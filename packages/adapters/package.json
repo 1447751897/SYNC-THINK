@@ -1,0 +1,25 @@
+{
+  "name": "@sync-think/adapters",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@sync-think/shared": "workspace:*",
+    "@sync-think/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@sync-think/test-fixtures": "workspace:*",
+    "@types/node": "^20.17.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.8"
+  }
+}

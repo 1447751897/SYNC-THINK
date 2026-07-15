@@ -1,0 +1,40 @@
+{
+  "name": "@sync-think/ui-kit",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./styles.css": "./src/styles/index.css"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/generate-css.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts,.tsx",
+    "tokens:css": "node scripts/generate-css.mjs"
+  },
+  "dependencies": {
+    "@sync-think/shared": "workspace:*",
+    "lucide-react": "^0.468.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^20.17.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "jsdom": "^25.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.8"
+  }
+}

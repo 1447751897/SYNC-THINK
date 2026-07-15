@@ -1,0 +1,31 @@
+{
+  "name": "@sync-think/runtime",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts",
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@sync-think/shared": "workspace:*",
+    "@sync-think/protocol": "workspace:*",
+    "@sync-think/storage": "workspace:*",
+    "@sync-think/secure-store": "workspace:*",
+    "@sync-think/core": "workspace:*",
+    "@sync-think/adapters": "workspace:*",
+    "@sync-think/workers": "workspace:*"
+  },
+  "devDependencies": {
+    "@sync-think/test-fixtures": "workspace:*",
+    "@types/node": "^20.17.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.8"
+  }
+}

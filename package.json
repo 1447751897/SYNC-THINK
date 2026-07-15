@@ -1,0 +1,47 @@
+{
+  "name": "sync-think",
+  "private": true,
+  "version": "0.0.1",
+  "description": "SYNC-THINK local-first multi-model Agent desktop workspace",
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "pretest": "node scripts/ensure-managed-pnpm.mjs",
+    "dev:runtime": "pnpm --filter @sync-think/runtime dev",
+    "dev:desktop": "node scripts/dev-desktop.mjs",
+    "dev:runtime:pipe-test": "tsx scripts/pipe-client.mjs",
+    "prebuild": "node scripts/ensure-managed-pnpm.mjs",
+    "build": "turbo run build",
+    "pretypecheck": "node scripts/ensure-managed-pnpm.mjs",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint --continue",
+    "format": "prettier --write .",
+    "selftest:m1-soft": "node scripts/selftest-m1-soft-regression.mjs",
+    "selftest:m1-soft:quick": "node scripts/selftest-m1-soft-regression.mjs --quick",
+    "preselftest:m2": "node scripts/ensure-managed-pnpm.mjs",
+    "selftest:m2": "node scripts/selftest-m2.mjs"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.16.0",
+    "@typescript-eslint/parser": "^8.16.0",
+    "eslint": "^9.16.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.23.0",
+    "turbo": "^2.3.3",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "electron",
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@sync-think/protocol": "workspace:*"
+  }
+}

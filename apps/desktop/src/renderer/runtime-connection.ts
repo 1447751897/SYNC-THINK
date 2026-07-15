@@ -1,0 +1,68 @@
+import type {
+  RuntimeConnectFailure,
+  RuntimeConnectOutcome,
+  RuntimeConnectResult,
+} from '../runtime-bridge-contract.js';
+
+const DEFAULT_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
+
+export interface RuntimeRetryScheduler {
+  schedule(callback: () => void, delayMs: number): unknown;
+  cancel(handle: unknown): void;
+}
+
+export interface RuntimeConnectionOptions {
+  connect: () => Promise<RuntimeConnectOutcome>;
+  onConnected: (result: RuntimeConnectResult) => void;
+  onFailed: (error: RuntimeConnectFailure) => void;
+  retryDelaysMs?: readonly number[];
+  scheduler?: RuntimeRetryScheduler;
+}
+
+const defaultScheduler: RuntimeRetryScheduler = {
+  schedule: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+  cancel: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+export function startRuntimeConnection(options: RuntimeConnectionOptions): () => void {
+  const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+  const scheduler = options.scheduler ?? defaultScheduler;
+  let active = true;
+  let retryIndex = 0;
+  let retryTimer: unknown = null;
+
+  const connect = async (): Promise<void> => {
+    let outcome: RuntimeConnectOutcome;
+    try {
+      outcome = await options.connect();
+    } catch {
+      outcome = {
+        ok: false,
+        error: { code: 'desktop.bridge-error', retryable: false },
+      };
+    }
+    if (!active) return;
+    if (outcome.ok) {
+      options.onConnected(outcome.result);
+      return;
+    }
+    if (!outcome.error.retryable || retryIndex >= retryDelaysMs.length) {
+      options.onFailed(outcome.error);
+      return;
+    }
+    const delayMs = retryDelaysMs[retryIndex++];
+    retryTimer = scheduler.schedule(() => {
+      retryTimer = null;
+      if (!active) return;
+      void connect();
+    }, delayMs);
+  };
+
+  void connect();
+  return () => {
+    if (!active) return;
+    active = false;
+    if (retryTimer !== null) scheduler.cancel(retryTimer);
+    retryTimer = null;
+  };
+}

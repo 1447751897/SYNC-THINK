@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SYNC-THINK · 智能体模型选择 Demo</title>
+  <style>
+    :root {
+      --bg: #0f1218;
+      --bg2: #151a22;
+      --bg3: #1b2230;
+      --border: #2a3344;
+      --border2: #3a4558;
+      --text: #e8eef8;
+      --muted: #8b97ab;
+      --accent: #5b8cff;
+      --accent2: #3d6fe0;
+      --ok: #3ecf8e;
+      --warn: #f0b429;
+      --danger: #f07178;
+      --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+      --sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      --radius: 10px;
+      --shadow: 0 18px 50px rgba(0,0,0,.45);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #1a2740 0%, transparent 55%),
+        radial-gradient(900px 500px at 90% 0%, #1a2030 0%, transparent 50%),
+        var(--bg);
+    }
+    button, input { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    .app {
+      display: grid;
+      grid-template-columns: 220px 1fr 320px;
+      min-height: 100vh;
+      gap: 0;
+    }
+    /* left workspace nav */
+    .nav {
+      border-right: 1px solid var(--border);
+      background: color-mix(in srgb, var(--bg2) 90%, #000);
+      padding: 16px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px 16px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 8px;
+    }
+    .brand-mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), #8b5cf6);
+      display: grid; place-items: center; font-weight: 700; font-size: 12px;
+    }
+    .brand strong { display: block; font-size: 13px; }
+    .brand small { color: var(--muted); font-size: 11px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%; text-align: left;
+      padding: 10px 12px; border-radius: 8px;
+      border: 1px solid transparent; background: transparent; color: var(--muted);
+    }
+    .nav-item:hover { background: var(--bg3); color: var(--text); }
+    .nav-item[data-active="1"] {
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+      border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+      color: var(--text);
+    }
+    .nav-item .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--border2);
+    }
+    .nav-item[data-active="1"] .dot { background: var(--accent); }
+    .nav-foot {
+      margin-top: auto; padding: 12px;
+      color: var(--muted); font-size: 11px; line-height: 1.5;
+      border-top: 1px solid var(--border);
+    }
+
+    /* main */
+    .main { padding: 20px 24px 40px; overflow: auto; }
+    .page-head {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 16px; margin-bottom: 16px;
+    }
+    .page-head h1 {
+      margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.02em;
+    }
+    .page-head p { margin: 6px 0 0; color: var(--muted); font-size: 13px; max-width: 52ch; }
+    .badge-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--bg2);
+      font-size: 11px; color: var(--muted);
+    }
+    .badge[data-tone="ok"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--border)); }
+    .badge[data-tone="warn"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
+
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, color-mix(in srgb, var(--bg3) 80%, transparent), transparent);
+    }
+    .card-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+    .card-head .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .path-pill {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+      padding: 8px 12px; border-radius: 10px;
+      background: var(--bg3); border: 1px solid var(--border);
+      font-size: 12px; max-width: 100%;
+    }
+    .path-pill b { color: var(--accent); font-family: var(--mono); font-weight: 600; }
+    .path-pill .sep { opacity: .45; }
+    .path-pill .hint { color: var(--muted); font-style: italic; }
+
+    .toolbar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px; border-bottom: 1px solid var(--border);
+    }
+    .search {
+      flex: 1; display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; border-radius: 8px;
+      background: var(--bg); border: 1px solid var(--border);
+    }
+    .search input {
+      flex: 1; border: 0; outline: none; background: transparent; min-width: 0;
+    }
+    .search input::placeholder { color: color-mix(in srgb, var(--muted) 80%, transparent); }
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg3); color: var(--text);
+    }
+    .btn:hover { border-color: var(--border2); }
+    .btn-primary {
+      background: linear-gradient(180deg, var(--accent), var(--accent2));
+      border-color: color-mix(in srgb, var(--accent) 50%, #000);
+      color: white; font-weight: 600;
+    }
+    .btn-primary:disabled {
+      opacity: .45; cursor: not-allowed; filter: grayscale(.2);
+    }
+    .btn-ghost { background: transparent; }
+
+    /* CC Switch board */
+    .board {
+      display: grid;
+      grid-template-columns: 150px minmax(180px, 28%) 1fr;
+      min-height: 360px;
+      max-height: 440px;
+    }
+    .col {
+      display: flex; flex-direction: column; min-height: 0;
+      border-right: 1px solid var(--border);
+    }
+    .col:last-child { border-right: 0; }
+    .col-label {
+      padding: 10px 12px 6px;
+      font-size: 11px; font-weight: 600; color: var(--muted);
+      letter-spacing: .04em;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .col-label span { color: var(--text); font-weight: 500; opacity: .75; }
+    .list { flex: 1; overflow: auto; padding: 4px 6px 10px; }
+    .row {
+      width: 100%; text-align: left;
+      display: grid; gap: 4px;
+      padding: 10px 10px; border-radius: 8px;
+      border: 1px solid transparent; background: transparent; color: var(--text);
+      margin-bottom: 2px;
+    }
+    .row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+    .row[data-active="1"] {
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+      border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+    .app-row {
+      grid-template-columns: 22px 1fr auto;
+      align-items: center; gap: 8px;
+    }
+    .app-ico {
+      width: 22px; height: 22px; border-radius: 6px;
+      display: grid; place-items: center; font-size: 11px; font-weight: 700;
+      background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+    }
+    .row[data-active="1"] .app-ico {
+      color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+    }
+    .app-name { font-size: 13px; font-weight: 550; }
+    .count {
+      font-family: var(--mono); font-size: 11px; color: var(--muted);
+      min-width: 1.5em; text-align: right;
+    }
+    .group-name { font-size: 13px; font-weight: 550; }
+    .group-meta { font-size: 11px; color: var(--muted); display: flex; gap: 8px; }
+    .tag-current {
+      color: var(--ok); font-size: 10px; font-weight: 600;
+      border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+      border-radius: 999px; padding: 0 6px;
+    }
+    .model-row { position: relative; padding-right: 56px; }
+    .model-id { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+    .model-sub { font-size: 11px; color: var(--muted); }
+    .model-badge {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      font-size: 10px; padding: 2px 7px; border-radius: 999px;
+      color: var(--accent);
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+    .empty {
+      padding: 24px 12px; color: var(--muted); font-size: 12px; line-height: 1.5;
+    }
+    .foot {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 16px; border-top: 1px solid var(--border);
+      background: color-mix(in srgb, var(--bg3) 50%, transparent);
+    }
+    .foot-left { font-size: 12px; color: var(--muted); }
+    .foot-left strong { color: var(--text); }
+
+    .section {
+      margin-top: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--bg2) 80%, transparent);
+      overflow: hidden;
+    }
+    .section summary {
+      list-style: none; cursor: pointer;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 14px; color: var(--text); font-size: 13px; font-weight: 550;
+    }
+    .section summary::-webkit-details-marker { display: none; }
+    .section summary small { color: var(--muted); font-weight: 400; }
+    .section-body { padding: 0 14px 14px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .fallback-item {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 8px 10px; border-radius: 8px;
+      background: var(--bg); border: 1px solid var(--border); margin-top: 6px;
+      color: var(--text); font-family: var(--mono); font-size: 12px;
+    }
+
+    /* right compose preview */
+    .side {
+      border-left: 1px solid var(--border);
+      background: color-mix(in srgb, var(--bg2) 92%, #000);
+      padding: 16px; display: flex; flex-direction: column; gap: 12px;
+    }
+    .side h3 { margin: 0; font-size: 13px; }
+    .side p.lead { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .compose-mock {
+      margin-top: auto;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--bg);
+      padding: 12px;
+      display: grid; gap: 10px;
+    }
+    .compose-label {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--muted); font-weight: 600;
+    }
+    .compose-trigger {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg2);
+      font-size: 12px; font-family: var(--mono);
+    }
+    .compose-trigger .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .compose-note {
+      font-size: 11px; color: var(--muted); line-height: 1.45;
+      padding: 8px; border-radius: 8px;
+      background: color-mix(in srgb, var(--accent) 8%, transparent);
+      border: 1px dashed color-mix(in srgb, var(--accent) 30%, var(--border));
+    }
+    .ta {
+      width: 100%; min-height: 72px; resize: vertical;
+      border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg2); padding: 10px; color: var(--text);
+    }
+    .send-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .send-row .hint { font-size: 11px; color: var(--muted); }
+    .toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      padding: 10px 16px; border-radius: 999px;
+      background: #122018; border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+      color: var(--ok); font-size: 13px; box-shadow: var(--shadow);
+      opacity: 0; pointer-events: none; transition: opacity .2s;
+      z-index: 20;
+    }
+    .toast[data-show="1"] { opacity: 1; }
+
+    @media (max-width: 1100px) {
+      .app { grid-template-columns: 1fr; }
+      .nav, .side { display: none; }
+      .board { grid-template-columns: 1fr; max-height: none; }
+      .col { border-right: 0; border-bottom: 1px solid var(--border); max-height: 180px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="nav">
+      <div class="brand">
+        <div class="brand-mark">ST</div>
+        <div>
+          <strong>SYNC-THINK</strong>
+          <small>设计 Demo · 非真实 Runtime</small>
+        </div>
+      </div>
+      <button class="nav-item" type="button" disabled><span class="dot"></span>任务</button>
+      <button class="nav-item" type="button" data-active="1"><span class="dot"></span>智能体</button>
+      <button class="nav-item" type="button" disabled><span class="dot"></span>Provider 中心</button>
+      <button class="nav-item" type="button" disabled><span class="dot"></span>轨迹 / 审批</button>
+      <div class="nav-foot">
+        方案 A：默认模型在<strong style="color:var(--text)">智能体</strong>里用三栏配置；对话区只做轻量展示与临时覆盖。
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="page-head">
+        <div>
+          <h1>智能体 · 模型绑定</h1>
+          <p>对齐 CC Switch：先选应用（Codex / Claude Code…），再选分组，再选模型。保存后成为 Agent 默认。</p>
+        </div>
+        <div class="badge-row">
+          <span class="badge" id="dirtyBadge" data-tone="ok">已同步</span>
+          <span class="badge" data-tone="ok">能力就绪（示意）</span>
+        </div>
+      </div>
+
+      <section class="card" aria-label="默认模型三栏选择">
+        <div class="card-head">
+          <div>
+            <h2>默认模型</h2>
+            <div class="sub">应用 → 分组 → 模型 · 值仍为 modelId</div>
+          </div>
+          <div class="path-pill" id="pathPill">
+            <span class="hint">尚未选择</span>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <div class="search">
+            <span aria-hidden="true">⌕</span>
+            <input id="search" type="search" placeholder="搜索分组或模型…" autocomplete="off" />
+          </div>
+          <button class="btn btn-ghost" type="button" id="btnReset" title="恢复已保存">撤销</button>
+          <button class="btn btn-primary" type="button" id="btnSave" disabled>保存绑定</button>
+        </div>
+
+        <div class="board">
+          <div class="col">
+            <div class="col-label">1 · 应用</div>
+            <div class="list" id="appList" role="tablist"></div>
+          </div>
+          <div class="col">
+            <div class="col-label">2 · 分组 <span id="groupHint"></span></div>
+            <div class="list" id="groupList" role="list"></div>
+          </div>
+          <div class="col">
+            <div class="col-label">3 · 模型 <span id="modelHint"></span></div>
+            <div class="list" id="modelList" role="listbox"></div>
+          </div>
+        </div>
+
+        <div class="foot">
+          <div class="foot-left">
+            当前草稿：<strong id="draftLabel">—</strong>
+          </div>
+          <div class="badge-row">
+            <span class="badge">Agent: Default</span>
+            <span class="badge">v3（示意）</span>
+          </div>
+        </div>
+      </section>
+
+      <details class="section">
+        <summary>
+          <span>Fallback 模型链</span>
+          <small id="fbCount">2 个 · 可排序（示意）</small>
+        </summary>
+        <div class="section-body">
+          <div>失败时按顺序尝试；不可与默认模型重复。</div>
+          <div class="fallback-item">1 · deepseek-chat <span class="tag-current">示意</span></div>
+          <div class="fallback-item">2 · glm-4-flash</div>
+        </div>
+      </details>
+
+      <details class="section">
+        <summary>
+          <span>凭证组 / Pin</span>
+          <small>与模型分组解耦（§5.4）</small>
+        </summary>
+        <div class="section-body">
+          凭证在 Provider 中心管理；此处只绑 group / pin。Demo 不展开表单。
+        </div>
+      </details>
+    </main>
+
+    <aside class="side">
+      <h3>对话区会怎样？（对照）</h3>
+      <p class="lead">Compose <strong>不展开三栏</strong>。只显示当前路径；需要时可临时覆盖，或跳回智能体改默认。</p>
+
+      <div class="compose-mock">
+        <div class="compose-label">✦ 本轮模型</div>
+        <div class="compose-trigger">
+          <span>✦</span>
+          <span class="grow" id="composePath">Agent 默认 · —</span>
+          <span style="opacity:.5">▾</span>
+        </div>
+        <div class="compose-note" id="composeNote">
+          使用智能体默认。若要改长期默认，请在左侧「智能体」配置。
+        </div>
+        <textarea class="ta" placeholder="输入指令，Enter 发送（Demo 不发送）…"></textarea>
+        <div class="send-row">
+          <span class="hint">Ctrl+Enter 发送</span>
+          <button class="btn btn-primary" type="button" disabled>发送</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="toast" id="toast">已保存默认模型绑定</div>
+
+  <script>
+    /** Mock catalog shaped like CC Switch + SYNC-THINK surfaces */
+    const CATALOG = [
+      {
+        id: 'codex', label: 'Codex', icon: 'Cx',
+        groups: [
+          {
+            id: 'g-kmk-codex', name: 'KMKAPI-CODEX', current: true,
+            models: [
+              { id: 'm1', name: 'gpt-5.4-mini' },
+              { id: 'm2', name: 'gpt-5.3-codex' },
+              { id: 'm3', name: 'o3-mini' },
+              { id: 'm4', name: 'gpt-4.1' },
+            ],
+          },
+          {
+            id: 'g-official-codex', name: 'Official',
+            models: [
+              { id: 'm5', name: 'gpt-5.2-codex' },
+              { id: 'm6', name: 'o4-mini' },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'claude', label: 'Claude Code', icon: 'CC',
+        groups: [
+          {
+            id: 'g-unity', name: 'Unity2.Ai', current: true,
+            models: [
+              { id: 'm7', name: 'claude-sonnet-4' },
+              { id: 'm8', name: 'claude-opus-4' },
+              { id: 'm9', name: 'claude-haiku-4' },
+            ],
+          },
+          {
+            id: 'g-kmk-claude', name: 'KMKAPI-CLAUDE',
+            models: [
+              { id: 'm10', name: 'claude-sonnet-4-5' },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'kiro', label: 'Kiro', icon: 'Kr',
+        groups: [
+          {
+            id: 'g-kiro', name: 'Kiro-Proxy',
+            models: [
+              { id: 'm11', name: 'kiro-auto' },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'generic', label: '其他', icon: '··',
+        groups: [
+          {
+            id: 'g-glm', name: 'GLM-Chat',
+            models: [
+              { id: 'm12', name: 'glm-4-flash' },
+              { id: 'm13', name: 'glm-4-plus' },
+            ],
+          },
+          {
+            id: 'g-ds', name: 'DeepSeek',
+            models: [
+              { id: 'm14', name: 'deepseek-chat' },
+              { id: 'm15', name: 'deepseek-reasoner' },
+            ],
+          },
+        ],
+      },
+    ];
+
+    function modelCount(app) {
+      return app.groups.reduce((n, g) => n + g.models.length, 0);
+    }
+
+    // Saved binding (simulate DB)
+    let saved = { appId: 'codex', groupId: 'g-kmk-codex', modelId: 'm1' };
+    // Draft
+    let draft = { ...saved };
+    let query = '';
+
+    const el = {
+      appList: document.getElementById('appList'),
+      groupList: document.getElementById('groupList'),
+      modelList: document.getElementById('modelList'),
+      pathPill: document.getElementById('pathPill'),
+      draftLabel: document.getElementById('draftLabel'),
+      dirtyBadge: document.getElementById('dirtyBadge'),
+      btnSave: document.getElementById('btnSave'),
+      btnReset: document.getElementById('btnReset'),
+      search: document.getElementById('search'),
+      groupHint: document.getElementById('groupHint'),
+      modelHint: document.getElementById('modelHint'),
+      composePath: document.getElementById('composePath'),
+      composeNote: document.getElementById('composeNote'),
+      toast: document.getElementById('toast'),
+    };
+
+    function findPath(sel) {
+      const app = CATALOG.find(a => a.id === sel.appId);
+      if (!app) return null;
+      const group = app.groups.find(g => g.id === sel.groupId) || app.groups[0];
+      const model = group?.models.find(m => m.id === sel.modelId) || group?.models[0];
+      return { app, group, model };
+    }
+
+    function isDirty() {
+      return draft.appId !== saved.appId || draft.groupId !== saved.groupId || draft.modelId !== saved.modelId;
+    }
+
+    function renderPath(sel, target) {
+      const p = findPath(sel);
+      if (!p?.model) {
+        target.innerHTML = '<span class="hint">选择 应用 → 分组 → 模型</span>';
+        return '—';
+      }
+      target.innerHTML = `
+        <span>${p.app.label}</span>
+        <span class="sep">→</span>
+        <span>${p.group.name}</span>
+        <span class="sep">→</span>
+        <b>${p.model.name}</b>
+      `;
+      return `${p.app.label} · ${p.group.name} · ${p.model.name}`;
+    }
+
+    function filteredGroups(app) {
+      const q = query.trim().toLowerCase();
+      if (!q) return app.groups;
+      return app.groups.filter(g =>
+        g.name.toLowerCase().includes(q) ||
+        g.models.some(m => m.name.toLowerCase().includes(q))
+      );
+    }
+
+    function filteredModels(group) {
+      const q = query.trim().toLowerCase();
+      if (!q) return group.models;
+      if (group.name.toLowerCase().includes(q)) return group.models;
+      return group.models.filter(m => m.name.toLowerCase().includes(q));
+    }
+
+    function render() {
+      // ensure draft points exist
+      let app = CATALOG.find(a => a.id === draft.appId) || CATALOG[0];
+      draft.appId = app.id;
+      let groups = filteredGroups(app);
+      let group = groups.find(g => g.id === draft.groupId) || groups[0] || app.groups[0];
+      if (group) draft.groupId = group.id;
+      let models = group ? filteredModels(group) : [];
+      if (models.length && !models.some(m => m.id === draft.modelId)) {
+        // keep draft model id even if filtered out of view
+      }
+
+      // apps
+      el.appList.innerHTML = CATALOG.map(a => `
+        <button type="button" class="row app-row" data-active="${a.id === draft.appId ? '1' : '0'}" data-app="${a.id}">
+          <span class="app-ico">${a.icon}</span>
+          <span class="app-name">${a.label}</span>
+          <span class="count">${modelCount(a)}</span>
+        </button>
+      `).join('');
+
+      el.groupHint.textContent = app ? '· ' + app.label : '';
+      el.groupList.innerHTML = groups.length
+        ? groups.map(g => `
+          <button type="button" class="row" data-active="${g.id === draft.groupId ? '1' : '0'}" data-group="${g.id}">
+            <span class="group-name">${g.name}</span>
+            <span class="group-meta">
+              <span>${g.models.length} models</span>
+              ${g.current ? '<span class="tag-current">Current</span>' : ''}
+            </span>
+          </button>
+        `).join('')
+        : '<div class="empty">无匹配分组</div>';
+
+      el.modelHint.textContent = group ? '· ' + group.name : '';
+      el.modelList.innerHTML = models.length
+        ? models.map(m => {
+            const selected = m.id === draft.modelId;
+            const isSavedDefault = m.id === saved.modelId;
+            return `
+              <button type="button" class="row model-row" data-active="${selected ? '1' : '0'}" data-model="${m.id}" role="option" aria-selected="${selected}">
+                <span class="model-id">${m.name}</span>
+                <span class="model-sub">${app.label} / ${group.name}</span>
+                ${isSavedDefault ? '<span class="model-badge">默认</span>' : selected ? '<span class="model-badge">已选</span>' : ''}
+              </button>
+            `;
+          }).join('')
+        : '<div class="empty">该分组暂无模型，或搜索无结果</div>';
+
+      const label = renderPath(draft, el.pathPill);
+      el.draftLabel.textContent = label;
+
+      const dirty = isDirty();
+      el.dirtyBadge.textContent = dirty ? '未保存' : '已同步';
+      el.dirtyBadge.dataset.tone = dirty ? 'warn' : 'ok';
+      el.btnSave.disabled = !dirty || !draft.modelId;
+
+      // compose shows SAVED binding (agent default), not draft — product intent
+      const savedLabel = renderPath(saved, { innerHTML: '' }) || '—';
+      // re-render path for saved into a temp
+      const sp = findPath(saved);
+      if (sp?.model) {
+        el.composePath.textContent = `Agent 默认 · ${sp.app.label} · ${sp.group.name} · ${sp.model.name}`;
+        el.composeNote.textContent = dirty
+          ? '智能体里有未保存的修改；对话仍使用已保存的默认，点「保存绑定」后生效。'
+          : '使用智能体默认。本轮可临时覆盖（Demo 未实现下拉），长期默认请在智能体修改。';
+      }
+    }
+
+    el.appList.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-app]');
+      if (!btn) return;
+      const appId = btn.getAttribute('data-app');
+      const app = CATALOG.find(a => a.id === appId);
+      draft.appId = appId;
+      draft.groupId = app.groups[0]?.id;
+      draft.modelId = app.groups[0]?.models[0]?.id;
+      render();
+    });
+
+    el.groupList.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-group]');
+      if (!btn) return;
+      draft.groupId = btn.getAttribute('data-group');
+      const app = CATALOG.find(a => a.id === draft.appId);
+      const g = app?.groups.find(x => x.id === draft.groupId);
+      draft.modelId = g?.models[0]?.id || draft.modelId;
+      render();
+    });
+
+    el.modelList.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-model]');
+      if (!btn) return;
+      draft.modelId = btn.getAttribute('data-model');
+      render();
+    });
+
+    el.search.addEventListener('input', () => {
+      query = el.search.value;
+      render();
+    });
+
+    el.btnReset.addEventListener('click', () => {
+      draft = { ...saved };
+      query = '';
+      el.search.value = '';
+      render();
+    });
+
+    el.btnSave.addEventListener('click', () => {
+      if (!isDirty()) return;
+      saved = { ...draft };
+      render();
+      el.toast.dataset.show = '1';
+      setTimeout(() => { el.toast.dataset.show = '0'; }, 1600);
+    });
+
+    render();
+  </script>
+</body>
+</html>
