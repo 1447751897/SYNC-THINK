@@ -2,7 +2,7 @@
 
 export interface WorkspaceNavWorkspace {
   readonly workspaceId: string;
-  readonly folderPath: string;
+  readonly folderPath?: string;
   readonly name: string;
   readonly createdAt?: string;
   readonly updatedAt?: string;
@@ -48,8 +48,7 @@ export function filterTasksByQuery(
   const q = query.trim().toLowerCase();
   if (!q) return [...tasks];
   return tasks.filter(
-    (task) =>
-      task.title.toLowerCase().includes(q) || task.goal.toLowerCase().includes(q),
+    (task) => task.title.toLowerCase().includes(q) || task.goal.toLowerCase().includes(q),
   );
 }
 

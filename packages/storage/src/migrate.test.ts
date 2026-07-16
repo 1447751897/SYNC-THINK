@@ -36,6 +36,8 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -230,6 +232,8 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -409,23 +413,133 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
 }
 
 describe('migration planner (pure)', () => {
+  it('appends provider execution checkpoints after optional project folder binding', () => {
+    expect(MIGRATIONS.at(-2)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-1)?.name).toBe('0023_provider_execution_checkpoint');
+  });
+
+  it.runIf(canOpenNativeSqlite())(
+    'makes workspace folder_path nullable without losing rows',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'sync-think-project-folder-migration-'));
+      const dbPath = join(dir, 'sync-think.db');
+      try {
+        const trailing = MIGRATIONS.splice(-2);
+        try {
+          await runMigrations(dbPath);
+        } finally {
+          MIGRATIONS.push(...trailing);
+        }
+        const before = await openDatabaseAsync({ path: dbPath });
+        try {
+          before.raw.exec(`
+          INSERT INTO workspace (id, folder_path, name, created_at, updated_at)
+          VALUES ('legacy-project', 'D:\\legacy-project', 'Legacy', 't0', 't0');
+          INSERT INTO task (
+            id, workspace_id, title, goal, status, participation_mode,
+            acceptance_criteria_json, version, created_at, updated_at
+          ) VALUES (
+            'legacy-task', 'legacy-project', 'Legacy task', 'Preserve ownership',
+            'active', 'conversation', '[]', 0, 't0', 't0'
+          );
+          INSERT INTO plan (id, task_id, created_at, updated_at)
+          VALUES ('legacy-plan', 'legacy-task', 't0', 't0');
+          INSERT INTO plan_revision (
+            id, plan_id, revision, title, steps_json, diff_json, state, created_at, approved_at
+          ) VALUES (
+            'legacy-revision', 'legacy-plan', 1, 'Legacy revision', '[]',
+            '{"added":[],"removed":[],"changed":[]}', 'approved', 't0', 't0'
+          );
+          INSERT INTO run (id, task_id, plan_revision_id, state, created_at, updated_at)
+          VALUES ('legacy-run', 'legacy-task', 'legacy-revision', 'completed', 't0', 't0');
+          INSERT INTO artifact (id, workspace_id, task_id, run_id, name, created_at)
+          VALUES (
+            'legacy-artifact', 'legacy-project', 'legacy-task', 'legacy-run',
+            'legacy.txt', 't0'
+          );
+        `);
+        } finally {
+          before.raw.close();
+        }
+
+        expect((await runMigrations(dbPath)).applied).toEqual([
+          '0022_optional_project_folder',
+          '0023_provider_execution_checkpoint',
+        ]);
+        const after = await openDatabaseAsync({ path: dbPath });
+        try {
+          const folderColumn = (
+            after.raw.prepare("PRAGMA table_info('workspace')").all() as Array<{
+              name: string;
+              notnull: number;
+            }>
+          ).find((column) => column.name === 'folder_path');
+          expect(folderColumn?.notnull).toBe(0);
+          expect(
+            after.raw
+              .prepare('SELECT folder_path FROM workspace WHERE id = ?')
+              .get('legacy-project'),
+          ).toEqual({
+            folder_path: 'D:\\legacy-project',
+          });
+          expect(
+            after.raw
+              .prepare(
+                `SELECT artifact.id
+               FROM artifact
+               INNER JOIN workspace ON workspace.id = artifact.workspace_id
+               INNER JOIN task ON task.id = artifact.task_id
+               INNER JOIN run ON run.id = artifact.run_id
+               WHERE artifact.id = 'legacy-artifact'`,
+              )
+              .get(),
+          ).toEqual({ id: 'legacy-artifact' });
+          expect(after.raw.pragma('foreign_keys', { simple: true })).toBe(1);
+          expect(after.raw.pragma('foreign_key_check')).toEqual([]);
+          expect(
+            after.raw
+              .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+              .get('workspace_folder_path_uidx'),
+          ).toEqual({ name: 'workspace_folder_path_uidx' });
+          const insertProject = after.raw.prepare(
+            `INSERT INTO workspace (id, folder_path, name, created_at, updated_at)
+           VALUES (?, ?, ?, 't1', 't1')`,
+          );
+          insertProject.run('unbound-one', null, 'Unbound one');
+          insertProject.run('unbound-two', null, 'Unbound two');
+          expect(() =>
+            insertProject.run('duplicate-folder', 'd:\\LEGACY-PROJECT', 'Duplicate folder'),
+          ).toThrow(/unique/i);
+        } finally {
+          after.raw.close();
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('appends the complete AgentVersion migration after reviewer/rework', () => {
-    expect(MIGRATIONS.at(-5)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0021_merge_step_conflict_resolution');
+    expect(MIGRATIONS.at(-7)?.name).toBe('0017_reviewer_rework');
+    expect(MIGRATIONS.at(-6)?.name).toBe('0018_complete_agent_version');
+    expect(MIGRATIONS.at(-5)?.name).toBe('0019_review_source_evidence_integrity');
+    expect(MIGRATIONS.at(-4)?.name).toBe('0020_review_bounds_integrity');
+    expect(MIGRATIONS.at(-3)?.name).toBe('0021_merge_step_conflict_resolution');
+    expect(MIGRATIONS.at(-2)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-1)?.name).toBe('0023_provider_execution_checkpoint');
   });
 
   it('reserves 0016 for production execution fencing after frozen 0015', () => {
-    expect(MIGRATIONS.at(-7)?.name).toBe('0015_capability_authorization');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0016_production_execution');
-    expect(MIGRATIONS.at(-5)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0021_merge_step_conflict_resolution');
-    const through0015 = MIGRATIONS.slice(0, -6).map((migration) => migration.name);
+    expect(MIGRATIONS.at(-9)?.name).toBe('0015_capability_authorization');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0016_production_execution');
+    expect(MIGRATIONS.at(-7)?.name).toBe('0017_reviewer_rework');
+    expect(MIGRATIONS.at(-6)?.name).toBe('0018_complete_agent_version');
+    expect(MIGRATIONS.at(-5)?.name).toBe('0019_review_source_evidence_integrity');
+    expect(MIGRATIONS.at(-4)?.name).toBe('0020_review_bounds_integrity');
+    expect(MIGRATIONS.at(-3)?.name).toBe('0021_merge_step_conflict_resolution');
+    expect(MIGRATIONS.at(-2)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-1)?.name).toBe('0023_provider_execution_checkpoint');
+    const through0015 = MIGRATIONS.slice(0, -8).map((migration) => migration.name);
     expect(planMigrations(through0015).applied).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',
@@ -433,13 +547,15 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
   });
 
   it('appends capability authorization after the frozen 0014 migration', () => {
-    expect(MIGRATIONS.at(-8)?.name).toBe('0014_scheduler_fencing');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0015_capability_authorization');
-    const through0014 = MIGRATIONS.slice(0, -7).map((migration) => migration.name);
+    expect(MIGRATIONS.at(-10)?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS.at(-9)?.name).toBe('0015_capability_authorization');
+    const through0014 = MIGRATIONS.slice(0, -9).map((migration) => migration.name);
     expect(planMigrations(through0014).applied).toEqual([
       '0015_capability_authorization',
       '0016_production_execution',
@@ -448,6 +564,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
   });
 
@@ -472,6 +590,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
   });
 
@@ -489,6 +609,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
   });
 
@@ -505,6 +627,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
   });
 
@@ -538,6 +662,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -564,6 +690,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -593,6 +721,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -626,6 +756,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -660,6 +792,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -695,6 +829,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -731,6 +867,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -769,6 +907,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -799,6 +939,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -826,6 +968,8 @@ describe('migration planner (pure)', () => {
       '0019_review_source_evidence_integrity',
       '0020_review_bounds_integrity',
       '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -951,6 +1095,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   it('upgrades a complete 0017 AgentVersion without rewriting history and uses safe defaults', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-agent-version-upgrade-'));
     const dbPath = join(dir, 'sync-think.db');
+    const providerCheckpointMigration =
+      MIGRATIONS.at(-1)?.name === '0023_provider_execution_checkpoint'
+        ? MIGRATIONS.pop()
+        : undefined;
+    const optionalProjectFolderMigration =
+      MIGRATIONS.at(-1)?.name === '0022_optional_project_folder' ? MIGRATIONS.pop() : undefined;
     const mergeResolutionMigration =
       MIGRATIONS.at(-1)?.name === '0021_merge_step_conflict_resolution'
         ? MIGRATIONS.pop()
@@ -991,11 +1141,15 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       if (sourceEvidenceMigration) MIGRATIONS.push(sourceEvidenceMigration);
       if (boundsMigration) MIGRATIONS.push(boundsMigration);
       if (mergeResolutionMigration) MIGRATIONS.push(mergeResolutionMigration);
+      if (optionalProjectFolderMigration) MIGRATIONS.push(optionalProjectFolderMigration);
+      if (providerCheckpointMigration) MIGRATIONS.push(providerCheckpointMigration);
       expect((await runMigrations(dbPath)).applied).toEqual([
         '0018_complete_agent_version',
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
 
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1030,6 +1184,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         sourceEvidenceMigration,
         boundsMigration,
         mergeResolutionMigration,
+        optionalProjectFolderMigration,
       ]) {
         if (migration && !MIGRATIONS.includes(migration)) MIGRATIONS.push(migration);
       }
@@ -1089,6 +1244,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1131,6 +1288,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
 
       const upgraded = await openDatabaseAsync({ path: dbPath });
@@ -1144,7 +1303,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         upgraded.raw.close();
       }
     } finally {
-      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0021_merge_step_conflict_resolution') {
+      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0023_provider_execution_checkpoint') {
         MIGRATIONS.push(...trailingMigrations);
       }
       rmSync(dir, { recursive: true, force: true });
@@ -1270,7 +1429,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   });
 
   it('appends 0014 scheduler fencing and exact Step output mapping', async () => {
-    expect(MIGRATIONS.at(-8)?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS.at(-10)?.name).toBe('0014_scheduler_fencing');
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduler-fencing-migration-'));
     const dbPath = join(dir, 'sync-think.db');
     try {
@@ -1399,6 +1558,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1454,6 +1615,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1484,6 +1647,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1513,6 +1678,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1549,6 +1716,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
 
       const { raw } = await openDatabaseAsync({ path: dbPath });
@@ -1654,6 +1823,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1709,6 +1880,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0019_review_source_evidence_integrity',
         '0020_review_bounds_integrity',
         '0021_merge_step_conflict_resolution',
+        '0022_optional_project_folder',
+        '0023_provider_execution_checkpoint',
       ]);
 
       const { raw } = await openDatabaseAsync({ path: dbPath });

@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,10 +9,12 @@ import {
   openDatabaseAsync,
   runMigrations,
   SqliteAgentStore,
+  SqliteApprovalStore,
   SqliteOrchestrationStore,
   SqliteProductionExecutionStore,
   SqliteProviderStore,
   SqliteWorkspaceStore,
+  SqliteUnitOfWork,
 } from '@sync-think/storage';
 import { openPersistentRuntime } from '../persistence.js';
 import { Scheduler } from './scheduler.js';
@@ -22,7 +25,14 @@ const PRODUCTION_SECRET_CANARY = 'sk-production-secret-canary-Q1-7f4d9c2a';
 const SECRET_ECHO_FAILURE = 'Production Provider response contained credential secret';
 
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) {
+    rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+  }
 });
 
 function deferred() {
@@ -215,10 +225,7 @@ function prepareReviewerAssignment(
       fixture.orchestration.getReviewStepContext(fixture.graph.run.id, step.id)?.kind ===
       'reviewer',
   )!;
-  const context = fixture.orchestration.getReviewStepContext(
-    fixture.graph.run.id,
-    reviewerStep.id,
-  );
+  const context = fixture.orchestration.getReviewStepContext(fixture.graph.run.id, reviewerStep.id);
   if (context?.kind !== 'reviewer') throw new Error('Reviewer assignment missing');
   return { reviewer, gate, reviewerStep, context };
 }
@@ -237,6 +244,272 @@ function expectLatestReservationUncompleted(
 }
 
 describe('production Step execution reservations', () => {
+  it('executes approved workspace tools across Provider turns and persists an inspectable trace artifact', async () => {
+    const f = await seedProductionRun('sync-think-production-tools-');
+    f.connection.raw
+      .prepare('UPDATE workspace SET folder_path = ? WHERE id = ?')
+      .run(f.dir, 'workspace-production');
+    f.connection.raw
+      .prepare('UPDATE model SET capabilities_json = ? WHERE id = ?')
+      .run(JSON.stringify(['text', 'tool-calling']), f.agent.defaultModelId);
+    execFileSync('git', ['init', '--quiet'], { cwd: f.dir });
+    execFileSync('git', ['config', 'user.email', 'sync-think@example.invalid'], { cwd: f.dir });
+    execFileSync('git', ['config', 'user.name', 'SYNC-THINK Test'], { cwd: f.dir });
+    writeFileSync(join(f.dir, 'input.txt'), 'workspace input', 'utf8');
+    writeFileSync(join(f.dir, 'tracked.txt'), 'before\n', 'utf8');
+    execFileSync('git', ['add', 'input.txt', 'tracked.txt'], { cwd: f.dir });
+    execFileSync('git', ['commit', '--quiet', '-m', 'initial'], { cwd: f.dir });
+
+    const calls = [
+      { name: 'read_file', arguments: { path: 'input.txt' } },
+      { name: 'write_file', arguments: { path: 'tracked.txt', content: 'after\n' } },
+      {
+        name: 'run_command',
+        arguments: {
+          command: process.execPath,
+          args: ['-e', "process.stdout.write('command-ok')"],
+        },
+      },
+      { name: 'git_status', arguments: {} },
+      { name: 'git_diff', arguments: { path: 'tracked.txt' } },
+    ] as const;
+    const requests: Parameters<ProviderAdapter['call']>[0][] = [];
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(request): AsyncIterable<AdapterEvent> {
+        requests.push(request);
+        const call = calls[requests.length - 1];
+        if (call) {
+          yield {
+            type: 'tool-call',
+            toolCall: {
+              id: `tool-call-${requests.length}`,
+              name: call.name,
+              argumentsJson: JSON.stringify(call.arguments),
+            },
+          };
+          yield { type: 'finished', reason: 'tool-requests' };
+          return;
+        }
+        yield { type: 'text-delta', text: 'Workspace tools completed successfully.' };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const claimed = f.orchestration.claimReadySteps({
+      runId: f.graph.run.id,
+      stepIds: ['production-step' as never],
+      ownerId: 'production-tool-owner',
+      leaseExpiresAt: '9999-12-31T23:59:59.999Z',
+    }).claimedSteps[0]!;
+    const gatedActions: string[] = [];
+
+    try {
+      const result = await productionExecutor(f, adapter).execute({
+        runId: f.graph.run.id,
+        step: claimed,
+        idempotencyKey: claimed.idempotencyKey!,
+        artifactVersions: [],
+        signal: new AbortController().signal,
+        async gateAction(request) {
+          gatedActions.push(request.action);
+          return { allowed: true, actionDigest: 'a'.repeat(64) };
+        },
+      });
+
+      expect(requests).toHaveLength(6);
+      expect(requests[0]!.tools?.map((tool) => tool.name)).toEqual([
+        'read_file',
+        'list_files',
+        'write_file',
+        'run_command',
+        'git_status',
+        'git_diff',
+      ]);
+      expect(
+        requests
+          .slice(1)
+          .every((request) => request.messages.some((message) => message.role === 'tool')),
+      ).toBe(true);
+      expect(gatedActions).toEqual(calls.map((call) => `tool.${call.name}`));
+      expect(readFileSync(join(f.dir, 'tracked.txt'), 'utf8')).toBe('after\n');
+      expect(result.outputVersions).toHaveLength(2);
+      expect(result.outputVersions?.[0]).toMatchObject({
+        content: 'Workspace tools completed successfully.',
+      });
+      expect(result.outputVersions?.[1]).toMatchObject({
+        mimeType: 'application/json',
+        status: 'candidate',
+      });
+      const trace = JSON.parse(result.outputVersions?.[1]!.content ?? '{}') as {
+        calls?: Array<{ name: string; result: string }>;
+      };
+      expect(trace.calls?.map((entry) => entry.name)).toEqual(calls.map((call) => call.name));
+      expect(trace.calls?.find((entry) => entry.name === 'read_file')?.result).toContain(
+        'workspace input',
+      );
+      expect(trace.calls?.find((entry) => entry.name === 'run_command')?.result).toContain(
+        'command-ok',
+      );
+      expect(trace.calls?.find((entry) => entry.name === 'git_diff')?.result).toContain('+after');
+      expect(
+        new SqliteProductionExecutionStore(f.connection.raw).getProviderExecution(
+          claimed.idempotencyKey!,
+        ),
+      ).toMatchObject({ state: 'completed' });
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  }, 30_000);
+
+  it('fails safely when a Provider exceeds the bounded tool-call loop', async () => {
+    const f = await seedProductionRun('sync-think-production-tool-limit-');
+    f.connection.raw
+      .prepare('UPDATE workspace SET folder_path = ? WHERE id = ?')
+      .run(f.dir, 'workspace-production');
+    f.connection.raw
+      .prepare('UPDATE model SET capabilities_json = ? WHERE id = ?')
+      .run(JSON.stringify(['text', 'tool-calling']), f.agent.defaultModelId);
+    let providerCalls = 0;
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(): AsyncIterable<AdapterEvent> {
+        providerCalls += 1;
+        yield {
+          type: 'tool-call',
+          toolCall: {
+            id: `loop-${providerCalls}`,
+            name: 'list_files',
+            argumentsJson: '{}',
+          },
+        };
+        yield { type: 'finished', reason: 'tool-requests' };
+      },
+    };
+    const claimed = f.orchestration.claimReadySteps({
+      runId: f.graph.run.id,
+      stepIds: ['production-step' as never],
+      ownerId: 'production-tool-limit-owner',
+      leaseExpiresAt: '9999-12-31T23:59:59.999Z',
+    }).claimedSteps[0]!;
+
+    try {
+      await expect(
+        productionExecutor(f, adapter).execute({
+          runId: f.graph.run.id,
+          step: claimed,
+          idempotencyKey: claimed.idempotencyKey!,
+          artifactVersions: [],
+          signal: new AbortController().signal,
+          async gateAction() {
+            return { allowed: true, actionDigest: 'b'.repeat(64) };
+          },
+        }),
+      ).rejects.toMatchObject({ failureClass: 'acceptance' });
+      expect(providerCalls).toBe(8);
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
+  it('resumes one checkpointed tool call after human approval without repeating the Provider request', async () => {
+    const f = await seedProductionRun('sync-think-production-tool-approval-');
+    f.connection.raw
+      .prepare('UPDATE workspace SET folder_path = ? WHERE id = ?')
+      .run(f.dir, 'workspace-production');
+    f.connection.raw
+      .prepare('UPDATE model SET capabilities_json = ? WHERE id = ?')
+      .run(JSON.stringify(['text', 'tool-calling']), f.agent.defaultModelId);
+    writeFileSync(join(f.dir, 'approved.txt'), 'approved content', 'utf8');
+    let providerCalls = 0;
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(request): AsyncIterable<AdapterEvent> {
+        providerCalls += 1;
+        if (!request.messages.some((message) => message.role === 'tool')) {
+          yield {
+            type: 'tool-call',
+            toolCall: {
+              id: 'approval-read-call',
+              name: 'read_file',
+              argumentsJson: '{"path":"approved.txt"}',
+            },
+          };
+          yield { type: 'finished', reason: 'tool-requests' };
+          return;
+        }
+        yield { type: 'text-delta', text: 'Approved tool result consumed.' };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const approvalStore = new SqliteApprovalStore(f.connection.raw);
+    const scheduler = new Scheduler({
+      store: f.orchestration,
+      executor: productionExecutor(f, adapter),
+      approvalStore,
+      unitOfWork: new SqliteUnitOfWork(f.connection.raw),
+      approvalPolicy: {
+        evaluate() {
+          return {
+            workspaceId: 'workspace-production' as never,
+            taskId: 'task-production' as never,
+            gate: 'require-human' as const,
+            humanOnly: false,
+            mode: 'request' as const,
+            reason: 'test requires a human',
+            labelZh: '需要人工批准',
+          };
+        },
+      },
+      ownerId: 'production-tool-approval-owner',
+    });
+
+    try {
+      await scheduler.tick(f.graph.run.id);
+      expect(providerCalls).toBe(1);
+      expect(f.orchestration.getGraph(f.graph.run.id)!.steps[0]!.state).toBe('awaitingApproval');
+      const pending = approvalStore.list({
+        workspaceId: 'workspace-production' as never,
+        state: 'pending',
+      });
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({ action: 'tool.read_file' });
+      expect(
+        f.connection.raw
+          .prepare(
+            `SELECT r.state, c.checkpoint_json AS checkpointJson
+             FROM provider_execution_reservation r
+             JOIN provider_execution_checkpoint c ON c.idempotency_key = r.idempotency_key`,
+          )
+          .get(),
+      ).toMatchObject({ state: 'released' });
+
+      scheduler.decideApproval({
+        approvalId: pending[0]!.id,
+        decision: 'approved',
+        decidedBy: 'human',
+      });
+      const completed = await scheduler.runUntilIdle(f.graph.run.id);
+      expect(completed.graph.run.state).toBe('completed');
+      expect(providerCalls).toBe(2);
+      expect(f.orchestration.listRunArtifactVersions(f.graph.run.id)).toHaveLength(2);
+    } finally {
+      await scheduler.shutdown();
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
   it('fails closed before persisting ordinary Provider output that echoes the current secret', async () => {
     const f = await seedProductionRun('sync-think-production-secret-ordinary-');
     const adapter: ProviderAdapter = {

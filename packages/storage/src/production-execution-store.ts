@@ -36,6 +36,7 @@ export interface ProviderExecutionReservation extends ProductionExecutionFence {
   executionOwnerId: string;
   state: 'started' | 'released' | 'completed';
   result?: ProductionExecutionResult;
+  checkpoint?: JsonValue;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -97,47 +98,51 @@ export class SqliteProductionExecutionStore {
   ): ProviderExecutionReservation & { created: boolean } {
     const normalized = normalizeProviderInput(input);
     const requestedNow = input.now;
-    return this.raw.transaction(() => {
-      const now = normalizeOperationNow(requestedNow, 'provider.execution_fence_mismatch');
-      const existing = this.getProviderExecution(normalized.idempotencyKey);
-      if (existing) {
-        assertProviderScope(existing, normalized);
-        if (existing.state === 'released') {
-          this.assertCurrentFence(normalized, now, normalized.idempotencyKey);
-          const reclaimed = this.raw.prepare(
-            `UPDATE provider_execution_reservation
+    return this.raw
+      .transaction(() => {
+        const now = normalizeOperationNow(requestedNow, 'provider.execution_fence_mismatch');
+        const existing = this.getProviderExecution(normalized.idempotencyKey);
+        if (existing) {
+          assertProviderScope(existing, normalized);
+          if (existing.state === 'released') {
+            this.assertCurrentFence(normalized, now, normalized.idempotencyKey);
+            const reclaimed = this.raw
+              .prepare(
+                `UPDATE provider_execution_reservation
              SET state = 'started', execution_owner_id = ?, execution_attempt = ?, updated_at = ?
              WHERE idempotency_key = ? AND state = 'released'`,
-          ).run(
-            normalized.ownerId,
-            normalized.executionAttempt,
-            now,
-            normalized.idempotencyKey,
-          );
-          if (reclaimed.changes !== 1) throw new Error('provider.execution_fence_mismatch');
-          return { ...this.getRequiredProviderExecution(normalized.idempotencyKey), created: true };
+              )
+              .run(normalized.ownerId, normalized.executionAttempt, now, normalized.idempotencyKey);
+            if (reclaimed.changes !== 1) throw new Error('provider.execution_fence_mismatch');
+            return {
+              ...this.getRequiredProviderExecution(normalized.idempotencyKey),
+              created: true,
+            };
+          }
+          return { ...existing, created: false };
         }
-        return { ...existing, created: false };
-      }
-      this.assertCurrentFence(normalized, now, normalized.idempotencyKey);
-      this.raw.prepare(
-        `INSERT INTO provider_execution_reservation (
+        this.assertCurrentFence(normalized, now, normalized.idempotencyKey);
+        this.raw
+          .prepare(
+            `INSERT INTO provider_execution_reservation (
            idempotency_key, run_id, step_id, agent_version_id,
            execution_owner_id, execution_attempt, state, result_json,
            created_at, updated_at, completed_at
          ) VALUES (?, ?, ?, ?, ?, ?, 'started', NULL, ?, ?, NULL)`,
-      ).run(
-        normalized.idempotencyKey,
-        normalized.runId,
-        normalized.stepId,
-        normalized.agentVersionId,
-        normalized.ownerId,
-        normalized.executionAttempt,
-        now,
-        now,
-      );
-      return { ...this.getRequiredProviderExecution(normalized.idempotencyKey), created: true };
-    }).immediate();
+          )
+          .run(
+            normalized.idempotencyKey,
+            normalized.runId,
+            normalized.stepId,
+            normalized.agentVersionId,
+            normalized.ownerId,
+            normalized.executionAttempt,
+            now,
+            now,
+          );
+        return { ...this.getRequiredProviderExecution(normalized.idempotencyKey), created: true };
+      })
+      .immediate();
   }
 
   releaseProviderExecution(
@@ -145,32 +150,76 @@ export class SqliteProductionExecutionStore {
   ): ProviderExecutionReservation {
     const normalized = normalizeProviderInput(input);
     const requestedNow = input.now;
-    return this.raw.transaction(() => {
-      const now = normalizeOperationNow(requestedNow, 'provider.execution_fence_mismatch');
-      const existing = this.getRequiredProviderExecution(normalized.idempotencyKey);
-      assertProviderScope(existing, normalized);
-      if (existing.state === 'released') return existing;
-      if (existing.state === 'completed') throw new Error('provider.execution_already_completed');
-      if (
-        existing.executionOwnerId !== normalized.ownerId ||
-        existing.executionAttempt !== normalized.executionAttempt
-      ) {
-        throw new Error('provider.execution_fence_mismatch');
-      }
-      const update = this.raw.prepare(
-        `UPDATE provider_execution_reservation
+    return this.raw
+      .transaction(() => {
+        const now = normalizeOperationNow(requestedNow, 'provider.execution_fence_mismatch');
+        const existing = this.getRequiredProviderExecution(normalized.idempotencyKey);
+        assertProviderScope(existing, normalized);
+        if (existing.state === 'released') return existing;
+        if (existing.state === 'completed') throw new Error('provider.execution_already_completed');
+        if (
+          existing.executionOwnerId !== normalized.ownerId ||
+          existing.executionAttempt !== normalized.executionAttempt
+        ) {
+          throw new Error('provider.execution_fence_mismatch');
+        }
+        const update = this.raw
+          .prepare(
+            `UPDATE provider_execution_reservation
          SET state = 'released', updated_at = ?
          WHERE idempotency_key = ? AND state = 'started'
            AND execution_owner_id = ? AND execution_attempt = ?`,
-      ).run(
-        now,
-        normalized.idempotencyKey,
-        normalized.ownerId,
-        normalized.executionAttempt,
-      );
-      if (update.changes !== 1) throw new Error('provider.execution_fence_mismatch');
-      return this.getRequiredProviderExecution(normalized.idempotencyKey);
-    }).immediate();
+          )
+          .run(now, normalized.idempotencyKey, normalized.ownerId, normalized.executionAttempt);
+        if (update.changes !== 1) throw new Error('provider.execution_fence_mismatch');
+        return this.getRequiredProviderExecution(normalized.idempotencyKey);
+      })
+      .immediate();
+  }
+
+  checkpointProviderExecution(
+    input: ProductionExecutionFence & {
+      idempotencyKey: string;
+      checkpoint: JsonValue;
+      now?: string;
+    },
+  ): ProviderExecutionReservation {
+    const normalized = normalizeProviderInput(input);
+    if (!isJsonValue(input.checkpoint)) throw new Error('provider.execution_checkpoint_invalid');
+    const checkpointJson = JSON.stringify({
+      kind: 'provider-checkpoint-v1',
+      value: input.checkpoint,
+    });
+    if (Buffer.byteLength(checkpointJson, 'utf8') > MAX_RESULT_BYTES) {
+      throw new Error('provider.execution_checkpoint_too_large');
+    }
+    const requestedNow = input.now;
+    return this.raw
+      .transaction(() => {
+        const now = normalizeOperationNow(requestedNow, 'provider.execution_fence_mismatch');
+        const existing = this.getRequiredProviderExecution(normalized.idempotencyKey);
+        assertProviderScope(existing, normalized);
+        if (
+          existing.state !== 'started' ||
+          existing.executionOwnerId !== normalized.ownerId ||
+          existing.executionAttempt !== normalized.executionAttempt
+        ) {
+          throw new Error('provider.execution_fence_mismatch');
+        }
+        this.assertCurrentFence(normalized, now, normalized.idempotencyKey);
+        this.raw
+          .prepare(
+            `INSERT INTO provider_execution_checkpoint (
+             idempotency_key, checkpoint_json, updated_at
+           ) VALUES (?, ?, ?)
+           ON CONFLICT(idempotency_key) DO UPDATE SET
+             checkpoint_json = excluded.checkpoint_json,
+             updated_at = excluded.updated_at`,
+          )
+          .run(normalized.idempotencyKey, checkpointJson, now);
+        return this.getRequiredProviderExecution(normalized.idempotencyKey);
+      })
+      .immediate();
   }
 
   completeProviderExecution(
@@ -187,49 +236,66 @@ export class SqliteProductionExecutionStore {
       throw new Error('provider.execution_result_too_large');
     }
     const requestedNow = input.now;
-    return this.raw.transaction(() => {
-      const now = normalizeOperationNow(requestedNow, 'provider.execution_fence_mismatch');
-      const existing = this.getRequiredProviderExecution(normalized.idempotencyKey);
-      assertProviderScope(existing, normalized);
-      if (existing.state === 'completed') {
-        if (JSON.stringify(existing.result) !== resultJson) {
-          throw new Error('provider.execution_result_mismatch');
+    return this.raw
+      .transaction(() => {
+        const now = normalizeOperationNow(requestedNow, 'provider.execution_fence_mismatch');
+        const existing = this.getRequiredProviderExecution(normalized.idempotencyKey);
+        assertProviderScope(existing, normalized);
+        if (existing.state === 'completed') {
+          if (JSON.stringify(existing.result) !== resultJson) {
+            throw new Error('provider.execution_result_mismatch');
+          }
+          return existing;
         }
-        return existing;
-      }
-      if (
-        existing.executionOwnerId !== normalized.ownerId ||
-        existing.executionAttempt !== normalized.executionAttempt
-      ) {
-        throw new Error('provider.execution_fence_mismatch');
-      }
-      this.assertCurrentFence(normalized, now, normalized.idempotencyKey);
-      const update = this.raw.prepare(
-        `UPDATE provider_execution_reservation
+        if (
+          existing.executionOwnerId !== normalized.ownerId ||
+          existing.executionAttempt !== normalized.executionAttempt
+        ) {
+          throw new Error('provider.execution_fence_mismatch');
+        }
+        this.assertCurrentFence(normalized, now, normalized.idempotencyKey);
+        const update = this.raw
+          .prepare(
+            `UPDATE provider_execution_reservation
          SET state = 'completed', result_json = ?, updated_at = ?, completed_at = ?
          WHERE idempotency_key = ? AND state = 'started'
            AND execution_owner_id = ? AND execution_attempt = ?`,
-      ).run(
-        resultJson,
-        now,
-        now,
-        normalized.idempotencyKey,
-        normalized.ownerId,
-        normalized.executionAttempt,
-      );
-      if (update.changes !== 1) throw new Error('provider.execution_fence_mismatch');
-      return this.getRequiredProviderExecution(normalized.idempotencyKey);
-    }).immediate();
+          )
+          .run(
+            resultJson,
+            now,
+            now,
+            normalized.idempotencyKey,
+            normalized.ownerId,
+            normalized.executionAttempt,
+          );
+        if (update.changes !== 1) throw new Error('provider.execution_fence_mismatch');
+        return this.getRequiredProviderExecution(normalized.idempotencyKey);
+      })
+      .immediate();
   }
 
   getProviderExecution(idempotencyKey: string): ProviderExecutionReservation | undefined {
-    const row = this.raw.prepare(
-      `SELECT idempotency_key, run_id, step_id, agent_version_id,
+    const row = this.raw
+      .prepare(
+        `SELECT idempotency_key, run_id, step_id, agent_version_id,
          execution_owner_id, execution_attempt, state, result_json,
          created_at, updated_at, completed_at
        FROM provider_execution_reservation WHERE idempotency_key = ?`,
-    ).get(idempotencyKey) as ProviderRow | undefined;
-    return row ? mapProviderRow(row) : undefined;
+      )
+      .get(idempotencyKey) as ProviderRow | undefined;
+    if (!row) return undefined;
+    const reservation = mapProviderRow(row);
+    if (reservation.state === 'completed') return reservation;
+    const checkpointRow = this.raw
+      .prepare(
+        `SELECT checkpoint_json AS checkpointJson
+         FROM provider_execution_checkpoint WHERE idempotency_key = ?`,
+      )
+      .get(idempotencyKey) as { checkpointJson: string } | undefined;
+    return checkpointRow
+      ? { ...reservation, checkpoint: parseCheckpoint(checkpointRow.checkpointJson) }
+      : reservation;
   }
 
   createMcpActionIntent(
@@ -237,36 +303,40 @@ export class SqliteProductionExecutionStore {
   ): McpActionExecutionIntent {
     const normalized = normalizeMcpInput(input);
     const requestedNow = input.now;
-    return this.raw.transaction(() => {
-      const now = normalizeOperationNow(requestedNow, 'mcp.action_fence_mismatch');
-      const existing = this.getMcpActionIntent(
-        normalized.runId,
-        normalized.stepId,
-        normalized.actionDigest,
-      );
-      if (existing) {
-        assertMcpScope(existing, normalized);
-        return existing;
-      }
-      this.assertCurrentFence(normalized, now);
-      this.raw.prepare(
-        `INSERT INTO mcp_action_execution_intent (
+    return this.raw
+      .transaction(() => {
+        const now = normalizeOperationNow(requestedNow, 'mcp.action_fence_mismatch');
+        const existing = this.getMcpActionIntent(
+          normalized.runId,
+          normalized.stepId,
+          normalized.actionDigest,
+        );
+        if (existing) {
+          assertMcpScope(existing, normalized);
+          return existing;
+        }
+        this.assertCurrentFence(normalized, now);
+        this.raw
+          .prepare(
+            `INSERT INTO mcp_action_execution_intent (
            run_id, step_id, agent_version_id, execution_owner_id,
            execution_attempt, action_digest, state, created_at, updated_at,
            started_at, completed_at
          ) VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?, NULL, NULL)`,
-      ).run(
-        normalized.runId,
-        normalized.stepId,
-        normalized.agentVersionId,
-        normalized.ownerId,
-        normalized.executionAttempt,
-        normalized.actionDigest,
-        now,
-        now,
-      );
-      return this.getRequiredMcpAction(normalized);
-    }).immediate();
+          )
+          .run(
+            normalized.runId,
+            normalized.stepId,
+            normalized.agentVersionId,
+            normalized.ownerId,
+            normalized.executionAttempt,
+            normalized.actionDigest,
+            now,
+            now,
+          );
+        return this.getRequiredMcpAction(normalized);
+      })
+      .immediate();
   }
 
   startMcpAction(
@@ -274,20 +344,24 @@ export class SqliteProductionExecutionStore {
   ): McpActionExecutionIntent & { startedNow: boolean } {
     const normalized = normalizeMcpInput(input);
     const requestedNow = input.now;
-    return this.raw.transaction(() => {
-      const now = normalizeOperationNow(requestedNow, 'mcp.action_fence_mismatch');
-      const existing = this.getRequiredMcpAction(normalized);
-      assertMcpScope(existing, normalized);
-      if (existing.state !== 'intent') return { ...existing, startedNow: false };
-      this.assertCurrentFence(normalized, now);
-      const update = this.raw.prepare(
-        `UPDATE mcp_action_execution_intent
+    return this.raw
+      .transaction(() => {
+        const now = normalizeOperationNow(requestedNow, 'mcp.action_fence_mismatch');
+        const existing = this.getRequiredMcpAction(normalized);
+        assertMcpScope(existing, normalized);
+        if (existing.state !== 'intent') return { ...existing, startedNow: false };
+        this.assertCurrentFence(normalized, now);
+        const update = this.raw
+          .prepare(
+            `UPDATE mcp_action_execution_intent
          SET state = 'started', updated_at = ?, started_at = ?
          WHERE run_id = ? AND step_id = ? AND action_digest = ? AND state = 'intent'`,
-      ).run(now, now, normalized.runId, normalized.stepId, normalized.actionDigest);
-      if (update.changes !== 1) throw new Error('mcp.action_fence_mismatch');
-      return { ...this.getRequiredMcpAction(normalized), startedNow: true };
-    }).immediate();
+          )
+          .run(now, now, normalized.runId, normalized.stepId, normalized.actionDigest);
+        if (update.changes !== 1) throw new Error('mcp.action_fence_mismatch');
+        return { ...this.getRequiredMcpAction(normalized), startedNow: true };
+      })
+      .immediate();
   }
 
   completeMcpAction(
@@ -295,21 +369,25 @@ export class SqliteProductionExecutionStore {
   ): McpActionExecutionIntent {
     const normalized = normalizeMcpInput(input);
     const requestedNow = input.now;
-    return this.raw.transaction(() => {
-      const now = normalizeOperationNow(requestedNow, 'mcp.action_fence_mismatch');
-      const existing = this.getRequiredMcpAction(normalized);
-      assertMcpScope(existing, normalized);
-      if (existing.state === 'completed') return existing;
-      if (existing.state !== 'started') throw new Error('mcp.action_not_started');
-      this.assertCurrentFence(normalized, now);
-      const update = this.raw.prepare(
-        `UPDATE mcp_action_execution_intent
+    return this.raw
+      .transaction(() => {
+        const now = normalizeOperationNow(requestedNow, 'mcp.action_fence_mismatch');
+        const existing = this.getRequiredMcpAction(normalized);
+        assertMcpScope(existing, normalized);
+        if (existing.state === 'completed') return existing;
+        if (existing.state !== 'started') throw new Error('mcp.action_not_started');
+        this.assertCurrentFence(normalized, now);
+        const update = this.raw
+          .prepare(
+            `UPDATE mcp_action_execution_intent
          SET state = 'completed', updated_at = ?, completed_at = ?
          WHERE run_id = ? AND step_id = ? AND action_digest = ? AND state = 'started'`,
-      ).run(now, now, normalized.runId, normalized.stepId, normalized.actionDigest);
-      if (update.changes !== 1) throw new Error('mcp.action_fence_mismatch');
-      return this.getRequiredMcpAction(normalized);
-    }).immediate();
+          )
+          .run(now, now, normalized.runId, normalized.stepId, normalized.actionDigest);
+        if (update.changes !== 1) throw new Error('mcp.action_fence_mismatch');
+        return this.getRequiredMcpAction(normalized);
+      })
+      .immediate();
   }
 
   getMcpActionIntent(
@@ -317,13 +395,15 @@ export class SqliteProductionExecutionStore {
     stepId: StepId,
     actionDigest: string,
   ): McpActionExecutionIntent | undefined {
-    const row = this.raw.prepare(
-      `SELECT run_id, step_id, agent_version_id, execution_owner_id,
+    const row = this.raw
+      .prepare(
+        `SELECT run_id, step_id, agent_version_id, execution_owner_id,
          execution_attempt, action_digest, state, created_at, updated_at,
          started_at, completed_at
        FROM mcp_action_execution_intent
        WHERE run_id = ? AND step_id = ? AND action_digest = ?`,
-    ).get(runId, stepId, actionDigest) as McpRow | undefined;
+      )
+      .get(runId, stepId, actionDigest) as McpRow | undefined;
     return row ? mapMcpRow(row) : undefined;
   }
 
@@ -346,11 +426,13 @@ export class SqliteProductionExecutionStore {
     now: string,
     idempotencyKey?: string,
   ): void {
-    const row = this.raw.prepare(
-      `SELECT state, agent_version_id, execution_owner_id, execution_attempt,
+    const row = this.raw
+      .prepare(
+        `SELECT state, agent_version_id, execution_owner_id, execution_attempt,
          idempotency_key, lease_expires_at
        FROM step WHERE run_id = ? AND id = ?`,
-    ).get(input.runId, input.stepId) as
+      )
+      .get(input.runId, input.stepId) as
       | {
           state: string;
           agent_version_id: string;
@@ -370,7 +452,9 @@ export class SqliteProductionExecutionStore {
       !isCanonicalIsoInstant(row.lease_expires_at) ||
       row.lease_expires_at <= now
     ) {
-      throw new Error(idempotencyKey ? 'provider.execution_fence_mismatch' : 'mcp.action_fence_mismatch');
+      throw new Error(
+        idempotencyKey ? 'provider.execution_fence_mismatch' : 'mcp.action_fence_mismatch',
+      );
     }
   }
 }
@@ -403,13 +487,17 @@ function normalizeFence<T extends ProductionExecutionFence>(input: T): T {
   return input;
 }
 
-function normalizeProviderInput<T extends ProductionExecutionFence & { idempotencyKey: string }>(input: T): T {
+function normalizeProviderInput<T extends ProductionExecutionFence & { idempotencyKey: string }>(
+  input: T,
+): T {
   normalizeFence(input);
   if (!ID_RE.test(input.idempotencyKey)) throw new Error('provider.idempotency_key_invalid');
   return input;
 }
 
-function normalizeMcpInput<T extends ProductionExecutionFence & { actionDigest: string }>(input: T): T {
+function normalizeMcpInput<T extends ProductionExecutionFence & { actionDigest: string }>(
+  input: T,
+): T {
   normalizeFence(input);
   if (!DIGEST_RE.test(input.actionDigest)) throw new Error('mcp.action_digest_invalid');
   return input;
@@ -468,8 +556,43 @@ function mapProviderRow(row: ProviderRow): ProviderExecutionReservation {
   };
 }
 
+function parseCheckpoint(raw: string): JsonValue {
+  if (Buffer.byteLength(raw, 'utf8') > MAX_RESULT_BYTES) {
+    throw new Error('provider.execution_record_invalid');
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      Object.keys(parsed).length !== 2 ||
+      (parsed as { kind?: unknown }).kind !== 'provider-checkpoint-v1' ||
+      !Object.prototype.hasOwnProperty.call(parsed, 'value') ||
+      !isJsonValue((parsed as { value?: unknown }).value)
+    ) {
+      throw new Error('invalid');
+    }
+    return (parsed as { value: JsonValue }).value;
+  } catch {
+    throw new Error('provider.execution_record_invalid');
+  }
+}
+
+function isJsonValue(value: unknown, depth = 0): value is JsonValue {
+  if (depth > 32) return false;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every((entry) => isJsonValue(entry, depth + 1));
+  if (typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).every((entry) =>
+    isJsonValue(entry, depth + 1),
+  );
+}
+
 function parseResult(raw: string): ProductionExecutionResult {
-  if (Buffer.byteLength(raw, 'utf8') > MAX_RESULT_BYTES) throw new Error('provider.execution_record_invalid');
+  if (Buffer.byteLength(raw, 'utf8') > MAX_RESULT_BYTES)
+    throw new Error('provider.execution_record_invalid');
   try {
     return normalizeResult(JSON.parse(raw) as ProductionExecutionResult);
   } catch {

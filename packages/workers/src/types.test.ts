@@ -20,6 +20,9 @@ describe('path traversal guard', () => {
     const root = String.raw`D:\proj`;
     expect(isPathInside(cand, root)).toBe(true);
   });
+  it('accepts the root itself as a scoped working directory', () => {
+    expect(isPathInside('D:/proj', 'D:/proj')).toBe(true);
+  });
 });
 
 describe('FakeDesktopWorker', () => {

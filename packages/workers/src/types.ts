@@ -1,3 +1,4 @@
+import { isAbsolute, relative, resolve, win32 } from 'node:path';
 import type { ErrorCode } from '@sync-think/shared';
 
 // Workers are short-lived isolated processes per design §14. They receive a
@@ -14,6 +15,10 @@ export interface WorkerToken {
   allowedRoot: string;
   /** Hard timeout in milliseconds. */
   timeoutMs: number;
+  /** Maximum combined stdout/stderr or returned text retained in memory. */
+  maxOutputBytes?: number;
+  /** Exact executable names or paths that a terminal capability may spawn. */
+  allowedCommands?: readonly string[];
   /** Cancels work before spawn or terminates an already-running child process. */
   signal?: AbortSignal;
   /** Server-owned durable fence check invoked immediately before external start. */
@@ -44,6 +49,7 @@ export interface WorkerJobInput {
 export interface WorkerJobOutput {
   ok: boolean;
   message: string;
+  [key: string]: unknown;
 }
 
 export type WorkerEvent =
@@ -53,23 +59,28 @@ export type WorkerEvent =
   | { type: 'artifact'; artifactRef: string; status: 'candidate' | 'incomplete' | 'rejected' }
   | { type: 'must-approve'; summary: string; permissions: string[] }
   | { type: 'completed'; output: WorkerJobOutput }
-  | { type: 'failed'; failureClass: 'timeout' | 'crashed' | 'permission' | 'acceptance' | 'unknown'; error: AppErrorLite };
+  | {
+      type: 'failed';
+      failureClass: 'timeout' | 'crashed' | 'permission' | 'acceptance' | 'unknown';
+      error: AppErrorLite;
+    };
 
 export interface AppErrorLite {
   code: ErrorCode | string;
   message: string;
 }
 
-// Canonicalize a path and confirm it lies strictly under allowedRoot (§19 / §13).
+// Canonicalize a path and confirm it equals or lies under allowedRoot (§19 / §13).
 export function isPathInside(candidate: string, allowedRoot: string): boolean {
-  const norm = (p: string) => p.split(/[\\/]+/).filter(Boolean).join('/');
-  const a = norm(allowedRoot);
-  const b = norm(candidate);
-  if (!b.startsWith(a + '/')) return false;
-  // Block traversal: ensure no '..' segment escapes the root normal-form.
-  const segs = b.slice(a.length + 1).split('/');
-  for (const s of segs) {
-    if (s === '..') return false;
-  }
-  return true;
+  if (typeof candidate !== 'string' || typeof allowedRoot !== 'string') return false;
+  const useWindowsPath = /^[A-Za-z]:[\\/]/.test(candidate) || /^[A-Za-z]:[\\/]/.test(allowedRoot);
+  const pathApi = useWindowsPath ? win32 : { isAbsolute, relative, resolve };
+  if (!pathApi.isAbsolute(candidate) || !pathApi.isAbsolute(allowedRoot)) return false;
+  const scoped = pathApi.relative(pathApi.resolve(allowedRoot), pathApi.resolve(candidate));
+  return (
+    scoped === '' ||
+    (!scoped.startsWith(`..${useWindowsPath ? '\\' : '/'}`) &&
+      scoped !== '..' &&
+      !pathApi.isAbsolute(scoped))
+  );
 }

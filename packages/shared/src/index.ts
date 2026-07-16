@@ -15,3 +15,4 @@ export * from './types/errors.js';
 export * from './provider-surface.js';
 export * from './acceptance-criteria.js';
 export * from './review-policy.js';
+export * from './task-title.js';

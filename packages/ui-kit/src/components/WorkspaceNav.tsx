@@ -3,13 +3,15 @@ import {
   ChevronDown,
   ChevronRight,
   CircleDot,
+  Folder,
   FolderOpen,
   FolderPlus,
-  HardDrive,
   MessageSquareText,
   Plus,
   Search,
   LayoutList,
+  Archive,
+  ArchiveRestore,
 } from 'lucide-react';
 import {
   buildWorkspaceNavModel,
@@ -44,20 +46,32 @@ export interface WorkspaceNavProps {
   onQueryChange?: (query: string) => void;
   onSelectTask?: (task: WorkspaceNavTask) => void;
   onCreateWorkspace?: () => void;
+  onBindWorkspaceFolder?: (workspaceId: string) => void;
   onCreateTask?: (workspaceId: string) => void;
   /** Explicit nested child under a parent task (§10.1 cross-task edge). */
   onCreateChildTask?: (workspaceId: string, parentTaskId: string) => void;
+  /** Soft-archive a task (and usually its subtasks). */
+  onArchiveTask?: (task: WorkspaceNavTask) => void;
+  /** Restore an archived task. */
+  onUnarchiveTask?: (task: WorkspaceNavTask) => void;
+  /** When true, archived tasks are visible in the tree. */
+  showArchived?: boolean;
+  onShowArchivedChange?: (show: boolean) => void;
+  /** Count of archived tasks in the current catalog (for toggle label). */
+  archivedCount?: number;
   connectionState?: WorkspaceNavConnectionState;
   brandTitle?: string;
   brandSubtitle?: string;
   footerLabel?: string;
   footerDetail?: string;
+  errorMessage?: string | null;
   emptyTitle?: string;
   emptyHint?: string;
   createWorkspaceLabel?: string;
   searchPlaceholder?: string;
   sectionLabel?: string;
   loading?: boolean;
+  bindingWorkspaceId?: string | null;
   /** Hide the development IA projection in the end-user workspace. */
   hideReadiness?: boolean;
   /** Let a product composition render its own compact Runtime status row. */
@@ -124,18 +138,18 @@ export function projectWorkspaceNavReadiness(input: {
   else if (queryActive) level = 'filtering';
   else level = 'ready';
 
-  let badge = '等待文件夹';
+  let badge = '等待项目';
   if (level === 'ready') badge = '任务已打开';
   else if (level === 'filtering') badge = taskCount === 0 ? '无匹配' : '筛选中';
   else if (level === 'partial') {
-    if (folderCount > 0 && taskCount === 0) badge = '仅有文件夹';
+    if (folderCount > 0 && taskCount === 0) badge = '仅有项目';
     else if (!hasActiveTask) badge = '待选任务';
     else badge = '布局不全';
   }
 
   const notes: string[] = [];
   if (level === 'empty') {
-    notes.push('左侧从本地文件夹开始 · 任务嵌套在文件夹下 · 添加目录后可建任务并打开会话');
+    notes.push('左侧从项目开始 · 任务嵌套在项目下 · 本地文件夹按需绑定');
   } else if (level === 'filtering') {
     notes.push(
       taskCount === 0
@@ -144,7 +158,7 @@ export function projectWorkspaceNavReadiness(input: {
     );
   } else if (level === 'partial') {
     if (folderCount > 0 && taskCount === 0) {
-      notes.push('已有本地文件夹 · 在文件夹下新建任务后即可打开会话');
+      notes.push('已有项目 · 在项目下新建任务后即可打开会话');
     } else {
       notes.push(
         `文件夹 ${folderCount} · 任务 ${taskCount} · 点选任务打开会话 · Runtime ${connectionLabel}`,
@@ -179,20 +193,28 @@ function TaskRows(props: {
   lastOpenedTaskId: string | null;
   onSelectTask?: (task: WorkspaceNavTask) => void;
   onCreateChildTask?: (workspaceId: string, parentTaskId: string) => void;
+  onArchiveTask?: (task: WorkspaceNavTask) => void;
+  onUnarchiveTask?: (task: WorkspaceNavTask) => void;
 }) {
   return (
     <>
       {props.nodes.map((node) => {
         const isActive = props.activeTaskId === node.task.taskId;
         const isResume = props.lastOpenedTaskId === node.task.taskId && !isActive;
+        const isArchived = node.task.status === 'archived';
         return (
-          <div key={node.task.taskId} className="st-workspace-nav__task-branch">
+          <div
+            key={node.task.taskId}
+            className="st-workspace-nav__task-branch"
+            data-archived={isArchived ? '1' : '0'}
+          >
             <div className="st-workspace-nav__task-row">
               <button
                 type="button"
                 className="st-workspace-nav__task"
                 data-active={isActive ? 'true' : 'false'}
                 data-resume={isResume ? 'true' : 'false'}
+                data-archived={isArchived ? '1' : '0'}
                 data-depth={node.depth}
                 style={{ ['--st-task-depth' as string]: String(node.depth) }}
                 onClick={() => props.onSelectTask?.(node.task)}
@@ -203,7 +225,9 @@ function TaskRows(props: {
                 <span className="st-workspace-nav__spine" aria-hidden="true" />
                 <MessageSquareText aria-hidden="true" size={15} strokeWidth={1.7} />
                 <span className="st-workspace-nav__task-title">{node.task.title}</span>
-                {isActive ? (
+                {isArchived ? (
+                  <span className="st-workspace-nav__archived-tag">已归档</span>
+                ) : isActive ? (
                   <CircleDot
                     className="st-workspace-nav__task-marker"
                     aria-hidden="true"
@@ -216,7 +240,7 @@ function TaskRows(props: {
                   <span className="st-workspace-nav__task-spacer" aria-hidden="true" />
                 )}
               </button>
-              {props.onCreateChildTask ? (
+              {props.onCreateChildTask && !isArchived ? (
                 <button
                   type="button"
                   className="st-workspace-nav__icon-btn st-workspace-nav__child-btn"
@@ -225,12 +249,43 @@ function TaskRows(props: {
                     props.onCreateChildTask?.(node.task.workspaceId, node.task.taskId);
                   }}
                   aria-label={`在「${node.task.title}」下新建子任务`}
-                  title="新建子任务（显式跨任务引用）"
+                  title="新建子任务"
                   data-testid={`workspace-nav-add-child-${node.task.taskId}`}
                 >
                   <Plus aria-hidden="true" size={12} strokeWidth={1.9} />
                 </button>
               ) : null}
+              {isArchived
+                ? props.onUnarchiveTask && (
+                    <button
+                      type="button"
+                      className="st-workspace-nav__icon-btn st-workspace-nav__archive-btn"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        props.onUnarchiveTask?.(node.task);
+                      }}
+                      aria-label={`恢复「${node.task.title}」`}
+                      title="从归档恢复"
+                      data-testid={`workspace-nav-unarchive-${node.task.taskId}`}
+                    >
+                      <ArchiveRestore aria-hidden="true" size={12} strokeWidth={1.9} />
+                    </button>
+                  )
+                : props.onArchiveTask && (
+                    <button
+                      type="button"
+                      className="st-workspace-nav__icon-btn st-workspace-nav__archive-btn"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        props.onArchiveTask?.(node.task);
+                      }}
+                      aria-label={`归档「${node.task.title}」`}
+                      title="归档任务（可恢复）"
+                      data-testid={`workspace-nav-archive-${node.task.taskId}`}
+                    >
+                      <Archive aria-hidden="true" size={12} strokeWidth={1.9} />
+                    </button>
+                  )}
             </div>
             {node.children.length > 0 ? (
               <TaskRows
@@ -239,6 +294,8 @@ function TaskRows(props: {
                 lastOpenedTaskId={props.lastOpenedTaskId}
                 onSelectTask={props.onSelectTask}
                 onCreateChildTask={props.onCreateChildTask}
+                onArchiveTask={props.onArchiveTask}
+                onUnarchiveTask={props.onUnarchiveTask}
               />
             ) : null}
           </div>
@@ -284,11 +341,11 @@ export function WorkspaceNav(props: WorkspaceNavProps) {
   );
   const brandTitle = props.brandTitle ?? 'SYNC-THINK';
   const brandSubtitle = props.brandSubtitle ?? '连续工作台';
-  const sectionLabel = props.sectionLabel ?? '本地工作区';
+  const sectionLabel = props.sectionLabel ?? '我的项目';
   const searchPlaceholder = props.searchPlaceholder ?? '筛选任务…';
-  const emptyTitle = props.emptyTitle ?? '还没有本地文件夹';
-  const emptyHint = props.emptyHint ?? '添加一个项目目录，任务会嵌套在文件夹下。';
-  const createWorkspaceLabel = props.createWorkspaceLabel ?? '添加本地文件夹';
+  const emptyTitle = props.emptyTitle ?? '还没有项目';
+  const emptyHint = props.emptyHint ?? '先创建项目，再按需要绑定本地文件夹。';
+  const createWorkspaceLabel = props.createWorkspaceLabel ?? '新建项目';
 
   const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape' && query) {
@@ -316,7 +373,7 @@ export function WorkspaceNav(props: WorkspaceNavProps) {
 
       <div className="st-workspace-nav__section-heading">
         <span>{sectionLabel}</span>
-        <HardDrive aria-hidden="true" size={14} strokeWidth={1.7} />
+        <LayoutList aria-hidden="true" size={14} strokeWidth={1.7} />
       </div>
 
       {!isEmpty ? (
@@ -334,10 +391,16 @@ export function WorkspaceNav(props: WorkspaceNavProps) {
         </label>
       ) : null}
 
+      {props.errorMessage ? (
+        <div className="st-workspace-nav__error" role="alert" data-testid="workspace-nav-error">
+          {props.errorMessage}
+        </div>
+      ) : null}
+
       <div className="st-workspace-nav__tree" role="tree" aria-label={sectionLabel}>
         {props.loading ? (
           <div className="st-workspace-nav__status" role="status">
-            正在加载工作区…
+            正在加载项目…
           </div>
         ) : null}
 
@@ -364,6 +427,7 @@ export function WorkspaceNav(props: WorkspaceNavProps) {
 
         {model.folders.map((folder) => {
           const workspaceId = folder.workspace.workspaceId;
+          const folderTooltipId = `workspace-folder-tooltip-${workspaceId}`;
           const isCollapsed = collapsed[workspaceId] === true;
           const hasActiveChild =
             props.activeTaskId != null &&
@@ -387,30 +451,60 @@ export function WorkspaceNav(props: WorkspaceNavProps) {
                       [workspaceId]: !isCollapsed,
                     }))
                   }
-                  aria-label={isCollapsed ? '展开文件夹' : '折叠文件夹'}
-                  title={folder.workspace.folderPath}
+                  aria-label={isCollapsed ? '展开项目' : '折叠项目'}
+                  aria-describedby={folder.workspace.folderPath ? folderTooltipId : undefined}
                 >
                   {isCollapsed ? (
                     <ChevronRight aria-hidden="true" size={14} strokeWidth={1.8} />
                   ) : (
                     <ChevronDown aria-hidden="true" size={14} strokeWidth={1.8} />
                   )}
-                  <FolderOpen aria-hidden="true" size={16} strokeWidth={1.7} />
+                  {folder.workspace.folderPath ? (
+                    <FolderOpen aria-hidden="true" size={16} strokeWidth={1.7} />
+                  ) : (
+                    <Folder aria-hidden="true" size={16} strokeWidth={1.7} />
+                  )}
                   <span className="st-workspace-nav__folder-name">{folder.workspace.name}</span>
                   <span className="st-workspace-nav__folder-count">{folder.flatTasks.length}</span>
+                  {folder.workspace.folderPath ? (
+                    <span
+                      id={folderTooltipId}
+                      className="st-workspace-nav__folder-path-tooltip"
+                      role="tooltip"
+                      data-testid={`workspace-nav-folder-tooltip-${workspaceId}`}
+                    >
+                      {folder.workspace.folderPath}
+                    </span>
+                  ) : null}
                 </button>
-                {props.onCreateTask ? (
-                  <button
-                    type="button"
-                    className="st-workspace-nav__icon-btn"
-                    onClick={() => props.onCreateTask?.(workspaceId)}
-                    aria-label={`在 ${folder.workspace.name} 新建任务`}
-                    title="新建任务"
-                    data-testid={`workspace-nav-add-task-${workspaceId}`}
-                  >
-                    <Plus aria-hidden="true" size={14} strokeWidth={1.9} />
-                  </button>
-                ) : null}
+                <span className="st-workspace-nav__folder-actions">
+                  {!folder.workspace.folderPath && props.onBindWorkspaceFolder ? (
+                    <button
+                      type="button"
+                      className="st-workspace-nav__icon-btn"
+                      onClick={() => props.onBindWorkspaceFolder?.(workspaceId)}
+                      aria-label={`为 ${folder.workspace.name} 绑定文件夹`}
+                      title="绑定文件夹"
+                      disabled={Boolean(props.bindingWorkspaceId)}
+                      aria-busy={props.bindingWorkspaceId === workspaceId}
+                      data-testid={`workspace-nav-bind-folder-${workspaceId}`}
+                    >
+                      <FolderPlus aria-hidden="true" size={14} strokeWidth={1.8} />
+                    </button>
+                  ) : null}
+                  {props.onCreateTask ? (
+                    <button
+                      type="button"
+                      className="st-workspace-nav__icon-btn"
+                      onClick={() => props.onCreateTask?.(workspaceId)}
+                      aria-label={`在 ${folder.workspace.name} 新建任务`}
+                      title="新建任务"
+                      data-testid={`workspace-nav-add-task-${workspaceId}`}
+                    >
+                      <Plus aria-hidden="true" size={14} strokeWidth={1.9} />
+                    </button>
+                  ) : null}
+                </span>
               </div>
 
               {!isCollapsed ? (
@@ -426,6 +520,8 @@ export function WorkspaceNav(props: WorkspaceNavProps) {
                       lastOpenedTaskId={model.lastOpenedTaskId}
                       onSelectTask={props.onSelectTask}
                       onCreateChildTask={props.onCreateChildTask}
+                      onArchiveTask={props.onArchiveTask}
+                      onUnarchiveTask={props.onUnarchiveTask}
                     />
                   )}
                 </div>
@@ -436,6 +532,25 @@ export function WorkspaceNav(props: WorkspaceNavProps) {
       </div>
 
       <div className="st-workspace-nav__actions">
+        {props.onShowArchivedChange ? (
+          <button
+            type="button"
+            className="st-workspace-nav__ghost-cta"
+            data-testid="workspace-nav-toggle-archived"
+            data-show={props.showArchived ? '1' : '0'}
+            aria-pressed={Boolean(props.showArchived)}
+            onClick={() => props.onShowArchivedChange?.(!props.showArchived)}
+          >
+            {props.showArchived ? (
+              <ArchiveRestore aria-hidden="true" size={14} strokeWidth={1.8} />
+            ) : (
+              <Archive aria-hidden="true" size={14} strokeWidth={1.8} />
+            )}
+            {props.showArchived
+              ? '隐藏已归档'
+              : `已归档${typeof props.archivedCount === 'number' ? ` ${props.archivedCount}` : ''}`}
+          </button>
+        ) : null}
         {!isEmpty && props.onCreateWorkspace ? (
           <button
             type="button"
@@ -455,12 +570,12 @@ export function WorkspaceNav(props: WorkspaceNavProps) {
           data-testid="workspace-nav-ia-strip"
           data-level={readiness.level}
           data-query={readiness.queryActive ? '1' : '0'}
-          aria-label="工作区导航就绪"
+          aria-label="项目导航就绪"
         >
           <div className="st-workspace-nav__ia-head">
             <LayoutList size={12} strokeWidth={1.8} aria-hidden="true" />
-            <span>工作区导航</span>
-            <small>§15.2 · 文件夹 / 任务</small>
+            <span>项目导航</span>
+            <small>§15.2 · 项目 / 任务</small>
             <strong data-testid="workspace-nav-ia-badge">{readiness.badge}</strong>
           </div>
           <ul className="st-workspace-nav__ia-list">
@@ -469,13 +584,13 @@ export function WorkspaceNav(props: WorkspaceNavProps) {
               data-testid="workspace-nav-ia-folders"
             >
               <span className="st-workspace-nav__ia-dot" aria-hidden="true" />
-              文件夹 {readiness.folderCount}
-              {readiness.folderCount > 0 ? ' · 已打开' : ' · 请添加本地目录'}
+              项目 {readiness.folderCount}
+              {readiness.folderCount > 0 ? ' · 已创建' : ' · 请新建项目'}
             </li>
             <li data-ok={readiness.taskCount > 0 ? '1' : '0'} data-testid="workspace-nav-ia-tasks">
               <span className="st-workspace-nav__ia-dot" aria-hidden="true" />
               任务 {readiness.taskCount}
-              {readiness.taskCount > 0 ? ' · 可切换' : ' · 可在文件夹下新建'}
+              {readiness.taskCount > 0 ? ' · 可切换' : ' · 可在项目下新建'}
             </li>
             <li
               data-ok={readiness.nestedTaskCount > 0 ? '1' : '0'}

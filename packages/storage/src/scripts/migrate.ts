@@ -94,7 +94,45 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0021_merge_step_conflict_resolution',
     sql: mergeStepConflictResolutionDdlSql(),
   },
+  {
+    name: '0022_optional_project_folder',
+    sql: optionalProjectFolderDdlSql(),
+  },
+  {
+    name: '0023_provider_execution_checkpoint',
+    sql: providerExecutionCheckpointDdlSql(),
+  },
 ];
+
+function providerExecutionCheckpointDdlSql(): string {
+  return `
+CREATE TABLE provider_execution_checkpoint (
+  idempotency_key TEXT PRIMARY KEY,
+  checkpoint_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT provider_execution_checkpoint_json_check CHECK (json_valid(checkpoint_json)),
+  FOREIGN KEY (idempotency_key)
+    REFERENCES provider_execution_reservation(idempotency_key)
+    ON DELETE RESTRICT
+);
+`;
+}
+
+function optionalProjectFolderDdlSql(): string {
+  return `
+-- Bundled SQLite supports DROP COLUMN and RENAME COLUMN. Replacing only this
+-- column preserves the workspace table identity and artifact foreign keys while
+-- removing the legacy NOT NULL constraint without disabling foreign_keys.
+ALTER TABLE workspace ADD COLUMN folder_path_0022 TEXT;
+UPDATE workspace SET folder_path_0022 = folder_path;
+ALTER TABLE workspace DROP COLUMN folder_path;
+ALTER TABLE workspace RENAME COLUMN folder_path_0022 TO folder_path;
+
+CREATE UNIQUE INDEX workspace_folder_path_uidx
+  ON workspace(lower(folder_path))
+  WHERE folder_path IS NOT NULL;
+`;
+}
 
 function mergeStepConflictResolutionDdlSql(): string {
   return `
@@ -449,7 +487,6 @@ export interface MigrationPlanResult {
   backupPath?: string;
 }
 
-
 function memoryDiagnosticsDdlSql(): string {
   return `
 CREATE TABLE IF NOT EXISTS memory_change (
@@ -572,7 +609,6 @@ CREATE TABLE IF NOT EXISTS mcp_server (
 CREATE INDEX IF NOT EXISTS mcp_server_name_idx ON mcp_server(name);
 `;
 }
-
 
 function providerSurfaceDdlSql(): string {
   // CC Switch-style app surface for hierarchical model picking (claude/codex/gemini/generic).
@@ -1800,10 +1836,9 @@ export async function runMigrations(dbPath: string): Promise<MigrationPlanResult
       try {
         const applyMigration = raw.transaction(() => {
           raw.exec(m.sql);
-          raw.prepare('INSERT INTO migration_record (name, applied_at) VALUES (?, ?)').run(
-            name,
-            new Date().toISOString(),
-          );
+          raw
+            .prepare('INSERT INTO migration_record (name, applied_at) VALUES (?, ?)')
+            .run(name, new Date().toISOString());
         });
         applyMigration.immediate();
       } catch (e) {
@@ -1833,5 +1868,3 @@ if (import.meta.url === `file://${process.argv[1]}` && process.argv[1]?.endsWith
       process.exit(1);
     });
 }
-
-

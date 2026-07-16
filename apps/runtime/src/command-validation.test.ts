@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseCreateTaskPayload } from './command-validation.js';
+import {
+  parseBindWorkspaceFolderPayload,
+  parseCreateTaskPayload,
+  parseCreateWorkspacePayload,
+} from './command-validation.js';
 
 const validTask = {
   workspaceId: 'workspace-criteria-validation',
@@ -24,5 +28,37 @@ describe('create Task acceptance criteria validation', () => {
     expect(parseCreateTaskPayload({ ...validTask, acceptanceCriteria: [] })).toMatchObject({
       acceptanceCriteria: [],
     });
+  });
+});
+
+describe('optional project folder payload validation', () => {
+  it('accepts a project without a folder and normalizes an optional folder', () => {
+    expect(parseCreateWorkspacePayload({ name: '  Project Atlas  ' })).toEqual({
+      name: 'Project Atlas',
+      folderPath: undefined,
+      allowedRoots: undefined,
+    });
+    expect(
+      parseCreateWorkspacePayload({ name: 'Atlas', folderPath: ' D:/projects/atlas ' }),
+    ).toMatchObject({ name: 'Atlas', folderPath: 'D:/projects/atlas' });
+  });
+
+  it('validates explicit folder binding before it reaches storage', () => {
+    expect(
+      parseBindWorkspaceFolderPayload({
+        workspaceId: ' workspace-atlas ',
+        folderPath: ' D:/projects/atlas ',
+      }),
+    ).toEqual({
+      workspaceId: 'workspace-atlas',
+      folderPath: 'D:/projects/atlas',
+      allowedRoots: undefined,
+    });
+    expect(
+      parseBindWorkspaceFolderPayload({ workspaceId: 'workspace-atlas', folderPath: '  ' }),
+    ).toBeUndefined();
+    expect(
+      parseBindWorkspaceFolderPayload({ workspaceId: '', folderPath: 'D:/projects/atlas' }),
+    ).toBeUndefined();
   });
 });

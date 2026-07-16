@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { Compose, type ComposeModelOption, projectComposeSendReadiness } from '../src/components/Compose.js';
+import {
+  Compose,
+  type ComposeAgentOption,
+  type ComposeModelOption,
+  type ComposeWorkspaceOption,
+  projectComposeSendReadiness,
+} from '../src/components/Compose.js';
 
 function getFormWithin(textarea: HTMLTextAreaElement): HTMLFormElement {
   return textarea.closest('form') as HTMLFormElement;
@@ -298,7 +304,7 @@ describe('Compose', () => {
       />,
     );
     expect(screen.queryByTestId('compose-send-readiness')).toBeNull();
-    expect(screen.getByTestId('compose-blocker').textContent).toMatch(/Runtime 未连接/);
+    expect(screen.getByTestId('compose-blocker').textContent).toMatch(/本地服务未连接/);
   });
 
   it('blocks submit when a compact blocker is active even without disabled prop', () => {
@@ -369,7 +375,7 @@ describe('Compose', () => {
         onReconnect={onReconnect}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: '重新连接 Runtime' }));
+    fireEvent.click(screen.getByRole('button', { name: '重新连接本地服务' }));
     expect(onReconnect).toHaveBeenCalledTimes(1);
 
     const onConfigureModel = vi.fn();
@@ -387,6 +393,103 @@ describe('Compose', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: '配置模型' }));
     expect(onConfigureModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('switches teammates from the Compose agent picker', () => {
+    const onAgentChange = vi.fn();
+    const onOpenAgentCenter = vi.fn();
+    const agents: ComposeAgentOption[] = [
+      { agentId: 'a1', name: '规划', role: 'planner', color: '#29b982' },
+      { agentId: 'a2', name: '执行', role: 'executor', color: '#438fd0' },
+    ];
+    render(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        models={sampleModels}
+        agents={agents}
+        selectedAgentId="a1"
+        onAgentChange={onAgentChange}
+        onOpenAgentCenter={onOpenAgentCenter}
+        hasActiveTask
+        agentDefaultSet
+        connectionState="online"
+      />,
+    );
+
+    expect(screen.getByTestId('compose-agent-trigger').textContent).toMatch(/@规划/);
+    fireEvent.click(screen.getByTestId('compose-agent-trigger'));
+    fireEvent.click(screen.getByTestId('compose-agent-option-a2'));
+    expect(onAgentChange).toHaveBeenCalledWith('a2');
+
+    fireEvent.click(screen.getByTestId('compose-agent-trigger'));
+    fireEvent.click(screen.getByTestId('compose-agent-manage'));
+    expect(onOpenAgentCenter).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers @ mention picks while typing', () => {
+    const onAgentChange = vi.fn();
+    const agents: ComposeAgentOption[] = [
+      { agentId: 'a1', name: '规划', role: 'planner' },
+      { agentId: 'a2', name: '审查', role: 'reviewer' },
+    ];
+    render(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        models={sampleModels}
+        agents={agents}
+        selectedAgentId="a1"
+        onAgentChange={onAgentChange}
+        hasActiveTask
+        agentDefaultSet
+        connectionState="online"
+      />,
+    );
+    const textarea = screen.getByLabelText('消息输入') as HTMLTextAreaElement;
+    fireEvent.change(textarea, {
+      target: {
+        value: '@审',
+        selectionStart: 2,
+        selectionEnd: 2,
+      },
+    });
+
+    expect(screen.getByTestId('compose-mention-menu')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('compose-mention-a2'));
+    expect(onAgentChange).toHaveBeenCalledWith('a2');
+    expect(textarea.value).toMatch(/@审查/);
+  });
+
+  it('switches the active project from the Compose toolbar', () => {
+    const onWorkspaceChange = vi.fn();
+    const workspaces: ComposeWorkspaceOption[] = [
+      {
+        workspaceId: 'ws-1',
+        name: 'SYNC-THINK',
+        folderPath: 'D:\\projects\\SYNC-THINK',
+      },
+      { workspaceId: 'ws-2', name: 'Notes' },
+    ];
+    render(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        models={sampleModels}
+        workspaces={workspaces}
+        selectedWorkspaceId="ws-1"
+        onWorkspaceChange={onWorkspaceChange}
+        hasActiveTask
+        agentDefaultSet
+        connectionState="online"
+      />,
+    );
+
+    expect(screen.getByTestId('compose-workspace-trigger').textContent).toContain('SYNC-THINK');
+    fireEvent.click(screen.getByTestId('compose-workspace-trigger'));
+    expect(screen.getByRole('tooltip').textContent).toBe('D:\\projects\\SYNC-THINK');
+    fireEvent.click(screen.getByTestId('compose-workspace-option-ws-2'));
+    expect(onWorkspaceChange).toHaveBeenCalledWith('ws-2');
   });
 
 });

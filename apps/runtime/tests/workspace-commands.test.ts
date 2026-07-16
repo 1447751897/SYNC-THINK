@@ -109,6 +109,139 @@ async function hello(
 }
 
 describe('workspace IA commands', () => {
+  it('auto-names a placeholder task from its first user message', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-task-title-'));
+    tempDirs.push(dir);
+    const installId = `task-title-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const session = await openPersistentRuntime({
+      dbPath: join(dir, 'sync-think.db'),
+      installId,
+      allowNoToken: true,
+    });
+    await session.runtime.start();
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    try {
+      await hello(sock, reader, installId);
+      const workspace = await writeAndRead(sock, reader, {
+        id: 'auto-title-workspace',
+        kind: 'request',
+        type: 'workspace.create',
+        payload: { name: 'Auto title' },
+      });
+      const workspaceId = (workspace.payload as { workspaceId: string }).workspaceId;
+      const task = await writeAndRead(sock, reader, {
+        id: 'auto-title-task',
+        kind: 'request',
+        type: 'task.create',
+        payload: { workspaceId, title: '新任务', goal: '新任务' },
+      });
+      const created = task.payload as { threadId: string };
+
+      const appended = await writeAndRead(sock, reader, {
+        id: 'auto-title-message',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: created.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: '请帮我分析现有项目，然后修复登录流程并补充测试。',
+        },
+      });
+      expect(appended.error).toBeUndefined();
+      expect(appended.payload).toMatchObject({
+        taskVersion: 1,
+        taskTitle: '分析现有项目，然后修复登录流程并补充测试',
+      });
+
+      const listed = await writeAndRead(sock, reader, {
+        id: 'auto-title-list',
+        kind: 'request',
+        type: 'task.list',
+        payload: { workspaceId },
+      });
+      expect(
+        (listed.payload as { tasks: Array<{ title: string; goal: string }> }).tasks[0],
+      ).toMatchObject({
+        title: '分析现有项目，然后修复登录流程并补充测试',
+        goal: '请帮我分析现有项目，然后修复登录流程并补充测试。',
+      });
+    } finally {
+      sock.destroy();
+      await session.close();
+    }
+  });
+
+  it('creates an unbound project, creates a task, and binds one folder later', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-project-binding-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    const installId = `project-binding-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const session = await openPersistentRuntime({ dbPath, installId, allowNoToken: true });
+    await session.runtime.start();
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    try {
+      await hello(sock, reader, installId);
+      const createdProject = await writeAndRead(sock, reader, {
+        id: 'project-create',
+        kind: 'request',
+        type: 'workspace.create',
+        payload: { name: 'Project Atlas' },
+      });
+      expect(createdProject.error).toBeUndefined();
+      expect(createdProject.payload).toMatchObject({ name: 'Project Atlas' });
+      expect(createdProject.payload).not.toHaveProperty('folderPath');
+      const workspaceId = (createdProject.payload as { workspaceId: string }).workspaceId;
+
+      const createdTask = await writeAndRead(sock, reader, {
+        id: 'project-task-create',
+        kind: 'request',
+        type: 'task.create',
+        payload: { workspaceId, title: 'First task', goal: 'Work before folder binding' },
+      });
+      expect(createdTask.error).toBeUndefined();
+      const createdTaskPayload = createdTask.payload as { taskId: string; threadId: string };
+
+      const openedTask = await writeAndRead(sock, reader, {
+        id: 'project-task-open',
+        kind: 'request',
+        type: 'task.open',
+        payload: { taskId: createdTaskPayload.taskId },
+      });
+      expect(openedTask.error).toBeUndefined();
+      expect(openedTask.payload).toMatchObject({
+        task: {
+          taskId: createdTaskPayload.taskId,
+          threadId: createdTaskPayload.threadId,
+          workspaceId,
+        },
+      });
+
+      const folderPath = join(dir, 'atlas-folder');
+      const bound = await writeAndRead(sock, reader, {
+        id: 'project-bind-folder',
+        kind: 'request',
+        type: 'workspace.bindFolder',
+        payload: { workspaceId, folderPath },
+      });
+      expect(bound.error).toBeUndefined();
+      expect(bound.payload).toMatchObject({ workspaceId, folderPath });
+
+      const rebound = await writeAndRead(sock, reader, {
+        id: 'project-rebind-folder',
+        kind: 'request',
+        type: 'workspace.bindFolder',
+        payload: { workspaceId, folderPath: join(dir, 'other-folder') },
+      });
+      expect(rebound.error).toBeDefined();
+    } finally {
+      sock.destroy();
+      await session.close();
+    }
+  });
+
   it('creates workspace/tasks, opens last task, and searches by goal text', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-workspace-cmd-'));
     tempDirs.push(dir);

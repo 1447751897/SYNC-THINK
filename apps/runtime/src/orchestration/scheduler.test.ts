@@ -87,23 +87,26 @@ class PersistentFakeAdapterResultStore {
 
   execute(idempotencyKey: string): Record<string, never> {
     this.adapterCalls += 1;
-    return this.raw.transaction(() => {
-      const existing = this.raw
-        .prepare('SELECT result_json FROM fake_adapter_result WHERE idempotency_key = ?')
-        .get(idempotencyKey) as { result_json: string } | undefined;
-      if (existing) return JSON.parse(existing.result_json) as Record<string, never>;
-      this.raw.prepare('UPDATE fake_adapter_effect_count SET count = count + 1').run();
-      const result = {};
-      this.raw
-        .prepare('INSERT INTO fake_adapter_result (idempotency_key, result_json) VALUES (?, ?)')
-        .run(idempotencyKey, JSON.stringify(result));
-      return result;
-    }).immediate();
+    return this.raw
+      .transaction(() => {
+        const existing = this.raw
+          .prepare('SELECT result_json FROM fake_adapter_result WHERE idempotency_key = ?')
+          .get(idempotencyKey) as { result_json: string } | undefined;
+        if (existing) return JSON.parse(existing.result_json) as Record<string, never>;
+        this.raw.prepare('UPDATE fake_adapter_effect_count SET count = count + 1').run();
+        const result = {};
+        this.raw
+          .prepare('INSERT INTO fake_adapter_result (idempotency_key, result_json) VALUES (?, ?)')
+          .run(idempotencyKey, JSON.stringify(result));
+        return result;
+      })
+      .immediate();
   }
 
   actualEffectCount(): number {
-    return (this.raw.prepare('SELECT count FROM fake_adapter_effect_count').get() as { count: number })
-      .count;
+    return (
+      this.raw.prepare('SELECT count FROM fake_adapter_effect_count').get() as { count: number }
+    ).count;
   }
 }
 
@@ -195,9 +198,7 @@ function schedulerApprovalPolicy(
               : ('request' as const),
         reason: `test policy: ${gate}`,
         labelZh: gate,
-        ...(gate === 'require-delegate'
-          ? { delegateAgentVersionId: secondAgent }
-          : {}),
+        ...(gate === 'require-delegate' ? { delegateAgentVersionId: secondAgent } : {}),
       };
     },
     validateDelegateAgentVersion(agentVersionId: AgentVersionId) {
@@ -307,10 +308,9 @@ describe('Scheduler parallel execution', () => {
       planStep('right-child', secondAgent, ['right-parent']),
     ]);
     for (const stepId of ['grandparent', 'left-parent', 'right-parent']) {
-      raw.prepare("UPDATE step SET state = 'completed' WHERE run_id = ? AND id = ?").run(
-        graph.run.id,
-        stepId,
-      );
+      raw
+        .prepare("UPDATE step SET state = 'completed' WHERE run_id = ? AND id = ?")
+        .run(graph.run.id, stepId);
     }
     const createOutput = (
       sourceStepId: string,
@@ -378,10 +378,9 @@ describe('Scheduler parallel execution', () => {
       planStep('bounded-child', secondAgent, parentIds),
     ]);
     for (const [index, parentId] of parentIds.entries()) {
-      raw.prepare("UPDATE step SET state = 'completed' WHERE run_id = ? AND id = ?").run(
-        graph.run.id,
-        parentId,
-      );
+      raw
+        .prepare("UPDATE step SET state = 'completed' WHERE run_id = ? AND id = ?")
+        .run(graph.run.id, parentId);
       const artifact = artifactStore.createArtifact({
         workspaceId,
         taskId,
@@ -477,10 +476,9 @@ describe('Scheduler parallel execution', () => {
       planStep('large-parent', firstAgent),
       planStep('large-child', secondAgent, ['large-parent']),
     ]);
-    raw.prepare("UPDATE step SET state = 'completed' WHERE run_id = ? AND id = ?").run(
-      graph.run.id,
-      'large-parent',
-    );
+    raw
+      .prepare("UPDATE step SET state = 'completed' WHERE run_id = ? AND id = ?")
+      .run(graph.run.id, 'large-parent');
     const artifact = artifactStore.createArtifact({
       workspaceId,
       taskId,
@@ -661,17 +659,12 @@ describe('Scheduler protected Step approvals', () => {
     });
     expect(replay.replayed).toBe(true);
 
-    await Promise.all([
-      scheduler.runUntilIdle(graph.run.id),
-      scheduler.runUntilIdle(graph.run.id),
-    ]);
+    await Promise.all([scheduler.runUntilIdle(graph.run.id), scheduler.runUntilIdle(graph.run.id)]);
     expect(executions).toBe(1);
     expect(store.getGraph(graph.run.id)!.run.state).toBe('completed');
     expect(
       raw
-        .prepare(
-          "SELECT COUNT(*) AS count FROM event WHERE run_id = ? AND type = 'step.started'",
-        )
+        .prepare("SELECT COUNT(*) AS count FROM event WHERE run_id = ? AND type = 'step.started'")
         .get(graph.run.id),
     ).toEqual({ count: 1 });
     expect(
@@ -710,9 +703,7 @@ describe('Scheduler protected Step approvals', () => {
       },
     });
 
-    expect((await scheduler.tick(graph.run.id)).startedStepIds).toEqual([
-      'protected-running',
-    ]);
+    expect((await scheduler.tick(graph.run.id)).startedStepIds).toEqual(['protected-running']);
     expect(store.getGraph(graph.run.id)!.steps[0]!.state).toBe('awaitingApproval');
     const pending = approvalStore.list({ workspaceId, state: 'pending' });
     expect(pending).toHaveLength(1);
@@ -725,6 +716,50 @@ describe('Scheduler protected Step approvals', () => {
 
     expect(calls).toBe(2);
     expect(keys[1]).toBe(keys[0]);
+    expect(store.getGraph(graph.run.id)!.run.state).toBe('completed');
+  });
+
+  it('provides a live action gate to the executor and resumes an approved dynamic tool once', async () => {
+    const { store, approvalStore, unitOfWork } = await openFixture();
+    const graph = approve(store, [planStep('dynamic-tool-gate', firstAgent)]);
+    let effects = 0;
+    let executeCalls = 0;
+    const scheduler = new Scheduler({
+      store,
+      approvalStore,
+      unitOfWork,
+      approvalPolicy: schedulerApprovalPolicy('require-human'),
+      executor: {
+        async execute(context) {
+          executeCalls += 1;
+          const gate = await context.gateAction!({
+            kind: 'tool',
+            action: 'tool.write_file',
+            summary: 'Write output.txt',
+            details: { path: 'output.txt' },
+          });
+          if (!gate.allowed) return {};
+          effects += 1;
+          expect(gate.actionDigest).toMatch(/^[a-f0-9]{64}$/);
+          return {};
+        },
+      },
+    });
+
+    await scheduler.tick(graph.run.id);
+    expect(executeCalls).toBe(1);
+    expect(effects).toBe(0);
+    expect(store.getGraph(graph.run.id)!.steps[0]!.state).toBe('awaitingApproval');
+    const approval = approvalStore.list({ workspaceId, state: 'pending' })[0]!;
+    scheduler.decideApproval({
+      approvalId: approval.id,
+      decision: 'approved',
+      decidedBy: 'human',
+    });
+    await scheduler.runUntilIdle(graph.run.id);
+
+    expect(executeCalls).toBe(2);
+    expect(effects).toBe(1);
     expect(store.getGraph(graph.run.id)!.run.state).toBe('completed');
   });
 
@@ -850,9 +885,7 @@ describe('Scheduler protected Step approvals', () => {
       }),
     ).toThrow('approval.human_only_requires_human');
     expect(humanOnlyExecutions).toBe(0);
-    expect(store.getGraph(humanOnly.run.id)!.steps[0]!.state).toBe(
-      'awaitingApproval',
-    );
+    expect(store.getGraph(humanOnly.run.id)!.steps[0]!.state).toBe('awaitingApproval');
   });
 
   it('gates only the live owner fence and rejection never retries the Step', async () => {
@@ -881,7 +914,11 @@ describe('Scheduler protected Step approvals', () => {
       unitOfWork,
       ownerId: 'scheduler-not-owner',
       approvalPolicy: schedulerApprovalPolicy('require-human'),
-      executor: { async execute() { return {}; } },
+      executor: {
+        async execute() {
+          return {};
+        },
+      },
     });
 
     const tick = scheduler.tick(graph.run.id);
@@ -1086,9 +1123,7 @@ describe('Scheduler protected Step approvals', () => {
       END;
     `);
 
-    await expect(scheduler.tick(graph.run.id)).rejects.toThrow(
-      'injected approval event failure',
-    );
+    await expect(scheduler.tick(graph.run.id)).rejects.toThrow('injected approval event failure');
     expect(approvalStore.list({ workspaceId })).toEqual([]);
     expect(store.getGraph(graph.run.id)).toMatchObject({
       run: { state: 'queued' },
@@ -1100,9 +1135,7 @@ describe('Scheduler protected Step approvals', () => {
         .get(graph.run.id),
     ).toEqual({ count: 0 });
     expect(
-      raw
-        .prepare('SELECT COUNT(*) AS count FROM checkpoint WHERE run_id = ?')
-        .get(graph.run.id),
+      raw.prepare('SELECT COUNT(*) AS count FROM checkpoint WHERE run_id = ?').get(graph.run.id),
     ).toEqual({ count: checkpointBefore });
 
     raw.exec('DROP TRIGGER fail_scheduler_approval_event');
@@ -1386,18 +1419,15 @@ describe('Scheduler lifecycle controls', () => {
       planStep('completed-root', secondAgent),
       planStep('ready-child', secondAgent, ['completed-root']),
     ]);
-    raw.prepare("UPDATE step SET state = 'failed' WHERE run_id = ? AND id = ?").run(
-      graph.run.id,
-      'failed-branch',
-    );
-    raw.prepare("UPDATE step SET state = 'completed' WHERE run_id = ? AND id = ?").run(
-      graph.run.id,
-      'completed-root',
-    );
-    raw.prepare("UPDATE step SET state = 'ready' WHERE run_id = ? AND id = ?").run(
-      graph.run.id,
-      'ready-child',
-    );
+    raw
+      .prepare("UPDATE step SET state = 'failed' WHERE run_id = ? AND id = ?")
+      .run(graph.run.id, 'failed-branch');
+    raw
+      .prepare("UPDATE step SET state = 'completed' WHERE run_id = ? AND id = ?")
+      .run(graph.run.id, 'completed-root');
+    raw
+      .prepare("UPDATE step SET state = 'ready' WHERE run_id = ? AND id = ?")
+      .run(graph.run.id, 'ready-child');
     raw.prepare("UPDATE run SET state = 'paused' WHERE id = ?").run(graph.run.id);
     const executed: string[] = [];
     const scheduler = new Scheduler({
@@ -1517,9 +1547,9 @@ describe('Scheduler lifecycle controls', () => {
     await firstTick;
     expect(store.getGraph(graph.run.id)!.run.state).toBe('completed');
     expect(
-      raw.prepare("SELECT COUNT(*) AS count FROM event WHERE run_id = ? AND type = 'step.completed'").get(
-        graph.run.id,
-      ),
+      raw
+        .prepare("SELECT COUNT(*) AS count FROM event WHERE run_id = ? AND type = 'step.completed'")
+        .get(graph.run.id),
     ).toEqual({ count: 1 });
   });
 

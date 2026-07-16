@@ -29,14 +29,14 @@ export const M1_HANDTEST_ITEMS: readonly M1HandtestItemDef[] = [
     section: 'pre',
     label: 'Runtime 已连接',
     gate: 'live',
-    hint: '确认左侧工作区底部 Runtime 为已连接',
+    hint: '确认左侧项目区底部 Runtime 为已连接',
   },
   {
     id: 'pre-task',
     section: 'pre',
     label: '已打开任务',
     gate: 'live',
-    hint: '在工作区导航打开一个任务',
+    hint: '在项目导航打开一个任务',
   },
   {
     id: 'pre-providers',
@@ -245,11 +245,11 @@ export function projectM1CurrentMilestoneCopy(input: M1CurrentMilestoneCopyInput
 const HANDTEST_JUMP: Record<string, { target: M1SessionJumpTarget; hint: string }> = {
   'pre-runtime': {
     target: 'workspaces',
-    hint: '看左侧工作区底部 Runtime 连接状态',
+    hint: '看左侧项目区底部 Runtime 连接状态',
   },
   'pre-task': {
     target: 'workspaces',
-    hint: '跳到工作区导航 · 打开任务',
+    hint: '跳到项目导航 · 打开任务',
   },
   'pre-providers': {
     target: 'providers',

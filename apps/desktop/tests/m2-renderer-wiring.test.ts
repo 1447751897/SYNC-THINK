@@ -76,20 +76,26 @@ describe('M2 renderer wiring', () => {
     expect(source).toMatch(/getRunGraph\([\s\S]{0,400}input\.runId/);
   });
 
-  it('renders actionable recovery controls for both automatic-mode blockers', () => {
-    expect(source).toContain('automatic-plan-cta');
-    expect(source).toContain('automatic-policy-cta');
-    expect(source).toContain("setRightRailTab('approvals')");
-    expect(source).toContain('document.querySelector(\'[data-testid="plan-editor"]\')');
-    expect(source).not.toContain('document.querySelector(\'[data-testid="plan-revision-panel"]\')');
+  it('upgrades collaboration from the conversation and keeps approval in the same pane', () => {
+    expect(source).not.toContain('automatic-plan-cta');
+    expect(source).not.toContain('automatic-policy-cta');
+    expect(source).not.toContain('<ModeSwitch');
+    expect(source).toContain('inferConversationCollaborationIntent(text)');
+    expect(source).toContain('conversation-collaboration-status');
+    expect(source).toContain("mode: 'collaboration'");
+    expect(source).toContain('runtime.createPlan({');
+    expect(source).toContain('<PlanRevisionPanel');
+    expect(source).toContain('approveCurrentPlan(input)');
   });
 
-  it('wires task-scoped automatic readiness and exact reviewer catalogs', () => {
-    expect(source).toContain('approvedPlan={automaticModeReadiness.approvedPlan}');
-    expect(source).toContain('applicablePolicy={automaticModeReadiness.applicablePolicy}');
+  it('wires task-scoped collaboration and exact reviewer catalogs', () => {
+    expect(source).toContain("targetTask.participationMode !== 'automatic'");
+    expect(source).toContain('planRevisions.length === 0');
     expect(source).not.toContain('approvalPolicies.length');
     expect(source).toContain('allAgentVersions={allAgentVersions.map');
     expect(source).toContain('reviewerCapable:');
+    expect(source).toContain('const latestByAgent = new Map<string, AgentDefinitionSummary>()');
+    expect(source).toContain('agentVersionId: String(version.agentVersionId)');
   });
 
   it('bridges append-only merge conflict listing and resolution into the Artifact rail', () => {

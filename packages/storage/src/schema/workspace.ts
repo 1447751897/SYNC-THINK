@@ -3,7 +3,7 @@ import { idColumn, tsColumns } from './ids.js';
 
 export const workspace = sqliteTable('workspace', {
   id: idColumn('id'),
-  folderPath: text('folder_path').notNull(),
+  folderPath: text('folder_path'),
   name: text('name').notNull(),
   policyId: text('policy_id'),
   uiPrefsJson: text('ui_prefs_json'),

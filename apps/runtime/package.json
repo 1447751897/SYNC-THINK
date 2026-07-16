@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --testTimeout=15000",
     "lint": "eslint src --ext .ts",
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts"

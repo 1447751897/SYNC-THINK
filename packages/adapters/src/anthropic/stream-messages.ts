@@ -1,7 +1,11 @@
 import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
 import { scrubSecrets, normalizeOpenAICompatibleBaseUrl } from '../openai/discover-models.js';
 import type { FailureClass } from '@sync-think/shared';
-import { closeResponseReader, createProviderCallControl, providerAbortEvent } from '../call-control.js';
+import {
+  closeResponseReader,
+  createProviderCallControl,
+  providerAbortEvent,
+} from '../call-control.js';
 
 export class AnthropicCallError extends Error {
   readonly failureClass: FailureClass;
@@ -37,11 +41,44 @@ function messageContentToString(message: ProviderMessage): string {
 
 function toAnthropicMessages(
   request: ProviderCallRequest,
-): Array<{ role: 'user' | 'assistant'; content: string }> {
-  const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+): Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }> {
+  const out: Array<{
+    role: 'user' | 'assistant';
+    content: string | Array<Record<string, unknown>>;
+  }> = [];
   for (const message of request.messages) {
-    if (message.role === 'system' || message.role === 'tool') continue;
+    if (message.role === 'system') continue;
     const content = messageContentToString(message);
+    if (message.role === 'tool' && message.toolCallId) {
+      out.push({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content }],
+      });
+      continue;
+    }
+    if (message.role === 'assistant' && Array.isArray(message.content)) {
+      const blocks: Array<Record<string, unknown>> = [];
+      if (content) blocks.push({ type: 'text', text: content });
+      for (const part of message.content) {
+        if (part.type !== 'tool-call' || !part.toolCall) continue;
+        let parsedInput: unknown = {};
+        try {
+          parsedInput = JSON.parse(part.toolCall.argumentsJson) as unknown;
+        } catch {
+          parsedInput = {};
+        }
+        blocks.push({
+          type: 'tool_use',
+          id: part.toolCall.id,
+          name: part.toolCall.name,
+          input: parsedInput,
+        });
+      }
+      if (blocks.length > 0) {
+        out.push({ role: 'assistant', content: blocks });
+        continue;
+      }
+    }
     if (!content && message.role !== 'assistant') continue;
     out.push({
       role: message.role === 'assistant' ? 'assistant' : 'user',
@@ -62,7 +99,11 @@ function classifyHttpFailure(status: number, snippet: string): AnthropicCallErro
     return new AnthropicCallError(`Provider auth failed (${status})${snippet}`, 'auth', status);
   }
   if (status === 429) {
-    return new AnthropicCallError(`Provider rate limited (${status})${snippet}`, 'rate-limit', status);
+    return new AnthropicCallError(
+      `Provider rate limited (${status})${snippet}`,
+      'rate-limit',
+      status,
+    );
   }
   if (status >= 400 && status < 500) {
     return new AnthropicCallError(
@@ -91,7 +132,11 @@ export async function* streamAnthropicMessages(
 ): AsyncIterable<AdapterEvent> {
   const apiKey = request.apiKey;
   if (!apiKey || apiKey.trim().length === 0) {
-    yield { type: 'error', failureClass: 'auth', message: 'API key is required for Anthropic messages' };
+    yield {
+      type: 'error',
+      failureClass: 'auth',
+      message: 'API key is required for Anthropic messages',
+    };
     return;
   }
   if (!request.modelId || request.modelId.trim().length === 0) {
@@ -105,7 +150,11 @@ export async function* streamAnthropicMessages(
 
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
-    yield { type: 'error', failureClass: 'protocol', message: 'Fetch is not available in this runtime' };
+    yield {
+      type: 'error',
+      failureClass: 'protocol',
+      message: 'Fetch is not available in this runtime',
+    };
     return;
   }
 
@@ -132,6 +181,13 @@ export async function* streamAnthropicMessages(
     if (systemParts.length > 0) body.system = systemParts.join('\n\n');
   }
   if (request.temperature !== undefined) body.temperature = request.temperature;
+  if (request.tools?.length) {
+    body.tools = request.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+    }));
+  }
 
   try {
     let response: Response;
@@ -195,10 +251,13 @@ export async function* streamAnthropicMessages(
     reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let finished = false;
-    let sawDelta = false;
+    const parseState: AnthropicParseState = {
+      toolBlocks: new Map(),
+      emittedToolIds: new Set(),
+      finished: false,
+    };
 
-    while (!finished) {
+    while (!parseState.finished) {
       let done: boolean;
       let value: Uint8Array | undefined;
       try {
@@ -215,28 +274,17 @@ export async function* streamAnthropicMessages(
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? '';
       for (const line of lines) {
-        const event = parseSseLine(line, apiKey);
-        if (!event) continue;
-        if (event.type === 'text-delta') sawDelta = true;
-        yield event;
-        if (event.type === 'finished' || event.type === 'error') {
-          finished = true;
-          break;
-        }
+        for (const event of parseSseLine(line, apiKey, parseState)) yield event;
+        if (parseState.finished) break;
       }
     }
 
-    if (!finished) {
+    if (!parseState.finished) {
       if (buffer.trim().length > 0) {
-        const event = parseSseLine(buffer, apiKey);
-        if (event) {
-          if (event.type === 'text-delta') sawDelta = true;
-          yield event;
-          if (event.type === 'finished' || event.type === 'error') finished = true;
-        }
+        for (const event of parseSseLine(buffer, apiKey, parseState)) yield event;
       }
-      if (!finished) {
-        yield { type: 'finished', reason: sawDelta ? 'stop' : 'stop' };
+      if (!parseState.finished) {
+        for (const event of finishAnthropicStream(parseState)) yield event;
       }
     }
   } finally {
@@ -245,92 +293,193 @@ export async function* streamAnthropicMessages(
   }
 }
 
-function parseSseLine(line: string, apiKey: string): AdapterEvent | undefined {
+interface AnthropicToolBlock {
+  id: string;
+  name: string;
+  argumentsJson: string;
+  initialInput?: unknown;
+}
+
+interface AnthropicParseState {
+  toolBlocks: Map<number, AnthropicToolBlock>;
+  emittedToolIds: Set<string>;
+  stopReason?: string;
+  finished: boolean;
+}
+
+function parseSseLine(line: string, apiKey: string, state: AnthropicParseState): AdapterEvent[] {
   const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith(':')) return undefined;
+  if (!trimmed || trimmed.startsWith(':')) return [];
   // Anthropic SSE uses both event: and data: lines; we only need data: payloads.
-  if (!trimmed.startsWith('data:')) return undefined;
+  if (!trimmed.startsWith('data:')) return [];
   const data = trimmed.slice(5).trim();
   if (data === '[DONE]') {
-    return { type: 'finished', reason: 'stop' };
+    return state.finished ? [] : finishAnthropicStream(state);
   }
   let json: unknown;
   try {
     json = JSON.parse(data);
   } catch {
-    return undefined;
+    return [];
   }
-  return parseAnthropicStreamEvent(json, apiKey);
+  return parseAnthropicStreamEvent(json, apiKey, state);
 }
 
-function parseAnthropicStreamEvent(json: unknown, apiKey: string): AdapterEvent | undefined {
-  if (!json || typeof json !== 'object') return undefined;
+function parseAnthropicStreamEvent(
+  json: unknown,
+  apiKey: string,
+  state: AnthropicParseState,
+): AdapterEvent[] {
+  if (!json || typeof json !== 'object') return [];
   const root = json as {
     type?: string;
+    index?: number;
     error?: { message?: string; type?: string };
-    delta?: { type?: string; text?: string; stop_reason?: string | null };
+    delta?: {
+      type?: string;
+      text?: string;
+      partial_json?: string;
+      stop_reason?: string | null;
+    };
     message?: {
       content?: Array<{ type?: string; text?: string }>;
       usage?: { input_tokens?: number; output_tokens?: number };
       stop_reason?: string | null;
     };
     usage?: { input_tokens?: number; output_tokens?: number };
-    content_block?: { type?: string; text?: string };
+    content_block?: {
+      type?: string;
+      text?: string;
+      id?: string;
+      name?: string;
+      input?: unknown;
+    };
   };
 
   if (root.type === 'error' || root.error) {
     const msg = scrubSecrets(root.error?.message ?? 'provider error', [apiKey]);
-    return { type: 'error', failureClass: 'protocol', message: msg };
+    state.finished = true;
+    return [{ type: 'error', failureClass: 'protocol', message: msg }];
   }
 
   if (root.type === 'content_block_delta' && root.delta?.type === 'text_delta' && root.delta.text) {
-    return { type: 'text-delta', text: root.delta.text };
+    return [{ type: 'text-delta', text: root.delta.text }];
+  }
+
+  if (root.type === 'content_block_start' && root.content_block?.type === 'tool_use') {
+    const index = Number.isInteger(root.index) ? Number(root.index) : state.toolBlocks.size;
+    state.toolBlocks.set(index, {
+      id: root.content_block.id ?? `tool-use-${index + 1}`,
+      name: root.content_block.name ?? '',
+      argumentsJson: '',
+      initialInput: root.content_block.input,
+    });
+    return [];
+  }
+
+  if (root.type === 'content_block_delta' && root.delta?.type === 'input_json_delta') {
+    const index = Number.isInteger(root.index) ? Number(root.index) : 0;
+    const block = state.toolBlocks.get(index);
+    if (block) block.argumentsJson += root.delta.partial_json ?? '';
+    return [];
+  }
+
+  if (root.type === 'content_block_stop') {
+    const index = Number.isInteger(root.index) ? Number(root.index) : 0;
+    const block = state.toolBlocks.get(index);
+    if (!block || !block.name || state.emittedToolIds.has(block.id)) return [];
+    state.emittedToolIds.add(block.id);
+    return [
+      {
+        type: 'tool-call',
+        toolCall: {
+          id: block.id,
+          name: block.name,
+          argumentsJson:
+            block.argumentsJson ||
+            (block.initialInput === undefined ? '{}' : JSON.stringify(block.initialInput)),
+        },
+      },
+    ];
   }
 
   // Some proxies emit OpenAI-like deltas inside Anthropic wrappers — ignore.
 
   if (root.type === 'message_delta') {
+    if (root.delta?.stop_reason) state.stopReason = root.delta.stop_reason;
     if (root.usage) {
-      return {
-        type: 'usage',
-        tokensIn: root.usage.input_tokens ?? 0,
-        tokensOut: root.usage.output_tokens ?? 0,
-      };
+      return [
+        {
+          type: 'usage',
+          tokensIn: root.usage.input_tokens ?? 0,
+          tokensOut: root.usage.output_tokens ?? 0,
+        },
+      ];
     }
     // stop_reason arrives on message_delta; finished is emitted on message_stop.
-    return undefined;
+    return [];
   }
 
   if (root.type === 'message_stop') {
-    return { type: 'finished', reason: 'stop' };
+    return finishAnthropicStream(state);
   }
 
   // Non-stream complete message object
   if (root.type === 'message' && root.message?.content) {
     // handled in emitFromJsonMessage primarily
-    return undefined;
+    return [];
   }
 
   if (root.usage && root.type === 'message_start') {
     // ignore partial usage
-    return undefined;
+    return [];
   }
 
-  return undefined;
+  return [];
+}
+
+function finishAnthropicStream(state: AnthropicParseState): AdapterEvent[] {
+  const events: AdapterEvent[] = [];
+  for (const block of state.toolBlocks.values()) {
+    if (!block.name || state.emittedToolIds.has(block.id)) continue;
+    state.emittedToolIds.add(block.id);
+    events.push({
+      type: 'tool-call',
+      toolCall: {
+        id: block.id,
+        name: block.name,
+        argumentsJson:
+          block.argumentsJson ||
+          (block.initialInput === undefined ? '{}' : JSON.stringify(block.initialInput)),
+      },
+    });
+  }
+  state.finished = true;
+  events.push({
+    type: 'finished',
+    reason:
+      state.emittedToolIds.size > 0 || state.stopReason === 'tool_use'
+        ? 'tool-requests'
+        : state.stopReason === 'max_tokens'
+          ? 'length'
+          : 'stop',
+  });
+  return events;
 }
 
 async function* emitFromSseText(text: string, apiKey: string): AsyncIterable<AdapterEvent> {
-  let sawFinish = false;
+  const state: AnthropicParseState = {
+    toolBlocks: new Map(),
+    emittedToolIds: new Set(),
+    finished: false,
+  };
   for (const line of text.split(/\r?\n/)) {
-    const event = parseSseLine(line, apiKey);
-    if (!event) continue;
-    yield event;
-    if (event.type === 'finished' || event.type === 'error') {
-      sawFinish = true;
-      break;
-    }
+    for (const event of parseSseLine(line, apiKey, state)) yield event;
+    if (state.finished) break;
   }
-  if (!sawFinish) yield { type: 'finished', reason: 'stop' };
+  if (!state.finished) {
+    for (const event of finishAnthropicStream(state)) yield event;
+  }
 }
 
 async function* emitFromJsonMessage(text: string, apiKey: string): AsyncIterable<AdapterEvent> {
@@ -347,7 +496,13 @@ async function* emitFromJsonMessage(text: string, apiKey: string): AsyncIterable
   }
   const root = json as {
     error?: { message?: string };
-    content?: Array<{ type?: string; text?: string }>;
+    content?: Array<{
+      type?: string;
+      text?: string;
+      id?: string;
+      name?: string;
+      input?: unknown;
+    }>;
     usage?: { input_tokens?: number; output_tokens?: number };
     stop_reason?: string | null;
   };
@@ -372,8 +527,26 @@ async function* emitFromJsonMessage(text: string, apiKey: string): AsyncIterable
   if (textParts.length > 0) {
     yield { type: 'text-delta', text: textParts.join('') };
   }
+  const toolUses = (root.content ?? []).filter(
+    (block) => block.type === 'tool_use' && typeof block.name === 'string',
+  );
+  for (const [index, block] of toolUses.entries()) {
+    yield {
+      type: 'tool-call',
+      toolCall: {
+        id: block.id ?? `tool-use-${index + 1}`,
+        name: block.name!,
+        argumentsJson: JSON.stringify(block.input ?? {}),
+      },
+    };
+  }
   yield {
     type: 'finished',
-    reason: root.stop_reason === 'max_tokens' ? 'length' : 'stop',
+    reason:
+      toolUses.length > 0 || root.stop_reason === 'tool_use'
+        ? 'tool-requests'
+        : root.stop_reason === 'max_tokens'
+          ? 'length'
+          : 'stop',
   };
 }

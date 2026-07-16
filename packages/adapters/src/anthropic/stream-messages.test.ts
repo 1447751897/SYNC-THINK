@@ -99,6 +99,66 @@ describe('streamAnthropicMessages', () => {
     expect(bodyJson.messages[0]).toMatchObject({ role: 'user', content: 'hello anthropic stream' });
   });
 
+  it('serializes tool history and assembles Anthropic tool_use input deltas', async () => {
+    const body = sseStream([
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"git_status","input":{}}}\n\n',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+      'data: {"type":"content_block_stop","index":0}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+      'data: {"type":"message_stop"}\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamAnthropicMessages(
+        req({
+          tools: [
+            { name: 'git_status', description: 'Read status', inputSchema: { type: 'object' } },
+          ],
+          messages: [
+            { role: 'user', content: 'Status' },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCall: { id: 'old-tool', name: 'git_status', argumentsJson: '{}' },
+                },
+              ],
+            },
+            { role: 'tool', toolCallId: 'old-tool', content: '{"ok":true}' },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    expect(events).toContainEqual({
+      type: 'tool-call',
+      toolCall: { id: 'toolu_1', name: 'git_status', argumentsJson: '{}' },
+    });
+    expect(events.at(-1)).toEqual({ type: 'finished', reason: 'tool-requests' });
+    const requestBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(requestBody.tools[0]).toMatchObject({
+      name: 'git_status',
+      input_schema: { type: 'object' },
+    });
+    expect(requestBody.messages[1]).toMatchObject({
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'old-tool', name: 'git_status' }],
+    });
+    expect(requestBody.messages[2]).toMatchObject({
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'old-tool' }],
+    });
+  });
+
   it('maps 401 to auth error without leaking key', async () => {
     const secret = 'sk-ant-LEAK_ME_IN_ERROR_BODY_XYZ999';
     fetchMock.mockResolvedValue({

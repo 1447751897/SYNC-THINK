@@ -724,11 +724,17 @@ export class Scheduler {
           ? { reviewContext: deepFreeze(structuredClone(persistedReviewContext)) }
           : {}),
         signal: controller.signal,
+        gateAction: async (request) => {
+          const result = this.gateStepAction({
+            runId,
+            stepId: step.id,
+            agentVersionId: step.agentVersionId,
+            request,
+          });
+          return { allowed: result.allowed, actionDigest: result.actionDigest };
+        },
       };
-      const result = await Promise.race([
-        this.options.executor.execute(context),
-        heartbeatFailure,
-      ]);
+      const result = await Promise.race([this.options.executor.execute(context), heartbeatFailure]);
       if (controller.signal.reason instanceof StepLeaseHeartbeatError) {
         throw controller.signal.reason;
       }

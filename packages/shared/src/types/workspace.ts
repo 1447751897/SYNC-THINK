@@ -2,8 +2,8 @@ import type { WorkspaceId, PolicyId } from './ids.js';
 
 export interface Workspace {
   id: WorkspaceId;
-  /** Absolute, canonical local folder path that defines the workspace boundary. */
-  folderPath: string;
+  /** Optional absolute, canonical local folder path used as the execution boundary. */
+  folderPath?: string;
   name: string;
   createdAt: string; // ISO 8601
   updatedAt: string;

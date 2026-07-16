@@ -129,7 +129,7 @@ export function projectContinuumReadiness(
   if (streaming) notes.push('流式进行中 · 决策/记忆写入后会出现在连续体');
   else if (!hasEntries) {
     if (hasActiveTask === false)
-      notes.push('添加本地文件夹并打开任务后，连续体绑定文件夹/任务/线程');
+      notes.push('创建项目并打开任务后，可按需绑定本地文件夹');
     else notes.push('发送消息或写入记忆后，连续体将点亮决策/记忆/产物');
   } else if (scaffoldOnly)
     notes.push('当前为任务结构位（文件夹/任务/线程）· 对话与记忆写入后会出现持久证据');

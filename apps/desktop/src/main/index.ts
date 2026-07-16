@@ -6,7 +6,7 @@
 // Visual Studio Build Tools. Once installed and `pnpm rebuild electron` runs,
 // `pnpm dev:desktop` launches this module.
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -24,12 +24,15 @@ import { fileURLToPath } from 'node:url';
 import { encodeFrame, decodeFrames } from '@sync-think/protocol';
 import type { AppendMessagePayload, CancelRunPayload, Frame } from '@sync-think/protocol';
 import {
+  parseArchiveTaskPayload,
+  parseBindWorkspaceFolderPayload,
   parseCreateTaskPayload,
   parseCreateWorkspacePayload,
   parseListTasksPayload,
   parseListWorkspacesPayload,
   parseOpenTaskPayload,
   parseSearchTasksPayload,
+  parseUnarchiveTaskPayload,
 } from '../workspace-payloads.js';
 import {
   parseCreateProviderPayload,
@@ -132,7 +135,8 @@ function createWindow(): void {
     minWidth: 1280,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#151815',
+    // Match resolved OS theme so light mode does not flash a dark frame.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#151815' : '#f1f4f0',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
@@ -272,6 +276,14 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('workspace.create', parseCreateWorkspacePayload(value));
   });
+  ipcMain.handle('runtime:workspace-bind-folder', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'workspace.bindFolder',
+      parseBindWorkspaceFolderPayload(value),
+    );
+  });
   ipcMain.handle('runtime:workspace-list', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -301,6 +313,16 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('task.setParticipationMode', parseModeSetPayload(value));
+  });
+  ipcMain.handle('runtime:task-archive', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('task.archive', parseArchiveTaskPayload(value));
+  });
+  ipcMain.handle('runtime:task-unarchive', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('task.unarchive', parseUnarchiveTaskPayload(value));
   });
   ipcMain.handle('runtime:plan-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -747,7 +769,7 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     const win = BrowserWindow.fromWebContents(event.sender);
     const options = {
-      title: '选择本地工作区文件夹',
+      title: '为项目绑定文件夹',
       properties: ['openDirectory', 'createDirectory'] as Array<
         'openDirectory' | 'createDirectory'
       >,

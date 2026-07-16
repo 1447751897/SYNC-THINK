@@ -3,6 +3,10 @@
 > Status: approved by the user on 2026-07-16
 > Reference: Multica desktop information hierarchy
 > Scope: desktop shell, task header, context rail expression, right task rail
+>
+> 2026-07-16 conversation-first refinement: the user explicitly replaced manual task naming,
+> persistent folder subtitles, and manual participation-mode switching with the behavior in
+> sections 3-5 below.
 
 ## 1. Goal
 
@@ -40,7 +44,11 @@ The left rail has three stable layers:
 
 1. SYNC-THINK product identity.
 2. Product navigation with visible labels: `任务`, `智能体`, `模型源`, `审批`.
-3. The selected section's content. For `任务`, this is the existing local workspace and nested task tree.
+3. The selected section's content. For `任务`, this is the existing project and nested task tree.
+
+Projects do not render their bound folder as a persistent subtitle. Focusing or hovering a bound
+project reveals the canonical folder path in a tooltip. Folder binding remains a project property,
+not a second visible hierarchy level.
 
 `记忆` remains available as a secondary tool below the task tree. Runtime connection state remains visible but visually quiet.
 
@@ -52,9 +60,11 @@ The task header shows only user-facing task facts:
 
 - workspace/task breadcrumb;
 - task title and status;
-- responsible Agent identity;
-- selected or Agent-default model;
-- conversation mode and display/theme controls.
+- display/theme controls.
+
+Agent, model, and project context live in the Composer toolbar, where they are actionable. The
+project control shows the active project and can switch to the last active task in another project.
+This avoids duplicating non-actionable Agent/model facts in the header.
 
 The context-continuity slot remains structurally present but uses one plain `下一步` row. Its copy is derived from actual state:
 
@@ -77,6 +87,16 @@ The approved conversation identity design remains authoritative:
 - Composer functionality and model-routing behavior remain unchanged.
 
 The Composer placeholder may name the selected Agent so the recipient is explicit.
+
+Creating a task is immediate and does not ask for a title or goal. The task uses an internal
+placeholder until the first user message is durably appended, then derives a concise title from
+that request. The full first request becomes the initial task goal.
+
+Participation remains one conversation surface. The product does not show a manual
+`对话 / 协作 / 自动` switch in the task header. An explicit multi-Agent request, or a sufficiently
+complex end-to-end request, upgrades the task to collaboration and creates an editable plan using
+configured Agent versions. The plan still requires the existing approval gate before execution.
+Simple conversation remains one-Agent chat.
 
 ## 6. Right Rail
 
@@ -106,10 +126,15 @@ Automatic navigation to an approval, graph, or artifact may open that exact adva
 
 1. The left product navigation uses visible Chinese labels and identifies the selected section.
 2. The task tree remains the only flexible scrolling region in the left rail.
-3. The task header names the responsible Agent and model without exposing IDs.
+3. The task header is limited to project/task identity, status, and display controls; Agent, model,
+   and project switching are available in Compose without exposing IDs.
 4. One actionable `下一步` row replaces scaffold Continuum chips in the normal workspace.
 5. The right rail opens on `任务进度`, not Trace or Manifest.
 6. Trace, Manifest, graph, approvals, and artifact version tools remain reachable under `执行详情`.
 7. Empty, offline, unconfigured, ready, streaming, and result states use truthful copy derived by a pure tested projector.
 8. Conversation identity, Compose, task switching, provider/Agent drawers, model routing, trace collapse, themes, and keyboard behavior do not regress.
 9. Focused tests, full Desktop/UI Kit tests, typecheck, build, and Electron visual QA pass.
+10. Bound folder paths appear only in an accessible hover/focus tooltip in the project tree.
+11. New tasks require no naming dialog and receive a durable title from the first user message.
+12. Multi-Agent intent upgrades within the same conversation and produces an editable,
+    approval-gated plan without manual mode switching.

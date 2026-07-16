@@ -1,10 +1,28 @@
-import { useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react';
 import type { ParticipationMode, ProviderSurface } from '@sync-think/shared';
-import { ArrowUp, CircleAlert, RefreshCw, Settings2, Square } from 'lucide-react';
+import {
+  ArrowUp,
+  Bot,
+  Check,
+  ChevronDown,
+  CircleAlert,
+  FolderKanban,
+  RefreshCw,
+  Settings2,
+  Square,
+} from 'lucide-react';
 import { ModelPathPicker } from './ModelPathPicker.js';
 
-// Compose — multi-line input with mode indicator, model picker, and send.
-// Optional cancel while streaming. Model selection is a Run override (§5.3).
+// Compose — multi-line input with teammate (Agent) picker, model override, and send.
+// Model selection is a Run override (§5.3). Agent selection is the conversation owner.
 
 export interface ComposeModelOption {
   modelId: string;
@@ -15,6 +33,23 @@ export interface ComposeModelOption {
   providerId?: string;
   surface?: ProviderSurface;
   protocol?: string;
+}
+
+/** Compact teammate identity for Compose @-switcher (Multica-style). */
+export interface ComposeAgentOption {
+  agentId: string;
+  name: string;
+  role?: string;
+  color?: string;
+  icon?: string;
+  /** Optional short model line, e.g. "grok-4.5". */
+  modelLabel?: string;
+}
+
+export interface ComposeWorkspaceOption {
+  workspaceId: string;
+  name: string;
+  folderPath?: string;
 }
 
 export interface ComposeSendOptions {
@@ -69,6 +104,16 @@ export interface ComposeProps {
   onReconnect?: () => void;
   /** Optional compact recovery action shown when no model can be resolved. */
   onConfigureModel?: () => void;
+  /** Teammate list for Compose-level Agent switch. */
+  agents?: readonly ComposeAgentOption[];
+  selectedAgentId?: string | null;
+  onAgentChange?: (agentId: string) => void;
+  /** Open the full Agent workspace / drawer. */
+  onOpenAgentCenter?: () => void;
+  /** Project context and switcher live beside Agent/model selection. */
+  workspaces?: readonly ComposeWorkspaceOption[];
+  selectedWorkspaceId?: string | null;
+  onWorkspaceChange?: (workspaceId: string) => void;
 }
 
 
@@ -188,9 +233,19 @@ export function projectComposeSendReadiness(
   };
 }
 
+function safeAgentColor(value: string | undefined): string {
+  return value && /^#[0-9a-f]{6}$/i.test(value) ? value : '#64748b';
+}
+
 export function Compose(props: ComposeProps) {
   const [val, setVal] = useState('');
   const [internalModelId, setInternalModelId] = useState<string | null>(null);
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const agentMenuRef = useRef<HTMLDivElement | null>(null);
+  const workspaceMenuRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const modelsProvided = props.models !== undefined;
   const models = props.models ?? [];
@@ -199,26 +254,83 @@ export function Compose(props: ComposeProps) {
     ? (props.selectedModelId ?? null)
     : internalModelId;
 
+  const agents = props.agents ?? [];
+  const showAgentPicker = agents.length > 0 && Boolean(props.onAgentChange);
+  const selectedAgent =
+    agents.find((agent) => agent.agentId === props.selectedAgentId) ?? agents[0] ?? null;
+  const selectedAgentColor = safeAgentColor(selectedAgent?.color);
+  const workspaces = props.workspaces ?? [];
+  const showWorkspacePicker = workspaces.length > 0 && Boolean(props.onWorkspaceChange);
+  const selectedWorkspace =
+    workspaces.find((workspace) => workspace.workspaceId === props.selectedWorkspaceId) ??
+    workspaces[0] ??
+    null;
+
   const showModelRow = modelsProvided;
   const hasModels = models.length > 0;
-  const defaultLabel = props.defaultModelLabel ?? 'Agent 默认（自动）';
+  const defaultLabel = props.defaultModelLabel ?? '智能体默认（自动）';
+
+  const mentionMatches = useMemo(() => {
+    if (mentionQuery == null) return [];
+    const q = mentionQuery.trim().toLowerCase();
+    if (!q) return agents.slice(0, 8);
+    return agents
+      .filter(
+        (agent) =>
+          agent.name.toLowerCase().includes(q) ||
+          (agent.role ?? '').toLowerCase().includes(q),
+      )
+      .slice(0, 8);
+  }, [agents, mentionQuery]);
+
+  useEffect(() => {
+    if (!agentMenuOpen && !workspaceMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!agentMenuRef.current?.contains(event.target as Node)) {
+        setAgentMenuOpen(false);
+      }
+      if (!workspaceMenuRef.current?.contains(event.target as Node)) {
+        setWorkspaceMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setAgentMenuOpen(false);
+        setWorkspaceMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [agentMenuOpen, workspaceMenuOpen]);
 
   const blocker = useMemo(() => {
     if (props.streaming) return null;
     if (props.connectionState === 'offline') {
-      return { message: 'Runtime 未连接', action: 'reconnect' as const };
+      return { message: '本地服务未连接', action: 'reconnect' as const, tone: 'warn' as const };
     }
     if (props.connectionState === 'connecting') {
-      return { message: 'Runtime 连接中', action: null };
+      return { message: '正在连接本地服务…', action: null, tone: 'hint' as const };
     }
     if (props.hasActiveTask === false) {
-      return { message: '请先打开一个任务', action: null };
+      return {
+        message: '先创建或选择一个任务，即可开始输入',
+        action: null,
+        tone: 'hint' as const,
+      };
     }
     if (modelsProvided && !hasModels) {
-      return { message: '尚未配置模型', action: 'configure' as const };
+      return { message: '还没有可用模型', action: 'configure' as const, tone: 'warn' as const };
     }
     if (props.agentDefaultSet === false && !selectedModelId) {
-      return { message: '当前 Agent 尚未配置默认模型', action: 'configure' as const };
+      return {
+        message: '智能体还没有默认模型',
+        action: 'configure' as const,
+        tone: 'warn' as const,
+      };
     }
     return null;
   },
@@ -240,6 +352,41 @@ export function Compose(props: ComposeProps) {
     props.onModelChange?.(next);
   };
 
+  const pickAgent = (agentId: string) => {
+    props.onAgentChange?.(agentId);
+    setAgentMenuOpen(false);
+    setMentionQuery(null);
+  };
+
+  const pickWorkspace = (workspaceId: string) => {
+    props.onWorkspaceChange?.(workspaceId);
+    setWorkspaceMenuOpen(false);
+    setMentionQuery(null);
+  };
+
+  const applyMentionPick = (agent: ComposeAgentOption) => {
+    const el = textareaRef.current;
+    const current = val;
+    const caret = el?.selectionStart ?? current.length;
+    const before = current.slice(0, caret);
+    const after = current.slice(caret);
+    const at = before.lastIndexOf('@');
+    if (at < 0) {
+      pickAgent(agent.agentId);
+      return;
+    }
+    const next = `${before.slice(0, at)}@${agent.name} ${after}`;
+    setVal(next);
+    pickAgent(agent.agentId);
+    window.setTimeout(() => {
+      const node = textareaRef.current;
+      if (!node) return;
+      const pos = at + agent.name.length + 2;
+      node.focus();
+      node.setSelectionRange(pos, pos);
+    }, 0);
+  };
+
   const sendCurrentValue = () => {
     if (!val.trim() || sendBlocked) return;
     const submittedValue = val;
@@ -251,13 +398,17 @@ export function Compose(props: ComposeProps) {
           (succeeded) => {
             if (succeeded !== false) {
               setVal((current) => (current === submittedValue ? '' : current));
+              setMentionQuery(null);
             }
           },
           () => undefined,
         );
         return;
       }
-      if (result !== false) setVal('');
+      if (result !== false) {
+        setVal('');
+        setMentionQuery(null);
+      }
     } catch {
       // Keep the draft. The parent owns the actionable send error.
     }
@@ -268,7 +419,35 @@ export function Compose(props: ComposeProps) {
     sendCurrentValue();
   };
 
+  const onTextareaChange = (value: string, caret: number) => {
+    setVal(value);
+    if (!showAgentPicker) {
+      setMentionQuery(null);
+      return;
+    }
+    const before = value.slice(0, caret);
+    const match = before.match(/(^|[\s\n])@([^\s@]*)$/);
+    if (match) {
+      setMentionQuery(match[2] ?? '');
+      setAgentMenuOpen(false);
+    } else {
+      setMentionQuery(null);
+    }
+  };
+
   const onTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionQuery != null && mentionMatches.length > 0) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMentionQuery(null);
+        return;
+      }
+      if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        applyMentionPick(mentionMatches[0]!);
+        return;
+      }
+    }
     if (event.key === 'Escape' && props.streaming && props.onCancel && !props.cancelDisabled) {
       event.preventDefault();
       props.onCancel();
@@ -280,6 +459,8 @@ export function Compose(props: ComposeProps) {
     }
   };
 
+  const showMentionMenu = mentionQuery != null && showAgentPicker;
+
   return (
     <form
       onSubmit={onSubmit}
@@ -288,13 +469,22 @@ export function Compose(props: ComposeProps) {
       data-mode={props.mode}
       data-streaming={props.streaming ? '1' : '0'}
       data-has-models={showModelRow ? (hasModels ? '1' : '0') : undefined}
+      data-has-agents={showAgentPicker ? '1' : '0'}
+      data-has-workspaces={showWorkspacePicker ? '1' : '0'}
     >
       {blocker ? (
-        <div className="st-compose__blocker" data-testid="compose-blocker" role="status">
-          <CircleAlert aria-hidden="true" size={14} strokeWidth={1.8} />
+        <div
+          className="st-compose__blocker"
+          data-testid="compose-blocker"
+          data-tone={blocker.tone}
+          role="status"
+        >
+          {blocker.tone === 'warn' ? (
+            <CircleAlert aria-hidden="true" size={14} strokeWidth={1.8} />
+          ) : null}
           <span>{blocker.message}</span>
           {blocker.action === 'reconnect' && props.onReconnect ? (
-            <button type="button" onClick={props.onReconnect} aria-label="重新连接 Runtime">
+            <button type="button" onClick={props.onReconnect} aria-label="重新连接本地服务">
               <RefreshCw aria-hidden="true" size={13} strokeWidth={1.8} />
               重连
             </button>
@@ -307,17 +497,218 @@ export function Compose(props: ComposeProps) {
         </div>
       ) : null}
 
-      <textarea
-        aria-label="消息输入"
-        className="st-compose__input"
-        placeholder={props.placeholder ?? '输入指令、粘贴上下文，或继续当前任务…'}
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        onKeyDown={onTextareaKeyDown}
-        disabled={props.disabled && !props.streaming}
-      />
+      <div className="st-compose__input-wrap">
+        <textarea
+          ref={textareaRef}
+          aria-label="消息输入"
+          className="st-compose__input"
+          placeholder={
+            props.placeholder ??
+            (selectedAgent
+              ? `@${selectedAgent.name} · 描述你希望完成的工作…`
+              : '输入指令、粘贴上下文，或继续当前任务…')
+          }
+          value={val}
+          onChange={(e) => onTextareaChange(e.target.value, e.target.selectionStart ?? 0)}
+          onKeyDown={onTextareaKeyDown}
+          disabled={props.disabled && !props.streaming}
+        />
+        {showMentionMenu ? (
+          <div
+            className="st-compose__mention-menu"
+            data-testid="compose-mention-menu"
+            role="listbox"
+            aria-label="选择智能体"
+          >
+            {mentionMatches.length === 0 ? (
+              <p className="st-compose__mention-empty">没有匹配的智能体</p>
+            ) : (
+              mentionMatches.map((agent, index) => {
+                const color = safeAgentColor(agent.color);
+                return (
+                  <button
+                    key={agent.agentId}
+                    type="button"
+                    role="option"
+                    aria-selected={index === 0}
+                    className="st-compose__mention-item"
+                    data-testid={`compose-mention-${agent.agentId}`}
+                    onClick={() => applyMentionPick(agent)}
+                  >
+                    <span
+                      className="st-compose__agent-avatar"
+                      style={{ '--st-compose-agent-color': color } as CSSProperties}
+                    >
+                      <Bot size={13} strokeWidth={1.9} aria-hidden="true" />
+                    </span>
+                    <span className="st-compose__mention-copy">
+                      <strong>@{agent.name}</strong>
+                      <small>{agent.role || agent.modelLabel || '智能体'}</small>
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        ) : null}
+      </div>
       <div className="st-compose__toolbar">
         <div className="st-compose__model-control">
+          {showWorkspacePicker && selectedWorkspace ? (
+            <div
+              className="st-compose__workspace-picker"
+              ref={workspaceMenuRef}
+              data-open={workspaceMenuOpen ? '1' : '0'}
+            >
+              <button
+                type="button"
+                className="st-compose__workspace-trigger"
+                data-testid="compose-workspace-trigger"
+                aria-haspopup="listbox"
+                aria-expanded={workspaceMenuOpen}
+                aria-label={`切换项目，当前 ${selectedWorkspace.name}`}
+                aria-describedby={
+                  selectedWorkspace.folderPath ? 'st-compose-workspace-path-tooltip' : undefined
+                }
+                disabled={props.streaming}
+                onClick={() => {
+                  setAgentMenuOpen(false);
+                  setMentionQuery(null);
+                  setWorkspaceMenuOpen((open) => !open);
+                }}
+              >
+                <FolderKanban size={14} strokeWidth={1.8} aria-hidden="true" />
+                <span className="st-compose__workspace-trigger-text">{selectedWorkspace.name}</span>
+                <ChevronDown size={13} strokeWidth={1.8} aria-hidden="true" />
+                {selectedWorkspace.folderPath ? (
+                  <span
+                    id="st-compose-workspace-path-tooltip"
+                    className="st-compose__workspace-tooltip"
+                    role="tooltip"
+                  >
+                    {selectedWorkspace.folderPath}
+                  </span>
+                ) : null}
+              </button>
+              {workspaceMenuOpen ? (
+                <div
+                  className="st-compose__workspace-menu"
+                  data-testid="compose-workspace-menu"
+                  role="listbox"
+                  aria-label="项目列表"
+                >
+                  {workspaces.map((workspace) => {
+                    const selected = workspace.workspaceId === selectedWorkspace.workspaceId;
+                    return (
+                      <button
+                        key={workspace.workspaceId}
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        className="st-compose__workspace-option"
+                        data-selected={selected ? '1' : '0'}
+                        data-testid={`compose-workspace-option-${workspace.workspaceId}`}
+                        title={workspace.folderPath}
+                        onClick={() => pickWorkspace(workspace.workspaceId)}
+                      >
+                        <FolderKanban size={15} strokeWidth={1.8} aria-hidden="true" />
+                        <span className="st-compose__workspace-option-copy">
+                          <strong>{workspace.name}</strong>
+                          <small>{workspace.folderPath ?? '未绑定文件夹'}</small>
+                        </span>
+                        {selected ? <Check size={14} strokeWidth={2} aria-hidden="true" /> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {showAgentPicker ? (
+            <div className="st-compose__agent-picker" ref={agentMenuRef} data-open={agentMenuOpen ? '1' : '0'}>
+              <button
+                type="button"
+                className="st-compose__agent-trigger"
+                data-testid="compose-agent-trigger"
+                aria-haspopup="listbox"
+                aria-expanded={agentMenuOpen}
+                disabled={props.streaming}
+                title="切换负责智能体"
+                onClick={() => {
+                  setWorkspaceMenuOpen(false);
+                  setMentionQuery(null);
+                  setAgentMenuOpen((open) => !open);
+                }}
+              >
+                <span
+                  className="st-compose__agent-avatar"
+                  style={{ '--st-compose-agent-color': selectedAgentColor } as CSSProperties}
+                >
+                  <Bot size={13} strokeWidth={1.9} aria-hidden="true" />
+                </span>
+                <span className="st-compose__agent-trigger-text">
+                  @{selectedAgent?.name ?? '智能体'}
+                </span>
+                <ChevronDown size={13} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+              {agentMenuOpen ? (
+                <div
+                  className="st-compose__agent-menu"
+                  data-testid="compose-agent-menu"
+                  role="listbox"
+                  aria-label="智能体列表"
+                >
+                  {agents.map((agent) => {
+                    const color = safeAgentColor(agent.color);
+                    const selected = agent.agentId === selectedAgent?.agentId;
+                    return (
+                      <button
+                        key={agent.agentId}
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        className="st-compose__agent-option"
+                        data-testid={`compose-agent-option-${agent.agentId}`}
+                        data-selected={selected ? '1' : '0'}
+                        onClick={() => pickAgent(agent.agentId)}
+                      >
+                        <span
+                          className="st-compose__agent-avatar"
+                          style={{ '--st-compose-agent-color': color } as CSSProperties}
+                        >
+                          <Bot size={13} strokeWidth={1.9} aria-hidden="true" />
+                        </span>
+                        <span className="st-compose__agent-option-copy">
+                          <strong>{agent.name}</strong>
+                          <small>
+                            {agent.role || '智能体'}
+                            {agent.modelLabel ? ` · ${agent.modelLabel}` : ''}
+                          </small>
+                        </span>
+                        {selected ? (
+                          <Check size={14} strokeWidth={2} aria-hidden="true" />
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                  {props.onOpenAgentCenter ? (
+                    <button
+                      type="button"
+                      className="st-compose__agent-manage"
+                      data-testid="compose-agent-manage"
+                      onClick={() => {
+                        setAgentMenuOpen(false);
+                        props.onOpenAgentCenter?.();
+                      }}
+                    >
+                      <Settings2 size={13} strokeWidth={1.8} aria-hidden="true" />
+                      管理智能体
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {showModelRow ? (
             hasModels ? (
               <div className="st-compose__model-select-wrap">

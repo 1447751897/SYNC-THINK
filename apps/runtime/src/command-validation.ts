@@ -6,6 +6,7 @@ import type {
   PauseRunPayload,
   ResumeRunPayload,
   ContinueEventReplayPayload,
+  BindWorkspaceFolderPayload,
   CreateTaskPayload,
   CreateWorkspacePayload,
   ListTasksPayload,
@@ -103,12 +104,17 @@ const EVENT_CATEGORIES = new Set<EventCategory>([
 export function parseCreateWorkspacePayload(value: unknown): CreateWorkspacePayload | undefined {
   if (!isRecord(value)) return undefined;
   if (
-    typeof value.folderPath !== 'string' ||
-    value.folderPath.trim().length === 0 ||
-    value.folderPath.length > 4096 ||
     typeof value.name !== 'string' ||
     value.name.trim().length === 0 ||
     value.name.length > 256
+  ) {
+    return undefined;
+  }
+  if (
+    value.folderPath !== undefined &&
+    (typeof value.folderPath !== 'string' ||
+      value.folderPath.trim().length === 0 ||
+      value.folderPath.length > 4096)
   ) {
     return undefined;
   }
@@ -122,7 +128,42 @@ export function parseCreateWorkspacePayload(value: unknown): CreateWorkspacePayl
       return undefined;
     }
   }
-  return value as unknown as CreateWorkspacePayload;
+  return {
+    name: value.name.trim(),
+    folderPath: typeof value.folderPath === 'string' ? value.folderPath.trim() : undefined,
+    allowedRoots: value.allowedRoots as string[] | undefined,
+  };
+}
+
+export function parseBindWorkspaceFolderPayload(
+  value: unknown,
+): BindWorkspaceFolderPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.workspaceId !== 'string' ||
+    value.workspaceId.trim().length === 0 ||
+    value.workspaceId.length > 256 ||
+    typeof value.folderPath !== 'string' ||
+    value.folderPath.trim().length === 0 ||
+    value.folderPath.length > 4096
+  ) {
+    return undefined;
+  }
+  if (value.allowedRoots !== undefined) {
+    if (
+      !Array.isArray(value.allowedRoots) ||
+      !value.allowedRoots.every(
+        (root) => typeof root === 'string' && root.length > 0 && root.length <= 4096,
+      )
+    ) {
+      return undefined;
+    }
+  }
+  return {
+    workspaceId: value.workspaceId.trim() as BindWorkspaceFolderPayload['workspaceId'],
+    folderPath: value.folderPath.trim(),
+    allowedRoots: value.allowedRoots as string[] | undefined,
+  };
 }
 
 export function parseListWorkspacesPayload(value: unknown): ListWorkspacesPayload | undefined {
@@ -161,7 +202,36 @@ export function parseCreateTaskPayload(value: unknown): CreateTaskPayload | unde
 export function parseListTasksPayload(value: unknown): ListTasksPayload | undefined {
   if (!isRecord(value)) return undefined;
   if (typeof value.workspaceId !== 'string' || value.workspaceId.length === 0) return undefined;
+  if (
+    value.includeArchived !== undefined &&
+    typeof value.includeArchived !== 'boolean'
+  ) {
+    return undefined;
+  }
   return value as unknown as ListTasksPayload;
+}
+
+export function parseArchiveTaskPayload(value: unknown): import('@sync-think/protocol').ArchiveTaskPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.taskId !== 'string' ||
+    value.taskId.length === 0 ||
+    value.taskId.length > 256 ||
+    !Number.isInteger(value.expectedTaskVersion) ||
+    (value.expectedTaskVersion as number) < 0
+  ) {
+    return undefined;
+  }
+  if (value.cascade !== undefined && typeof value.cascade !== 'boolean') return undefined;
+  return value as unknown as import('@sync-think/protocol').ArchiveTaskPayload;
+}
+
+export function parseUnarchiveTaskPayload(
+  value: unknown,
+): import('@sync-think/protocol').UnarchiveTaskPayload | undefined {
+  return parseArchiveTaskPayload(value) as
+    | import('@sync-think/protocol').UnarchiveTaskPayload
+    | undefined;
 }
 
 export function parseOpenTaskPayload(value: unknown): OpenTaskPayload | undefined {

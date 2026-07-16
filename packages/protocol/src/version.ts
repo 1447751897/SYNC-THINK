@@ -7,8 +7,11 @@ export const PROTOCOL_VERSION = 2;
 // Optional capability flags advertised by Runtime and respected by UI.
 // New features should extend this list (delta from prior version).
 export type Feature =
+  | 'workspace.bindFolder'
   | 'task.appendMessage'
   | 'task.create'
+  | 'task.archive'
+  | 'task.unarchive'
   | 'task.setParticipationMode'
   | 'runtime.subscribeEvents'
   | 'runtime.continueEventReplay'
@@ -64,8 +67,11 @@ export type Feature =
   | 'memory.rollback';
 
 export const DEFAULT_FEATURES: Feature[] = [
+  'workspace.bindFolder',
   'task.appendMessage',
   'task.create',
+  'task.archive',
+  'task.unarchive',
   'task.setParticipationMode',
   'runtime.subscribeEvents',
   'runtime.continueEventReplay',

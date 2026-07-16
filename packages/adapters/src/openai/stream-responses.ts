@@ -5,7 +5,11 @@ import type {
   ProviderToolCall,
 } from '../types.js';
 import { normalizeOpenAICompatibleBaseUrl, scrubSecrets } from './discover-models.js';
-import { closeResponseReader, createProviderCallControl, providerAbortEvent } from '../call-control.js';
+import {
+  closeResponseReader,
+  createProviderCallControl,
+  providerAbortEvent,
+} from '../call-control.js';
 
 export interface StreamOpenAIResponsesOptions {
   fetchImpl?: typeof fetch;
@@ -45,6 +49,18 @@ function toResponsesInput(request: ProviderCallRequest): Array<Record<string, un
       });
       continue;
     }
+    if (message.role === 'assistant' && Array.isArray(message.content)) {
+      for (const part of message.content) {
+        if (part.type !== 'tool-call' || !part.toolCall) continue;
+        input.push({
+          type: 'function_call',
+          call_id: part.toolCall.id,
+          name: part.toolCall.name,
+          arguments: part.toolCall.argumentsJson,
+        });
+      }
+      if (!content) continue;
+    }
     if (!content && message.role !== 'assistant') continue;
     input.push({
       role: message.role === 'assistant' ? 'assistant' : 'user',
@@ -70,7 +86,11 @@ function classifyHttpFailure(
   snippet: string,
 ): Extract<AdapterEvent, { type: 'error' }> {
   if (status === 401 || status === 403) {
-    return { type: 'error', failureClass: 'auth', message: `Provider auth failed (${status})${snippet}` };
+    return {
+      type: 'error',
+      failureClass: 'auth',
+      message: `Provider auth failed (${status})${snippet}`,
+    };
   }
   if (status === 429) {
     return {
@@ -104,17 +124,18 @@ function responseErrorEvent(
   const rawMessage =
     typeof error?.message === 'string'
       ? error.message
-      : value && typeof value === 'object' && typeof (value as { message?: unknown }).message === 'string'
+      : value &&
+          typeof value === 'object' &&
+          typeof (value as { message?: unknown }).message === 'string'
         ? String((value as { message: string }).message)
         : 'Provider Responses error';
   const code = typeof error?.code === 'string' ? error.code.toLowerCase() : '';
   const lower = rawMessage.toLowerCase();
-  const failureClass =
-    /rate.?limit|quota|429/.test(`${code} ${lower}`)
-      ? 'rate-limit'
-      : /auth|api.?key|unauthorized|forbidden|401|403/.test(`${code} ${lower}`)
-        ? 'auth'
-        : 'protocol';
+  const failureClass = /rate.?limit|quota|429/.test(`${code} ${lower}`)
+    ? 'rate-limit'
+    : /auth|api.?key|unauthorized|forbidden|401|403/.test(`${code} ${lower}`)
+      ? 'auth'
+      : 'protocol';
   return {
     type: 'error',
     failureClass,
@@ -300,10 +321,7 @@ function parseResponseEvent(
   return [];
 }
 
-async function* emitFromJsonResponse(
-  text: string,
-  apiKey: string,
-): AsyncIterable<AdapterEvent> {
+async function* emitFromJsonResponse(text: string, apiKey: string): AsyncIterable<AdapterEvent> {
   let response: unknown;
   try {
     response = JSON.parse(text);
@@ -350,7 +368,11 @@ export async function* streamOpenAIResponses(
   }
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
-    yield { type: 'error', failureClass: 'protocol', message: 'Fetch is not available in this runtime' };
+    yield {
+      type: 'error',
+      failureClass: 'protocol',
+      message: 'Fetch is not available in this runtime',
+    };
     return;
   }
 

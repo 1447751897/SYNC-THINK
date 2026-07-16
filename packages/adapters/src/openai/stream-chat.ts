@@ -1,7 +1,11 @@
 ﻿import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
 import { scrubSecrets, normalizeOpenAICompatibleBaseUrl } from './discover-models.js';
 import type { FailureClass } from '@sync-think/shared';
-import { closeResponseReader, createProviderCallControl, providerAbortEvent } from '../call-control.js';
+import {
+  closeResponseReader,
+  createProviderCallControl,
+  providerAbortEvent,
+} from '../call-control.js';
 
 export class ProviderCallError extends Error {
   readonly failureClass: FailureClass;
@@ -26,16 +30,36 @@ export function joinChatCompletionsUrl(baseUrl: string): string {
   return `${root}/chat/completions`;
 }
 
-function toOpenAIMessages(request: ProviderCallRequest): Array<{ role: string; content: string }> {
-  const out: Array<{ role: string; content: string }> = [];
+function toOpenAIMessages(request: ProviderCallRequest): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
   if (request.systemPrompt && request.systemPrompt.trim().length > 0) {
     out.push({ role: 'system', content: request.systemPrompt });
   }
   for (const message of request.messages) {
     const content = messageContentToString(message);
+    if (message.role === 'tool' && message.toolCallId) {
+      out.push({ role: 'tool', tool_call_id: message.toolCallId, content });
+      continue;
+    }
+    if (message.role === 'assistant' && Array.isArray(message.content)) {
+      const toolCalls = message.content
+        .filter((part) => part.type === 'tool-call' && part.toolCall)
+        .map((part) => ({
+          id: part.toolCall!.id,
+          type: 'function',
+          function: {
+            name: part.toolCall!.name,
+            arguments: part.toolCall!.argumentsJson,
+          },
+        }));
+      if (toolCalls.length > 0) {
+        out.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
+        continue;
+      }
+    }
     if (!content && message.role !== 'assistant') continue;
     out.push({
-      role: message.role === 'tool' ? 'tool' : message.role,
+      role: message.role,
       content,
     });
   }
@@ -55,7 +79,11 @@ function classifyHttpFailure(status: number, snippet: string): ProviderCallError
     return new ProviderCallError(`Provider auth failed (${status})${snippet}`, 'auth', status);
   }
   if (status === 429) {
-    return new ProviderCallError(`Provider rate limited (${status})${snippet}`, 'rate-limit', status);
+    return new ProviderCallError(
+      `Provider rate limited (${status})${snippet}`,
+      'rate-limit',
+      status,
+    );
   }
   if (status >= 400 && status < 500) {
     return new ProviderCallError(
@@ -82,7 +110,11 @@ export async function* streamOpenAIChatCompletions(
 ): AsyncIterable<AdapterEvent> {
   const apiKey = request.apiKey;
   if (!apiKey || apiKey.trim().length === 0) {
-    yield { type: 'error', failureClass: 'auth', message: 'API key is required for chat completion' };
+    yield {
+      type: 'error',
+      failureClass: 'auth',
+      message: 'API key is required for chat completion',
+    };
     return;
   }
   if (!request.modelId || request.modelId.trim().length === 0) {
@@ -96,7 +128,11 @@ export async function* streamOpenAIChatCompletions(
 
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
-    yield { type: 'error', failureClass: 'protocol', message: 'Fetch is not available in this runtime' };
+    yield {
+      type: 'error',
+      failureClass: 'protocol',
+      message: 'Fetch is not available in this runtime',
+    };
     return;
   }
 
@@ -111,6 +147,18 @@ export async function* streamOpenAIChatCompletions(
     stream: true,
     ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
     ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+    ...(request.tools?.length
+      ? {
+          tools: request.tools.map((tool) => ({
+            type: 'function',
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.inputSchema,
+            },
+          })),
+        }
+      : {}),
   };
 
   try {
@@ -176,10 +224,13 @@ export async function* streamOpenAIChatCompletions(
     reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let finished = false;
-    let sawDelta = false;
+    const parseState: ChatParseState = {
+      toolCalls: new Map(),
+      emitted: new Set(),
+      finished: false,
+    };
 
-    while (!finished) {
+    while (!parseState.finished) {
       let done: boolean;
       let value: Uint8Array | undefined;
       try {
@@ -196,29 +247,18 @@ export async function* streamOpenAIChatCompletions(
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? '';
       for (const line of lines) {
-        const event = parseSseLine(line, apiKey);
-        if (!event) continue;
-        if (event.type === 'text-delta') sawDelta = true;
-        yield event;
-        if (event.type === 'finished' || event.type === 'error') {
-          finished = true;
-          break;
-        }
+        for (const event of parseSseLine(line, apiKey, parseState)) yield event;
+        if (parseState.finished) break;
       }
     }
 
-    if (!finished) {
+    if (!parseState.finished) {
       // Flush remaining buffer.
       if (buffer.trim().length > 0) {
-        const event = parseSseLine(buffer, apiKey);
-        if (event) {
-          if (event.type === 'text-delta') sawDelta = true;
-          yield event;
-          if (event.type === 'finished' || event.type === 'error') finished = true;
-        }
+        for (const event of parseSseLine(buffer, apiKey, parseState)) yield event;
       }
-      if (!finished) {
-        yield { type: 'finished', reason: sawDelta ? 'stop' : 'stop' };
+      if (!parseState.finished) {
+        for (const event of finishChatStream(parseState, 'stop')) yield event;
       }
     }
   } finally {
@@ -227,30 +267,57 @@ export async function* streamOpenAIChatCompletions(
   }
 }
 
-function parseSseLine(line: string, apiKey: string): AdapterEvent | undefined {
+type ChatToolCall = Extract<AdapterEvent, { type: 'tool-call' }>['toolCall'];
+
+interface ChatParseState {
+  toolCalls: Map<number, ChatToolCall>;
+  emitted: Set<string>;
+  finished: boolean;
+}
+
+function parseSseLine(line: string, apiKey: string, state: ChatParseState): AdapterEvent[] {
   const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith(':')) return undefined;
-  if (!trimmed.startsWith('data:')) return undefined;
+  if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data:')) return [];
   const data = trimmed.slice(5).trim();
   if (data === '[DONE]') {
-    return { type: 'finished', reason: 'stop' };
+    return state.finished
+      ? []
+      : finishChatStream(state, state.toolCalls.size > 0 ? 'tool-requests' : 'stop');
   }
   let json: unknown;
   try {
     json = JSON.parse(data);
   } catch {
-    return undefined;
+    return [];
   }
-  return parseCompletionChunk(json, apiKey);
+  return parseCompletionChunk(json, apiKey, state);
 }
 
-function parseCompletionChunk(json: unknown, apiKey: string): AdapterEvent | undefined {
-  if (!json || typeof json !== 'object') return undefined;
+function parseCompletionChunk(
+  json: unknown,
+  apiKey: string,
+  state: ChatParseState,
+): AdapterEvent[] {
+  if (!json || typeof json !== 'object') return [];
   const root = json as {
     error?: { message?: string; type?: string };
     choices?: Array<{
-      delta?: { content?: string | null; role?: string };
-      message?: { content?: string | null };
+      delta?: {
+        content?: string | null;
+        role?: string;
+        tool_calls?: Array<{
+          index?: number;
+          id?: string;
+          function?: { name?: string; arguments?: string };
+        }>;
+      };
+      message?: {
+        content?: string | null;
+        tool_calls?: Array<{
+          id?: string;
+          function?: { name?: string; arguments?: string };
+        }>;
+      };
       finish_reason?: string | null;
     }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -258,29 +325,52 @@ function parseCompletionChunk(json: unknown, apiKey: string): AdapterEvent | und
 
   if (root.error) {
     const msg = scrubSecrets(root.error.message ?? 'provider error', [apiKey]);
-    return { type: 'error', failureClass: 'protocol', message: msg };
+    state.finished = true;
+    return [{ type: 'error', failureClass: 'protocol', message: msg }];
   }
 
   if (root.usage) {
-    return {
-      type: 'usage',
-      tokensIn: root.usage.prompt_tokens ?? 0,
-      tokensOut: root.usage.completion_tokens ?? 0,
-    };
+    return [
+      {
+        type: 'usage',
+        tokensIn: root.usage.prompt_tokens ?? 0,
+        tokensOut: root.usage.completion_tokens ?? 0,
+      },
+    ];
   }
 
   const choice = root.choices?.[0];
-  if (!choice) return undefined;
+  if (!choice) return [];
+  for (const part of choice.delta?.tool_calls ?? []) {
+    const index = Number.isInteger(part.index) ? Number(part.index) : state.toolCalls.size;
+    const previous = state.toolCalls.get(index) ?? {
+      id: part.id ?? `tool-call-${index + 1}`,
+      name: '',
+      argumentsJson: '',
+    };
+    state.toolCalls.set(index, {
+      id: part.id ?? previous.id,
+      name: `${previous.name}${part.function?.name ?? ''}`,
+      argumentsJson: `${previous.argumentsJson}${part.function?.arguments ?? ''}`,
+    });
+  }
+  for (const [index, part] of (choice.message?.tool_calls ?? []).entries()) {
+    state.toolCalls.set(index, {
+      id: part.id ?? `tool-call-${index + 1}`,
+      name: part.function?.name ?? '',
+      argumentsJson: part.function?.arguments ?? '{}',
+    });
+  }
 
   const deltaText = choice.delta?.content;
   if (typeof deltaText === 'string' && deltaText.length > 0) {
-    return { type: 'text-delta', text: deltaText };
+    return [{ type: 'text-delta', text: deltaText }];
   }
 
   // Non-delta message content (some proxies).
   const messageText = choice.message?.content;
   if (typeof messageText === 'string' && messageText.length > 0) {
-    return { type: 'text-delta', text: messageText };
+    return [{ type: 'text-delta', text: messageText }];
   }
 
   if (choice.finish_reason) {
@@ -290,24 +380,39 @@ function parseCompletionChunk(json: unknown, apiKey: string): AdapterEvent | und
         : choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call'
           ? 'tool-requests'
           : 'stop';
-    return { type: 'finished', reason };
+    return finishChatStream(state, reason);
   }
 
-  return undefined;
+  return [];
+}
+
+function finishChatStream(
+  state: ChatParseState,
+  reason: 'stop' | 'length' | 'tool-requests',
+): AdapterEvent[] {
+  const events: AdapterEvent[] = [];
+  for (const call of [...state.toolCalls.values()]) {
+    if (state.emitted.has(call.id) || !call.name) continue;
+    state.emitted.add(call.id);
+    events.push({
+      type: 'tool-call',
+      toolCall: { ...call, argumentsJson: call.argumentsJson || '{}' },
+    });
+  }
+  state.finished = true;
+  events.push({ type: 'finished', reason: state.emitted.size > 0 ? 'tool-requests' : reason });
+  return events;
 }
 
 async function* emitFromSseText(text: string, apiKey: string): AsyncIterable<AdapterEvent> {
-  let sawFinish = false;
+  const state: ChatParseState = { toolCalls: new Map(), emitted: new Set(), finished: false };
   for (const line of text.split(/\r?\n/)) {
-    const event = parseSseLine(line, apiKey);
-    if (!event) continue;
-    yield event;
-    if (event.type === 'finished' || event.type === 'error') {
-      sawFinish = true;
-      break;
-    }
+    for (const event of parseSseLine(line, apiKey, state)) yield event;
+    if (state.finished) break;
   }
-  if (!sawFinish) yield { type: 'finished', reason: 'stop' };
+  if (!state.finished) {
+    for (const event of finishChatStream(state, 'stop')) yield event;
+  }
 }
 
 async function* emitFromJsonCompletion(text: string, apiKey: string): AsyncIterable<AdapterEvent> {
@@ -324,7 +429,16 @@ async function* emitFromJsonCompletion(text: string, apiKey: string): AsyncItera
   }
   const root = json as {
     error?: { message?: string };
-    choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+    choices?: Array<{
+      message?: {
+        content?: string;
+        tool_calls?: Array<{
+          id?: string;
+          function?: { name?: string; arguments?: string };
+        }>;
+      };
+      finish_reason?: string;
+    }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
   if (root.error) {
@@ -346,10 +460,26 @@ async function* emitFromJsonCompletion(text: string, apiKey: string): AsyncItera
   if (typeof content === 'string' && content.length > 0) {
     yield { type: 'text-delta', text: content };
   }
+  const toolCalls = root.choices?.[0]?.message?.tool_calls ?? [];
+  for (const [index, call] of toolCalls.entries()) {
+    if (!call.function?.name) continue;
+    yield {
+      type: 'tool-call',
+      toolCall: {
+        id: call.id ?? `tool-call-${index + 1}`,
+        name: call.function.name,
+        argumentsJson: call.function.arguments ?? '{}',
+      },
+    };
+  }
   const finish = root.choices?.[0]?.finish_reason;
   yield {
     type: 'finished',
-    reason: finish === 'length' ? 'length' : 'stop',
+    reason:
+      toolCalls.length > 0 || finish === 'tool_calls' || finish === 'function_call'
+        ? 'tool-requests'
+        : finish === 'length'
+          ? 'length'
+          : 'stop',
   };
 }
-

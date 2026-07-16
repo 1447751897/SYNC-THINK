@@ -10,13 +10,18 @@ const uiCss = readFileSync(
   new URL('../../../packages/ui-kit/src/styles/components.css', import.meta.url),
   'utf8',
 );
+const rendererCss = readFileSync(new URL('../src/renderer/renderer.css', import.meta.url), 'utf8');
 
 describe('conversation Agent identity composition', () => {
   it('uses a plain task breadcrumb and one actionable next step on the beginner surface', () => {
     expect(source).toContain('data-testid="beginner-next-step"');
-    expect(source).toContain('<strong>下一步</strong>');
-    expect(source).toContain('`${active.workspaceName} / 任务`');
+    expect(source).toContain('<strong>需要你处理</strong>');
+    expect(source).not.toContain('className="st-task-overview__next"');
+    expect(source).toContain('<span>{active.workspaceName}</span>');
+    expect(source).toContain('<span>任务</span>');
     expect(source).not.toContain("categoryLabel: '上下文'");
+    expect(rendererCss).toContain('.st-demo-header-tools .st-demo-mode > button');
+    expect(rendererCss).toContain('word-break: keep-all');
   });
 
   it('keeps the completed M1 workbench out of the normal product surface', () => {

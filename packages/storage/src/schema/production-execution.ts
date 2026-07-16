@@ -1,5 +1,13 @@
 import { sql } from 'drizzle-orm';
-import { check, foreignKey, index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import {
+  check,
+  foreignKey,
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+} from 'drizzle-orm/sqlite-core';
 import { step } from './orchestration.js';
 import { agentVersion } from './provider.js';
 
@@ -37,6 +45,14 @@ export const providerExecutionReservation = sqliteTable(
     ),
   }),
 );
+
+export const providerExecutionCheckpoint = sqliteTable('provider_execution_checkpoint', {
+  idempotencyKey: text('idempotency_key')
+    .primaryKey()
+    .references(() => providerExecutionReservation.idempotencyKey, { onDelete: 'restrict' }),
+  checkpointJson: text('checkpoint_json').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
 
 export const mcpActionExecutionIntent = sqliteTable(
   'mcp_action_execution_intent',

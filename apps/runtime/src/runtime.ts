@@ -7,6 +7,8 @@ import {
   HEADER_BYTES,
   MAX_FRAME_BYTES,
   type AppendMessageResponse,
+  type BindWorkspaceFolderResponse,
+  type ArchiveTaskResponse,
   type CreateTaskResponse,
   type CreateWorkspaceResponse,
   type EventReplayPagePayload,
@@ -17,6 +19,7 @@ import {
   type OpenTaskResponse,
   type SearchTasksResponse,
   type SetParticipationModeResponse,
+  type UnarchiveTaskResponse,
   type SavePolicyResponse,
   type SavePolicyPayload,
   type ListPoliciesResponse,
@@ -87,6 +90,8 @@ import {
 } from '@sync-think/protocol';
 import {
   ErrorCode,
+  deriveTaskTitleFromPrompt,
+  isUntitledTaskTitle,
   ulid,
   type Event,
   type EventCategory,
@@ -193,8 +198,10 @@ import {
 } from './demo-run.js';
 import {
   parseAppendMessagePayload,
+  parseBindWorkspaceFolderPayload,
   parseCancelRunPayload,
   parseContinueEventReplayPayload,
+  parseArchiveTaskPayload,
   parseCreateTaskPayload,
   parseCreateWorkspacePayload,
   parseListTasksPayload,
@@ -202,6 +209,7 @@ import {
   parseOpenTaskPayload,
   parseSearchTasksPayload,
   parseSetParticipationModePayload,
+  parseUnarchiveTaskPayload,
   parseSavePolicyPayload,
   parseListPoliciesPayload,
   parseSubscribeEventsPayload,
@@ -570,6 +578,10 @@ export class Runtime {
           this.handleCreateWorkspace(socket, frame);
           return;
         }
+        if (frame.type === 'workspace.bindFolder') {
+          this.handleBindWorkspaceFolder(socket, frame);
+          return;
+        }
         if (frame.type === 'workspace.list') {
           this.handleListWorkspaces(socket, frame);
           return;
@@ -592,6 +604,14 @@ export class Runtime {
         }
         if (frame.type === 'task.setParticipationMode') {
           this.handleSetParticipationMode(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.archive') {
+          this.handleArchiveTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.unarchive') {
+          this.handleUnarchiveTask(socket, frame);
           return;
         }
         if (frame.type === 'task.appendMessage') {
@@ -1169,6 +1189,45 @@ export class Runtime {
     }
   }
 
+  private handleBindWorkspaceFolder(socket: Socket, frame: Frame): void {
+    const payload = parseBindWorkspaceFolderPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.workspaceStore.bindWorkspaceFolder({
+        workspaceId: payload.workspaceId,
+        folderPath: payload.folderPath,
+        allowedRoots: payload.allowedRoots,
+      });
+      if (!updated.folderPath) {
+        throw new Error(`Workspace folder binding was not persisted: ${payload.workspaceId}`);
+      }
+      const response: BindWorkspaceFolderResponse = {
+        workspaceId: updated.id,
+        folderPath: updated.folderPath,
+        name: updated.name,
+        createdAt: updated.createdAt,
+        updatedAt: updated.updatedAt,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'workspace.bindFolder',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
   private handleListWorkspaces(socket: Socket, frame: Frame): void {
     const payload = parseListWorkspacesPayload(frame.payload ?? {});
     if (!payload) {
@@ -1264,7 +1323,9 @@ export class Runtime {
       return;
     }
     const response: ListTasksResponse = {
-      tasks: this.workspaceStore.listTasks(payload.workspaceId).map((task) => toTaskSummary(task)),
+      tasks: this.workspaceStore
+        .listTasks(payload.workspaceId, { includeArchived: Boolean(payload.includeArchived) })
+        .map((task) => toTaskSummary(task)),
     };
     socket.write(
       encodeFrame({
@@ -1465,6 +1526,76 @@ export class Runtime {
       for (const event of result.committedEvents) this.publishEvent(event);
     } catch (error) {
       this.writeTaskModeCommandError(socket, frame, error);
+    }
+  }
+
+  private handleArchiveTask(socket: Socket, frame: Frame): void {
+    const payload = parseArchiveTaskPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const result = this.workspaceStore.setTaskStatus(
+        payload.taskId as TaskId,
+        'archived',
+        payload.expectedTaskVersion,
+        { cascade: payload.cascade !== false },
+      );
+      this.threadVersions.set(result.task.threadId, result.task.version);
+      const response: ArchiveTaskResponse = {
+        task: toTaskSummary(result.task),
+        archivedTaskIds: result.affectedTaskIds,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'task.archive',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private handleUnarchiveTask(socket: Socket, frame: Frame): void {
+    const payload = parseUnarchiveTaskPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const result = this.workspaceStore.setTaskStatus(
+        payload.taskId as TaskId,
+        'active',
+        payload.expectedTaskVersion,
+        { cascade: payload.cascade !== false },
+      );
+      this.threadVersions.set(result.task.threadId, result.task.version);
+      const response: UnarchiveTaskResponse = {
+        task: toTaskSummary(result.task),
+        unarchivedTaskIds: result.affectedTaskIds,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'task.unarchive',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
     }
   }
 
@@ -7506,7 +7637,7 @@ export class Runtime {
     if (/workspace not found/i.test(message)) code = ErrorCode.WORKSPACE_NOT_FOUND;
     else if (/task not found/i.test(message) || /parent task not found/i.test(message)) {
       code = ErrorCode.TASK_NOT_FOUND;
-    } else if (/already exists/i.test(message)) {
+    } else if (/already exists|already has a folder/i.test(message)) {
       code = ErrorCode.PROTOCOL_UNEXPECTED_REQUEST;
     }
     socket.write(
@@ -7642,6 +7773,16 @@ export class Runtime {
     }
 
     const nextVersion = currentVersion + 1;
+    const generatedTaskIdentity =
+      persistedTask &&
+      payload.role === 'user' &&
+      currentVersion === 0 &&
+      isUntitledTaskTitle(persistedTask.title)
+        ? {
+            title: deriveTaskTitleFromPrompt(payload.text),
+            goal: payload.text.trim(),
+          }
+        : undefined;
     const messageId = ulid() as MessageId;
     const eventPayload = {
       threadId: payload.threadId,
@@ -7649,6 +7790,12 @@ export class Runtime {
       text: payload.text,
       messageId,
       taskVersion: nextVersion,
+      ...(generatedTaskIdentity
+        ? {
+            taskTitle: generatedTaskIdentity.title,
+            taskGoal: generatedTaskIdentity.goal,
+          }
+        : {}),
     };
     const messageEventDraft: EventDraft = {
       id: ulid() as Event['id'],
@@ -7744,6 +7891,12 @@ export class Runtime {
             payload.threadId as ThreadId,
             payload.expectedTaskVersion,
             messageEventDraft.occurredAt,
+            generatedTaskIdentity
+              ? {
+                  generatedTitle: generatedTaskIdentity.title,
+                  generatedGoal: generatedTaskIdentity.goal,
+                }
+              : undefined,
           );
         }
         if (this.stateStore) {
@@ -7794,6 +7947,12 @@ export class Runtime {
     const response: AppendMessageResponse = {
       messageId,
       taskVersion: nextVersion,
+      ...(generatedTaskIdentity
+        ? {
+            taskTitle: generatedTaskIdentity.title,
+            taskGoal: generatedTaskIdentity.goal,
+          }
+        : {}),
       streamId: demoRunId,
     };
     socket.write(

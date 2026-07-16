@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { WorkspaceNav, projectWorkspaceNavReadiness } from '../src/components/WorkspaceNav.js';
-import type { WorkspaceNavTask, WorkspaceNavWorkspace } from '../src/components/workspace-nav-model.js';
+import type {
+  WorkspaceNavTask,
+  WorkspaceNavWorkspace,
+} from '../src/components/workspace-nav-model.js';
 
 const workspace: WorkspaceNavWorkspace = {
   workspaceId: 'ws_1',
@@ -66,25 +69,67 @@ describe('WorkspaceNav', () => {
   it('renders empty state with single clear CTA', () => {
     const onCreate = vi.fn();
     render(
-      <WorkspaceNav
-        workspaces={[]}
-        tasksByWorkspace={new Map()}
-        onCreateWorkspace={onCreate}
-      />,
+      <WorkspaceNav workspaces={[]} tasksByWorkspace={new Map()} onCreateWorkspace={onCreate} />,
     );
     expect(screen.getByTestId('workspace-nav-empty')).toBeTruthy();
+    expect(screen.getByText('还没有项目')).toBeTruthy();
+    expect(screen.getByText('先创建项目，再按需要绑定本地文件夹。')).toBeTruthy();
+    expect(screen.getByText('新建项目')).toBeTruthy();
     fireEvent.click(screen.getByTestId('workspace-nav-add-folder'));
     expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('can hide the development readiness strip in the product workspace', () => {
+  it('shows an unbound project without a persistent folder subtitle and requests binding', () => {
+    const onBind = vi.fn();
+    const onCreateTask = vi.fn();
+    const project = {
+      workspaceId: 'ws_unbound',
+      name: 'Project Atlas',
+    } as WorkspaceNavWorkspace;
     render(
       <WorkspaceNav
-        workspaces={[]}
-        tasksByWorkspace={new Map()}
-        hideReadiness
+        sectionLabel="我的项目"
+        workspaces={[project]}
+        tasksByWorkspace={new Map([['ws_unbound', []]])}
+        onBindWorkspaceFolder={onBind}
+        onCreateTask={onCreateTask}
       />,
     );
+    expect(screen.getByText('Project Atlas')).toBeTruthy();
+    expect(document.querySelector('.st-workspace-nav__folder-binding')).toBeNull();
+    fireEvent.click(screen.getByTestId('workspace-nav-bind-folder-ws_unbound'));
+    expect(onBind).toHaveBeenCalledWith('ws_unbound');
+    fireEvent.click(screen.getByTestId('workspace-nav-add-task-ws_unbound'));
+    expect(onCreateTask).toHaveBeenCalledWith('ws_unbound');
+  });
+
+  it('keeps a bound folder path only in the project hover tooltip', () => {
+    render(
+      <WorkspaceNav
+        workspaces={[{ ...workspace, name: 'Atlas', folderPath: 'D:\\projects\\atlas-source' }]}
+        tasksByWorkspace={new Map([['ws_1', []]])}
+      />,
+    );
+    expect(screen.queryByText('atlas-source')).toBeNull();
+    const project = screen.getByRole('button', { name: '折叠项目' });
+    expect(project.getAttribute('aria-describedby')).toBe('workspace-folder-tooltip-ws_1');
+    expect(screen.getByRole('tooltip').textContent).toBe('D:\\projects\\atlas-source');
+  });
+
+  it('keeps project errors visible when the product footer is hidden', () => {
+    render(
+      <WorkspaceNav
+        hideFooter
+        workspaces={[]}
+        tasksByWorkspace={new Map()}
+        errorMessage="文件夹绑定失败"
+      />,
+    );
+    expect(screen.getByRole('alert').textContent).toContain('文件夹绑定失败');
+  });
+
+  it('can hide the development readiness strip in the product workspace', () => {
+    render(<WorkspaceNav workspaces={[]} tasksByWorkspace={new Map()} hideReadiness />);
     expect(screen.queryByTestId('workspace-nav-ia-strip')).toBeNull();
     expect(screen.getByTestId('workspace-nav-empty')).toBeTruthy();
     expect(screen.getByTestId('workspace-nav-footer')).toBeTruthy();
@@ -140,14 +185,12 @@ describe('WorkspaceNav', () => {
     expect(screen.getByText('Child binding')).toBeTruthy();
   });
 
-
-
   it('shows IA structure strip empty → with folders/tasks', () => {
     const { rerender } = render(
       <WorkspaceNav workspaces={[]} tasksByWorkspace={new Map()} connectionState="offline" />,
     );
     expect(screen.getByTestId('workspace-nav-ia-strip').getAttribute('data-level')).toBe('empty');
-    expect(screen.getByTestId('workspace-nav-ia-badge').textContent).toMatch(/等待文件夹/);
+    expect(screen.getByTestId('workspace-nav-ia-badge').textContent).toMatch(/等待项目/);
     expect(screen.getByTestId('workspace-nav-ia-folders').getAttribute('data-ok')).toBe('0');
     expect(screen.getByTestId('workspace-nav-footer-label').textContent).toMatch(/本地 Runtime/);
     expect(screen.getByTestId('workspace-nav-footer-detail').textContent).toMatch(/未连接/);
@@ -165,8 +208,12 @@ describe('WorkspaceNav', () => {
     expect(screen.getByTestId('workspace-nav-ia-folders').getAttribute('data-ok')).toBe('1');
     expect(screen.getByTestId('workspace-nav-ia-tasks').getAttribute('data-ok')).toBe('1');
     expect(screen.getByTestId('workspace-nav-ia-active').getAttribute('data-ok')).toBe('1');
-    expect(screen.getByTestId('workspace-nav-footer-detail').textContent).toMatch(/持久事件流|已连接/);
-    expect(screen.getByTestId('workspace-nav-ia-note').textContent).toMatch(/会话就绪|Runtime|运行轨迹|嵌套/);
+    expect(screen.getByTestId('workspace-nav-footer-detail').textContent).toMatch(
+      /持久事件流|已连接/,
+    );
+    expect(screen.getByTestId('workspace-nav-ia-note').textContent).toMatch(
+      /会话就绪|Runtime|运行轨迹|嵌套/,
+    );
   });
 
   it('marks partial when folders exist but no active task', () => {
@@ -182,8 +229,6 @@ describe('WorkspaceNav', () => {
     expect(screen.getByTestId('workspace-nav-footer-detail').textContent).toMatch(/正在连接/);
   });
 
-
-
   it('marks filtering when search active with matches', () => {
     render(
       <WorkspaceNav
@@ -194,7 +239,9 @@ describe('WorkspaceNav', () => {
         connectionState="online"
       />,
     );
-    expect(screen.getByTestId('workspace-nav-ia-strip').getAttribute('data-level')).toBe('filtering');
+    expect(screen.getByTestId('workspace-nav-ia-strip').getAttribute('data-level')).toBe(
+      'filtering',
+    );
     expect(screen.getByTestId('workspace-nav-ia-badge').textContent).toMatch(/筛选中/);
     expect(screen.getByTestId('workspace-nav-ia-filter').getAttribute('data-ok')).toBe('1');
     expect(screen.getByTestId('workspace-nav-ia-nested').getAttribute('data-ok')).toBe('0');
@@ -210,7 +257,9 @@ describe('WorkspaceNav', () => {
         connectionState="online"
       />,
     );
-    expect(screen.getByTestId('workspace-nav-ia-strip').getAttribute('data-level')).toBe('filtering');
+    expect(screen.getByTestId('workspace-nav-ia-strip').getAttribute('data-level')).toBe(
+      'filtering',
+    );
     expect(screen.getByTestId('workspace-nav-ia-badge').textContent).toMatch(/无匹配/);
     expect(screen.getByTestId('workspace-nav-ia-tasks').getAttribute('data-ok')).toBe('0');
   });
@@ -234,7 +283,7 @@ describe('projectWorkspaceNavReadiness', () => {
   it('projects empty shell', () => {
     const r = projectWorkspaceNavReadiness({});
     expect(r.level).toBe('empty');
-    expect(r.badge).toBe('等待文件夹');
+    expect(r.badge).toBe('等待项目');
     expect(r.runtimeOk).toBe(false);
   });
 

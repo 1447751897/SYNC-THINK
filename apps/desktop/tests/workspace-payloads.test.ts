@@ -2,6 +2,7 @@
 import {
   parseCreateTaskPayload,
   parseCreateWorkspacePayload,
+  parseBindWorkspaceFolderPayload,
   parseListTasksPayload,
   parseListWorkspacesPayload,
   parseOpenTaskPayload,
@@ -9,7 +10,12 @@ import {
 } from '../src/workspace-payloads.js';
 
 describe('desktop workspace bridge payload validation', () => {
-  it('accepts valid workspace create and rejects empty path/name', () => {
+  it('accepts project creation without a folder and validates optional legacy folder input', () => {
+    expect(parseCreateWorkspacePayload({ name: 'Project Atlas' })).toEqual({
+      name: 'Project Atlas',
+      folderPath: undefined,
+      allowedRoots: undefined,
+    });
     expect(
       parseCreateWorkspacePayload({
         folderPath: 'D:/projects/SYNC-THINK',
@@ -25,6 +31,25 @@ describe('desktop workspace bridge payload validation', () => {
     );
     expect(() => parseCreateWorkspacePayload({ folderPath: 'D:/a', name: '' })).toThrow(
       /Invalid create-workspace/,
+    );
+  });
+
+  it('validates explicit project folder binding', () => {
+    expect(
+      parseBindWorkspaceFolderPayload({
+        workspaceId: 'ws_1',
+        folderPath: ' D:/projects/atlas ',
+      }),
+    ).toEqual({
+      workspaceId: 'ws_1',
+      folderPath: 'D:/projects/atlas',
+      allowedRoots: undefined,
+    });
+    expect(() => parseBindWorkspaceFolderPayload({ workspaceId: '', folderPath: 'D:/x' })).toThrow(
+      /Invalid bind-workspace-folder/,
+    );
+    expect(() => parseBindWorkspaceFolderPayload({ workspaceId: 'ws_1', folderPath: '  ' })).toThrow(
+      /Invalid bind-workspace-folder/,
     );
   });
 

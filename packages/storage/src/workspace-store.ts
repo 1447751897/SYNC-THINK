@@ -7,6 +7,7 @@
 } from '@sync-think/shared';
 import {
   AcceptanceCriteriaValidationError,
+  isUntitledTaskTitle,
   normalizeAcceptanceCriteria,
   ulid,
 } from '@sync-think/shared';
@@ -14,7 +15,7 @@ import type { BetterSQLite3Raw } from './connection.js';
 import { assertAllowedWorkspacePath, canonicalizeWorkspacePath } from './path-allowlist.js';
 
 export interface CreateWorkspaceInput {
-  folderPath: string;
+  folderPath?: string;
   name: string;
   /** Optional path roots that constrain new workspace folders. Empty = first-folder onboarding. */
   allowedRoots?: readonly string[];
@@ -24,12 +25,19 @@ export interface CreateWorkspaceInput {
 
 export interface WorkspaceRecord {
   id: WorkspaceId;
-  folderPath: string;
+  folderPath?: string;
   name: string;
   policyId?: string;
   uiPrefsJson?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface BindWorkspaceFolderInput {
+  workspaceId: WorkspaceId;
+  folderPath: string;
+  allowedRoots?: readonly string[];
+  now?: string;
 }
 
 export interface CreateTaskInput {
@@ -70,9 +78,15 @@ export interface TaskRecord {
   threadId: ThreadId;
 }
 
+export interface AdvanceTaskVersionOptions {
+  /** Applied only to a version-0 product placeholder in the same CAS transition. */
+  generatedTitle?: string;
+  generatedGoal?: string;
+}
+
 interface WorkspaceRow {
   id: string;
-  folder_path: string;
+  folder_path: string | null;
   name: string;
   policy_id: string | null;
   ui_prefs_json: string | null;
@@ -109,12 +123,17 @@ export class SqliteWorkspaceStore {
     if (name.length === 0) {
       throw new Error('Workspace name must not be empty');
     }
-    const folderPath = assertAllowedWorkspacePath(input.folderPath, input.allowedRoots ?? []);
-    const existing = this.raw
-      .prepare('SELECT id FROM workspace WHERE lower(folder_path) = lower(?)')
-      .get(folderPath) as { id: string } | undefined;
-    if (existing) {
-      throw new Error(`Workspace already exists for folder path: ${folderPath}`);
+    const folderPath =
+      input.folderPath === undefined
+        ? undefined
+        : assertAllowedWorkspacePath(input.folderPath, input.allowedRoots ?? []);
+    if (folderPath) {
+      const existing = this.raw
+        .prepare('SELECT id FROM workspace WHERE lower(folder_path) = lower(?)')
+        .get(folderPath) as { id: string } | undefined;
+      if (existing) {
+        throw new Error(`Workspace already exists for folder path: ${folderPath}`);
+      }
     }
 
     const now = input.now ?? new Date().toISOString();
@@ -133,6 +152,48 @@ export class SqliteWorkspaceStore {
       createdAt: now,
       updatedAt: now,
     };
+  }
+
+  bindWorkspaceFolder(input: BindWorkspaceFolderInput): WorkspaceRecord {
+    const folderPath = assertAllowedWorkspacePath(input.folderPath, input.allowedRoots ?? []);
+    const bind = this.raw.transaction(() => {
+      const workspace = this.getWorkspace(input.workspaceId);
+      if (!workspace) {
+        throw new Error(`Workspace not found: ${input.workspaceId}`);
+      }
+      if (workspace.folderPath) {
+        const currentFolderPath = canonicalizeWorkspacePath(workspace.folderPath);
+        if (currentFolderPath.toLowerCase() === folderPath.toLowerCase()) {
+          return workspace;
+        }
+        throw new Error(`Workspace already has a folder: ${workspace.folderPath}`);
+      }
+
+      const existing = this.raw
+        .prepare('SELECT id FROM workspace WHERE lower(folder_path) = lower(?) AND id <> ?')
+        .get(folderPath, input.workspaceId) as { id: string } | undefined;
+      if (existing) {
+        throw new Error(`Workspace already exists for folder path: ${folderPath}`);
+      }
+
+      const updatedAt = input.now ?? new Date().toISOString();
+      const result = this.raw
+        .prepare(
+          `UPDATE workspace
+           SET folder_path = ?, updated_at = ?
+           WHERE id = ? AND folder_path IS NULL`,
+        )
+        .run(folderPath, updatedAt, input.workspaceId);
+      if (result.changes !== 1) {
+        throw new Error(`Workspace folder binding changed concurrently: ${input.workspaceId}`);
+      }
+      const updated = this.getWorkspace(input.workspaceId);
+      if (!updated) {
+        throw new Error(`Workspace not found after folder binding: ${input.workspaceId}`);
+      }
+      return updated;
+    });
+    return bind.immediate();
   }
 
   listWorkspaces(): WorkspaceRecord[] {
@@ -220,7 +281,11 @@ export class SqliteWorkspaceStore {
     };
   }
 
-  listTasks(workspaceId: WorkspaceId): TaskRecord[] {
+  listTasks(
+    workspaceId: WorkspaceId,
+    options?: { includeArchived?: boolean },
+  ): TaskRecord[] {
+    const includeArchived = Boolean(options?.includeArchived);
     const rows = this.raw
       .prepare(
         `SELECT
@@ -231,10 +296,71 @@ export class SqliteWorkspaceStore {
          FROM task t
          INNER JOIN thread th ON th.task_id = t.id
          WHERE t.workspace_id = ?
+           AND (? = 1 OR t.status != 'archived')
          ORDER BY t.created_at ASC, t.rowid ASC`,
       )
-      .all(workspaceId) as Array<TaskRow & { thread_id: string }>;
+      .all(workspaceId, includeArchived ? 1 : 0) as Array<TaskRow & { thread_id: string }>;
     return rows.map((row) => mapTask(row, row.thread_id as ThreadId));
+  }
+
+  /**
+   * Soft-archive a task (and optionally its descendants). Prefer archive over hard delete
+   * so history / artifacts remain recoverable.
+   */
+  setTaskStatus(
+    taskId: TaskId,
+    status: 'active' | 'paused' | 'completed' | 'archived',
+    expectedTaskVersion: number,
+    options?: { cascade?: boolean; now?: string },
+  ): { task: TaskRecord; affectedTaskIds: TaskId[] } {
+    if (!Number.isInteger(expectedTaskVersion) || expectedTaskVersion < 0) {
+      throw new Error('expectedTaskVersion must be a non-negative integer');
+    }
+    const cascade = options?.cascade !== false;
+    const changedAt = options?.now ?? new Date().toISOString();
+
+    const run = this.raw.transaction(() => {
+      const root = this.getTask(taskId);
+      if (!root) {
+        throw new Error(`Task not found: ${taskId}`);
+      }
+      if (root.version !== expectedTaskVersion) {
+        throw new Error(
+          `Task version conflict: expected ${expectedTaskVersion}, actual ${root.version}`,
+        );
+      }
+
+      const allInWorkspace = this.listTasks(root.workspaceId, { includeArchived: true });
+      const targets = cascade
+        ? collectTaskSubtreeIds(allInWorkspace, taskId)
+        : [taskId];
+
+      const affected: TaskId[] = [];
+      for (const id of targets) {
+        const current = this.getTask(id);
+        if (!current) continue;
+        if (current.status === status) {
+          affected.push(id);
+          continue;
+        }
+        const result = this.raw
+          .prepare(
+            `UPDATE task
+             SET status = ?, version = version + 1, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(status, changedAt, id);
+        if (result.changes === 1) affected.push(id);
+      }
+
+      const updated = this.getTask(taskId);
+      if (!updated) {
+        throw new Error(`Task not found after status update: ${taskId}`);
+      }
+      return { task: updated, affectedTaskIds: affected };
+    });
+
+    return run.immediate();
   }
 
   getTask(taskId: TaskId): TaskRecord | undefined {
@@ -337,26 +463,47 @@ export class SqliteWorkspaceStore {
     threadId: ThreadId,
     expectedTaskVersion: number,
     now?: string,
+    options?: AdvanceTaskVersionOptions,
   ): TaskRecord {
     if (!Number.isInteger(expectedTaskVersion) || expectedTaskVersion < 0) {
       throw new Error('expectedTaskVersion must be a non-negative integer');
     }
     const changedAt = now ?? new Date().toISOString();
     const advance = this.raw.transaction(() => {
-      const result = this.raw
-        .prepare(
-          `UPDATE task
-           SET version = version + 1, updated_at = ?
-           WHERE id = (SELECT task_id FROM thread WHERE id = ?)
-             AND version = ?`,
-        )
-        .run(changedAt, threadId, expectedTaskVersion);
-
-      if (result.changes !== 1) {
-        const current = this.getTaskByThreadId(threadId);
-        if (!current) throw new Error(`Task not found for thread: ${threadId}`);
+      const current = this.getTaskByThreadId(threadId);
+      if (!current) throw new Error(`Task not found for thread: ${threadId}`);
+      if (current.version !== expectedTaskVersion) {
         throw new Error(
           `Task version conflict: expected ${expectedTaskVersion}, actual ${current.version}`,
+        );
+      }
+      const generatedTitle = options?.generatedTitle?.trim();
+      const generatedGoal = options?.generatedGoal?.trim();
+      const shouldGenerateIdentity =
+        current.version === 0 &&
+        isUntitledTaskTitle(current.title) &&
+        Boolean(generatedTitle && generatedGoal);
+      const result = shouldGenerateIdentity
+        ? this.raw
+            .prepare(
+              `UPDATE task
+               SET title = ?, goal = ?, version = version + 1, updated_at = ?
+               WHERE id = ? AND version = ?`,
+            )
+            .run(generatedTitle, generatedGoal, changedAt, current.id, expectedTaskVersion)
+        : this.raw
+            .prepare(
+              `UPDATE task
+               SET version = version + 1, updated_at = ?
+               WHERE id = ? AND version = ?`,
+            )
+            .run(changedAt, current.id, expectedTaskVersion);
+
+      if (result.changes !== 1) {
+        const latest = this.getTaskByThreadId(threadId);
+        if (!latest) throw new Error(`Task not found for thread: ${threadId}`);
+        throw new Error(
+          `Task version conflict: expected ${expectedTaskVersion}, actual ${latest.version}`,
         );
       }
 
@@ -449,9 +596,14 @@ export class SqliteWorkspaceStore {
     return row ? mapTask(row, row.thread_id as ThreadId) : undefined;
   }
 
-  searchTasks(workspaceId: WorkspaceId, query: string): TaskRecord[] {
+  searchTasks(
+    workspaceId: WorkspaceId,
+    query: string,
+    options?: { includeArchived?: boolean },
+  ): TaskRecord[] {
     const needle = query.trim().toLowerCase();
     if (needle.length === 0) return [];
+    const includeArchived = Boolean(options?.includeArchived);
     const rows = this.raw
       .prepare(
         `SELECT
@@ -462,15 +614,19 @@ export class SqliteWorkspaceStore {
          FROM task t
          INNER JOIN thread th ON th.task_id = t.id
          WHERE t.workspace_id = ?
+           AND (? = 1 OR t.status != 'archived')
            AND (
              lower(t.title) LIKE ? ESCAPE '\\'
              OR lower(t.goal) LIKE ? ESCAPE '\\'
            )
          ORDER BY t.updated_at DESC, t.id ASC`,
       )
-      .all(workspaceId, `%${escapeLike(needle)}%`, `%${escapeLike(needle)}%`) as Array<
-      TaskRow & { thread_id: string }
-    >;
+      .all(
+        workspaceId,
+        includeArchived ? 1 : 0,
+        `%${escapeLike(needle)}%`,
+        `%${escapeLike(needle)}%`,
+      ) as Array<TaskRow & { thread_id: string }>;
     return rows.map((row) => mapTask(row, row.thread_id as ThreadId));
   }
 
@@ -480,10 +636,31 @@ export class SqliteWorkspaceStore {
   }
 }
 
+/** Root first, then depth-first descendants (parent before children not required for status). */
+function collectTaskSubtreeIds(
+  tasks: readonly Pick<TaskRecord, 'id' | 'parentTaskId'>[],
+  rootId: TaskId,
+): TaskId[] {
+  const byParent = new Map<string, TaskId[]>();
+  for (const task of tasks) {
+    const key = task.parentTaskId ? String(task.parentTaskId) : '';
+    const bucket = byParent.get(key);
+    if (bucket) bucket.push(task.id);
+    else byParent.set(key, [task.id]);
+  }
+  const ordered: TaskId[] = [];
+  const walk = (id: TaskId) => {
+    ordered.push(id);
+    for (const childId of byParent.get(String(id)) ?? []) walk(childId);
+  };
+  walk(rootId);
+  return ordered;
+}
+
 function mapWorkspace(row: WorkspaceRow): WorkspaceRecord {
   return {
     id: row.id as WorkspaceId,
-    folderPath: row.folder_path,
+    folderPath: row.folder_path ?? undefined,
     name: row.name,
     policyId: row.policy_id ?? undefined,
     uiPrefsJson: row.ui_prefs_json ?? undefined,
@@ -527,4 +704,3 @@ function parseParticipationMode(value: string): ParticipationMode {
 function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
-

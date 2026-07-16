@@ -84,6 +84,54 @@ describe('streamOpenAIResponses', () => {
     expect(body.input[0]).toMatchObject({ role: 'user', content: 'hello responses' });
   });
 
+  it('serializes prior function calls and their local outputs for the next Responses turn', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ status: 'completed', output: [] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIResponses(
+        req({
+          messages: [
+            { role: 'user', content: 'Read file' },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCall: {
+                    id: 'call-previous',
+                    name: 'read_file',
+                    argumentsJson: '{"path":"README.md"}',
+                  },
+                },
+              ],
+            },
+            { role: 'tool', toolCallId: 'call-previous', content: '{"content":"hello"}' },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const requestBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(requestBody.input).toContainEqual({
+      type: 'function_call',
+      call_id: 'call-previous',
+      name: 'read_file',
+      arguments: '{"path":"README.md"}',
+    });
+    expect(requestBody.input).toContainEqual({
+      type: 'function_call_output',
+      call_id: 'call-previous',
+      output: '{"content":"hello"}',
+    });
+  });
+
   it('parses a non-stream Responses JSON fallback', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
@@ -93,9 +141,7 @@ describe('streamOpenAIResponses', () => {
       text: async () =>
         JSON.stringify({
           status: 'completed',
-          output: [
-            { type: 'message', content: [{ type: 'output_text', text: 'solid response' }] },
-          ],
+          output: [{ type: 'message', content: [{ type: 'output_text', text: 'solid response' }] }],
           usage: { input_tokens: 4, output_tokens: 3 },
         }),
     } as unknown as Response);

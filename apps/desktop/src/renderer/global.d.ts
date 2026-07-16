@@ -1,6 +1,8 @@
 ﻿import type {
   AppendMessagePayload,
   AppendMessageResponse,
+  BindWorkspaceFolderPayload,
+  BindWorkspaceFolderResponse,
   CancelRunPayload,
   CreateTaskPayload,
   CreateTaskResponse,
@@ -127,6 +129,9 @@ declare global {
         appendMessage(payload: AppendMessagePayload): Promise<AppendMessageResponse>;
         cancelRun(payload: CancelRunPayload): Promise<PauseResumeCancelResponse>;
         createWorkspace(payload: CreateWorkspacePayload): Promise<CreateWorkspaceResponse>;
+        bindWorkspaceFolder(
+          payload: BindWorkspaceFolderPayload,
+        ): Promise<BindWorkspaceFolderResponse>;
         listWorkspaces(payload?: ListWorkspacesPayload): Promise<ListWorkspacesResponse>;
         createTask(payload: CreateTaskPayload): Promise<CreateTaskResponse>;
         listTasks(payload: ListTasksPayload): Promise<ListTasksResponse>;
@@ -135,6 +140,12 @@ declare global {
         setParticipationMode(
           payload: SetParticipationModePayload,
         ): Promise<SetParticipationModeResponse>;
+        archiveTask(
+          payload: import('@sync-think/protocol').ArchiveTaskPayload,
+        ): Promise<import('@sync-think/protocol').ArchiveTaskResponse>;
+        unarchiveTask(
+          payload: import('@sync-think/protocol').UnarchiveTaskPayload,
+        ): Promise<import('@sync-think/protocol').UnarchiveTaskResponse>;
         createPlan(payload: PlanDraftPayload): Promise<PlanDraftResponse>;
         revisePlan(payload: PlanRevisePayload): Promise<PlanReviseResponse>;
         listPlanRevisions(payload: PlanListRevisionsPayload): Promise<PlanListRevisionsResponse>;

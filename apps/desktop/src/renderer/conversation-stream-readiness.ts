@@ -404,7 +404,7 @@ export function projectConversationStreamReadiness(
     title = connectHint ? `Runtime 暂不可用 · ${connectHint}` : 'Runtime 暂不可用';
   else if (taskOk && !hasMessages) title = '从下方输入开始这条连续对话';
   else if (taskOk && hasMessages) title = '连续对话进行中';
-  else title = '左侧添加本地文件夹，再创建或打开任务';
+  else title = '左侧新建项目，再创建或打开任务';
 
   const scrubbedError = scrubFailureText(input.errorSummary);
   const bits: string[] = [];

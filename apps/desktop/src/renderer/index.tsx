@@ -1,9 +1,10 @@
 import { StrictMode, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { createPortal } from 'react-dom';
 import {
   AppShell,
   Compose,
-  ModeSwitch,
+  ContinuumRail,
   MessageBubble,
   TraceList,
   ProvidersPanel,
@@ -14,9 +15,12 @@ import {
   ExecutionGraphPanel,
   ArtifactVersionsPanel,
   ManifestPanel,
+  ProjectCreateDialog,
   WorkspaceNav,
+  type ComposeAgentOption,
   type ComposeModelOption,
   type ComposeSendOptions,
+  type ComposeWorkspaceOption,
   type ProviderCreateInput,
   type ProviderUpdateInput,
   type CcSwitchPreviewItem,
@@ -68,6 +72,8 @@ import type {
   PolicyVersionSummary,
 } from '@sync-think/protocol';
 import {
+  deriveTaskTitleFromPrompt,
+  isUntitledTaskTitle,
   ulid,
   type ArtifactMergeConflictResolutionStrategy,
   type PlanRevision,
@@ -84,12 +90,11 @@ import {
   Circle,
   Columns2,
   Files,
+  FolderKanban,
   GitBranch,
-  ListTodo,
   Monitor,
   Moon,
   PackageCheck,
-  Plus,
   RefreshCw,
   ServerCog,
   ShieldCheck,
@@ -97,6 +102,8 @@ import {
   X,
 } from 'lucide-react';
 import { projectBeginnerWorkspace } from './beginner-workspace.js';
+import { findParentTaskLink, projectChildTasks, summarizeChildTasks } from './child-tasks.js';
+import { projectContinuumEvidence, shouldShowContinuumStrip } from './continuum-evidence.js';
 import { projectConversation } from './m0-projection.js';
 import { formatProviderDiscoveryError } from './provider-error-copy.js';
 import { startRuntimeConnection } from './runtime-connection.js';
@@ -125,16 +132,16 @@ import {
   createM2LoadRequestGate,
   deriveM2WorkspaceIdentity,
   findNearestCommonArtifactAncestor,
-  hasApprovedPlanRevision,
   isApprovalDelegateAgentVersion,
   isM2RefreshEvent,
   mergeTaskVersionForTarget,
   projectAgentWorkspace,
   projectM2ExecutionGraph,
-  resolveAutomaticModeRecovery,
-  resolveVisibleAutomaticModeRecovery,
-  type AutomaticModeRecovery,
 } from './m2-workspace.js';
+import {
+  buildConversationCollaborationPlan,
+  inferConversationCollaborationIntent,
+} from './collaboration-intent.js';
 import {
   projectM1SessionReadiness,
   isM1SessionChipJumpable,
@@ -582,6 +589,8 @@ function DesktopShell() {
   const [traceCollapsed, setTraceCollapsed] = useState<boolean>(() =>
     readTraceCollapsedPreference(),
   );
+  /** Session-only: expand right rail while there is no active task (default collapsed). */
+  const [emptyRailExpanded, setEmptyRailExpanded] = useState(false);
   const [previewMessages, setPreviewMessages] = useState<string[]>([]);
   const [runtimeView, dispatchRuntimeView] = useReducer(
     runtimeViewReducer,
@@ -616,9 +625,12 @@ function DesktopShell() {
   const [sendPending, setSendPending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [cancelPending, setCancelPending] = useState(false);
-  const [modeBusy, setModeBusy] = useState(false);
-  const [modeError, setModeError] = useState<string | null>(null);
-  const [automaticRecovery, setAutomaticRecovery] = useState<AutomaticModeRecovery>(null);
+  const collaborationPreparationRef = useRef(false);
+  const [collaborationStatus, setCollaborationStatus] = useState<{
+    taskId: string;
+    tone: 'working' | 'ready' | 'error';
+    text: string;
+  } | null>(null);
 
   const [workspaces, setWorkspaces] = useState<readonly WorkspaceSummary[]>([]);
   const [tasksByWorkspace, setTasksByWorkspace] = useState<
@@ -626,6 +638,12 @@ function DesktopShell() {
   >(() => new Map());
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  /** Soft-archive: hide by default so the left tree does not grow forever. */
+  const [showArchivedTasks, setShowArchivedTasks] = useState(false);
+  const [projectCreateOpen, setProjectCreateOpen] = useState(false);
+  const [projectCreateBusy, setProjectCreateBusy] = useState(false);
+  const [projectCreateError, setProjectCreateError] = useState<string | null>(null);
+  const [bindingWorkspaceId, setBindingWorkspaceId] = useState<string | null>(null);
   const [active, setActive] = useState<ActiveTaskSelection | null>(null);
   const [navQuery, setNavQuery] = useState('');
   const [providers, setProviders] = useState<readonly ProviderPanelItem[]>([]);
@@ -782,26 +800,6 @@ function DesktopShell() {
       })),
     [allAgentVersions],
   );
-  const automaticModeReadiness = useMemo(() => {
-    const approvedPlan = hasApprovedPlanRevision(planRevisions);
-    const applicablePolicy = Boolean(
-      active &&
-      approvalPolicies.some(
-        (policy) =>
-          (policy.scopeType === 'task' && policy.scopeId === active.taskId) ||
-          ((policy.scopeType === 'workspace' || policy.scopeType === 'project') &&
-            policy.scopeId === active.workspaceId) ||
-          policy.scopeType === 'user',
-      ),
-    );
-    return { approvedPlan, applicablePolicy };
-  }, [active, approvalPolicies, planRevisions]);
-  const visibleAutomaticRecovery = resolveVisibleAutomaticModeRecovery({
-    hasActiveTask: Boolean(active),
-    hasApprovedPlan: automaticModeReadiness.approvedPlan,
-    hasPolicy: automaticModeReadiness.applicablePolicy,
-    runtimeRecovery: automaticRecovery,
-  });
   const isStreaming = projection.stream.state === 'streaming';
 
   useEffect(() => {
@@ -829,7 +827,6 @@ function DesktopShell() {
     setSelectedTraceId(null);
     setSelectedManifestId(null);
     setRightRailTab('overview');
-    setAutomaticRecovery(null);
   }, [active?.taskId]);
 
   const PEEK_MANIFEST_ID = 'peek:live';
@@ -1597,7 +1594,11 @@ function DesktopShell() {
         const nextWorkspaces = listed.workspaces;
         const entries: Array<[string, TaskSummary[]]> = [];
         for (const workspace of nextWorkspaces) {
-          const listedTasks = await runtime.listTasks({ workspaceId: workspace.workspaceId });
+          // Always load archived so we can toggle visibility and restore without a second round-trip.
+          const listedTasks = await runtime.listTasks({
+            workspaceId: workspace.workspaceId,
+            includeArchived: true,
+          });
           entries.push([workspace.workspaceId, listedTasks.tasks]);
         }
         const nextMap = new Map(entries);
@@ -1606,7 +1607,7 @@ function DesktopShell() {
         const selection = resolvePreferredTask(nextWorkspaces, nextMap, preferredTaskId);
         applySelection(selection);
       } catch {
-        setWorkspaceError('工作区加载失败');
+        setWorkspaceError('项目加载失败');
       } finally {
         setWorkspaceLoading(false);
       }
@@ -3488,8 +3489,25 @@ function DesktopShell() {
     setReconnectNonce((n) => n + 1);
   }, []);
 
+  const openTaskById = async (taskId: string) => {
+    if (!active) return;
+    const tasks = tasksByWorkspace.get(active.workspaceId) ?? [];
+    const target = tasks.find((task) => task.taskId === taskId);
+    if (!target) {
+      setWorkspaceError('找不到该任务');
+      return;
+    }
+    await openTask(toNavTask(target));
+  };
+
   const openTask = async (task: WorkspaceNavTask) => {
     setLeftDrawerOpen(false);
+    // Parent surface: keep the progress rail open when jumping among related tasks.
+    if (rightRailTab !== 'overview') setRightRailTab('overview');
+    if (traceCollapsed) {
+      setTraceCollapsed(false);
+      writeTraceCollapsedPreference(false);
+    }
     const requestToken = openTaskLoadGateRef.current.begin(
       `${task.workspaceId}\u0000${task.taskId}`,
     );
@@ -3537,133 +3555,324 @@ function DesktopShell() {
     }
   };
 
-  const changeParticipationMode = async (mode: 'conversation' | 'collaboration' | 'automatic') => {
-    if (!active || modeBusy || mode === active.participationMode) return;
+  const prepareConversationCollaboration = async (input: {
+    task: ActiveTaskSelection;
+    prompt: string;
+    expectedTaskVersion: number;
+  }) => {
+    if (collaborationPreparationRef.current) return;
     const runtime = window.syncThink?.runtime;
-    if (!runtime?.setParticipationMode) {
-      setModeError('当前环境未连接 Runtime，无法切换参与模式');
+    if (!runtime?.setParticipationMode || !runtime.createPlan) {
+      setCollaborationStatus({
+        taskId: input.task.taskId,
+        tone: 'error',
+        text: '当前环境无法准备协作计划，请重启 Runtime 后重试。',
+      });
       return;
     }
-    setModeBusy(true);
-    setModeError(null);
-    setAutomaticRecovery(null);
+    const latestByAgent = new Map<string, AgentDefinitionSummary>();
+    for (const version of allAgentVersions) {
+      const agentId = String(version.agentId);
+      const previous = latestByAgent.get(agentId);
+      if (!previous || version.version > previous.version) latestByAgent.set(agentId, version);
+    }
+    const candidates = [...latestByAgent.values()].map((version) => ({
+      agentVersionId: String(version.agentVersionId),
+      name: version.name,
+      role: version.role,
+      selected:
+        String(version.agentVersionId) === agentBinding?.agentVersionId ||
+        String(version.agentId) === selectedAgentId,
+    }));
+    if (candidates.length === 0 && agentBinding?.agentVersionId) {
+      candidates.push({
+        agentVersionId: agentBinding.agentVersionId,
+        name: agentBinding.name,
+        role: agentBinding.role,
+        selected: true,
+      });
+    }
+    const steps = buildConversationCollaborationPlan({
+      prompt: input.prompt,
+      agents: candidates,
+      createStepId: () => ulid(),
+    });
+    if (steps.length === 0) {
+      setCollaborationStatus({
+        taskId: input.task.taskId,
+        tone: 'error',
+        text: '请先配置至少一个智能体，再通过对话发起协作。',
+      });
+      return;
+    }
+
+    collaborationPreparationRef.current = true;
+    setPlanBusy(true);
+    setPlanError(null);
+    setCollaborationStatus({
+      taskId: input.task.taskId,
+      tone: 'working',
+      text: '已识别为协作任务，正在按已配置智能体准备计划…',
+    });
     try {
-      const response = await runtime.setParticipationMode({
-        taskId: active.taskId as never,
-        mode,
-        expectedTaskVersion: resolveExpectedTaskVersion(active.taskVersion, projection.taskVersion),
+      let expectedTaskVersion = input.expectedTaskVersion;
+      let participationMode = input.task.participationMode;
+      if (participationMode === 'conversation') {
+        const response = await runtime.setParticipationMode({
+          taskId: input.task.taskId as never,
+          mode: 'collaboration',
+          expectedTaskVersion,
+        });
+        const updated = response.task;
+        expectedTaskVersion = updated.taskVersion;
+        participationMode = updated.participationMode;
+        setTasksByWorkspace((current) => upsertTaskInMap(current, updated));
+        if (activeTaskIdRef.current === input.task.taskId) {
+          setActive((current) =>
+            current
+              ? {
+                  ...current,
+                  title: updated.title,
+                  goal: updated.goal,
+                  taskVersion: updated.taskVersion,
+                  status: updated.status,
+                  participationMode: updated.participationMode,
+                }
+              : current,
+          );
+          dispatchRuntimeView({
+            type: 'append-succeeded',
+            taskVersion: updated.taskVersion,
+          });
+        }
+      }
+      if (participationMode !== 'collaboration') {
+        throw new Error('任务当前状态不允许准备协作计划');
+      }
+      const plan = await runtime.createPlan({
+        taskId: input.task.taskId as never,
+        expectedTaskVersion,
+        title: input.task.title,
+        steps,
       });
-      const updated = response.task;
-      setTasksByWorkspace((current) => upsertTaskInMap(current, updated));
-      applySelection({
-        ...active,
-        title: updated.title,
-        goal: updated.goal,
-        taskVersion: updated.taskVersion,
-        status: updated.status,
-        participationMode: updated.participationMode,
+      if (activeTaskIdRef.current === input.task.taskId) {
+        setPlanRevision(plan);
+        setPlanRevisions([plan]);
+        syncTaskVersion(input.task.taskId, plan.taskVersion);
+      }
+      setCollaborationStatus({
+        taskId: input.task.taskId,
+        tone: 'ready',
+        text:
+          steps.length > 1
+            ? `已按 ${steps.length} 个分工生成协作计划，检查并批准后开始执行。`
+            : '已生成可编辑协作计划，检查并批准后开始执行。',
       });
-      setAutomaticRecovery(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
-      let recovery =
-        mode === 'automatic'
-          ? resolveAutomaticModeRecovery({
-              hasApprovedPlan: automaticModeReadiness.approvedPlan,
-              hasPolicy: automaticModeReadiness.applicablePolicy,
-            })
-          : null;
-      if (!recovery && mode === 'automatic' && /approved plan|计划/i.test(message)) {
-        recovery = resolveAutomaticModeRecovery({
-          hasApprovedPlan: false,
-          hasPolicy: true,
-        });
-      }
-      if (!recovery && mode === 'automatic' && /policy|策略/i.test(message)) {
-        recovery = resolveAutomaticModeRecovery({
-          hasApprovedPlan: true,
-          hasPolicy: false,
-        });
-      }
-      setAutomaticRecovery(recovery);
-      setModeError(
-        mode === 'automatic'
-          ? message || '自动模式需要已批准计划和适用策略。'
-          : '模式切换失败；任务版本可能已更新，请重新打开任务后再试。',
-      );
+      const failure = message || '协作计划准备失败，请继续对话或重新打开任务后再试。';
+      setPlanError(failure);
+      setCollaborationStatus({ taskId: input.task.taskId, tone: 'error', text: failure });
     } finally {
-      setModeBusy(false);
+      collaborationPreparationRef.current = false;
+      setPlanBusy(false);
     }
   };
 
-  const recoverAutomaticPlan = async () => {
-    if (!active) return;
-    if (active.participationMode !== 'collaboration') {
-      await changeParticipationMode('collaboration');
-    }
-    if (planRevisions.length === 0) {
-      await createDefaultPlan();
-    }
-    window.setTimeout(() => {
-      const target = document.querySelector('[data-testid="plan-editor"]') as HTMLElement | null;
-      if (!target) return;
-      target.tabIndex = -1;
-      target.focus({ preventScroll: true });
-      target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }, 0);
+  const openProjectCreateDialog = () => {
+    setProjectCreateError(null);
+    setWorkspaceError(null);
+    setProjectCreateOpen(true);
   };
 
-  const createWorkspace = async () => {
+  const createWorkspace = async (name: string) => {
     const runtime = window.syncThink?.runtime;
-    let folderPath: string | null = null;
-    if (runtime?.pickFolder) {
+    setProjectCreateBusy(true);
+    setProjectCreateError(null);
+    setWorkspaceError(null);
+    try {
+      if (!runtime?.createWorkspace) {
+        const now = new Date().toISOString();
+        const preview: WorkspaceSummary = {
+          workspaceId: `preview-ws-${Date.now()}` as never,
+          name,
+          createdAt: now,
+          updatedAt: now,
+        };
+        setWorkspaces((prev) => [...prev, preview]);
+        setTasksByWorkspace((prev) => new Map(prev).set(preview.workspaceId, []));
+      } else {
+        await runtime.createWorkspace({ name });
+        await loadWorkspaceCatalog(active?.taskId ?? null);
+      }
+      setProjectCreateOpen(false);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+      const message = `项目创建失败${detail}`;
+      setProjectCreateError(message);
+      setWorkspaceError(message);
+    } finally {
+      setProjectCreateBusy(false);
+    }
+  };
+
+  const bindWorkspaceFolder = async (workspaceId: string) => {
+    const runtime = window.syncThink?.runtime;
+    setWorkspaceError(null);
+    setBindingWorkspaceId(workspaceId);
+    try {
+      if (!runtime?.pickFolder) {
+        setWorkspaceError('当前环境无法打开文件夹选择器');
+        return;
+      }
       const picked = await runtime.pickFolder();
       if (picked.canceled || !picked.path) return;
-      folderPath = picked.path;
-    } else if (typeof window !== 'undefined') {
-      folderPath = window.prompt('本地文件夹绝对路径', 'D:/projects/SYNC-THINK');
-    }
-    if (!folderPath || !folderPath.trim()) return;
-    const defaultName = folderPath.split(/[/\\]/).filter(Boolean).at(-1) ?? 'Workspace';
-    const name = window.prompt('工作区名称', defaultName) ?? '';
-    if (!name.trim()) return;
 
-    if (!runtime?.createWorkspace) {
-      const now = new Date().toISOString();
-      const preview: WorkspaceSummary = {
-        workspaceId: `preview-ws-${Date.now()}` as never,
-        folderPath: folderPath.trim(),
-        name: name.trim(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      setWorkspaces((prev) => [...prev, preview]);
-      setTasksByWorkspace((prev) => new Map(prev).set(preview.workspaceId, []));
+      if (!runtime.bindWorkspaceFolder) {
+        setWorkspaceError('当前 Runtime 不支持文件夹绑定，请重启应用后重试');
+        return;
+      }
+
+      await runtime.bindWorkspaceFolder({
+        workspaceId: workspaceId as never,
+        folderPath: picked.path,
+      });
+      await loadWorkspaceCatalog(active?.taskId ?? null);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+      setWorkspaceError(`文件夹绑定失败${detail}`);
+    } finally {
+      setBindingWorkspaceId(null);
+    }
+  };
+
+  const archiveTask = async (task: {
+    taskId: string;
+    workspaceId: string;
+    taskVersion: number;
+  }) => {
+    const runtime = window.syncThink?.runtime;
+    const taskId = task.taskId;
+    const taskVersion = task.taskVersion;
+    const workspaceId = task.workspaceId;
+
+    if (!runtime?.archiveTask) {
+      const list = tasksByWorkspace.get(workspaceId) ?? [];
+      const ids = new Set<string>([taskId]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const item of list) {
+          if (item.parentTaskId && ids.has(String(item.parentTaskId)) && !ids.has(item.taskId)) {
+            ids.add(item.taskId);
+            grew = true;
+          }
+        }
+      }
+      setTasksByWorkspace((prev) => {
+        const next = new Map(prev);
+        next.set(
+          workspaceId,
+          (next.get(workspaceId) ?? []).map((item) =>
+            ids.has(item.taskId) ? { ...item, status: 'archived' as const } : item,
+          ),
+        );
+        return next;
+      });
+      if (active && ids.has(active.taskId)) applySelection(null);
       return;
     }
 
     try {
-      await runtime.createWorkspace({
-        folderPath: folderPath.trim(),
-        name: name.trim(),
+      const response = await runtime.archiveTask({
+        taskId: taskId as never,
+        expectedTaskVersion: taskVersion,
+        cascade: true,
       });
-      await loadWorkspaceCatalog(active?.taskId ?? null);
-    } catch {
-      setWorkspaceError('创建工作区失败（检查路径 allowlist）');
+      const archivedIds = new Set(response.archivedTaskIds.map(String));
+      setTasksByWorkspace((prev) => {
+        const next = new Map(prev);
+        for (const [wsId, list] of next) {
+          next.set(
+            wsId,
+            list.map((item) =>
+              archivedIds.has(item.taskId)
+                ? { ...item, status: 'archived', taskVersion: item.taskVersion + 1 }
+                : item,
+            ),
+          );
+        }
+        return next;
+      });
+      if (active && archivedIds.has(active.taskId)) {
+        applySelection(null);
+      }
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+      setWorkspaceError(`归档任务失败${detail}`);
     }
   };
 
+  const unarchiveTask = async (task: {
+    taskId: string;
+    workspaceId: string;
+    taskVersion: number;
+  }) => {
+    const runtime = window.syncThink?.runtime;
+    const taskId = task.taskId;
+    const taskVersion = task.taskVersion;
+
+    if (!runtime?.unarchiveTask) {
+      setTasksByWorkspace((prev) => {
+        const next = new Map(prev);
+        const list = [...(next.get(task.workspaceId) ?? [])];
+        next.set(
+          task.workspaceId,
+          list.map((item) =>
+            item.taskId === taskId || item.parentTaskId === taskId
+              ? { ...item, status: 'active' as const }
+              : item,
+          ),
+        );
+        return next;
+      });
+      return;
+    }
+
+    try {
+      const response = await runtime.unarchiveTask({
+        taskId: taskId as never,
+        expectedTaskVersion: taskVersion,
+        cascade: true,
+      });
+      const restored = new Set(response.unarchivedTaskIds.map(String));
+      setTasksByWorkspace((prev) => {
+        const next = new Map(prev);
+        for (const [wsId, list] of next) {
+          next.set(
+            wsId,
+            list.map((item) =>
+              restored.has(item.taskId)
+                ? { ...item, status: 'active', taskVersion: item.taskVersion + 1 }
+                : item,
+            ),
+          );
+        }
+        return next;
+      });
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+      setWorkspaceError(`恢复任务失败${detail}`);
+    }
+  };
+
+  /** Instant create under a project — no modal (product path). */
   const createTask = async (workspaceId: string, options?: { parentTaskId?: string }) => {
     const runtime = window.syncThink?.runtime;
     const parentTaskId = options?.parentTaskId;
-    const defaultTitle = parentTaskId ? '子任务' : '新任务';
-    const title = window.prompt(
-      parentTaskId ? '子任务标题（将显式引用父任务上下文）' : '任务标题',
-      defaultTitle,
-    );
-    if (!title || !title.trim()) return;
-    const goal = window.prompt('任务目标', title.trim()) ?? title.trim();
-    if (!goal.trim()) return;
+    const title = parentTaskId ? '子任务' : '新任务';
+    const goal = title;
+    setWorkspaceError(null);
 
     if (!runtime?.createTask) {
       const now = new Date().toISOString();
@@ -3671,8 +3880,8 @@ function DesktopShell() {
         taskId: `preview-task-${Date.now()}` as never,
         workspaceId: workspaceId as never,
         parentTaskId: parentTaskId as TaskSummary['parentTaskId'],
-        title: title.trim(),
-        goal: goal.trim(),
+        title,
+        goal,
         status: 'active',
         participationMode: 'conversation',
         taskVersion: 0,
@@ -3702,24 +3911,101 @@ function DesktopShell() {
     try {
       const created = await runtime.createTask({
         workspaceId: workspaceId as never,
-        title: title.trim(),
-        goal: goal.trim(),
+        title,
+        goal,
         parentTaskId: parentTaskId as TaskSummary['parentTaskId'],
       });
       if (runtime.openTask) {
         await runtime.openTask({ taskId: created.taskId });
       }
       await loadWorkspaceCatalog(created.taskId);
-    } catch {
-      setWorkspaceError(parentTaskId ? '创建子任务失败' : '创建任务失败');
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+      setWorkspaceError(`${parentTaskId ? '创建子任务失败' : '创建任务失败'}${detail}`);
     }
+  };
+
+  const switchComposeWorkspace = async (workspaceId: string) => {
+    if (active?.workspaceId === workspaceId) return;
+    setWorkspaceError(null);
+    const candidates = (tasksByWorkspace.get(workspaceId) ?? []).filter(
+      (task) => task.status !== 'archived',
+    );
+    const lastOpenedTaskId = pickLastOpenedTaskId(candidates);
+    const target =
+      (lastOpenedTaskId
+        ? candidates.find((task) => task.taskId === lastOpenedTaskId)
+        : undefined) ?? candidates.at(-1);
+    if (!target) {
+      const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
+      setWorkspaceError(`项目「${workspace?.name ?? workspaceId}」还没有任务，请先新建任务。`);
+      return;
+    }
+    await openTask(toNavTask(target));
+  };
+
+  const applyTaskMessageResult = (input: {
+    task: ActiveTaskSelection;
+    taskVersion: number;
+    taskTitle?: string;
+    taskGoal?: string;
+  }) => {
+    setActive((current) =>
+      current?.taskId === input.task.taskId
+        ? {
+            ...current,
+            taskVersion: input.taskVersion,
+            title: input.taskTitle ?? current.title,
+            goal: input.taskGoal ?? current.goal,
+          }
+        : current,
+    );
+    setTasksByWorkspace((current) => {
+      const next = new Map(current);
+      const list = next.get(input.task.workspaceId) ?? [];
+      next.set(
+        input.task.workspaceId,
+        list.map((item) =>
+          item.taskId === input.task.taskId
+            ? {
+                ...item,
+                taskVersion: input.taskVersion,
+                title: input.taskTitle ?? item.title,
+                goal: input.taskGoal ?? item.goal,
+              }
+            : item,
+        ),
+      );
+      return next;
+    });
   };
 
   const sendMessage = async (text: string, options?: ComposeSendOptions) => {
     if (sendPending || !canSendRuntimeMessage(runtimeView.connectionState)) return false;
     const runtime = window.syncThink?.runtime;
+    const targetTask = active;
+    const collaborationIntent = inferConversationCollaborationIntent(text);
     if (!runtime) {
       setPreviewMessages((messages) => [...messages, text]);
+      if (targetTask) {
+        const generatedTitle =
+          targetTask.taskVersion === 0 && isUntitledTaskTitle(targetTask.title)
+            ? deriveTaskTitleFromPrompt(text)
+            : undefined;
+        applyTaskMessageResult({
+          task: targetTask,
+          taskVersion: targetTask.taskVersion + 1,
+          taskTitle: generatedTitle,
+          taskGoal: generatedTitle ? text.trim() : undefined,
+        });
+        if (collaborationIntent.shouldUpgrade) {
+          setCollaborationStatus({
+            taskId: targetTask.taskId,
+            tone: 'error',
+            text: '浏览器预览无法创建协作计划，请连接本地 Runtime。',
+          });
+        }
+      }
       return true;
     }
     setSendPending(true);
@@ -3736,8 +4022,29 @@ function DesktopShell() {
         ...(options?.modelId ? { modelId: options.modelId as never } : {}),
       });
       dispatchRuntimeView({ type: 'append-succeeded', taskVersion: response.taskVersion });
-      if (active) {
-        setActive({ ...active, taskVersion: response.taskVersion });
+      if (targetTask) {
+        applyTaskMessageResult({
+          task: targetTask,
+          taskVersion: response.taskVersion,
+          taskTitle: response.taskTitle,
+          taskGoal: response.taskGoal,
+        });
+        if (
+          collaborationIntent.shouldUpgrade &&
+          targetTask.participationMode !== 'automatic' &&
+          planRevisions.length === 0
+        ) {
+          void prepareConversationCollaboration({
+            task: {
+              ...targetTask,
+              taskVersion: response.taskVersion,
+              title: response.taskTitle ?? targetTask.title,
+              goal: response.taskGoal ?? targetTask.goal,
+            },
+            prompt: text,
+            expectedTaskVersion: response.taskVersion,
+          });
+        }
       }
       return true;
     } catch (error) {
@@ -3772,30 +4079,45 @@ function DesktopShell() {
     }
   };
 
-  const navWorkspaces = useMemo(
+  const composeWorkspaces = useMemo<ComposeWorkspaceOption[]>(
     () =>
       workspaces.map((workspace) => ({
         workspaceId: workspace.workspaceId,
         folderPath: workspace.folderPath,
         name: workspace.name,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
       })),
     [workspaces],
   );
+  const navWorkspaces = workspaces;
+
+  const archivedTaskCount = useMemo(() => {
+    let count = 0;
+    for (const tasks of tasksByWorkspace.values()) {
+      for (const task of tasks) {
+        if (task.status === 'archived') count += 1;
+      }
+    }
+    return count;
+  }, [tasksByWorkspace]);
 
   const navTasks = useMemo(() => {
     const map = new Map<string, WorkspaceNavTask[]>();
     for (const [workspaceId, tasks] of tasksByWorkspace) {
-      map.set(workspaceId, tasks.map(toNavTask));
+      const visible = showArchivedTasks
+        ? tasks
+        : tasks.filter((task) => task.status !== 'archived');
+      map.set(workspaceId, visible.map(toNavTask));
     }
     return map;
-  }, [tasksByWorkspace]);
+  }, [tasksByWorkspace, showArchivedTasks]);
 
   const lastOpenedId = useMemo(() => {
-    const all = [...tasksByWorkspace.values()].flat().map(toNavTask);
+    const all = [...tasksByWorkspace.values()]
+      .flat()
+      .filter((task) => showArchivedTasks || task.status !== 'archived')
+      .map(toNavTask);
     return pickLastOpenedTaskId(all);
-  }, [tasksByWorkspace]);
+  }, [tasksByWorkspace, showArchivedTasks]);
 
   const flashInstrument = useCallback((selector: string) => {
     const parts = selector
@@ -5421,7 +5743,7 @@ function DesktopShell() {
   }, [conversationStreamReadiness.failureCtaAction, reconnectRuntime, navigateToInstrument]);
 
   const taskTitle = active?.title ?? '选择或创建一个任务';
-  const folderPath = active?.folderPath ?? '本地工作区';
+  const folderPath = active?.folderPath ?? '未绑定文件夹';
   const taskStatus = active?.status ?? 'idle';
   const executionGraphView = useMemo(
     () =>
@@ -5509,8 +5831,76 @@ function DesktopShell() {
     selectedModelOption?.label ??
     defaultModelOption?.label ??
     (agentBinding?.defaultModelId ? agentDefaultModelLabel : '尚未配置');
+  const latestAgentById = useMemo(() => {
+    const map = new Map<string, (typeof allAgentVersions)[number]>();
+    for (const version of allAgentVersions) {
+      const agentId = String(version.agentId);
+      const prev = map.get(agentId);
+      if (!prev || version.version > prev.version) map.set(agentId, version);
+    }
+    return map;
+  }, [allAgentVersions]);
+  const composeAgents: ComposeAgentOption[] = useMemo(
+    () =>
+      agents.map((agent) => {
+        const latest = latestAgentById.get(agent.agentId);
+        const modelId = agent.defaultModelId ?? latest?.defaultModelId;
+        const model = modelId
+          ? composeModels.find((option) => option.modelId === String(modelId))
+          : undefined;
+        return {
+          agentId: agent.agentId,
+          name: agent.name,
+          role: agent.role,
+          color: latest?.visualIdentity?.color,
+          icon: latest?.visualIdentity?.icon,
+          modelLabel: model?.providerModelId ?? model?.label,
+        };
+      }),
+    [agents, latestAgentById, composeModels],
+  );
+  const continuumEntries = useMemo(
+    () =>
+      projectContinuumEvidence({
+        hasActiveTask: Boolean(active),
+        taskTitle: active?.title,
+        workspaceName: active?.workspaceName,
+        memoryEntries,
+        artifacts: artifactItems.map((item) => {
+          const latestVersion = item.versions[item.versions.length - 1];
+          return {
+            id: String(item.artifact.id),
+            name: item.artifact.name,
+            versionLabel: latestVersion ? `v${latestVersion.version}` : undefined,
+          };
+        }),
+        approvalPendingCount,
+        messageCount: projection.messages.length,
+      }),
+    [active, memoryEntries, artifactItems, approvalPendingCount, projection.messages.length],
+  );
+  const showContinuumStrip = shouldShowContinuumStrip(continuumEntries);
+  const workspaceTasksForActive = useMemo(() => {
+    if (!active) return [] as TaskSummary[];
+    const all = [...(tasksByWorkspace.get(active.workspaceId) ?? [])];
+    return showArchivedTasks ? all : all.filter((task) => task.status !== 'archived');
+  }, [active, tasksByWorkspace, showArchivedTasks]);
+  const childTasks = useMemo(
+    () => projectChildTasks(workspaceTasksForActive, active?.taskId),
+    [workspaceTasksForActive, active?.taskId],
+  );
+  const childTasksSummary = useMemo(() => summarizeChildTasks(childTasks), [childTasks]);
+  const parentTaskLink = useMemo(() => {
+    if (!active) return null;
+    const current = workspaceTasksForActive.find((task) => task.taskId === active.taskId);
+    return findParentTaskLink(workspaceTasksForActive, {
+      taskId: active.taskId,
+      parentTaskId: current?.parentTaskId,
+    });
+  }, [active, workspaceTasksForActive]);
   const beginnerWorkspace = projectBeginnerWorkspace({
     hasActiveTask: Boolean(active),
+    hasWorkspace: workspaces.length > 0,
     connectionState: runtimeView.connectionState,
     agentReady: Boolean(agentBinding?.defaultModelId && composeModels.length > 0),
     streaming: isStreaming,
@@ -5523,6 +5913,9 @@ function DesktopShell() {
     (runtimeView.connectionState !== 'online' ||
       conversationStreamReadiness.failed ||
       conversationStreamReadiness.paused);
+  // No active task: right rail defaults collapsed so the chat canvas stays primary.
+  // Expanding without a task is session-local and does not rewrite the saved preference.
+  const shellTraceCollapsed = active ? traceCollapsed : !emptyRailExpanded;
 
   const handleBeginnerAction = () => {
     if (beginnerWorkspace.action === 'reconnect') {
@@ -5534,11 +5927,37 @@ function DesktopShell() {
       return;
     }
     if (beginnerWorkspace.action === 'approvals') {
+      if (active) {
+        setTraceCollapsed(false);
+        writeTraceCollapsedPreference(false);
+      } else {
+        setEmptyRailExpanded(true);
+      }
       setRightRailTab('approvals');
       return;
     }
     if (beginnerWorkspace.action === 'artifacts') {
+      if (active) {
+        setTraceCollapsed(false);
+        writeTraceCollapsedPreference(false);
+      } else {
+        setEmptyRailExpanded(true);
+      }
       setRightRailTab('artifacts');
+      return;
+    }
+    if (beginnerWorkspace.action === 'create-project') {
+      openProjectCreateDialog();
+      return;
+    }
+    if (beginnerWorkspace.action === 'create-task') {
+      const targetWorkspace =
+        workspaces.find((item) => item.workspaceId === active?.workspaceId) ?? workspaces[0];
+      if (!targetWorkspace) {
+        openProjectCreateDialog();
+        return;
+      }
+      void createTask(targetWorkspace.workspaceId);
       return;
     }
     if (beginnerWorkspace.action === 'tasks') {
@@ -5555,19 +5974,39 @@ function DesktopShell() {
     }
   };
 
+  const projectCreateDialog = createPortal(
+    <ProjectCreateDialog
+      open={projectCreateOpen}
+      busy={projectCreateBusy}
+      error={projectCreateError}
+      onClose={() => {
+        setProjectCreateOpen(false);
+        setProjectCreateError(null);
+      }}
+      onSubmit={(name) => void createWorkspace(name)}
+    />,
+    document.body,
+    'project-create-dialog',
+  );
+
   return (
     <AppShell
       theme={theme}
       hideReadiness
       traceTitle={rightRailTab === 'overview' ? '任务进度' : '执行详情'}
       traceAriaLabel="任务与执行详情"
-      traceCollapsed={traceCollapsed}
+      traceCollapsed={shellTraceCollapsed}
       onTraceCollapsedChange={(collapsed) => {
+        if (!active) {
+          setEmptyRailExpanded(!collapsed);
+          return;
+        }
         setTraceCollapsed(collapsed);
         writeTraceCollapsedPreference(collapsed);
       }}
-      leftNav={
-        <div className="st-demo-nav-stack">
+      leftNav={[
+        projectCreateDialog,
+        <div className="st-demo-nav-stack" key="product-navigation-stack">
           <header className="st-product-brand">
             <span className="st-product-brand__mark" aria-hidden="true">
               ST
@@ -5592,8 +6031,8 @@ function DesktopShell() {
               aria-selected={!leftDrawerOpen}
               onClick={() => dismissLeftDrawer(false)}
             >
-              <ListTodo aria-hidden="true" size={16} strokeWidth={1.8} />
-              <span>任务</span>
+              <FolderKanban aria-hidden="true" size={16} strokeWidth={1.8} />
+              <span>项目</span>
             </button>
             {leftPrimaryToolOrder.map((instrumentId) => {
               const item = leftInstrumentSwitch.items.find(
@@ -5639,43 +6078,37 @@ function DesktopShell() {
               );
             })}
           </nav>
-          {navWorkspaces.length > 0 ? (
-            <button
-              type="button"
-              className="st-product-new-task"
-              onClick={() => {
-                const workspaceId = active?.workspaceId ?? navWorkspaces[0]?.workspaceId;
-                if (workspaceId) void createTask(workspaceId);
-              }}
-            >
-              <Plus aria-hidden="true" size={15} strokeWidth={1.9} />
-              新建任务
-            </button>
-          ) : null}
           <div className="st-demo-nav-stack__workspaces" data-instrument="workspaces">
             <WorkspaceNav
               hideReadiness
               hideFooter
               hideBrand
-              sectionLabel="我的任务"
+              sectionLabel="我的项目"
               searchPlaceholder="搜索任务…"
-              createWorkspaceLabel="添加项目文件夹"
+              createWorkspaceLabel="新建项目"
+              emptyTitle="还没有项目"
+              emptyHint="先建项目再开任务；文件夹可稍后绑定。"
               workspaces={navWorkspaces}
               tasksByWorkspace={navTasks}
               activeTaskId={active?.taskId ?? null}
               query={navQuery}
               onQueryChange={setNavQuery}
               onSelectTask={(task) => void openTask(task)}
-              onCreateWorkspace={() => void createWorkspace()}
+              onCreateWorkspace={openProjectCreateDialog}
+              onBindWorkspaceFolder={(workspaceId) => void bindWorkspaceFolder(workspaceId)}
               onCreateTask={(workspaceId) => void createTask(workspaceId)}
               onCreateChildTask={(workspaceId, parentTaskId) =>
                 void createTask(workspaceId, { parentTaskId })
               }
+              onArchiveTask={(task) => void archiveTask(task)}
+              onUnarchiveTask={(task) => void unarchiveTask(task)}
+              showArchived={showArchivedTasks}
+              onShowArchivedChange={setShowArchivedTasks}
+              archivedCount={archivedTaskCount}
               connectionState={runtimeView.connectionState}
               loading={workspaceLoading}
-              footerDetail={
-                workspaceError ? workspaceError : connectionDetail(runtimeView.connectionState)
-              }
+              bindingWorkspaceId={bindingWorkspaceId}
+              errorMessage={workspaceError}
             />
           </div>
           <div
@@ -5897,14 +6330,36 @@ function DesktopShell() {
               </section>
             </>
           ) : null}
-        </div>
-      }
+        </div>,
+      ]}
       contextRail={
         <div className="st-demo-context">
           <header className="st-demo-task-header">
             <div className="st-demo-task-heading">
               <span className="st-demo-path" title={folderPath}>
-                {active ? `${active.workspaceName} / 任务` : '任务'}
+                {active ? (
+                  <>
+                    <span>{active.workspaceName}</span>
+                    {parentTaskLink ? (
+                      <>
+                        <span aria-hidden="true"> / </span>
+                        <button
+                          type="button"
+                          className="st-demo-path__link"
+                          data-testid="task-parent-breadcrumb"
+                          title={`回到主任务：${parentTaskLink.title}`}
+                          onClick={() => void openTaskById(parentTaskLink.taskId)}
+                        >
+                          {parentTaskLink.title}
+                        </button>
+                      </>
+                    ) : null}
+                    <span aria-hidden="true"> / </span>
+                    <span>任务</span>
+                  </>
+                ) : (
+                  '任务'
+                )}
               </span>
               <div className="st-demo-task-heading__title">
                 <h1>{taskTitle}</h1>
@@ -5913,77 +6368,19 @@ function DesktopShell() {
                   {lastOpenedId && active?.taskId === lastOpenedId ? ' · 已恢复' : ''}
                 </span>
               </div>
-              <div className="st-task-runtime-summary">
-                <button
-                  type="button"
-                  className="st-task-runtime-summary__agent"
-                  data-testid="task-agent-summary"
-                  onClick={() => navigateToInstrument('agent')}
-                  title="打开智能体"
-                >
-                  <span
-                    className="st-task-runtime-summary__avatar"
-                    style={{
-                      ['--st-agent-identity-color' as string]:
-                        fallbackConversationAgentIdentity.color,
-                    }}
-                  >
-                    <Bot aria-hidden="true" size={14} strokeWidth={1.9} />
-                  </span>
-                  <span>
-                    <small>负责智能体</small>
-                    <strong>{fallbackConversationAgentIdentity.name}</strong>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="st-task-runtime-summary__model"
-                  data-testid="task-model-summary"
-                  onClick={() => navigateToInstrument('agent')}
-                  title={activeModelLabel}
-                >
-                  <span className="st-task-runtime-summary__model-mark" aria-hidden="true" />
-                  <span>
-                    <small>运行模型</small>
-                    <strong>{activeModelLabel}</strong>
-                  </span>
-                </button>
-              </div>
+              {showContinuumStrip ? (
+                <div className="st-demo-continuum-strip" data-testid="product-continuum-strip">
+                  <ContinuumRail
+                    hideReadiness
+                    entries={continuumEntries}
+                    hasActiveTask={Boolean(active)}
+                    streaming={isStreaming}
+                    emptyState={null}
+                  />
+                </div>
+              ) : null}
             </div>
             <div className="st-demo-header-tools">
-              <div className="st-demo-mode" aria-busy={modeBusy}>
-                <ModeSwitch
-                  hideReadiness
-                  value={active?.participationMode ?? 'conversation'}
-                  approvedPlan={automaticModeReadiness.approvedPlan}
-                  applicablePolicy={automaticModeReadiness.applicablePolicy}
-                  onChange={(mode) => void changeParticipationMode(mode)}
-                />
-                {modeError ? (
-                  <p className="st-demo-mode__error" role="alert">
-                    {modeError}
-                  </p>
-                ) : null}
-                {visibleAutomaticRecovery?.kind === 'plan' ? (
-                  <button
-                    type="button"
-                    data-testid="automatic-plan-cta"
-                    disabled={modeBusy || planBusy}
-                    onClick={() => void recoverAutomaticPlan()}
-                  >
-                    切到协作并准备计划
-                  </button>
-                ) : null}
-                {visibleAutomaticRecovery?.kind === 'policy' ? (
-                  <button
-                    type="button"
-                    data-testid="automatic-policy-cta"
-                    onClick={() => setRightRailTab('approvals')}
-                  >
-                    打开审批策略
-                  </button>
-                ) : null}
-              </div>
               <div
                 className="st-demo-theme-switch st-demo-layout-switch"
                 role="group"
@@ -6034,27 +6431,31 @@ function DesktopShell() {
               </div>
             </div>
           </header>
-          <div
-            className="st-beginner-next-step"
-            data-testid="beginner-next-step"
-            data-state={beginnerWorkspace.state}
-          >
-            <span className="st-beginner-next-step__icon" aria-hidden="true">
-              <ArrowRight size={15} strokeWidth={2} />
-            </span>
-            <span className="st-beginner-next-step__copy">
-              <strong>下一步</strong>
-              <span>{beginnerWorkspace.nextAction}</span>
-            </span>
-            {beginnerWorkspace.actionLabel ? (
-              <button type="button" onClick={handleBeginnerAction}>
-                {beginnerWorkspace.actionLabel}
-                <ArrowRight aria-hidden="true" size={13} strokeWidth={1.9} />
-              </button>
-            ) : (
-              <span className="st-beginner-next-step__status">{beginnerWorkspace.statusLabel}</span>
-            )}
-          </div>
+          {beginnerWorkspace.showNextStepStrip ? (
+            <div
+              className="st-beginner-next-step"
+              data-testid="beginner-next-step"
+              data-state={beginnerWorkspace.state}
+            >
+              <span className="st-beginner-next-step__icon" aria-hidden="true">
+                <ArrowRight size={15} strokeWidth={2} />
+              </span>
+              <span className="st-beginner-next-step__copy">
+                <strong>需要你处理</strong>
+                <span>{beginnerWorkspace.nextAction}</span>
+              </span>
+              {beginnerWorkspace.actionLabel ? (
+                <button type="button" onClick={handleBeginnerAction}>
+                  {beginnerWorkspace.actionLabel}
+                  <ArrowRight aria-hidden="true" size={13} strokeWidth={1.9} />
+                </button>
+              ) : (
+                <span className="st-beginner-next-step__status">
+                  {beginnerWorkspace.statusLabel}
+                </span>
+              )}
+            </div>
+          ) : null}
           {SHOW_M1_VALIDATION_WORKBENCH ? (
             <details
               className="st-demo-m1-obs"
@@ -7590,6 +7991,18 @@ function DesktopShell() {
             </div>
           ) : null}
 
+          {active && collaborationStatus?.taskId === active.taskId ? (
+            <div
+              className="st-conversation-collaboration-status"
+              data-testid="conversation-collaboration-status"
+              data-tone={collaborationStatus.tone}
+              role={collaborationStatus.tone === 'error' ? 'alert' : 'status'}
+            >
+              <GitBranch aria-hidden="true" size={15} strokeWidth={1.8} />
+              <span>{collaborationStatus.text}</span>
+            </div>
+          ) : null}
+
           {active && active.participationMode !== 'conversation' ? (
             <div className="st-m2-plan-flow" data-testid="m2-plan-flow">
               {planRevision ? (
@@ -7649,38 +8062,22 @@ function DesktopShell() {
               <span className="st-beginner-empty__mark" aria-hidden="true">
                 <Bot size={18} strokeWidth={1.7} />
               </span>
-              <h2 data-testid="conversation-empty-title">
-                {!active
-                  ? '从一个任务开始'
-                  : !agentBinding?.defaultModelId
-                    ? '为任务选好智能体'
-                    : runtimeView.connectionState !== 'online'
-                      ? '连接恢复后即可继续'
-                      : '告诉智能体要做什么'}
-              </h2>
-              <p data-testid="conversation-empty-hint">{beginnerWorkspace.nextAction}</p>
-              <ol className="st-beginner-empty__steps" data-testid="conversation-empty-steps">
-                {beginnerWorkspace.steps.map((step, index) => (
-                  <li key={step.id} data-state={step.state}>
-                    <span aria-hidden="true">
-                      {step.state === 'complete' ? (
-                        <Check size={12} strokeWidth={2.2} />
-                      ) : (
-                        index + 1
-                      )}
-                    </span>
-                    <span>
-                      <strong>{step.label}</strong>
-                      <small>{step.detail}</small>
-                    </span>
-                  </li>
-                ))}
-              </ol>
+              <h2 data-testid="conversation-empty-title">{beginnerWorkspace.emptyTitle}</h2>
+              <p data-testid="conversation-empty-hint">{beginnerWorkspace.emptyHint}</p>
               {beginnerWorkspace.actionLabel ? (
-                <button type="button" onClick={handleBeginnerAction}>
+                <button
+                  type="button"
+                  data-testid="conversation-empty-cta"
+                  onClick={handleBeginnerAction}
+                >
                   {beginnerWorkspace.actionLabel}
                   <ArrowRight aria-hidden="true" size={14} strokeWidth={1.9} />
                 </button>
+              ) : null}
+              {!active ? (
+                <p className="st-beginner-empty__aside" data-testid="conversation-empty-aside">
+                  本地文件夹可在项目菜单里稍后绑定，不挡开始。
+                </p>
               ) : null}
             </div>
           ) : null}
@@ -7728,6 +8125,7 @@ function DesktopShell() {
               className="st-task-overview"
               data-testid="right-rail-overview"
               data-state={beginnerWorkspace.state}
+              data-dense={beginnerWorkspace.showProgressSteps ? '1' : '0'}
             >
               <header className="st-task-overview__status">
                 <span className="st-task-overview__status-dot" aria-hidden="true" />
@@ -7737,54 +8135,161 @@ function DesktopShell() {
                 </span>
               </header>
 
-              <section className="st-task-overview__next" aria-labelledby="task-overview-next">
-                <span id="task-overview-next">下一步</span>
-                <p>{beginnerWorkspace.nextAction}</p>
-                {beginnerWorkspace.actionLabel ? (
-                  <button type="button" onClick={handleBeginnerAction}>
-                    {beginnerWorkspace.actionLabel}
-                    <ArrowRight aria-hidden="true" size={13} strokeWidth={1.9} />
+              {parentTaskLink ? (
+                <section
+                  className="st-task-overview__parent"
+                  data-testid="right-rail-parent-task"
+                  aria-labelledby="task-parent-label"
+                >
+                  <span id="task-parent-label">所属主任务</span>
+                  <button
+                    type="button"
+                    data-testid="right-rail-open-parent"
+                    onClick={() => void openTaskById(parentTaskLink.taskId)}
+                  >
+                    <GitBranch aria-hidden="true" size={14} strokeWidth={1.8} />
+                    <span>
+                      <strong>{parentTaskLink.title}</strong>
+                      <small>返回主任务查看子任务进度</small>
+                    </span>
+                    <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
                   </button>
-                ) : null}
-              </section>
+                </section>
+              ) : null}
 
-              <ol className="st-task-overview__steps" aria-label="任务进度">
-                {beginnerWorkspace.steps.map((step) => (
-                  <li key={step.id} data-state={step.state}>
-                    <span className="st-task-overview__step-mark" aria-hidden="true">
-                      {step.state === 'complete' ? (
-                        <Check size={12} strokeWidth={2.2} />
-                      ) : (
-                        <Circle size={10} strokeWidth={2} />
-                      )}
+              {active && !parentTaskLink ? (
+                <section
+                  className="st-task-overview__children"
+                  data-testid="right-rail-child-tasks"
+                  aria-labelledby="task-children-label"
+                >
+                  <header>
+                    <span id="task-children-label">子任务</span>
+                    {childTasks.length > 0 ? <small>{childTasksSummary}</small> : null}
+                  </header>
+                  {childTasks.length > 0 ? (
+                    <ul className="st-task-overview__child-list">
+                      {childTasks.map((child) => (
+                        <li key={child.taskId} data-tone={child.tone}>
+                          <button
+                            type="button"
+                            className="st-task-overview__child-btn"
+                            data-testid={`right-rail-child-${child.taskId}`}
+                            data-tone={child.tone}
+                            title={child.goal || child.title}
+                            onClick={() => void openTaskById(child.taskId)}
+                          >
+                            <span
+                              className="st-task-overview__child-dot"
+                              data-tone={child.tone}
+                              aria-hidden="true"
+                            />
+                            <span className="st-task-overview__child-copy">
+                              <strong>{child.title}</strong>
+                              <small>{child.statusLabel}</small>
+                            </span>
+                            <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="st-task-overview__children-empty">
+                      左侧任务旁点 + 可拆子任务；进度会在这里浮现。
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className="st-task-overview__children-add"
+                    data-testid="right-rail-add-child"
+                    onClick={() =>
+                      void createTask(active.workspaceId, { parentTaskId: active.taskId })
+                    }
+                  >
+                    + 新建子任务
+                  </button>
+                </section>
+              ) : null}
+
+              {active ? (
+                <section
+                  className="st-task-overview__lifecycle"
+                  data-testid="right-rail-task-lifecycle"
+                >
+                  {(tasksByWorkspace.get(active.workspaceId) ?? []).find(
+                    (task) => task.taskId === active.taskId,
+                  )?.status === 'archived' ? (
+                    <button
+                      type="button"
+                      data-testid="right-rail-unarchive-task"
+                      onClick={() => {
+                        const full = (tasksByWorkspace.get(active.workspaceId) ?? []).find(
+                          (task) => task.taskId === active.taskId,
+                        );
+                        if (full) void unarchiveTask(full);
+                      }}
+                    >
+                      恢复此任务
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      data-testid="right-rail-archive-task"
+                      onClick={() => {
+                        const full = (tasksByWorkspace.get(active.workspaceId) ?? []).find(
+                          (task) => task.taskId === active.taskId,
+                        );
+                        if (full) void archiveTask(full);
+                      }}
+                    >
+                      归档此任务
+                    </button>
+                  )}
+                  <p>归档后默认从列表隐藏，可随时恢复；不会删除对话记录。</p>
+                </section>
+              ) : null}
+
+              {beginnerWorkspace.showProgressSteps ? (
+                <ol className="st-task-overview__steps" aria-label="任务进度">
+                  {beginnerWorkspace.steps.map((step) => (
+                    <li key={step.id} data-state={step.state}>
+                      <span className="st-task-overview__step-mark" aria-hidden="true">
+                        {step.state === 'complete' ? (
+                          <Check size={12} strokeWidth={2.2} />
+                        ) : (
+                          <Circle size={10} strokeWidth={2} />
+                        )}
+                      </span>
+                      <span>
+                        <strong>{step.label}</strong>
+                        <small>{step.detail}</small>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
+
+              {active ? (
+                <section className="st-task-overview__agent" aria-labelledby="task-owner-label">
+                  <span id="task-owner-label">当前智能体</span>
+                  <button type="button" onClick={() => navigateToInstrument('agent')}>
+                    <span
+                      className="st-task-overview__avatar"
+                      style={{
+                        ['--st-agent-identity-color' as string]:
+                          fallbackConversationAgentIdentity.color,
+                      }}
+                    >
+                      <Bot aria-hidden="true" size={15} strokeWidth={1.9} />
                     </span>
                     <span>
-                      <strong>{step.label}</strong>
-                      <small>{step.detail}</small>
+                      <strong>{fallbackConversationAgentIdentity.name}</strong>
+                      <small title={activeModelLabel}>{activeModelLabel}</small>
                     </span>
-                  </li>
-                ))}
-              </ol>
-
-              <section className="st-task-overview__agent" aria-labelledby="task-owner-label">
-                <span id="task-owner-label">当前由谁处理</span>
-                <button type="button" onClick={() => navigateToInstrument('agent')}>
-                  <span
-                    className="st-task-overview__avatar"
-                    style={{
-                      ['--st-agent-identity-color' as string]:
-                        fallbackConversationAgentIdentity.color,
-                    }}
-                  >
-                    <Bot aria-hidden="true" size={15} strokeWidth={1.9} />
-                  </span>
-                  <span>
-                    <strong>{fallbackConversationAgentIdentity.name}</strong>
-                    <small title={activeModelLabel}>{activeModelLabel}</small>
-                  </span>
-                  <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
-                </button>
-              </section>
+                    <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
+                  </button>
+                </section>
+              ) : null}
 
               {approvalPendingCount > 0 ? (
                 <button
@@ -7801,51 +8306,55 @@ function DesktopShell() {
                 </button>
               ) : null}
 
-              <section
-                className="st-task-overview__artifacts"
-                aria-labelledby="task-artifacts-label"
-              >
-                <header>
-                  <span id="task-artifacts-label">产物</span>
-                  {artifactItems.length > 0 ? <small>{artifactItems.length}</small> : null}
-                </header>
-                {artifactItems.length > 0 ? (
-                  <ul>
-                    {artifactItems.slice(0, 3).map((item) => {
-                      const latestVersion = item.versions[item.versions.length - 1];
-                      return (
-                        <li key={String(item.artifact.id)}>
-                          <PackageCheck aria-hidden="true" size={15} strokeWidth={1.7} />
-                          <span>
-                            <strong>{item.artifact.name}</strong>
-                            <small>
-                              {latestVersion ? `版本 ${latestVersion.version}` : '等待生成版本'}
-                            </small>
-                          </span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                ) : (
-                  <p>智能体生成的文件和版本会出现在这里。</p>
-                )}
-                {artifactItems.length > 0 ? (
-                  <button type="button" onClick={() => setRightRailTab('artifacts')}>
-                    查看全部产物
-                    <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
-                  </button>
-                ) : null}
-              </section>
+              {active || artifactItems.length > 0 ? (
+                <section
+                  className="st-task-overview__artifacts"
+                  aria-labelledby="task-artifacts-label"
+                >
+                  <header>
+                    <span id="task-artifacts-label">产物</span>
+                    {artifactItems.length > 0 ? <small>{artifactItems.length}</small> : null}
+                  </header>
+                  {artifactItems.length > 0 ? (
+                    <ul>
+                      {artifactItems.slice(0, 3).map((item) => {
+                        const latestVersion = item.versions[item.versions.length - 1];
+                        return (
+                          <li key={String(item.artifact.id)}>
+                            <PackageCheck aria-hidden="true" size={15} strokeWidth={1.7} />
+                            <span>
+                              <strong>{item.artifact.name}</strong>
+                              <small>
+                                {latestVersion ? `版本 ${latestVersion.version}` : '等待生成版本'}
+                              </small>
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <p>生成的文件和版本会出现在这里。</p>
+                  )}
+                  {artifactItems.length > 0 ? (
+                    <button type="button" onClick={() => setRightRailTab('artifacts')}>
+                      查看全部产物
+                      <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
+                    </button>
+                  ) : null}
+                </section>
+              ) : null}
 
-              <button
-                type="button"
-                className="st-task-overview__details"
-                data-testid="right-rail-open-details"
-                onClick={() => setRightRailTab('trace')}
-              >
-                <Activity aria-hidden="true" size={14} strokeWidth={1.8} />
-                执行详情
-              </button>
+              {active ? (
+                <button
+                  type="button"
+                  className="st-task-overview__details"
+                  data-testid="right-rail-open-details"
+                  onClick={() => setRightRailTab('trace')}
+                >
+                  <Activity aria-hidden="true" size={14} strokeWidth={1.8} />
+                  执行详情
+                </button>
+              ) : null}
             </div>
           ) : (
             <>
@@ -8071,8 +8580,8 @@ function DesktopShell() {
             mode={active?.participationMode ?? 'conversation'}
             placeholder={
               active
-                ? `给 ${fallbackConversationAgentIdentity.name} 发送消息…`
-                : '先选择任务再发送…'
+                ? `@${fallbackConversationAgentIdentity.name} · 描述你希望完成的工作…`
+                : '创建任务后即可在这里输入…'
             }
             disabled={
               sendPending ||
@@ -8089,6 +8598,13 @@ function DesktopShell() {
             connectionState={runtimeView.connectionState}
             hasActiveTask={Boolean(active)}
             agentDefaultSet={Boolean(agentBinding?.defaultModelId)}
+            workspaces={composeWorkspaces}
+            selectedWorkspaceId={active?.workspaceId ?? null}
+            onWorkspaceChange={(workspaceId) => void switchComposeWorkspace(workspaceId)}
+            agents={composeAgents}
+            selectedAgentId={selectedAgentId ?? fallbackConversationAgentIdentity.agentId ?? null}
+            onAgentChange={(agentId) => selectAgent(agentId)}
+            onOpenAgentCenter={() => navigateToInstrument('agent')}
             onReconnect={reconnectRuntime}
             onConfigureModel={() => navigateToInstrument('agent')}
             onCancel={() => void cancelStream()}

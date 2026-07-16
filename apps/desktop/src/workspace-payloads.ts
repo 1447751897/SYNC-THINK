@@ -1,5 +1,6 @@
 ﻿import type {
   CreateTaskPayload,
+  BindWorkspaceFolderPayload,
   CreateWorkspacePayload,
   ListTasksPayload,
   ListWorkspacesPayload,
@@ -14,13 +15,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function parseCreateWorkspacePayload(value: unknown): CreateWorkspacePayload {
   if (!isRecord(value)) throw new Error('Invalid create-workspace payload');
+  if (typeof value.name !== 'string' || value.name.trim().length === 0 || value.name.length > 256) {
+    throw new Error('Invalid create-workspace payload');
+  }
   if (
-    typeof value.folderPath !== 'string' ||
-    value.folderPath.trim().length === 0 ||
-    value.folderPath.length > 4096 ||
-    typeof value.name !== 'string' ||
-    value.name.trim().length === 0 ||
-    value.name.length > 256
+    value.folderPath !== undefined &&
+    (typeof value.folderPath !== 'string' ||
+      value.folderPath.trim().length === 0 ||
+      value.folderPath.length > 4096)
   ) {
     throw new Error('Invalid create-workspace payload');
   }
@@ -35,8 +37,37 @@ export function parseCreateWorkspacePayload(value: unknown): CreateWorkspacePayl
     }
   }
   return {
-    folderPath: value.folderPath.trim(),
+    folderPath: typeof value.folderPath === 'string' ? value.folderPath.trim() : undefined,
     name: value.name.trim(),
+    allowedRoots: value.allowedRoots as string[] | undefined,
+  };
+}
+
+export function parseBindWorkspaceFolderPayload(value: unknown): BindWorkspaceFolderPayload {
+  if (!isRecord(value)) throw new Error('Invalid bind-workspace-folder payload');
+  if (
+    typeof value.workspaceId !== 'string' ||
+    value.workspaceId.trim().length === 0 ||
+    value.workspaceId.length > 256 ||
+    typeof value.folderPath !== 'string' ||
+    value.folderPath.trim().length === 0 ||
+    value.folderPath.length > 4096
+  ) {
+    throw new Error('Invalid bind-workspace-folder payload');
+  }
+  if (value.allowedRoots !== undefined) {
+    if (
+      !Array.isArray(value.allowedRoots) ||
+      !value.allowedRoots.every(
+        (root) => typeof root === 'string' && root.length > 0 && root.length <= 4096,
+      )
+    ) {
+      throw new Error('Invalid bind-workspace-folder payload');
+    }
+  }
+  return {
+    workspaceId: value.workspaceId.trim() as BindWorkspaceFolderPayload['workspaceId'],
+    folderPath: value.folderPath.trim(),
     allowedRoots: value.allowedRoots as string[] | undefined,
   };
 }
@@ -88,7 +119,45 @@ export function parseListTasksPayload(value: unknown): ListTasksPayload {
   if (typeof value.workspaceId !== 'string' || value.workspaceId.length === 0) {
     throw new Error('Invalid list-tasks payload');
   }
-  return { workspaceId: value.workspaceId as ListTasksPayload['workspaceId'] };
+  if (value.includeArchived !== undefined && typeof value.includeArchived !== 'boolean') {
+    throw new Error('Invalid list-tasks payload');
+  }
+  return {
+    workspaceId: value.workspaceId as ListTasksPayload['workspaceId'],
+    includeArchived: value.includeArchived === true ? true : undefined,
+  };
+}
+
+export function parseArchiveTaskPayload(value: unknown): {
+  taskId: string;
+  expectedTaskVersion: number;
+  cascade?: boolean;
+} {
+  if (!isRecord(value)) throw new Error('Invalid archive-task payload');
+  if (
+    typeof value.taskId !== 'string' ||
+    value.taskId.length === 0 ||
+    !Number.isInteger(value.expectedTaskVersion) ||
+    (value.expectedTaskVersion as number) < 0
+  ) {
+    throw new Error('Invalid archive-task payload');
+  }
+  if (value.cascade !== undefined && typeof value.cascade !== 'boolean') {
+    throw new Error('Invalid archive-task payload');
+  }
+  return {
+    taskId: value.taskId,
+    expectedTaskVersion: value.expectedTaskVersion as number,
+    cascade: value.cascade,
+  };
+}
+
+export function parseUnarchiveTaskPayload(value: unknown): {
+  taskId: string;
+  expectedTaskVersion: number;
+  cascade?: boolean;
+} {
+  return parseArchiveTaskPayload(value);
 }
 
 export function parseOpenTaskPayload(value: unknown): OpenTaskPayload {

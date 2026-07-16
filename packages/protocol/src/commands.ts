@@ -35,11 +35,14 @@ import type { Feature } from './version.js';
 export type CommandType =
   | 'runtime.healthcheck'
   | 'workspace.create'
+  | 'workspace.bindFolder'
   | 'workspace.list'
   | 'task.create'
   | 'task.list'
   | 'task.open'
   | 'task.search'
+  | 'task.archive'
+  | 'task.unarchive'
   | 'task.setParticipationMode'
   | 'task.appendMessage'
   | 'runtime.subscribeEvents'
@@ -128,7 +131,7 @@ export interface HealthcheckResponse {
 }
 
 export interface CreateWorkspacePayload {
-  folderPath: string;
+  folderPath?: string;
   name: string;
   /** Optional allowlisted roots; empty/undefined allows first-folder onboarding. */
   allowedRoots?: string[];
@@ -136,9 +139,24 @@ export interface CreateWorkspacePayload {
 
 export interface CreateWorkspaceResponse {
   workspaceId: WorkspaceId;
+  folderPath?: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface BindWorkspaceFolderPayload {
+  workspaceId: WorkspaceId;
+  folderPath: string;
+  /** Optional allowlisted roots; validation and enforcement happen in the Runtime. */
+  allowedRoots?: string[];
+}
+
+export interface BindWorkspaceFolderResponse {
+  workspaceId: WorkspaceId;
   folderPath: string;
   name: string;
   createdAt: string;
+  updatedAt: string;
 }
 
 export interface ListWorkspacesPayload {
@@ -147,7 +165,7 @@ export interface ListWorkspacesPayload {
 
 export interface WorkspaceSummary {
   workspaceId: WorkspaceId;
-  folderPath: string;
+  folderPath?: string;
   name: string;
   createdAt: string;
   updatedAt: string;
@@ -177,6 +195,33 @@ export interface CreateTaskResponse {
 
 export interface ListTasksPayload {
   workspaceId: WorkspaceId;
+  /** When true, include status=archived tasks. Default: false. */
+  includeArchived?: boolean;
+}
+
+export interface ArchiveTaskPayload {
+  taskId: TaskId;
+  expectedTaskVersion: number;
+  /** When true (default), also archive descendant subtasks. */
+  cascade?: boolean;
+}
+
+export interface ArchiveTaskResponse {
+  task: TaskSummary;
+  /** Task IDs that were transitioned to archived (includes root). */
+  archivedTaskIds: TaskId[];
+}
+
+export interface UnarchiveTaskPayload {
+  taskId: TaskId;
+  expectedTaskVersion: number;
+  /** When true (default), also restore descendant subtasks that were archived. */
+  cascade?: boolean;
+}
+
+export interface UnarchiveTaskResponse {
+  task: TaskSummary;
+  unarchivedTaskIds: TaskId[];
 }
 
 export interface TaskSummary {
@@ -243,6 +288,9 @@ export interface AppendMessagePayload {
 export interface AppendMessageResponse {
   messageId: MessageId;
   taskVersion: number;
+  /** Present when the first user request replaced a generated placeholder title. */
+  taskTitle?: string;
+  taskGoal?: string;
   /** Optional: streaming id assigned if this user message triggers a model call. */
   streamId?: string;
 }

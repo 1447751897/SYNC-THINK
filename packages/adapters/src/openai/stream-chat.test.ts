@@ -21,7 +21,9 @@ function req(overrides: Partial<ProviderCallRequest> = {}): ProviderCallRequest 
 
 function deferred() {
   let resolve!: () => void;
-  const promise = new Promise<void>((done) => { resolve = done; });
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 
@@ -92,16 +94,80 @@ describe('streamOpenAIChatCompletions', () => {
     expect(bodyJson.stream).toBe(true);
   });
 
+  it('serializes tool schemas/history and assembles streamed tool calls', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"README.md\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(
+        req({
+          tools: [
+            {
+              name: 'read_file',
+              description: 'Read a file',
+              inputSchema: { type: 'object', required: ['path'] },
+            },
+          ],
+          messages: [
+            { role: 'user', content: 'Read README' },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCall: {
+                    id: 'previous-call',
+                    name: 'read_file',
+                    argumentsJson: '{"path":"old.md"}',
+                  },
+                },
+              ],
+            },
+            { role: 'tool', toolCallId: 'previous-call', content: '{"content":"old"}' },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    expect(events).toContainEqual({
+      type: 'tool-call',
+      toolCall: { id: 'call-1', name: 'read_file', argumentsJson: '{"path":"README.md"}' },
+    });
+    expect(events.at(-1)).toEqual({ type: 'finished', reason: 'tool-requests' });
+    const requestBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(requestBody.tools[0]).toMatchObject({
+      type: 'function',
+      function: { name: 'read_file', parameters: { type: 'object' } },
+    });
+    expect(requestBody.messages[1]).toMatchObject({
+      role: 'assistant',
+      tool_calls: [{ id: 'previous-call', function: { name: 'read_file' } }],
+    });
+    expect(requestBody.messages[2]).toMatchObject({
+      role: 'tool',
+      tool_call_id: 'previous-call',
+    });
+  });
+
   it('distinguishes external cancellation from timeout', async () => {
     const external = new AbortController();
     fetchMock.mockImplementation(async (_url, initValue) => {
       const signal = (initValue as RequestInit).signal!;
       return new Promise<Response>((_resolve, reject) => {
-        signal.addEventListener(
-          'abort',
-          () => reject(new DOMException('aborted', 'AbortError')),
-          { once: true },
-        );
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), {
+          once: true,
+        });
       });
     });
     const eventsPromise = collect(
@@ -152,7 +218,9 @@ describe('streamOpenAIChatCompletions', () => {
       value: { type: 'text-delta', text: 'first' },
     });
     let returned = false;
-    const closing = iterator.return!().then(() => { returned = true; });
+    const closing = iterator.return!().then(() => {
+      returned = true;
+    });
     await Promise.resolve();
     expect(returned).toBe(false);
     cleanup.resolve();

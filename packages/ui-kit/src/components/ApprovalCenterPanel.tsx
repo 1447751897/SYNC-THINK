@@ -149,7 +149,7 @@ const MODE_LABEL: Record<ApprovalModeView, string> = {
 
 const POLICY_SCOPE_LABEL: Record<ApprovalPolicyScopeType, string> = {
   user: '用户',
-  workspace: '工作区',
+  workspace: '项目',
   project: '项目',
   task: '任务',
   agent: '智能体',

@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, type ReactNode, useEffect, useCallback } from 'react';
+﻿import { useState, useRef, useMemo, type ReactNode, useEffect, useCallback } from 'react';
 import { LayoutPanelLeft, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { applyTheme, type Theme } from '../theme.js';
 
@@ -19,7 +19,7 @@ export interface AppShellReadiness {
 }
 
 export interface AppShellProps {
-  /** Left navigation starts with local folders; tasks nested under them. */
+  /** Left navigation starts with projects; tasks nest under projects; local folders bind optionally. */
   leftNav?: ReactNode;
   /** Center: scrollable complete conversation history. */
   conversation?: ReactNode;
@@ -188,7 +188,7 @@ export function AppShell(props: AppShellProps) {
       data-level={readiness.level}
       data-testid="app-shell"
     >
-      <aside className="st-app-shell__nav" aria-label="本地工作区">
+      <aside className="st-app-shell__nav" aria-label="项目导航">
         {props.leftNav}
       </aside>
       <main className="st-app-shell__main">

@@ -553,7 +553,7 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                     </div>
                   ) : (
                     <p className="st-agent-ws__hint">
-                      任务关联列表将在多 Agent API 就绪后展示。当前可从左侧工作区打开任务。
+                      任务关联列表将在多 Agent API 就绪后展示。当前可从左侧项目打开任务。
                     </p>
                   )}
                   <p className="st-agent-ws__hint">{capability.note}</p>
@@ -580,7 +580,7 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                 <div className="st-agent-ws__panel" data-testid="agent-workspace-panel-tasks">
                   {relatedTasks.length === 0 ? (
                     <p className="st-agent-ws__empty">
-                      暂无关联任务摘要。请在左侧工作区打开或创建任务；多 Agent 关联将在后续接入。
+                      暂无关联任务摘要。请在左侧项目打开或创建任务；多 Agent 关联将在后续接入。
                     </p>
                   ) : (
                     <ul className="st-agent-ws__task-list">

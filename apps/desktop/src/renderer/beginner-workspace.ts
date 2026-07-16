@@ -1,8 +1,23 @@
 export type BeginnerWorkspaceState =
-  'empty' | 'offline' | 'setup' | 'ready' | 'working' | 'approval' | 'result' | 'continue';
+  | 'empty'
+  | 'offline'
+  | 'setup'
+  | 'ready'
+  | 'working'
+  | 'approval'
+  | 'result'
+  | 'continue';
 
 export type BeginnerWorkspaceAction =
-  'tasks' | 'reconnect' | 'agent' | 'compose' | 'approvals' | 'artifacts' | 'none';
+  | 'tasks'
+  | 'create-project'
+  | 'create-task'
+  | 'reconnect'
+  | 'agent'
+  | 'compose'
+  | 'approvals'
+  | 'artifacts'
+  | 'none';
 
 export type BeginnerTaskStepState = 'complete' | 'active' | 'pending';
 
@@ -21,10 +36,20 @@ export interface BeginnerWorkspaceView {
   actionLabel: string | null;
   action: BeginnerWorkspaceAction;
   steps: readonly BeginnerTaskStep[];
+  /** Center empty state primary heading (product copy). */
+  emptyTitle: string;
+  /** Center empty state supporting line. */
+  emptyHint: string;
+  /** Whether the top "下一步" strip should show (urgent guidance only). */
+  showNextStepStrip: boolean;
+  /** Whether the right-rail overview should stay dense with steps. */
+  showProgressSteps: boolean;
 }
 
 export interface BeginnerWorkspaceInput {
   hasActiveTask: boolean;
+  /** When known, empty CTA becomes create-project vs create-task. */
+  hasWorkspace?: boolean;
   connectionState: 'preview' | 'connecting' | 'online' | 'offline';
   agentReady: boolean;
   streaming: boolean;
@@ -54,14 +79,25 @@ function steps(
 
 export function projectBeginnerWorkspace(input: BeginnerWorkspaceInput): BeginnerWorkspaceView {
   if (!input.hasActiveTask) {
+    // Prefer create-project when we know there is no workspace; otherwise create-task
+    // (falls back to project create in the shell if the catalog is empty).
+    const noWorkspace = input.hasWorkspace === false;
     return {
       state: 'empty',
-      statusLabel: '等待开始',
-      statusDetail: '还没有打开任务',
-      nextAction: '从左侧选择一个任务，或新建任务。',
-      actionLabel: '查看任务',
-      action: 'tasks',
+      statusLabel: '可以开始',
+      statusDetail: noWorkspace ? '还没有项目' : '还没有打开任务',
+      nextAction: noWorkspace
+        ? '先建一个项目，再创建任务开始对话。'
+        : '创建或选择一个任务，就能开始对话。',
+      actionLabel: noWorkspace ? '新建项目' : '新建任务',
+      action: noWorkspace ? 'create-project' : 'create-task',
       steps: steps('active', 'pending', 'pending', '等待任务', '完成后在这里检查'),
+      emptyTitle: '今天想推进什么？',
+      emptyHint: noWorkspace
+        ? '先建一个项目；本地文件夹可稍后绑定。'
+        : '创建一个任务，或从左侧选择已有任务。',
+      showNextStepStrip: false,
+      showProgressSteps: false,
     };
   }
 
@@ -75,6 +111,12 @@ export function projectBeginnerWorkspace(input: BeginnerWorkspaceInput): Beginne
       actionLabel: connecting ? null : '重新连接',
       action: connecting ? 'none' : 'reconnect',
       steps: steps('active', 'pending', 'pending', '等待连接', '完成后在这里检查'),
+      emptyTitle: connecting ? '正在连接本地服务' : '连接恢复后即可继续',
+      emptyHint: connecting
+        ? '连接成功后，对话会自动恢复。'
+        : '重新连接本地服务，无需重述任务。',
+      showNextStepStrip: !connecting,
+      showProgressSteps: false,
     };
   }
 
@@ -82,11 +124,15 @@ export function projectBeginnerWorkspace(input: BeginnerWorkspaceInput): Beginne
     return {
       state: 'setup',
       statusLabel: '还差一步',
-      statusDetail: '智能体没有可用的运行模型',
-      nextAction: '为智能体选择分组、供应商和模型，然后回到任务。',
+      statusDetail: '智能体还没有可用模型',
+      nextAction: '为智能体选好模型后，回到这里开始对话。',
       actionLabel: '配置智能体',
       action: 'agent',
       steps: steps('active', 'pending', 'pending', '等待运行模型', '完成后在这里检查'),
+      emptyTitle: '为任务选好智能体',
+      emptyHint: '绑定模型后即可发送消息。',
+      showNextStepStrip: true,
+      showProgressSteps: false,
     };
   }
 
@@ -94,11 +140,15 @@ export function projectBeginnerWorkspace(input: BeginnerWorkspaceInput): Beginne
     return {
       state: 'working',
       statusLabel: '智能体处理中',
-      statusDetail: '回复和执行结果会自动出现在当前任务',
+      statusDetail: '回复会自动出现在当前任务',
       nextAction: '智能体正在工作，无需重复发送。',
       actionLabel: null,
       action: 'none',
       steps: steps('complete', 'active', 'pending', '正在处理你的要求', '等待工作完成'),
+      emptyTitle: '智能体处理中',
+      emptyHint: '回复和执行结果会自动出现。',
+      showNextStepStrip: false,
+      showProgressSteps: true,
     };
   }
 
@@ -111,6 +161,10 @@ export function projectBeginnerWorkspace(input: BeginnerWorkspaceInput): Beginne
       actionLabel: '查看审批',
       action: 'approvals',
       steps: steps('complete', 'active', 'pending', '等待你的确认', '审批后继续'),
+      emptyTitle: '有操作等待确认',
+      emptyHint: '批准或拒绝后，任务才会继续。',
+      showNextStepStrip: true,
+      showProgressSteps: true,
     };
   }
 
@@ -123,6 +177,10 @@ export function projectBeginnerWorkspace(input: BeginnerWorkspaceInput): Beginne
       actionLabel: '查看产物',
       action: 'artifacts',
       steps: steps('complete', 'complete', 'complete', '本轮工作已返回', '产物可以检查'),
+      emptyTitle: '本轮已有结果',
+      emptyHint: '可以检查产物，或继续补充要求。',
+      showNextStepStrip: false,
+      showProgressSteps: true,
     };
   }
 
@@ -130,11 +188,15 @@ export function projectBeginnerWorkspace(input: BeginnerWorkspaceInput): Beginne
     return {
       state: 'ready',
       statusLabel: '可以开始',
-      statusDetail: '任务、智能体和模型已就绪',
+      statusDetail: '任务已就绪',
       nextAction: '在下方描述你希望完成的工作。',
       actionLabel: '开始输入',
       action: 'compose',
       steps: steps('complete', 'active', 'pending', '等待你的第一条消息', '完成后在这里检查'),
+      emptyTitle: '告诉智能体要做什么',
+      emptyHint: '直接在下方输入即可，上下文会留在当前任务里。',
+      showNextStepStrip: false,
+      showProgressSteps: false,
     };
   }
 
@@ -146,5 +208,9 @@ export function projectBeginnerWorkspace(input: BeginnerWorkspaceInput): Beginne
     actionLabel: '继续输入',
     action: 'compose',
     steps: steps('complete', 'active', 'pending', '继续推进当前任务', '结果出现后可检查'),
+    emptyTitle: '继续当前任务',
+    emptyHint: '补充要求即可，无需重述背景。',
+    showNextStepStrip: false,
+    showProgressSteps: true,
   };
 }

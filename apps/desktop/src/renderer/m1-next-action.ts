@@ -301,7 +301,7 @@ export function projectM1NextAction(input: M1NextActionInput): M1NextAction {
     return action({
       kind: 'connect-runtime',
       title: '先连上 Runtime',
-      body: '桌面端要先连本地 Runtime，会话就绪与发送才会亮。可点主按钮重新连接；或看左侧工作区底部连接状态。',
+      body: '桌面端要先连本地 Runtime，会话就绪与发送才会亮。可点主按钮重新连接；或看左侧项目区底部连接状态。',
       ctaLabel: '重新连接 Runtime',
       jumpTarget: 'workspaces',
       ctaAction: 'reconnect',
@@ -315,8 +315,8 @@ export function projectM1NextAction(input: M1NextActionInput): M1NextAction {
     return action({
       kind: 'open-task',
       title: '打开或创建一个任务',
-      body: '多模型对话、Manifest、轨迹都以任务为边界。在左侧工作区选一个任务或新建。',
-      ctaLabel: '打开工作区导航',
+      body: '多模型对话、Manifest、轨迹都以任务为边界。在左侧项目中选一个任务或新建。',
+      ctaLabel: '打开项目导航',
       jumpTarget: 'workspaces',
       ctaAction: 'jump',
       priority: 2,

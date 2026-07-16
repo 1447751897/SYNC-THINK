@@ -65,11 +65,11 @@ export type M1SessionJumpTarget =
 const CHIP_JUMP: Record<string, { target: M1SessionJumpTarget; hint: string }> = {
   runtime: {
     target: 'none',
-    hint: 'Runtime 连接状态 · 见左侧工作区底部连接说明',
+    hint: 'Runtime 连接状态 · 见左侧项目区底部连接说明',
   },
   task: {
     target: 'workspaces',
-    hint: '跳到工作区导航 · 打开或创建任务',
+    hint: '跳到项目导航 · 打开或创建任务',
   },
   providers: {
     target: 'providers',

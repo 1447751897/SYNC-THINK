@@ -4,6 +4,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AppendMessagePayload,
   AppendMessageResponse,
+  BindWorkspaceFolderPayload,
+  BindWorkspaceFolderResponse,
   CancelRunPayload,
   CreateTaskPayload,
   CreateTaskResponse,
@@ -140,6 +142,11 @@ const api = {
       ipcRenderer.invoke('runtime:run-cancel', payload) as Promise<PauseResumeCancelResponse>,
     createWorkspace: (payload: CreateWorkspacePayload) =>
       ipcRenderer.invoke('runtime:workspace-create', payload) as Promise<CreateWorkspaceResponse>,
+    bindWorkspaceFolder: (payload: BindWorkspaceFolderPayload) =>
+      ipcRenderer.invoke(
+        'runtime:workspace-bind-folder',
+        payload,
+      ) as Promise<BindWorkspaceFolderResponse>,
     listWorkspaces: (payload: ListWorkspacesPayload = {}) =>
       ipcRenderer.invoke('runtime:workspace-list', payload) as Promise<ListWorkspacesResponse>,
     createTask: (payload: CreateTaskPayload) =>
@@ -152,6 +159,14 @@ const api = {
       ipcRenderer.invoke('runtime:task-search', payload) as Promise<SearchTasksResponse>,
     setParticipationMode: (payload: SetParticipationModePayload) =>
       ipcRenderer.invoke('runtime:mode-set', payload) as Promise<SetParticipationModeResponse>,
+    archiveTask: (payload: import('@sync-think/protocol').ArchiveTaskPayload) =>
+      ipcRenderer.invoke('runtime:task-archive', payload) as Promise<
+        import('@sync-think/protocol').ArchiveTaskResponse
+      >,
+    unarchiveTask: (payload: import('@sync-think/protocol').UnarchiveTaskPayload) =>
+      ipcRenderer.invoke('runtime:task-unarchive', payload) as Promise<
+        import('@sync-think/protocol').UnarchiveTaskResponse
+      >,
     createPlan: (payload: PlanDraftPayload) =>
       ipcRenderer.invoke('runtime:plan-create', payload) as Promise<PlanDraftResponse>,
     revisePlan: (payload: PlanRevisePayload) =>

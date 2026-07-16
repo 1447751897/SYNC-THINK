@@ -1,5 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { Worker, WorkerEvent, WorkerJobInput, WorkerJobOutput, WorkerToken } from '../types.js';
+import type {
+  Worker,
+  WorkerEvent,
+  WorkerJobInput,
+  WorkerJobOutput,
+  WorkerToken,
+} from '../types.js';
 import {
   enforceMcpOutputLimit,
   formatMcpPolicyLabel,
@@ -83,13 +89,18 @@ export interface LocalStdioMcpWorker extends Worker<LocalStdioMcpWorkerInput> {
 const DEFAULT_TOKEN_TIMEOUT = 30_000;
 
 /** Split a simple command line without shell metacharacters. */
-export function parseLocalStdioCommand(endpoint: string):
-  | { ok: true; command: string; args: string[] }
-  | { ok: false; reason: string } {
+export function parseLocalStdioCommand(
+  endpoint: string,
+): { ok: true; command: string; args: string[] } | { ok: false; reason: string } {
   const raw = String(endpoint ?? '').trim();
   if (!raw) return { ok: false, reason: 'endpoint 为空' };
   const lower = raw.toLowerCase();
-  if (lower.startsWith('fake://') || lower.startsWith('stdio://') || lower.startsWith('http://') || lower.startsWith('https://')) {
+  if (
+    lower.startsWith('fake://') ||
+    lower.startsWith('stdio://') ||
+    lower.startsWith('http://') ||
+    lower.startsWith('https://')
+  ) {
     return {
       ok: false,
       reason: 'endpoint 不是可启动的本地命令（fake/stdio/http URL 请用策略模拟探测）',
@@ -121,29 +132,56 @@ export function parseLocalStdioCommand(endpoint: string):
   return { ok: true, command, args };
 }
 
-function killTree(child: ChildProcessWithoutNullStreams): void {
-  try {
-    if (process.platform === 'win32') {
-      const pid = child.pid;
-      if (typeof pid === 'number' && pid > 0) {
+const killRequests = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
+
+function killTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const existing = killRequests.get(child);
+  if (existing) return existing;
+
+  const request = new Promise<void>((resolve) => {
+    try {
+      if (process.platform === 'win32') {
+        const pid = child.pid;
+        if (typeof pid !== 'number' || pid <= 0) {
+          child.kill();
+          resolve();
+          return;
+        }
         try {
-          spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
+          const killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
             shell: false,
             windowsHide: true,
             stdio: 'ignore',
           });
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
+          killer.once('error', () => {
+            try {
+              child.kill();
+            } catch {
+              // The process already exited.
+            }
+            finish();
+          });
+          killer.once('close', finish);
         } catch {
           child.kill();
+          resolve();
         }
-      } else {
-        child.kill();
+        return;
       }
-    } else {
       child.kill('SIGKILL');
+      resolve();
+    } catch {
+      resolve();
     }
-  } catch {
-    // ignore
-  }
+  });
+  killRequests.set(child, request);
+  return request;
 }
 
 function refuseOutput(
@@ -217,11 +255,15 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
     const basePolicy = normalizeMcpProcessPolicy(input.policy);
     const policy = normalizeMcpProcessPolicy({
       ...basePolicy,
-      timeoutMs: Math.min(basePolicy.timeoutMs, Math.max(100, token.timeoutMs || DEFAULT_TOKEN_TIMEOUT)),
+      timeoutMs: Math.min(
+        basePolicy.timeoutMs,
+        Math.max(100, token.timeoutMs || DEFAULT_TOKEN_TIMEOUT),
+      ),
     });
     const toolName =
-      String(input.action.toolName || (input.action.kind === 'call-tool' ? 'unknown' : 'spawn-probe')).trim() ||
-      'spawn-probe';
+      String(
+        input.action.toolName || (input.action.kind === 'call-tool' ? 'unknown' : 'spawn-probe'),
+      ).trim() || 'spawn-probe';
     const transport = String(input.transport || 'local-stdio').trim() || 'local-stdio';
     const actionKind = input.action.kind || 'spawn-probe';
 
@@ -280,7 +322,10 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
         failureClass: 'acceptance',
         error: { code: 'worker.aborted', message: refusal },
       };
-      yield { type: 'completed', output: refuseOutput(input, policy, toolName, transport, refusal) };
+      yield {
+        type: 'completed',
+        output: refuseOutput(input, policy, toolName, transport, refusal),
+      };
       return;
     }
 
@@ -354,12 +399,12 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
     const timeoutMs = policy.timeoutMs;
     const timer = setTimeout(() => {
       timedOut = true;
-      killTree(child);
+      void killTree(child);
     }, timeoutMs);
     const onAbort = () => {
       aborted = true;
       clearTimeout(timer);
-      killTree(child);
+      void killTree(child);
     };
     token.signal?.addEventListener('abort', onAbort, { once: true });
     if (token.signal?.aborted) onAbort();
@@ -530,7 +575,10 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
         failureClass: 'acceptance',
         error: { code: 'worker.aborted', message: refusal },
       };
-      yield { type: 'completed', output: refuseOutput(input, policy, toolName, transport, refusal) };
+      yield {
+        type: 'completed',
+        output: refuseOutput(input, policy, toolName, transport, refusal),
+      };
       return;
     }
 
@@ -588,7 +636,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
       if (rawStdoutBytes > policy.maxOutputBytes * 4) {
         // hard ceiling before parser blow-up
         parseError = 'stdout exceeded hard ceiling';
-        killTree(child);
+        void killTree(child);
         return;
       }
       try {
@@ -596,7 +644,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
         for (const m of msgs) onMessage(m);
       } catch (err) {
         parseError = err instanceof Error ? err.message : String(err);
-        killTree(child);
+        void killTree(child);
       }
     });
     child.stderr.on('data', (chunk: Buffer) => {
@@ -649,7 +697,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
         w.reject(new Error('MCP JSON-RPC timed out'));
       }
       pending.clear();
-      killTree(child);
+      void killTree(child);
     }, policy.timeoutMs);
     const onAbort = () => {
       aborted = true;
@@ -658,7 +706,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
         waiter.reject(new Error('MCP execution aborted'));
       }
       pending.clear();
-      killTree(child);
+      void killTree(child);
     };
     token.signal?.addEventListener('abort', onAbort, { once: true });
     if (token.signal?.aborted) onAbort();
@@ -725,7 +773,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
       // Give a short grace then kill residual process
       if (!closed) {
         setTimeout(() => {
-          if (!closed) killTree(child);
+          if (!closed) void killTree(child);
         }, 200).unref?.();
       }
     }
@@ -737,12 +785,19 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
     ]);
     clearTimeout(timer);
     token.signal?.removeEventListener('abort', onAbort);
-    if (!closed) killTree(child);
+    if (!closed) {
+      await killTree(child);
+      await Promise.race([
+        closePromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+    }
+    const pendingKill = killRequests.get(child);
+    if (pendingKill) await pendingKill;
 
     const elapsedMs = Date.now() - started;
     const combined =
-      toolResultText +
-      (stderrText ? (toolResultText ? '\n' : '') + '[stderr] ' + stderrText : '');
+      toolResultText + (stderrText ? (toolResultText ? '\n' : '') + '[stderr] ' + stderrText : '');
     const enforced = enforceMcpOutputLimit(combined, policy, {
       mcpServerId: input.mcpServerId,
       toolName,
@@ -893,7 +948,10 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
         failureClass: 'acceptance',
         error: { code: 'worker.aborted', message: refusal },
       };
-      yield { type: 'completed', output: refuseOutput(input, policy, toolName, transport, refusal) };
+      yield {
+        type: 'completed',
+        output: refuseOutput(input, policy, toolName, transport, refusal),
+      };
       return;
     }
 
@@ -950,7 +1008,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
       rawStdoutBytes += chunk.length;
       if (rawStdoutBytes > policy.maxOutputBytes * 4) {
         parseError = 'stdout exceeded hard ceiling';
-        killTree(child);
+        void killTree(child);
         return;
       }
       try {
@@ -958,7 +1016,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
         for (const m of msgs) onMessage(m);
       } catch (err) {
         parseError = err instanceof Error ? err.message : String(err);
-        killTree(child);
+        void killTree(child);
       }
     });
     child.stderr.on('data', (chunk: Buffer) => {
@@ -1011,7 +1069,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
         w.reject(new Error('MCP JSON-RPC timed out'));
       }
       pending.clear();
-      killTree(child);
+      void killTree(child);
     }, policy.timeoutMs);
 
     const onAbort = () => {
@@ -1021,7 +1079,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
         waiter.reject(new Error('MCP execution aborted'));
       }
       pending.clear();
-      killTree(child);
+      void killTree(child);
     };
     token.signal?.addEventListener('abort', onAbort, { once: true });
     if (token.signal?.aborted) onAbort();
@@ -1092,7 +1150,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
       }
       if (!closed) {
         setTimeout(() => {
-          if (!closed) killTree(child);
+          if (!closed) void killTree(child);
         }, 200).unref?.();
       }
     }
@@ -1103,12 +1161,19 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
     ]);
     clearTimeout(timer);
     token.signal?.removeEventListener('abort', onAbort);
-    if (!closed) killTree(child);
+    if (!closed) {
+      await killTree(child);
+      await Promise.race([
+        closePromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+    }
+    const pendingKill = killRequests.get(child);
+    if (pendingKill) await pendingKill;
 
     const elapsedMs = Date.now() - started;
     const combined =
-      toolResultText +
-      (stderrText ? (toolResultText ? '\n' : '') + '[stderr] ' + stderrText : '');
+      toolResultText + (stderrText ? (toolResultText ? '\n' : '') + '[stderr] ' + stderrText : '');
     const enforced = enforceMcpOutputLimit(combined, policy, {
       mcpServerId: input.mcpServerId,
       toolName,
@@ -1173,11 +1238,7 @@ export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
     } else {
       yield {
         type: 'stderr',
-        text:
-          '[mcp-list] ok · tools=' +
-          tools.length +
-          ' · real-jsonrpc · ' +
-          enforced.audit.note,
+        text: '[mcp-list] ok · tools=' + tools.length + ' · real-jsonrpc · ' + enforced.audit.note,
       };
     }
     if (enforced.text) {

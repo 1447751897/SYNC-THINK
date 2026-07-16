@@ -34,6 +34,57 @@ async function openStore(dbPath = makeDbPath()) {
 }
 
 describe('SqliteWorkspaceStore', () => {
+  it('creates a project without a folder and binds exactly one canonical folder later', async () => {
+    const { store, close } = await openStore();
+    try {
+      const project = store.createWorkspace({ name: 'Unbound Project' });
+      expect(project.folderPath).toBeUndefined();
+      expect(store.listWorkspaces()).toEqual([
+        expect.objectContaining({ id: project.id, name: 'Unbound Project', folderPath: undefined }),
+      ]);
+
+      const bound = store.bindWorkspaceFolder({
+        workspaceId: project.id,
+        folderPath: 'D:\\projects\\bound-project\\.',
+      });
+      expect(bound.folderPath).toMatch(/^[A-Za-z]:\\projects\\bound-project$/i);
+      expect(
+        store.bindWorkspaceFolder({
+          workspaceId: project.id,
+          folderPath: 'D:\\projects\\bound-project',
+        }),
+      ).toEqual(bound);
+      expect(() =>
+        store.bindWorkspaceFolder({
+          workspaceId: project.id,
+          folderPath: 'D:\\projects\\different-project',
+        }),
+      ).toThrow(/already has a folder/i);
+    } finally {
+      close();
+    }
+  });
+
+  it('does not bind one canonical folder to two projects', async () => {
+    const { store, close } = await openStore();
+    try {
+      const first = store.createWorkspace({ name: 'First' });
+      const second = store.createWorkspace({ name: 'Second' });
+      store.bindWorkspaceFolder({
+        workspaceId: first.id,
+        folderPath: 'D:\\projects\\shared-binding',
+      });
+      expect(() =>
+        store.bindWorkspaceFolder({
+          workspaceId: second.id,
+          folderPath: 'D:\\projects\\shared-binding\\.',
+        }),
+      ).toThrow(/already exists/i);
+    } finally {
+      close();
+    }
+  });
+
   it('creates a workspace from an absolute folder path and lists it', async () => {
     const { store, close } = await openStore();
     try {
@@ -397,6 +448,34 @@ describe('SqliteWorkspaceStore participation mode', () => {
 });
 
 describe('SqliteWorkspaceStore task version source of truth', () => {
+  it('generates a placeholder task identity in the first version transition only', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Generated identity' });
+      const task = store.createTask({
+        workspaceId: workspace.id,
+        title: '新任务',
+        goal: '新任务',
+      });
+      const advanced = store.advanceTaskVersionByThreadId(task.threadId, 0, undefined, {
+        generatedTitle: '修复登录流程',
+        generatedGoal: '请修复登录流程并补充测试',
+      });
+      expect(advanced).toMatchObject({
+        title: '修复登录流程',
+        goal: '请修复登录流程并补充测试',
+        version: 1,
+      });
+      const second = store.advanceTaskVersionByThreadId(task.threadId, 1, undefined, {
+        generatedTitle: '不应覆盖',
+        generatedGoal: '不应覆盖',
+      });
+      expect(second).toMatchObject({ title: '修复登录流程', version: 2 });
+    } finally {
+      close();
+    }
+  });
+
   it('advances a task version by thread with compare-and-swap semantics', async () => {
     const { store, close } = await openStore();
     try {

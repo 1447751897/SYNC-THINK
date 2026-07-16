@@ -6,7 +6,7 @@ export interface ActiveTaskSelection {
   readonly threadId: string;
   readonly title: string;
   readonly goal: string;
-  readonly folderPath: string;
+  readonly folderPath?: string;
   readonly workspaceName: string;
   readonly taskVersion: number;
   readonly status: string;

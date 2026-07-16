@@ -54,12 +54,30 @@ describe('workspace-catalog selection', () => {
     expect(selected?.participationMode).toBe('collaboration');
   });
 
+  it('projects tasks from a project that has no folder binding', () => {
+    const unboundWorkspace: WorkspaceSummary = {
+      workspaceId: workspace.workspaceId,
+      name: workspace.name,
+      createdAt: workspace.createdAt,
+      updatedAt: workspace.updatedAt,
+    };
+    const tasks = [task({ taskId: 'unbound-task' as never, title: 'Unbound task' })];
+    const selected = resolvePreferredTask(
+      [unboundWorkspace],
+      new Map([['ws_1', tasks]]),
+      'unbound-task',
+    );
+    expect(selected).toMatchObject({
+      taskId: 'unbound-task',
+      workspaceId: 'ws_1',
+      workspaceName: 'SYNC-THINK',
+    });
+    expect(selected?.folderPath).toBeUndefined();
+  });
+
   it('upserts task summaries by id', () => {
     const initial = new Map([
-      [
-        'ws_1',
-        [task({ taskId: 'a' as never, title: 'A', taskVersion: 0 })],
-      ],
+      ['ws_1', [task({ taskId: 'a' as never, title: 'A', taskVersion: 0 })]],
     ]);
     const next = upsertTaskInMap(
       initial,

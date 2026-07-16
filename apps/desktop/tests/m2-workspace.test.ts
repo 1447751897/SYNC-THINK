@@ -357,7 +357,7 @@ describe('M2 desktop workspace projection', () => {
     expect(api.isApprovalDelegateAgentVersion({ role: 'executor' })).toBe(false);
   });
 
-  it('keeps Automatic readiness task-scoped and exposes recovery before a blocked selection', () => {
+  it('keeps Automatic readiness task-scoped behind conversation-driven collaboration', () => {
     const api = m2Workspace as unknown as Record<string, (...args: never[]) => unknown>;
     expect(typeof api.hasApprovedPlanRevision).toBe('function');
     expect(typeof api.resolveVisibleAutomaticModeRecovery).toBe('function');
@@ -411,10 +411,15 @@ describe('M2 desktop workspace projection', () => {
       new URL('../src/renderer/index.tsx', import.meta.url),
       'utf8',
     );
-    expect(source).toContain('hasApprovedPlanRevision(planRevisions)');
-    expect(source).toContain('resolveVisibleAutomaticModeRecovery({');
-    expect(source).toContain("visibleAutomaticRecovery?.kind === 'plan'");
-    expect(source).toContain("visibleAutomaticRecovery?.kind === 'policy'");
+    expect(source).not.toContain('<ModeSwitch');
+    expect(source).toContain('inferConversationCollaborationIntent(text)');
+    expect(source).toContain('collaborationIntent.shouldUpgrade');
+    expect(source).toContain('prepareConversationCollaboration({');
+    expect(source).toContain("runtime.setParticipationMode({");
+    expect(source).toContain("mode: 'collaboration'");
+    expect(source).toContain('runtime.createPlan({');
+    expect(source).toContain('<PlanRevisionPanel');
+    expect(source).toContain('approveCurrentPlan(input)');
   });
 
   it('commits only the latest scoped M2 load when Task responses resolve out of order', async () => {

@@ -6,6 +6,8 @@ export * from './components/Compose.js';
 export * from './components/ModeSwitch.js';
 export * from './theme.js';
 export * from './components/WorkspaceNav.js';
+export * from './components/ProjectCreateDialog.js';
+export * from './components/TaskCreateDialog.js';
 
 export * from './components/ProvidersPanel.js';
 export * from './components/AgentBindingPanel.js';

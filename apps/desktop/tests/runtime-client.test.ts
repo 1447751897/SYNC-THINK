@@ -905,12 +905,12 @@ describe('RuntimePipeClient', () => {
           throw new Error('listener failed');
         }),
       ).rejects.toThrow('listener failed');
-      expect(
-        (client as unknown as { subscriptions: Set<unknown> }).subscriptions.size,
-      ).toBe(0);
+      expect((client as unknown as { subscriptions: Set<unknown> }).subscriptions.size).toBe(0);
       expect(
         await waitFor(
-          () => (runtime as unknown as { subscriptions: Map<string, unknown> }).subscriptions.size === 0,
+          () =>
+            (runtime as unknown as { subscriptions: Map<string, unknown> }).subscriptions.size ===
+            0,
         ),
       ).toBe(true);
       await expect(client.request('runtime.healthcheck', {})).resolves.toMatchObject({ ok: true });
@@ -940,9 +940,7 @@ describe('RuntimePipeClient', () => {
       });
 
       expect(await waitFor(() => received.length === 1)).toBe(true);
-      expect(
-        (client as unknown as { subscriptions: Set<unknown> }).subscriptions.size,
-      ).toBe(1);
+      expect((client as unknown as { subscriptions: Set<unknown> }).subscriptions.size).toBe(1);
       await expect(client.request('runtime.healthcheck', {})).resolves.toMatchObject({ ok: true });
       await unsubscribeHealthy();
     } finally {
@@ -1019,7 +1017,7 @@ describe('RuntimePipeClient', () => {
       await expect(client.subscribeEvents(0, () => {})).rejects.toThrow(
         'Runtime request timed out: runtime.subscribeEvents',
       );
-      await new Promise((resolve) => setTimeout(resolve, 70));
+      expect(await waitFor(() => unsubscribedStreams.length === 1, 2_000)).toBe(true);
       expect(
         (client as unknown as { pendingStreamEvents: Map<string, Event[]> }).pendingStreamEvents
           .size,

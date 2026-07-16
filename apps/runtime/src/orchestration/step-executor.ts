@@ -14,6 +14,13 @@ export interface StepExecutionContext {
   artifactVersions: readonly ArtifactVersion[];
   reviewContext?: Readonly<ReviewStepExecutionContext>;
   signal: AbortSignal;
+  /** Runtime-owned policy gate for dynamic actions discovered during execution. */
+  gateAction?: (request: StepActionRequest) => Promise<StepActionGateResult>;
+}
+
+export interface StepActionGateResult {
+  allowed: boolean;
+  actionDigest: string;
 }
 
 export interface StepExecutionResult {
@@ -22,12 +29,7 @@ export interface StepExecutionResult {
 }
 
 export type StepActionKind =
-  | 'tool'
-  | 'export'
-  | 'skill-permission'
-  | 'mcp-permission'
-  | 'human-only'
-  | 'other';
+  'tool' | 'export' | 'skill-permission' | 'mcp-permission' | 'human-only' | 'other';
 
 export interface StepActionRequest {
   kind?: StepActionKind;
