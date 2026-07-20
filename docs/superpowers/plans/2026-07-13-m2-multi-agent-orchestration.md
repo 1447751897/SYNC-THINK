@@ -1,5 +1,7 @@
 # M2 Multi-Agent Orchestration Implementation Plan
 
+> Superseded permission rule (2026-07-20): `full` now means 完全访问 and executes every currently available action without approval, including sensitive action categories. The older human-only/full restrictions below are retained only as historical implementation-plan context.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver the complete M2 vertical slice: persisted participation modes, editable immutable plan revisions, durable DAG execution, scoped approvals and allowlists, bounded reviewer rework, immutable artifact versions, full Desktop observability, and the specified exit demo.
@@ -414,7 +416,7 @@ Run: `pnpm --filter @sync-think/storage test -- authorization-store.test.ts appr
 
 Run: `pnpm --filter @sync-think/runtime test -- approval-commands.test.ts mcp-commands.test.ts`
 
-Expected: unauthorized Agent/tool pairs are rejected, human-only cannot be delegated/full-approved, and approved Steps resume exactly once.
+Expected: unauthorized Agent/tool pairs are rejected, sensitive actions cannot be delegated outside full access, and approved Steps resume exactly once.
 
 ## Task 7: Reviewer Agent, Evidence, and Bounded Rework
 

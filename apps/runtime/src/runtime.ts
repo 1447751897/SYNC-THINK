@@ -31,6 +31,7 @@ import {
   type OpenTaskResponse,
   type SearchTasksResponse,
   type SetParticipationModeResponse,
+  type SetExecutionModeResponse,
   type UnarchiveTaskResponse,
   type DiscardEmptyTaskResponse,
   type SavePolicyResponse,
@@ -118,8 +119,6 @@ import {
 } from '@sync-think/protocol';
 import {
   ErrorCode,
-  isAgentPermissionCategoryEnabled,
-  isLegacyAgentPermissions,
   deriveTaskTitleFromPrompt,
   isUntitledTaskTitle,
   ulid,
@@ -143,6 +142,7 @@ import {
   type ContextSourceRef,
   type ThreadId,
   type ParticipationMode,
+  type ExecutionMode,
   type ArtifactVersion,
   type ArtifactVersionSummary,
   type AcceptanceGateId,
@@ -218,6 +218,7 @@ import {
   resolveScopedPolicy,
   resolveActionDecision,
   resolveCapabilityAccess,
+  resolveEffectiveExecution,
   compareTextSnapshots,
   mergeTextSnapshots,
 } from '@sync-think/core';
@@ -252,6 +253,7 @@ import {
   EXECUTION_TOOL_SCHEMAS,
   invokeExecutionTool,
   isExecutionToolName,
+  isReadOnlyExecutionToolName,
 } from './execution-tools.js';
 import {
   loadImageAttachmentParts,
@@ -280,6 +282,7 @@ import {
   parseOpenTaskPayload,
   parseSearchTasksPayload,
   parseSetParticipationModePayload,
+  parseSetExecutionModePayload,
   parseUnarchiveTaskPayload,
   parseDiscardEmptyTaskPayload,
   parseSavePolicyPayload,
@@ -452,6 +455,7 @@ interface RuntimeEventSubscription {
 
 interface PendingAgentConfigurationCommand {
   id: string;
+  toolCallId: string;
   toolName: string;
   command: CommandType;
   payload: Record<string, unknown>;
@@ -677,6 +681,7 @@ export class Runtime {
     } else if (this.stateStore) {
       this.restorePersistedState();
     }
+    if (this.stateStore) this.recoverUnresolvedApplicationToolConfirmations();
     this.handlers = {
       expectedInstallId: opts.installId,
       expectedSecret: opts.helloSecret,
@@ -801,6 +806,10 @@ export class Runtime {
         }
         if (frame.type === 'task.setParticipationMode') {
           this.handleSetParticipationMode(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.setExecutionMode') {
+          this.handleSetExecutionMode(socket, frame);
           return;
         }
         if (frame.type === 'task.archive') {
@@ -1222,6 +1231,77 @@ export class Runtime {
     }
   }
 
+  private recoverUnresolvedApplicationToolConfirmations(): void {
+    const unresolved = new Map<string, { requested: Event; started: boolean }>();
+    for (const event of this.events) {
+      const confirmationId =
+        typeof event.payload.confirmationId === 'string'
+          ? event.payload.confirmationId
+          : undefined;
+      if (!confirmationId) continue;
+      if (event.type === 'application.tool_confirmation_requested') {
+        unresolved.set(confirmationId, { requested: event, started: false });
+      } else if (event.type === 'application.tool_confirmation_started') {
+        const current = unresolved.get(confirmationId);
+        if (current) current.started = true;
+      } else if (event.type === 'application.tool_confirmation_resolved') {
+        unresolved.delete(confirmationId);
+      }
+    }
+
+    for (const [confirmationId, state] of unresolved) {
+      const event = state.requested;
+      const runId = event.runId;
+      const run = runId ? this.demoRuns.get(runId) : undefined;
+      const toolCallId =
+        typeof event.payload.toolCallId === 'string' ? event.payload.toolCallId : undefined;
+      const toolName =
+        typeof event.payload.toolName === 'string' ? event.payload.toolName : undefined;
+      const definition = toolName ? getApplicationToolDefinition(toolName) : undefined;
+      if (!runId || !run || !toolCallId || !toolName || !definition) continue;
+      if (run.applicationToolResults.some((candidate) => candidate.toolCallId === toolCallId)) {
+        continue;
+      }
+      let expiresAt =
+        typeof event.payload.expiresAt === 'string' ? event.payload.expiresAt : undefined;
+      if (!expiresAt && typeof event.payload.result === 'string') {
+        try {
+          const parsed = JSON.parse(event.payload.result) as { expiresAt?: unknown };
+          if (typeof parsed.expiresAt === 'string') expiresAt = parsed.expiresAt;
+        } catch {
+          // Older events may not carry a structured preview; recovery still expires them safely.
+        }
+      }
+      const pending: PendingAgentConfigurationCommand = {
+        id: confirmationId,
+        toolCallId,
+        toolName,
+        command: definition.command,
+        payload: {},
+        confirmationToken: '',
+        threadId: run.threadId,
+        runId,
+        agentVersionId: run.agentVersionId,
+        expiresAt: expiresAt ?? new Date(0).toISOString(),
+      };
+      this.persistApplicationToolConfirmationResult(
+        pending,
+        state.started ? 'failed' : 'expired',
+        state.started
+          ? {
+              status: 'failed',
+              code: 'application.configuration_outcome_unknown',
+              message: 'The Runtime restarted after this operation began; it will not be repeated.',
+            }
+          : {
+              status: 'expired',
+              code: 'application.configuration_runtime_restarted',
+            },
+        state.started ? 'Operation outcome is unknown after Runtime restart' : undefined,
+      );
+    }
+  }
+
   private applyEventToProjection(event: Event): void {
     if (event.type === 'message.appended') {
       const threadId = event.payload.threadId;
@@ -1477,31 +1557,70 @@ export class Runtime {
     );
   }
 
-  private appendApplicationToolConfirmationResolution(
+  private persistApplicationToolConfirmationStarted(
+    pending: PendingAgentConfigurationCommand,
+  ): Event {
+    const current = this.demoRuns.get(pending.runId);
+    if (!current) throw new Error('application.configuration_run_not_found');
+    const next = {
+      ...current,
+      startedApplicationToolCallIds: current.startedApplicationToolCallIds.includes(
+        pending.toolCallId,
+      )
+        ? current.startedApplicationToolCallIds
+        : [...current.startedApplicationToolCallIds, pending.toolCallId],
+    };
+    return this.persistApplicationToolRunState(
+      pending.runId,
+      next,
+      'application.tool_confirmation_started',
+      {
+        confirmationId: pending.id,
+        toolCallId: pending.toolCallId,
+        toolName: pending.toolName,
+        command: pending.command,
+        expiresAt: pending.expiresAt,
+      },
+    );
+  }
+
+  private persistApplicationToolConfirmationResult(
     pending: PendingAgentConfigurationCommand,
     status: 'confirmed' | 'failed' | 'rejected' | 'expired',
+    result: Record<string, unknown>,
     errorSummary?: string,
   ): Event {
-    const task = this.resolveTaskForThread(pending.threadId);
-    const event = this.appendEvent(
-      'system',
+    const current = this.demoRuns.get(pending.runId);
+    if (!current) throw new Error('application.configuration_run_not_found');
+    const next = {
+      ...current,
+      startedApplicationToolCallIds: current.startedApplicationToolCallIds.filter(
+        (id) => id !== pending.toolCallId,
+      ),
+      applicationToolResults: [
+        ...current.applicationToolResults.filter(
+          (candidate) => candidate.toolCallId !== pending.toolCallId,
+        ),
+        {
+          toolCallId: pending.toolCallId,
+          result: this.boundedApplicationToolResult(result),
+        },
+      ],
+    };
+    return this.persistApplicationToolRunState(
+      pending.runId,
+      next,
       'application.tool_confirmation_resolved',
       {
-        threadId: pending.threadId,
         confirmationId: pending.id,
-        status,
-        command: pending.command,
+        toolCallId: pending.toolCallId,
         toolName: pending.toolName,
-        agentVersionId: pending.agentVersionId,
+        command: pending.command,
+        status,
+        result,
         ...(errorSummary ? { errorSummary } : {}),
       },
-      undefined,
-      pending.runId,
-      task?.id,
-      task?.workspaceId ?? this.workspaceId,
     );
-    this.publishEvent(event);
-    return event;
   }
 
   private resolvePendingApplicationToolConfirmation(
@@ -1535,8 +1654,21 @@ export class Runtime {
       !Number.isFinite(Date.parse(pending.expiresAt)) ||
       Date.parse(pending.expiresAt) <= Date.now()
     ) {
+      try {
+        this.persistApplicationToolConfirmationResult(
+          pending,
+          'expired',
+          {
+            status: 'expired',
+            code: 'application.configuration_expired',
+          },
+        );
+      } catch (error) {
+        this.writeWorkspaceCommandError(socket, frame, error);
+        return undefined;
+      }
       this.pendingAgentConfigurationCommands.delete(payload.confirmationId);
-      this.appendApplicationToolConfirmationResolution(pending, 'expired');
+      this.scheduleDemoRunExecution(pending.runId);
       this.writeApplicationToolConfirmationError(socket, frame, 'expired');
       return undefined;
     }
@@ -1547,6 +1679,12 @@ export class Runtime {
     const resolved = this.resolvePendingApplicationToolConfirmation(socket, frame);
     if (!resolved) return;
     const { payload, pending } = resolved;
+    try {
+      this.persistApplicationToolConfirmationStarted(pending);
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+      return;
+    }
     this.pendingAgentConfigurationCommands.delete(payload.confirmationId);
 
     let commandResult: Frame;
@@ -1560,11 +1698,22 @@ export class Runtime {
       const errorSummary =
         this.scrubDiagnosticMessage(error instanceof Error ? error.message : 'Command failed') ??
         'Command failed';
-      const auditEvent = this.appendApplicationToolConfirmationResolution(
-        pending,
-        'failed',
-        errorSummary,
-      );
+      let auditEvent: Event;
+      try {
+        auditEvent = this.persistApplicationToolConfirmationResult(
+          pending,
+          'failed',
+          {
+            status: 'failed',
+            code: 'application.configuration_failed',
+            message: errorSummary,
+          },
+          errorSummary,
+        );
+      } catch (persistError) {
+        this.writeWorkspaceCommandError(socket, frame, persistError);
+        return;
+      }
       const response: ConfirmApplicationToolResponse = {
         confirmationId: pending.id,
         status: 'failed',
@@ -1580,6 +1729,7 @@ export class Runtime {
           payload: response,
         }),
       );
+      this.scheduleDemoRunExecution(pending.runId);
       return;
     }
 
@@ -1587,11 +1737,24 @@ export class Runtime {
       ? (this.scrubDiagnosticMessage(commandResult.error.message) ?? 'Command failed')
       : undefined;
     const status = commandResult.error ? 'failed' : 'confirmed';
-    const auditEvent = this.appendApplicationToolConfirmationResolution(
-      pending,
-      status,
-      errorSummary,
-    );
+    let auditEvent: Event;
+    try {
+      auditEvent = this.persistApplicationToolConfirmationResult(
+        pending,
+        status,
+        commandResult.error
+          ? {
+              status: 'failed',
+              code: commandResult.error.code,
+              message: errorSummary ?? 'Command failed',
+            }
+          : { status: 'confirmed', result: commandResult.payload ?? {} },
+        errorSummary,
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+      return;
+    }
     const response: ConfirmApplicationToolResponse = {
       confirmationId: pending.id,
       status,
@@ -1608,14 +1771,24 @@ export class Runtime {
         payload: response,
       }),
     );
+    this.scheduleDemoRunExecution(pending.runId);
   }
 
   private handleRejectApplicationTool(socket: Socket, frame: Frame): void {
     const resolved = this.resolvePendingApplicationToolConfirmation(socket, frame);
     if (!resolved) return;
     const { payload, pending } = resolved;
+    let auditEvent: Event;
+    try {
+      auditEvent = this.persistApplicationToolConfirmationResult(pending, 'rejected', {
+        status: 'rejected',
+        code: 'application.configuration_rejected',
+      });
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+      return;
+    }
     this.pendingAgentConfigurationCommands.delete(payload.confirmationId);
-    const auditEvent = this.appendApplicationToolConfirmationResolution(pending, 'rejected');
     const response: RejectApplicationToolResponse = {
       confirmationId: pending.id,
       status: 'rejected',
@@ -1630,6 +1803,7 @@ export class Runtime {
         payload: response,
       }),
     );
+    this.scheduleDemoRunExecution(pending.runId);
   }
 
   private handleCreateWorkspace(socket: Socket, frame: Frame): void {
@@ -1903,20 +2077,42 @@ export class Runtime {
       return;
     }
     try {
-      const created = this.workspaceStore.createTask({
-        workspaceId: payload.workspaceId,
-        title: payload.title,
-        goal: payload.goal,
-        parentTaskId: payload.parentTaskId,
-        acceptanceCriteria: payload.acceptanceCriteria,
+      const { created, bindingEvent } = this.runInUnitOfWork(() => {
+        if (payload.agentVersionId) this.getRequiredAgentVersion(payload.agentVersionId);
+        const created = this.workspaceStore!.createTask({
+          workspaceId: payload.workspaceId,
+          title: payload.title,
+          goal: payload.goal,
+          parentTaskId: payload.parentTaskId,
+          acceptanceCriteria: payload.acceptanceCriteria,
+        });
+        const bindingEvent = payload.agentVersionId
+          ? this.appendEvent(
+              'system',
+              'task.agent-bound',
+              {
+                taskId: created.taskId,
+                threadId: created.threadId,
+                agentVersionId: payload.agentVersionId,
+                callerSurface: this.commandCallerSurface(frame),
+              },
+              undefined,
+              undefined,
+              created.taskId,
+              payload.workspaceId,
+            )
+          : undefined;
+        return { created, bindingEvent };
       });
       this.prepareCreatedTaskEnvironment(created.taskId, created.parentTaskId);
       this.threadVersions.set(created.threadId, created.taskVersion);
+      if (bindingEvent) this.publishEvent(bindingEvent);
       const response: CreateTaskResponse = {
         taskId: created.taskId,
         threadId: created.threadId,
         taskVersion: created.taskVersion,
         participationMode: created.participationMode,
+        executionMode: created.executionMode,
         parentTaskId: created.parentTaskId,
         createdAt: created.createdAt,
       };
@@ -2032,6 +2228,7 @@ export class Runtime {
           threadId: child.threadId,
           taskVersion: child.version,
           participationMode: child.participationMode,
+          executionMode: child.executionMode,
           parentTaskId: child.parentTaskId,
           createdAt: child.createdAt,
           delegateAgentVersionId: existingDelegation.delegateAgentVersionId,
@@ -2131,6 +2328,7 @@ export class Runtime {
         threadId: created.threadId,
         taskVersion: created.taskVersion,
         participationMode: created.participationMode,
+        executionMode: created.executionMode,
         parentTaskId: created.parentTaskId,
         createdAt: created.createdAt,
         delegateAgentVersionId: payload.delegateAgentVersionId,
@@ -2152,13 +2350,18 @@ export class Runtime {
   }
 
   private resolveTaskLeadAgentVersionId(task: TaskRecord): AgentVersionId {
+    const stableBindingKeys = new Map<string, 'agentVersionId' | 'leadAgentVersionId'>([
+      ['task.agent-bound', 'agentVersionId'],
+      ['subtask.agent-assigned', 'agentVersionId'],
+      ['group.task-created', 'leadAgentVersionId'],
+    ]);
     for (const event of [...this.events].reverse()) {
       if (event.taskId !== task.id && event.payload.threadId !== task.threadId) continue;
-      for (const key of ['leadAgentVersionId', 'agentVersionId', 'targetAgentVersionId'] as const) {
-        const value = event.payload[key];
-        if (typeof value === 'string' && this.agentStore?.getVersion(value as AgentVersionId)) {
-          return value as AgentVersionId;
-        }
+      const bindingKey = stableBindingKeys.get(event.type);
+      if (!bindingKey) continue;
+      const value = event.payload[bindingKey];
+      if (typeof value === 'string' && this.agentStore?.getVersion(value as AgentVersionId)) {
+        return value as AgentVersionId;
       }
     }
     return this.ensureAgentRecord(DEFAULT_CONVERSATION_AGENT_ID).id;
@@ -3108,6 +3311,106 @@ export class Runtime {
     }
   }
 
+  private handleSetExecutionMode(socket: Socket, frame: Frame): void {
+    const payload = parseSetExecutionModePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+
+    const task = this.workspaceStore.getTask(payload.taskId);
+    if (!task) {
+      this.writeTaskModeCommandError(socket, frame, new Error(`Task not found: ${payload.taskId}`));
+      return;
+    }
+    const currentVersion = task.version;
+    if (payload.expectedTaskVersion !== currentVersion) {
+      this.writeTaskVersionMismatch(socket, frame, currentVersion, payload.expectedTaskVersion);
+      return;
+    }
+
+    const previousMode: ExecutionMode = task.executionMode;
+    try {
+      const occurredAt = new Date().toISOString();
+      const result = this.runInUnitOfWork(() => {
+        const updated = this.workspaceStore!.setExecutionMode(
+          payload.taskId,
+          payload.mode,
+          payload.expectedTaskVersion,
+          occurredAt,
+        );
+        const projectedThreadVersions = new Map(this.threadVersions);
+        projectedThreadVersions.set(updated.threadId, updated.version);
+        const eventPayload = {
+          taskId: updated.id,
+          threadId: updated.threadId,
+          previousMode,
+          executionMode: updated.executionMode,
+          taskVersion: updated.version,
+        };
+        if (this.stateStore) {
+          return {
+            updated,
+            needsProjection: true,
+            committedEvents: this.commitProjectedEvents(
+              [
+                {
+                  id: ulid() as Event['id'],
+                  workspaceId: updated.workspaceId,
+                  taskId: updated.id,
+                  category: 'system',
+                  type: 'task.execution-mode.changed',
+                  occurredAt,
+                  payload: eventPayload,
+                },
+              ],
+              projectedThreadVersions,
+              this.demoRuns,
+            ),
+          };
+        }
+        return {
+          updated,
+          needsProjection: false,
+          committedEvents: [
+            this.appendEvent(
+              'system',
+              'task.execution-mode.changed',
+              eventPayload,
+              undefined,
+              undefined,
+              updated.id,
+            ),
+          ],
+        };
+      });
+
+      if (result.needsProjection) this.recordCommittedEvents(result.committedEvents);
+      this.threadVersions.set(result.updated.threadId, result.updated.version);
+      const response: SetExecutionModeResponse = {
+        task: toTaskSummary(
+          result.updated,
+          this.executionEnvironmentStore?.getTaskContext(result.updated.id),
+        ),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'task.setExecutionMode',
+          payload: response,
+        }),
+      );
+      for (const event of result.committedEvents) this.publishEvent(event);
+    } catch (error) {
+      this.writeTaskModeCommandError(socket, frame, error);
+    }
+  }
+
   private handleArchiveTask(socket: Socket, frame: Frame): void {
     const payload = parseArchiveTaskPayload(frame.payload);
     if (!payload) {
@@ -3203,23 +3506,15 @@ export class Runtime {
     }
     try {
       const task = this.workspaceStore.getTask(payload.taskId);
-      const hasChildren = task
-        ? this.workspaceStore
-            .listTasks(task.workspaceId, { includeArchived: true })
-            .some((candidate) => candidate.parentTaskId === task.id)
-        : false;
-      if (
-        task &&
-        task.version === payload.expectedTaskVersion &&
-        task.version === 0 &&
-        isUntitledTaskTitle(task.title) &&
-        !hasChildren
-      ) {
-        this.taskEnvironmentManager?.discardPreparedTask(task.id);
-      }
+      const executionContext = task
+        ? this.executionEnvironmentStore?.getTaskContext(task.id)
+        : undefined;
       const discarded = this.workspaceStore.discardEmptyTask(
         payload.taskId,
         payload.expectedTaskVersion,
+        task && this.taskEnvironmentManager
+          ? () => this.taskEnvironmentManager!.discardPreparedTask(task.id, executionContext)
+          : undefined,
       );
       if (discarded && task) {
         this.threadVersions.delete(task.threadId);
@@ -6169,18 +6464,9 @@ export class Runtime {
           goal: payload.goal,
           parentTaskId: payload.parentTaskId,
           acceptanceCriteria: payload.acceptanceCriteria,
+          participationMode: 'collaboration',
         });
-        const groupTask = this.workspaceStore!.setParticipationMode(
-          initial.taskId,
-          'collaboration',
-          initial.taskVersion,
-          initial.createdAt,
-        );
-        const created = {
-          ...initial,
-          taskVersion: groupTask.version,
-          participationMode: groupTask.participationMode,
-        };
+        const created = initial;
         this.groupStore!.attachTask(group.id, created.taskId, created.createdAt);
         const event = this.appendEvent(
           'system',
@@ -6208,6 +6494,7 @@ export class Runtime {
         threadId: created.threadId,
         taskVersion: created.taskVersion,
         participationMode: created.participationMode,
+        executionMode: created.executionMode,
         parentTaskId: created.parentTaskId,
         createdAt: created.createdAt,
       };
@@ -7145,6 +7432,7 @@ export class Runtime {
     actionDetails?: unknown;
   }): {
     evaluation: EvaluateApprovalResponse;
+    policyMode: ApprovalMode;
     actionDigest: string;
     workspaceId?: WorkspaceId;
     taskId?: TaskId;
@@ -7239,42 +7527,18 @@ export class Runtime {
       );
     }
 
-    const scopes: PolicyScopeRef[] = [{ scopeType: 'user', scopeId: this.installId }];
-    if (workspaceId) {
-      scopes.push(
-        { scopeType: 'workspace', scopeId: workspaceId },
-        { scopeType: 'project', scopeId: workspaceId },
-      );
-    }
-    if (taskId) scopes.push({ scopeType: 'task', scopeId: taskId });
-    if (agentVersion) scopes.push({ scopeType: 'agent', scopeId: agentVersion.agentId });
-    if (runId) scopes.push({ scopeType: 'run', scopeId: runId });
-
-    const policies = this.policyStore?.listApplicable(scopes) ?? [];
     const groupApprovalMode = taskId
       ? this.groupStore?.getForTask(taskId)?.approvalMode
       : undefined;
-    const defaultApprovalMode = groupApprovalMode ?? agentVersion?.approvalMode ?? 'request';
-    const resolved = resolveScopedPolicy([
-      ...policies.map((policy) => ({
-        scope: policy.scopeType,
-        scopeId: policy.scopeId,
-        approvalMode: policy.approvalMode,
-        rules: policy.rules,
-        policyId: policy.policyId,
-        version: policy.version,
-      })),
-      ...(policies.length === 0
-        ? [
-            {
-              scope: groupApprovalMode ? ('task' as const) : ('agent' as const),
-              scopeId: groupApprovalMode ? taskId : agentVersion?.agentId,
-              approvalMode: defaultApprovalMode,
-              rules: [],
-            },
-          ]
-        : []),
-    ]);
+    const resolved = this.resolveEffectiveScopedPolicy({
+      workspaceId,
+      taskId,
+      runId,
+      agentVersion: agentVersion
+        ? { agentId: String(agentVersion.agentId), approvalMode: agentVersion.approvalMode }
+        : undefined,
+      groupApprovalMode,
+    });
     const actionDecision = resolveActionDecision({
       action,
       approvalMode: resolved.approvalMode,
@@ -7340,6 +7604,7 @@ export class Runtime {
           ? { delegateAgentVersionId }
           : {}),
       },
+      policyMode: resolved.approvalMode,
       actionDigest,
       workspaceId,
       taskId,
@@ -7404,7 +7669,7 @@ export class Runtime {
       const evaluationResponse: EvaluateApprovalResponse = evaluation;
 
       const autoApproved = evaluation.gate === 'auto-approve';
-      if (autoApproved && !payload.forceEnqueue) {
+      if (autoApproved && (evaluation.mode === 'full' || !payload.forceEnqueue)) {
         const response: EnqueueApprovalResponse = {
           evaluation: evaluationResponse,
           enqueued: false,
@@ -7422,7 +7687,7 @@ export class Runtime {
       }
 
       const needsQueue =
-        Boolean(payload.forceEnqueue) ||
+        (evaluation.mode !== 'full' && Boolean(payload.forceEnqueue)) ||
         evaluation.gate === 'require-human' ||
         evaluation.gate === 'require-delegate' ||
         evaluation.gate === 'deny';
@@ -7677,6 +7942,13 @@ export class Runtime {
         payload: response,
       }),
     );
+    if (
+      metadata?.source === 'conversation.execution-tool' &&
+      summary.runId &&
+      this.demoRuns.has(summary.runId)
+    ) {
+      this.scheduleDemoRunExecution(summary.runId);
+    }
     if (schedulerDecision && !schedulerDecision.replayed && decision === 'approved') {
       this.scheduleOrchestrationDrain(schedulerDecision.runId, 'step-approval');
     }
@@ -8593,7 +8865,9 @@ export class Runtime {
       }
 
       if (validatedScope) {
-        const autoApproved = evaluationResponse.gate === 'auto-approve' && !payload.forceEnqueue;
+        const autoApproved =
+          evaluationResponse.gate === 'auto-approve' &&
+          (evaluationResponse.mode === 'full' || !payload.forceEnqueue);
         const event = this.appendOrchestrationMcpAudit(
           'mcp.tool_requested',
           {
@@ -8639,7 +8913,9 @@ export class Runtime {
         return;
       }
 
-      const autoApproved = evaluationResponse.gate === 'auto-approve' && !payload.forceEnqueue;
+      const autoApproved =
+        evaluationResponse.gate === 'auto-approve' &&
+        (evaluationResponse.mode === 'full' || !payload.forceEnqueue);
       let approvalRequest: ApprovalRequestSummary | undefined;
       let enqueued = false;
 
@@ -11544,7 +11820,7 @@ export class Runtime {
           : toolCall.name.startsWith('git_')
             ? 'git'
             : 'file';
-      const approval = this.resolveServerApproval({
+      const resolvedApproval = this.resolveServerApproval({
         workspaceId: task.workspaceId,
         taskId: task.id,
         runId: run.runId,
@@ -11552,17 +11828,108 @@ export class Runtime {
         action: `execution.${toolCall.name}`,
         kind,
         actionDetails: args,
-      }).evaluation;
-      if (approval.gate !== 'auto-approve') {
-        return {
-          result: this.boundedApplicationToolResult({
-            status: 'blocked',
-            code: 'execution.approval_required',
-            toolName: toolCall.name,
-            approvalMode: approval.mode,
-            reason: approval.reason,
-          }),
-        };
+      });
+      const approval = resolvedApproval.evaluation;
+      const readOnlyInRequestMode =
+        resolvedApproval.policyMode === 'request' && isReadOnlyExecutionToolName(toolCall.name);
+      if (approval.gate !== 'auto-approve' && !readOnlyInRequestMode) {
+        const existing = this.approvalStore
+          ?.list({ taskId: task.id, limit: 200 })
+          .find(
+            (item) =>
+              item.runId === run.runId &&
+              item.metadata.actionDigest === resolvedApproval.actionDigest &&
+              item.metadata.toolCallId === toolCall.id,
+          );
+        if (existing?.state === 'approved') {
+          // The exact persisted action was approved; continue below without re-enqueueing.
+        } else if (existing?.state === 'rejected') {
+          return {
+            result: this.boundedApplicationToolResult({
+              status: 'blocked',
+              code: 'execution.approval_rejected',
+              toolName: toolCall.name,
+              approvalId: existing.id,
+            }),
+          };
+        } else {
+          const item =
+            existing ??
+            this.approvalStore?.enqueue({
+              workspaceId: task.workspaceId,
+              taskId: task.id,
+              runId: run.runId,
+              kind: 'tool',
+              action: `execution.${toolCall.name}`,
+              summary: `允许智能体执行：${toolCall.name}`,
+              humanOnly: approval.humanOnly,
+              humanOnlyAction: approval.humanOnlyAction,
+              mode: approval.mode,
+              gate: approval.gate,
+              metadata: {
+                source: 'conversation.execution-tool',
+                actionDigest: resolvedApproval.actionDigest,
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                agentVersionId: run.agentVersionId,
+                arguments: args,
+                ...(approval.delegateAgentVersionId
+                  ? { delegateAgentVersionId: approval.delegateAgentVersionId }
+                  : {}),
+              },
+            });
+          if (item && !existing) {
+            this.emitSubtaskEvent(
+              'approval',
+              'approval.requested',
+              {
+                threadId: run.threadId,
+                approvalId: item.id,
+                action: item.action,
+                summary: item.summary,
+                approvalMode: item.mode,
+                gate: item.gate,
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+              },
+              task.id,
+              task.workspaceId,
+              run.runId,
+            );
+          }
+          if (item) {
+            return {
+              confirmationId: String(item.id),
+              result: this.boundedApplicationToolResult({
+                status: 'approval_required',
+                approvalId: item.id,
+                summary: item.summary,
+                toolName: toolCall.name,
+              }),
+            };
+          }
+        }
+      }
+      if (approval.gate !== 'auto-approve' && !readOnlyInRequestMode) {
+        const approved = this.approvalStore
+          ?.list({ taskId: task.id, state: 'approved', limit: 200 })
+          .some(
+            (item) =>
+              item.runId === run.runId &&
+              item.metadata.actionDigest === resolvedApproval.actionDigest &&
+              item.metadata.toolCallId === toolCall.id,
+          );
+        if (!approved) {
+          return {
+            result: this.boundedApplicationToolResult({
+              status: 'blocked',
+              code: 'execution.approval_required',
+              toolName: toolCall.name,
+              approvalMode: approval.mode,
+              reason: approval.reason,
+            }),
+          };
+        }
       }
       this.emitSubtaskEvent(
         'tool',
@@ -11683,33 +12050,18 @@ export class Runtime {
       const approvalAgentVersionId = this.agentStore?.getVersion(
         run.agentVersionId as AgentVersionId,
       )?.id;
-      const taskPolicy = task
-        ? this.policyStore
-            ?.listApplicable([{ scopeType: 'task', scopeId: task.id }])
-            .filter((policy) => policy.scopeType === 'task' && policy.scopeId === task.id)
-            .sort((left, right) => right.version - left.version)[0]
-        : undefined;
-      const taskDecision = taskPolicy
-        ? resolveActionDecision({
-            action: definition.name,
-            approvalMode: taskPolicy.approvalMode,
-            rules: taskPolicy.rules,
-          })
-        : undefined;
       const permission = task
         ? this.resolveServerApproval({
             workspaceId: task.workspaceId,
             taskId: task.id,
+            runId: run.runId,
             ...(approvalAgentVersionId ? { agentVersionId: approvalAgentVersionId } : {}),
             action: definition.name,
             kind: 'other',
             actionDetails: payload,
           }).evaluation
         : undefined;
-      if (
-        taskDecision?.decision === 'allowed' ||
-        (!taskDecision && permission?.gate === 'auto-approve')
-      ) {
+      if (permission?.gate === 'auto-approve') {
         const confirmed = await this.invokeAgentRuntimeCommand(
           definition.command,
           payload,
@@ -11729,6 +12081,7 @@ export class Runtime {
       const confirmationId = `confirmation_${ulid()}`;
       const pending: PendingAgentConfigurationCommand = {
         id: confirmationId,
+        toolCallId: toolCall.id,
         toolName: definition.name,
         command: definition.command,
         payload: structuredClone(payload),
@@ -11757,7 +12110,7 @@ export class Runtime {
   private async continueDemoRunAfterApplicationTools(
     runId: RunId,
     initialRun: DemoRunState,
-  ): Promise<DemoRunState> {
+  ): Promise<{ run: DemoRunState; pausedForApproval: boolean }> {
     if (initialRun.providerTurn >= MAX_APPLICATION_TOOL_TURNS) {
       throw new Error('application.tool_turn_limit_reached');
     }
@@ -11782,6 +12135,38 @@ export class Runtime {
         toolName: toolCall.name,
       });
       const invoked = await this.invokeApplicationTool(run, toolCall);
+      if (invoked.confirmationId) {
+        const pendingConfiguration = invoked.confirmationId.startsWith('confirmation_')
+          ? this.pendingAgentConfigurationCommands.get(invoked.confirmationId)
+          : undefined;
+        run = {
+          ...run,
+          startedApplicationToolCallIds: run.startedApplicationToolCallIds.filter(
+            (id) => id !== toolCall.id,
+          ),
+        };
+        const isConfigurationConfirmation = invoked.confirmationId.startsWith('confirmation_');
+        this.persistApplicationToolRunState(
+          runId,
+          run,
+          isConfigurationConfirmation
+            ? 'application.tool_confirmation_requested'
+            : 'execution.tool_approval_requested',
+          {
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            confirmationId: invoked.confirmationId,
+            result: invoked.result,
+            ...(pendingConfiguration
+              ? {
+                  command: pendingConfiguration.command,
+                  expiresAt: pendingConfiguration.expiresAt,
+                }
+              : {}),
+          },
+        );
+        return { run, pausedForApproval: true };
+      }
       run = {
         ...run,
         applicationToolResults: [
@@ -11789,19 +12174,11 @@ export class Runtime {
           { toolCallId: toolCall.id, result: invoked.result },
         ],
       };
-      this.persistApplicationToolRunState(
-        runId,
-        run,
-        invoked.confirmationId
-          ? 'application.tool_confirmation_requested'
-          : 'application.tool_completed',
-        {
-          toolCallId: toolCall.id,
-          toolName: toolCall.name,
-          ...(invoked.confirmationId ? { confirmationId: invoked.confirmationId } : {}),
-          result: invoked.result,
-        },
-      );
+      this.persistApplicationToolRunState(runId, run, 'application.tool_completed', {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        result: invoked.result,
+      });
     }
 
     const assistantParts: ProviderContentPart[] = [];
@@ -11840,7 +12217,7 @@ export class Runtime {
       providerTurn: nextRun.providerTurn,
       toolCallCount: run.pendingApplicationToolCalls.length,
     });
-    return nextRun;
+    return { run: nextRun, pausedForApproval: false };
   }
 
   private async executeDemoRun(runId: RunId): Promise<void> {
@@ -11899,6 +12276,11 @@ export class Runtime {
     this.demoRunAbortControllers.set(runId, abortController);
     this.recordInFlight(runId);
     try {
+      const pendingToolRun = this.demoRuns.get(runId);
+      if (pendingToolRun?.pendingApplicationToolCalls.length) {
+        const continuation = await this.continueDemoRunAfterApplicationTools(runId, pendingToolRun);
+        if (continuation.pausedForApproval) return;
+      }
       // Outer loop: re-enter after section 5.3 fallback walk selects the next model.
       while (this.demoRuns.has(runId)) {
         const attemptRun = this.demoRuns.get(runId);
@@ -11991,7 +12373,11 @@ export class Runtime {
               currentRun.applicationToolsEnabled &&
               currentRun.pendingApplicationToolCalls.length > 0
             ) {
-              await this.continueDemoRunAfterApplicationTools(runId, currentRun);
+              const continuation = await this.continueDemoRunAfterApplicationTools(
+                runId,
+                currentRun,
+              );
+              if (continuation.pausedForApproval) return;
               resumeAfterApplicationTools = true;
               break;
             }
@@ -12170,6 +12556,64 @@ export class Runtime {
     return this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
   }
 
+  private resolveEffectiveScopedPolicy(input: {
+    workspaceId?: WorkspaceId;
+    taskId?: TaskId;
+    runId?: RunId;
+    agentVersion?: { agentId: string; approvalMode: ApprovalMode };
+    groupApprovalMode?: ApprovalMode;
+  }): ReturnType<typeof resolveScopedPolicy> {
+    const scopes: PolicyScopeRef[] = [{ scopeType: 'user', scopeId: this.installId }];
+    if (input.workspaceId) {
+      scopes.push(
+        { scopeType: 'workspace', scopeId: input.workspaceId },
+        { scopeType: 'project', scopeId: input.workspaceId },
+      );
+    }
+    if (input.taskId) scopes.push({ scopeType: 'task', scopeId: input.taskId });
+    if (input.agentVersion) {
+      scopes.push({ scopeType: 'agent', scopeId: input.agentVersion.agentId });
+    }
+    if (input.runId) scopes.push({ scopeType: 'run', scopeId: input.runId });
+
+    const applicable = this.policyStore?.listApplicable(scopes) ?? [];
+    const runPolicies = input.runId
+      ? applicable.filter((policy) => policy.scopeType === 'run' && policy.scopeId === input.runId)
+      : [];
+    const taskPolicies = input.taskId
+      ? applicable.filter(
+          (policy) => policy.scopeType === 'task' && policy.scopeId === input.taskId,
+        )
+      : [];
+    const effectivePolicies = runPolicies.length
+      ? runPolicies
+      : taskPolicies.length
+        ? taskPolicies
+        : applicable;
+    const defaultApprovalMode =
+      input.groupApprovalMode ?? input.agentVersion?.approvalMode ?? 'request';
+    return resolveScopedPolicy([
+      ...effectivePolicies.map((policy) => ({
+        scope: policy.scopeType,
+        scopeId: policy.scopeId,
+        approvalMode: policy.approvalMode,
+        rules: policy.rules,
+        policyId: policy.policyId,
+        version: policy.version,
+      })),
+      ...(effectivePolicies.length === 0
+        ? [
+            {
+              scope: input.groupApprovalMode ? ('task' as const) : ('agent' as const),
+              scopeId: input.groupApprovalMode ? input.taskId : input.agentVersion?.agentId,
+              approvalMode: defaultApprovalMode,
+              rules: [],
+            },
+          ]
+        : []),
+    ]);
+  }
+
   private compileProviderContextForRun(input: {
     threadId: string;
     latestUserMessageId?: string;
@@ -12181,6 +12625,16 @@ export class Runtime {
     const project = task ? this.workspaceStore?.getWorkspace(task.workspaceId) : undefined;
     const agent = this.agentStore?.getVersion(input.agentVersionId);
     const group = task ? this.groupStore?.getForTask(task.id) : undefined;
+    const effectivePolicy = task
+      ? this.resolveEffectiveScopedPolicy({
+          workspaceId: task.workspaceId,
+          taskId: task.id,
+          agentVersion: agent
+            ? { agentId: String(agent.agentId), approvalMode: agent.approvalMode }
+            : undefined,
+          groupApprovalMode: group?.approvalMode,
+        })
+      : undefined;
     const surface = resolveSyncThinkSurface({
       events: this.events,
       taskId: task?.id,
@@ -12193,7 +12647,7 @@ export class Runtime {
       latestUserMessageId: input.latestUserMessageId,
       latestUserText: input.latestUserText,
       surface,
-      permissionMode: group?.approvalMode ?? agent?.approvalMode,
+      permissionMode: effectivePolicy?.approvalMode ?? group?.approvalMode ?? agent?.approvalMode,
       project: project
         ? {
             id: project.id,
@@ -12752,44 +13206,40 @@ export class Runtime {
     browserIdentityId?: string;
   } {
     if (!task) return { executionToolNames: [] };
-    const context = this.executionEnvironmentStore?.getTaskContext(task.id);
-    if (!context?.executionPath || context.state !== 'ready') {
-      return { executionToolNames: [] };
-    }
     const agent = this.agentStore?.getVersion(agentVersionId as AgentVersionId);
-    const permissions = agent?.permissions;
-    const legacyDefault = !permissions || isLegacyAgentPermissions(permissions);
-    const allows = (values: readonly string[] | undefined) =>
-      isAgentPermissionCategoryEnabled(values, legacyDefault);
-    const fileAllowed = allows(permissions?.file);
-    const commandAllowed = allows(permissions?.command);
-    const browserAllowed = allows(permissions?.browser);
-    const desktopAllowed = allows(permissions?.desktop);
-    let names = EXECUTION_TOOL_SCHEMAS.map((tool) => tool.name).filter((name) => {
-      if (name.startsWith('browser_')) return browserAllowed;
-      if (name.startsWith('desktop_')) return desktopAllowed;
-      if (name === 'run_command') return commandAllowed;
-      if (name.startsWith('git_')) return fileAllowed || commandAllowed;
-      return fileAllowed;
+    const group = this.groupStore?.getForTask(task.id);
+    const effectivePolicy = this.resolveEffectiveScopedPolicy({
+      workspaceId: task.workspaceId,
+      taskId: task.id,
+      agentVersion: agent
+        ? { agentId: String(agent.agentId), approvalMode: agent.approvalMode }
+        : undefined,
+      groupApprovalMode: group?.approvalMode,
     });
+    const context = this.executionEnvironmentStore?.getTaskContext(task.id);
+    const executionRoot =
+      context?.executionPath && context.state === 'ready' ? context.executionPath : undefined;
     const delegated = this.delegatedSubtaskDescriptors().find(
       (candidate) => candidate.childTaskId === task.id,
     );
-    if (delegated?.packet.allowedTools.length) {
-      const allowlist = new Set(delegated.packet.allowedTools);
-      names = names.filter((name) => allowlist.has(name));
+    // Codex three-mode authority: mode decides tool surface; AgentPermissions matrix is ignored.
+    const effectiveExecution = resolveEffectiveExecution({
+      legacyApprovalMode: effectivePolicy.approvalMode,
+      workspaceRoot: executionRoot,
+      candidateToolNames: EXECUTION_TOOL_SCHEMAS.map((tool) => tool.name),
+      allowedTools: delegated?.packet.allowedTools,
+    });
+    if (!executionRoot) {
+      return {
+        executionToolNames: [],
+        effectiveApprovalMode: effectiveExecution.legacyApprovalMode,
+      };
     }
-    const taskPolicy = this.policyStore
-      ?.listApplicable([{ scopeType: 'task', scopeId: task.id }])
-      .filter((policy) => policy.scopeType === 'task' && policy.scopeId === task.id)
-      .sort((left, right) => right.version - left.version)[0];
-    const group = this.groupStore?.getForTask(task.id);
     return {
-      executionRoot: context.executionPath,
-      executionToolNames: names,
-      effectiveApprovalMode:
-        taskPolicy?.approvalMode ?? group?.approvalMode ?? agent?.approvalMode ?? 'request',
-      ...(context.browserIdentityId
+      executionRoot,
+      executionToolNames: effectiveExecution.toolNames,
+      effectiveApprovalMode: effectiveExecution.legacyApprovalMode,
+      ...(context?.browserIdentityId
         ? { browserIdentityId: String(context.browserIdentityId) }
         : {}),
     };
@@ -13886,6 +14336,7 @@ function toTaskSummary(
     goal: task.goal,
     status: task.status,
     participationMode: task.participationMode,
+    executionMode: task.executionMode,
     taskVersion: task.version,
     threadId: task.threadId,
     lastOpenedAt: task.lastOpenedAt,

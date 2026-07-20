@@ -313,7 +313,7 @@ Provider：OpenAI-compatible（Responses/Chat Completions/Images）+ Anthropic-c
 ### 业务红线
 
 ```text
-权限规则：Runtime 强制；人类专属动作不可绕过
+权限规则：Runtime 强制；“完全访问”对当前可执行能力不弹审批并保留审计，其他模式按敏感操作策略门禁
 数据隔离规则：跨任务仅显式引用；密钥不进 UI/日志
 模型路由规则：用户控制；无静默替换
 审计/日志规则：关键动作全审计且脱敏

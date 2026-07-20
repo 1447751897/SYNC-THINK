@@ -202,6 +202,7 @@ describe('0017_reviewer_rework migration', () => {
       '0026_automation',
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
+      '0029_task_execution_mode',
     ]);
   });
 

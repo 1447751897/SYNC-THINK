@@ -85,8 +85,10 @@ import type {
 import {
   deriveTaskTitleFromPrompt,
   isUntitledTaskTitle,
+  normalizeExecutionMode,
   ulid,
   type ArtifactMergeConflictResolutionStrategy,
+  type ExecutionMode,
   type PlanRevision,
   type GroupDefinition,
   type AutomationDefinition,
@@ -115,6 +117,7 @@ import { projectBeginnerWorkspace } from './beginner-workspace.js';
 import {
   projectAgentGroupMemberships,
   projectAgentRelatedTasks,
+  projectConversationMentionLabel,
   projectTaskConversationSummaries,
   projectTaskGroupIds,
   projectTaskPrimaryAgentVersions,
@@ -855,6 +858,9 @@ function DesktopShell() {
   const [approvalPolicies, setApprovalPolicies] = useState<ApprovalPolicyView[]>([]);
   const [conversationApprovalMode, setConversationApprovalMode] =
     useState<ApprovalModeView>('full');
+  const [conversationExecutionMode, setConversationExecutionMode] =
+    useState<ExecutionMode>('workspace');
+  const [executionModeBusy, setExecutionModeBusy] = useState(false);
   const approvalLoadGateRef = useRef(createM2LoadRequestGate());
   const policyLoadGateRef = useRef(createM2LoadRequestGate());
   const planLoadGateRef = useRef(createM2LoadRequestGate());
@@ -1037,20 +1043,18 @@ function DesktopShell() {
   }, [projection.messages, agentVersionById, activeConversationIdentity, agentAvatarUrls]);
   const conversationMentionLabelByMessageId = useMemo(() => {
     const labels = new Map<string, string>();
+    const agentNames = new Map(
+      [...agentVersionById].map(([id, version]) => [id, version.name] as const),
+    );
+    const groupNames = new Map(
+      [...groupById].map(
+        ([id, group]) =>
+          [id, { name: group.name, leadAgentVersionId: String(group.leadAgentVersionId) }] as const,
+      ),
+    );
     for (const message of projection.messages) {
-      if (message.mentionAgentVersionId) {
-        const target = agentVersionById.get(message.mentionAgentVersionId);
-        if (target?.name) labels.set(message.id, target.name);
-        continue;
-      }
-      if (message.role !== 'user' || !message.targetAgentVersionId) continue;
-      const target = agentVersionById.get(message.targetAgentVersionId);
-      const group = message.targetGroupId ? groupById.get(message.targetGroupId) : undefined;
-      if (group && String(group.leadAgentVersionId) === String(message.targetAgentVersionId)) {
-        labels.set(message.id, group.name);
-      } else if (target?.name) {
-        labels.set(message.id, target.name);
-      }
+      const label = projectConversationMentionLabel(message, agentNames, groupNames);
+      if (label) labels.set(message.id, label);
     }
     return labels;
   }, [agentVersionById, groupById, projection.messages]);
@@ -1086,6 +1090,8 @@ function DesktopShell() {
     setApprovalPendingCount(0);
     setApprovalPolicies([]);
     setConversationApprovalMode('full');
+    setConversationExecutionMode('workspace');
+    setExecutionModeBusy(false);
     setApprovalLoading(false);
     setPlanRevisions([]);
     setRunGraph(null);
@@ -1623,6 +1629,9 @@ function DesktopShell() {
       artifactLoadGateRef.current.invalidate();
       openTaskLoadGateRef.current.invalidate();
       setActive(selection);
+      setConversationExecutionMode(
+        normalizeExecutionMode(selection?.executionMode ?? 'workspace'),
+      );
       if (options?.syncTaskVersion !== false) {
         dispatchRuntimeView({
           type: 'task-selected',
@@ -2937,7 +2946,7 @@ function DesktopShell() {
       ).length;
       setApprovalStatus(
         pending > 0
-          ? `审批中心 · 待审 ${pending}${humanOnlyPending > 0 ? ` · 仅限真人 ${humanOnlyPending}` : ''} · 共 ${result.items.length}`
+          ? `审批中心 · 待审 ${pending}${humanOnlyPending > 0 ? ` · 需本人确认 ${humanOnlyPending}` : ''} · 共 ${result.items.length}`
           : `审批中心 · 暂无待审 · 共 ${result.items.length}`,
       );
     } catch (error) {
@@ -2971,6 +2980,8 @@ function DesktopShell() {
       const taskPolicies = policies
         .filter((policy) => policy.scopeType === 'task' && policy.scopeId === taskId)
         .sort((left, right) => right.version - left.version);
+      // Keep legacy approval policy projection for the approval center only.
+      // Product authority for compose/rail is Task.executionMode.
       setConversationApprovalMode(taskPolicies[0]?.approvalMode ?? 'full');
     } catch (error) {
       if (!policyLoadGateRef.current.isCurrent(requestToken)) return;
@@ -3025,6 +3036,56 @@ function DesktopShell() {
       approvalMode: mode,
       rules: [...(current?.rules ?? [])],
     });
+  };
+
+  const changeConversationExecutionMode = async (mode: ExecutionMode) => {
+    if (!active) return;
+    const nextMode = normalizeExecutionMode(mode);
+    const previousMode = conversationExecutionMode;
+    setConversationExecutionMode(nextMode);
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.setExecutionMode) {
+      setApprovalError('当前环境未连接 Runtime，无法切换执行模式');
+      setConversationExecutionMode(previousMode);
+      return;
+    }
+    setExecutionModeBusy(true);
+    setApprovalError(null);
+    try {
+      const response = await runtime.setExecutionMode({
+        taskId: active.taskId as never,
+        mode: nextMode,
+        expectedTaskVersion: active.taskVersion,
+      });
+      const updated = response.task;
+      setTasksByWorkspace((current) => upsertTaskInMap(current, updated));
+      if (activeTaskIdRef.current === active.taskId) {
+        setActive((current) =>
+          current
+            ? {
+                ...current,
+                title: updated.title,
+                goal: updated.goal,
+                taskVersion: updated.taskVersion,
+                status: updated.status,
+                participationMode: updated.participationMode,
+                executionMode: updated.executionMode ?? nextMode,
+              }
+            : current,
+        );
+        setConversationExecutionMode(normalizeExecutionMode(updated.executionMode ?? nextMode));
+        dispatchRuntimeView({
+          type: 'append-succeeded',
+          taskVersion: updated.taskVersion,
+        });
+      }
+    } catch (error) {
+      setConversationExecutionMode(previousMode);
+      const message = error instanceof Error ? error.message : '执行模式切换失败';
+      setApprovalError(message || '执行模式切换失败');
+    } finally {
+      setExecutionModeBusy(false);
+    }
   };
 
   const syncTaskVersion = useCallback((targetTaskId: string, taskVersion: number) => {
@@ -3774,17 +3835,17 @@ function DesktopShell() {
         const response = await runtime.createGroupTask(payload);
         let replacementWarning: string | null = null;
         if (replacementTask) {
-          if (!runtime.archiveTask) {
-            replacementWarning = '小队任务已创建，但原空对话未能自动归档';
+          if (!runtime.discardEmptyTask) {
+            replacementWarning = '小队任务已创建，但原空对话未能自动清理';
           } else {
             try {
-              await runtime.archiveTask({
+              const discarded = await runtime.discardEmptyTask({
                 taskId: replacementTask.taskId as never,
                 expectedTaskVersion: replacementTask.taskVersion,
-                cascade: true,
               });
+              if (!discarded.discarded) replacementWarning = '原对话已有内容，已为你保留';
             } catch {
-              replacementWarning = '小队任务已创建，但原空对话归档失败';
+              replacementWarning = '小队任务已创建，但原空对话清理失败';
             }
           }
         }
@@ -3915,12 +3976,7 @@ function DesktopShell() {
 
   const discardBlankActiveTask = async (nextTaskId?: string) => {
     const current = active;
-    if (
-      !current ||
-      current.taskId === nextTaskId ||
-      current.taskVersion !== 0 ||
-      !isUntitledTaskTitle(current.title)
-    ) {
+    if (!current || current.taskId === nextTaskId) {
       return false;
     }
     const draftKey = `${current.workspaceId}:${current.taskId}`;
@@ -3934,7 +3990,7 @@ function DesktopShell() {
         discarded = (
           await runtime.discardEmptyTask({
             taskId: current.taskId as never,
-            expectedTaskVersion: 0,
+            expectedTaskVersion: current.taskVersion,
           })
         ).discarded;
       } catch {
@@ -3960,8 +4016,14 @@ function DesktopShell() {
       next.delete(draftKey);
       return next;
     });
+    if (activeTaskIdRef.current === current.taskId) applySelection(null);
     return true;
   };
+
+  useEffect(() => {
+    if (productSection !== 'tasks') void discardBlankActiveTask();
+    // The section transition is the lifecycle boundary; the guarded Runtime check owns safety.
+  }, [productSection]);
 
   const openTask = async (task: WorkspaceNavTask) => {
     await discardBlankActiveTask(String(task.taskId));
@@ -3987,6 +4049,7 @@ function DesktopShell() {
         taskVersion: task.taskVersion,
         status: task.status,
         participationMode: task.participationMode ?? 'conversation',
+        executionMode: task.executionMode ?? 'workspace',
       });
       return;
     }
@@ -4007,6 +4070,7 @@ function DesktopShell() {
         taskVersion: opened.taskVersion,
         status: opened.status,
         participationMode: opened.participationMode,
+        executionMode: opened.executionMode ?? 'workspace',
       });
     } catch {
       if (!openTaskLoadGateRef.current.isCurrent(requestToken)) return;
@@ -4094,6 +4158,7 @@ function DesktopShell() {
                   taskVersion: updated.taskVersion,
                   status: updated.status,
                   participationMode: updated.participationMode,
+                  executionMode: updated.executionMode ?? current.executionMode,
                 }
               : current,
           );
@@ -4472,12 +4537,16 @@ function DesktopShell() {
   };
 
   /** Instant create under a project — no modal (product path). */
-  const createTask = async (workspaceId: string, options?: { parentTaskId?: string }) => {
+  const createTask = async (
+    workspaceId: string,
+    options?: { parentTaskId?: string; agentVersionId?: string },
+  ) => {
     if (!options?.parentTaskId || options.parentTaskId !== active?.taskId) {
       await discardBlankActiveTask();
     }
     const runtime = window.syncThink?.runtime;
     const parentTaskId = options?.parentTaskId;
+    const agentVersionId = options?.agentVersionId ?? agentBinding?.agentVersionId;
     const title = parentTaskId ? '子任务' : '新任务';
     const goal = title;
     setWorkspaceError(null);
@@ -4492,6 +4561,7 @@ function DesktopShell() {
         goal,
         status: 'active',
         participationMode: 'conversation',
+        executionMode: 'workspace',
         taskVersion: 0,
         threadId: `thread-preview-${Date.now()}` as never,
         createdAt: now,
@@ -4511,6 +4581,7 @@ function DesktopShell() {
           taskVersion: 0,
           status: 'active',
           participationMode: 'conversation',
+          executionMode: 'workspace',
         });
       }
       return;
@@ -4521,6 +4592,7 @@ function DesktopShell() {
         workspaceId: workspaceId as never,
         title,
         goal,
+        ...(agentVersionId ? { agentVersionId: agentVersionId as never } : {}),
         parentTaskId: parentTaskId as TaskSummary['parentTaskId'],
       });
       if (runtime.openTask) {
@@ -4633,9 +4705,7 @@ function DesktopShell() {
         ...(options?.modelId ? { modelId: options.modelId as never } : {}),
         ...(options?.agentVersionId
           ? { agentVersionId: options.agentVersionId as never }
-          : targetTask?.participationMode !== 'collaboration' && activeConversationAgentVersionId
-            ? { agentVersionId: activeConversationAgentVersionId as never }
-            : {}),
+          : {}),
       });
       dispatchRuntimeView({ type: 'append-succeeded', taskVersion: response.taskVersion });
       if (targetTask) {
@@ -6800,19 +6870,23 @@ function DesktopShell() {
         return;
       }
       const hasConversation = projection.messages.length + previewMessages.length > 0;
-      const replacementTask = hasConversation
-        ? undefined
-        : {
-            taskId: active.taskId,
-            taskVersion: active.taskVersion,
-            workspaceId: active.workspaceId,
-          };
+      const hasUnsentContent = Boolean(
+        composeDraft?.text.trim() || composeDraft?.attachments.length,
+      );
+      const replacementTask =
+        hasConversation || hasUnsentContent
+          ? undefined
+          : {
+              taskId: active.taskId,
+              taskVersion: active.taskVersion,
+              workspaceId: active.workspaceId,
+            };
       await createGroupTask(
         {
           groupId: group.id,
           workspaceId: active.workspaceId as never,
-          title: active.title,
-          goal: active.goal,
+          title: '新任务',
+          goal: '新任务',
         },
         replacementTask,
       );
@@ -6820,12 +6894,25 @@ function DesktopShell() {
     [
       active,
       activeConversationGroup?.id,
+      composeDraft,
       createGroupTask,
       groupById,
       previewMessages.length,
       projection.messages.length,
     ],
   );
+  const selectComposeAgent = async (agentId: string) => {
+    const option = composeAgents.find((agent) => agent.agentId === agentId);
+    selectAgent(agentId);
+    if (!active || !option?.agentVersionId) return;
+    if (
+      active.participationMode !== 'collaboration' &&
+      activeConversationAgentIdentity.agentId === agentId
+    ) {
+      return;
+    }
+    await createTask(active.workspaceId, { agentVersionId: option.agentVersionId });
+  };
   const groupAgentOptions = useMemo(
     () =>
       agents.flatMap((agent) => {
@@ -7291,6 +7378,7 @@ function DesktopShell() {
       policies={approvalPolicies}
       delegateAgentVersions={delegateAgentVersions}
       defaultPolicyScope={active ? { scopeType: 'task', scopeId: active.taskId } : undefined}
+      defaultPolicyMode={conversationApprovalMode}
       pendingCount={approvalPendingCount}
       humanOnlyActions={approvalHumanOnlyActions}
       modes={approvalModes}
@@ -7529,6 +7617,9 @@ function DesktopShell() {
               canPause={Boolean(runGraph)}
               canTerminate={Boolean(runGraph || projection.stream.runId)}
               actionBusy={graphBusy || cancelPending}
+              utilityPanel={talkApprovalPanel}
+              utilityLabel="操作审批"
+              utilityCount={approvalPendingCount}
               conversationLayout={conversationLayout}
               onConversationLayoutChange={(layout) => {
                 setConversationLayout(layout);
@@ -9873,10 +9964,10 @@ function DesktopShell() {
                           }
                           integrationBusyTaskId={integrationBusyTaskId}
                           accessDetails={taskExecutionAccess}
-                          permissionMode={conversationApprovalMode}
-                          permissionBusy={approvalBusy}
+                          permissionMode={conversationExecutionMode}
+                          permissionBusy={executionModeBusy}
                           onPermissionModeChange={(mode) =>
-                            changeConversationApprovalMode(mode as ApprovalModeView)
+                            void changeConversationExecutionMode(mode)
                           }
                           browserIdentities={browserIdentities}
                           selectedBrowserIdentityId={
@@ -9967,7 +10058,9 @@ function DesktopShell() {
                     mode={active?.participationMode ?? 'conversation'}
                     placeholder={
                       active
-                        ? `@${activeConversationIdentity.name} · 描述你希望完成的工作…`
+                        ? active.participationMode === 'collaboration'
+                          ? `@${activeConversationIdentity.name} · 描述你希望小队完成的工作…`
+                          : '描述你希望完成的工作…'
                         : '创建任务后即可在这里输入…'
                     }
                     disabled={
@@ -9991,16 +10084,36 @@ function DesktopShell() {
                     onCreateWorkspace={openProjectCreateDialog}
                     onCreateWorkspaceFromFolder={createWorkspaceFromFolder}
                     workspaceActionBusy={projectCreateBusy}
+                    permissionMode={conversationExecutionMode}
+                    permissionBusy={executionModeBusy}
+                    onPermissionModeChange={(mode) => void changeConversationExecutionMode(mode)}
+                    permissionDetails={
+                      taskExecutionAccess
+                        ? {
+                            approvalMode: taskExecutionAccess.approvalMode,
+                            executionMode: taskExecutionAccess.executionMode,
+                            executionState: taskExecutionAccess.executionState,
+                            executionPath: taskExecutionAccess.executionPath,
+                            baseRef: taskExecutionAccess.baseRef,
+                            browserIdentityName: taskExecutionAccess.browserIdentityName,
+                            effectiveToolNames: taskExecutionAccess.effectiveToolNames,
+                            capabilityCeiling: taskExecutionAccess.capabilityCeiling,
+                          }
+                        : null
+                    }
                     agents={composeAgents}
-                    mentionAgents={composeMentionAgents}
+                    mentionAgents={composeMentionAgents ?? composeAgents}
                     groups={composeGroups}
                     selectedAgentId={
-                      selectedAgentId ?? fallbackConversationAgentIdentity.agentId ?? null
+                      activeConversationAgentIdentity.agentId ??
+                      selectedAgentId ??
+                      fallbackConversationAgentIdentity.agentId ??
+                      null
                     }
                     selectedGroupId={
                       activeConversationGroup ? String(activeConversationGroup.id) : null
                     }
-                    onAgentChange={(agentId) => selectAgent(agentId)}
+                    onAgentChange={(agentId) => void selectComposeAgent(agentId)}
                     onGroupChange={(groupId) => void selectComposeGroup(groupId)}
                     participantBusy={groupBusy}
                     onOpenAgentCenter={() => navigateToInstrument('agent')}

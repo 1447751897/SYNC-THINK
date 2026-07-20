@@ -1,10 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
-import {
-  AGENT_PERMISSION_DISABLED,
-  isAgentPermissionCategoryEnabled,
-  isLegacyAgentPermissions,
-  type AgentPermissions,
-} from '@sync-think/shared';
+import type { AgentPermissions } from '@sync-think/shared';
 import {
   Bot,
   BookMarked,
@@ -204,34 +199,6 @@ function definitionChanges(
 
 function emptyDefinitionPermissions(): NonNullable<AgentDefinitionView['permissions']> {
   return { file: [], command: [], browser: [], desktop: [], network: [] };
-}
-
-const AGENT_CAPABILITY_OPTIONS: ReadonlyArray<{
-  id: keyof AgentPermissions;
-  label: string;
-  description: string;
-}> = [
-  { id: 'file', label: '文件', description: '读取和修改工作区文件' },
-  { id: 'command', label: '命令', description: '执行终端命令' },
-  { id: 'browser', label: '浏览器', description: '打开网页并使用已选浏览器身份' },
-  { id: 'desktop', label: '桌面', description: '操作本机 Windows 应用' },
-  { id: 'network', label: '网络', description: '访问外部网络资源' },
-];
-
-function materializeAgentPermissions(
-  permissions: AgentDefinitionView['permissions'],
-): AgentPermissions {
-  const current = permissions ?? emptyDefinitionPermissions();
-  if (isLegacyAgentPermissions(current)) {
-    return { file: ['*'], command: ['*'], browser: ['*'], desktop: ['*'], network: ['*'] };
-  }
-  return {
-    file: [...current.file],
-    command: [...current.command],
-    browser: [...current.browser],
-    desktop: [...current.desktop],
-    network: [...current.network],
-  };
 }
 
 function toListItem(binding: AgentBindingView | null): AgentWorkspaceListItem | null {
@@ -1059,46 +1026,13 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
 
                         <section className="st-agent-ws__definition-section">
                           <header>
-                            <h4>能力上限</h4>
+                            <h4>执行权限</h4>
                           </header>
                           <div className="st-agent-ws__capability-ceiling">
-                            <p>任务可以临时收紧这些能力，但不能超过此处的范围。</p>
-                            <div>
-                              {AGENT_CAPABILITY_OPTIONS.map((capabilityOption) => {
-                                const permissions =
-                                  definitionDraft.permissions ?? emptyDefinitionPermissions();
-                                const enabled = isAgentPermissionCategoryEnabled(
-                                  permissions[capabilityOption.id],
-                                  isLegacyAgentPermissions(permissions),
-                                );
-                                return (
-                                  <label key={capabilityOption.id}>
-                                    <input
-                                      type="checkbox"
-                                      aria-label={`允许${capabilityOption.label}能力`}
-                                      checked={enabled}
-                                      disabled={props.busy}
-                                      onChange={(event) => {
-                                        const nextPermissions = materializeAgentPermissions(
-                                          definitionDraft.permissions,
-                                        );
-                                        nextPermissions[capabilityOption.id] = event.target.checked
-                                          ? ['*']
-                                          : [AGENT_PERMISSION_DISABLED];
-                                        setDefinitionDraft({
-                                          ...definitionDraft,
-                                          permissions: nextPermissions,
-                                        });
-                                      }}
-                                    />
-                                    <span>
-                                      <strong>{capabilityOption.label}</strong>
-                                      <small>{capabilityOption.description}</small>
-                                    </span>
-                                  </label>
-                                );
-                              })}
-                            </div>
+                            <p data-testid="agent-execution-mode-authority-note">
+                              智能体不再配置文件/命令/浏览器等细粒度权限矩阵。实际可执行范围由任务的
+                              只读 / 工作区 / 完全访问 模式决定。
+                            </p>
                           </div>
                         </section>
 

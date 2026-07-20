@@ -1,4 +1,5 @@
 import type { WorkspaceId, TaskId, ThreadId } from './ids.js';
+import type { ExecutionMode } from './enums.js';
 
 export type TaskStatus =
   | 'active'
@@ -15,6 +16,11 @@ export interface Task {
   title: string;
   goal: string;
   status: TaskStatus;
+  /**
+   * Codex three-mode execution authority for this task.
+   * Legacy rows without the column resolve to workspace at Runtime.
+   */
+  executionMode?: ExecutionMode;
   /** User-defined, visible before autonomous execution (§5.5). */
   acceptanceCriteria: string[];
   createdAt: string;

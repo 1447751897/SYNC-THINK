@@ -97,6 +97,8 @@ import type {
   AmendContextPacketResponse,
   SetParticipationModePayload,
   SetParticipationModeResponse,
+  SetExecutionModePayload,
+  SetExecutionModeResponse,
   PlanDraftPayload,
   PlanDraftResponse,
   PlanRevisePayload,
@@ -294,6 +296,11 @@ const api = {
       ipcRenderer.invoke('runtime:task-search', payload) as Promise<SearchTasksResponse>,
     setParticipationMode: (payload: SetParticipationModePayload) =>
       ipcRenderer.invoke('runtime:mode-set', payload) as Promise<SetParticipationModeResponse>,
+    setExecutionMode: (payload: SetExecutionModePayload) =>
+      ipcRenderer.invoke(
+        'runtime:execution-mode-set',
+        payload,
+      ) as Promise<SetExecutionModeResponse>,
     archiveTask: (payload: import('@sync-think/protocol').ArchiveTaskPayload) =>
       ipcRenderer.invoke('runtime:task-archive', payload) as Promise<
         import('@sync-think/protocol').ArchiveTaskResponse

@@ -152,6 +152,7 @@ async function createWorkspaceAndTask(
   expect(task.error).toBeUndefined();
   expect(task.payload).toMatchObject({
     participationMode: 'conversation',
+    executionMode: 'workspace',
     taskVersion: 0,
   });
   const taskPayload = task.payload as {
@@ -159,6 +160,7 @@ async function createWorkspaceAndTask(
     threadId: string;
     taskVersion: number;
     participationMode: string;
+    executionMode: string;
   };
   return { workspaceId, ...taskPayload };
 }
@@ -424,6 +426,78 @@ describe('participation mode commands', () => {
         task: { participationMode: 'conversation', taskVersion: 3 },
       });
       expect(resolvedTaskIds).toEqual([task.taskId]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('switches task execution mode with optimistic concurrency and summary projection', async () => {
+    const fixture = await startFixture();
+    try {
+      const task = await createWorkspaceAndTask(fixture, 'execution-mode');
+
+      const changed = await send(
+        fixture.socket,
+        fixture.reader,
+        'execution-full-access',
+        'task.setExecutionMode',
+        {
+          taskId: task.taskId,
+          mode: 'full-access',
+          expectedTaskVersion: 0,
+        },
+      );
+      expect(changed.error).toBeUndefined();
+      expect(changed.payload).toMatchObject({
+        task: {
+          taskId: task.taskId,
+          executionMode: 'full-access',
+          taskVersion: 1,
+        },
+      });
+
+      const listed = await send(fixture.socket, fixture.reader, 'execution-list', 'task.list', {
+        workspaceId: task.workspaceId,
+      });
+      expect(listed.payload).toMatchObject({
+        tasks: [{ taskId: task.taskId, executionMode: 'full-access', taskVersion: 1 }],
+      });
+
+      const opened = await send(fixture.socket, fixture.reader, 'execution-open', 'task.open', {
+        taskId: task.taskId,
+      });
+      expect(opened.payload).toMatchObject({
+        task: { executionMode: 'full-access', taskVersion: 1 },
+      });
+
+      const stale = await send(
+        fixture.socket,
+        fixture.reader,
+        'execution-stale',
+        'task.setExecutionMode',
+        {
+          taskId: task.taskId,
+          mode: 'read-only',
+          expectedTaskVersion: 0,
+        },
+      );
+      expect(stale.error?.code).toBeDefined();
+
+      const readOnly = await send(
+        fixture.socket,
+        fixture.reader,
+        'execution-read-only',
+        'task.setExecutionMode',
+        {
+          taskId: task.taskId,
+          mode: 'read-only',
+          expectedTaskVersion: 1,
+        },
+      );
+      expect(readOnly.error).toBeUndefined();
+      expect(readOnly.payload).toMatchObject({
+        task: { executionMode: 'read-only', taskVersion: 2 },
+      });
     } finally {
       await fixture.close();
     }

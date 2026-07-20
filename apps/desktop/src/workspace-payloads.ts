@@ -91,7 +91,9 @@ export function parseBindWorkspaceGitRepositoryPayload(
     !value.repositoryUrl.trim() ||
     value.repositoryUrl.length > 4096 ||
     (value.defaultRef !== undefined &&
-      (typeof value.defaultRef !== 'string' || !value.defaultRef.trim() || value.defaultRef.length > 512))
+      (typeof value.defaultRef !== 'string' ||
+        !value.defaultRef.trim() ||
+        value.defaultRef.length > 512))
   ) {
     throw new Error('Invalid bind-workspace-git-repository payload');
   }
@@ -127,7 +129,8 @@ export function parseCreateBrowserIdentityPayload(value: unknown): CreateBrowser
     !value.name.trim() ||
     value.name.length > 128 ||
     (value.makeDefault !== undefined && typeof value.makeDefault !== 'boolean')
-  ) throw new Error('Invalid create-browser-identity payload');
+  )
+    throw new Error('Invalid create-browser-identity payload');
   return { name: value.name.trim(), ...(value.makeDefault === true ? { makeDefault: true } : {}) };
 }
 
@@ -141,7 +144,8 @@ export function parseUpdateBrowserIdentityPayload(value: unknown): UpdateBrowser
       (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 128)) ||
     (value.makeDefault !== undefined && typeof value.makeDefault !== 'boolean') ||
     (value.name === undefined && value.makeDefault !== true)
-  ) throw new Error('Invalid update-browser-identity payload');
+  )
+    throw new Error('Invalid update-browser-identity payload');
   return {
     id: value.id.trim(),
     ...(typeof value.name === 'string' ? { name: value.name.trim() } : {}),
@@ -150,7 +154,12 @@ export function parseUpdateBrowserIdentityPayload(value: unknown): UpdateBrowser
 }
 
 export function parseDeleteBrowserIdentityPayload(value: unknown): DeleteBrowserIdentityPayload {
-  if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim() || value.id.length > 256) {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== 'string' ||
+    !value.id.trim() ||
+    value.id.length > 256
+  ) {
     throw new Error('Invalid delete-browser-identity payload');
   }
   return { id: value.id.trim() };
@@ -165,7 +174,8 @@ export function parseSetTaskBrowserIdentityPayload(value: unknown): SetTaskBrows
     typeof value.browserIdentityId !== 'string' ||
     !value.browserIdentityId.trim() ||
     value.browserIdentityId.length > 256
-  ) throw new Error('Invalid set-task-browser-identity payload');
+  )
+    throw new Error('Invalid set-task-browser-identity payload');
   return {
     taskId: value.taskId.trim() as SetTaskBrowserIdentityPayload['taskId'],
     browserIdentityId: value.browserIdentityId.trim(),
@@ -183,10 +193,12 @@ export function parseDescribeTaskExecutionAccessPayload(
     typeof value.agentVersionId !== 'string' ||
     !value.agentVersionId.trim() ||
     value.agentVersionId.length > 256
-  ) throw new Error('Invalid describe-task-execution-access payload');
+  )
+    throw new Error('Invalid describe-task-execution-access payload');
   return {
     taskId: value.taskId.trim() as DescribeTaskExecutionAccessPayload['taskId'],
-    agentVersionId: value.agentVersionId.trim() as DescribeTaskExecutionAccessPayload['agentVersionId'],
+    agentVersionId:
+      value.agentVersionId.trim() as DescribeTaskExecutionAccessPayload['agentVersionId'],
   };
 }
 
@@ -214,6 +226,14 @@ export function parseCreateTaskPayload(value: unknown): CreateTaskPayload {
   if (value.parentTaskId !== undefined && typeof value.parentTaskId !== 'string') {
     throw new Error('Invalid create-task payload');
   }
+  if (
+    value.agentVersionId !== undefined &&
+    (typeof value.agentVersionId !== 'string' ||
+      !value.agentVersionId.trim() ||
+      value.agentVersionId.length > 256)
+  ) {
+    throw new Error('Invalid create-task payload');
+  }
   let acceptanceCriteria: string[] | undefined;
   try {
     acceptanceCriteria =
@@ -227,6 +247,10 @@ export function parseCreateTaskPayload(value: unknown): CreateTaskPayload {
     workspaceId: value.workspaceId as CreateTaskPayload['workspaceId'],
     title: value.title.trim(),
     goal: value.goal.trim(),
+    agentVersionId:
+      typeof value.agentVersionId === 'string'
+        ? (value.agentVersionId.trim() as CreateTaskPayload['agentVersionId'])
+        : undefined,
     parentTaskId: value.parentTaskId as CreateTaskPayload['parentTaskId'],
     acceptanceCriteria,
   };

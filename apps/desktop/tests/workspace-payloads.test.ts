@@ -51,9 +51,9 @@ describe('desktop workspace bridge payload validation', () => {
     expect(() => parseBindWorkspaceFolderPayload({ workspaceId: '', folderPath: 'D:/x' })).toThrow(
       /Invalid bind-workspace-folder/,
     );
-    expect(() => parseBindWorkspaceFolderPayload({ workspaceId: 'ws_1', folderPath: '  ' })).toThrow(
-      /Invalid bind-workspace-folder/,
-    );
+    expect(() =>
+      parseBindWorkspaceFolderPayload({ workspaceId: 'ws_1', folderPath: '  ' }),
+    ).toThrow(/Invalid bind-workspace-folder/);
   });
 
   it('validates Git repository binding without accepting secrets', () => {
@@ -113,12 +113,22 @@ describe('desktop workspace bridge payload validation', () => {
         workspaceId: 'ws_1',
         title: '恢复主链',
         goal: '验证 checkpoint',
+        agentVersionId: 'agent-version-1',
       }),
     ).toMatchObject({
       workspaceId: 'ws_1',
       title: '恢复主链',
       goal: '验证 checkpoint',
+      agentVersionId: 'agent-version-1',
     });
+    expect(() =>
+      parseCreateTaskPayload({
+        workspaceId: 'ws_1',
+        title: '无效智能体',
+        goal: '拒绝错误类型',
+        agentVersionId: 1,
+      }),
+    ).toThrow(/Invalid create-task/);
     expect(parseListTasksPayload({ workspaceId: 'ws_1' })).toEqual({ workspaceId: 'ws_1' });
     expect(parseOpenTaskPayload({ taskId: 'task_1' })).toEqual({ taskId: 'task_1' });
     expect(parseSearchTasksPayload({ workspaceId: 'ws_1', query: '恢复' })).toEqual({
@@ -127,9 +137,9 @@ describe('desktop workspace bridge payload validation', () => {
     });
     expect(() => parseListTasksPayload({})).toThrow(/Invalid list-tasks/);
     expect(() => parseOpenTaskPayload({ taskId: '' })).toThrow(/Invalid open-task/);
-    expect(() =>
-      parseSearchTasksPayload({ workspaceId: 'ws_1', query: 'x'.repeat(513) }),
-    ).toThrow(/Invalid search-tasks/);
+    expect(() => parseSearchTasksPayload({ workspaceId: 'ws_1', query: 'x'.repeat(513) })).toThrow(
+      /Invalid search-tasks/,
+    );
   });
 
   it('normalizes bounded acceptance criteria and rejects every oversized shape', () => {

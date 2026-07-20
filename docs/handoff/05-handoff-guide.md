@@ -1,8 +1,18 @@
 # Handoff Guide
 
-最后更新：2026-07-19
+最后更新：2026-07-20
 
-## 0. 2026-07-19 最新交接
+## 0. 2026-07-20 最新交接
+
+本轮继续完成对话目标切换与权限闭环：Composer 自动增高到 200px 后内部滚动；单聊隐藏隐式 `@`，显式 `@Agent` 只路由当前轮；切换 Agent/小队创建不继承旧标题/目标的新任务；真正空白的任务离开后删除，草稿和任何持久工作都会保留。
+
+权限的四个产品名称固定为“请求批准 / 替我审批 / 完全访问 / 自定义”。完全访问对所有当前可执行操作不弹审批，包括七类敏感操作和配置确认，但继续写审计；能力上限、执行位置和资源边界仍决定哪些操作当前可用。请求批准下只读检查自动执行，写入等受保护工具会暂停精确调用，并在批准、拒绝或确认过期后恢复 Provider。
+
+代码审查后的加固已经落地：Scheduler 遵守完全访问；自定义 request 规则不会被只读例外绕过；`browser_navigate` 属于需审批的对外操作；配置确认的 requested / started / resolved 状态持久化，崩溃恢复不会重复副作用。空任务只有在数据库无持久工作且 managed worktree 干净时才会删除，清理失败或未提交改动会保留任务和目录。显式 `@Agent` 只路由当前轮，主 Agent 只由 `task.agent-bound`、`subtask.agent-assigned` 或 `group.task-created` 等绑定事件决定。
+
+最终验证已完成：Runtime `50 files / 297 tests`、Storage `23 files / 233 tests`、Workers `9 files / 53 tests`、UI Kit `21 files / 253 passed / 2 skipped`、Desktop `65 files / 456 tests`；全仓 typecheck `21/21`、build `12/12` 无缓存通过，最终受影响包重新构建通过。Talk 任务头“操作审批”已接通，空策略草稿继承当前任务有效模式。隔离 Runtime PID `14960`、Electron PID `19128` 已启动，hello 成功、窗口正常响应、最新 stderr 为空。不要恢复“完全访问仍需本人确认”的旧规则，也不要在普通权限 UI 暴露原始工具名。
+
+## 0.1 2026-07-19 交接基线
 
 规格 `docs/superpowers/specs/2026-07-19-mention-task-progress-log-design.md` 已完成：群聊自动协作使用精确 `@` 消息，本轮任务与低层工具日志分离，右栏和工作记录减负，空白占位任务可安全丢弃，父子任务可折叠并双向跳转。普通完全访问对话、策略优先级、Provider 中止关闭和 Windows Desktop Worker 也已完成回归修复。
 
@@ -22,7 +32,7 @@
 6. `AI_DEVELOPMENT_RULES.md`
 
 不要要求用户重新解释已锁定需求，不要回退现有工作区改动。当前分支为
-`feature/project-folder-binding`，工作区包含 Talk V8 的大量未提交实现。
+`codex/talk-mention-progress-logs`，工作区包含本轮未提交实现。
 
 ## 2. 当前交接结论
 

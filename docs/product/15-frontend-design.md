@@ -276,6 +276,7 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 | 2026-07-18 | 采用 Figma Talk V8 的全局导航与分区工作台，新增好友、群聊、自动化，审批退出全局导航             | 用户确认原型并要求 1:1 改造，同时保留现有真实运行能力            | 桌面壳 / 任务 / 项目 / Agent / 群聊 / 自动化 / 模型源       |
 | 2026-07-19 | Composer 增加紧凑附件架；执行详情改为按 Agent 展开的真实命令、文件与工具日志                    | 用户要求向 Agent 发送图片/文件/文件夹，并参考 Codex 查看执行记录 | 对话输入 / 消息附件 / 执行详情弹窗                          |
 | 2026-07-19 | 附件改为可见大图预览并自动增高；产物目录只保留关键交付，单版本详情默认展示正文                 | 用户反馈截图粘贴后不可见、拖放失效且内部步骤产物过多难以理解     | Composer / 文件与产物目录 / 产物弹窗                       |
+| 2026-07-20 | 文本输入随内容增高并在 200px 后内部滚动；单聊隐藏隐式 @；Agent/小队切换创建空白新任务；权限详情使用产品能力名 | 用户要求长输入可读、单聊减噪、避免继承旧标题并解释真实权限       | Composer / 对话目标 / 空任务生命周期 / 权限详情            |
 
 ### 12.5 附件与产物减负规则（2026-07-19）
 
@@ -347,3 +348,11 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 - The rail directly edits operation permission and Browser Identity, then summarizes execution location, base ref, effective capability categories, and the Agent ceiling without exposing raw tool names.
 - Agent capability ceilings are edited under `好友 → 能力与指令 → 能力上限`. Task settings may narrow that ceiling but never expand it.
 - Browser Identities are managed under `设置 → 浏览器身份`. Product copy explains that each identity isolates cookies, login state, and site data; filesystem profile paths remain hidden.
+
+## Composer, participant, and permission behavior (2026-07-20)
+
+- The text area starts at 56px, grows with content, caps at 200px, then scrolls internally. The Talk Composer surface caps at `min(360px, 45vh)` and retains manual resize.
+- Direct chat placeholders and messages do not show an implicit `@Agent`. An explicit `@Agent` remains a one-turn route; group conversations continue to show their team target.
+- Picking another Agent or team creates a new blank task. It does not copy the previous title/goal, and a truly empty abandoned task is deleted. Draft text or attachments preserve the prior task.
+- Permission UI keeps the four labels 请求批准、替我审批、完全访问、自定义. Internal tool names are grouped as readable capabilities such as 读取项目文件、修改项目文件、查看 Git 变更、执行命令、浏览/操作网页、查看/操作桌面应用.
+- 完全访问 copy states that all currently available actions run without approval and remain auditable. Capability ceilings and execution location remain visible as separate limits.

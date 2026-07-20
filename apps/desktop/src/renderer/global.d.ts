@@ -92,6 +92,8 @@
   AmendContextPacketResponse,
   SetParticipationModePayload,
   SetParticipationModeResponse,
+  SetExecutionModePayload,
+  SetExecutionModeResponse,
   PlanDraftPayload,
   PlanDraftResponse,
   PlanRevisePayload,
@@ -230,6 +232,9 @@ declare global {
         setParticipationMode(
           payload: SetParticipationModePayload,
         ): Promise<SetParticipationModeResponse>;
+        setExecutionMode(
+          payload: SetExecutionModePayload,
+        ): Promise<SetExecutionModeResponse>;
         archiveTask(
           payload: import('@sync-think/protocol').ArchiveTaskPayload,
         ): Promise<import('@sync-think/protocol').ArchiveTaskResponse>;

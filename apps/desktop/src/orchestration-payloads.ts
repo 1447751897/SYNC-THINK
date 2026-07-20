@@ -15,6 +15,7 @@ import type {
   SavePolicyPayload,
   SelectArtifactVersionPayload,
   SetParticipationModePayload,
+  SetExecutionModePayload,
   ListAgentsPayload,
   CreateAgentPayload,
   ListAgentVersionsPayload,
@@ -33,6 +34,7 @@ const MAX_INSTRUCTIONS = 20_000;
 const MAX_STEPS = 256;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
 const PARTICIPATION_MODES = new Set(['conversation', 'collaboration', 'automatic']);
+const EXECUTION_MODES = new Set(['read-only', 'workspace', 'full-access']);
 const APPROVAL_MODES = new Set(['request', 'delegate', 'full', 'custom']);
 const POLICY_SCOPES = new Set(['user', 'workspace', 'project', 'task', 'agent', 'workflow', 'run']);
 const AGENT_MEMORY_SCOPES = new Set(['task', 'project', 'global']);
@@ -160,6 +162,25 @@ export function parseModeSetPayload(value: unknown): SetParticipationModePayload
   return {
     taskId: value.taskId as SetParticipationModePayload['taskId'],
     mode: value.mode as SetParticipationModePayload['mode'],
+    expectedTaskVersion: value.expectedTaskVersion,
+  };
+}
+
+export function parseExecutionModeSetPayload(value: unknown): SetExecutionModePayload {
+  assertRendererSafeOrchestrationPayload(value);
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'mode', 'expectedTaskVersion']) ||
+    !boundedText(value.taskId) ||
+    typeof value.mode !== 'string' ||
+    !EXECUTION_MODES.has(value.mode) ||
+    !taskVersion(value.expectedTaskVersion)
+  ) {
+    return invalid('execution-mode-set');
+  }
+  return {
+    taskId: value.taskId as SetExecutionModePayload['taskId'],
+    mode: value.mode as SetExecutionModePayload['mode'],
     expectedTaskVersion: value.expectedTaskVersion,
   };
 }

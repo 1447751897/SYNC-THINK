@@ -6,13 +6,7 @@ import {
 } from '@sync-think/shared';
 
 export type PolicyScopeType =
-  | 'user'
-  | 'workspace'
-  | 'project'
-  | 'task'
-  | 'agent'
-  | 'workflow'
-  | 'run';
+  'user' | 'workspace' | 'project' | 'task' | 'agent' | 'workflow' | 'run';
 
 export interface ScopedPolicyRule {
   action: string;
@@ -34,10 +28,7 @@ export interface ResolvedScopedPolicy {
   rules: ScopedPolicyRule[];
 }
 
-export type ActionPolicyDecision =
-  | 'allowed'
-  | 'delegate-required'
-  | 'human-required';
+export type ActionPolicyDecision = 'allowed' | 'delegate-required' | 'human-required';
 
 export interface ResolveActionDecisionInput {
   action: string;
@@ -77,9 +68,7 @@ function moreRestrictive(left: unknown, right: unknown): ApprovalMode {
     : normalizedRight;
 }
 
-export function resolveScopedPolicy(
-  policies: readonly ScopedPolicy[],
-): ResolvedScopedPolicy {
+export function resolveScopedPolicy(policies: readonly ScopedPolicy[]): ResolvedScopedPolicy {
   if (policies.length === 0) {
     return { approvalMode: 'request', rules: [] };
   }
@@ -111,9 +100,7 @@ export function resolveScopedPolicy(
         else missingDelegateAgentVersion = true;
       }
       rulesByAction.set(action, {
-        approvalMode: existing
-          ? moreRestrictive(existing.approvalMode, ruleMode)
-          : ruleMode,
+        approvalMode: existing ? moreRestrictive(existing.approvalMode, ruleMode) : ruleMode,
         delegateAgentVersionIds,
         missingDelegateAgentVersion,
       });
@@ -142,14 +129,20 @@ export function resolveScopedPolicy(
   };
 }
 
-export function resolveActionDecision(
-  input: ResolveActionDecisionInput,
-): ResolvedActionDecision {
+export function resolveActionDecision(input: ResolveActionDecisionInput): ResolvedActionDecision {
   const action = input.action.trim();
   const approvalMode = normalizeApprovalMode(input.approvalMode);
-  const humanOnlyAction = HUMAN_ONLY_SET.has(action)
-    ? (action as HumanOnlyAction)
-    : undefined;
+  const humanOnlyAction = HUMAN_ONLY_SET.has(action) ? (action as HumanOnlyAction) : undefined;
+
+  if (approvalMode === 'full') {
+    return {
+      action,
+      approvalMode,
+      decision: 'allowed',
+      humanOnly: Boolean(humanOnlyAction),
+      ...(humanOnlyAction ? { humanOnlyAction } : {}),
+    };
+  }
 
   if (humanOnlyAction) {
     return {
@@ -168,9 +161,7 @@ export function resolveActionDecision(
     const ruleAction = rule.action.trim();
     if (ruleAction !== action && ruleAction !== '*') continue;
     const ruleMode = normalizeApprovalMode(rule.approvalMode);
-    matchingRuleMode = matchingRuleMode
-      ? moreRestrictive(matchingRuleMode, ruleMode)
-      : ruleMode;
+    matchingRuleMode = matchingRuleMode ? moreRestrictive(matchingRuleMode, ruleMode) : ruleMode;
     if (ruleMode === 'delegate') {
       const candidate = rule.delegateAgentVersionId?.trim() as AgentVersionId | undefined;
       if (!candidate || (delegateAgentVersionId && delegateAgentVersionId !== candidate)) {
@@ -181,7 +172,7 @@ export function resolveActionDecision(
     }
   }
 
-  let effectiveMode = approvalMode;
+  let effectiveMode: ApprovalMode = approvalMode;
   if (matchingRuleMode) {
     effectiveMode =
       approvalMode === 'custom'

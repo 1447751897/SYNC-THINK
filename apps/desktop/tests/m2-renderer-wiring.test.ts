@@ -36,6 +36,13 @@ describe('M2 renderer wiring', () => {
     expect(source).toMatch(/delegateAgentVersionId:\s*input\.delegateAgentVersionId/);
   });
 
+  it('keeps the task approval center reachable from the Talk task header', () => {
+    expect(source).toContain('utilityPanel={talkApprovalPanel}');
+    expect(source).toContain('utilityLabel="操作审批"');
+    expect(source).toContain('utilityCount={approvalPendingCount}');
+    expect(source).toContain('defaultPolicyMode={conversationApprovalMode}');
+  });
+
   it('has no plaintext credential reveal route into Renderer payloads or state', () => {
     expect(protocolSource).not.toContain("'provider.revealCredential'");
     expect(protocolSource).not.toContain('RevealCredentialResponse');
@@ -91,7 +98,7 @@ describe('M2 renderer wiring', () => {
 
   it('wires task-scoped collaboration and exact reviewer catalogs', () => {
     expect(source).toContain("targetTask.participationMode === 'conversation'");
-    expect(source).toContain('mentionAgents={composeMentionAgents}');
+    expect(source).toContain('mentionAgents={composeMentionAgents ?? composeAgents}');
     expect(source).toContain('agentVersionId: options.agentVersionId as never');
     expect(source).toContain('planRevisions.length === 0');
     expect(source).not.toContain('approvalPolicies.length');

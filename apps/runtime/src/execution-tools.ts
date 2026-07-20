@@ -166,9 +166,22 @@ export const EXECUTION_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
 ];
 
 const EXECUTION_TOOL_NAMES = new Set(EXECUTION_TOOL_SCHEMAS.map((tool) => tool.name));
+const READ_ONLY_EXECUTION_TOOL_NAMES = new Set([
+  'read_file',
+  'list_files',
+  'git_status',
+  'git_diff',
+  'browser_extract',
+  'desktop_list_windows',
+  'desktop_snapshot',
+]);
 
 export function isExecutionToolName(name: string): boolean {
   return EXECUTION_TOOL_NAMES.has(name);
+}
+
+export function isReadOnlyExecutionToolName(name: string): boolean {
+  return READ_ONLY_EXECUTION_TOOL_NAMES.has(name);
 }
 
 export async function invokeExecutionTool(input: {
@@ -195,7 +208,10 @@ export async function invokeExecutionTool(input: {
   switch (input.name) {
     case 'read_file':
       events = new FileSystemWorker().exec(
-        { workingDir: input.executionRoot, action: { kind: 'read', relative: stringArg(args, 'path') } },
+        {
+          workingDir: input.executionRoot,
+          action: { kind: 'read', relative: stringArg(args, 'path') },
+        },
         token,
       );
       break;
@@ -354,7 +370,8 @@ async function collectWorkerResult(events: AsyncIterable<WorkerEvent>): Promise<
 
 function stringArg(args: Record<string, JsonValue>, name: string): string {
   const value = args[name];
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`execution.tool_argument_invalid:${name}`);
+  if (typeof value !== 'string' || !value.trim())
+    throw new Error(`execution.tool_argument_invalid:${name}`);
   return value;
 }
 

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,10 +11,10 @@ import {
   type DragEvent,
 } from 'react';
 import {
-  isAgentPermissionCategoryEnabled,
-  isLegacyAgentPermissions,
-  type AgentPermissions,
+  executionModeLabelZh,
+  executionModeSummaryZh,
   type ApprovalMode,
+  type ExecutionMode,
   type MessageAttachment,
   type ParticipationMode,
   type ProviderSurface,
@@ -188,10 +189,13 @@ export interface ComposeProps {
   onCreateWorkspace?: () => void | Promise<void>;
   onCreateWorkspaceFromFolder?: () => void | Promise<void>;
   workspaceActionBusy?: boolean;
-  /** Operation permission for the current conversation task. */
-  permissionMode?: ApprovalMode;
+  /**
+   * Codex three-mode execution authority for the current conversation task.
+   * Accepts ExecutionMode values; legacy ApprovalMode aliases still render during migration.
+   */
+  permissionMode?: ExecutionMode | ApprovalMode;
   permissionBusy?: boolean;
-  onPermissionModeChange?: (mode: ApprovalMode) => void | Promise<void>;
+  onPermissionModeChange?: (mode: ExecutionMode) => void | Promise<void>;
   permissionDetails?: ComposePermissionDetails | null;
   browserIdentities?: readonly ComposeBrowserIdentityOption[];
   selectedBrowserIdentityId?: string | null;
@@ -322,11 +326,19 @@ function safeAgentColor(value: string | undefined): string {
   return value && /^#[0-9a-f]{6}$/i.test(value) ? value : '#64748b';
 }
 
-function permissionModeLabel(mode: ApprovalMode): string {
-  if (mode === 'full') return '完全访问';
-  if (mode === 'delegate') return '替我审批';
-  if (mode === 'custom') return '自定义';
-  return '请求批准';
+function toComposeExecutionMode(mode: ExecutionMode | ApprovalMode | string): ExecutionMode {
+  if (mode === 'read-only' || mode === 'workspace' || mode === 'full-access') return mode;
+  if (mode === 'full') return 'full-access';
+  // request / delegate / custom all map onto the daily workspace sandbox.
+  return 'workspace';
+}
+
+function permissionModeLabel(mode: ExecutionMode | ApprovalMode | string): string {
+  return executionModeLabelZh(toComposeExecutionMode(mode));
+}
+
+function permissionModeDescription(mode: ExecutionMode | ApprovalMode | string): string {
+  return executionModeSummaryZh(toComposeExecutionMode(mode));
 }
 
 function executionModeLabel(mode: ComposePermissionDetails['executionMode']): string {
@@ -335,18 +347,47 @@ function executionModeLabel(mode: ComposePermissionDetails['executionMode']): st
   return '仅对话';
 }
 
-function capabilityCeilingLabel(
-  ceiling: ComposePermissionDetails['capabilityCeiling'],
-): string {
-  const legacyDefault = isLegacyAgentPermissions(ceiling as AgentPermissions);
-  const labels = [
-    isAgentPermissionCategoryEnabled(ceiling.file, legacyDefault) ? '文件' : '',
-    isAgentPermissionCategoryEnabled(ceiling.command, legacyDefault) ? '命令' : '',
-    isAgentPermissionCategoryEnabled(ceiling.browser, legacyDefault) ? '浏览器' : '',
-    isAgentPermissionCategoryEnabled(ceiling.desktop, legacyDefault) ? '桌面' : '',
-    isAgentPermissionCategoryEnabled(ceiling.network, legacyDefault) ? '网络' : '',
-  ].filter(Boolean);
-  return labels.length ? labels.join('、') : '沿用兼容能力';
+function executionCapabilityLabels(toolNames: readonly string[]): string[] {
+  const labels = new Set<string>();
+  for (const name of toolNames) {
+    if (name === 'read_file' || name === 'list_files') labels.add('读取项目文件');
+    else if (name === 'write_file') labels.add('修改项目文件');
+    else if (name === 'run_command') labels.add('执行命令');
+    else if (name === 'git_status' || name === 'git_diff') labels.add('查看 Git 变更');
+    else if (name === 'browser_navigate' || name === 'browser_extract') labels.add('浏览网页');
+    else if (name === 'browser_click' || name === 'browser_fill') labels.add('操作网页');
+    else if (name === 'desktop_list_windows' || name === 'desktop_snapshot') {
+      labels.add('查看桌面应用');
+    } else if (name === 'desktop_invoke' || name === 'desktop_fill') {
+      labels.add('操作桌面应用');
+    } else labels.add('扩展工具');
+  }
+  return [...labels];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function hasExactMention(text: string, agentName: string): boolean {
+  return new RegExp(
+    `(^|[\\s])@${escapeRegExp(agentName)}(?=$|[\\s,，。！？!?;；:：])`,
+    'u',
+  ).test(text);
+}
+
+function resolveMentionedAgent(
+  text: string,
+  agents: readonly ComposeAgentOption[],
+  pickedAgentVersionId: string | null,
+): ComposeAgentOption | undefined {
+  const picked = pickedAgentVersionId
+    ? agents.find((agent) => agent.agentVersionId === pickedAgentVersionId)
+    : undefined;
+  if (picked && hasExactMention(text, picked.name)) return picked;
+  return [...agents]
+    .filter((agent) => agent.agentVersionId && hasExactMention(text, agent.name))
+    .sort((left, right) => right.name.length - left.name.length)[0];
 }
 
 export function Compose(props: ComposeProps) {
@@ -355,6 +396,9 @@ export function Compose(props: ComposeProps) {
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [pickedMentionAgentVersionId, setPickedMentionAgentVersionId] = useState<string | null>(
+    null,
+  );
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
@@ -372,7 +416,18 @@ export function Compose(props: ComposeProps) {
     setAttachments([...(props.draft?.attachments ?? [])]);
     setAttachmentError(null);
     setMentionQuery(null);
+    setPickedMentionAgentVersionId(null);
   }, [props.draftKey]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = '0px';
+    const contentHeight = Math.max(56, textarea.scrollHeight);
+    const height = Math.min(200, contentHeight);
+    textarea.style.height = `${height}px`;
+    textarea.style.overflowY = contentHeight > 200 ? 'auto' : 'hidden';
+  }, [props.draftKey, val]);
 
   const updateDraftText = (next: string) => {
     setVal(next);
@@ -555,6 +610,7 @@ export function Compose(props: ComposeProps) {
     const next = `${before.slice(0, at)}@${agent.name} ${after}`;
     updateDraftText(next);
     if (hasDedicatedMentionAgents) {
+      setPickedMentionAgentVersionId(agent.agentVersionId ?? null);
       setAgentMenuOpen(false);
       setMentionQuery(null);
     } else {
@@ -624,8 +680,10 @@ export function Compose(props: ComposeProps) {
     const submittedValue = val;
     const submittedAttachments = attachments;
     const modelId = selectedModelId || undefined;
-    const mentionedAgent = mentionAgents.find(
-      (agent) => agent.agentVersionId && submittedValue.includes(`@${agent.name}`),
+    const mentionedAgent = resolveMentionedAgent(
+      submittedValue,
+      mentionAgents,
+      pickedMentionAgentVersionId,
     );
     try {
       const result = props.onSend(submittedValue, {
@@ -651,6 +709,7 @@ export function Compose(props: ComposeProps) {
               if (val === submittedValue) setVal('');
               if (attachments === submittedAttachments) setAttachments([]);
               setMentionQuery(null);
+              setPickedMentionAgentVersionId(null);
             }
           },
           () => undefined,
@@ -662,6 +721,7 @@ export function Compose(props: ComposeProps) {
         setVal('');
         setAttachments([]);
         setMentionQuery(null);
+        setPickedMentionAgentVersionId(null);
       }
     } catch {
       // Keep the draft. The parent owns the actionable send error.
@@ -675,6 +735,12 @@ export function Compose(props: ComposeProps) {
 
   const onTextareaChange = (value: string, caret: number) => {
     updateDraftText(value);
+    if (pickedMentionAgentVersionId) {
+      const picked = mentionAgents.find(
+        (agent) => agent.agentVersionId === pickedMentionAgentVersionId,
+      );
+      if (!picked || !hasExactMention(value, picked.name)) setPickedMentionAgentVersionId(null);
+    }
     if (!showMentionPicker) {
       setMentionQuery(null);
       return;
@@ -833,7 +899,9 @@ export function Compose(props: ComposeProps) {
                 className="st-compose__attachment-remove"
                 aria-label={`移除附件 ${attachment.name}`}
                 onClick={() =>
-                  updateDraftAttachments((current) => current.filter((entry) => entry.id !== attachment.id))
+                  updateDraftAttachments((current) =>
+                    current.filter((entry) => entry.id !== attachment.id),
+                  )
                 }
               >
                 <X aria-hidden="true" size={13} />
@@ -857,7 +925,7 @@ export function Compose(props: ComposeProps) {
             (selectedGroup
               ? `@${selectedGroup.name} · 描述你希望小队完成的工作…`
               : selectedAgent
-                ? `@${selectedAgent.name} · 描述你希望完成的工作…`
+                ? '描述你希望完成的工作…'
                 : '输入指令、粘贴上下文，或继续当前任务…')
           }
           value={val}
@@ -913,16 +981,15 @@ export function Compose(props: ComposeProps) {
                 <ShieldCheck size={13} strokeWidth={1.9} aria-hidden="true" />
                 <select
                   aria-label="当前对话操作权限"
-                  value={props.permissionMode}
+                  value={toComposeExecutionMode(props.permissionMode)}
                   disabled={props.streaming || props.permissionBusy}
                   onChange={(event) =>
-                    void props.onPermissionModeChange?.(event.target.value as ApprovalMode)
+                    void props.onPermissionModeChange?.(event.target.value as ExecutionMode)
                   }
                 >
-                  <option value="request">请求批准</option>
-                  <option value="delegate">替我审批</option>
-                  <option value="full">完全访问</option>
-                  <option value="custom">自定义</option>
+                  <option value="read-only">只读</option>
+                  <option value="workspace">工作区</option>
+                  <option value="full-access">完全访问</option>
                 </select>
               </label>
               {props.permissionDetails ? (
@@ -937,28 +1004,64 @@ export function Compose(props: ComposeProps) {
                 </button>
               ) : null}
               {permissionDetailsOpen && props.permissionDetails ? (
-                <div className="st-compose__permission-details" role="dialog" aria-label="当前任务有效权限">
+                <div
+                  className="st-compose__permission-details"
+                  role="dialog"
+                  aria-label="当前任务有效权限"
+                >
                   <header>
                     <strong>当前任务访问范围</strong>
-                    <button type="button" aria-label="关闭权限详情" onClick={() => setPermissionDetailsOpen(false)}>
+                    <button
+                      type="button"
+                      aria-label="关闭权限详情"
+                      onClick={() => setPermissionDetailsOpen(false)}
+                    >
                       <X size={13} aria-hidden="true" />
                     </button>
                   </header>
                   <dl>
-                    <div><dt>操作权限</dt><dd>{permissionModeLabel(props.permissionDetails.approvalMode)}</dd></div>
-                    <div><dt>执行位置</dt><dd>{executionModeLabel(props.permissionDetails.executionMode)}</dd></div>
-                    {props.permissionDetails.baseRef ? <div><dt>基准分支</dt><dd>{props.permissionDetails.baseRef}</dd></div> : null}
-                    <div><dt>浏览器身份</dt><dd>{props.permissionDetails.browserIdentityName ?? '未选择'}</dd></div>
+                    <div>
+                      <dt>执行模式</dt>
+                      <dd>
+                        {permissionModeLabel(
+                          props.permissionMode ?? props.permissionDetails.approvalMode,
+                        )}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>执行位置</dt>
+                      <dd>{executionModeLabel(props.permissionDetails.executionMode)}</dd>
+                    </div>
+                    {props.permissionDetails.baseRef ? (
+                      <div>
+                        <dt>基准分支</dt>
+                        <dd>{props.permissionDetails.baseRef}</dd>
+                      </div>
+                    ) : null}
+                    <div>
+                      <dt>浏览器身份</dt>
+                      <dd>{props.permissionDetails.browserIdentityName ?? '未选择'}</dd>
+                    </div>
                   </dl>
                   <section>
-                    <strong>本次可用工具</strong>
-                    <div className="st-compose__permission-chips">
-                      {props.permissionDetails.effectiveToolNames.length ? props.permissionDetails.effectiveToolNames.map((name) => <span key={name}>{name}</span>) : <small>当前没有执行工具</small>}
-                    </div>
+                    <strong>执行规则</strong>
+                    <p>
+                      {permissionModeDescription(
+                        props.permissionMode ?? props.permissionDetails.approvalMode,
+                      )}
+                    </p>
                   </section>
                   <section>
-                    <strong>智能体能力上限</strong>
-                    <p>{capabilityCeilingLabel(props.permissionDetails.capabilityCeiling)}</p>
+                    <strong>本次可用能力</strong>
+                    <div className="st-compose__permission-chips">
+                      {props.permissionDetails.effectiveToolNames.length ? (
+                        executionCapabilityLabels(props.permissionDetails.effectiveToolNames).map(
+                          (label) => <span key={label}>{label}</span>,
+                        )
+                      ) : (
+                        <small>当前没有执行能力</small>
+                      )}
+                    </div>
                   </section>
                 </div>
               ) : null}
@@ -975,7 +1078,8 @@ export function Compose(props: ComposeProps) {
               >
                 {props.browserIdentities.map((identity) => (
                   <option key={identity.id} value={identity.id}>
-                    {identity.name}{identity.isDefault ? '（默认）' : ''}
+                    {identity.name}
+                    {identity.isDefault ? '（默认）' : ''}
                   </option>
                 ))}
               </select>

@@ -1,14 +1,23 @@
 /**
  * Approval policy helpers (§13 Permissions and approvals).
  *
- * Modes: request | delegate | full | custom
- * Human-only actions (§13.2) always require a real human — cannot be
- * bypassed by delegated approval or full-approval mode.
+ * Product authority is the Codex three-mode model:
+ *   read-only | workspace | full-access
+ *
+ * Legacy modes remain accepted for wire compatibility:
+ *   request | delegate | full | custom
+ *
+ * Full access / full-access execute every currently available action without
+ * an approval prompt and retain audit metadata.
  */
 
 import {
   HUMAN_ONLY_ACTIONS,
+  executionModeFromLegacyApprovalMode,
+  legacyApprovalModeFromExecutionMode,
+  normalizeExecutionMode,
   type ApprovalMode,
+  type ExecutionMode,
   type HumanOnlyAction,
 } from '@sync-think/shared';
 
@@ -22,11 +31,7 @@ export type ApprovalActionKind =
   | 'human-only'
   | 'other';
 
-export type ApprovalDecisionGate =
-  | 'auto-approve'
-  | 'require-human'
-  | 'require-delegate'
-  | 'deny';
+export type ApprovalDecisionGate = 'auto-approve' | 'require-human' | 'require-delegate' | 'deny';
 
 export interface EvaluateApprovalInput {
   /** Active approval mode (Agent / Workspace / Run). */
@@ -72,8 +77,8 @@ const HUMAN_ONLY_LABEL_ZH: Record<HumanOnlyAction, string> = {
 
 const MODE_LABEL_ZH: Record<ApprovalMode, string> = {
   request: '请求批准',
-  delegate: '委托批准',
-  full: '完全批准',
+  delegate: '替我审批',
+  full: '完全访问',
   custom: '自定义',
 };
 
@@ -82,20 +87,49 @@ export function isHumanOnlyAction(action: string | null | undefined): boolean {
   return HUMAN_ONLY_SET.has(String(action).trim());
 }
 
-export function asHumanOnlyAction(
-  action: string | null | undefined,
-): HumanOnlyAction | undefined {
+export function asHumanOnlyAction(action: string | null | undefined): HumanOnlyAction | undefined {
   if (!action) return undefined;
   const key = String(action).trim();
   return HUMAN_ONLY_SET.has(key) ? (key as HumanOnlyAction) : undefined;
 }
 
 export function normalizeApprovalMode(mode: unknown): ApprovalMode {
-  const m = String(mode ?? '').trim().toLowerCase();
+  const m = String(mode ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, '-');
   if (m === 'delegate' || m === 'full' || m === 'custom' || m === 'request') {
     return m;
   }
+  // Accept ExecutionMode values on the approval path for gradual migration.
+  if (m === 'full-access' || m === 'danger-full-access' || m === 'unrestricted') {
+    return 'full';
+  }
+  if (m === 'workspace' || m === 'workspace-write' || m === 'default' || m === 'agent') {
+    return 'request';
+  }
+  if (m === 'read-only' || m === 'readonly' || m === 'read only') {
+    return 'request';
+  }
   return 'request';
+}
+
+export function toExecutionMode(mode: ApprovalMode | ExecutionMode | string | null | undefined): ExecutionMode {
+  const raw = String(mode ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, '-');
+  if (raw === 'read-only' || raw === 'readonly' || raw === 'workspace' || raw === 'full-access') {
+    return normalizeExecutionMode(raw);
+  }
+  return executionModeFromLegacyApprovalMode(mode);
+}
+
+export function fromExecutionMode(
+  mode: ExecutionMode | string,
+  routing: 'user' | 'delegate-agent' = 'user',
+): ApprovalMode {
+  return legacyApprovalModeFromExecutionMode(mode, routing);
 }
 
 export function humanOnlyActionLabelZh(action: HumanOnlyAction | string): string {
@@ -110,16 +144,25 @@ export function approvalModeLabelZh(mode: ApprovalMode | string): string {
 
 /**
  * Evaluate whether an action may auto-approve under the given mode.
- * Human-only actions always force require-human (§13.2 / §19).
+ * Sensitive actions force require-human unless full access is the effective mode (§13.2 / §19).
  */
 export function evaluateApproval(input: EvaluateApprovalInput): EvaluateApprovalResult {
   const mode = normalizeApprovalMode(input.mode);
   const action = String(input.action ?? '').trim();
   const humanOnlyAction = asHumanOnlyAction(action);
   const humanOnly =
-    Boolean(humanOnlyAction) ||
-    input.kind === 'human-only' ||
-    isHumanOnlyAction(action);
+    Boolean(humanOnlyAction) || input.kind === 'human-only' || isHumanOnlyAction(action);
+
+  if (mode === 'full') {
+    return {
+      gate: 'auto-approve',
+      humanOnly,
+      ...(humanOnlyAction ? { humanOnlyAction } : {}),
+      mode,
+      reason: 'full access runs every available action without approval',
+      labelZh: humanOnly ? '完全访问 · 敏感操作自动执行并记录' : '完全访问 · 自动执行',
+    };
+  }
 
   if (humanOnly) {
     const slug = humanOnlyAction ?? (action as HumanOnlyAction);
@@ -129,7 +172,7 @@ export function evaluateApproval(input: EvaluateApprovalInput): EvaluateApproval
       humanOnlyAction: humanOnlyAction,
       mode,
       reason: 'human-only action cannot be auto-approved or delegated',
-      labelZh: `仅限真人 · ${humanOnlyActionLabelZh(slug)}`,
+      labelZh: `敏感操作 · 需本人确认 · ${humanOnlyActionLabelZh(slug)}`,
     };
   }
 
@@ -152,7 +195,7 @@ export function evaluateApproval(input: EvaluateApprovalInput): EvaluateApproval
         humanOnly: false,
         mode,
         reason: 'delegate mode routes to approval agent (not human-only)',
-        labelZh: '委托批准 · 由审批 Agent 评估',
+        labelZh: '替我审批 · 由审批 Agent 评估',
       };
     }
     return {
@@ -160,26 +203,7 @@ export function evaluateApproval(input: EvaluateApprovalInput): EvaluateApproval
       humanOnly: false,
       mode,
       reason: 'delegate mode without available agent falls back to human',
-      labelZh: '委托批准 · 无审批 Agent · 回退真人',
-    };
-  }
-
-  if (mode === 'full') {
-    if (inside) {
-      return {
-        gate: 'auto-approve',
-        humanOnly: false,
-        mode,
-        reason: 'full mode auto-approves actions inside explicit policy',
-        labelZh: '完全批准 · 策略内自动通过',
-      };
-    }
-    return {
-      gate: 'require-human',
-      humanOnly: false,
-      mode,
-      reason: 'full mode still requires human outside explicit policy',
-      labelZh: '完全批准 · 策略外需真人',
+      labelZh: '替我审批 · 无审批 Agent · 回退真人',
     };
   }
 

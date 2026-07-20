@@ -80,11 +80,15 @@ describe('ApprovalCenterPanel (section 13)', () => {
     );
     const strip = screen.getByTestId('approval-gate-readiness');
     expect(strip.getAttribute('data-level')).toMatch(/ready|empty|partial/);
-    expect(screen.getByTestId('approval-gate-readiness-badge').textContent).toMatch(/闸门空闲|尚未观测|进行中/);
+    expect(screen.getByTestId('approval-gate-readiness-badge').textContent).toMatch(
+      /闸门空闲|尚未观测|进行中/,
+    );
     expect(screen.getByTestId('approval-gate-check-human').getAttribute('data-ok')).toBe('1');
     expect(screen.getByTestId('approval-gate-check-pending').getAttribute('data-ok')).toBe('1');
-    expect(screen.getByTestId('approval-gate-check-human').textContent).toMatch(/仅限真人|3/);
-    expect(screen.getByTestId('approval-gate-readiness-note').textContent).toMatch(/仅限真人|Memory|MCP/);
+    expect(screen.getByTestId('approval-gate-check-human').textContent).toMatch(/敏感操作|3/);
+    expect(screen.getByTestId('approval-gate-readiness-note').textContent).toMatch(
+      /完全访问|审计记录/,
+    );
   });
 
   it('attention level when pending items exist', () => {
@@ -106,7 +110,9 @@ describe('ApprovalCenterPanel (section 13)', () => {
         pendingCount={1}
       />,
     );
-    expect(screen.getByTestId('approval-gate-readiness').getAttribute('data-level')).toBe('attention');
+    expect(screen.getByTestId('approval-gate-readiness').getAttribute('data-level')).toBe(
+      'attention',
+    );
     expect(screen.getByTestId('approval-gate-readiness-badge').textContent).toMatch(/1 待审/);
     expect(screen.getByTestId('approval-gate-check-pending').getAttribute('data-ok')).toBe('0');
     expect(screen.getByTestId('approval-gate-check-bridge').textContent).toMatch(/记忆|桥接/);
@@ -335,10 +341,7 @@ describe('ApprovalCenterPanel (section 13)', () => {
       />,
     );
 
-    expect(screen.getByTestId('approval-policy-rule-action')).toHaveProperty(
-      'value',
-      'shell.exec',
-    );
+    expect(screen.getByTestId('approval-policy-rule-action')).toHaveProperty('value', 'shell.exec');
     expect(screen.getByTestId('approval-policy-rule-mode')).toHaveProperty('value', 'delegate');
     const delegate = screen.getByTestId('approval-policy-rule-delegate');
     expect(delegate).toHaveProperty('value', 'agent-reviewer-v3');
@@ -457,6 +460,19 @@ describe('ApprovalCenterPanel (section 13)', () => {
     });
   });
 
+  it('uses the effective task mode for a new policy draft', () => {
+    render(
+      <ApprovalCenterPanel
+        items={[]}
+        policies={[]}
+        defaultPolicyScope={{ scopeType: 'task', scopeId: 'task-full' }}
+        defaultPolicyMode="full"
+      />,
+    );
+
+    expect(screen.getByLabelText('策略审批模式')).toHaveProperty('value', 'full');
+  });
+
   it('submits the selected exact delegate AgentVersion and shows it in immutable history', async () => {
     const onDecide = vi.fn().mockResolvedValue(undefined);
     render(
@@ -528,7 +544,7 @@ describe('projectApprovalGateReadiness', () => {
     expect(r.humanOnlyOk).toBe(true);
     expect(r.humanOnlyCount).toBe(7);
     expect(r.pendingCount).toBe(0);
-    expect(r.note).toMatch(/dogfood|soft|M1|仅限真人/);
+    expect(r.note).toMatch(/完全访问|审计记录/);
     expect(r.note).not.toMatch(/仍需.*外网/);
   });
 

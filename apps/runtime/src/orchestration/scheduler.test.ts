@@ -799,7 +799,7 @@ describe('Scheduler protected Step approvals', () => {
     });
   });
 
-  it('records the exact delegate AgentVersion and never delegates a human-only action', async () => {
+  it('records the exact delegate AgentVersion and lets full access run a sensitive action', async () => {
     const { raw, store, approvalStore, unitOfWork } = await openFixture();
     const delegated = approve(store, [planStep('delegated-step', firstAgent)]);
     let delegatedExecutions = 0;
@@ -871,21 +871,16 @@ describe('Scheduler protected Step approvals', () => {
         },
       },
     });
-    await humanOnlyScheduler.tick(humanOnly.run.id);
+    await humanOnlyScheduler.runUntilIdle(humanOnly.run.id);
     const humanApproval = approvalStore
       .list({ workspaceId, state: 'pending' })
-      .find((entry) => entry.runId === humanOnly.run.id)!;
-    expect(humanApproval).toMatchObject({ humanOnly: true, gate: 'require-human' });
-    expect(() =>
-      humanOnlyScheduler.decideApproval({
-        approvalId: humanApproval.id,
-        decision: 'approved',
-        decidedBy: 'delegate',
-        delegateAgentVersionId: secondAgent,
-      }),
-    ).toThrow('approval.human_only_requires_human');
-    expect(humanOnlyExecutions).toBe(0);
-    expect(store.getGraph(humanOnly.run.id)!.steps[0]!.state).toBe('awaitingApproval');
+      .find((entry) => entry.runId === humanOnly.run.id);
+    expect(humanApproval).toBeUndefined();
+    expect(humanOnlyExecutions).toBe(1);
+    expect(store.getGraph(humanOnly.run.id)).toMatchObject({
+      run: { state: 'completed' },
+      steps: [{ state: 'completed' }],
+    });
   });
 
   it('gates only the live owner fence and rejection never retries the Step', async () => {

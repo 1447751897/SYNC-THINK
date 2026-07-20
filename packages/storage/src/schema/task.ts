@@ -9,6 +9,8 @@ export const task = sqliteTable('task', {
   goal: text('goal').notNull(),
   status: text('status').notNull().default('active'),
   participationMode: text('participation_mode').notNull().default('conversation'),
+  /** Codex three-mode execution authority for this task. */
+  executionMode: text('execution_mode').notNull().default('workspace'),
   acceptanceCriteriaJson: text('acceptance_criteria_json').notNull().default('[]'),
   // task_version supports optimistic concurrency on commands (side effects must
   // be deterministic & guarded by expectedTaskVersion per AI rules §5.1).

@@ -138,9 +138,8 @@ describe('subtask delegation and handoff Runtime commands', () => {
         },
       });
       expect(worker.error).toBeUndefined();
-      const workerAgentVersionId = (
-        worker.payload as { agent: { agentVersionId: string } }
-      ).agent.agentVersionId;
+      const workerAgentVersionId = (worker.payload as { agent: { agentVersionId: string } }).agent
+        .agentVersionId;
 
       const parent = await request(socket, reader, {
         id: 'parent-task',
@@ -232,16 +231,13 @@ describe('subtask delegation and handoff Runtime commands', () => {
             automaticEvents
               .listAllEvents(0)
               .some(
-                (event) =>
-                  event.type === 'subtask.blocked' && event.payload.childTaskId === taskId,
+                (event) => event.type === 'subtask.blocked' && event.payload.childTaskId === taskId,
               ),
           ),
         );
         const events = automaticEvents.listAllEvents(0);
         const eventFor = (type: string, taskId: string) =>
-          events.find(
-            (event) => event.type === type && event.payload.childTaskId === taskId,
-          );
+          events.find((event) => event.type === type && event.payload.childTaskId === taskId);
         const firstStarted = eventFor('subtask.execution-started', childTaskId)!;
         const parallelStarted = eventFor('subtask.execution-started', parallelTaskId)!;
         const firstBlocked = eventFor('subtask.blocked', childTaskId)!;
@@ -288,9 +284,8 @@ describe('subtask delegation and handoff Runtime commands', () => {
         type: 'task.open',
         payload: { taskId: childTaskId },
       });
-      const childTaskVersion = (
-        reopenedChild.payload as { task: { taskVersion: number } }
-      ).task.taskVersion;
+      const childTaskVersion = (reopenedChild.payload as { task: { taskVersion: number } }).task
+        .taskVersion;
       const continuationInspection = await openDatabaseAsync({ path: dbPath });
       const continuationEvents = new SqliteEventCheckpointStore(continuationInspection.raw);
       const beforeContinuation = continuationEvents.listAllEvents(0).length;
@@ -492,9 +487,7 @@ describe('subtask delegation and handoff Runtime commands', () => {
           models: [{ providerModelId: 'group-model', displayName: 'Group model' }],
         },
       });
-      const modelId = (
-        models.payload as { models: Array<{ modelId: string }> }
-      ).models[0]!.modelId;
+      const modelId = (models.payload as { models: Array<{ modelId: string }> }).models[0]!.modelId;
       const credentialGroupId = providerPayload.provider.credentials[0]!.credentialGroupId;
 
       const lead = await request(socket, reader, {
@@ -512,9 +505,8 @@ describe('subtask delegation and handoff Runtime commands', () => {
           approvalMode: 'full',
         },
       });
-      const leadAgentVersionId = (
-        lead.payload as { agent: { agentVersionId: string } }
-      ).agent.agentVersionId;
+      const leadAgentVersionId = (lead.payload as { agent: { agentVersionId: string } }).agent
+        .agentVersionId;
       const worker = await request(socket, reader, {
         id: 'worker-group',
         kind: 'request',
@@ -530,9 +522,8 @@ describe('subtask delegation and handoff Runtime commands', () => {
           approvalMode: 'full',
         },
       });
-      workerAgentVersionId = (
-        worker.payload as { agent: { agentVersionId: string } }
-      ).agent.agentVersionId;
+      workerAgentVersionId = (worker.payload as { agent: { agentVersionId: string } }).agent
+        .agentVersionId;
       const group = await request(socket, reader, {
         id: 'group-create-runtime',
         kind: 'request',
@@ -570,6 +561,7 @@ describe('subtask delegation and handoff Runtime commands', () => {
         threadId: string;
         taskVersion: number;
       };
+      expect(task.taskVersion).toBe(0);
       const appended = await request(socket, reader, {
         id: 'group-message-runtime',
         kind: 'request',
@@ -587,8 +579,7 @@ describe('subtask delegation and handoff Runtime commands', () => {
         eventStore
           .listAllEvents(0)
           .some(
-            (event) =>
-              event.payload.threadId === task.threadId && event.type === 'run.completed',
+            (event) => event.payload.threadId === task.threadId && event.type === 'run.completed',
           ),
       );
 
@@ -611,17 +602,16 @@ describe('subtask delegation and handoff Runtime commands', () => {
           eventStore
             .listAllEvents(0)
             .filter(
-              (event) =>
-                event.payload.threadId === task.threadId && event.type === 'run.completed',
+              (event) => event.payload.threadId === task.threadId && event.type === 'run.completed',
             ).length >= 2,
       );
 
       const taskEvents = eventStore
         .listAllEvents(0)
         .filter((event) => event.payload.threadId === task.threadId);
-      expect(
-        taskEvents.filter((event) => event.type.startsWith('group.collaboration.')),
-      ).toEqual([]);
+      expect(taskEvents.filter((event) => event.type.startsWith('group.collaboration.'))).toEqual(
+        [],
+      );
       expect(taskEvents.filter((event) => event.type === 'group.delegation-decided')).toEqual([]);
       expect(taskEvents.filter((event) => event.type === 'group.agent-message')).toEqual([]);
       expect(providerRequests).toHaveLength(2);
@@ -637,6 +627,78 @@ describe('subtask delegation and handoff Runtime commands', () => {
       expect(
         manifests.filter((event) => event.payload.agentVersionId === leadAgentVersionId),
       ).toHaveLength(1);
+
+      const directTask = await request(socket, reader, {
+        id: 'direct-task-bound-runtime',
+        kind: 'request',
+        type: 'task.create',
+        payload: {
+          workspaceId,
+          title: 'Stable direct Agent',
+          goal: 'Keep the lead binding after one mention',
+          agentVersionId: leadAgentVersionId,
+        },
+      });
+      const direct = directTask.payload as {
+        taskId: string;
+        threadId: string;
+        taskVersion: number;
+      };
+      const directMention = await request(socket, reader, {
+        id: 'direct-message-mentioned-runtime',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: direct.threadId,
+          expectedTaskVersion: direct.taskVersion,
+          role: 'user',
+          text: '@Worker Agent Please inspect this once.',
+          agentVersionId: workerAgentVersionId,
+        },
+      });
+      const directNextVersion = (directMention.payload as { taskVersion: number }).taskVersion;
+      await waitFor(() => providerRequests.length === 3);
+      await waitFor(
+        () =>
+          eventStore
+            .listAllEvents(0)
+            .filter(
+              (event) =>
+                event.payload.threadId === direct.threadId && event.type === 'run.completed',
+            ).length >= 1,
+      );
+
+      await request(socket, reader, {
+        id: 'direct-message-unmentioned-runtime',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: direct.threadId,
+          expectedTaskVersion: directNextVersion,
+          role: 'user',
+          text: 'Continue with the primary Agent.',
+        },
+      });
+      await waitFor(() => providerRequests.length === 4);
+      await waitFor(
+        () =>
+          eventStore
+            .listAllEvents(0)
+            .filter(
+              (event) =>
+                event.payload.threadId === direct.threadId && event.type === 'run.completed',
+            ).length >= 2,
+      );
+      const directManifests = eventStore
+        .listAllEvents(0)
+        .filter(
+          (event) =>
+            event.payload.threadId === direct.threadId && event.type === 'context.packet.built',
+        );
+      expect(directManifests.map((event) => event.payload.agentVersionId)).toEqual([
+        workerAgentVersionId,
+        leadAgentVersionId,
+      ]);
     } finally {
       inspection.raw.close();
       socket.destroy();

@@ -566,6 +566,48 @@ describe('workspace IA commands', () => {
       }
       expect(execution).toMatchObject({ mode: 'managed_worktree', state: 'ready' });
       expect(execution?.executionPath && existsSync(execution.executionPath)).toBe(true);
+
+      const dirtyExecutionPath = execution!.executionPath!;
+      const untrackedPath = join(dirtyExecutionPath, 'external-editor-draft.txt');
+      writeFileSync(untrackedPath, 'unsaved task work\n');
+
+      const dirtyDiscard = await writeAndRead(sock, reader, {
+        id: 'git-dirty-task-discard',
+        kind: 'request',
+        type: 'task.discardEmpty',
+        payload: { taskId, expectedTaskVersion: 0 },
+      });
+      expect(dirtyDiscard.payload).toEqual({ taskId, discarded: false });
+      expect(existsSync(untrackedPath)).toBe(true);
+      const dirtyTaskStillExists = await writeAndRead(sock, reader, {
+        id: 'git-dirty-task-still-exists',
+        kind: 'request',
+        type: 'task.open',
+        payload: { taskId },
+      });
+      expect(dirtyTaskStillExists.error).toBeUndefined();
+      rmSync(untrackedPath);
+
+      const appended = await writeAndRead(sock, reader, {
+        id: 'git-task-message',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: (created.payload as { threadId: string }).threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: '保留这个任务和它的隔离工作树',
+        },
+      });
+      expect(appended.error).toBeUndefined();
+      const discardAttempt = await writeAndRead(sock, reader, {
+        id: 'git-task-discard-non-empty',
+        kind: 'request',
+        type: 'task.discardEmpty',
+        payload: { taskId, expectedTaskVersion: 1 },
+      });
+      expect(discardAttempt.payload).toEqual({ taskId, discarded: false });
+      expect(execution?.executionPath && existsSync(execution.executionPath)).toBe(true);
     } finally {
       sock.destroy();
       await session.close();

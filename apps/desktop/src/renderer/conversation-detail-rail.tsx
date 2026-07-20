@@ -29,7 +29,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import type { AgentPermissions, ApprovalMode } from '@sync-think/shared';
+import type { AgentPermissions, ApprovalMode, ExecutionMode } from '@sync-think/shared';
 import type {
   ConversationLogEvent,
   ConversationLogStage,
@@ -130,11 +130,17 @@ function executionBaseLabel(baseRef?: string): string | undefined {
   return baseRef === 'HEAD' ? '创建任务时的当前版本' : baseRef;
 }
 
+function toTaskExecutionMode(mode: ExecutionMode | ApprovalMode | string): ExecutionMode {
+  if (mode === 'read-only' || mode === 'workspace' || mode === 'full-access') return mode;
+  if (mode === 'full') return 'full-access';
+  return 'workspace';
+}
+
 export function TaskAccessEnvironment(props: {
   details: TaskExecutionAccessDetails;
-  permissionMode: ApprovalMode;
+  permissionMode: ExecutionMode | ApprovalMode;
   permissionBusy?: boolean | undefined;
-  onPermissionModeChange?: ((mode: ApprovalMode) => void | Promise<void>) | undefined;
+  onPermissionModeChange?: ((mode: ExecutionMode) => void | Promise<void>) | undefined;
   browserIdentities?: readonly TaskBrowserIdentityOption[] | undefined;
   selectedBrowserIdentityId?: string | null | undefined;
   browserIdentityBusy?: boolean | undefined;
@@ -149,17 +155,18 @@ export function TaskAccessEnvironment(props: {
       </summary>
       <div className="st-task-access__controls" aria-labelledby="rail-task-access">
         <label>
-          <span><ShieldCheck aria-hidden="true" size={13} />操作权限</span>
+          <span><ShieldCheck aria-hidden="true" size={13} />执行模式</span>
           <select
             aria-label="当前任务操作权限"
-            value={props.permissionMode}
+            value={toTaskExecutionMode(props.permissionMode)}
             disabled={props.permissionBusy}
-            onChange={(event) => void props.onPermissionModeChange?.(event.target.value as ApprovalMode)}
+            onChange={(event) =>
+              void props.onPermissionModeChange?.(event.target.value as ExecutionMode)
+            }
           >
-            <option value="request">请求批准</option>
-            <option value="delegate">替我审批</option>
-            <option value="full">完全访问</option>
-            <option value="custom">自定义</option>
+            <option value="read-only">只读</option>
+            <option value="workspace">工作区</option>
+            <option value="full-access">完全访问</option>
           </select>
         </label>
         <label>
@@ -242,9 +249,9 @@ export function ConversationTaskProgress(props: {
   ) => void;
   integrationBusyTaskId?: string | null;
   accessDetails?: TaskExecutionAccessDetails | null;
-  permissionMode?: ApprovalMode;
+  permissionMode?: ExecutionMode | ApprovalMode;
   permissionBusy?: boolean | undefined;
-  onPermissionModeChange?: ((mode: ApprovalMode) => void | Promise<void>) | undefined;
+  onPermissionModeChange?: ((mode: ExecutionMode) => void | Promise<void>) | undefined;
   browserIdentities?: readonly TaskBrowserIdentityOption[] | undefined;
   selectedBrowserIdentityId?: string | null | undefined;
   browserIdentityBusy?: boolean | undefined;

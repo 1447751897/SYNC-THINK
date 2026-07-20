@@ -46,6 +46,9 @@ export interface CreateTaskInput {
   goal: string;
   parentTaskId?: TaskId;
   acceptanceCriteria?: string[];
+  participationMode?: ParticipationMode;
+  /** Codex three-mode default for this task. */
+  executionMode?: import('@sync-think/shared').ExecutionMode;
   id?: TaskId;
   threadId?: ThreadId;
   now?: string;
@@ -56,6 +59,7 @@ export interface CreateTaskResult {
   threadId: ThreadId;
   taskVersion: number;
   participationMode: ParticipationMode;
+  executionMode: import('@sync-think/shared').ExecutionMode;
   parentTaskId?: TaskId;
   title: string;
   goal: string;
@@ -70,6 +74,7 @@ export interface TaskRecord {
   goal: string;
   status: TaskStatus;
   participationMode: ParticipationMode;
+  executionMode: import('@sync-think/shared').ExecutionMode;
   acceptanceCriteria: string[];
   version: number;
   lastOpenedAt?: string;
@@ -102,6 +107,7 @@ interface TaskRow {
   goal: string;
   status: string;
   participation_mode: string;
+  execution_mode?: string | null;
   acceptance_criteria_json: string;
   version: number;
   last_opened_at: string | null;
@@ -229,15 +235,16 @@ export class SqliteWorkspaceStore {
       throw new Error(`Workspace not found: ${input.workspaceId}`);
     }
 
+    let parentTask: TaskRecord | undefined;
     if (input.parentTaskId) {
-      const parent = this.getTask(input.parentTaskId);
-      if (!parent) {
+      parentTask = this.getTask(input.parentTaskId);
+      if (!parentTask) {
         throw new Error(`Parent task not found: ${input.parentTaskId}`);
       }
-      if (parent.workspaceId !== input.workspaceId) {
+      if (parentTask.workspaceId !== input.workspaceId) {
         throw new Error('Parent task must belong to the same workspace');
       }
-      if (parent.parentTaskId) {
+      if (parentTask.parentTaskId) {
         throw new Error('Only one level of child tasks is supported');
       }
     }
@@ -246,15 +253,23 @@ export class SqliteWorkspaceStore {
     const taskId = (input.id ?? ulid()) as TaskId;
     const threadId = (input.threadId ?? ulid()) as ThreadId;
     const acceptance = JSON.stringify(normalizeAcceptanceCriteria(input.acceptanceCriteria ?? []));
+    const participationMode = input.participationMode ?? 'conversation';
+    if (participationMode !== 'conversation' && participationMode !== 'collaboration') {
+      throw new Error(`Unsupported initial participation mode: ${participationMode}`);
+    }
+    // Child tasks inherit the parent's live execution mode when not overridden.
+    const executionMode = normalizeTaskExecutionMode(
+      input.executionMode ?? parentTask?.executionMode,
+    );
 
     const insert = this.raw.transaction(() => {
       this.raw
         .prepare(
           `INSERT INTO task (
             id, workspace_id, parent_task_id, title, goal, status,
-            participation_mode, acceptance_criteria_json, version, last_opened_at,
+            participation_mode, execution_mode, acceptance_criteria_json, version, last_opened_at,
             created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, 'active', 'conversation', ?, 0, NULL, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, 0, NULL, ?, ?)`,
         )
         .run(
           taskId,
@@ -262,6 +277,8 @@ export class SqliteWorkspaceStore {
           input.parentTaskId ?? null,
           title,
           goal,
+          participationMode,
+          executionMode,
           acceptance,
           now,
           now,
@@ -276,7 +293,8 @@ export class SqliteWorkspaceStore {
       taskId,
       threadId,
       taskVersion: 0,
-      participationMode: 'conversation',
+      participationMode,
+      executionMode,
       parentTaskId: input.parentTaskId,
       title,
       goal,
@@ -288,18 +306,17 @@ export class SqliteWorkspaceStore {
    * Removes only the untouched product placeholder created by the instant-new-task path.
    * The guarded no-op result keeps navigation races from deleting real work.
    */
-  discardEmptyTask(taskId: TaskId, expectedTaskVersion: number): boolean {
+  discardEmptyTask(
+    taskId: TaskId,
+    expectedTaskVersion: number,
+    beforeDiscard?: () => boolean,
+  ): boolean {
     if (!Number.isInteger(expectedTaskVersion) || expectedTaskVersion < 0) {
       throw new Error('expectedTaskVersion must be a non-negative integer');
     }
     const discard = this.raw.transaction(() => {
       const task = this.getTask(taskId);
-      if (
-        !task ||
-        task.version !== expectedTaskVersion ||
-        task.version !== 0 ||
-        !isUntitledTaskTitle(task.title)
-      ) {
+      if (!task || task.version !== expectedTaskVersion) {
         return false;
       }
       const child = this.raw
@@ -314,12 +331,28 @@ export class SqliteWorkspaceStore {
         .prepare("SELECT id FROM event WHERE task_id = ? AND type = 'message.appended' LIMIT 1")
         .get(taskId) as { id: string } | undefined;
       if (persistedMessageEvent) return false;
+      for (const [table, column] of [
+        ['plan', 'task_id'],
+        ['run', 'task_id'],
+        ['artifact', 'task_id'],
+        ['approval_request', 'task_id'],
+      ] as const) {
+        const related = this.raw
+          .prepare(`SELECT 1 AS present FROM ${table} WHERE ${column} = ? LIMIT 1`)
+          .get(taskId) as { present: number } | undefined;
+        if (related) return false;
+      }
+      if (beforeDiscard && !beforeDiscard()) return false;
 
       this.raw.prepare('DELETE FROM event WHERE task_id = ?').run(taskId);
       this.raw.prepare('DELETE FROM group_task WHERE task_id = ?').run(taskId);
       this.raw.prepare('DELETE FROM task_execution_context WHERE task_id = ?').run(taskId);
       this.raw.prepare('DELETE FROM thread WHERE id = ?').run(task.threadId);
-      return this.raw.prepare('DELETE FROM task WHERE id = ? AND version = 0').run(taskId).changes === 1;
+      return (
+        this.raw
+          .prepare('DELETE FROM task WHERE id = ? AND version = ?')
+          .run(taskId, expectedTaskVersion).changes === 1
+      );
     });
     return discard.immediate();
   }
@@ -330,7 +363,7 @@ export class SqliteWorkspaceStore {
       .prepare(
         `SELECT
           t.id, t.workspace_id, t.parent_task_id, t.title, t.goal, t.status,
-          t.participation_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
+          t.participation_mode, t.execution_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
           t.created_at, t.updated_at,
           th.id AS thread_id
          FROM task t
@@ -406,7 +439,7 @@ export class SqliteWorkspaceStore {
       .prepare(
         `SELECT
           t.id, t.workspace_id, t.parent_task_id, t.title, t.goal, t.status,
-          t.participation_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
+          t.participation_mode, t.execution_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
           t.created_at, t.updated_at,
           th.id AS thread_id
          FROM task t
@@ -461,6 +494,49 @@ export class SqliteWorkspaceStore {
     return update.immediate();
   }
 
+  setExecutionMode(
+    taskId: TaskId,
+    mode: import('@sync-think/shared').ExecutionMode | string,
+    expectedTaskVersion: number,
+    now?: string,
+  ): TaskRecord {
+    const executionMode = normalizeTaskExecutionMode(mode);
+    if (!Number.isInteger(expectedTaskVersion) || expectedTaskVersion < 0) {
+      throw new Error('expectedTaskVersion must be a non-negative integer');
+    }
+
+    const changedAt = now ?? new Date().toISOString();
+    const update = this.raw.transaction(() => {
+      const result = this.raw
+        .prepare(
+          `UPDATE task
+           SET execution_mode = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND version = ?`,
+        )
+        .run(executionMode, changedAt, taskId, expectedTaskVersion);
+
+      if (result.changes !== 1) {
+        const current = this.raw.prepare('SELECT version FROM task WHERE id = ?').get(taskId) as
+          | { version: number }
+          | undefined;
+        if (!current) {
+          throw new Error(`Task not found: ${taskId}`);
+        }
+        throw new Error(
+          `Task version conflict: expected ${expectedTaskVersion}, actual ${current.version}`,
+        );
+      }
+
+      const updated = this.getTask(taskId);
+      if (!updated) {
+        throw new Error(`Task not found after execution mode update: ${taskId}`);
+      }
+      return updated;
+    });
+
+    return update.immediate();
+  }
+
   openTask(taskId: TaskId, now?: string): TaskRecord {
     const existing = this.getTask(taskId);
     if (!existing) {
@@ -480,7 +556,7 @@ export class SqliteWorkspaceStore {
       .prepare(
         `SELECT
           t.id, t.workspace_id, t.parent_task_id, t.title, t.goal, t.status,
-          t.participation_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
+          t.participation_mode, t.execution_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
           t.created_at, t.updated_at,
           th.id AS thread_id
          FROM task t
@@ -609,7 +685,7 @@ export class SqliteWorkspaceStore {
       .prepare(
         `SELECT
           t.id, t.workspace_id, t.parent_task_id, t.title, t.goal, t.status,
-          t.participation_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
+          t.participation_mode, t.execution_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
           t.created_at, t.updated_at,
           th.id AS thread_id
          FROM task t
@@ -634,7 +710,7 @@ export class SqliteWorkspaceStore {
       .prepare(
         `SELECT
           t.id, t.workspace_id, t.parent_task_id, t.title, t.goal, t.status,
-          t.participation_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
+          t.participation_mode, t.execution_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
           t.created_at, t.updated_at,
           th.id AS thread_id
          FROM task t
@@ -711,6 +787,7 @@ function mapTask(row: TaskRow, threadId: ThreadId): TaskRecord {
     goal: row.goal,
     status: row.status as TaskStatus,
     participationMode: parseParticipationMode(row.participation_mode),
+    executionMode: normalizeTaskExecutionMode(row.execution_mode),
     acceptanceCriteria,
     version: row.version,
     lastOpenedAt: row.last_opened_at ?? undefined,
@@ -725,6 +802,18 @@ function parseParticipationMode(value: string): ParticipationMode {
     return value;
   }
   throw new Error(`Invalid participation mode in task row: ${String(value)}`);
+}
+
+function normalizeTaskExecutionMode(
+  value: import('@sync-think/shared').ExecutionMode | string | null | undefined,
+): import('@sync-think/shared').ExecutionMode {
+  const raw = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, '-');
+  if (raw === 'read-only' || raw === 'readonly' || raw === 'read only') return 'read-only';
+  if (raw === 'full-access' || raw === 'full' || raw === 'danger-full-access') return 'full-access';
+  return 'workspace';
 }
 
 function escapeLike(value: string): string {

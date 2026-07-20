@@ -6799,7 +6799,7 @@ textarea {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: 52px minmax(0, 1fr) var(--st-talk-composer-height, 126px);
+  grid-template-rows: 52px minmax(0, 1fr) minmax(var(--st-talk-composer-height, 126px), auto);
   overflow: hidden;
   background: var(--st-color-background);
   background: var(--st-color-background);
@@ -7048,6 +7048,7 @@ textarea {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  max-height: min(360px, 45vh);
   padding: 12px 14px 10px;
   border-top: 0;
   background: var(--st-color-background);
@@ -7073,15 +7074,17 @@ textarea {
 
 .st-talk-task-composer .st-demo-compose-wrap {
   width: min(100%, 980px);
-  height: 100%;
+  height: auto;
   min-height: 0;
+  max-height: 100%;
 }
 
 .st-talk-task-composer .st-compose {
   width: 100%;
   max-width: none;
   min-height: 94px;
-  height: 100%;
+  height: auto;
+  max-height: 100%;
   padding: 9px 11px 7px;
   border-radius: 8px;
   box-shadow: none;
@@ -7100,7 +7103,7 @@ textarea {
 }
 
 .st-talk-task-main:has(.st-compose[data-has-attachments='1']) {
-  grid-template-rows: 52px minmax(0, 1fr) max(var(--st-talk-composer-height), 220px);
+  grid-template-rows: 52px minmax(0, 1fr) minmax(max(var(--st-talk-composer-height), 220px), auto);
 }
 
 .st-message-attachments > p {

@@ -20,6 +20,8 @@ function task(partial: Partial<TaskSummary> & Pick<TaskSummary, 'taskId' | 'titl
     workspaceId: 'ws_1' as never,
     goal: partial.goal ?? partial.title,
     status: 'active',
+    participationMode: 'conversation',
+    executionMode: 'workspace',
     taskVersion: 0,
     threadId: `thread-${partial.taskId}` as never,
     createdAt: '2026-07-12T00:00:00.000Z',
@@ -53,6 +55,18 @@ describe('workspace-catalog selection', () => {
     ];
     const selected = resolvePreferredTask([workspace], new Map([['ws_1', tasks]]));
     expect(selected?.participationMode).toBe('collaboration');
+  });
+
+  it('preserves the persisted execution mode in the active task selection', () => {
+    const tasks = [
+      task({
+        taskId: 'exec-mode-task' as never,
+        title: 'Exec mode task',
+        executionMode: 'read-only',
+      }),
+    ];
+    const selected = resolvePreferredTask([workspace], new Map([['ws_1', tasks]]));
+    expect(selected?.executionMode).toBe('read-only');
   });
 
   it('projects tasks from a project that has no folder binding', () => {

@@ -37,7 +37,14 @@ export type StepState =
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
+/** Legacy wire/storage approval vocabulary. Prefer ExecutionMode for product logic. */
 export type ApprovalMode = 'request' | 'delegate' | 'full' | 'custom';
+
+/**
+ * Codex-style execution modes (2026-07-20).
+ * This is the user-facing authority for sandbox + approval behavior.
+ */
+export type ExecutionMode = 'read-only' | 'workspace' | 'full-access';
 
 // Model resolution precedence 鈥?Locked in product design 搂5.3
 export type ModelResolutionSource =

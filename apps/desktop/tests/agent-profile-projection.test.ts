@@ -4,6 +4,7 @@ import type { Event, GroupDefinition } from '@sync-think/shared';
 import {
   projectAgentGroupMemberships,
   projectAgentRelatedTasks,
+  projectConversationMentionLabel,
   projectTaskConversationSummaries,
   projectTaskGroupIds,
   projectTaskPrimaryAgentVersions,
@@ -16,6 +17,7 @@ const task = (taskId: string, updatedAt: string): TaskSummary => ({
   goal: `${taskId} goal`,
   status: 'active',
   participationMode: 'conversation',
+  executionMode: 'workspace',
   taskVersion: 1,
   threadId: `thread-${taskId}` as never,
   createdAt: updatedAt,
@@ -34,15 +36,63 @@ const event = (taskId: string, payload: Record<string, unknown>): Event => ({
 });
 
 describe('Agent profile projection', () => {
+  it('hides the implicit direct target but keeps explicit and group mentions', () => {
+    const agents = new Map([
+      ['lead-v1', '规划官'],
+      ['review-v1', '审查官'],
+    ]);
+    const groups = new Map([['group-1', { name: '发布小队', leadAgentVersionId: 'lead-v1' }]]);
+
+    expect(
+      projectConversationMentionLabel(
+        { role: 'user', text: '继续处理', targetAgentVersionId: 'lead-v1' },
+        agents,
+        groups,
+      ),
+    ).toBeUndefined();
+    expect(
+      projectConversationMentionLabel(
+        { role: 'user', text: '@审查官 看一下', targetAgentVersionId: 'review-v1' },
+        agents,
+        groups,
+      ),
+    ).toBe('审查官');
+    expect(
+      projectConversationMentionLabel(
+        {
+          role: 'user',
+          text: '继续处理',
+          targetAgentVersionId: 'lead-v1',
+          targetGroupId: 'group-1',
+        },
+        agents,
+        groups,
+      ),
+    ).toBe('发布小队');
+  });
+
   it('projects the latest primary AgentVersion for each isolated task', () => {
     const projected = projectTaskPrimaryAgentVersions([
-      { ...event('task-a', { agentVersionId: 'agent-a-v1' }), sequence: 1 },
-      { ...event('task-b', { agentVersionId: 'agent-b-v1' }), sequence: 2 },
+      {
+        ...event('task-a', { agentVersionId: 'agent-a-v1' }),
+        type: 'task.agent-bound',
+        sequence: 1,
+      },
+      {
+        ...event('task-b', { agentVersionId: 'agent-b-v1' }),
+        type: 'subtask.agent-assigned',
+        sequence: 2,
+      },
       { ...event('task-a', { reviewerAgentVersionId: 'reviewer-v1' }), sequence: 3 },
-      { ...event('task-a', { agentVersionId: 'agent-a-v2' }), sequence: 4 },
+      {
+        ...event('task-a', { agentVersionId: 'agent-a-v2' }),
+        type: 'task.agent-bound',
+        sequence: 4,
+      },
       {
         ...event('ignored-event-task', { taskId: 'task-c', leadAgentVersionId: 'lead-c-v1' }),
         taskId: undefined,
+        type: 'group.task-created',
         sequence: 5,
       },
     ]);
@@ -56,7 +106,11 @@ describe('Agent profile projection', () => {
 
   it('does not replace the parent primary Agent with a child message sender', () => {
     const projected = projectTaskPrimaryAgentVersions([
-      { ...event('parent-task', { agentVersionId: 'lead-v1' }), sequence: 1 },
+      {
+        ...event('parent-task', { agentVersionId: 'lead-v1' }),
+        type: 'task.agent-bound',
+        sequence: 1,
+      },
       {
         ...event('parent-task', {
           messageAgentVersionId: 'worker-v1',
@@ -72,21 +126,17 @@ describe('Agent profile projection', () => {
     expect(projected.get('parent-task')).toBe('lead-v1');
   });
 
-  it('resolves a run Agent through the task thread when run events omit taskId', () => {
+  it('does not replace a stable task binding with a temporary run target', () => {
     const projected = projectTaskPrimaryAgentVersions([
       {
-        ...event('direct-task', {
-          threadId: 'thread-direct',
-          role: 'user',
-          text: 'Hello',
-        }),
-        type: 'message.appended',
+        ...event('direct-task', { threadId: 'thread-direct', agentVersionId: 'direct-agent-v1' }),
+        type: 'task.agent-bound',
         sequence: 1,
       },
       {
         ...event('ignored-run-task', {
           threadId: 'thread-direct',
-          agentVersionId: 'direct-agent-v1',
+          agentVersionId: 'temporary-mentioned-agent-v1',
         }),
         taskId: undefined,
         type: 'run.started',

@@ -127,6 +127,7 @@ export interface ApprovalCenterPanelProps {
     scopeType: ApprovalPolicyScopeType;
     scopeId: string;
   };
+  defaultPolicyMode?: ApprovalModeView;
   onRefresh?: () => void | Promise<void>;
   onDecide?: (input: ApprovalDecideInput) => void | Promise<void>;
   onSavePolicy?: (input: ApprovalPolicySaveInput) => void | Promise<void>;
@@ -142,8 +143,8 @@ export interface ApprovalCenterPanelProps {
 
 const MODE_LABEL: Record<ApprovalModeView, string> = {
   request: '请求批准',
-  delegate: '委托批准',
-  full: '完全批准',
+  delegate: '替我审批',
+  full: '完全访问',
   custom: '自定义',
 };
 
@@ -164,7 +165,7 @@ const KIND_LABEL: Record<ApprovalKindView, string> = {
   export: '导出',
   'skill-permission': 'Skill 权限',
   'mcp-permission': 'MCP 权限',
-  'human-only': '仅限真人',
+  'human-only': '敏感操作',
   other: '其他',
 };
 
@@ -292,13 +293,12 @@ export function projectApprovalGateReadiness(
   if (level === 'attention') {
     note = '有待审项：通过 / 拒绝会写回 Runtime，并与 Memory / Skill / MCP 桥双向同步。';
   } else if (level === 'ready') {
-    note =
-      '委托或完全批准不能绕过「仅限真人」。Memory 变更、Skill 升级、敏感 MCP 会自动入队。闸门 soft 已就绪；外网 18/18、dogfood 1/1，M1 已完成。';
+    note = '请求批准、替我审批和自定义模式会按策略入队；完全访问直接执行并保留审计记录。';
   } else if (level === 'empty') {
     note =
-      '尚无仅限真人策略与队列记录。连接 Runtime 后加载闸门；演示入队可验证 Memory / Skill / MCP 桥。';
+      '尚无敏感操作分类与队列记录。连接 Runtime 后加载策略；演示入队可验证 Memory / Skill / MCP 桥。';
   } else {
-    note = '队列已有记录但仅限真人策略未就绪。委托/完全批准不能绕过仅限真人。';
+    note = '队列已有记录，但敏感操作分类尚未完整加载。';
   }
 
   return {
@@ -393,7 +393,9 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
     props.defaultPolicyScope?.scopeType ?? 'workspace',
   );
   const [policyScopeId, setPolicyScopeId] = useState(props.defaultPolicyScope?.scopeId ?? '');
-  const [policyMode, setPolicyMode] = useState<ApprovalModeView>('request');
+  const [policyMode, setPolicyMode] = useState<ApprovalModeView>(
+    props.defaultPolicyMode ?? 'request',
+  );
   const [policyRuleAction, setPolicyRuleAction] = useState('');
   const [policyRuleMode, setPolicyRuleMode] = useState<ApprovalModeView>('request');
   const [policyRuleDelegateId, setPolicyRuleDelegateId] = useState('');
@@ -415,7 +417,7 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
 
   useEffect(() => {
     if (!latestScopedPolicy) {
-      setPolicyMode('request');
+      setPolicyMode(props.defaultPolicyMode ?? 'request');
       setPolicyRuleAction('');
       setPolicyRuleMode('request');
       setPolicyRuleDelegateId('');
@@ -428,7 +430,7 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
     setPolicyRuleMode(rule?.approvalMode ?? 'request');
     setPolicyRuleDelegateId(rule?.delegateAgentVersionId ?? '');
     setPolicyRuleTail(latestScopedPolicy.rules.slice(1).map((item) => ({ ...item })));
-  }, [latestScopedPolicy?.id]);
+  }, [latestScopedPolicy?.id, props.defaultPolicyMode]);
 
   const humanOnlyActions = props.humanOnlyActions?.length
     ? props.humanOnlyActions
@@ -494,7 +496,7 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
       mode: demoMode,
       action: demoHumanOnly ? 'irreversible-deletion' : demoAction,
       kind: demoHumanOnly ? 'human-only' : 'tool',
-      summary: demoHumanOnly ? '演示：不可逆删除（仅限真人）' : `演示工具 · ${demoAction}`,
+      summary: demoHumanOnly ? '演示：不可逆删除（敏感操作）' : `演示工具 · ${demoAction}`,
       insideExplicitPolicy: demoMode === 'full' || demoMode === 'custom',
     });
   };
@@ -568,13 +570,13 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
         <div className="st-approval__readiness-head">
           <Radar size={12} strokeWidth={1.8} aria-hidden="true" />
           <span>批准闸门</span>
-          <small>§13 · 仅限真人不可绕过</small>
+          <small>§13 · 四种操作权限</small>
           <strong data-testid="approval-gate-readiness-badge">{readiness.badge}</strong>
         </div>
         <ul className="st-approval__readiness-list">
           <li data-ok={readiness.humanOnlyOk ? '1' : '0'} data-testid="approval-gate-check-human">
             <span className="st-approval__readiness-dot" aria-hidden="true" />
-            仅限真人 {readiness.humanOnlyCount} 类
+            敏感操作 {readiness.humanOnlyCount} 类
             {readiness.humanOnlyOk ? ' · 已加载' : ' · 未加载'}
           </li>
           <li
@@ -619,14 +621,14 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
 
       <div className="st-approval__body">
         <Section
-          title="仅限真人"
+          title="敏感操作"
           count={humanOnlyActions.length}
           open={humanOpen}
           onToggle={() => setHumanOpen((v) => !v)}
           testId="approval-section-human-only"
           icon={<ShieldAlert size={12} strokeWidth={1.8} aria-hidden="true" />}
         >
-          <p className="st-approval__hint">委托 / 完全批准模式无法绕过 · 必须真人点通过</p>
+          <p className="st-approval__hint">完全访问自动执行；其他模式按当前策略处理</p>
           <div className="st-approval__chips" data-testid="approval-human-only-chips">
             {humanOnlyActions.map((action) => (
               <span
@@ -686,7 +688,7 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
                   onChange={(e) => setDemoHumanOnly(e.target.checked)}
                   disabled={props.busy}
                 />
-                <span>仅限真人样例</span>
+                <span>敏感操作样例</span>
               </label>
               <div className="st-approval__probe-actions">
                 <button
@@ -873,7 +875,7 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
             <div className="st-approval__empty-card" data-testid="approval-pending-empty">
               <strong>暂无待审</strong>
               <p>
-                队列空闲时闸门仍在工作：仅限真人清单已就绪。
+                队列空闲时策略仍在工作：敏感操作分类已就绪。
                 {productMode
                   ? '触发计划、工具、Memory、Skill 或 MCP 敏感动作后会在这里出现。'
                   : '用上方「入队演示」或触发 Memory / Skill / MCP 敏感动作可观测入队。'}
@@ -909,7 +911,9 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
                       </span>
                       <span className="st-approval__chip">{KIND_LABEL[item.kind]}</span>
                       {item.humanOnly ? (
-                        <span className="st-approval__chip st-approval__chip--warn">仅限真人</span>
+                        <span className="st-approval__chip st-approval__chip--warn">
+                          需本人确认
+                        </span>
                       ) : null}
                       <span className="st-approval__mode">{MODE_LABEL[item.mode]}</span>
                     </div>
@@ -1057,7 +1061,7 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
                     </span>
                     <span className="st-approval__chip">{KIND_LABEL[item.kind]}</span>
                     {item.humanOnly ? (
-                      <span className="st-approval__chip st-approval__chip--warn">仅限真人</span>
+                      <span className="st-approval__chip st-approval__chip--warn">需本人确认</span>
                     ) : null}
                   </div>
                   <p className="st-approval__action">{item.action}</p>

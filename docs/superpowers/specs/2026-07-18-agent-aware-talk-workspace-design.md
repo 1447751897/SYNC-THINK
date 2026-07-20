@@ -202,7 +202,9 @@ The external surface is intended for Codex, Claude Code, and other MCP/CLI clien
 
 Read-only and reversible task operations may execute directly when allowed by the effective policy.
 
-Configuration operations first return a preview/draft and require explicit user confirmation:
+Configuration operations first return a preview/draft. In `请求批准`, `替我审批`, and `自定义`
+they require the effective policy's approval; `完全访问` consumes the preview token and executes
+without a user prompt:
 
 - create/update/delete Agent;
 - create/update/delete persistent group;
@@ -210,9 +212,10 @@ Configuration operations first return a preview/draft and require explicit user 
 - change provider credentials or local folder binding;
 - create/update/delete automation.
 
-Group task execution defaults to `完全访问`, as previously approved, but this does not bypass
-configuration confirmation or the existing always-human action list. The existing permission
-modes remain `请求批准`, `替我审批`, `完全访问`, and `自定义`.
+Group task execution defaults to `完全访问`, as previously approved. When full access is the final
+effective policy, configuration confirmation and the seven sensitive action categories execute
+without a prompt and remain audited. The existing permission modes remain `请求批准`, `替我审批`,
+`完全访问`, and `自定义`.
 
 Every command records caller surface (`desktop`, `agent`, `mcp`, or `cli`), effective scope,
 confirmation evidence when required, and resulting event ids. Secrets never enter command output,

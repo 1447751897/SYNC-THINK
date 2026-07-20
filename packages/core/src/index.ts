@@ -78,6 +78,17 @@ export {
 } from './approval-policy.js';
 
 export {
+  resolveEffectiveExecution,
+  isAutoApprovedByExecutionMode,
+  executionModeFromApprovalMode,
+  type EffectiveExecution,
+  type ExecutionApprovalPolicy,
+  type ExecutionFilesystemPolicy,
+  type ExecutionNetworkPolicy,
+  type ResolveEffectiveExecutionInput,
+} from './execution-mode-policy.js';
+
+export {
   evaluateMcpToolSensitivity,
   isHighRiskMcpToolName,
   type McpToolSensitivityInput,

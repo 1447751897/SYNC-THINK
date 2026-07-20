@@ -1,13 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
-import {
-  copyFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  rmSync,
-  statSync,
-} from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import {
   ulid,
@@ -17,10 +10,7 @@ import {
   type TaskExecutionContext,
   type TaskId,
 } from '@sync-think/shared';
-import type {
-  SqliteExecutionEnvironmentStore,
-  SqliteWorkspaceStore,
-} from '@sync-think/storage';
+import type { SqliteExecutionEnvironmentStore, SqliteWorkspaceStore } from '@sync-think/storage';
 
 const GIT_TIMEOUT_MS = 120_000;
 const GIT_MAX_BUFFER = 8 * 1024 * 1024;
@@ -55,7 +45,12 @@ export class TaskExecutionEnvironmentManager {
 
   constructor(private readonly options: TaskExecutionEnvironmentManagerOptions) {}
 
-  ensureWorkspaceDefaults(workspaceId: Parameters<SqliteExecutionEnvironmentStore['ensureWorkspaceDefaults']>[0]['workspaceId'], folderPath?: string) {
+  ensureWorkspaceDefaults(
+    workspaceId: Parameters<
+      SqliteExecutionEnvironmentStore['ensureWorkspaceDefaults']
+    >[0]['workspaceId'],
+    folderPath?: string,
+  ) {
     return this.options.store.ensureWorkspaceDefaults({
       workspaceId,
       folderPath,
@@ -92,7 +87,10 @@ export class TaskExecutionEnvironmentManager {
     }
   }
 
-  setTaskBrowserIdentity(taskId: TaskId, browserIdentityId: BrowserIdentityId): TaskExecutionContext {
+  setTaskBrowserIdentity(
+    taskId: TaskId,
+    browserIdentityId: BrowserIdentityId,
+  ): TaskExecutionContext {
     return this.options.store.setTaskBrowserIdentity(taskId, browserIdentityId);
   }
 
@@ -136,7 +134,8 @@ export class TaskExecutionEnvironmentManager {
     const resource = context.resourceId
       ? this.options.store.getRequiredResource(context.resourceId)
       : undefined;
-    if (!resource) return this.options.store.markTaskBlocked(taskId, '项目尚未绑定代码目录或 Git 仓库');
+    if (!resource)
+      return this.options.store.markTaskBlocked(taskId, '项目尚未绑定代码目录或 Git 仓库');
     const profile = context.executionProfileId
       ? this.options.store.getRequiredProfile(context.executionProfileId)
       : undefined;
@@ -279,7 +278,8 @@ export class TaskExecutionEnvironmentManager {
         error: '父任务没有可用的 Git 执行位置',
       };
     }
-    const baseline = context.headRef ?? this.git(context.executionPath, ['rev-parse', 'HEAD']).trim();
+    const baseline =
+      context.headRef ?? this.git(context.executionPath, ['rev-parse', 'HEAD']).trim();
     const resultCommit = this.createSnapshotCommit(
       context.executionPath,
       baseline,
@@ -350,7 +350,8 @@ export class TaskExecutionEnvironmentManager {
     if (!task?.parentTaskId) throw new Error('Only child tasks have integration state');
     const childContext = this.options.store.getRequiredTaskContext(taskId);
     const parentContext = this.options.store.getRequiredTaskContext(task.parentTaskId);
-    if (!parentContext.executionPath) throw new Error('Parent task execution location is unavailable');
+    if (!parentContext.executionPath)
+      throw new Error('Parent task execution location is unavailable');
     const conflictFiles = this.conflictFiles(parentContext.executionPath);
     if (conflictFiles.length === 0) throw new Error('No worktree integration conflict is active');
     if (strategy === 'keep-parent') {
@@ -391,26 +392,25 @@ export class TaskExecutionEnvironmentManager {
     return this.options.store.scheduleCleanup(taskId, profile?.retentionDays ?? 7);
   }
 
-  discardPreparedTask(taskId: TaskId): void {
-    this.preparations.delete(String(taskId));
-    const context = this.options.store.getTaskContext(taskId);
+  discardPreparedTask(taskId: TaskId, preparedContext?: TaskExecutionContext): boolean {
+    const context = preparedContext ?? this.options.store.getTaskContext(taskId);
     if (
       context?.mode !== 'managed_worktree' ||
       !context.executionPath ||
       !existsSync(context.executionPath)
     ) {
-      return;
+      this.preparations.delete(String(taskId));
+      return true;
     }
+    if (!context.sourcePath) return false;
     try {
-      if (context.sourcePath) {
-        this.git(context.sourcePath, ['worktree', 'remove', '--force', context.executionPath]);
-      } else if (isInside(this.options.worktreeRoot, context.executionPath)) {
-        rmSync(context.executionPath, { recursive: true, force: true });
-      }
+      const dirty = this.git(context.executionPath, ['status', '--porcelain']).trim();
+      if (dirty) return false;
+      this.git(context.sourcePath, ['worktree', 'remove', context.executionPath]);
+      this.preparations.delete(String(taskId));
+      return true;
     } catch {
-      if (isInside(this.options.worktreeRoot, context.executionPath)) {
-        rmSync(context.executionPath, { recursive: true, force: true });
-      }
+      return false;
     }
   }
 
@@ -418,7 +418,9 @@ export class TaskExecutionEnvironmentManager {
     const results: TaskExecutionContext[] = [];
     for (const context of this.options.store.listCleanupCandidates(now)) {
       if (context.leaseOwnerRunId) {
-        results.push(this.options.store.markCleanupResult(context.taskId, 'retained', '任务仍在运行'));
+        results.push(
+          this.options.store.markCleanupResult(context.taskId, 'retained', '任务仍在运行'),
+        );
         continue;
       }
       if (!context.executionPath || !context.sourcePath) {
@@ -429,7 +431,11 @@ export class TaskExecutionEnvironmentManager {
         const dirty = this.git(context.executionPath, ['status', '--porcelain']).trim();
         if (dirty) {
           results.push(
-            this.options.store.markCleanupResult(context.taskId, 'retained', '工作树存在未提交改动'),
+            this.options.store.markCleanupResult(
+              context.taskId,
+              'retained',
+              '工作树存在未提交改动',
+            ),
           );
           continue;
         }

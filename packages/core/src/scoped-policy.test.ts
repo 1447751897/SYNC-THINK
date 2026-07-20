@@ -1,8 +1,4 @@
-import {
-  HUMAN_ONLY_ACTIONS,
-  type AgentVersionId,
-  type ApprovalMode,
-} from '@sync-think/shared';
+import { HUMAN_ONLY_ACTIONS, type AgentVersionId, type ApprovalMode } from '@sync-think/shared';
 import { describe, expect, it } from 'vitest';
 import { resolveActionDecision, resolveScopedPolicy } from './scoped-policy.js';
 
@@ -21,20 +17,18 @@ describe('scoped policy', () => {
       {
         scope: 'workspace',
         scopeId: 'workspace-1',
-        approvalMode: 'full',
+        approvalMode: 'custom',
         rules: [{ action: 'shell.exec', approvalMode: 'delegate' }],
       },
       {
         scope: 'agent',
         scopeId: 'agent-1',
-        approvalMode: 'full',
+        approvalMode: 'custom',
         rules: [{ action: 'shell.exec', approvalMode: 'request' }],
       },
     ]);
 
-    expect(resolved.rules).toEqual([
-      { action: 'shell.exec', approvalMode: 'request' },
-    ]);
+    expect(resolved.rules).toEqual([{ action: 'shell.exec', approvalMode: 'request' }]);
     expect(
       resolveActionDecision({
         action: 'shell.exec',
@@ -44,10 +38,20 @@ describe('scoped policy', () => {
     ).toMatchObject({ decision: 'human-required', approvalMode: 'request' });
   });
 
-  it.each(['full', 'delegate', 'custom'] satisfies ApprovalMode[])(
-    'keeps all seven human-only actions human-required in %s mode',
+  it('allows every action in full access while retaining sensitive-action audit metadata', () => {
+    expect(HUMAN_ONLY_ACTIONS).toHaveLength(7);
+    for (const action of HUMAN_ONLY_ACTIONS) {
+      expect(resolveActionDecision({ action, approvalMode: 'full' })).toMatchObject({
+        action,
+        decision: 'allowed',
+        humanOnly: true,
+      });
+    }
+  });
+
+  it.each(['delegate', 'custom'] satisfies ApprovalMode[])(
+    'keeps sensitive actions human-required in %s mode',
     (approvalMode) => {
-      expect(HUMAN_ONLY_ACTIONS).toHaveLength(7);
       for (const action of HUMAN_ONLY_ACTIONS) {
         expect(resolveActionDecision({ action, approvalMode })).toMatchObject({
           action,
@@ -98,7 +102,7 @@ describe('scoped policy', () => {
         approvalMode: 'full',
         rules: [{ action: 'shell.exec', approvalMode: unknown }],
       }),
-    ).toMatchObject({ decision: 'human-required', approvalMode: 'request' });
+    ).toMatchObject({ decision: 'allowed', approvalMode: 'full' });
   });
 
   it('returns normalized rules in stable action order regardless of input order', () => {
@@ -106,7 +110,7 @@ describe('scoped policy', () => {
       {
         scope: 'workspace',
         scopeId: 'workspace-1',
-        approvalMode: 'full',
+        approvalMode: 'custom',
         rules: [
           { action: ' shell.exec ', approvalMode: 'full' },
           { action: 'browser.navigate', approvalMode: 'delegate' },
@@ -115,7 +119,7 @@ describe('scoped policy', () => {
       {
         scope: 'agent',
         scopeId: 'agent-1',
-        approvalMode: 'full',
+        approvalMode: 'custom',
         rules: [{ action: 'shell.exec', approvalMode: 'request' }],
       },
     ]);
@@ -123,13 +127,13 @@ describe('scoped policy', () => {
       {
         scope: 'agent',
         scopeId: 'agent-1',
-        approvalMode: 'full',
+        approvalMode: 'custom',
         rules: [{ action: 'shell.exec', approvalMode: 'request' }],
       },
       {
         scope: 'workspace',
         scopeId: 'workspace-1',
-        approvalMode: 'full',
+        approvalMode: 'custom',
         rules: [
           { action: 'browser.navigate', approvalMode: 'delegate' },
           { action: ' shell.exec ', approvalMode: 'full' },
@@ -149,7 +153,7 @@ describe('scoped policy', () => {
       {
         scope: 'workspace',
         scopeId: 'workspace-1',
-        approvalMode: 'full',
+        approvalMode: 'custom',
         rules: [
           {
             action: 'shell.exec',
@@ -182,13 +186,13 @@ describe('scoped policy', () => {
       ...resolved.rules.map((rule) => ({
         scope: 'workspace' as const,
         scopeId: 'workspace-1',
-        approvalMode: 'full' as const,
+        approvalMode: 'custom' as const,
         rules: [rule],
       })),
       {
         scope: 'task' as const,
         scopeId: 'task-1',
-        approvalMode: 'full' as const,
+        approvalMode: 'custom' as const,
         rules: [
           {
             action: 'shell.exec',

@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
-import { AGENT_PERMISSION_DISABLED } from '@sync-think/shared';
 import { AgentWorkspace } from '../src/components/AgentWorkspace.js';
 
 afterEach(() => cleanup());
@@ -119,9 +118,12 @@ describe('AgentWorkspace', () => {
     expect(screen.getByRole('button', { name: '开始任务' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '加入群聊' })).toBeTruthy();
     fireEvent.click(screen.getByTestId('agent-workspace-tab-instructions'));
-    for (const heading of ['身份', '工作能力', '工作指令', '能力上限', '执行设置']) {
+    for (const heading of ['身份', '工作能力', '工作指令', '执行权限', '执行设置']) {
       expect(screen.getByRole('heading', { name: heading })).toBeTruthy();
     }
+    expect(screen.getByTestId('agent-execution-mode-authority-note')).toBeTruthy();
+    expect(screen.queryByText('能力上限')).toBeNull();
+    expect(screen.queryByLabelText('允许文件能力')).toBeNull();
     expect(screen.queryByText('输入与输出')).toBeNull();
     expect(screen.queryByLabelText('输入契约')).toBeNull();
     expect(screen.queryByLabelText('输出契约')).toBeNull();
@@ -133,8 +135,7 @@ describe('AgentWorkspace', () => {
     expect(screen.queryByText('批准模式')).toBeNull();
   });
 
-  it('materializes legacy capability defaults and saves an explicit disabled category', () => {
-    const onSaveDefinition = vi.fn();
+  it('no longer exposes an editable agent permission matrix', () => {
     render(
       <AgentWorkspace
         binding={binding}
@@ -153,27 +154,16 @@ describe('AgentWorkspace', () => {
           approvalMode: 'full',
           permissions: { file: [], command: [], browser: [], desktop: [], network: [] },
         }}
-        onSaveDefinition={onSaveDefinition}
+        onSaveDefinition={vi.fn()}
       />,
     );
 
     fireEvent.click(screen.getByTestId('agent-workspace-tab-instructions'));
-    const browserCapability = screen.getByLabelText('允许浏览器能力') as HTMLInputElement;
-    expect(browserCapability.checked).toBe(true);
-    fireEvent.click(browserCapability);
-    fireEvent.click(screen.getByTestId('agent-definition-save'));
-
-    expect(onSaveDefinition).toHaveBeenCalledWith(
-      expect.objectContaining({
-        permissions: {
-          file: ['*'],
-          command: ['*'],
-          browser: [AGENT_PERMISSION_DISABLED],
-          desktop: ['*'],
-          network: ['*'],
-        },
-      }),
+    expect(screen.getByTestId('agent-execution-mode-authority-note').textContent).toMatch(
+      /只读 \/ 工作区 \/ 完全访问/,
     );
+    expect(screen.queryByLabelText('允许浏览器能力')).toBeNull();
+    expect(screen.queryByLabelText('允许文件能力')).toBeNull();
   });
 
   it('shows agent list and detail tabs; runtime board uses 分组→供应商→模型', () => {

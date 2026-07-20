@@ -121,7 +121,7 @@ describe('beginner desktop shell contract', () => {
     expect(css).toContain('.st-talk-conversation-workspace');
     expect(css).toContain('grid-template-columns: 240px minmax(0, 1fr) 260px');
     expect(css).toContain(
-      'grid-template-rows: 52px minmax(0, 1fr) var(--st-talk-composer-height, 126px)',
+      'grid-template-rows: 52px minmax(0, 1fr) minmax(var(--st-talk-composer-height, 126px), auto)',
     );
   });
 
@@ -129,6 +129,8 @@ describe('beginner desktop shell contract', () => {
     expect(source).toContain('groups={composeGroups}');
     expect(source).toContain('onGroupChange={(groupId) => void selectComposeGroup(groupId)}');
     expect(source).toContain('await createGroupTask(');
+    expect(source).toContain('const hasUnsentContent = Boolean(');
+    expect(source).toContain('hasConversation || hasUnsentContent');
     expect(css).toContain('*::-webkit-scrollbar');
     expect(css).toContain('scrollbar-width: thin');
     expect(css).toMatch(/\*::-webkit-scrollbar\s*\{[^}]*width: 6px[^}]*height: 6px/s);

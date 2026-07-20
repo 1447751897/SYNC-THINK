@@ -24,6 +24,7 @@ import type {
   OpenTaskPayload,
   SearchTasksPayload,
   SetParticipationModePayload,
+  SetExecutionModePayload,
   SavePolicyPayload,
   ListPoliciesPayload,
   SubscribeEventsPayload,
@@ -110,7 +111,8 @@ export function parseCreateBrowserIdentityPayload(
     !value.name.trim() ||
     value.name.length > 128 ||
     (value.makeDefault !== undefined && typeof value.makeDefault !== 'boolean')
-  ) return undefined;
+  )
+    return undefined;
   return { name: value.name.trim(), ...(value.makeDefault === true ? { makeDefault: true } : {}) };
 }
 
@@ -127,7 +129,8 @@ export function parseUpdateBrowserIdentityPayload(
       (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 128)) ||
     (value.makeDefault !== undefined && typeof value.makeDefault !== 'boolean') ||
     (value.name === undefined && value.makeDefault !== true)
-  ) return undefined;
+  )
+    return undefined;
   return {
     id: value.id.trim(),
     ...(typeof value.name === 'string' ? { name: value.name.trim() } : {}),
@@ -144,7 +147,8 @@ export function parseDeleteBrowserIdentityPayload(
     typeof value.id !== 'string' ||
     !value.id.trim() ||
     value.id.length > 256
-  ) return undefined;
+  )
+    return undefined;
   return { id: value.id.trim() };
 }
 
@@ -160,7 +164,8 @@ export function parseSetTaskBrowserIdentityPayload(
     typeof value.browserIdentityId !== 'string' ||
     !value.browserIdentityId.trim() ||
     value.browserIdentityId.length > 256
-  ) return undefined;
+  )
+    return undefined;
   return {
     taskId: value.taskId.trim() as SetTaskBrowserIdentityPayload['taskId'],
     browserIdentityId: value.browserIdentityId.trim(),
@@ -179,10 +184,12 @@ export function parseDescribeTaskExecutionAccessPayload(
     typeof value.agentVersionId !== 'string' ||
     !value.agentVersionId.trim() ||
     value.agentVersionId.length > 256
-  ) return undefined;
+  )
+    return undefined;
   return {
     taskId: value.taskId.trim() as DescribeTaskExecutionAccessPayload['taskId'],
-    agentVersionId: value.agentVersionId.trim() as DescribeTaskExecutionAccessPayload['agentVersionId'],
+    agentVersionId:
+      value.agentVersionId.trim() as DescribeTaskExecutionAccessPayload['agentVersionId'],
   };
 }
 
@@ -215,6 +222,7 @@ import {
 
 const MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'tool']);
 const PARTICIPATION_MODES = new Set(['conversation', 'collaboration', 'automatic']);
+const EXECUTION_MODES = new Set(['read-only', 'workspace', 'full-access']);
 const POLICY_SCOPE_TYPES = new Set([
   'user',
   'workspace',
@@ -608,7 +616,9 @@ export function parseBindWorkspaceGitRepositoryPayload(
     !value.repositoryUrl.trim() ||
     value.repositoryUrl.length > 4096 ||
     (value.defaultRef !== undefined &&
-      (typeof value.defaultRef !== 'string' || !value.defaultRef.trim() || value.defaultRef.length > 512))
+      (typeof value.defaultRef !== 'string' ||
+        !value.defaultRef.trim() ||
+        value.defaultRef.length > 512))
   ) {
     return undefined;
   }
@@ -641,6 +651,13 @@ export function parseCreateTaskPayload(value: unknown): CreateTaskPayload | unde
     return undefined;
   }
   if (value.parentTaskId !== undefined && typeof value.parentTaskId !== 'string') return undefined;
+  if (
+    value.agentVersionId !== undefined &&
+    (typeof value.agentVersionId !== 'string' ||
+      !value.agentVersionId.trim() ||
+      value.agentVersionId.length > 256)
+  )
+    return undefined;
   let acceptanceCriteria: string[] | undefined;
   if (value.acceptanceCriteria !== undefined) {
     try {
@@ -649,7 +666,13 @@ export function parseCreateTaskPayload(value: unknown): CreateTaskPayload | unde
       return undefined;
     }
   }
-  return { ...value, acceptanceCriteria } as unknown as CreateTaskPayload;
+  return {
+    ...value,
+    ...(typeof value.agentVersionId === 'string'
+      ? { agentVersionId: value.agentVersionId.trim() }
+      : {}),
+    acceptanceCriteria,
+  } as unknown as CreateTaskPayload;
 }
 
 export function parseDelegateSubtaskPayload(value: unknown): DelegateSubtaskPayload | undefined {
@@ -678,8 +701,7 @@ export function parseDelegateSubtaskPayload(value: unknown): DelegateSubtaskPayl
     (value.acceptanceConditions !== undefined &&
       !validAgentIdList(value.acceptanceConditions, 64, 2_000)) ||
     (value.allowedTools !== undefined && !validAgentIdList(value.allowedTools, 64, 256)) ||
-    (value.dependsOnTaskIds !== undefined &&
-      !validAgentIdList(value.dependsOnTaskIds, 64, 256)) ||
+    (value.dependsOnTaskIds !== undefined && !validAgentIdList(value.dependsOnTaskIds, 64, 256)) ||
     (value.delegatingAgentVersionId !== undefined &&
       !boundedAgentText(value.delegatingAgentVersionId, 256)) ||
     (value.delegationBatchId !== undefined && !boundedAgentText(value.delegationBatchId, 256))
@@ -833,6 +855,24 @@ export function parseSetParticipationModePayload(
     return undefined;
   }
   return value as unknown as SetParticipationModePayload;
+}
+
+export function parseSetExecutionModePayload(
+  value: unknown,
+): SetExecutionModePayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.taskId !== 'string' ||
+    value.taskId.length === 0 ||
+    value.taskId.length > 256 ||
+    typeof value.mode !== 'string' ||
+    !EXECUTION_MODES.has(value.mode) ||
+    !Number.isInteger(value.expectedTaskVersion) ||
+    (value.expectedTaskVersion as number) < 0
+  ) {
+    return undefined;
+  }
+  return value as unknown as SetExecutionModePayload;
 }
 
 export function parseSavePolicyPayload(value: unknown): SavePolicyPayload | undefined {

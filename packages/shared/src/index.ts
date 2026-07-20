@@ -1,5 +1,6 @@
 ﻿export * from './types/ids.js';
 export * from './types/enums.js';
+export * from './types/execution-mode.js';
 export * from './types/workspace.js';
 export * from './types/execution-environment.js';
 export * from './types/task.js';

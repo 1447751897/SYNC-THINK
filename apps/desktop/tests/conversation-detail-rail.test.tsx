@@ -148,7 +148,7 @@ describe('conversation detail rail', () => {
               network: [],
             },
           }}
-          permissionMode="full"
+          permissionMode="full-access"
           onPermissionModeChange={onPermissionModeChange}
           browserIdentities={[
             { id: 'browser-default', name: '默认身份', isDefault: true },
@@ -167,16 +167,16 @@ describe('conversation detail rail', () => {
     const browser = container.querySelector<HTMLSelectElement>(
       'select[aria-label="当前任务浏览器身份"]',
     );
-    expect(permission?.value).toBe('full');
+    expect(permission?.value).toBe('full-access');
     expect(browser?.value).toBe('browser-default');
     await act(async () => {
       if (!permission || !browser) throw new Error('Task access controls not found');
-      permission.value = 'request';
+      permission.value = 'workspace';
       permission.dispatchEvent(new Event('change', { bubbles: true }));
       browser.value = 'browser-work';
       browser.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    expect(onPermissionModeChange).toHaveBeenCalledWith('request');
+    expect(onPermissionModeChange).toHaveBeenCalledWith('workspace');
     expect(onBrowserIdentityChange).toHaveBeenCalledWith('browser-work');
     expect(container.textContent).not.toContain('本次可用能力');
     expect(container.textContent).not.toContain('智能体能力上限');

@@ -70,7 +70,7 @@ SYNC-THINK combines a desktop conversation workspace with a durable local Agent 
 3. **Progressive orchestration (Locked).** Start with one-Agent conversation, then expand to collaboration or automation only when needed.
 4. **Local-first execution (Locked).** Model calls, secrets, task state, and tools run locally in the first release.
 5. **Inspectable behavior (Locked).** Every context packet, model selection, key-group choice, tool action, approval, artifact, and memory change is traceable.
-6. **Secure by default (Locked).** Tool access is scoped. A fixed set of high-risk actions always requires a human.
+6. **Secure by default (Locked).** Tool access is scoped. Outside explicit full access, a fixed set of high-risk actions requires a human.
 7. **Portable definitions (Locked).** Agent, Skill, workflow, and policy definitions are versioned and can later be shared without sharing credentials.
 8. **No cost-driven model substitution (Locked).** Usage is recorded, but the system does not choose cheaper models unless the user explicitly configures such a rule.
 9. **One calm primary experience (Locked).** Chat is primary. Graphs, traces, approvals, and context details expand on demand.
@@ -438,18 +438,18 @@ Video and audio later use the same contract with asynchronous job IDs, progress,
 
 ### 13.1 User-selectable modes
 
-The user can configure:
+The canonical product labels are fixed:
 
-- **Request approval**: the user approves protected actions.
-- **Delegate approval**: a designated approval Agent evaluates actions against policy.
-- **Full approval**: actions inside the explicit policy run automatically.
-- **Custom**: per-tool, per-directory, per-command, per-site, and per-action rules.
+- **请求批准** (`request`): read-only inspection runs automatically; protected writes, commands, and external actions pause for the user.
+- **替我审批** (`delegate`): a designated approval Agent evaluates protected actions; non-delegable sensitive actions fall back to the user.
+- **完全访问** (`full`): every currently available action runs without an approval prompt, including the seven sensitive categories below. Runtime still records the action for audit.
+- **自定义** (`custom`): per-tool, per-directory, per-command, per-site, and per-action rules.
 
-Policies can be scoped to user, Workspace, Agent, workflow, or one Run. The most restrictive applicable rule wins unless the user explicitly creates a narrower, auditable override.
+Policies can be scoped to user, Workspace, Agent, workflow, Task, or one Run. A Run policy overrides a Task policy, and a Task policy overrides broader Agent, Workspace, and user defaults. Once `full` is the final effective mode, legacy per-action request/delegate rules do not reintroduce approval. Capability ceilings and resource boundaries still determine which actions are available.
 
-### 13.2 Human-only actions
+### 13.2 Sensitive action categories
 
-These always require a real human and cannot be approved by another Agent:
+These require the user in request, delegate, and custom modes. Full access executes them directly and keeps audit metadata:
 
 - accessing or creating a new secret;
 - payments or purchases;
@@ -632,7 +632,7 @@ sequenceDiagram
 - Web pages, files, messages, and tool outputs are untrusted data and cannot promote themselves to higher-priority instructions.
 - Skill and MCP version changes expose permission diffs.
 - Every model change, approval, tool call, memory change, artifact, and credential reference is audited.
-- The human-only action list in section 13.2 cannot be bypassed by delegated approval or full-approval mode.
+- Sensitive actions in section 13.2 cannot be delegated in request, delegate, or custom mode. Explicit full access executes them without prompting and preserves audit metadata.
 
 ## 20. Error handling and recovery
 

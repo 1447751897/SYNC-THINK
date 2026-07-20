@@ -465,7 +465,7 @@ export function TalkConversationTaskWorkspace(props: TalkConversationTaskWorkspa
 
   const detailTab = props.detailTab ?? 'progress';
   const clampComposerHeight = useCallback((height: number) => {
-    const maxHeight = Math.min(420, Math.max(180, window.innerHeight * 0.55));
+    const maxHeight = Math.min(360, Math.max(180, window.innerHeight * 0.45));
     return Math.round(Math.max(114, Math.min(maxHeight, height)));
   }, []);
   const resizeComposerByKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -686,14 +686,14 @@ export function TalkConversationTaskWorkspace(props: TalkConversationTaskWorkspa
                   ) : (
                     <>
                       {!task.parentTaskId ? (
-                      <button
-                        type="button"
-                        title="新建子任务"
-                        aria-label={`在 ${task.title} 下新建子任务`}
-                        onClick={() => props.onCreateChildTask?.(task.taskId)}
-                      >
-                        <Plus aria-hidden="true" size={12} />
-                      </button>
+                        <button
+                          type="button"
+                          title="新建子任务"
+                          aria-label={`在 ${task.title} 下新建子任务`}
+                          onClick={() => props.onCreateChildTask?.(task.taskId)}
+                        >
+                          <Plus aria-hidden="true" size={12} />
+                        </button>
                       ) : null}
                       <button
                         type="button"
@@ -835,7 +835,7 @@ export function TalkConversationTaskWorkspace(props: TalkConversationTaskWorkspa
             aria-label="调整输入框高度"
             aria-orientation="horizontal"
             aria-valuemin={114}
-            aria-valuemax={420}
+            aria-valuemax={360}
             aria-valuenow={composerHeight}
             tabIndex={0}
             onKeyDown={resizeComposerByKeyboard}
@@ -1392,7 +1392,10 @@ export function TalkProjectsWorkspace(props: {
                     <>
                       <div>
                         <dt>仓库地址</dt>
-                        <dd className="st-talk-projects__repository-url" title={selectedProject.repositoryUrl}>
+                        <dd
+                          className="st-talk-projects__repository-url"
+                          title={selectedProject.repositoryUrl}
+                        >
                           {selectedProject.repositoryUrl}
                         </dd>
                       </div>
@@ -1409,7 +1412,9 @@ export function TalkProjectsWorkspace(props: {
                   <div>
                     <dt>默认执行方式</dt>
                     <dd>
-                      {selectedProject.executionMode === 'local' ? '原地执行' : '自动创建隔离工作树'}
+                      {selectedProject.executionMode === 'local'
+                        ? '原地执行'
+                        : '自动创建隔离工作树'}
                     </dd>
                   </div>
                   <div>
@@ -1430,11 +1435,7 @@ export function TalkProjectsWorkspace(props: {
                   {selectedProject.folderPath ? '更换工作区' : '绑定工作区'}
                 </button>
                 {props.onBindGitRepository ? (
-                  <button
-                    type="button"
-                    className="st-talk-button"
-                    onClick={openGitDialog}
-                  >
+                  <button type="button" className="st-talk-button" onClick={openGitDialog}>
                     <GitBranch aria-hidden="true" size={13} />
                     {selectedProject.repositoryUrl ? '编辑 Git 仓库' : '绑定 Git 仓库'}
                   </button>
@@ -1508,10 +1509,18 @@ export function TalkProjectsWorkspace(props: {
                 <input value={defaultRef} onChange={(event) => setDefaultRef(event.target.value)} />
               </label>
               <footer>
-                <button type="button" className="st-talk-button" onClick={() => setGitDialogOpen(false)}>
+                <button
+                  type="button"
+                  className="st-talk-button"
+                  onClick={() => setGitDialogOpen(false)}
+                >
                   取消
                 </button>
-                <button type="submit" className="st-talk-button st-talk-button--primary" disabled={!repositoryUrl.trim()}>
+                <button
+                  type="submit"
+                  className="st-talk-button st-talk-button--primary"
+                  disabled={!repositoryUrl.trim()}
+                >
                   <Link2 aria-hidden="true" size={13} />
                   绑定仓库
                 </button>
@@ -3123,10 +3132,15 @@ export function TalkSettingsWorkspace(props: {
   browserIdentities?: readonly BrowserIdentitySummary[];
   browserIdentityBusy?: boolean;
   browserIdentityError?: string | null;
-  onCreateBrowserIdentity?: (input: { name: string; makeDefault?: boolean }) => void | Promise<void>;
-  onUpdateBrowserIdentity?: (
-    input: { id: string; name?: string; makeDefault?: boolean },
-  ) => void | Promise<void>;
+  onCreateBrowserIdentity?: (input: {
+    name: string;
+    makeDefault?: boolean;
+  }) => void | Promise<void>;
+  onUpdateBrowserIdentity?: (input: {
+    id: string;
+    name?: string;
+    makeDefault?: boolean;
+  }) => void | Promise<void>;
   onDeleteBrowserIdentity?: (id: string) => void | Promise<void>;
   onThemeChange: (theme: Theme) => void;
   onFontSizeChange: (size: number) => void;
@@ -3240,6 +3254,9 @@ export function TalkSettingsWorkspace(props: {
                 <h2>浏览器身份</h2>
                 <p>每个身份会隔离 Cookie、登录状态和网站数据</p>
                 <p>新任务继承默认身份；单个任务可在任务右侧栏切换。</p>
+                <p>
+                  例如“工作账号”保持公司后台登录，“个人账号”保留个人网站登录，两者不会串用 Cookie。
+                </p>
               </span>
               <button
                 type="button"
@@ -3380,7 +3397,12 @@ export function TalkSettingsWorkspace(props: {
       </main>
       {browserEditor ? (
         <div className="st-talk-task-utility-backdrop">
-          <section className="st-talk-task-utility-dialog" role="dialog" aria-modal="true" aria-label={browserEditor.id ? '编辑浏览器身份' : '新建浏览器身份'}>
+          <section
+            className="st-talk-task-utility-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={browserEditor.id ? '编辑浏览器身份' : '新建浏览器身份'}
+          >
             <header>
               <strong>{browserEditor.id ? '编辑浏览器身份' : '新建浏览器身份'}</strong>
               <button type="button" aria-label="关闭" onClick={() => setBrowserEditor(null)}>
@@ -3413,7 +3435,9 @@ export function TalkSettingsWorkspace(props: {
                   maxLength={128}
                   autoFocus
                   onChange={(event) =>
-                    setBrowserEditor((current) => current ? { ...current, name: event.target.value } : current)
+                    setBrowserEditor((current) =>
+                      current ? { ...current, name: event.target.value } : current,
+                    )
                   }
                 />
               </label>
@@ -3422,14 +3446,28 @@ export function TalkSettingsWorkspace(props: {
                   type="checkbox"
                   checked={browserEditor.makeDefault}
                   onChange={(event) =>
-                    setBrowserEditor((current) => current ? { ...current, makeDefault: event.target.checked } : current)
+                    setBrowserEditor((current) =>
+                      current ? { ...current, makeDefault: event.target.checked } : current,
+                    )
                   }
                 />
                 <span>设为默认身份</span>
               </label>
               <footer>
-                <button type="button" className="st-talk-button" onClick={() => setBrowserEditor(null)}>取消</button>
-                <button type="submit" className="st-talk-button st-talk-button--primary" disabled={!browserEditor.name.trim() || props.browserIdentityBusy}>保存</button>
+                <button
+                  type="button"
+                  className="st-talk-button"
+                  onClick={() => setBrowserEditor(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="st-talk-button st-talk-button--primary"
+                  disabled={!browserEditor.name.trim() || props.browserIdentityBusy}
+                >
+                  保存
+                </button>
               </footer>
             </form>
           </section>

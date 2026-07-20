@@ -33,7 +33,11 @@ async function connectRuntime(installId: string): Promise<Socket> {
 
 function createFrameReader(sock: Socket) {
   const queued: Frame[] = [];
-  const waiters: Array<{ count: number; resolve: (f: Frame[]) => void; reject: (e: unknown) => void }> = [];
+  const waiters: Array<{
+    count: number;
+    resolve: (f: Frame[]) => void;
+    reject: (e: unknown) => void;
+  }> = [];
   let pending = Buffer.alloc(0);
   const drain = () => {
     while (waiters.length > 0 && queued.length >= waiters[0]!.count) {
@@ -65,13 +69,21 @@ function createFrameReader(sock: Socket) {
   };
 }
 
-async function writeAndRead(sock: Socket, reader: ReturnType<typeof createFrameReader>, frame: Frame) {
+async function writeAndRead(
+  sock: Socket,
+  reader: ReturnType<typeof createFrameReader>,
+  frame: Frame,
+) {
   const next = reader.read(1);
   sock.write(encodeFrame(frame));
   return (await next)[0]!;
 }
 
-async function hello(sock: Socket, reader: ReturnType<typeof createFrameReader>, installId: string) {
+async function hello(
+  sock: Socket,
+  reader: ReturnType<typeof createFrameReader>,
+  installId: string,
+) {
   const resp = await writeAndRead(sock, reader, {
     id: 'hello',
     kind: 'request',
@@ -136,17 +148,30 @@ async function withRuntime(
 }
 
 describe('approval commands (section 13)', () => {
-  it('evaluates human-only as require-human even in full mode', async () => {
-    await withRuntime(async ({ sock, reader }) => {
+  it('evaluates every action as auto-approved in full access', async () => {
+    await withRuntime(async ({ sock, reader, workspaceId }) => {
+      const policy = await writeAndRead(sock, reader, {
+        id: 'policy-full-every-action',
+        kind: 'request',
+        type: 'policy.save',
+        payload: {
+          workspaceId,
+          scopeType: 'workspace',
+          scopeId: workspaceId,
+          approvalMode: 'full',
+          rules: [],
+        },
+      });
+      expect(policy.error).toBeUndefined();
       const resp = await writeAndRead(sock, reader, {
         id: 'ev-1',
         kind: 'request',
         type: 'approval.evaluate',
-        payload: { mode: 'full', action: 'payment-or-purchase', insideExplicitPolicy: true, delegateAvailable: true },
+        payload: { workspaceId, action: 'payment-or-purchase' },
       });
       expect(resp.error).toBeUndefined();
       const p = resp.payload as { gate: string; humanOnly: boolean; labelZh: string };
-      expect(p.gate).toBe('require-human');
+      expect(p.gate).toBe('auto-approve');
       expect(p.humanOnly).toBe(true);
       expect(p.labelZh.length).toBeGreaterThan(0);
     });
@@ -161,7 +186,12 @@ describe('approval commands (section 13)', () => {
         payload: { workspaceId },
       });
       expect(resp.error).toBeUndefined();
-      const p = resp.payload as { items: unknown[]; pendingCount: number; humanOnlyActions: string[]; modes: string[] };
+      const p = resp.payload as {
+        items: unknown[];
+        pendingCount: number;
+        humanOnlyActions: string[];
+        modes: string[];
+      };
       expect(p.pendingCount).toBe(0);
       expect(p.items).toEqual([]);
       expect(p.humanOnlyActions).toContain('irreversible-deletion');
@@ -175,10 +205,21 @@ describe('approval commands (section 13)', () => {
         id: 'enq-1',
         kind: 'request',
         type: 'approval.enqueue',
-        payload: { workspaceId, action: 'shell.exec', kind: 'tool', summary: 'Run tests', mode: 'request' },
+        payload: {
+          workspaceId,
+          action: 'shell.exec',
+          kind: 'tool',
+          summary: 'Run tests',
+          mode: 'request',
+        },
       });
       expect(enq.error).toBeUndefined();
-      const ep = enq.payload as { enqueued: boolean; autoApproved: boolean; item?: { id: string; action: string }; evaluation: { gate: string } };
+      const ep = enq.payload as {
+        enqueued: boolean;
+        autoApproved: boolean;
+        item?: { id: string; action: string };
+        evaluation: { gate: string };
+      };
       expect(ep.enqueued).toBe(true);
       expect(ep.autoApproved).toBe(false);
       expect(ep.evaluation.gate).toBe('require-human');
@@ -211,7 +252,13 @@ describe('approval commands (section 13)', () => {
         id: 'enq-forged-auto',
         kind: 'request',
         type: 'approval.enqueue',
-        payload: { workspaceId, action: 'read-file', kind: 'tool', mode: 'full', insideExplicitPolicy: true },
+        payload: {
+          workspaceId,
+          action: 'read-file',
+          kind: 'tool',
+          mode: 'full',
+          insideExplicitPolicy: true,
+        },
       });
       expect(forged.error).toBeUndefined();
       expect(forged.payload).toMatchObject({
@@ -282,7 +329,7 @@ describe('approval commands (section 13)', () => {
     });
   });
 
-  it('allows only the exact persisted delegate AgentVersion and never delegates human-only', async () => {
+  it('allows only the exact persisted delegate AgentVersion', async () => {
     await withRuntime(async ({ sock, reader, workspaceId, dbPath }) => {
       const defaultAgent = await writeAndRead(sock, reader, {
         id: 'delegate-default-agent',
@@ -310,11 +357,7 @@ describe('approval commands (section 13)', () => {
       });
       external.raw.close();
 
-      const savePolicy = async (
-        id: string,
-        action: string,
-        delegateAgentVersionId?: string,
-      ) =>
+      const savePolicy = async (id: string, action: string, delegateAgentVersionId?: string) =>
         writeAndRead(sock, reader, {
           id,
           kind: 'request',
@@ -324,7 +367,7 @@ describe('approval commands (section 13)', () => {
             policyId: `policy-${action}`,
             scopeType: 'workspace',
             scopeId: workspaceId,
-            approvalMode: 'full',
+            approvalMode: 'custom',
             rules: [
               {
                 action,
@@ -368,13 +411,7 @@ describe('approval commands (section 13)', () => {
         ).error,
       ).toBeDefined();
       expect(
-        (
-          await savePolicy(
-            'delegate-policy-exact',
-            'shell.exec',
-            configuredDelegate.id,
-          )
-        ).error,
+        (await savePolicy('delegate-policy-exact', 'shell.exec', configuredDelegate.id)).error,
       ).toBeUndefined();
       const exact = await enqueue('delegate-enqueue-exact', 'shell.exec');
       expect(exact.payload).toMatchObject({
@@ -427,10 +464,7 @@ describe('approval commands (section 13)', () => {
       expect(
         (await savePolicy('delegate-policy-unconfigured', 'browser.navigate')).error,
       ).toBeUndefined();
-      const unconfigured = await enqueue(
-        'delegate-enqueue-unconfigured',
-        'browser.navigate',
-      );
+      const unconfigured = await enqueue('delegate-enqueue-unconfigured', 'browser.navigate');
       const unconfiguredId = (unconfigured.payload as { item: { id: string } }).item.id;
       expect(
         (
@@ -441,27 +475,24 @@ describe('approval commands (section 13)', () => {
           )
         ).error,
       ).toBeDefined();
-
-      const humanOnly = await enqueue(
-        'delegate-enqueue-human-only',
-        'payment-or-purchase',
-        'human-only',
-      );
-      const humanOnlyId = (humanOnly.payload as { item: { id: string } }).item.id;
-      expect(
-        (
-          await decideAsDelegate(
-            'delegate-decide-human-only',
-            humanOnlyId,
-            configuredDelegate.id,
-          )
-        ).error,
-      ).toBeDefined();
     });
   });
 
-  it('human-only always enqueues even in full mode', async () => {
+  it('full access does not enqueue sensitive actions', async () => {
     await withRuntime(async ({ sock, reader, workspaceId }) => {
+      const policy = await writeAndRead(sock, reader, {
+        id: 'policy-full-sensitive',
+        kind: 'request',
+        type: 'policy.save',
+        payload: {
+          workspaceId,
+          scopeType: 'workspace',
+          scopeId: workspaceId,
+          approvalMode: 'full',
+          rules: [],
+        },
+      });
+      expect(policy.error).toBeUndefined();
       const enq = await writeAndRead(sock, reader, {
         id: 'enq-ho',
         kind: 'request',
@@ -473,6 +504,7 @@ describe('approval commands (section 13)', () => {
           mode: 'full',
           insideExplicitPolicy: true,
           summary: 'Delete production data',
+          forceEnqueue: true,
         },
       });
       expect(enq.error).toBeUndefined();
@@ -483,11 +515,116 @@ describe('approval commands (section 13)', () => {
         item?: { humanOnly: boolean };
       };
       expect(ep.evaluation.humanOnly).toBe(true);
-      expect(ep.evaluation.gate).toBe('require-human');
-      expect(ep.enqueued).toBe(true);
-      expect(ep.autoApproved).toBe(false);
-      expect(ep.item?.humanOnly).toBe(true);
+      expect(ep.evaluation.gate).toBe('auto-approve');
+      expect(ep.enqueued).toBe(false);
+      expect(ep.autoApproved).toBe(true);
+      expect(ep.item).toBeUndefined();
     });
+  });
+
+  it('lets a full-access Scheduler Step execute a sensitive action without approval', async () => {
+    let executions = 0;
+    const executor: StepExecutor = {
+      getActionRequest() {
+        return {
+          kind: 'human-only',
+          action: 'irreversible-deletion',
+          summary: 'Delete generated test output',
+        };
+      },
+      async execute() {
+        executions += 1;
+        return {};
+      },
+    };
+
+    await withRuntime(
+      async ({ sock, reader, workspaceId }) => {
+        const task = await writeAndRead(sock, reader, {
+          id: 'full-scheduler-task',
+          kind: 'request',
+          type: 'task.create',
+          payload: { workspaceId, title: 'Full scheduler task', goal: 'Execute directly' },
+        });
+        const taskId = (task.payload as { taskId: string }).taskId;
+        await writeAndRead(sock, reader, {
+          id: 'full-scheduler-mode',
+          kind: 'request',
+          type: 'task.setParticipationMode',
+          payload: { taskId, mode: 'collaboration', expectedTaskVersion: 0 },
+        });
+        const policy = await writeAndRead(sock, reader, {
+          id: 'full-scheduler-policy',
+          kind: 'request',
+          type: 'policy.save',
+          payload: {
+            workspaceId,
+            scopeType: 'task',
+            scopeId: taskId,
+            approvalMode: 'full',
+            rules: [],
+          },
+        });
+        expect(policy.error).toBeUndefined();
+        const agent = await writeAndRead(sock, reader, {
+          id: 'full-scheduler-agent',
+          kind: 'request',
+          type: 'agent.get',
+          payload: {},
+        });
+        const agentVersionId = (agent.payload as { agent: { agentVersionId: string } }).agent
+          .agentVersionId;
+        const draft = await writeAndRead(sock, reader, {
+          id: 'full-scheduler-plan',
+          kind: 'request',
+          type: 'plan.draft',
+          payload: {
+            taskId,
+            expectedTaskVersion: 1,
+            title: 'Full scheduler plan',
+            steps: [
+              {
+                id: 'full-sensitive-step',
+                title: 'Execute sensitive action',
+                instructions: 'Execute under full access',
+                agentVersionId,
+                dependsOn: [],
+              },
+            ],
+          },
+        });
+        const approved = await writeAndRead(sock, reader, {
+          id: 'full-scheduler-plan-approve',
+          kind: 'request',
+          type: 'plan.approve',
+          payload: {
+            planId: (draft.payload as { planId: string }).planId,
+            revision: 1,
+          },
+        });
+        const runId = (approved.payload as { run: { id: string } }).run.id;
+        let state = '';
+        for (let attempt = 0; attempt < 40 && state !== 'completed'; attempt += 1) {
+          const graph = await writeAndRead(sock, reader, {
+            id: `full-scheduler-graph-${attempt}`,
+            kind: 'request',
+            type: 'run.getGraph',
+            payload: { workspaceId, taskId, runId },
+          });
+          state = (graph.payload as { run?: { state?: string } }).run?.state ?? '';
+        }
+        const approvals = await writeAndRead(sock, reader, {
+          id: 'full-scheduler-approvals',
+          kind: 'request',
+          type: 'approval.list',
+          payload: { workspaceId, taskId, state: 'pending' },
+        });
+        expect(state).toBe('completed');
+        expect(executions).toBe(1);
+        expect((approvals.payload as { items: unknown[] }).items).toEqual([]);
+      },
+      { stepExecutor: executor },
+    );
   });
 
   it('resumes one stable protected Step once after concurrent approval replay', async () => {
@@ -512,115 +649,117 @@ describe('approval commands (section 13)', () => {
       },
     };
 
-    await withRuntime(async ({ sock, reader, workspaceId }) => {
-      const task = await writeAndRead(sock, reader, {
-        id: 'protected-task',
-        kind: 'request',
-        type: 'task.create',
-        payload: { workspaceId, title: 'Protected task', goal: 'Approve once' },
-      });
-      const taskId = (task.payload as { taskId: string }).taskId;
-      expect(
-        (
-          await writeAndRead(sock, reader, {
-            id: 'protected-mode',
-            kind: 'request',
-            type: 'task.setParticipationMode',
-            payload: { taskId, mode: 'collaboration', expectedTaskVersion: 0 },
-          })
-        ).error,
-      ).toBeUndefined();
-      const agent = await writeAndRead(sock, reader, {
-        id: 'protected-agent',
-        kind: 'request',
-        type: 'agent.get',
-        payload: {},
-      });
-      const agentVersionId = (
-        agent.payload as { agent: { agentVersionId: string } }
-      ).agent.agentVersionId;
-      const draft = await writeAndRead(sock, reader, {
-        id: 'protected-plan',
-        kind: 'request',
-        type: 'plan.draft',
-        payload: {
-          taskId,
-          expectedTaskVersion: 1,
-          title: 'Protected plan',
-          steps: [
-            {
-              id: 'protected-command-step',
-              title: 'Protected command',
-              instructions: 'Execute only after approval',
-              agentVersionId,
-              dependsOn: [],
-            },
-          ],
-        },
-      });
-      expect(draft.error).toBeUndefined();
-      const approved = await writeAndRead(sock, reader, {
-        id: 'protected-plan-approve',
-        kind: 'request',
-        type: 'plan.approve',
-        payload: {
-          planId: (draft.payload as { planId: string }).planId,
-          revision: 1,
-        },
-      });
-      expect(approved.error).toBeUndefined();
-      const runId = (approved.payload as { run: { id: string } }).run.id;
-
-      let approvalId = '';
-      for (let attempt = 0; attempt < 40 && !approvalId; attempt += 1) {
-        const listed = await writeAndRead(sock, reader, {
-          id: `protected-list-${attempt}`,
+    await withRuntime(
+      async ({ sock, reader, workspaceId }) => {
+        const task = await writeAndRead(sock, reader, {
+          id: 'protected-task',
           kind: 'request',
-          type: 'approval.list',
-          payload: { workspaceId, taskId, state: 'pending' },
+          type: 'task.create',
+          payload: { workspaceId, title: 'Protected task', goal: 'Approve once' },
         });
-        const items = (listed.payload as { items: Array<{ id: string; runId?: string }> }).items;
-        approvalId = items.find((item) => item.runId === runId)?.id ?? '';
-      }
-      expect(approvalId).not.toBe('');
-      expect(executions).toBe(0);
+        const taskId = (task.payload as { taskId: string }).taskId;
+        expect(
+          (
+            await writeAndRead(sock, reader, {
+              id: 'protected-mode',
+              kind: 'request',
+              type: 'task.setParticipationMode',
+              payload: { taskId, mode: 'collaboration', expectedTaskVersion: 0 },
+            })
+          ).error,
+        ).toBeUndefined();
+        const agent = await writeAndRead(sock, reader, {
+          id: 'protected-agent',
+          kind: 'request',
+          type: 'agent.get',
+          payload: {},
+        });
+        const agentVersionId = (agent.payload as { agent: { agentVersionId: string } }).agent
+          .agentVersionId;
+        const draft = await writeAndRead(sock, reader, {
+          id: 'protected-plan',
+          kind: 'request',
+          type: 'plan.draft',
+          payload: {
+            taskId,
+            expectedTaskVersion: 1,
+            title: 'Protected plan',
+            steps: [
+              {
+                id: 'protected-command-step',
+                title: 'Protected command',
+                instructions: 'Execute only after approval',
+                agentVersionId,
+                dependsOn: [],
+              },
+            ],
+          },
+        });
+        expect(draft.error).toBeUndefined();
+        const approved = await writeAndRead(sock, reader, {
+          id: 'protected-plan-approve',
+          kind: 'request',
+          type: 'plan.approve',
+          payload: {
+            planId: (draft.payload as { planId: string }).planId,
+            revision: 1,
+          },
+        });
+        expect(approved.error).toBeUndefined();
+        const runId = (approved.payload as { run: { id: string } }).run.id;
 
-      const responses = reader.read(2);
-      for (const id of ['protected-decide-a', 'protected-decide-b']) {
-        sock.write(
-          encodeFrame({
-            id,
+        let approvalId = '';
+        for (let attempt = 0; attempt < 40 && !approvalId; attempt += 1) {
+          const listed = await writeAndRead(sock, reader, {
+            id: `protected-list-${attempt}`,
             kind: 'request',
-            type: 'approval.decide',
-            payload: { id: approvalId, decision: 'approved' },
-          }),
-        );
-      }
-      const decisions = await responses;
-      expect(decisions.map((response) => response.error)).toEqual([undefined, undefined]);
-      expect(decisions).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            payload: expect.objectContaining({
-              item: expect.objectContaining({ state: 'approved' }),
+            type: 'approval.list',
+            payload: { workspaceId, taskId, state: 'pending' },
+          });
+          const items = (listed.payload as { items: Array<{ id: string; runId?: string }> }).items;
+          approvalId = items.find((item) => item.runId === runId)?.id ?? '';
+        }
+        expect(approvalId).not.toBe('');
+        expect(executions).toBe(0);
+
+        const responses = reader.read(2);
+        for (const id of ['protected-decide-a', 'protected-decide-b']) {
+          sock.write(
+            encodeFrame({
+              id,
+              kind: 'request',
+              type: 'approval.decide',
+              payload: { id: approvalId, decision: 'approved' },
             }),
-          }),
-        ]),
-      );
+          );
+        }
+        const decisions = await responses;
+        expect(decisions.map((response) => response.error)).toEqual([undefined, undefined]);
+        expect(decisions).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              payload: expect.objectContaining({
+                item: expect.objectContaining({ state: 'approved' }),
+              }),
+            }),
+          ]),
+        );
 
-      await executed;
-      let state = '';
-      for (let attempt = 0; attempt < 40 && state !== 'completed'; attempt += 1) {
-        const current = await writeAndRead(sock, reader, {
-          id: `protected-graph-${attempt}`,
-          kind: 'request',
-          type: 'run.getGraph',
-          payload: { workspaceId, taskId, runId },
-        });
-        state = (current.payload as { run?: { state?: string } }).run?.state ?? '';
-      }
-      expect(state).toBe('completed');
-      expect(executions).toBe(1);
-    }, { stepExecutor: executor });
+        await executed;
+        let state = '';
+        for (let attempt = 0; attempt < 40 && state !== 'completed'; attempt += 1) {
+          const current = await writeAndRead(sock, reader, {
+            id: `protected-graph-${attempt}`,
+            kind: 'request',
+            type: 'run.getGraph',
+            payload: { workspaceId, taskId, runId },
+          });
+          state = (current.payload as { run?: { state?: string } }).run?.state ?? '';
+        }
+        expect(state).toBe('completed');
+        expect(executions).toBe(1);
+      },
+      { stepExecutor: executor },
+    );
   });
 });

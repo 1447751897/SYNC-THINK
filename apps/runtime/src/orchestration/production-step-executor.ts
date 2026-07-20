@@ -8,11 +8,9 @@ import type {
   ProviderMessage,
   ProviderToolCall,
 } from '@sync-think/adapters';
-import { resolveCredentialRef } from '@sync-think/core';
+import { resolveCredentialRef, resolveEffectiveExecution } from '@sync-think/core';
 import {
   MAX_INLINE_ARTIFACT_CONTENT_BYTES,
-  isAgentPermissionCategoryEnabled,
-  isLegacyAgentPermissions,
   isReviewOutcomeConsistent,
   type ArtifactVersionStatus,
   type Event,
@@ -234,29 +232,18 @@ async function executeProviderStep(
     context.reviewContext === undefined &&
     workspaceRoot !== undefined &&
     model.capabilities.includes('tool-calling');
-  const legacyPermissionDefault = isLegacyAgentPermissions(agent.permissions);
-  const allows = (values: readonly string[]) =>
-    isAgentPermissionCategoryEnabled(values, legacyPermissionDefault);
+  // Codex three-mode authority: ignore AgentPermissions matrix; mode + bindings decide tools.
+  const modeToolNames = new Set(
+    resolveEffectiveExecution({
+      legacyApprovalMode: agent.approvalMode,
+      workspaceRoot,
+      candidateToolNames: EXECUTION_TOOL_SCHEMAS.map((tool) => tool.name),
+      allowedTools:
+        groupRouting?.kind === 'member' ? groupRouting.assignment?.allowedTools : undefined,
+    }).toolNames,
+  );
   const toolSchemas = workspaceToolsEnabled
-    ? EXECUTION_TOOL_SCHEMAS.filter(
-        (tool) => {
-          const categoryAllowed = tool.name.startsWith('browser_')
-            ? allows(agent.permissions.browser)
-            : tool.name.startsWith('desktop_')
-              ? allows(agent.permissions.desktop)
-              : tool.name === 'run_command'
-                ? allows(agent.permissions.command)
-                : tool.name.startsWith('git_')
-                  ? allows(agent.permissions.file) || allows(agent.permissions.command)
-                  : allows(agent.permissions.file);
-          return (
-            categoryAllowed &&
-            (!groupRouting ||
-              (groupRouting.kind === 'member' &&
-                groupRouting.assignment?.allowedTools.includes(tool.name)))
-          );
-        },
-      )
+    ? EXECUTION_TOOL_SCHEMAS.filter((tool) => modeToolNames.has(tool.name))
     : [];
   const toolsEnabled = toolSchemas.length > 0;
   const providerContext = compileStepProviderContext(

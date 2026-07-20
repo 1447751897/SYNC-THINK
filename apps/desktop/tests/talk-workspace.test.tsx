@@ -244,9 +244,9 @@ describe('Talk workspace', () => {
       window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
     });
     expect(resizeHandle?.getAttribute('aria-valuenow')).toBe('190');
-    expect(
-      readFileSync(join(process.cwd(), 'src/renderer/renderer.css'), 'utf8'),
-    ).toMatch(/data-has-attachments='1'[\s\S]*max\(var\(--st-talk-composer-height\),\s*220px\)/);
+    expect(readFileSync(join(process.cwd(), 'src/renderer/renderer.css'), 'utf8')).toMatch(
+      /data-has-attachments='1'[\s\S]*max\(var\(--st-talk-composer-height\),\s*220px\)/,
+    );
     expect(container.querySelector('[data-testid="real-detail-slot"]')).not.toBeNull();
     expect(container.querySelectorAll('[data-testid^="talk-detail-tab-"]')).toHaveLength(3);
     expect(container.textContent).not.toContain('介入');
@@ -488,6 +488,7 @@ describe('Talk workspace', () => {
       goal: '按照 Talk V8 完成真实界面替换',
       status: 'active',
       participationMode: 'conversation' as const,
+      executionMode: 'workspace' as const,
       taskVersion: 3,
       threadId: 'thread-1' as never,
       createdAt: '2026-07-18T00:00:00.000Z',
@@ -586,6 +587,7 @@ describe('Talk workspace', () => {
       goal: '按 Figma 还原',
       status: 'active',
       participationMode: 'conversation' as const,
+      executionMode: 'workspace' as const,
       taskVersion: 1,
       threadId: 'thread-design' as never,
       createdAt: '2026-07-18T00:00:00.000Z',
@@ -1114,6 +1116,9 @@ describe('Talk workspace', () => {
     expect(container.textContent).toContain('每个身份会隔离 Cookie、登录状态和网站数据');
     expect(container.textContent).toContain('新任务继承默认身份');
     expect(container.textContent).toContain('任务右侧栏');
+    expect(container.textContent).toContain('工作账号');
+    expect(container.textContent).toContain('个人账号');
+    expect(container.textContent).toContain('不会串用 Cookie');
   });
 
   it('renders real automation status, trigger controls, and execution history', () => {

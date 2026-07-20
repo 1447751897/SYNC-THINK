@@ -1,3 +1,27 @@
+## 2026-07-20 · Codex 三档执行模式权限收敛（Phase 1+2）
+
+- 新增设计：`docs/superpowers/specs/2026-07-20-codex-three-mode-permission-design.md`。
+- 产品权威收敛为 Codex 三档：`read-only`（只读）/ `workspace`（工作区）/ `full-access`（完全访问）。
+- shared 增加 `ExecutionMode` 与 legacy `ApprovalMode` 映射；core 增加 `resolveEffectiveExecution`。
+- Runtime 对话工具绑定与 Production Step 工具注册改为按三档模式决定工具面，不再按 `AgentPermissions` 细分类矩阵过滤。
+- storage migration `0029_task_execution_mode` 为 Task 持久化 `execution_mode`；protocol 增加 `task.setExecutionMode`。
+- Desktop Composer / 详情栏绑定 `Task.executionMode`；审批中心继续使用独立 approval policy，不驱动三档控件。
+- 移除 Agent 权限矩阵 UI；子任务创建与 reuse 响应均投影 `executionMode`。
+- 兼容：旧 `request/delegate/custom` → 工作区；旧 `full` → 完全访问；`delegate` 仅影响审批路由。
+- 定向验证：runtime typecheck/build、`mode-policy-commands` 14、storage 关键回归 89。
+- 后续 Phase 3：Project/Install 默认 mode、Run snapshot 审计固化、旧 policy 主路径降级、全仓与实窗验收。
+
+## 2026-07-20 · 对话输入、目标切换、空任务与完全访问闭环
+
+- Composer 文本输入随内容从 56px 自动增高到 200px，达到上限后内部滚动；Talk 输入区总高度限制为 `min(360px, 45vh)`，手动拖拽仍可用。
+- 单聊隐藏隐式 `@智能体`；显式 `@其他智能体` 只路由当前一轮。切换主智能体或小队会创建标题/目标均为“新任务”的独立对话，不继承旧任务信息。
+- 空任务不再依赖版本 0 或默认标题判断；Runtime 根据消息、子任务、计划、Run、产物和审批请求做最终保护。未发送草稿/附件会保留旧任务，真实任务的 managed worktree 不会被误清理。
+- 四种模式名称固定为请求批准、替我审批、完全访问、自定义。完全访问对所有当前可执行操作直接放行，包括敏感操作与配置确认；请求批准下只读检查自动执行，受保护工具在同一调用上暂停并于批准/拒绝后恢复。
+- 普通权限界面不再显示 `read_file`、`list_files`、`git_status`、`git_diff` 等内部名称，统一映射为读取项目文件、查看 Git 变更等产品能力分类。
+- Talk 任务头新增“操作审批”入口，可查看待审、已决、敏感操作分类和作用域策略；没有历史策略时，新策略草稿继承当前任务有效模式，避免右栏“完全访问”却在弹窗显示“请求批准”。
+- 定向验证：Core 21、Storage 19、Runtime 审批/工具 14、Runtime 工具/工作区 14 均通过。最终 Runtime `50 files / 297 tests`、Storage `23 files / 233 tests`、Workers `9 files / 53 tests`、UI Kit `21 files / 253 passed / 2 skipped`、Desktop `65 files / 456 tests`；全仓 typecheck `21/21`、build `12/12` 无缓存通过，最终受影响包重新构建通过。
+- 实窗验证：Composer `56px -> 121px -> 200px`，超过上限后 `overflow-y: auto`，清空恢复 `56px`；单聊输入无隐式 `@`；浏览器身份页显示工作/个人账号 Cookie 隔离示例；任务权限与审批策略均为 `full`。Runtime PID `14960`、Electron PID `19128`，窗口响应正常、hello 成功、最新 stderr 为空。
+
 ## 2026-07-19 · 项目执行位置、worktree 集成与独立浏览器身份
 
 - 项目资料页现在直接显示 Git 仓库地址与默认分支，并提供“编辑 Git 仓库”；弹窗预填当前值。旧版本产生的本地/远程双资源会在启动时把远程绑定合并到主资源，后续保存只更新主记录。
@@ -24,7 +48,7 @@
 ## 2026-07-19 · Composer 小队选择、稳定拖拽与全局细滚动条
 
 - Composer 参与者菜单按“智能体 / 小队”分区展示已有配置；小队显示主智能体与成员数，不提供快捷创建入口。
-- 选择小队会创建真实协作任务并复用小队主智能体、成员职责和 Runtime 调度；当前对话为空时以小队任务替换并归档空任务，已有消息时保留原任务并新建小队任务。
+- 选择小队会创建真实协作任务并复用小队主智能体、成员职责和 Runtime 调度；当前对话为空时以小队任务替换并删除空任务，已有消息或草稿时保留原任务并新建小队任务。
 - 输入区顶部拖拽改为窗口级 Pointer 监听，透明命中区扩大且继续支持方向键调整；移除可见横线，并统一桌面全局 6px 紧凑滚动条。
 - 验证：UI Kit **242/242（2 skipped）**、Desktop **431/431**，两包 typecheck 与全仓 build **12/12** 通过；Electron 已重启为 PID `55480`，QA Runtime `74052` 与生产 Runtime `43748` 未重启。
 
@@ -1512,7 +1536,7 @@ Desktop typecheck/build：passed
 - 右栏“本轮任务”只显示本轮计划、委派子任务、审查和交付工作；`agent/list`、命令、文件、Git、浏览器及其他工具调用统一进入执行日志，不再伪装成任务步骤。
 - 执行日志改为 Multica 式工作记录：每条用户消息一轮，提供元数据、Agent 阶段、类型筛选、时间线和可展开证据；隐藏原始 Run ID、重复统计与未脱敏长载荷。
 - 右栏收敛为属性、本轮摘要、本轮任务、参与智能体和可折叠子任务；父任务可原位展开/收起子任务，子任务提供“返回父任务”，选择任务不改变目录顺序。
-- 离开版本为 0、没有消息/子任务/草稿/附件的占位任务时，Desktop 调用受 Runtime 最终条件保护的 `task.discardEmpty` 删除空任务；有未发送草稿或附件时继续保留。
+- 离开没有消息/子任务/计划/Run/产物/审批请求/草稿/附件的占位任务时，Desktop 调用受 Runtime 最终条件保护的 `task.discardEmpty` 删除空任务；标题和版本不再作为是否有内容的判断，有未发送草稿或附件时继续保留。
 - 群组自动跟随成员 Agent 的最新版本，产品界面不再显示 `v9` 等内部群组版本；普通对话的完全访问策略可执行真实工作区工具，已保存任务策略优先于 Agent 默认值。
 - Runtime Provider 流与后台任务支持可中止关闭；Windows Desktop Worker 修复 0/1 项时的数组投影；单个 Runtime 命令异常现在返回请求级 `storage.write_failed` 并保持 pipe 连接，不再误断开整个桌面会话。
 - 验证：Desktop **65 files / 453 tests**、Storage **23 files / 233 tests**、UI Kit **250 passed / 2 existing skipped**、Runtime **287/287**、Workers **9 files / 53 tests**；Runtime/Workers typecheck 通过，12 个 workspace 包串行 build 全部通过。

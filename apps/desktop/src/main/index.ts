@@ -107,6 +107,7 @@ import {
   parseArtifactMergePayload,
   parseArtifactSelectPayload,
   parseModeSetPayload,
+  parseExecutionModeSetPayload,
   parsePlanApprovePayload,
   parsePlanCreatePayload,
   parsePlanListPayload,
@@ -489,6 +490,14 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('task.setParticipationMode', parseModeSetPayload(value));
+  });
+  ipcMain.handle('runtime:execution-mode-set', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'task.setExecutionMode',
+      parseExecutionModeSetPayload(value),
+    );
   });
   ipcMain.handle('runtime:task-archive', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

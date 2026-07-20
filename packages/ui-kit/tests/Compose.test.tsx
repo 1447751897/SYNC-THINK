@@ -35,6 +35,34 @@ const sampleModels: ComposeModelOption[] = [
 ];
 
 describe('Compose', () => {
+  it('grows the message input with its content and caps it before scrolling', async () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'scrollHeight');
+    Object.defineProperty(HTMLTextAreaElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return (this as HTMLTextAreaElement).value.includes('\n') ? 320 : 72;
+      },
+    });
+    try {
+      render(<Compose mode="conversation" onSend={() => undefined} />);
+      const textarea = screen.getByLabelText('消息输入') as HTMLTextAreaElement;
+
+      fireEvent.change(textarea, { target: { value: '第一行' } });
+      await waitFor(() => expect(textarea.style.height).toBe('72px'));
+      expect(textarea.style.overflowY).toBe('hidden');
+
+      fireEvent.change(textarea, { target: { value: '第一行\n第二行\n第三行' } });
+      await waitFor(() => expect(textarea.style.height).toBe('200px'));
+      expect(textarea.style.overflowY).toBe('auto');
+    } finally {
+      if (original) {
+        Object.defineProperty(HTMLTextAreaElement.prototype, 'scrollHeight', original);
+      } else {
+        delete (HTMLTextAreaElement.prototype as { scrollHeight?: number }).scrollHeight;
+      }
+    }
+  });
+
   it('picks, previews, removes, and sends managed attachments', async () => {
     const onSend = vi.fn();
     const onPickAttachments = vi.fn().mockResolvedValue([
@@ -107,9 +135,7 @@ describe('Compose', () => {
         previewUrl: 'data:image/png;base64,AQIDBA==',
       },
     ]);
-    render(
-      <Compose mode="conversation" onSend={() => undefined} onImportFiles={onImportFiles} />,
-    );
+    render(<Compose mode="conversation" onSend={() => undefined} onImportFiles={onImportFiles} />);
     const textarea = screen.getByLabelText('消息输入') as HTMLTextAreaElement;
     const form = getFormWithin(textarea);
     const file = new File(['drop'], 'dropped.png', { type: 'image/png' });
@@ -604,6 +630,29 @@ describe('Compose', () => {
     );
   });
 
+  it('matches a manually typed mention by the longest exact Agent name', () => {
+    const onSend = vi.fn();
+    render(
+      <Compose
+        mode="conversation"
+        onSend={onSend}
+        mentionAgents={[
+          { agentId: 'review', agentVersionId: 'review-v1', name: '审查' },
+          { agentId: 'review-pro', agentVersionId: 'review-pro-v2', name: '审查专家' },
+        ]}
+      />,
+    );
+
+    const textarea = screen.getByLabelText('消息输入') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '@审查专家 请检查方案' } });
+    fireEvent.submit(getFormWithin(textarea));
+
+    expect(onSend).toHaveBeenCalledWith(
+      '@审查专家 请检查方案',
+      expect.objectContaining({ agentVersionId: 'review-pro-v2' }),
+    );
+  });
+
   it('switches the active project from the Compose toolbar', () => {
     const onWorkspaceChange = vi.fn();
     const workspaces: ComposeWorkspaceOption[] = [
@@ -661,39 +710,53 @@ describe('Compose', () => {
 
   it('changes operation permission for the current conversation', () => {
     const onPermissionModeChange = vi.fn();
-    render(
+    const details = {
+      approvalMode: 'full' as const,
+      executionMode: 'managed_worktree' as const,
+      executionState: 'ready',
+      baseRef: 'main',
+      browserIdentityName: '工作账号',
+      effectiveToolNames: ['read_file', 'run_command'],
+      capabilityCeiling: {
+        file: ['*'],
+        command: ['*'],
+        browser: ['*'],
+        desktop: [] as string[],
+        network: [] as string[],
+      },
+    };
+    const { rerender } = render(
       <Compose
         mode="conversation"
         onSend={() => undefined}
-        permissionMode="full"
+        permissionMode="full-access"
         onPermissionModeChange={onPermissionModeChange}
-        permissionDetails={{
-          approvalMode: 'full',
-          executionMode: 'managed_worktree',
-          executionState: 'ready',
-          baseRef: 'main',
-          browserIdentityName: '工作账号',
-          effectiveToolNames: ['read_file', 'run_command'],
-          capabilityCeiling: {
-            file: ['*'],
-            command: ['*'],
-            browser: ['*'],
-            desktop: [],
-            network: [],
-          },
-        }}
+        permissionDetails={details}
       />,
     );
 
     const select = screen.getByLabelText('当前对话操作权限') as HTMLSelectElement;
-    expect(select.value).toBe('full');
-    fireEvent.change(select, { target: { value: 'request' } });
-    expect(onPermissionModeChange).toHaveBeenCalledWith('request');
+    expect(select.value).toBe('full-access');
+    fireEvent.change(select, { target: { value: 'workspace' } });
+    expect(onPermissionModeChange).toHaveBeenCalledWith('workspace');
+    rerender(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        permissionMode="workspace"
+        onPermissionModeChange={onPermissionModeChange}
+        permissionDetails={details}
+      />,
+    );
     fireEvent.click(screen.getByLabelText('查看当前任务有效权限'));
     expect(screen.getByRole('dialog', { name: '当前任务有效权限' })).toBeTruthy();
     expect(screen.getByText('隔离工作树')).toBeTruthy();
     expect(screen.getByText('工作账号')).toBeTruthy();
-    expect(screen.getByText('run_command')).toBeTruthy();
+    expect(screen.getByText('读取项目文件')).toBeTruthy();
+    expect(screen.getByText('执行命令')).toBeTruthy();
+    expect(screen.getByText(/项目内读写与命令可自动执行/)).toBeTruthy();
+    expect(screen.queryByText('run_command')).toBeNull();
+    expect(screen.queryByText('智能体能力上限')).toBeNull();
   });
 
   it('changes the browser identity pinned to the current task', () => {

@@ -23,6 +23,7 @@ export type Feature =
   | 'task.archive'
   | 'task.unarchive'
   | 'task.setParticipationMode'
+  | 'task.setExecutionMode'
   | 'runtime.subscribeEvents'
   | 'runtime.continueEventReplay'
   | 'runtime.healthcheck'
@@ -102,6 +103,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'task.archive',
   'task.unarchive',
   'task.setParticipationMode',
+  'task.setExecutionMode',
   'runtime.subscribeEvents',
   'runtime.continueEventReplay',
   'runtime.healthcheck',

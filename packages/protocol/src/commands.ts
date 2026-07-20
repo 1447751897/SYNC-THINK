@@ -10,6 +10,7 @@
   CredentialRefId,
   ParticipationMode,
   ApprovalMode,
+  ExecutionMode,
   PlanId,
   PlanRevision,
   PlanStepDraft,
@@ -62,6 +63,7 @@ export type CommandType =
   | 'task.unarchive'
   | 'task.discardEmpty'
   | 'task.setParticipationMode'
+  | 'task.setExecutionMode'
   | 'task.appendMessage'
   | 'runtime.subscribeEvents'
   | 'runtime.continueEventReplay'
@@ -320,6 +322,8 @@ export interface CreateTaskPayload {
   workspaceId: WorkspaceId;
   title: string;
   goal: string;
+  /** Exact initial conversation owner recorded when the task is created. */
+  agentVersionId?: AgentVersionId;
   parentTaskId?: TaskId;
   acceptanceCriteria?: string[];
 }
@@ -330,6 +334,7 @@ export interface CreateTaskResponse {
   /** Initial expected version for optimistic concurrency on subsequent commands. */
   taskVersion: number;
   participationMode: ParticipationMode;
+  executionMode: ExecutionMode;
   parentTaskId?: TaskId;
   createdAt: string;
 }
@@ -445,6 +450,8 @@ export interface TaskSummary {
   goal: string;
   status: string;
   participationMode: ParticipationMode;
+  /** Codex three-mode execution authority for this task. */
+  executionMode: ExecutionMode;
   taskVersion: number;
   threadId: ThreadId;
   lastOpenedAt?: string;
@@ -490,6 +497,16 @@ export interface SetParticipationModePayload {
 }
 
 export interface SetParticipationModeResponse {
+  task: TaskSummary;
+}
+
+export interface SetExecutionModePayload {
+  taskId: TaskId;
+  mode: ExecutionMode;
+  expectedTaskVersion: number;
+}
+
+export interface SetExecutionModeResponse {
   task: TaskSummary;
 }
 

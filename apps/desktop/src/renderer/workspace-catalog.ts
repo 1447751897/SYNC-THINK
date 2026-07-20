@@ -11,6 +11,8 @@ export interface ActiveTaskSelection {
   readonly taskVersion: number;
   readonly status: string;
   readonly participationMode: TaskSummary['participationMode'];
+  /** Codex three-mode execution authority for the open task. */
+  readonly executionMode: TaskSummary['executionMode'];
 }
 
 export interface WorkspaceCatalogState {
@@ -88,6 +90,7 @@ export function resolvePreferredTask(
     taskVersion: preferred.taskVersion,
     status: preferred.status,
     participationMode: preferred.participationMode,
+    executionMode: preferred.executionMode ?? 'workspace',
   };
 }
 

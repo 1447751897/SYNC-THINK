@@ -13,6 +13,29 @@ export interface AgentGroupMembershipSummary {
   isLead: boolean;
 }
 
+export interface ConversationMentionMessage {
+  role: string;
+  text: string;
+  targetAgentVersionId?: string;
+  targetGroupId?: string;
+  mentionAgentVersionId?: string;
+}
+
+export function projectConversationMentionLabel(
+  message: ConversationMentionMessage,
+  agentNames: ReadonlyMap<string, string>,
+  groups: ReadonlyMap<string, { name: string; leadAgentVersionId: string }>,
+): string | undefined {
+  if (message.mentionAgentVersionId) return agentNames.get(message.mentionAgentVersionId);
+  if (message.role !== 'user' || !message.targetAgentVersionId) return undefined;
+  const targetName = agentNames.get(message.targetAgentVersionId);
+  if (targetName && message.text.includes(`@${targetName}`)) return targetName;
+  const group = message.targetGroupId ? groups.get(message.targetGroupId) : undefined;
+  return group && group.leadAgentVersionId === message.targetAgentVersionId
+    ? group.name
+    : undefined;
+}
+
 const AGENT_VERSION_PAYLOAD_KEYS = [
   'agentVersionId',
   'leadAgentVersionId',
@@ -34,6 +57,12 @@ const CONVERSATION_TEXT_EVENT_TYPES = new Set([
   'group.collaboration.completed',
   'group.collaboration.failed',
   'group.collaboration.skipped',
+]);
+
+const TASK_AGENT_BINDING_EVENT_KEYS = new Map<string, 'agentVersionId' | 'leadAgentVersionId'>([
+  ['task.agent-bound', 'agentVersionId'],
+  ['subtask.agent-assigned', 'agentVersionId'],
+  ['group.task-created', 'leadAgentVersionId'],
 ]);
 
 function orderedEvents(events: readonly Event[]): Event[] {
@@ -78,10 +107,9 @@ export function projectTaskPrimaryAgentVersions(
   for (const event of ordered) {
     const taskId = eventTaskId(event, taskIdByThread);
     if (!taskId) continue;
-
-    const leadAgentVersionId = payloadString(event.payload.leadAgentVersionId);
-    const agentVersionId = payloadString(event.payload.agentVersionId);
-    const primaryAgentVersionId = leadAgentVersionId ?? agentVersionId;
+    const bindingKey = TASK_AGENT_BINDING_EVENT_KEYS.get(event.type);
+    if (!bindingKey) continue;
+    const primaryAgentVersionId = payloadString(event.payload[bindingKey]);
     if (primaryAgentVersionId) result.set(taskId, primaryAgentVersionId);
   }
 

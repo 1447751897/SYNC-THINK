@@ -182,6 +182,36 @@ describe('SqliteWorkspaceStore', () => {
       expect(store.discardEmptyTask(blank.taskId, 0)).toBe(true);
       expect(store.getTask(blank.taskId)).toBeUndefined();
 
+      const renamedBlank = store.createTask({
+        workspaceId: workspace.id,
+        title: '沿用下来的旧标题',
+        goal: '沿用下来的旧目标',
+      });
+      expect(store.discardEmptyTask(renamedBlank.taskId, 0)).toBe(true);
+      expect(store.getTask(renamedBlank.taskId)).toBeUndefined();
+
+      const blankGroup = store.createTask({
+        workspaceId: workspace.id,
+        title: '新任务',
+        goal: '新任务',
+        participationMode: 'collaboration',
+      });
+      expect(blankGroup).toMatchObject({ taskVersion: 0, participationMode: 'collaboration' });
+      expect(store.discardEmptyTask(blankGroup.taskId, blankGroup.taskVersion)).toBe(true);
+      expect(store.getTask(blankGroup.taskId)).toBeUndefined();
+
+      const legacyBlankGroup = store.createTask({
+        workspaceId: workspace.id,
+        title: '沿用下来的旧标题',
+        goal: '沿用下来的旧目标',
+      });
+      const legacyGroupMode = store.setParticipationMode(
+        legacyBlankGroup.taskId,
+        'collaboration',
+        legacyBlankGroup.taskVersion,
+      );
+      expect(store.discardEmptyTask(legacyBlankGroup.taskId, legacyGroupMode.version)).toBe(true);
+
       const parent = store.createTask({
         workspaceId: workspace.id,
         title: '新任务',
@@ -495,6 +525,99 @@ describe('SqliteWorkspaceStore participation mode', () => {
       expect(() => store.getTask(task.taskId)).toThrow(
         'Invalid participation mode in task row: unknown-mode',
       );
+    } finally {
+      close();
+    }
+  });
+});
+
+describe('SqliteWorkspaceStore execution mode', () => {
+  it('defaults new tasks to workspace execution mode', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({
+        folderPath: 'D:\\projects\\execution-default',
+        name: 'Execution Default',
+      });
+      const created = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Default execution',
+        goal: 'Start in workspace mode',
+      });
+
+      expect(created.executionMode).toBe('workspace');
+      expect(store.getTask(created.taskId)).toMatchObject({
+        executionMode: 'workspace',
+        version: 0,
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it('updates execution mode with optimistic task versioning', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({
+        folderPath: 'D:\\projects\\execution-version',
+        name: 'Execution Version',
+      });
+      const task = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Versioned execution',
+        goal: 'Reject stale writers',
+      });
+
+      const changed = store.setExecutionMode(
+        task.taskId,
+        'full-access',
+        task.taskVersion,
+        '2026-07-20T01:00:00.000Z',
+      );
+      expect(changed).toMatchObject({
+        executionMode: 'full-access',
+        version: 1,
+        updatedAt: '2026-07-20T01:00:00.000Z',
+      });
+
+      expect(() =>
+        store.setExecutionMode(
+          task.taskId,
+          'read-only',
+          task.taskVersion,
+          '2026-07-20T01:01:00.000Z',
+        ),
+      ).toThrow(/task version conflict/i);
+      expect(store.getTask(task.taskId)).toMatchObject({
+        executionMode: 'full-access',
+        version: 1,
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it('inherits parent execution mode for child tasks', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({
+        folderPath: 'D:\\projects\\execution-inherit',
+        name: 'Execution Inherit',
+      });
+      const parent = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Parent',
+        goal: 'Parent task',
+        executionMode: 'read-only',
+      });
+      const child = store.createTask({
+        workspaceId: workspace.id,
+        parentTaskId: parent.taskId,
+        title: 'Child',
+        goal: 'Child inherits parent mode',
+      });
+      expect(child.executionMode).toBe('read-only');
+      expect(store.getTask(child.taskId)?.executionMode).toBe('read-only');
     } finally {
       close();
     }

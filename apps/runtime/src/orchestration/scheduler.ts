@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { asHumanOnlyAction, getReadyStepIds, validateDag } from '@sync-think/core';
+import { getReadyStepIds, validateDag } from '@sync-think/core';
 import {
   ulid,
   type AgentVersionId,
@@ -601,18 +601,7 @@ export class Scheduler {
       request: deepFreeze(structuredClone(request)),
       actionDigest: digest,
     });
-    const humanOnlyAction = asHumanOnlyAction(request.action);
-    const humanOnly = Boolean(humanOnlyAction) || request.kind === 'human-only';
-    const evaluation: SchedulerApprovalEvaluation = humanOnly
-      ? {
-          ...policyEvaluation,
-          gate: 'require-human',
-          humanOnly: true,
-          ...(humanOnlyAction ? { humanOnlyAction } : {}),
-          mode: 'request',
-          reason: 'human-only action cannot be auto-approved or delegated',
-        }
-      : policyEvaluation;
+    const evaluation = policyEvaluation;
     if (evaluation.gate === 'auto-approve') return true;
 
     return unitOfWork.run(() => {

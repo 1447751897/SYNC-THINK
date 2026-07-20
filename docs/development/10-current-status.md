@@ -1,3 +1,43 @@
+## 本轮进度：2026-07-20 · Codex 三档执行模式端到端（Phase 1+2）
+
+- **决策**：废弃“读写/命令/网络细权限 + 多层 scope 继承”作为主模型；用户只面对 Codex 三档。
+- **设计文档**：`docs/superpowers/specs/2026-07-20-codex-three-mode-permission-design.md`
+- **Phase 1 基础**：
+  - `packages/shared`：`ExecutionMode`、legacy 映射、normalize/label helpers
+  - `packages/core`：`resolveEffectiveExecution`、自动放行判定
+  - `apps/runtime`：对话执行绑定与 production step 工具注册改走三档
+- **Phase 2 产品接线**：
+  - storage migration `0029_task_execution_mode`：Task 持久化 `execution_mode`（默认 `workspace`）
+  - protocol：`task.setExecutionMode` + Create/Delegate/Summary 投影字段
+  - desktop：Composer / 详情栏绑定 `Task.executionMode`；审批中心仍用 `conversationApprovalMode`
+  - ui-kit：去掉 Agent 权限矩阵编辑入口；三档控件与产品文案
+  - 子任务 reuse 路径补齐 `executionMode`，runtime typecheck 恢复绿色
+- **兼容**：`ApprovalMode` 仍可写入旧协议；`full`/`full-access` 不入审批；Agent 权限矩阵在主路径被忽略。
+- **已验证**：
+  - runtime typecheck + build 通过
+  - `mode-policy-commands` 14/14
+  - storage migrate/workspace-store/reviewer-rework/artifact-store 89/89
+- **剩余（Phase 3 / 收尾）**：
+  1. Project/Install 默认 mode 持久化与解析链补齐（当前以 Task 为主、fallback `workspace`）
+  2. 父任务 live mode 变更时子任务继承/同步策略
+  3. Run 级 effective-mode snapshot 审计字段固化
+  4. 旧 scoped policy / authorization-grant 从主路径降级为兼容层
+  5. 全仓 test/typecheck/build + 实窗验收（三档切换、full-access 不弹批、read-only 仅检查）
+
+## 本轮进度：2026-07-20 · 输入框、目标切换、空任务与权限闭环
+
+- **输入体验**：文本框随内容从 56px 自动长到 200px，之后内部滚动；Talk Composer 总高度最多 `min(360px, 45vh)`，继续支持手动拖拽。
+- **单聊与切换**：单聊不显示隐式 `@`；显式 `@Agent` 只影响当前轮。切换 Agent/小队创建“新任务”，不复制旧标题或目标。
+- **空任务安全**：无真实内容的任务离开后删除，草稿/附件和任何持久工作都会保留；清理失败不会提前删除真实任务的 managed worktree。
+- **权限规则**：四种名称保持请求批准、替我审批、完全访问、自定义。完全访问对当前可执行操作全部直接运行并审计；请求批准下只读检查自动执行，写入等受保护工具通过唯一审批请求暂停/恢复。
+- **审查加固**：Scheduler 不再把完全访问的敏感动作强制改回人工审批；自定义中的显式 request 规则不会被只读快捷路径绕过，浏览器导航按对外操作审批。
+- **崩溃与数据保护**：配置确认在副作用前持久化 started fence，结果与确认状态原子落盘；重启不重复执行结果未知的操作。空任务清理发现 managed worktree 有未提交改动时拒绝删除，也不再使用强制移除。
+- **单轮提及**：任务主智能体只来自显式绑定事件；`@其他智能体` 的 Run 结束后下一轮恢复主智能体，前缀相同的名称按精确最长边界匹配。
+- **产品表达**：普通权限详情只显示读取项目文件、查看 Git 变更、执行命令等能力分类，不暴露 Runtime 工具名。Talk 任务头可打开“操作审批”，查看待审、已决、敏感操作和作用域策略；新策略草稿与当前任务有效模式一致。
+- **最终验证**：Runtime `50 files / 297 tests`、Storage `23 files / 233 tests`、Workers `9 files / 53 tests`、UI Kit `21 files / 253 passed / 2 skipped`、Desktop `65 files / 456 tests`；全仓 typecheck `21/21`、build `12/12` 无缓存通过，最终 UI Kit/Desktop 重新构建通过，`git diff --check` 通过。
+- **运行状态**：隔离 Runtime PID `14960` 使用 `.tmp-runtime-codex/sync-think.db` 并监听 `sync-think-codex-talk-20260720`；Electron PID `19128`，窗口标题 `SYNC-THINK`、`Responding=True`、Runtime hello 成功，最新 Runtime/Desktop stderr 为空。
+- **实窗验收**：Composer 从 `56px` 增长到 `200px` 后内部滚动并可恢复；单聊无隐式 `@`；浏览器身份工作/个人账号 Cookie 隔离示例可见；右栏 `full` 与审批弹窗默认策略 `full` 一致，弹窗不显示普通内部工具名。
+
 ## 本轮进度：2026-07-19 · 项目执行位置与浏览器身份闭环
 
 - **Git 绑定可见**：项目资料页显示仓库 URL、默认分支和“编辑 Git 仓库”；QA 数据已确认 `SYNC-THINK` 绑定 `https://github.com/1447751897/SYNC-THINK.git`、`main`，新 Runtime 已把旧双资源合并到主记录。
