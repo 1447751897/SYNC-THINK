@@ -116,12 +116,20 @@ export class SqliteEventCheckpointStore {
         ...transition.checkpoint,
         lastEventSequence: events[events.length - 1].sequence,
       };
-      this.raw
-        .prepare(
-          `INSERT INTO checkpoint (
+      const checkpointSql = checkpoint.id.startsWith('runtime-latest:')
+        ? `INSERT INTO checkpoint (
             id, run_id, last_event_sequence, state_json, created_at
-          ) VALUES (?, ?, ?, ?, ?)`,
-        )
+          ) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            run_id = excluded.run_id,
+            last_event_sequence = excluded.last_event_sequence,
+            state_json = excluded.state_json,
+            created_at = excluded.created_at`
+        : `INSERT INTO checkpoint (
+            id, run_id, last_event_sequence, state_json, created_at
+          ) VALUES (?, ?, ?, ?, ?)`;
+      this.raw
+        .prepare(checkpointSql)
         .run(
           checkpoint.id,
           checkpoint.runId,

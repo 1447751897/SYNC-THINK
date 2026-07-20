@@ -29,6 +29,7 @@ export interface PipeServerHandlers {
   onClientHello: (socket: Socket, hello: Hello, result: HelloResult) => void;
   onClientGone: (socket: Socket) => void;
   onFrame: (socket: Socket, frame: Frame) => void;
+  onFrameError?: (socket: Socket, frame: Frame, error: unknown) => void;
   onServerError?: (err: Error) => void;
 }
 
@@ -118,7 +119,17 @@ export function createPipeServer(
         buffers.set(socket, decoded.remaining);
         for (const frame of decoded.frames) {
           if (authenticatedSockets.has(socket)) {
-            handlers.onFrame(socket, frame);
+            try {
+              handlers.onFrame(socket, frame);
+            } catch (error) {
+              if (!handlers.onFrameError) throw error;
+              try {
+                handlers.onFrameError(socket, frame, error);
+              } catch {
+                socket.destroy();
+                return;
+              }
+            }
             continue;
           }
 

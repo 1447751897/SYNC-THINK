@@ -201,7 +201,7 @@ describe('ManifestPanel amend', () => {
         onExcludeSource={onExclude}
       />,
     );
-    // sample has message-excerpt + agent-instructions (both non-protected)
+    // message-excerpt remains user-excludable; Agent instructions are protected.
     const btn = screen.getByTestId('manifest-exclude-msg-1');
     fireEvent.click(btn);
     expect(onExclude).toHaveBeenCalledWith('msg-1');
@@ -370,4 +370,3 @@ describe('projectManifestReadiness', () => {
     expect(r.hasAmends).toBe(true);
   });
 });
-

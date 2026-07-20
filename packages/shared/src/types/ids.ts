@@ -4,6 +4,9 @@
 export type Brand<T, B extends string> = T & { readonly __brand: B };
 
 export type WorkspaceId = Brand<string, 'Workspace'>;
+export type ProjectResourceId = Brand<string, 'ProjectResource'>;
+export type ExecutionProfileId = Brand<string, 'ExecutionProfile'>;
+export type BrowserIdentityId = Brand<string, 'BrowserIdentity'>;
 export type TaskId = Brand<string, 'Task'>;
 export type ThreadId = Brand<string, 'Thread'>;
 export type PlanId = Brand<string, 'Plan'>;
@@ -21,6 +24,9 @@ export type CredentialRefId = Brand<string, 'CredentialRef'>;
 export type ModelId = Brand<string, 'Model'>;
 export type AgentId = Brand<string, 'Agent'>;
 export type AgentVersionId = Brand<string, 'AgentVersion'>;
+export type GroupId = Brand<string, 'Group'>;
+export type AutomationId = Brand<string, 'Automation'>;
+export type AutomationExecutionId = Brand<string, 'AutomationExecution'>;
 export type SkillId = Brand<string, 'Skill'>;
 export type SkillVersionId = Brand<string, 'SkillVersion'>;
 export type McpServerId = Brand<string, 'McpServer'>;

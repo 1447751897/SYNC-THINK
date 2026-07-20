@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Event } from '@sync-think/shared';
-import {
-  RuntimeSession,
-  type RuntimeSessionClient,
-} from '../src/main/runtime-session.js';
+import { RuntimeSession, type RuntimeSessionClient } from '../src/main/runtime-session.js';
 import type { RuntimeHealth } from '../src/runtime-bridge-contract.js';
 
 function eventAt(sequence: number): Event {
@@ -170,6 +167,10 @@ describe('desktop main RuntimeSession', () => {
         session_token: 'session-secret-token-123456',
         privateKey: 'private-key-secret-123456',
         secretValue: 'opaque-secret-value-123456',
+        run: {
+          assistantText: 'large internal snapshot that must not enter Renderer state',
+          providerContext: { messages: ['large history'] },
+        },
         nested: {
           authorization: 'Bearer runtime-secret-token-123456',
           message: 'request failed: api_key=sk-provider-secret-123456',
@@ -217,6 +218,7 @@ describe('desktop main RuntimeSession', () => {
         values: ['safe', 'Bearer [REDACTED]', 'session_token=[REDACTED]', '[REDACTED]'],
       },
     });
+    expect(connected.snapshot[0]?.payload).not.toHaveProperty('run');
     expect(original.payload.apiKey).toBe('sk-ant-live-secret-123456789');
   });
 });

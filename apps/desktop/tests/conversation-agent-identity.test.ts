@@ -39,6 +39,27 @@ describe('conversation Agent identity composition', () => {
     expect(source).toContain("navigateToInstrument('agent')");
   });
 
+  it('uses task participant identity for the directory, header, and fallback messages', () => {
+    expect(source).toContain('projectTaskPrimaryAgentVersions');
+    expect(source).toContain('projectTaskGroupIds');
+    expect(source).toContain('projectTaskConversationSummaries');
+    expect(source).toContain('toConversationGroupIdentity');
+    expect(source).toContain('activeConversationIdentity');
+    expect(source).toContain('participantAvatarUrl: taskParticipantIdentity.avatarUrl');
+    expect(source).toContain('participantIcon={activeConversationIdentity.icon}');
+    expect(source).toContain('participantAvatarUrl={activeConversationIdentity.avatarUrl}');
+    expect(source).not.toContain("message.text || (message.streaming ? '…' : '')");
+  });
+
+  it('loads group avatar paths into the shared conversation identity URL map', () => {
+    expect(source).toMatch(
+      /result\.groups\s*\.map\(\(group\) => group\.visualIdentity\.avatarPath\)/,
+    );
+    expect(source).toContain(
+      'setAgentAvatarUrls((current) => new Map([...current, ...avatarUrls]))',
+    );
+  });
+
   it('renders a stable round avatar gutter without restoring execution metadata', () => {
     expect(messageSource).toContain('message-agent-avatar');
     expect(messageSource).toContain('message-agent-identity');

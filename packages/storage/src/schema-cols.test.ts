@@ -30,6 +30,21 @@ describe('schema columns', () => {
     expect(columnNames(schema.task)).toContain('version');
   });
 
+  it('project execution environment tables keep profiles independent from Agents', () => {
+    expect(columnNames(schema.projectResource)).toEqual(
+      expect.arrayContaining(['workspaceId', 'type', 'localPath', 'repositoryUrl', 'defaultRef']),
+    );
+    expect(columnNames(schema.executionProfile)).toEqual(
+      expect.arrayContaining(['mode', 'retentionDays', 'browserIdentityId']),
+    );
+    expect(columnNames(schema.browserIdentity)).toEqual(
+      expect.arrayContaining(['name', 'profilePath', 'isDefault']),
+    );
+    expect(columnNames(schema.taskExecutionContext)).toEqual(
+      expect.arrayContaining(['taskId', 'mode', 'state', 'executionPath', 'cleanupAfter']),
+    );
+  });
+
   it('credential_ref never exposes a plaintext column directly', () => {
     // The table object exposes logical column keys; a plaintext-column would
     // never appear on this list. Lists the snake_case names too via accessor.

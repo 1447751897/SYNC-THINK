@@ -1,3 +1,86 @@
+## 本轮进度：2026-07-19 · 项目执行位置与浏览器身份闭环
+
+- **Git 绑定可见**：项目资料页显示仓库 URL、默认分支和“编辑 Git 仓库”；QA 数据已确认 `SYNC-THINK` 绑定 `https://github.com/1447751897/SYNC-THINK.git`、`main`，新 Runtime 已把旧双资源合并到主记录。
+- **可恢复工作树**：任务和并行子任务使用持久独立 worktree；子任务完成自动集成，真实冲突可采用子任务或保留父任务，七天清理继续拒绝脏目录和活跃租约。
+- **浏览器与权限**：浏览器身份支持完整管理和任务级固定；任务右侧栏可直接编辑访问模式和浏览器身份，并查看执行位置、基线、最终能力分类和 Agent 能力上限。
+- **真实执行工具**：对话与 Production Step 共享文件、命令、Git、Playwright 和 Windows UI Automation 工具；远程 Git 异步准备不阻塞 Runtime。
+- **最终验证**：全仓 test **21/21**、typecheck **21/21**、build **12/12**；Runtime **50/284**、Workers **9/53**，`git diff --check` 通过。
+- **运行状态**：QA Runtime PID `75840` 已恢复 `.tmp-runtime-qa/sync-think.db`；Electron 根 PID `19952` 已完成 Runtime hello；新启动后 stderr 无新增内容。生产 Runtime PID `43748` 保持存活且未重启。
+
+## 本轮进度：2026-07-19 · 附件拖放与产物减负修复
+
+- **拖放修复**：Composer 使用标准可迭代 `DataTransfer.types` 判断文件拖入，提供进入/离开/松手状态；粘贴与拖入文件由 Renderer 读取为 `Uint8Array` 后通过窄 Electron bridge 保存，不再跨隔离世界传递不稳定的 `File` 对象。
+- **截图可见**：图片缩略图稳定显示在正文输入上方；有附件时 Composer 自动增高到至少 220px，移除附件后恢复用户原高度，原有键盘/指针拖拽调高仍保留。
+- **产物减负**：用户目录过滤 `group-skip`、`tool-trace`、委派决策、审核控制输出和普通步骤回复；旧任务即时生效，数据不删除并继续进入执行日志。
+- **内容优先**：群聊最终汇总显示为“最终结果”；单版本弹窗读取 `artifact.getVersion` 的真实正文，只显示名称、状态、时间、类型与内容。
+- **最终验证**：聚焦 UI Kit **2 files / 44 tests**、Desktop **4 files / 27 tests**、Runtime production executor **1 file / 21 tests**；Desktop **65 files / 442 tests**、UI Kit **247 passed / 2 existing skipped**、Runtime **47 files / 269 tests**。全仓强制串行 test **21/21**、typecheck **21/21**、build **12/12** 均为 0 cache 通过，`git diff --check` 无错误。
+- **运行状态**：QA Runtime PID `39376` 已恢复原数据库并监听 `sync-think-dev-0001`；Electron 根 PID `21848`，窗口标题 `SYNC-THINK`、`Responding=True`、stderr `0 bytes`，已完成 Runtime hello；生产 Runtime PID `43748` 保持存活且未重启。
+
+## 本轮进度：2026-07-19 · 历史图片上下文续传修复
+
+- **问题根因**：历史事件只投影为文字消息，图片附件元数据未进入 Provider history；后续轮次只加载当前轮附件，因此 Agent 无法再次读取上一轮图片。
+- **修复结果**：同一任务最近 6 张图片保留在原用户消息位置，Provider 调用前重新读取快照并发送真实图片；历史图片不再只剩文件名文字。
+- **完整性**：图片快照按 SHA-256 校验；旧数据仍兼容，无图片的旧 checkpoint 不受影响；文件夹仍为当前轮只读上下文。
+- **验证**：Runtime **47 files / 272 tests**、Runtime typecheck、Desktop 附件回归 **4/4** 和 Desktop build 通过；新增历史图片预算优先测试后定向 Runtime **15/15** 通过。
+- **运行状态**：QA Runtime PID `70324`、Electron 根 PID `72788`，窗口标题 `SYNC-THINK`、`Responding=True`、stderr `0 bytes`；生产 Runtime PID `43748` 保持存活且未重启。
+
+## 本轮进度：2026-07-18 · Figma Talk 产品页 fidelity 完成
+
+- **任务稳定性**：打开任务只更新 `last_opened_at`，不再改变 `updated_at`，因此点击任务不会把它移动到目录顶部；空对话 CTA 在浅色主题下可读。
+- **对话与项目**：对话内容使用完整可用宽度，助手正文最大 1040px；项目页同时显示项目目录、项目内任务目录、真实对话与任务详情，并保持项目导航选中。
+- **好友/智能体**：新增内联创建表单、资料操作、固定指令、输入输出、记忆并发、工具、审查与产物分组编辑；移除 Agent 级审批控件，不影响任务操作确认和群聊/自动化权限。
+- **资源页面**：好友、群聊、自动化、模型源、Skill & MCP 和设置均直接渲染在 Talk 全高表面；群聊、自动化、Skill & MCP 使用一致的 250px 目录/详情结构，Provider 保留全部 CC Switch 与模型配置能力。
+- **审查修复**：项目设置恢复为真实第二列视图；空项目切换会清空旧任务并锁定新建目标项目；首个 Agent 可直接使用已导入模型源和匹配凭证，失败原因在创建表单内可见。
+- **验证**：审查修复聚焦 Desktop **3/48**、AgentWorkspace **1/14**、Storage **1/18**；Desktop 全量 **62/419**、UI Kit 全量 **21/239**；全仓强制串行 test **21/21**、typecheck **21/21**、build **12/12**，均为 0 cache 通过。
+- **运行状态**：最新 Desktop Electron 根进程 `70140`，窗口标题 `SYNC-THINK`，`Responding=True`，启动 stderr `0 bytes`；生产 Runtime `43748` 与 QA Runtime `51248` 未重启且继续在线。
+- **验收边界**：Figma Talk 原型和用户截图是本轮设计真源；自动化与进程检查已完成，最终桌面视觉 1:1 验收由用户在最新构建中执行。
+
+## 本轮进度：2026-07-18 · 对话流式、身份一致性与字号完成
+
+- **流式对话**：空 assistant turn 立即显示真实 Agent 的“正在思考”，首个 delta 到达后在同一消息中立刻替换并持续流式输出；用户与 Agent 正文均使用浅色边框框体。
+- **身份一致性**：单聊使用任务主 AgentVersion，群聊使用真实群组身份；精确成员消息继续使用不可变 AgentVersion。目录、任务头和消息统一支持受管头像与完整 `bot/brain/code/image/planner/executor/reviewer/workflow/users` 图标集合。
+- **任务目录**：显示真实最后一条对话摘要、参与者、项目、时间和状态；摘要最多两行，固定轨道尺寸不随内容或字号跳动。
+- **字号偏好**：设置 -> 外观支持 13-18px，默认 14px，localStorage 持久化；对话、目录、设置和 Composer 使用同一排版 token，不缩放按钮、图标或布局轨道。
+- **审查修复**：群聊不再冒充主 Agent；非当前任务不再显示任务目标作为最新消息；Composer 不再覆盖字号；reduced-motion 规则位于动画声明之后；目录/任务头渲染配置图标；群组头像和 Agent 头像采用函数式 Map 合并，避免并发覆盖。
+- **验证**：Desktop **62 files / 410 tests**、UI Kit **21 files / 236 tests**；全仓强制串行 test **21/21**、typecheck **21/21**、build **12/12**；Prettier 与 `git diff --check` 通过，最终独立审查无 P1/P2。
+- **运行状态**：最新 Desktop Electron 根进程 `24144`，窗口标题 `SYNC-THINK`，`Responding=True`，启动 stderr `0 bytes`；生产 Runtime `43748` 与 QA Runtime `51248` 均保持存活且未重启。
+- **视觉边界**：用户将自行检查本轮页面；历史双尺寸实窗结果不能替代本轮对话样式、流式思考态和字号控制的视觉验收。
+
+## 本轮进度：2026-07-18 · 对话任务详情右栏完成
+
+- **任务进度**：使用真实 Run/Step/AgentVersion/模型事件生成 Run 摘要、步骤和参与智能体；可区分未开始、运行、完成、失败、暂停与取消，单个 Step 完成不会误判整轮完成。
+- **文件与产物**：260px 右栏只显示紧凑产物目录；版本历史、比较、选择、合并和冲突处理保留在产物弹窗。目录区分最新版本与当前选择版本，并显示真实生产者和更新时间。
+- **执行详情**：每条用户消息形成一轮日志，按 Agent 阶段归属真实事件；阶段默认折叠，弹窗显示开始/结束时间、Run IDs、模型、职责、工具调用、产物、异常和 Runtime-only 事件。
+- **功能可达性**：暂停/终止保留在任务头；子任务、归档/恢复位于任务树；父任务 breadcrumb 位于任务头；操作审批通过任务头独立工具弹窗打开。右栏不再混入审批、Trace 或执行图子导航。
+- **最新验证**：聚焦 **6 files / 48 tests**、Desktop **62 files / 400 tests**、UI Kit **21 files / 233 tests**；全仓强制串行 test **21/21**、typecheck **21/21**、build **12/12** 均为 0 cache 通过。Desktop main/preload/renderer 已重新生成。
+- **验收边界**：按用户要求，本轮不启动 Electron、不代替用户查看页面，不把自动化测试结果表述为新的视觉 1:1 验收。
+
+## 本轮进度：2026-07-18 · Figma 对话任务结构替换与功能保留
+
+- **页面替换**：任务页不再套用旧 `AppShell` 任务布局，改由独立 `TalkConversationTaskWorkspace` 呈现 Figma Talk 对话工作区；非任务页面继续沿用现有真实页面与交互。
+- **固定结构**：全局导航 200px、跨项目对话目录 240px、流式中心列、任务详情 260px；对话头 52px、Composer 114px。目录提供全部/单聊/群聊、归档筛选、新建和任务切换。
+- **真实功能保留**：创建/打开/归档任务，发送与流式回复，项目/Agent/模型切换，暂停/终止，审批、子任务、产物、Trace、Manifest、执行图、主题、单列阅读和 `Ctrl+\\` 详情折叠继续复用原 Runtime 状态与回调。
+- **消息归属**：助手消息显示真实 Agent、头像、该次调用模型、消息时间，以及 Runtime 确实记录时才显示的 token 估算；不伪造内部执行数据。
+- **自动化验证**：Desktop **59 文件 / 386 项**、UI Kit **21 文件 / 233 项**通过；全仓强制串行测试 **21/21（0 cache）**、强制 typecheck **21/21（0 cache）**、强制 build **12/12（0 cache）** 通过，其中 Storage **22 文件 / 224 项**、Runtime **46 文件 / 265 项**均真实执行。Desktop main/preload/renderer 已重新生成，`git diff --check` 通过。
+- **验收边界**：按用户要求，本轮不启动 Electron、不进行新的视觉检查；用户将在本地重构后直接查看页面。此前双尺寸实窗结果不作为本次任务页替换后的 1:1 视觉结论。
+- **环境边界**：本轮命令使用系统 Node `24.14.1`。Node 20 生产 Runtime/Desktop 在线重启门禁保持不变，未在本轮冒充完成。
+
+## 本轮进度：2026-07-18 · Talk V8 功能闭环与最新桌面回归
+
+- **规格真源**：继续严格执行 `docs/superpowers/specs/2026-07-18-agent-aware-talk-workspace-design.md`。Agent 的平台感知来自 SYNC-THINK 注入的应用上下文，不监控 Windows 前台软件。
+- **桌面信息架构**：Talk V8 全局导航已经接通对话任务、项目、好友、群聊、自动化、模型源、Skill & MCP 与设置；任务/项目继续使用真实对话工作台，自动化不再是占位页。
+- **好友 / Agent**：好友直接读取 AgentVersion；资料页显示由 Runtime 推导的在线/忙碌中/离线状态，并可编辑描述、固定 Prompt、分组 -> 供应商 -> 模型绑定和最大并发数。资料页同时从任务事件真源投影最近任务，聚合同一 Agent 的历史版本，并显示群聊归属、责任和主智能体身份。头像支持 PNG/JPEG/WebP，限制 5 MiB、4096×4096，并以 SHA-256 受管相对路径保存；Renderer 只接收 data URL，不把绝对路径或图片字节写入领域事件。
+- **内置应用工具**：对话 Agent 已接入应用工具多轮循环。模型发起 `sync_think.*` 调用后，Runtime 复用同一命令网关、校验、授权、确认令牌和事件真源，将工具结果回传下一 Provider turn；配置操作仍先展示确认卡，不允许模型静默改配置。
+- **群聊对话**：持久 GroupDefinition 保证恰好一个主智能体和每名成员的责任。普通消息像好友单聊一样仅由主智能体回复，`@成员` 按精确 AgentVersion 路由该成员；每轮不再强制生成自动委派计划或协作生命周期卡片。主智能体仍可显式创建子任务并委派，操作事件保留在执行详情与审计流中；不建立无界 Agent 闲聊通道。
+- **自动化**：migration `0026_automation`、SQLite Store、五字段 Cron/时区计算、本地 Webhook、HMAC-SHA256 验签、并发策略、0-2 次重试、独立任务创建和运行历史已接通。Desktop 可创建、编辑、删除、启停、手动触发并打开对应任务；Webhook 密钥只在创建或轮换时显示一次。
+- **平台与任务上下文**：每次 Provider 调用，包括 Scheduler、群聊和自动化调用，都会加入 SYNC-THINK 环境信封、项目/任务/Agent/群聊/权限信息；同一 thread 的真实用户/助手历史按预算进入请求并保持时间顺序，兄弟任务和无关群聊不隐式混入。每个真实 Step 调用都持久化幂等 `context.packet.built`，记录纳入/排除历史和允许工具。
+- **统一应用网关**：21 个 `sync_think.*` 工具、`sync-think` CLI、stdio MCP、Desktop 与内置 Agent 均复用 Runtime Command Gateway；新增的 `sync_think.subtask.delegate` 与 `sync_think.handoff.record` 也走同一边界。外部配置确认令牌有效 5 分钟、单次使用，并绑定命令、来源和规范化 payload digest；预览不回显字段值。
+- **最新桌面验证**：Desktop **59 个文件 / 385 项**、UI Kit **21 个文件 / 233 项**全部通过；两包 typecheck 与 build 通过，最新 Electron main/preload/renderer 已生成。新增测试覆盖群聊创建/编辑的权限、协作与并发 payload，Skill 导入、MCP 注册、设置页状态/计数/主题切换，以及好友状态筛选。完整 Node 20 全仓基线仍是此前的 **189 个文件 / 1399 项**，不能冒充为最新改动后的全仓结果。
+- **运行环境**：项目必须使用 Node `20.20.2`；系统默认 Node 24 与当前 `better-sqlite3` ABI 不兼容。生产 Runtime 启动会先在 `%LOCALAPPDATA%\SYNC-THINK\backups` 生成迁移备份，受限执行环境需要显式允许该目录写入。
+- **实窗修复与验证**：首次 1440 档实窗发现所有非任务页空白。根因是隐藏 AppShell 左栏后仍保留 `0 + 1fr` 两列，Grid 把唯一可见主内容放入 0px 第一列；静态契约先 RED，改为单列后 GREEN。最新构建已在 1440×900 与 1280×720 客户区检查任务、项目、好友、群聊/创建表单、自动化、模型源、Skill & MCP、设置、全局导航折叠和浅/深主题，无裁切或重叠。Renderer Console 显示 `No Issues`，仅有 React DevTools 开发提示；打开 DevTools 前 Electron stderr 为空，打开后仅新增 DevTools 自身的 language-mismatch 与 Autofill 协议诊断。
+- **当前运行状态**：QA Runtime PID `51248` 仍在使用 Node 20 和 `.tmp-runtime-qa/sync-think.db`；最新 Electron 4 个进程已启动并连接 Runtime，当前停留在 1280×720 浅色对话任务页。开发版 QA 参数在正式打包版中强制忽略。
+- **未关闭门禁**：最新构建仍需 Node 20 全仓 test/typecheck/build 和最终生产 Runtime/Desktop 在线重启。Node 20 的正常权限执行仍被 CC Switch 自动审批路由拦截：`codex-auto-review` 被发往不支持该模型的 `https://www.kamenking.top/responses` 并返回 404。不得把此前全仓基线或空 QA 数据库冒充为本轮 Node 20/生产验收。
+
 ## 本轮进度：2026-07-16 · 对话 Agent 身份 + 产品界面去验收化
 
 - **顶部语义**：原 `决策 / 记忆 / 上下文` 实际只是工作区、任务和对话版本的结构占位，现改为用户可理解的 **工作区 / 任务 / 对话**；真实 Continuum 证据仍保留决策、记忆、产物等语义。
@@ -1431,3 +1514,84 @@ Workspace IA、Conversation 可观测性、Providers SecureStore、真实 OpenAI
 - **后续边界**
   - 本轮没有删除任何高级执行能力，也没有改变模型路由或凭据解析。
   - 视觉概念图服务两次返回上游 502；最终以 Multica 实屏、项目 tokens 和两档 Electron 实窗为设计/验证真源。
+
+---
+
+## 本轮进度（2026-07-18 · 对话流式、Agent 身份与字号）
+
+- **已完成**
+  - 空流式 assistant turn 显示真实 Agent 思考态，首个 delta 到达后立即切换为正文流式输出。
+  - 对话正文使用浅色边框框体；Agent、模型、时间与 token 元信息保持可扫描且不混入正文。
+  - 任务主 AgentVersion 投影已统一任务列表、任务头与消息回退身份；精确历史 AgentVersion 仍保持不可变。
+  - 对话任务目录显示头像、两行摘要、Agent、项目、时间和状态。
+  - 设置 -> 外观支持 13-18px 应用主要文字字号，默认 14px，持久化且不缩放布局几何。
+- **验证**
+  - focused：UI Kit `9/9`；Desktop `65/65`。
+  - full packages：Desktop `62 files / 410 tests`；UI Kit `21 files / 236 tests`。
+  - root forced：test `21/21`；typecheck `21/21`；build `12/12`。
+- **运行状态**
+  - 最新 Desktop Electron 根进程 `24144`，窗口标题 `SYNC-THINK`，`Responding=True`，启动 stderr 为空。
+  - Runtime `43748` 与 QA Runtime `51248` 均保持存活，重启没有清空真实数据。
+
+---
+
+## 本轮进度（2026-07-19 · 对话附件与真实执行日志）
+
+- **已完成**
+  - 图片/文件/文件夹的选择、拖放、粘贴、预览、移除和发送。
+  - 不可变附件快照、大小/格式/数量校验，以及附件消息持久化摘要。
+  - OpenAI Chat、OpenAI Responses、Anthropic 图片输入；非视觉模型发送门禁。
+  - 当前轮文本/代码摘录、只读文件夹清单与显式项目绑定。
+  - 每条用户消息一轮日志；真实模型重试/fallback、工具、命令、文件、输出、耗时与错误详情。
+  - 生产编排 `tool-trace` 到 Agent/Step 工具事件的持久投影，日志二次脱敏。
+- **边界**
+  - PDF/Word/Excel 不自动 OCR，只提供附件元数据；OCR 后续按用户显式操作增加。
+  - 文件夹本轮只读使用受限目录清单/文本摘录；完整持续工具访问需要点击绑定项目。
+  - 只展示 Provider 明确返回并持久化的 reasoning summary，不展示或推断隐藏思维链。
+- **验证与运行状态**
+  - Shared `21`、Protocol `19`、Adapters `50`、UI Kit `245`、Desktop `438`、Runtime `269` 全通过。
+  - 根级 typecheck `21/21`、build `12/12`、`git diff --check` 通过。
+  - QA Runtime PID `39688`；Electron PID `33072`、`Responding=True`、stderr `0 bytes`。
+  - Production Runtime PID `43748` 未改动。
+## Current increment: task drafts and attachment continuity
+
+- Implemented task-scoped Composer drafts, persisted image thumbnails, zoom preview, and parent/child task progress links.
+- Runtime build, Desktop build, Desktop tests, and UI Kit tests pass after the change.
+## 2026-07-19 - Child task closure status
+
+- Complete: automatic child execution, exact Agent assignment, Agent-attributed receive/completion messages, structured result handoff, and automatic parent continuation.
+- Complete: dependency-aware parallel/serial scheduling with Agent concurrency limits and one parent wake per delegation batch.
+- Complete: initial execution plus up to five retries, failed-dependency propagation, parent policy/project inheritance, and one-level depth enforcement.
+- Complete: stable task/avatar projection; a child completion message uses the child Agent without changing the parent task's primary Agent.
+- `@Agent` is intentionally separate: it routes only the current turn and creates no durable child task.
+- Verification: focused Runtime 5/5, Desktop identity/history 38/38, Storage workspace 18/18, Workers isolated 50/50, forced uncached serial test 21/21 tasks, build 12/12, and typecheck 21/21. Root parallel test can still expose pre-existing Workers process-test contention.
+- Running now: QA Runtime PID `46448`, Electron root PID `39688` (`SYNC-THINK`, responding, zero-byte startup stderr), production Runtime PID `43748` unchanged.
+
+## 2026-07-19 - 项目执行环境阶段状态
+
+- **已完成**：Project Resource、独立 Execution Profile、默认 Browser Identity、任务执行上下文快照和 `0028` 数据迁移。
+- **已完成**：Git 新任务独立 managed worktree、同任务复用、并行子任务隔离、父任务脏快照继承、非 Git 目录单写租约、7 天延迟清理及 dirty/leased 保留。
+- **已完成**：Conversation Run 的真实文件、Shell、Git、Browser 工具和持久化执行事件；实现型子任务没有执行证据时不能仅凭文本声明完成。
+- **已完成**：Git 仓库绑定 UI、项目/任务执行位置展示、默认独立浏览器身份和 Runtime 启动清理扫描。
+- **验证**：Storage 229、Runtime 280、Desktop 446、Workers 52、Protocol 19、Adapters 50、Core 148、UI Kit 247（另有 2 个既有 skipped）、CLI 4、Shared 21、Secure Store 11 均通过；全仓 typecheck `21/21`、build `12/12` 通过。
+- **下一阶段**：子任务 worktree 自动合并/挑选回父任务；浏览器身份创建、编辑、删除和任务级切换；完整有效权限详情弹层；Windows Desktop/UIA 真实工具；将 Production Step Executor 的内建工具收敛到共享执行工具模块。
+- **性能债务**：远程 Git 首次镜像克隆仍为任务创建路径上的同步等待，大仓库需要后续改为可观察的后台准备状态。
+- **当前运行**：QA Runtime PID `24904` 使用 `.tmp-runtime-qa/sync-think.db` 和 `sync-think-dev-0001`；Electron PID `29064` 窗口响应正常，本次启动 stderr 为 0；生产 Runtime PID `43748` 未重启。
+
+## 当前进展（2026-07-19 · 任务访问与能力上限）
+
+- **已完成**：任务右侧栏直接编辑操作权限和浏览器身份，并显示执行位置、基准分支、本次可用能力与智能体能力上限。
+- **已完成**：好友的“能力与指令”可配置文件、命令、浏览器、桌面、网络五类能力上限；修改通过不可变 AgentVersion 保存。
+- **已完成**：设置可直达浏览器身份管理，并说明身份用于隔离 Cookie、登录状态和网站数据；当前可编辑名称、默认身份，可创建和删除未被引用的非默认身份。
+- **规则**：任务权限可以比智能体上限更严格，但不能扩展上限；浏览器身份属于任务/执行环境，不属于单个智能体。
+- **验证**：全仓强制测试 `21/21`、typecheck `21/21`、build `12/12` 已通过；Desktop `451` 项、Runtime `284` 项通过。QA Runtime PID `75840`、Electron PID `19952` 已重启；生产 Runtime PID `43748` 未重启。
+## 本轮进度：2026-07-19 · @协作、本轮任务与工作记录闭环
+
+- **群聊表达**：用户目标、主智能体委派、成员交接和结果回传都显示精确 `@智能体`；自动化仍由 Runtime 连续完成，不要求用户逐步监督。
+- **进度语义**：右栏只展示本轮真正分配的工作；工具、命令、文件、Git、浏览器和模型 fallback 只进入执行日志。
+- **日志与右栏**：每条用户消息形成一轮 Multica 式工作记录，支持 Agent 阶段、类型筛选和展开证据；默认右栏已移除内部版本、原始 ID 和工具白名单噪声。
+- **父子任务**：父任务原位展开/收起子任务，子任务可返回父任务；后续消息保持委派 Agent，父任务在子任务完成后获得结构化结果并继续总结。
+- **空任务**：未发送且无草稿/附件/子任务的版本 0 占位任务在切走时安全删除；任何未发送内容都会保留。
+- **稳定性**：普通完全访问对话可执行真实工具；任务策略不会被 Agent 默认值覆盖；Provider 关闭可中止；Runtime 单请求异常不会再关闭已认证 pipe 连接。
+- **验证**：Desktop `453`、Storage `233`、UI Kit `250`（另有 2 个既有 skipped）、Runtime `287`、Workers `53` 均通过；Runtime/Workers typecheck 和 12 包串行 build 通过。
+- **待用户验收**：最新构建重启后检查 `@` 消息、本轮任务、日志弹窗、空任务切换和父子任务导航的实际桌面表现。

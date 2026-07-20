@@ -8,9 +8,12 @@ export * from './runtime-state-store.js';
 export { MIGRATIONS, planMigrations, runMigrations } from './scripts/migrate.js';
 export * from './path-allowlist.js';
 export * from './workspace-store.js';
+export * from './execution-environment-store.js';
 
 export * from './provider-store.js';
 export * from './agent-store.js';
+export * from './group-store.js';
+export * from './automation-store.js';
 export * from './memory-store.js';
 export * from './skill-store.js';
 export * from './mcp-store.js';

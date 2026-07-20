@@ -1,9 +1,6 @@
 import type { Event } from '@sync-think/shared';
-import { mergeEventHistory } from '../event-history.js';
-import type {
-  RuntimeConnectFailure,
-  RuntimeConnectResult,
-} from '../runtime-bridge-contract.js';
+import { appendEventHistory } from '../event-history.js';
+import type { RuntimeConnectFailure, RuntimeConnectResult } from '../runtime-bridge-contract.js';
 import { projectM0EventHistory } from './m0-projection.js';
 
 export type RuntimeConnectionState = 'preview' | 'connecting' | 'online' | 'offline';
@@ -18,9 +15,11 @@ export interface RuntimeViewState {
 
 export type RuntimeViewAction =
   | { type: 'event-received'; event: Event; threadId: string }
+  | { type: 'events-received'; events: readonly Event[]; threadId: string }
   | { type: 'connect-succeeded'; result: RuntimeConnectResult; threadId: string }
   | { type: 'connect-failed'; error?: RuntimeConnectFailure | null }
   | { type: 'reconnect-requested' }
+  | { type: 'task-selected'; taskVersion: number }
   | { type: 'append-succeeded'; taskVersion: number };
 
 export function createInitialRuntimeViewState(hasRuntime: boolean): RuntimeViewState {
@@ -53,16 +52,22 @@ export function runtimeViewReducer(
   if (action.type === 'append-succeeded') {
     return { ...state, taskVersion: Math.max(state.taskVersion, action.taskVersion) };
   }
+  if (action.type === 'task-selected') {
+    return { ...state, taskVersion: action.taskVersion };
+  }
 
   const incoming =
-    action.type === 'event-received' ? [action.event] : action.result.snapshot;
-  const eventHistory = mergeEventHistory(state.eventHistory, incoming);
+    action.type === 'event-received'
+      ? [action.event]
+      : action.type === 'events-received'
+        ? action.events
+        : action.result.snapshot;
+  const eventHistory = appendEventHistory(state.eventHistory, incoming);
   const projection = projectM0EventHistory(eventHistory, action.threadId);
   return {
     eventHistory,
     taskVersion: Math.max(state.taskVersion, projection.taskVersion),
-    lastConnectFailure:
-      action.type === 'connect-succeeded' ? null : state.lastConnectFailure,
+    lastConnectFailure: action.type === 'connect-succeeded' ? null : state.lastConnectFailure,
     connectionState:
       action.type === 'connect-succeeded'
         ? action.result.health.ok

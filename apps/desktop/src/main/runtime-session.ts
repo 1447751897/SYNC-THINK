@@ -1,10 +1,7 @@
 import type { CommandType } from '@sync-think/protocol';
 import type { Event } from '@sync-think/shared';
-import { mergeEventHistory } from '../event-history.js';
-import type {
-  RuntimeConnectResult,
-  RuntimeHealth,
-} from '../runtime-bridge-contract.js';
+import { appendEventHistory } from '../event-history.js';
+import type { RuntimeConnectResult, RuntimeHealth } from '../runtime-bridge-contract.js';
 
 const REDACTED = '[REDACTED]';
 const SAFE_SECRET_METADATA_KEYS = new Set([
@@ -67,18 +64,17 @@ function scrubRendererValue(value: unknown, seen: WeakSet<object>): unknown {
   seen.add(value);
   const sanitized: Record<string, unknown> = {};
   for (const [key, nestedValue] of Object.entries(value)) {
-    sanitized[key] = isSensitiveKey(key)
-      ? REDACTED
-      : scrubRendererValue(nestedValue, seen);
+    sanitized[key] = isSensitiveKey(key) ? REDACTED : scrubRendererValue(nestedValue, seen);
   }
   seen.delete(value);
   return sanitized;
 }
 
 export function sanitizeRuntimeEventForRenderer(event: Event): Event {
+  const { run: _runtimeCheckpoint, ...payload } = event.payload;
   return {
     ...event,
-    payload: scrubRendererValue(event.payload, new WeakSet()) as Record<string, unknown>,
+    payload: scrubRendererValue(payload, new WeakSet()) as Record<string, unknown>,
   };
 }
 
@@ -93,6 +89,7 @@ export interface RuntimeSessionClient {
 
 export class RuntimeSession {
   private eventHistory: Event[] = [];
+  private readonly eventSequences = new Set<number>();
   private runtimeSubscription: Promise<() => Promise<void>> | null = null;
 
   constructor(
@@ -124,9 +121,10 @@ export class RuntimeSession {
   }
 
   private recordEvent(event: Event): void {
-    if (this.eventHistory.some((existing) => existing.sequence === event.sequence)) return;
+    if (this.eventSequences.has(event.sequence)) return;
     const sanitizedEvent = sanitizeRuntimeEventForRenderer(event);
-    this.eventHistory = mergeEventHistory(this.eventHistory, [sanitizedEvent]);
+    this.eventSequences.add(event.sequence);
+    this.eventHistory = appendEventHistory(this.eventHistory, [sanitizedEvent]);
     try {
       this.forwardEvent(sanitizedEvent);
     } catch {

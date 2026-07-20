@@ -2,6 +2,7 @@ import type { WorkspaceId, TaskId, ThreadId } from './ids.js';
 
 export type TaskStatus =
   | 'active'
+  | 'blocked'
   | 'paused'
   | 'completed'
   | 'archived';

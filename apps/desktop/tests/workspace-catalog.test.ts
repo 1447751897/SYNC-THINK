@@ -1,5 +1,6 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
+  deriveProjectNameFromFolderPath,
   resolveExpectedTaskVersion,
   resolvePreferredTask,
   upsertTaskInMap,
@@ -87,8 +88,32 @@ describe('workspace-catalog selection', () => {
     expect(next.get('ws_1')?.[0]?.taskVersion).toBe(2);
   });
 
+  it('replaces an opened task in place instead of moving the clicked conversation', () => {
+    const initialTasks = [
+      task({ taskId: 'a' as never, title: 'A' }),
+      task({ taskId: 'b' as never, title: 'B' }),
+      task({ taskId: 'c' as never, title: 'C' }),
+    ];
+    const next = upsertTaskInMap(
+      new Map([['ws_1', initialTasks]]),
+      task({
+        taskId: 'b' as never,
+        title: 'B opened',
+        lastOpenedAt: '2026-07-19T00:10:00.000Z',
+      }),
+    );
+
+    expect(next.get('ws_1')?.map((item) => item.taskId)).toEqual(['a', 'b', 'c']);
+    expect(next.get('ws_1')?.[1]?.title).toBe('B opened');
+  });
+
   it('uses the newest hydrated task version when the catalog is stale', () => {
     expect(resolveExpectedTaskVersion(0, 2)).toBe(2);
     expect(resolveExpectedTaskVersion(3, 2)).toBe(3);
+  });
+
+  it('derives a project name from Windows and POSIX folder paths', () => {
+    expect(deriveProjectNameFromFolderPath('D:\\projects\\SYNC-THINK\\')).toBe('SYNC-THINK');
+    expect(deriveProjectNameFromFolderPath('/workspaces/release')).toBe('release');
   });
 });

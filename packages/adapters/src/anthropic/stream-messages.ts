@@ -39,6 +39,17 @@ function messageContentToString(message: ProviderMessage): string {
     .join('');
 }
 
+function anthropicImageBlock(imageUrl: string): Record<string, unknown> {
+  const match = imageUrl.match(/^data:([^;,]+);base64,([a-z0-9+/=]+)$/i);
+  if (match) {
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: match[1], data: match[2] },
+    };
+  }
+  return { type: 'image', source: { type: 'url', url: imageUrl } };
+}
+
 function toAnthropicMessages(
   request: ProviderCallRequest,
 ): Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }> {
@@ -79,10 +90,18 @@ function toAnthropicMessages(
         continue;
       }
     }
-    if (!content && message.role !== 'assistant') continue;
+    const multimodalContent =
+      message.role === 'user' && Array.isArray(message.content)
+        ? message.content.flatMap((part) => {
+            if (part.type === 'text' && part.text) return [{ type: 'text', text: part.text }];
+            if (part.type === 'image' && part.imageUrl) return [anthropicImageBlock(part.imageUrl)];
+            return [];
+          })
+        : undefined;
+    if (!content && !multimodalContent?.length && message.role !== 'assistant') continue;
     out.push({
       role: message.role === 'assistant' ? 'assistant' : 'user',
-      content,
+      content: multimodalContent?.length ? multimodalContent : content,
     });
   }
   // Anthropic requires the conversation to start with a user turn.

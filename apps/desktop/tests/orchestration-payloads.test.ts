@@ -8,6 +8,7 @@ import {
   parseArtifactComparePayload,
   parseArtifactConflictListPayload,
   parseArtifactConflictResolutionPayload,
+  parseArtifactGetVersionPayload,
   parseArtifactListPayload,
   parseArtifactMergePayload,
   parseArtifactSelectPayload,
@@ -113,6 +114,12 @@ describe('orchestration payload validation', () => {
     };
     expect(parseArtifactListPayload({ ...scope, limit: 8 })).toMatchObject({ limit: 8 });
     expect(
+      parseArtifactGetVersionPayload({
+        ...scope,
+        artifactVersionId: ids.leftVersionId,
+      }),
+    ).toMatchObject({ artifactVersionId: ids.leftVersionId });
+    expect(
       parseArtifactComparePayload({
         ...scope,
         leftVersionId: ids.leftVersionId,
@@ -213,6 +220,7 @@ describe('orchestration payload validation', () => {
       developerInstructions: 'Plan against acceptance criteria.',
       inputContract: 'task goal',
       outputContract: 'reviewed plan',
+      maxConcurrency: 3,
       defaultModelId: 'model-planner',
       fallbackModelIds: ['model-fallback'],
       pauseOnFailure: true,

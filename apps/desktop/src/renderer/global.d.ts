@@ -3,6 +3,21 @@
   AppendMessageResponse,
   BindWorkspaceFolderPayload,
   BindWorkspaceFolderResponse,
+  BindWorkspaceGitRepositoryPayload,
+  BindWorkspaceGitRepositoryResponse,
+  ResolveWorktreeIntegrationPayload,
+  ResolveWorktreeIntegrationResponse,
+  ListBrowserIdentitiesResponse,
+  CreateBrowserIdentityPayload,
+  CreateBrowserIdentityResponse,
+  UpdateBrowserIdentityPayload,
+  UpdateBrowserIdentityResponse,
+  DeleteBrowserIdentityPayload,
+  DeleteBrowserIdentityResponse,
+  SetTaskBrowserIdentityPayload,
+  SetTaskBrowserIdentityResponse,
+  DescribeTaskExecutionAccessPayload,
+  DescribeTaskExecutionAccessResponse,
   CancelRunPayload,
   CreateTaskPayload,
   CreateTaskResponse,
@@ -95,6 +110,8 @@
   ListPoliciesResponse,
   ListArtifactsPayload,
   ListArtifactsResponse,
+  GetArtifactVersionPayload,
+  GetArtifactVersionResponse,
   CompareArtifactVersionsPayload,
   CompareArtifactVersionsResponse,
   SelectArtifactVersionPayload,
@@ -113,12 +130,43 @@
   ListAgentVersionsResponse,
   CreateAgentVersionPayload,
   CreateAgentVersionResponse,
+  CreateGroupPayload,
+  CreateGroupResponse,
+  GetGroupPayload,
+  GetGroupResponse,
+  ListGroupsPayload,
+  ListGroupsResponse,
+  UpdateGroupPayload,
+  UpdateGroupResponse,
+  AddGroupMemberPayload,
+  RemoveGroupMemberPayload,
+  UpdateGroupMemberResponsibilityPayload,
+  SetGroupLeadPayload,
+  GroupMemberMutationResponse,
+  CreateGroupTaskPayload,
+  CreateGroupTaskResponse,
+  ResolveApplicationToolConfirmationPayload,
+  ConfirmApplicationToolResponse,
+  RejectApplicationToolResponse,
+  CreateAutomationPayload,
+  UpdateAutomationPayload,
+  DeleteAutomationPayload,
+  GetAutomationPayload,
+  ListAutomationsPayload,
+  TriggerAutomationPayload,
+  ListAutomationExecutionsPayload,
+  AutomationCommandResponse,
+  DeleteAutomationResponse,
+  GetAutomationResponse,
+  ListAutomationsResponse,
+  TriggerAutomationResponse,
+  ListAutomationExecutionsResponse,
 } from '@sync-think/protocol';
 import type {
   RendererCreateProviderPayload,
   RendererUpdateProviderPayload,
 } from '../provider-payloads.js';
-import type { Event } from '@sync-think/shared';
+import type { Event, MessageAttachment } from '@sync-think/shared';
 import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
 
 declare global {
@@ -127,15 +175,57 @@ declare global {
       runtime: {
         connect(): Promise<RuntimeConnectOutcome>;
         appendMessage(payload: AppendMessagePayload): Promise<AppendMessageResponse>;
+        confirmApplicationTool(
+          payload: ResolveApplicationToolConfirmationPayload,
+        ): Promise<ConfirmApplicationToolResponse>;
+        rejectApplicationTool(
+          payload: ResolveApplicationToolConfirmationPayload,
+        ): Promise<RejectApplicationToolResponse>;
+        createAutomation(payload: CreateAutomationPayload): Promise<AutomationCommandResponse>;
+        updateAutomation(payload: UpdateAutomationPayload): Promise<AutomationCommandResponse>;
+        deleteAutomation(payload: DeleteAutomationPayload): Promise<DeleteAutomationResponse>;
+        getAutomation(payload: GetAutomationPayload): Promise<GetAutomationResponse>;
+        listAutomations(payload?: ListAutomationsPayload): Promise<ListAutomationsResponse>;
+        triggerAutomation(payload: TriggerAutomationPayload): Promise<TriggerAutomationResponse>;
+        listAutomationExecutions(
+          payload?: ListAutomationExecutionsPayload,
+        ): Promise<ListAutomationExecutionsResponse>;
         cancelRun(payload: CancelRunPayload): Promise<PauseResumeCancelResponse>;
         createWorkspace(payload: CreateWorkspacePayload): Promise<CreateWorkspaceResponse>;
         bindWorkspaceFolder(
           payload: BindWorkspaceFolderPayload,
         ): Promise<BindWorkspaceFolderResponse>;
+        bindWorkspaceGitRepository(
+          payload: BindWorkspaceGitRepositoryPayload,
+        ): Promise<BindWorkspaceGitRepositoryResponse>;
         listWorkspaces(payload?: ListWorkspacesPayload): Promise<ListWorkspacesResponse>;
+        listBrowserIdentities(): Promise<ListBrowserIdentitiesResponse>;
+        createBrowserIdentity(
+          payload: CreateBrowserIdentityPayload,
+        ): Promise<CreateBrowserIdentityResponse>;
+        updateBrowserIdentity(
+          payload: UpdateBrowserIdentityPayload,
+        ): Promise<UpdateBrowserIdentityResponse>;
+        deleteBrowserIdentity(
+          payload: DeleteBrowserIdentityPayload,
+        ): Promise<DeleteBrowserIdentityResponse>;
         createTask(payload: CreateTaskPayload): Promise<CreateTaskResponse>;
+        resolveWorktreeIntegration(
+          payload: ResolveWorktreeIntegrationPayload,
+        ): Promise<ResolveWorktreeIntegrationResponse>;
+        setTaskBrowserIdentity(
+          payload: SetTaskBrowserIdentityPayload,
+        ): Promise<SetTaskBrowserIdentityResponse>;
+        describeTaskExecutionAccess(
+          payload: DescribeTaskExecutionAccessPayload,
+        ): Promise<DescribeTaskExecutionAccessResponse>;
         listTasks(payload: ListTasksPayload): Promise<ListTasksResponse>;
         openTask(payload: OpenTaskPayload): Promise<OpenTaskResponse>;
+        loadMessageAttachmentPreview(attachment: {
+          managedRef: string;
+          mimeType: string;
+          sha256?: string;
+        }): Promise<string | null>;
         searchTasks(payload: SearchTasksPayload): Promise<SearchTasksResponse>;
         setParticipationMode(
           payload: SetParticipationModePayload,
@@ -146,6 +236,9 @@ declare global {
         unarchiveTask(
           payload: import('@sync-think/protocol').UnarchiveTaskPayload,
         ): Promise<import('@sync-think/protocol').UnarchiveTaskResponse>;
+        discardEmptyTask(
+          payload: import('@sync-think/protocol').DiscardEmptyTaskPayload,
+        ): Promise<import('@sync-think/protocol').DiscardEmptyTaskResponse>;
         createPlan(payload: PlanDraftPayload): Promise<PlanDraftResponse>;
         revisePlan(payload: PlanRevisePayload): Promise<PlanReviseResponse>;
         listPlanRevisions(payload: PlanListRevisionsPayload): Promise<PlanListRevisionsResponse>;
@@ -163,6 +256,7 @@ declare global {
         savePolicy(payload: SavePolicyPayload): Promise<SavePolicyResponse>;
         listPolicies(payload: ListPoliciesPayload): Promise<ListPoliciesResponse>;
         listArtifacts(payload: ListArtifactsPayload): Promise<ListArtifactsResponse>;
+        getArtifactVersion(payload: GetArtifactVersionPayload): Promise<GetArtifactVersionResponse>;
         compareArtifactVersions(
           payload: CompareArtifactVersionsPayload,
         ): Promise<CompareArtifactVersionsResponse>;
@@ -197,6 +291,17 @@ declare global {
         createAgent(payload: CreateAgentPayload): Promise<CreateAgentResponse>;
         listAgentVersions(payload: ListAgentVersionsPayload): Promise<ListAgentVersionsResponse>;
         createAgentVersion(payload: CreateAgentVersionPayload): Promise<CreateAgentVersionResponse>;
+        createGroup(payload: CreateGroupPayload): Promise<CreateGroupResponse>;
+        getGroup(payload: GetGroupPayload): Promise<GetGroupResponse>;
+        listGroups(payload?: ListGroupsPayload): Promise<ListGroupsResponse>;
+        updateGroup(payload: UpdateGroupPayload): Promise<UpdateGroupResponse>;
+        addGroupMember(payload: AddGroupMemberPayload): Promise<GroupMemberMutationResponse>;
+        removeGroupMember(payload: RemoveGroupMemberPayload): Promise<GroupMemberMutationResponse>;
+        updateGroupMemberResponsibility(
+          payload: UpdateGroupMemberResponsibilityPayload,
+        ): Promise<GroupMemberMutationResponse>;
+        setGroupLead(payload: SetGroupLeadPayload): Promise<GroupMemberMutationResponse>;
+        createGroupTask(payload: CreateGroupTaskPayload): Promise<CreateGroupTaskResponse>;
         importSkill(payload: ImportSkillPayload): Promise<ImportSkillResponse>;
         listSkills(payload?: ListSkillsPayload): Promise<ListSkillsResponse>;
         registerMcpServer(payload: RegisterMcpServerPayload): Promise<RegisterMcpServerResponse>;
@@ -217,6 +322,36 @@ declare global {
         amendContextPacket(payload: AmendContextPacketPayload): Promise<AmendContextPacketResponse>;
         listDiagnostics(payload?: ListDiagnosticsPayload): Promise<ListDiagnosticsResponse>;
         pickFolder(): Promise<{ canceled: boolean; path: string | null }>;
+        pickMessageAttachments(
+          kind: 'files' | 'folder',
+        ): Promise<Array<MessageAttachment & { previewUrl?: string }>>;
+        stageMessageFiles(
+          files: readonly File[],
+        ): Promise<Array<MessageAttachment & { previewUrl?: string }>>;
+        stageMessageFileData(
+          sources: readonly { name: string; mimeType?: string; bytes: Uint8Array }[],
+        ): Promise<Array<MessageAttachment & { previewUrl?: string }>>;
+        loadMessageAttachmentPreview(attachment: {
+          managedRef: string;
+          mimeType: string;
+          sha256?: string;
+        }): Promise<string | null>;
+        pickAgentAvatar(): Promise<
+          | { canceled: true }
+          | {
+              canceled: false;
+              avatarPath: string;
+              avatarUrl: string;
+              width: number;
+              height: number;
+            }
+        >;
+        loadAgentAvatar(avatarPath: string): Promise<{
+          avatarPath: string;
+          avatarUrl: string;
+          width: number;
+          height: number;
+        }>;
         getM1ExitEvidence(): Promise<{
           ok: boolean;
           handtestChecked: number;

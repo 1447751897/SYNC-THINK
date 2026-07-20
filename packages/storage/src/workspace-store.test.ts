@@ -146,6 +146,14 @@ describe('SqliteWorkspaceStore', () => {
         title: 'Child task',
         goal: 'Break down the plan',
       });
+      expect(() =>
+        store.createTask({
+          workspaceId: workspace.id,
+          parentTaskId: child.taskId,
+          title: 'Grandchild task',
+          goal: 'This phase only supports one child level',
+        }),
+      ).toThrow(/one level/i);
 
       expect(root.taskVersion).toBe(0);
       expect(root.threadId).toBeTruthy();
@@ -154,6 +162,51 @@ describe('SqliteWorkspaceStore', () => {
       const tasks = store.listTasks(workspace.id);
       expect(tasks.map((task) => task.title)).toEqual(['Root task', 'Child task']);
       expect(tasks.find((task) => task.id === child.taskId)?.parentTaskId).toBe(root.taskId);
+    } finally {
+      close();
+    }
+  });
+
+  it('discards only an untouched placeholder and keeps real or parent tasks', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({
+        folderPath: 'D:\\projects\\discard-placeholder',
+        name: 'Discard Placeholder',
+      });
+      const blank = store.createTask({
+        workspaceId: workspace.id,
+        title: '新任务',
+        goal: '新任务',
+      });
+      expect(store.discardEmptyTask(blank.taskId, 0)).toBe(true);
+      expect(store.getTask(blank.taskId)).toBeUndefined();
+
+      const parent = store.createTask({
+        workspaceId: workspace.id,
+        title: '新任务',
+        goal: '新任务',
+      });
+      store.createTask({
+        workspaceId: workspace.id,
+        parentTaskId: parent.taskId,
+        title: '子任务',
+        goal: '子任务',
+      });
+      expect(store.discardEmptyTask(parent.taskId, 0)).toBe(false);
+      expect(store.getTask(parent.taskId)).toBeTruthy();
+
+      const started = store.createTask({
+        workspaceId: workspace.id,
+        title: '新任务',
+        goal: '新任务',
+      });
+      store.advanceTaskVersionByThreadId(started.threadId, 0, '2026-07-19T00:00:00.000Z', {
+        generatedTitle: '已经开始的任务',
+        generatedGoal: '已经发送第一条消息',
+      });
+      expect(store.discardEmptyTask(started.taskId, 0)).toBe(false);
+      expect(store.getTask(started.taskId)).toBeTruthy();
     } finally {
       close();
     }
@@ -171,10 +224,13 @@ describe('SqliteWorkspaceStore', () => {
         title: 'Resume me',
         goal: 'Remember last open',
       });
-      expect(store.getTask(task.taskId)?.lastOpenedAt).toBeUndefined();
+      const persistedTask = store.getTask(task.taskId);
+      expect(persistedTask?.lastOpenedAt).toBeUndefined();
+      const contentUpdatedAt = persistedTask?.updatedAt;
 
-      const opened = store.openTask(task.taskId);
-      expect(opened.lastOpenedAt).toBeTruthy();
+      const opened = store.openTask(task.taskId, '2026-07-18T12:00:00.000Z');
+      expect(opened.lastOpenedAt).toBe('2026-07-18T12:00:00.000Z');
+      expect(opened.updatedAt).toBe(contentUpdatedAt);
       expect(store.getTask(task.taskId)?.lastOpenedAt).toBe(opened.lastOpenedAt);
       expect(store.getLastOpenedTask(workspace.id)?.id).toBe(task.taskId as TaskId);
     } finally {
@@ -262,9 +318,7 @@ describe('SqliteWorkspaceStore', () => {
         ).toThrow(invalid.code);
       }
       expect(
-        raw
-          .prepare("SELECT COUNT(*) AS count FROM task WHERE title = 'Invalid criteria'")
-          .get(),
+        raw.prepare("SELECT COUNT(*) AS count FROM task WHERE title = 'Invalid criteria'").get(),
       ).toEqual({ count: 0 });
     } finally {
       close();
@@ -536,18 +590,14 @@ describe('SqliteWorkspaceStore task version source of truth', () => {
         ],
       });
 
-      expect(
-        store.reconcileTaskVersionsFromMessageEvents('2026-07-13T06:11:00.000Z'),
-      ).toBe(1);
+      expect(store.reconcileTaskVersionsFromMessageEvents('2026-07-13T06:11:00.000Z')).toBe(1);
       expect(store.getTask(task.taskId)).toMatchObject({
         version: 18,
         updatedAt: '2026-07-13T06:11:00.000Z',
       });
 
       raw.prepare('UPDATE task SET version = 20 WHERE id = ?').run(task.taskId);
-      expect(
-        store.reconcileTaskVersionsFromMessageEvents('2026-07-13T06:12:00.000Z'),
-      ).toBe(0);
+      expect(store.reconcileTaskVersionsFromMessageEvents('2026-07-13T06:12:00.000Z')).toBe(0);
       expect(store.getTask(task.taskId)?.version).toBe(20);
     } finally {
       close();

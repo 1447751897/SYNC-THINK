@@ -56,6 +56,7 @@ export interface AgentVersionRecord {
   developerInstructions: string;
   inputContract: string;
   outputContract: string;
+  maxConcurrency: number;
   defaultModelId: ModelId;
   defaultCredentialGroupId: CredentialGroupId;
   pinnedCredentialRefId?: CredentialRefId;
@@ -91,6 +92,7 @@ export interface CreateAgentInput {
   developerInstructions: string;
   inputContract: string;
   outputContract: string;
+  maxConcurrency?: number;
   defaultModelId: ModelId;
   defaultCredentialGroupId?: CredentialGroupId;
   pinnedCredentialRefId?: CredentialRefId;
@@ -117,6 +119,7 @@ export interface UpdateAgentDefinitionInput {
   developerInstructions?: string;
   inputContract?: string;
   outputContract?: string;
+  maxConcurrency?: number;
   defaultModelId?: ModelId;
   defaultCredentialGroupId?: CredentialGroupId;
   pinnedCredentialRefId?: CredentialRefId | null;
@@ -183,6 +186,7 @@ interface AgentVersionRow {
   developer_instructions: string;
   input_contract: string;
   output_contract: string;
+  max_concurrency: number;
   default_model_id: string;
   default_credential_group_id: string;
   pinned_credential_ref_id: string | null;
@@ -309,6 +313,14 @@ function sanitizeFallbackIds(
   return out;
 }
 
+function normalizeMaxConcurrency(value: unknown): number {
+  const normalized = value ?? 3;
+  if (!Number.isSafeInteger(normalized) || Number(normalized) < 1 || Number(normalized) > 16) {
+    throw new Error('maxConcurrency must be an integer between 1 and 16');
+  }
+  return Number(normalized);
+}
+
 function mapRow(row: AgentVersionRow): AgentVersionRecord {
   const path = `agent_version[${row.id}]`;
   return {
@@ -322,6 +334,7 @@ function mapRow(row: AgentVersionRow): AgentVersionRecord {
     developerInstructions: row.developer_instructions,
     inputContract: row.input_contract,
     outputContract: row.output_contract,
+    maxConcurrency: normalizeMaxConcurrency(row.max_concurrency),
     defaultModelId: row.default_model_id as ModelId,
     defaultCredentialGroupId: row.default_credential_group_id as CredentialGroupId,
     pinnedCredentialRefId: row.pinned_credential_ref_id
@@ -384,7 +397,7 @@ export class SqliteAgentStore {
       .prepare(
         `SELECT id, agent_id, version, name, description, visual_identity_json,
                 role, developer_instructions, input_contract,
-                output_contract, default_model_id, default_credential_group_id,
+                output_contract, max_concurrency, default_model_id, default_credential_group_id,
                 pinned_credential_ref_id, pause_on_failure, fallback_model_ids_json,
                 memory_scope, skill_version_ids_json, mcp_server_ids_json,
                 mcp_tool_allowlist_json, permissions_json, policy_id,
@@ -403,7 +416,7 @@ export class SqliteAgentStore {
       .prepare(
         `SELECT id, agent_id, version, name, description, visual_identity_json,
                 role, developer_instructions, input_contract,
-                output_contract, default_model_id, default_credential_group_id,
+                output_contract, max_concurrency, default_model_id, default_credential_group_id,
                 pinned_credential_ref_id, pause_on_failure, fallback_model_ids_json,
                 memory_scope, skill_version_ids_json, mcp_server_ids_json,
                 mcp_tool_allowlist_json, permissions_json, policy_id,
@@ -428,7 +441,7 @@ export class SqliteAgentStore {
       .prepare(
         `SELECT id, agent_id, version, name, description, visual_identity_json,
                 role, developer_instructions, input_contract,
-                output_contract, default_model_id, default_credential_group_id,
+                output_contract, max_concurrency, default_model_id, default_credential_group_id,
                 pinned_credential_ref_id, pause_on_failure, fallback_model_ids_json,
                 memory_scope, skill_version_ids_json, mcp_server_ids_json,
                 mcp_tool_allowlist_json, permissions_json, policy_id,
@@ -450,7 +463,7 @@ export class SqliteAgentStore {
       .prepare(
         `SELECT id, agent_id, version, name, description, visual_identity_json,
                 role, developer_instructions, input_contract,
-                output_contract, default_model_id, default_credential_group_id,
+                output_contract, max_concurrency, default_model_id, default_credential_group_id,
                 pinned_credential_ref_id, pause_on_failure, fallback_model_ids_json,
                 memory_scope, skill_version_ids_json, mcp_server_ids_json,
                 mcp_tool_allowlist_json, permissions_json, policy_id,
@@ -499,12 +512,12 @@ export class SqliteAgentStore {
           `INSERT INTO agent_version (
              id, agent_id, version, name, description, visual_identity_json,
              role, developer_instructions, input_contract,
-             output_contract, default_model_id, default_credential_group_id,
+             output_contract, max_concurrency, default_model_id, default_credential_group_id,
              pinned_credential_ref_id, pause_on_failure, fallback_model_ids_json,
              memory_scope, skill_version_ids_json, mcp_server_ids_json,
              mcp_tool_allowlist_json, permissions_json, policy_id, approval_mode,
              review_behavior_json, artifact_rules_json, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -517,6 +530,7 @@ export class SqliteAgentStore {
           requireText(input.developerInstructions, 'developerInstructions'),
           requireText(input.inputContract, 'inputContract'),
           requireText(input.outputContract, 'outputContract'),
+          normalizeMaxConcurrency(input.maxConcurrency),
           defaultModelId,
           defaultCredentialGroupId,
           pinnedCredentialRefId ?? null,
@@ -592,12 +606,12 @@ export class SqliteAgentStore {
           `INSERT INTO agent_version (
              id, agent_id, version, name, description, visual_identity_json,
              role, developer_instructions, input_contract,
-             output_contract, default_model_id, default_credential_group_id,
+             output_contract, max_concurrency, default_model_id, default_credential_group_id,
              pinned_credential_ref_id, pause_on_failure, fallback_model_ids_json,
              memory_scope, skill_version_ids_json, mcp_server_ids_json,
              mcp_tool_allowlist_json, permissions_json, policy_id, approval_mode,
              review_behavior_json, artifact_rules_json, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -617,6 +631,7 @@ export class SqliteAgentStore {
           ),
           requireText(input.inputContract ?? previous.inputContract, 'inputContract'),
           requireText(input.outputContract ?? previous.outputContract, 'outputContract'),
+          normalizeMaxConcurrency(input.maxConcurrency ?? previous.maxConcurrency),
           defaultModelId,
           defaultCredentialGroupId,
           pinnedCredentialRefId ?? null,
@@ -738,9 +753,14 @@ function normalizeVisualIdentity(value?: AgentVisualIdentity): AgentVisualIdenti
   if (typeof value.icon !== 'string' || typeof value.color !== 'string') {
     throw new Error('visualIdentity must contain string icon and color');
   }
+  const avatarPath = value.avatarPath?.trim();
+  if (avatarPath && !/^avatars\/[a-f0-9]{64}\.(?:png|jpg|webp)$/.test(avatarPath)) {
+    throw new Error('visualIdentity.avatarPath is not a managed avatar path');
+  }
   return {
     icon: requireText(value.icon, 'visualIdentity.icon'),
     color: requireText(value.color, 'visualIdentity.color'),
+    ...(avatarPath ? { avatarPath } : {}),
   };
 }
 

@@ -53,6 +53,39 @@ describe('streamOpenAIResponses', () => {
 
   afterEach(() => fetchMock.mockReset());
 
+  it('sends image parts as Responses input_image content', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+    await collect(
+      streamOpenAIResponses(
+        req({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Inspect this' },
+                { type: 'image', imageUrl: 'data:image/png;base64,AQID' },
+              ],
+            },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body.input[0].content).toEqual([
+      { type: 'input_text', text: 'Inspect this' },
+      { type: 'input_image', image_url: 'data:image/png;base64,AQID' },
+    ]);
+  });
+
   it('streams output text, usage, and completion from Responses SSE', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
@@ -129,6 +162,64 @@ describe('streamOpenAIResponses', () => {
       type: 'function_call_output',
       call_id: 'call-previous',
       output: '{"content":"hello"}',
+    });
+  });
+
+  it('maps dotted internal tool names to OpenAI-safe names and restores them on output', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.function_call_arguments.done","call_id":"call-agent","name":"sync_think__agent__create","arguments":"{\\"name\\":\\"Reviewer\\"}"}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(
+        req({
+          tools: [
+            {
+              name: 'sync_think.agent.create',
+              description: 'Create an agent',
+              inputSchema: { type: 'object', properties: { name: { type: 'string' } } },
+            },
+          ],
+          messages: [
+            { role: 'user', content: 'Create a reviewer' },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCall: {
+                    id: 'call-previous',
+                    name: 'sync_think.agent.create',
+                    argumentsJson: '{"name":"Old"}',
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const requestBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(requestBody.tools[0].name).toBe('sync_think__agent__create');
+    expect(requestBody.input).toContainEqual(
+      expect.objectContaining({ name: 'sync_think__agent__create' }),
+    );
+    expect(events).toContainEqual({
+      type: 'tool-call',
+      toolCall: {
+        id: 'call-agent',
+        name: 'sync_think.agent.create',
+        argumentsJson: '{"name":"Reviewer"}',
+      },
     });
   });
 

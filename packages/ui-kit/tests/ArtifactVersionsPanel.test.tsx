@@ -74,6 +74,37 @@ const conflicts = [
 ];
 
 describe('ArtifactVersionsPanel', () => {
+  it('shows readable content instead of version machinery for a one-version deliverable', () => {
+    render(
+      <ArtifactVersionsPanel
+        artifact={{
+          id: 'artifact-final',
+          name: '最终结果',
+          versions: [
+            {
+              id: 'artifact-version-final',
+              artifactId: 'artifact-final',
+              version: 1,
+              sourceStepId: 'opaque-step-id',
+              status: 'candidate',
+              contentHash: 'opaque-hash',
+              mimeType: 'text/markdown',
+              parentVersionIds: [],
+              createdAt: '2026-07-19T00:00:00.000Z',
+              content: '# 交付结果\n\n已完成页面修改。',
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('内容预览')).toBeTruthy();
+    expect(screen.getByText(/已完成页面修改/)).toBeTruthy();
+    expect(screen.queryByText('Hash')).toBeNull();
+    expect(screen.queryByText('版本对照')).toBeNull();
+    expect(screen.queryByText('左侧')).toBeNull();
+  });
+
   it('adapts graph controls and artifact versions to a narrow host drawer', () => {
     const css = readFileSync(join(process.cwd(), 'src/styles/components.css'), 'utf8');
 

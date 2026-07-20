@@ -1,11 +1,13 @@
 ﻿import { describe, expect, it } from 'vitest';
 import { connect, type Socket } from 'node:net';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach } from 'vitest';
 import { decodeFrames, encodeFrame, pipePathPortable, type Frame } from '@sync-think/protocol';
+import { openDatabaseAsync, runMigrations, SqliteWorkspaceStore } from '@sync-think/storage';
 import { openPersistentRuntime } from '../src/persistence.js';
 
 const tempDirs: string[] = [];
@@ -97,10 +99,19 @@ async function hello(
       features: [
         'workspace.create',
         'workspace.list',
+        'workspace.bindGitRepository',
+        'agent.get',
+        'browserIdentity.list',
+        'browserIdentity.create',
+        'browserIdentity.update',
+        'browserIdentity.delete',
         'task.create',
+        'task.setBrowserIdentity',
+        'task.describeExecutionAccess',
         'task.list',
         'task.open',
         'task.search',
+        'task.discardEmpty',
         'task.appendMessage',
       ],
     },
@@ -109,6 +120,198 @@ async function hello(
 }
 
 describe('workspace IA commands', () => {
+  it('lazily prepares execution access for a task created before execution contexts existed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-legacy-execution-context-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    await runMigrations(dbPath);
+    const legacyConnection = await openDatabaseAsync({ path: dbPath });
+    const legacyWorkspaceStore = new SqliteWorkspaceStore(legacyConnection.raw);
+    const workspace = legacyWorkspaceStore.createWorkspace({
+      name: 'Legacy execution project',
+      folderPath: dir,
+    });
+    const task = legacyWorkspaceStore.createTask({
+      workspaceId: workspace.id,
+      title: 'Legacy task',
+      goal: 'Open after the execution environment upgrade',
+    });
+    legacyConnection.raw.close();
+
+    const installId = `legacy-execution-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const session = await openPersistentRuntime({ dbPath, installId, allowNoToken: true });
+    await session.runtime.start();
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    try {
+      await hello(sock, reader, installId);
+      const agent = await writeAndRead(sock, reader, {
+        id: 'legacy-agent',
+        kind: 'request',
+        type: 'agent.get',
+        payload: {},
+      });
+      const agentVersionId = (agent.payload as { agent: { agentVersionId: string } }).agent
+        .agentVersionId;
+
+      const access = await writeAndRead(sock, reader, {
+        id: 'legacy-access',
+        kind: 'request',
+        type: 'task.describeExecutionAccess',
+        payload: { taskId: task.taskId, agentVersionId },
+      });
+
+      expect(access.error).toBeUndefined();
+      expect(access.payload).toMatchObject({
+        taskId: task.taskId,
+        agentVersionId,
+        executionMode: 'local_serial',
+        executionState: 'ready',
+      });
+    } finally {
+      sock.destroy();
+      await session.close();
+    }
+  });
+
+  it('manages browser identities and reports the effective task execution access', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-browser-identity-'));
+    tempDirs.push(dir);
+    const installId = `browser-identity-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const session = await openPersistentRuntime({
+      dbPath: join(dir, 'sync-think.db'),
+      installId,
+      allowNoToken: true,
+    });
+    await session.runtime.start();
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    try {
+      await hello(sock, reader, installId);
+      const workspace = await writeAndRead(sock, reader, {
+        id: 'browser-workspace',
+        kind: 'request',
+        type: 'workspace.create',
+        payload: { name: 'Browser identity project' },
+      });
+      const workspaceId = (workspace.payload as { workspaceId: string }).workspaceId;
+      const bound = await writeAndRead(sock, reader, {
+        id: 'browser-workspace-bind',
+        kind: 'request',
+        type: 'workspace.bindFolder',
+        payload: { workspaceId, folderPath: join(dir, 'workspace') },
+      });
+      expect(bound.error).toBeUndefined();
+      const task = await writeAndRead(sock, reader, {
+        id: 'browser-task',
+        kind: 'request',
+        type: 'task.create',
+        payload: { workspaceId, title: 'Browser task', goal: 'Use one browser profile' },
+      });
+      const taskId = (task.payload as { taskId: string }).taskId;
+
+      const initial = await writeAndRead(sock, reader, {
+        id: 'browser-list-initial',
+        kind: 'request',
+        type: 'browserIdentity.list',
+        payload: {},
+      });
+      const defaultIdentity = (
+        initial.payload as { identities: Array<{ id: string; name: string; isDefault: boolean }> }
+      ).identities.find((identity) => identity.isDefault)!;
+      expect(defaultIdentity).toBeDefined();
+
+      const created = await writeAndRead(sock, reader, {
+        id: 'browser-create',
+        kind: 'request',
+        type: 'browserIdentity.create',
+        payload: { name: 'Work account' },
+      });
+      expect(created.error).toBeUndefined();
+      const identityId = (created.payload as { identity: { id: string } }).identity.id;
+
+      const updated = await writeAndRead(sock, reader, {
+        id: 'browser-update',
+        kind: 'request',
+        type: 'browserIdentity.update',
+        payload: { id: identityId, name: 'Project account', makeDefault: true },
+      });
+      expect(updated.payload).toMatchObject({
+        identity: { id: identityId, name: 'Project account', isDefault: true },
+      });
+
+      const selected = await writeAndRead(sock, reader, {
+        id: 'browser-select',
+        kind: 'request',
+        type: 'task.setBrowserIdentity',
+        payload: { taskId, browserIdentityId: identityId },
+      });
+      expect(selected.payload).toMatchObject({
+        taskId,
+        browserIdentityId: identityId,
+        browserIdentityName: 'Project account',
+      });
+
+      const agent = await writeAndRead(sock, reader, {
+        id: 'browser-agent',
+        kind: 'request',
+        type: 'agent.get',
+        payload: {},
+      });
+      const agentVersionId = (agent.payload as { agent: { agentVersionId: string } }).agent
+        .agentVersionId;
+      const access = await writeAndRead(sock, reader, {
+        id: 'browser-access',
+        kind: 'request',
+        type: 'task.describeExecutionAccess',
+        payload: { taskId, agentVersionId },
+      });
+      expect(access.error).toBeUndefined();
+      expect(access.payload).toMatchObject({
+        taskId,
+        agentVersionId,
+        executionMode: 'local_serial',
+        executionState: 'ready',
+        browserIdentityId: identityId,
+        browserIdentityName: 'Project account',
+      });
+      expect((access.payload as { effectiveToolNames: string[] }).effectiveToolNames).toEqual(
+        expect.arrayContaining(['browser_navigate', 'desktop_snapshot']),
+      );
+
+      const referencedDelete = await writeAndRead(sock, reader, {
+        id: 'browser-delete-referenced',
+        kind: 'request',
+        type: 'browserIdentity.delete',
+        payload: { id: identityId },
+      });
+      expect(referencedDelete.error).toBeDefined();
+
+      await writeAndRead(sock, reader, {
+        id: 'browser-restore-default',
+        kind: 'request',
+        type: 'browserIdentity.update',
+        payload: { id: defaultIdentity.id, makeDefault: true },
+      });
+      await writeAndRead(sock, reader, {
+        id: 'browser-restore-task',
+        kind: 'request',
+        type: 'task.setBrowserIdentity',
+        payload: { taskId, browserIdentityId: defaultIdentity.id },
+      });
+      const deleted = await writeAndRead(sock, reader, {
+        id: 'browser-delete',
+        kind: 'request',
+        type: 'browserIdentity.delete',
+        payload: { id: identityId },
+      });
+      expect(deleted.payload).toEqual({ id: identityId, deleted: true });
+    } finally {
+      sock.destroy();
+      await session.close();
+    }
+  });
+
   it('auto-names a placeholder task from its first user message', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-task-title-'));
     tempDirs.push(dir);
@@ -167,6 +370,57 @@ describe('workspace IA commands', () => {
         title: '分析现有项目，然后修复登录流程并补充测试',
         goal: '请帮我分析现有项目，然后修复登录流程并补充测试。',
       });
+    } finally {
+      sock.destroy();
+      await session.close();
+    }
+  });
+
+  it('discards an untouched placeholder task through the guarded Runtime command', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-task-discard-empty-'));
+    tempDirs.push(dir);
+    const installId = `task-discard-empty-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const session = await openPersistentRuntime({
+      dbPath: join(dir, 'sync-think.db'),
+      installId,
+      allowNoToken: true,
+    });
+    await session.runtime.start();
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    try {
+      await hello(sock, reader, installId);
+      const workspace = await writeAndRead(sock, reader, {
+        id: 'discard-workspace',
+        kind: 'request',
+        type: 'workspace.create',
+        payload: { name: 'Discard empty task' },
+      });
+      const workspaceId = (workspace.payload as { workspaceId: string }).workspaceId;
+      const task = await writeAndRead(sock, reader, {
+        id: 'discard-task',
+        kind: 'request',
+        type: 'task.create',
+        payload: { workspaceId, title: '新任务', goal: '新任务' },
+      });
+      const taskId = (task.payload as { taskId: string }).taskId;
+
+      const discarded = await writeAndRead(sock, reader, {
+        id: 'discard-empty',
+        kind: 'request',
+        type: 'task.discardEmpty',
+        payload: { taskId, expectedTaskVersion: 0 },
+      });
+      expect(discarded.error).toBeUndefined();
+      expect(discarded.payload).toEqual({ taskId, discarded: true });
+
+      const listed = await writeAndRead(sock, reader, {
+        id: 'discard-list',
+        kind: 'request',
+        type: 'task.list',
+        payload: { workspaceId },
+      });
+      expect((listed.payload as { tasks: unknown[] }).tasks).toEqual([]);
     } finally {
       sock.destroy();
       await session.close();
@@ -236,6 +490,82 @@ describe('workspace IA commands', () => {
         payload: { workspaceId, folderPath: join(dir, 'other-folder') },
       });
       expect(rebound.error).toBeDefined();
+    } finally {
+      sock.destroy();
+      await session.close();
+    }
+  });
+
+  it('binds a Git repository and gives a new task a persisted managed worktree', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-project-git-'));
+    tempDirs.push(dir);
+    const repository = join(dir, 'repository');
+    execFileSync('git', ['init', repository], { windowsHide: true });
+    writeFileSync(join(repository, 'README.md'), 'base\n');
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'SYNC-THINK Test',
+      GIT_AUTHOR_EMAIL: 'sync-think@example.invalid',
+      GIT_COMMITTER_NAME: 'SYNC-THINK Test',
+      GIT_COMMITTER_EMAIL: 'sync-think@example.invalid',
+    };
+    execFileSync('git', ['-C', repository, 'add', 'README.md'], { windowsHide: true, env: gitEnv });
+    execFileSync('git', ['-C', repository, 'commit', '-m', 'initial'], {
+      windowsHide: true,
+      env: gitEnv,
+    });
+    const installId = `project-git-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const session = await openPersistentRuntime({
+      dbPath: join(dir, 'sync-think.db'),
+      installId,
+      allowNoToken: true,
+    });
+    await session.runtime.start();
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    try {
+      await hello(sock, reader, installId);
+      const project = await writeAndRead(sock, reader, {
+        id: 'git-project',
+        kind: 'request',
+        type: 'workspace.create',
+        payload: { name: 'Git project' },
+      });
+      const workspaceId = (project.payload as { workspaceId: string }).workspaceId;
+      const bound = await writeAndRead(sock, reader, {
+        id: 'git-bind',
+        kind: 'request',
+        type: 'workspace.bindGitRepository',
+        payload: { workspaceId, repositoryUrl: repository, defaultRef: 'HEAD' },
+      });
+      expect(bound.error).toBeUndefined();
+      expect(bound.payload).toMatchObject({ workspaceId, resourceType: 'git_repository' });
+
+      const created = await writeAndRead(sock, reader, {
+        id: 'git-task',
+        kind: 'request',
+        type: 'task.create',
+        payload: { workspaceId, title: 'Git task', goal: 'Use an isolated checkout' },
+      });
+      const taskId = (created.payload as { taskId: string }).taskId;
+      let execution: { mode: string; state: string; executionPath?: string } | undefined;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const opened = await writeAndRead(sock, reader, {
+          id: `git-open-${attempt}`,
+          kind: 'request',
+          type: 'task.open',
+          payload: { taskId },
+        });
+        execution = (
+          opened.payload as {
+            task: { execution?: { mode: string; state: string; executionPath?: string } };
+          }
+        ).task.execution;
+        if (execution?.state === 'ready') break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(execution).toMatchObject({ mode: 'managed_worktree', state: 'ready' });
+      expect(execution?.executionPath && existsSync(execution.executionPath)).toBe(true);
     } finally {
       sock.destroy();
       await session.close();
@@ -337,7 +667,9 @@ describe('workspace IA commands', () => {
       expect(
         (opened.payload as { task: { lastOpenedAt?: string; taskVersion: number } }).task,
       ).toMatchObject({ taskVersion: 2 });
-      expect((opened.payload as { task: { lastOpenedAt?: string } }).task.lastOpenedAt).toBeTruthy();
+      expect(
+        (opened.payload as { task: { lastOpenedAt?: string } }).task.lastOpenedAt,
+      ).toBeTruthy();
 
       const searched = await writeAndRead(sock, reader, {
         id: 'task-search',

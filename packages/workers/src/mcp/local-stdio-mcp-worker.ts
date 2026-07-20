@@ -154,20 +154,41 @@ function killTree(child: ChildProcessWithoutNullStreams): Promise<void> {
             stdio: 'ignore',
           });
           let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            resolve();
-          };
-          killer.once('error', () => {
+          const directKill = () => {
             try {
-              child.kill();
+              if (child.exitCode === null && child.signalCode === null) {
+                child.kill('SIGKILL');
+              }
             } catch {
               // The process already exited.
             }
+          };
+          const timeout = setTimeout(() => {
+            try {
+              killer.kill();
+            } catch {
+              // The taskkill helper already exited.
+            }
+            directKill();
+            finish();
+          }, 2_000);
+          timeout.unref();
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve();
+          };
+          killer.once('error', () => {
+            directKill();
             finish();
           });
-          killer.once('close', finish);
+          killer.once('close', (code) => {
+            if (code !== 0 || (child.exitCode === null && child.signalCode === null)) {
+              directKill();
+            }
+            finish();
+          });
         } catch {
           child.kill();
           resolve();

@@ -10,6 +10,7 @@ import {
   createProviderCallControl,
   providerAbortEvent,
 } from '../call-control.js';
+import { createOpenAIToolNameMap, type OpenAIToolNameMap } from './tool-name-map.js';
 
 export interface StreamOpenAIResponsesOptions {
   fetchImpl?: typeof fetch;
@@ -36,7 +37,10 @@ function messageContentToString(message: ProviderMessage): string {
     .join('');
 }
 
-function toResponsesInput(request: ProviderCallRequest): Array<Record<string, unknown>> {
+function toResponsesInput(
+  request: ProviderCallRequest,
+  toolNames: OpenAIToolNameMap,
+): Array<Record<string, unknown>> {
   const input: Array<Record<string, unknown>> = [];
   for (const message of request.messages) {
     const content = messageContentToString(message);
@@ -55,16 +59,28 @@ function toResponsesInput(request: ProviderCallRequest): Array<Record<string, un
         input.push({
           type: 'function_call',
           call_id: part.toolCall.id,
-          name: part.toolCall.name,
+          name: toolNames.toWireName(part.toolCall.name),
           arguments: part.toolCall.argumentsJson,
         });
       }
       if (!content) continue;
     }
-    if (!content && message.role !== 'assistant') continue;
+    const multimodalContent: Array<Record<string, unknown>> | undefined =
+      message.role === 'user' && Array.isArray(message.content)
+        ? message.content.reduce<Array<Record<string, unknown>>>((parts, part) => {
+            if (part.type === 'text' && part.text) {
+              parts.push({ type: 'input_text', text: part.text });
+            }
+            if (part.type === 'image' && part.imageUrl) {
+              parts.push({ type: 'input_image', image_url: part.imageUrl });
+            }
+            return parts;
+          }, [])
+        : undefined;
+    if (!content && !multimodalContent?.length && message.role !== 'assistant') continue;
     input.push({
       role: message.role === 'assistant' ? 'assistant' : 'user',
-      content,
+      content: multimodalContent?.length ? multimodalContent : content,
     });
   }
   return input;
@@ -321,7 +337,11 @@ function parseResponseEvent(
   return [];
 }
 
-async function* emitFromJsonResponse(text: string, apiKey: string): AsyncIterable<AdapterEvent> {
+async function* emitFromJsonResponse(
+  text: string,
+  apiKey: string,
+  toolNames: OpenAIToolNameMap,
+): AsyncIterable<AdapterEvent> {
   let response: unknown;
   try {
     response = JSON.parse(text);
@@ -336,7 +356,9 @@ async function* emitFromJsonResponse(text: string, apiKey: string): AsyncIterabl
   const outputText = extractOutputText(response);
   if (outputText) yield { type: 'text-delta', text: outputText };
   const toolCalls = extractToolCalls(response);
-  for (const toolCall of toolCalls) yield { type: 'tool-call', toolCall };
+  for (const toolCall of toolCalls) {
+    yield toolNames.restoreEvent({ type: 'tool-call', toolCall });
+  }
   const usage = usageEvent(response);
   if (usage) yield usage;
   const status =
@@ -378,9 +400,10 @@ export async function* streamOpenAIResponses(
 
   const control = createProviderCallControl(request.signal, options.timeoutMs ?? 120_000);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const toolNames = createOpenAIToolNameMap(request);
   const body: Record<string, unknown> = {
     model: request.modelId,
-    input: toResponsesInput(request),
+    input: toResponsesInput(request, toolNames),
     stream: true,
   };
   const instructions = resolveInstructions(request);
@@ -390,7 +413,7 @@ export async function* streamOpenAIResponses(
   if (request.tools?.length) {
     body.tools = request.tools.map((tool) => ({
       type: 'function',
-      name: tool.name,
+      name: toolNames.toWireName(tool.name),
       description: tool.description,
       parameters: tool.inputSchema,
     }));
@@ -435,14 +458,14 @@ export async function* streamOpenAIResponses(
 
     const contentType = response.headers?.get?.('content-type') ?? '';
     if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
-      yield* emitFromJsonResponse(await response.text(), apiKey);
+      yield* emitFromJsonResponse(await response.text(), apiKey, toolNames);
       return;
     }
 
     if (!response.body) {
       const text = await response.text();
       if (!text.includes('data:')) {
-        yield* emitFromJsonResponse(text, apiKey);
+        yield* emitFromJsonResponse(text, apiKey, toolNames);
         return;
       }
       const state: ResponsesParseState = {
@@ -456,7 +479,9 @@ export async function* streamOpenAIResponses(
         const data = trimmed.slice(5).trim();
         if (!data || data === '[DONE]') continue;
         try {
-          for (const event of parseResponseEvent(JSON.parse(data), apiKey, state)) yield event;
+          for (const event of parseResponseEvent(JSON.parse(data), apiKey, state)) {
+            yield toolNames.restoreEvent(event);
+          }
         } catch {
           // Ignore malformed keepalive/event fragments.
         }
@@ -500,7 +525,9 @@ export async function* streamOpenAIResponses(
           break;
         }
         try {
-          for (const event of parseResponseEvent(JSON.parse(data), apiKey, state)) yield event;
+          for (const event of parseResponseEvent(JSON.parse(data), apiKey, state)) {
+            yield toolNames.restoreEvent(event);
+          }
         } catch {
           // Ignore malformed keepalive/event fragments.
         }
@@ -513,7 +540,9 @@ export async function* streamOpenAIResponses(
         const data = remaining.slice(5).trim();
         if (data && data !== '[DONE]') {
           try {
-            for (const event of parseResponseEvent(JSON.parse(data), apiKey, state)) yield event;
+            for (const event of parseResponseEvent(JSON.parse(data), apiKey, state)) {
+              yield toolNames.restoreEvent(event);
+            }
           } catch {
             // Ignore malformed tail.
           }

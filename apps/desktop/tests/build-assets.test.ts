@@ -97,7 +97,7 @@ describe('desktop renderer build assets', () => {
     expect(rendererSource).toContain('canSendRuntimeMessage');
     expect(rendererSource).toContain('cancelConnection()');
     expect(rendererSource).toContain('sendPending || !canSendRuntimeMessage');
-    expect(runtimeViewStateSource).toContain('mergeEventHistory');
+    expect(runtimeViewStateSource).toContain('appendEventHistory');
     expect(runtimeViewStateSource).toContain('projectM0EventHistory');
     expect(runtimeViewStateSource).toContain('result.snapshot');
     expect(runtimeConnectionSource).toContain('if (!active) return');

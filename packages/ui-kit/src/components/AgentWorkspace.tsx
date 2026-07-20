@@ -1,17 +1,30 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import {
+  AGENT_PERMISSION_DISABLED,
+  isAgentPermissionCategoryEnabled,
+  isLegacyAgentPermissions,
+  type AgentPermissions,
+} from '@sync-think/shared';
 import {
   Bot,
   BookMarked,
   History,
   Layers3,
   ListTodo,
-  Plug,
   Plus,
   Radar,
   Search,
   Save,
   Sparkles,
   Wrench,
+  ImagePlus,
+  ArrowRight,
+  Crown,
+  Users,
+  Pencil,
+  MessageSquarePlus,
+  UserPlus,
+  X,
 } from 'lucide-react';
 import {
   AgentBindingPanel,
@@ -22,17 +35,18 @@ import {
 import { formatModelPathLabel } from './ModelPathBoard.js';
 
 export type AgentWorkspaceTab =
-  | 'overview'
-  | 'tasks'
-  | 'instructions'
-  | 'skills'
-  | 'tools'
-  | 'runtime'
-  | 'versions'
-  | 'more';
+  'overview' | 'tasks' | 'instructions' | 'skills' | 'runtime' | 'versions' | 'more';
 
 export type AgentMemoryScopeView = 'task' | 'project' | 'global';
 export type AgentApprovalModeView = 'request' | 'delegate' | 'full' | 'custom';
+
+export interface AgentCreateInput {
+  name: string;
+  role: string;
+  description: string;
+  developerInstructions: string;
+  maxConcurrency: number;
+}
 
 export interface AgentDefinitionView {
   agentId: string;
@@ -40,21 +54,16 @@ export interface AgentDefinitionView {
   version: number;
   name: string;
   description?: string;
-  visualIdentity?: { icon: string; color: string };
+  visualIdentity?: { icon: string; color: string; avatarPath?: string; avatarUrl?: string };
   role: string;
   developerInstructions: string;
   inputContract: string;
   outputContract: string;
+  maxConcurrency?: number;
   memoryScope: AgentMemoryScopeView;
   approvalMode: AgentApprovalModeView;
   mcpToolAllowlist?: string[];
-  permissions?: {
-    file: string[];
-    command: string[];
-    browser: string[];
-    desktop: string[];
-    network: string[];
-  };
+  permissions?: AgentPermissions;
   reviewBehavior?: {
     role: 'none' | 'reviewer' | 'executor-reviewer';
     maxIterations: number;
@@ -80,8 +89,10 @@ export interface AgentVersionHistoryView extends AgentDefinitionView {
   createdAt: string;
 }
 
-export interface AgentDefinitionSaveInput
-  extends Omit<AgentDefinitionView, 'agentVersionId' | 'version'> {
+export interface AgentDefinitionSaveInput extends Omit<
+  AgentDefinitionView,
+  'agentVersionId' | 'version'
+> {
   expectedVersion: number;
 }
 
@@ -89,6 +100,13 @@ export interface AgentWorkspaceTaskSummary {
   taskId: string;
   title: string;
   status?: string;
+}
+
+export interface AgentWorkspaceGroupSummary {
+  groupId: string;
+  name: string;
+  responsibility: string;
+  isLead: boolean;
 }
 
 export interface AgentWorkspaceListItem {
@@ -101,6 +119,7 @@ export interface AgentWorkspaceListItem {
   mcpCount?: number;
   taskCount?: number;
   statusLabel?: string;
+  visualIdentity?: { icon: string; color: string; avatarPath?: string; avatarUrl?: string };
 }
 
 export interface AgentWorkspaceReviewerVersion {
@@ -117,9 +136,14 @@ export interface AgentWorkspaceProps extends AgentBindingPanelProps {
   agents?: readonly AgentWorkspaceListItem[];
   selectedAgentId?: string | null;
   onSelectAgent?: (agentId: string) => void;
-  onCreateAgent?: () => void;
+  onCreateAgent?: (input: AgentCreateInput) => Promise<string | null | void>;
+  onStartTask?: (agentId: string) => void;
+  onJoinGroup?: (agentId: string) => void;
   /** Optional related tasks for the selected agent. */
   relatedTasks?: readonly AgentWorkspaceTaskSummary[];
+  /** Persisted groups that include any version of the selected agent. */
+  groupMemberships?: readonly AgentWorkspaceGroupSummary[];
+  onOpenTask?: (taskId: string) => void;
   /** Role/work blurb for overview when API has no description. */
   workSummary?: string;
   /** Optional read-only instructions text for instructions tab (M1 may be empty). */
@@ -128,17 +152,17 @@ export interface AgentWorkspaceProps extends AgentBindingPanelProps {
   versions?: readonly AgentVersionHistoryView[];
   allAgentVersions?: readonly AgentWorkspaceReviewerVersion[];
   onSaveDefinition?: (input: AgentDefinitionSaveInput) => void | Promise<void>;
+  onPickAvatar?: () => Promise<{ avatarPath: string; avatarUrl: string } | null>;
   defaultTab?: AgentWorkspaceTab;
 }
 
 const TABS: { id: AgentWorkspaceTab; label: string; icon: typeof Bot }[] = [
-  { id: 'overview', label: '概览', icon: Radar },
+  { id: 'overview', label: '资料', icon: Radar },
   { id: 'tasks', label: '任务', icon: ListTodo },
-  { id: 'instructions', label: '指令', icon: BookMarked },
-  { id: 'skills', label: 'Skills', icon: Sparkles },
-  { id: 'tools', label: '工具', icon: Plug },
+  { id: 'instructions', label: '能力与指令', icon: BookMarked },
   { id: 'runtime', label: '运行时', icon: Layers3 },
-  { id: 'versions', label: '版本', icon: History },
+  { id: 'skills', label: 'Skills', icon: Sparkles },
+  { id: 'versions', label: '历史', icon: History },
   { id: 'more', label: '更多', icon: Wrench },
 ];
 
@@ -150,8 +174,8 @@ const DEFINITION_FIELD_LABELS: Array<[keyof AgentDefinitionView, string]> = [
   ['developerInstructions', '指令'],
   ['inputContract', '输入契约'],
   ['outputContract', '输出契约'],
+  ['maxConcurrency', '最大并发'],
   ['memoryScope', '记忆范围'],
-  ['approvalMode', '批准模式'],
   ['policyId', '策略'],
   ['reviewBehavior', '评审行为'],
   ['artifactRules', '产物规则'],
@@ -178,20 +202,36 @@ function definitionChanges(
   ).map(([field]) => field);
 }
 
-function parseDefinitionList(value: string): string[] {
-  return [...new Set(value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean))];
-}
-
-const AGENT_PERMISSION_FIELDS = [
-  ['file', '文件'],
-  ['command', '命令'],
-  ['browser', '浏览器'],
-  ['desktop', '桌面'],
-  ['network', '网络'],
-] as const;
-
 function emptyDefinitionPermissions(): NonNullable<AgentDefinitionView['permissions']> {
   return { file: [], command: [], browser: [], desktop: [], network: [] };
+}
+
+const AGENT_CAPABILITY_OPTIONS: ReadonlyArray<{
+  id: keyof AgentPermissions;
+  label: string;
+  description: string;
+}> = [
+  { id: 'file', label: '文件', description: '读取和修改工作区文件' },
+  { id: 'command', label: '命令', description: '执行终端命令' },
+  { id: 'browser', label: '浏览器', description: '打开网页并使用已选浏览器身份' },
+  { id: 'desktop', label: '桌面', description: '操作本机 Windows 应用' },
+  { id: 'network', label: '网络', description: '访问外部网络资源' },
+];
+
+function materializeAgentPermissions(
+  permissions: AgentDefinitionView['permissions'],
+): AgentPermissions {
+  const current = permissions ?? emptyDefinitionPermissions();
+  if (isLegacyAgentPermissions(current)) {
+    return { file: ['*'], command: ['*'], browser: ['*'], desktop: ['*'], network: ['*'] };
+  }
+  return {
+    file: [...current.file],
+    command: [...current.command],
+    browser: [...current.browser],
+    desktop: [...current.desktop],
+    network: [...current.network],
+  };
 }
 
 function toListItem(binding: AgentBindingView | null): AgentWorkspaceListItem | null {
@@ -205,6 +245,131 @@ function toListItem(binding: AgentBindingView | null): AgentWorkspaceListItem | 
     skillCount: binding.skillVersionIds?.length ?? 0,
     mcpCount: binding.mcpServerIds?.length ?? 0,
   };
+}
+
+function AgentCreateForm(props: {
+  busy: boolean;
+  error?: string | null;
+  statusNote?: string | null;
+  onCancel: () => void;
+  onCreate: (input: AgentCreateInput) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<AgentCreateInput>({
+    name: '',
+    role: 'specialist',
+    description: '',
+    developerInstructions: '',
+    maxConcurrency: 3,
+  });
+
+  const canCreate =
+    draft.name.trim().length > 0 &&
+    draft.role.trim().length > 0 &&
+    draft.developerInstructions.trim().length > 0;
+
+  return (
+    <form
+      className="st-agent-ws__create"
+      data-testid="agent-workspace-create-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!canCreate || props.busy) return;
+        void props.onCreate({
+          name: draft.name.trim(),
+          role: draft.role.trim(),
+          description: draft.description.trim(),
+          developerInstructions: draft.developerInstructions.trim(),
+          maxConcurrency: draft.maxConcurrency,
+        });
+      }}
+    >
+      <header>
+        <div>
+          <h3>新建智能体</h3>
+          <p>定义它负责的工作，运行时可在创建后继续配置。</p>
+        </div>
+        <button type="button" aria-label="取消创建" title="取消创建" onClick={props.onCancel}>
+          <X size={15} aria-hidden="true" />
+        </button>
+      </header>
+      {props.error ? (
+        <p className="st-agent-ws__create-feedback" role="alert">
+          {props.error}
+        </p>
+      ) : props.statusNote ? (
+        <p className="st-agent-ws__create-feedback" role="status">
+          {props.statusNote}
+        </p>
+      ) : null}
+      <div className="st-agent-ws__create-grid">
+        <label>
+          <span>名称</span>
+          <input
+            aria-label="智能体名称"
+            value={draft.name}
+            autoFocus
+            disabled={props.busy}
+            onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+          />
+        </label>
+        <label>
+          <span>角色</span>
+          <input
+            aria-label="智能体角色"
+            value={draft.role}
+            disabled={props.busy}
+            onChange={(event) => setDraft({ ...draft, role: event.target.value })}
+          />
+        </label>
+        <label className="st-agent-ws__create-wide">
+          <span>描述</span>
+          <textarea
+            aria-label="智能体描述"
+            rows={3}
+            value={draft.description}
+            disabled={props.busy}
+            onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+          />
+        </label>
+        <label className="st-agent-ws__create-wide">
+          <span>固定指令</span>
+          <textarea
+            aria-label="固定指令"
+            rows={7}
+            value={draft.developerInstructions}
+            disabled={props.busy}
+            onChange={(event) => setDraft({ ...draft, developerInstructions: event.target.value })}
+          />
+        </label>
+        <label>
+          <span>支持的任务并发数</span>
+          <input
+            type="number"
+            min={1}
+            max={16}
+            aria-label="支持的任务并发数"
+            value={draft.maxConcurrency}
+            disabled={props.busy}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                maxConcurrency: Math.max(1, Math.min(16, Number(event.target.value) || 1)),
+              })
+            }
+          />
+        </label>
+      </div>
+      <footer>
+        <button type="button" onClick={props.onCancel} disabled={props.busy}>
+          取消
+        </button>
+        <button type="submit" className="is-primary" disabled={!canCreate || props.busy}>
+          <Plus size={13} aria-hidden="true" />
+          创建智能体
+        </button>
+      </footer>
+    </form>
+  );
 }
 
 /**
@@ -223,13 +388,19 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
   }, [props.agents, derived]);
 
   const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'busy' | 'offline'>('all');
   const [tab, setTab] = useState<AgentWorkspaceTab>(props.defaultTab ?? 'overview');
+  const [creating, setCreating] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(
     props.selectedAgentId ?? agents[0]?.agentId ?? null,
   );
   const [definitionDraft, setDefinitionDraft] = useState<AgentDefinitionView | null>(
     props.definition ?? null,
   );
+
+  useEffect(() => {
+    if (props.defaultTab) setTab(props.defaultTab);
+  }, [props.defaultTab]);
 
   useEffect(() => {
     setDefinitionDraft(props.definition ?? null);
@@ -251,14 +422,31 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return agents;
-    return agents.filter(
-      (a) =>
+    return agents.filter((a) => {
+      const matchesQuery =
+        !q ||
         a.name.toLowerCase().includes(q) ||
         a.role.toLowerCase().includes(q) ||
-        a.agentId.toLowerCase().includes(q),
-    );
-  }, [agents, query]);
+        a.agentId.toLowerCase().includes(q);
+      const status = a.statusLabel ?? '在线';
+      const matchesStatus =
+        statusFilter === 'all' ||
+        (statusFilter === 'online' && status === '在线') ||
+        (statusFilter === 'busy' && status === '忙碌中') ||
+        (statusFilter === 'offline' && status === '离线');
+      return matchesQuery && matchesStatus;
+    });
+  }, [agents, query, statusFilter]);
+
+  const statusCounts = useMemo(
+    () => ({
+      all: agents.length,
+      online: agents.filter((agent) => (agent.statusLabel ?? '在线') === '在线').length,
+      busy: agents.filter((agent) => agent.statusLabel === '忙碌中').length,
+      offline: agents.filter((agent) => agent.statusLabel === '离线').length,
+    }),
+    [agents],
+  );
 
   const selected = agents.find((a) => a.agentId === selectedId) ?? agents[0] ?? null;
   const binding = props.binding;
@@ -285,6 +473,7 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
   );
 
   const relatedTasks = props.relatedTasks ?? [];
+  const groupMemberships = props.groupMemberships ?? [];
   const versionHistory = useMemo(
     () => [...(props.versions ?? [])].sort((left, right) => right.version - left.version),
     [props.versions],
@@ -293,37 +482,12 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
     () => [...versionHistory].sort((left, right) => left.version - right.version),
     [versionHistory],
   );
-  const backupReviewerVersions = useMemo(
-    () =>
-      (props.allAgentVersions ?? []).filter(
-        (version) =>
-          version.reviewerCapable && version.agentVersionId !== definitionDraft?.agentVersionId,
-      ),
-    [definitionDraft?.agentVersionId, props.allAgentVersions],
-  );
-  const selectedBackupReviewerVersionId =
-    definitionDraft?.reviewBehavior?.backupAgentVersionId?.trim() ?? '';
-  const requiresBackupReviewer =
-    definitionDraft?.reviewBehavior?.onLimitReached === 'reassign';
-  const hasValidBackupReviewer =
-    !requiresBackupReviewer ||
-    (selectedBackupReviewerVersionId.length > 0 &&
-      backupReviewerVersions.some(
-        (version) => version.agentVersionId === selectedBackupReviewerVersionId,
-      ));
-  const hasStaleBackupReviewer =
-    requiresBackupReviewer &&
-    selectedBackupReviewerVersionId.length > 0 &&
-    !hasValidBackupReviewer;
-
   const saveDefinition = () => {
     if (!definitionDraft || !props.onSaveDefinition) return;
     const required = [
       definitionDraft.name,
       definitionDraft.role,
       definitionDraft.developerInstructions,
-      definitionDraft.inputContract,
-      definitionDraft.outputContract,
     ];
     if (required.some((value) => !value.trim())) return;
     const draftReviewBehavior = definitionDraft.reviewBehavior ?? {
@@ -331,19 +495,6 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
       maxIterations: 0,
       onLimitReached: 'pause' as const,
     };
-    const { backupAgentVersionId, ...reviewBehaviorWithoutBackup } = draftReviewBehavior;
-    const normalizedBackupAgentVersionId = backupAgentVersionId?.trim();
-    if (
-      draftReviewBehavior.onLimitReached === 'reassign' &&
-      (!normalizedBackupAgentVersionId ||
-        !backupReviewerVersions.some(
-          (version) => version.agentVersionId === normalizedBackupAgentVersionId,
-        ))
-    ) return;
-    const reviewBehavior =
-      draftReviewBehavior.onLimitReached === 'reassign'
-        ? { ...reviewBehaviorWithoutBackup, backupAgentVersionId: normalizedBackupAgentVersionId }
-        : reviewBehaviorWithoutBackup;
     props.onSaveDefinition({
       agentId: definitionDraft.agentId,
       expectedVersion: definitionDraft.version,
@@ -352,13 +503,14 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
       visualIdentity: definitionDraft.visualIdentity ?? { icon: 'bot', color: '#64748b' },
       role: definitionDraft.role.trim(),
       developerInstructions: definitionDraft.developerInstructions.trim(),
-      inputContract: definitionDraft.inputContract.trim(),
-      outputContract: definitionDraft.outputContract.trim(),
-      memoryScope: definitionDraft.memoryScope,
-      approvalMode: definitionDraft.approvalMode,
+      inputContract: definitionDraft.inputContract,
+      outputContract: definitionDraft.outputContract,
+      maxConcurrency: definitionDraft.maxConcurrency ?? 3,
+      memoryScope: 'task',
+      approvalMode: 'full',
       mcpToolAllowlist: [...(definitionDraft.mcpToolAllowlist ?? [])],
       permissions: definitionDraft.permissions ?? emptyDefinitionPermissions(),
-      reviewBehavior,
+      reviewBehavior: draftReviewBehavior,
       artifactRules: definitionDraft.artifactRules ?? {
         retainVersions: true,
         requireReview: false,
@@ -375,29 +527,59 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
   };
 
   return (
-    <section
-      className="st-agent-ws"
-      data-testid="agent-workspace"
-      aria-label="智能体中心"
-    >
+    <section className="st-agent-ws" data-testid="agent-workspace" aria-label="智能体中心">
       <aside className="st-agent-ws__list" data-testid="agent-workspace-list">
         <header className="st-agent-ws__list-head">
           <div>
-            <h2>智能体中心</h2>
-            <p>全部智能体 · 点进详情配置工作与运行时</p>
+            <h2>好友</h2>
+            <p>{agents.length} 个智能体</p>
           </div>
-          <div className="st-agent-ws__search">
-            <Search size={13} strokeWidth={1.8} aria-hidden="true" />
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索智能体…"
-              aria-label="搜索智能体"
-              data-testid="agent-workspace-search"
-            />
-          </div>
+          <button
+            type="button"
+            className="st-agent-ws__new"
+            data-testid="agent-workspace-new"
+            onClick={() => setCreating(true)}
+            disabled={!props.onCreateAgent}
+            title="新建智能体"
+          >
+            <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
+            新建
+          </button>
         </header>
+
+        <div className="st-agent-ws__filters" role="tablist" aria-label="按状态筛选">
+          {(
+            [
+              ['all', '全部'],
+              ['online', '在线'],
+              ['busy', '忙碌'],
+              ['offline', '离线'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              data-active={statusFilter === value ? '1' : '0'}
+              aria-selected={statusFilter === value}
+              onClick={() => setStatusFilter(value)}
+            >
+              <span>{label}</span>
+              <em>{statusCounts[value]}</em>
+            </button>
+          ))}
+        </div>
+        <div className="st-agent-ws__search">
+          <Search size={13} strokeWidth={1.8} aria-hidden="true" />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索智能体"
+            aria-label="搜索智能体"
+            data-testid="agent-workspace-search"
+          />
+        </div>
 
         <div className="st-agent-ws__cards" data-testid="agent-workspace-cards">
           {props.loading && agents.length === 0 ? (
@@ -418,47 +600,60 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                 className="st-agent-ws__card"
                 data-testid={`agent-workspace-card-${a.agentId}`}
                 data-active={active ? '1' : '0'}
+                data-status={a.statusLabel ?? '在线'}
                 onClick={() => selectAgent(a.agentId)}
               >
-                <div className="st-agent-ws__card-name">
-                  <span>{a.name}</span>
-                  <span className="st-agent-ws__pill">v{a.version}</span>
-                </div>
-                <div className="st-agent-ws__card-role">{a.role}</div>
-                <div className="st-agent-ws__card-runtime" title={path}>
-                  {path}
-                </div>
-                <div className="st-agent-ws__card-meta">
-                  <span className="st-agent-ws__pill">
-                    Skill {a.skillCount ?? 0}
-                  </span>
-                  <span className="st-agent-ws__pill">MCP {a.mcpCount ?? 0}</span>
-                  {typeof a.taskCount === 'number' ? (
-                    <span className="st-agent-ws__pill">Task {a.taskCount}</span>
-                  ) : null}
+                <span
+                  className="st-agent-ws__avatar"
+                  style={
+                    { '--st-agent-color': a.visualIdentity?.color ?? '#64748b' } as CSSProperties
+                  }
+                  aria-hidden="true"
+                >
+                  {a.visualIdentity?.avatarUrl ? (
+                    <img src={a.visualIdentity.avatarUrl} alt="" />
+                  ) : (
+                    <Bot size={15} strokeWidth={1.8} />
+                  )}
+                  <i data-status={a.statusLabel ?? '在线'} />
+                </span>
+                <div className="st-agent-ws__card-content">
+                  <div className="st-agent-ws__card-name">
+                    <span>{a.name}</span>
+                    <span className="st-agent-ws__status">{a.statusLabel ?? '在线'}</span>
+                  </div>
+                  <div className="st-agent-ws__card-role">{a.role}</div>
+                  <div className="st-agent-ws__card-runtime" title={path}>
+                    {path}
+                  </div>
+                  <div className="st-agent-ws__card-meta">
+                    {typeof a.taskCount === 'number' && a.taskCount > 0 ? (
+                      <span className="st-agent-ws__pill">{a.taskCount} 个任务</span>
+                    ) : null}
+                  </div>
                 </div>
               </button>
             );
           })}
         </div>
-
-        <footer className="st-agent-ws__list-foot">
-          <button
-            type="button"
-            className="st-agent-ws__new"
-            data-testid="agent-workspace-new"
-            onClick={() => props.onCreateAgent?.()}
-            disabled={!props.onCreateAgent}
-            title={props.onCreateAgent ? '新建智能体' : '多智能体创建将在后续版本开放'}
-          >
-            <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
-            新建智能体
-          </button>
-        </footer>
       </aside>
 
       <div className="st-agent-ws__detail" data-testid="agent-workspace-detail">
-        {!selected ? (
+        {creating ? (
+          <AgentCreateForm
+            busy={Boolean(props.busy)}
+            error={props.error}
+            statusNote={props.statusNote}
+            onCancel={() => setCreating(false)}
+            onCreate={async (input) => {
+              const agentId = await props.onCreateAgent?.(input);
+              if (typeof agentId !== 'string' || !agentId) return;
+              setCreating(false);
+              setSelectedId(agentId);
+              setTab('overview');
+            }}
+          />
+        ) : !selected ? (
           <div className="st-agent-ws__detail-empty">
             <Bot size={28} strokeWidth={1.5} aria-hidden="true" />
             <p>从左侧选择一个智能体</p>
@@ -466,25 +661,72 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
         ) : (
           <>
             <header className="st-agent-ws__detail-head">
+              <span
+                className="st-agent-ws__avatar st-agent-ws__avatar--large"
+                style={
+                  {
+                    '--st-agent-color': selected.visualIdentity?.color ?? '#64748b',
+                  } as CSSProperties
+                }
+                aria-hidden="true"
+              >
+                {selected.visualIdentity?.avatarUrl ? (
+                  <img src={selected.visualIdentity.avatarUrl} alt="" />
+                ) : (
+                  <Bot size={25} strokeWidth={1.7} />
+                )}
+                <i data-status={selected.statusLabel ?? '在线'} />
+              </span>
               <div className="st-agent-ws__detail-titles">
                 <h3 data-testid="agent-workspace-detail-name">{selected.name}</h3>
                 <p>
                   {selected.role}
                   {' · '}
-                  运行时 {runtimePath}
+                  {selected.statusLabel ?? '在线'}
                 </p>
               </div>
               <div className="st-agent-ws__badges">
-                <span className="st-agent-ws__badge" data-testid="agent-workspace-version">
-                  v{selected.version}
-                </span>
                 <span
-                  className="st-agent-ws__badge"
-                  data-tone={capability.level === 'ready' ? 'ok' : 'warn'}
-                  data-testid="agent-workspace-cap"
+                  className="st-agent-ws__badge st-agent-ws__badge--status"
+                  data-status={selected.statusLabel ?? '在线'}
                 >
-                  {capability.badge}
+                  <i aria-hidden="true" />
+                  {selected.statusLabel ?? '在线'}
                 </span>
+                {selected.taskCount && selected.taskCount > 0 ? (
+                  <span className="st-agent-ws__badge">{selected.taskCount} 个任务</span>
+                ) : null}
+              </div>
+              <div className="st-agent-ws__profile-actions">
+                <button
+                  type="button"
+                  aria-label="编辑智能体"
+                  title="编辑智能体"
+                  onClick={() => setTab('instructions')}
+                >
+                  <Pencil size={13} aria-hidden="true" />
+                  编辑
+                </button>
+                <button
+                  type="button"
+                  aria-label="开始任务"
+                  title="开始任务"
+                  disabled={!props.onStartTask}
+                  onClick={() => props.onStartTask?.(selected.agentId)}
+                >
+                  <MessageSquarePlus size={13} aria-hidden="true" />
+                  开始任务
+                </button>
+                <button
+                  type="button"
+                  aria-label="加入群聊"
+                  title="加入群聊"
+                  disabled={!props.onJoinGroup}
+                  onClick={() => props.onJoinGroup?.(selected.agentId)}
+                >
+                  <UserPlus size={13} aria-hidden="true" />
+                  加入群聊
+                </button>
               </div>
             </header>
 
@@ -531,13 +773,18 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                       <strong>{capability.fallbackCount} 条</strong>
                     </div>
                     <div className="st-agent-ws__stat">
+                      <span>最大并发</span>
+                      <strong>{definitionDraft?.maxConcurrency ?? 3} 个任务</strong>
+                    </div>
+                    <div className="st-agent-ws__stat">
                       <span>凭证</span>
                       <strong>{capability.credOk ? '已配置' : '未绑'}</strong>
                     </div>
                   </div>
                   <p className="st-agent-ws__work" data-testid="agent-workspace-work">
                     {props.workSummary?.trim() ||
-                      `「${selected.name}」是当前默认对话智能体。在「运行时」按 分组 → 供应商 → 模型 配置默认模型；Skills / 工具 在对应页签白名单。`}
+                      definitionDraft?.description?.trim() ||
+                      selected.role}
                   </p>
                   {relatedTasks.length > 0 ? (
                     <div className="st-agent-ws__task-preview">
@@ -545,18 +792,53 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                       <ul>
                         {relatedTasks.slice(0, 4).map((t) => (
                           <li key={t.taskId}>
-                            <strong>{t.title}</strong>
-                            <span>{t.status ?? '—'}</span>
+                            <div className="st-agent-ws__task-copy">
+                              <strong>{t.title}</strong>
+                              <small>{t.status ?? '—'}</small>
+                            </div>
+                            {props.onOpenTask ? (
+                              <button
+                                type="button"
+                                className="st-agent-ws__row-action"
+                                aria-label={`打开任务 ${t.title}`}
+                                title="打开任务"
+                                onClick={() => props.onOpenTask?.(t.taskId)}
+                              >
+                                <ArrowRight size={13} aria-hidden="true" />
+                              </button>
+                            ) : null}
                           </li>
                         ))}
                       </ul>
                     </div>
                   ) : (
                     <p className="st-agent-ws__hint">
-                      任务关联列表将在多 Agent API 就绪后展示。当前可从左侧项目打开任务。
+                      还没有由这个智能体参与的任务。开始执行后会自动出现在这里。
                     </p>
                   )}
-                  <p className="st-agent-ws__hint">{capability.note}</p>
+                  <div className="st-agent-ws__memberships">
+                    <h4>所在群聊</h4>
+                    {groupMemberships.length === 0 ? (
+                      <p className="st-agent-ws__hint">尚未加入群聊。</p>
+                    ) : (
+                      <ul>
+                        {groupMemberships.map((membership) => (
+                          <li key={membership.groupId}>
+                            <span className="st-agent-ws__membership-icon" aria-hidden="true">
+                              {membership.isLead ? <Crown size={13} /> : <Users size={13} />}
+                            </span>
+                            <div>
+                              <strong>{membership.name}</strong>
+                              <small>{membership.responsibility}</small>
+                            </div>
+                            {membership.isLead ? (
+                              <span className="st-agent-ws__pill">主智能体</span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                   <div className="st-agent-ws__quick">
                     <button
                       type="button"
@@ -580,17 +862,30 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                 <div className="st-agent-ws__panel" data-testid="agent-workspace-panel-tasks">
                   {relatedTasks.length === 0 ? (
                     <p className="st-agent-ws__empty">
-                      暂无关联任务摘要。请在左侧项目打开或创建任务；多 Agent 关联将在后续接入。
+                      还没有由这个智能体参与的任务。智能体开始执行后会自动出现在这里。
                     </p>
                   ) : (
                     <ul className="st-agent-ws__task-list">
                       {relatedTasks.map((t) => (
                         <li key={t.taskId}>
-                          <div>
+                          <div className="st-agent-ws__task-copy">
                             <strong>{t.title}</strong>
                             <small>{t.taskId}</small>
                           </div>
-                          <span className="st-agent-ws__pill">{t.status ?? '—'}</span>
+                          <span className="st-agent-ws__task-actions">
+                            <span className="st-agent-ws__pill">{t.status ?? '—'}</span>
+                            {props.onOpenTask ? (
+                              <button
+                                type="button"
+                                className="st-agent-ws__row-action"
+                                aria-label={`打开任务 ${t.title}`}
+                                title="打开任务"
+                                onClick={() => props.onOpenTask?.(t.taskId)}
+                              >
+                                <ArrowRight size={13} aria-hidden="true" />
+                              </button>
+                            ) : null}
+                          </span>
                         </li>
                       ))}
                     </ul>
@@ -605,441 +900,248 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                 >
                   {definitionDraft ? (
                     <div className="st-agent-ws__definition" data-testid="agent-definition-editor">
-                      <div className="st-agent-ws__definition-grid">
-                        <label>
-                          <span>名称</span>
-                          <input
-                            aria-label="智能体名称"
-                            value={definitionDraft.name}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({ ...definitionDraft, name: event.target.value })
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>角色</span>
-                          <input
-                            aria-label="智能体角色"
-                            value={definitionDraft.role}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({ ...definitionDraft, role: event.target.value })
-                            }
-                          />
-                        </label>
-                        <label className="st-agent-ws__definition-wide">
-                          <span>描述</span>
-                          <textarea
-                            data-testid="agent-definition-description"
-                            rows={3}
-                            maxLength={4000}
-                            value={definitionDraft.description ?? ''}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                description: event.target.value,
-                              })
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>图标</span>
-                          <input
-                            data-testid="agent-definition-icon"
-                            maxLength={128}
-                            value={definitionDraft.visualIdentity?.icon ?? 'bot'}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                visualIdentity: {
-                                  ...(definitionDraft.visualIdentity ?? {
-                                    icon: 'bot',
-                                    color: '#64748b',
-                                  }),
-                                  icon: event.target.value,
-                                },
-                              })
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>强调色</span>
-                          <input
-                            type="color"
-                            data-testid="agent-definition-color"
-                            value={
-                              /^#[0-9a-f]{6}$/i.test(definitionDraft.visualIdentity?.color ?? '')
-                                ? definitionDraft.visualIdentity!.color
-                                : '#64748b'
-                            }
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                visualIdentity: {
-                                  ...(definitionDraft.visualIdentity ?? {
-                                    icon: 'bot',
-                                    color: '#64748b',
-                                  }),
-                                  color: event.target.value,
-                                },
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="st-agent-ws__definition-wide">
-                          <span>开发者指令</span>
-                          <textarea
-                            aria-label="开发者指令"
-                            rows={7}
-                            value={definitionDraft.developerInstructions}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                developerInstructions: event.target.value,
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="st-agent-ws__definition-wide">
-                          <span>输入契约</span>
-                          <textarea
-                            aria-label="输入契约"
-                            rows={3}
-                            value={definitionDraft.inputContract}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                inputContract: event.target.value,
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="st-agent-ws__definition-wide">
-                          <span>输出契约</span>
-                          <textarea
-                            aria-label="输出契约"
-                            rows={3}
-                            value={definitionDraft.outputContract}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                outputContract: event.target.value,
-                              })
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>记忆范围</span>
-                          <select
-                            aria-label="记忆范围"
-                            value={definitionDraft.memoryScope}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                memoryScope: event.target.value as AgentMemoryScopeView,
-                              })
-                            }
-                          >
-                            <option value="task">当前任务</option>
-                            <option value="project">当前项目</option>
-                            <option value="global">全局</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span>批准模式</span>
-                          <select
-                            aria-label="智能体批准模式"
-                            value={definitionDraft.approvalMode}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                approvalMode: event.target.value as AgentApprovalModeView,
-                              })
-                            }
-                          >
-                            <option value="request">请求批准</option>
-                            <option value="delegate">委托批准</option>
-                            <option value="full">完全批准</option>
-                            <option value="custom">自定义</option>
-                          </select>
-                        </label>
-                        <label className="st-agent-ws__definition-wide">
-                          <span>策略 ID（可选）</span>
-                          <input
-                            aria-label="智能体策略 ID"
-                            value={definitionDraft.policyId ?? ''}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                policyId: event.target.value,
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="st-agent-ws__definition-wide">
-                          <span>MCP 工具白名单</span>
-                          <textarea
-                            data-testid="agent-definition-mcp-tools"
-                            rows={2}
-                            value={(definitionDraft.mcpToolAllowlist ?? []).join(', ')}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                mcpToolAllowlist: parseDefinitionList(event.target.value),
-                              })
-                            }
-                          />
-                        </label>
-                        {AGENT_PERMISSION_FIELDS.map(([field, label]) => (
-                          <label key={field}>
-                            <span>{label}权限</span>
+                      <div className="st-agent-ws__definition-sections">
+                        <section className="st-agent-ws__definition-section">
+                          <header>
+                            <h4>身份</h4>
+                          </header>
+                          <div className="st-agent-ws__definition-grid">
+                            <label>
+                              <span>名称</span>
+                              <input
+                                aria-label="智能体名称"
+                                value={definitionDraft.name}
+                                disabled={props.busy}
+                                onChange={(event) =>
+                                  setDefinitionDraft({
+                                    ...definitionDraft,
+                                    name: event.target.value,
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              <span>角色</span>
+                              <input
+                                aria-label="智能体角色"
+                                value={definitionDraft.role}
+                                disabled={props.busy}
+                                onChange={(event) =>
+                                  setDefinitionDraft({
+                                    ...definitionDraft,
+                                    role: event.target.value,
+                                  })
+                                }
+                              />
+                            </label>
+                            <div className="st-agent-ws__avatar-editor">
+                              <span>头像</span>
+                              <span
+                                className="st-agent-ws__avatar st-agent-ws__avatar--preview"
+                                data-testid="agent-definition-avatar-preview"
+                                style={
+                                  {
+                                    '--st-agent-color':
+                                      definitionDraft.visualIdentity?.color ?? '#64748b',
+                                  } as CSSProperties
+                                }
+                              >
+                                {definitionDraft.visualIdentity?.avatarUrl ? (
+                                  <img
+                                    src={definitionDraft.visualIdentity.avatarUrl}
+                                    alt="头像预览"
+                                  />
+                                ) : (
+                                  <Bot size={18} strokeWidth={1.8} aria-hidden="true" />
+                                )}
+                              </span>
+                              <button
+                                type="button"
+                                data-testid="agent-definition-avatar-pick"
+                                disabled={props.busy || !props.onPickAvatar}
+                                onClick={() => {
+                                  void props.onPickAvatar?.().then((picked) => {
+                                    if (!picked) return;
+                                    setDefinitionDraft((current) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            visualIdentity: {
+                                              ...(current.visualIdentity ?? {
+                                                icon: 'bot',
+                                                color: '#64748b',
+                                              }),
+                                              avatarPath: picked.avatarPath,
+                                              avatarUrl: picked.avatarUrl,
+                                            },
+                                          }
+                                        : current,
+                                    );
+                                  });
+                                }}
+                              >
+                                <ImagePlus size={13} strokeWidth={1.8} aria-hidden="true" />
+                                选择图片
+                              </button>
+                            </div>
+                            <label>
+                              <span>强调色</span>
+                              <input
+                                type="color"
+                                data-testid="agent-definition-color"
+                                value={
+                                  /^#[0-9a-f]{6}$/i.test(
+                                    definitionDraft.visualIdentity?.color ?? '',
+                                  )
+                                    ? definitionDraft.visualIdentity!.color
+                                    : '#64748b'
+                                }
+                                disabled={props.busy}
+                                onChange={(event) =>
+                                  setDefinitionDraft({
+                                    ...definitionDraft,
+                                    visualIdentity: {
+                                      ...(definitionDraft.visualIdentity ?? {
+                                        icon: 'bot',
+                                        color: '#64748b',
+                                      }),
+                                      color: event.target.value,
+                                    },
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                        </section>
+
+                        <section className="st-agent-ws__definition-section">
+                          <header>
+                            <h4>工作能力</h4>
+                          </header>
+                          <label className="st-agent-ws__definition-field">
+                            <span>能力描述</span>
                             <textarea
-                              data-testid={`agent-definition-permission-${field}`}
-                              rows={2}
-                              value={(definitionDraft.permissions?.[field] ?? []).join(', ')}
+                              data-testid="agent-definition-description"
+                              rows={4}
+                              maxLength={4000}
+                              value={definitionDraft.description ?? ''}
                               disabled={props.busy}
                               onChange={(event) =>
                                 setDefinitionDraft({
                                   ...definitionDraft,
-                                  permissions: {
-                                    ...(definitionDraft.permissions ?? emptyDefinitionPermissions()),
-                                    [field]: parseDefinitionList(event.target.value),
-                                  },
+                                  description: event.target.value,
                                 })
                               }
                             />
                           </label>
-                        ))}
-                        <label>
-                          <span>评审角色</span>
-                          <select
-                            data-testid="agent-definition-review-role"
-                            value={definitionDraft.reviewBehavior?.role ?? 'none'}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                reviewBehavior: {
-                                  ...(definitionDraft.reviewBehavior ?? {
-                                    role: 'none',
-                                    maxIterations: 0,
-                                    onLimitReached: 'pause',
-                                  }),
-                                  role: event.target.value as NonNullable<
-                                    AgentDefinitionView['reviewBehavior']
-                                  >['role'],
-                                },
-                              })
-                            }
-                          >
-                            <option value="none">无</option>
-                            <option value="reviewer">评审者</option>
-                            <option value="executor-reviewer">执行并评审</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span>最大评审轮次</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={100}
-                            data-testid="agent-definition-review-max-iterations"
-                            value={definitionDraft.reviewBehavior?.maxIterations ?? 0}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                reviewBehavior: {
-                                  ...(definitionDraft.reviewBehavior ?? {
-                                    role: 'none',
-                                    maxIterations: 0,
-                                    onLimitReached: 'pause',
-                                  }),
-                                  maxIterations: Math.max(0, Number(event.target.value) || 0),
-                                },
-                              })
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>达到上限时</span>
-                          <select
-                            data-testid="agent-definition-review-on-limit"
-                            value={definitionDraft.reviewBehavior?.onLimitReached ?? 'pause'}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                reviewBehavior: {
-                                  ...(definitionDraft.reviewBehavior ?? {
-                                    role: 'none',
-                                    maxIterations: 0,
-                                    onLimitReached: 'pause',
-                                  }),
-                                  onLimitReached: event.target.value as NonNullable<
-                                    AgentDefinitionView['reviewBehavior']
-                                  >['onLimitReached'],
-                                  ...(event.target.value === 'reassign'
-                                    ? {}
-                                    : { backupAgentVersionId: undefined }),
-                                },
-                              })
-                            }
-                          >
-                            <option value="pause">暂停</option>
-                            <option value="abort">终止</option>
-                            <option value="reassign">重新分配</option>
-                          </select>
-                        </label>
-                        {definitionDraft.reviewBehavior?.onLimitReached === 'reassign' ? (
-                          <label>
-                            <span>备用审阅者</span>
-                            <select
-                              data-testid="agent-definition-review-backup"
-                              value={definitionDraft.reviewBehavior.backupAgentVersionId ?? ''}
+                        </section>
+
+                        <section className="st-agent-ws__definition-section">
+                          <header>
+                            <h4>工作指令</h4>
+                          </header>
+                          <label className="st-agent-ws__definition-field">
+                            <span>固定 Prompt</span>
+                            <textarea
+                              aria-label="工作指令"
+                              rows={8}
+                              value={definitionDraft.developerInstructions}
                               disabled={props.busy}
-                              aria-invalid={!hasValidBackupReviewer}
-                              aria-describedby={
-                                hasValidBackupReviewer
-                                  ? undefined
-                                  : 'agent-definition-review-backup-error'
-                              }
                               onChange={(event) =>
                                 setDefinitionDraft({
                                   ...definitionDraft,
-                                  reviewBehavior: {
-                                    ...(definitionDraft.reviewBehavior ?? {
-                                      role: 'none',
-                                      maxIterations: 0,
-                                      onLimitReached: 'reassign',
-                                    }),
-                                    backupAgentVersionId: event.target.value || undefined,
-                                  },
+                                  developerInstructions: event.target.value,
                                 })
                               }
-                            >
-                              <option value="">选择 exact AgentVersion</option>
-                              {hasStaleBackupReviewer ? (
-                                <option value={selectedBackupReviewerVersionId} disabled>
-                                  已失效 · {selectedBackupReviewerVersionId}
-                                </option>
-                              ) : null}
-                              {backupReviewerVersions.map((version) => (
-                                <option
-                                  key={version.agentVersionId}
-                                  value={version.agentVersionId}
-                                  title={version.title ?? version.agentName}
-                                >
-                                  {version.agentName} · v{version.version} · {version.agentVersionId}
-                                  {version.title ? ` · ${version.title}` : ''}
-                                </option>
-                              ))}
-                            </select>
-                            {!hasValidBackupReviewer ? (
-                              <span
-                                className="st-agent-ws__definition-error"
-                                id="agent-definition-review-backup-error"
-                                data-testid="agent-definition-review-backup-error"
-                                role="alert"
-                              >
-                                请选择目录中有效的 exact AgentVersion。
-                              </span>
-                            ) : null}
+                            />
                           </label>
-                        ) : null}
-                        <label className="st-agent-ws__definition-check">
-                          <input
-                            type="checkbox"
-                            data-testid="agent-definition-artifact-retain"
-                            checked={definitionDraft.artifactRules?.retainVersions ?? true}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                artifactRules: {
-                                  ...(definitionDraft.artifactRules ?? {
-                                    retainVersions: true,
-                                    requireReview: false,
-                                    defaultStatus: 'candidate',
-                                  }),
-                                  retainVersions: event.target.checked,
-                                },
-                              })
-                            }
-                          />
-                          <span>保留产物版本</span>
-                        </label>
-                        <label className="st-agent-ws__definition-check">
-                          <input
-                            type="checkbox"
-                            data-testid="agent-definition-artifact-review"
-                            checked={definitionDraft.artifactRules?.requireReview ?? false}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                artifactRules: {
-                                  ...(definitionDraft.artifactRules ?? {
-                                    retainVersions: true,
-                                    requireReview: false,
-                                    defaultStatus: 'candidate',
-                                  }),
-                                  requireReview: event.target.checked,
-                                },
-                              })
-                            }
-                          />
-                          <span>产物必须评审</span>
-                        </label>
-                        <label>
-                          <span>默认产物状态</span>
-                          <select
-                            data-testid="agent-definition-artifact-status"
-                            value={definitionDraft.artifactRules?.defaultStatus ?? 'candidate'}
-                            disabled={props.busy}
-                            onChange={(event) =>
-                              setDefinitionDraft({
-                                ...definitionDraft,
-                                artifactRules: {
-                                  ...(definitionDraft.artifactRules ?? {
-                                    retainVersions: true,
-                                    requireReview: false,
-                                    defaultStatus: 'candidate',
-                                  }),
-                                  defaultStatus: event.target.value as 'candidate' | 'final',
-                                },
-                              })
-                            }
-                          >
-                            <option value="candidate">候选</option>
-                            <option value="final">最终</option>
-                          </select>
-                        </label>
+                        </section>
+
+                        <section className="st-agent-ws__definition-section">
+                          <header>
+                            <h4>能力上限</h4>
+                          </header>
+                          <div className="st-agent-ws__capability-ceiling">
+                            <p>任务可以临时收紧这些能力，但不能超过此处的范围。</p>
+                            <div>
+                              {AGENT_CAPABILITY_OPTIONS.map((capabilityOption) => {
+                                const permissions =
+                                  definitionDraft.permissions ?? emptyDefinitionPermissions();
+                                const enabled = isAgentPermissionCategoryEnabled(
+                                  permissions[capabilityOption.id],
+                                  isLegacyAgentPermissions(permissions),
+                                );
+                                return (
+                                  <label key={capabilityOption.id}>
+                                    <input
+                                      type="checkbox"
+                                      aria-label={`允许${capabilityOption.label}能力`}
+                                      checked={enabled}
+                                      disabled={props.busy}
+                                      onChange={(event) => {
+                                        const nextPermissions = materializeAgentPermissions(
+                                          definitionDraft.permissions,
+                                        );
+                                        nextPermissions[capabilityOption.id] = event.target.checked
+                                          ? ['*']
+                                          : [AGENT_PERMISSION_DISABLED];
+                                        setDefinitionDraft({
+                                          ...definitionDraft,
+                                          permissions: nextPermissions,
+                                        });
+                                      }}
+                                    />
+                                    <span>
+                                      <strong>{capabilityOption.label}</strong>
+                                      <small>{capabilityOption.description}</small>
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </section>
+
+                        <section className="st-agent-ws__definition-section">
+                          <header>
+                            <h4>执行设置</h4>
+                          </header>
+                          <div className="st-agent-ws__definition-grid">
+                            <label>
+                              <span>支持的任务并发数</span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={16}
+                                step={1}
+                                aria-label="最大并发任务数"
+                                data-testid="agent-definition-max-concurrency"
+                                value={definitionDraft.maxConcurrency ?? 3}
+                                disabled={props.busy}
+                                onChange={(event) =>
+                                  setDefinitionDraft({
+                                    ...definitionDraft,
+                                    maxConcurrency: Math.max(
+                                      1,
+                                      Math.min(16, Number(event.target.value) || 1),
+                                    ),
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                        </section>
                       </div>
                       <div className="st-agent-ws__definition-save">
-                        <span>
-                          当前 {definitionDraft.agentVersionId} · v{definitionDraft.version}
-                        </span>
+                        <span>修改会保存并用于后续任务</span>
                         <button
                           type="button"
+                          data-testid="agent-definition-save"
                           onClick={saveDefinition}
-                          disabled={
-                            props.busy || !props.onSaveDefinition || !hasValidBackupReviewer
-                          }
+                          disabled={props.busy || !props.onSaveDefinition}
                         >
                           <Save size={13} strokeWidth={1.9} aria-hidden="true" />
-                          保存为新版本
+                          保存修改
                         </button>
                       </div>
                     </div>
@@ -1076,13 +1178,17 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                             data-testid={`agent-version-${version.agentVersionId}`}
                             data-changes={changes.join(',')}
                             data-current={
-                              version.agentVersionId === props.definition?.agentVersionId ? '1' : '0'
+                              version.agentVersionId === props.definition?.agentVersionId
+                                ? '1'
+                                : '0'
                             }
                           >
                             <div className="st-agent-ws__version-head">
                               <strong>v{version.version}</strong>
                               <code>{version.agentVersionId}</code>
-                              <time dateTime={version.createdAt}>{version.createdAt.slice(0, 16)}</time>
+                              <time dateTime={version.createdAt}>
+                                {version.createdAt.slice(0, 16)}
+                              </time>
                             </div>
                             <p>
                               {changes
@@ -1096,18 +1202,54 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                                 .join(' · ')}
                             </p>
                             <dl>
-                              <div><dt>角色</dt><dd>{version.role}</dd></div>
-                              <div><dt>记忆</dt><dd>{version.memoryScope}</dd></div>
-                              <div><dt>批准</dt><dd>{version.approvalMode}</dd></div>
-                              <div><dt>策略</dt><dd>{version.policyId ?? '无'}</dd></div>
-                              <div><dt>Model</dt><dd>{version.defaultModelId ?? '—'}</dd></div>
-                              <div><dt>Credential group</dt><dd>{version.defaultCredentialGroupId ?? '—'}</dd></div>
-                              <div><dt>Credential pin</dt><dd>{version.pinnedCredentialRefId ?? '—'}</dd></div>
-                              <div><dt>Failure</dt><dd>{version.pauseOnFailure ? 'pause' : 'continue'}</dd></div>
-                              <div><dt>Fallback</dt><dd>{version.fallbackModelIds?.join(', ') || '—'}</dd></div>
-                              <div><dt>Skills</dt><dd>{version.skillVersionIds?.join(', ') || '—'}</dd></div>
-                              <div><dt>MCP servers</dt><dd>{version.mcpServerIds?.join(', ') || '—'}</dd></div>
-                              <div><dt>MCP tools</dt><dd>{version.mcpToolAllowlist?.join(', ') || '—'}</dd></div>
+                              <div>
+                                <dt>角色</dt>
+                                <dd>{version.role}</dd>
+                              </div>
+                              <div>
+                                <dt>并发</dt>
+                                <dd>{version.maxConcurrency ?? 3}</dd>
+                              </div>
+                              <div>
+                                <dt>记忆</dt>
+                                <dd>{version.memoryScope}</dd>
+                              </div>
+                              <div>
+                                <dt>策略</dt>
+                                <dd>{version.policyId ?? '无'}</dd>
+                              </div>
+                              <div>
+                                <dt>Model</dt>
+                                <dd>{version.defaultModelId ?? '—'}</dd>
+                              </div>
+                              <div>
+                                <dt>Credential group</dt>
+                                <dd>{version.defaultCredentialGroupId ?? '—'}</dd>
+                              </div>
+                              <div>
+                                <dt>Credential pin</dt>
+                                <dd>{version.pinnedCredentialRefId ?? '—'}</dd>
+                              </div>
+                              <div>
+                                <dt>Failure</dt>
+                                <dd>{version.pauseOnFailure ? 'pause' : 'continue'}</dd>
+                              </div>
+                              <div>
+                                <dt>Fallback</dt>
+                                <dd>{version.fallbackModelIds?.join(', ') || '—'}</dd>
+                              </div>
+                              <div>
+                                <dt>Skills</dt>
+                                <dd>{version.skillVersionIds?.join(', ') || '—'}</dd>
+                              </div>
+                              <div>
+                                <dt>MCP servers</dt>
+                                <dd>{version.mcpServerIds?.join(', ') || '—'}</dd>
+                              </div>
+                              <div>
+                                <dt>MCP tools</dt>
+                                <dd>{version.mcpToolAllowlist?.join(', ') || '—'}</dd>
+                              </div>
                             </dl>
                           </li>
                         );
@@ -1117,10 +1259,7 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                 </div>
               ) : null}
 
-              {tab === 'skills' ||
-              tab === 'tools' ||
-              tab === 'runtime' ||
-              tab === 'more' ? (
+              {tab === 'skills' || tab === 'runtime' || tab === 'more' ? (
                 <div
                   className="st-agent-ws__panel st-agent-ws__panel--binding"
                   data-testid={`agent-workspace-panel-${tab}`}
@@ -1129,13 +1268,7 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
                     {...props}
                     layout="tabs"
                     activeSection={
-                      tab === 'skills'
-                        ? 'skills'
-                        : tab === 'tools'
-                          ? 'tools'
-                          : tab === 'runtime'
-                            ? 'runtime'
-                            : 'more'
+                      tab === 'skills' ? 'skills' : tab === 'runtime' ? 'runtime' : 'more'
                     }
                   />
                 </div>

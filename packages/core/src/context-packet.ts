@@ -42,10 +42,14 @@ export interface BuiltContext {
 
 /** Design §20.9 — never silently remove these under overflow. */
 export const PROTECTED_SOURCE_KINDS: ReadonlySet<ContextSourceRef['kind']> = new Set([
+  'application-context',
+  'agent-instructions',
   'task-goal',
+  'task-status',
   'acceptance-criteria',
   'decision',
   'constraint',
+  'latest-user-message',
 ]);
 
 /** Parent task snapshot used only for explicit cross-task references (§10.1). */

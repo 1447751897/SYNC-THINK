@@ -5,6 +5,7 @@ import {
   Code2,
   Image as ImageIcon,
   ListChecks,
+  LoaderCircle,
   SearchCheck,
   Workflow,
   type LucideIcon,
@@ -19,11 +20,20 @@ export interface MessageBubbleProps {
   role: 'user' | 'assistant' | 'system' | 'tool';
   agentLabel?: string;
   agentIcon?: string;
+  agentAvatarUrl?: string;
   agentColor?: string;
   onAgentActivate?: () => void;
   children?: ReactNode;
   /** @deprecated Internal model/run metadata belongs in Trace and Manifest. */
   meta?: string;
+  /** Exact model recorded for this assistant turn. */
+  modelLabel?: string;
+  /** User-facing time for the persisted message. */
+  occurredAt?: string;
+  /** Token metadata only when recorded by the Runtime. */
+  tokenLabel?: string;
+  /** Effective routed target shown as an @ mention in the conversation. */
+  mentionLabel?: string;
   /** Live stream indicator for in-flight assistant turns. */
   streaming?: boolean;
   /**
@@ -71,6 +81,11 @@ export function MessageBubble(props: MessageBubbleProps) {
   const showsAgent = props.role === 'assistant';
   const agentLabel = props.agentLabel?.trim() || 'Agent';
   const agentColor = safeAgentColor(props.agentColor);
+  const hasMessageContent =
+    typeof props.children === 'string'
+      ? props.children.trim().length > 0
+      : props.children !== null && props.children !== undefined && props.children !== false;
+  const thinking = showsAgent && Boolean(props.streaming) && !hasMessageContent;
   const identityContents = showsAgent ? (
     <>
       <span
@@ -80,14 +95,25 @@ export function MessageBubble(props: MessageBubbleProps) {
         data-streaming={props.streaming ? '1' : '0'}
         style={{ '--st-message-agent-color': agentColor } as CSSProperties}
       >
-        <AgentGlyph icon={props.agentIcon} label={agentLabel} />
+        {props.agentAvatarUrl ? (
+          <img src={props.agentAvatarUrl} alt="" />
+        ) : (
+          <AgentGlyph icon={props.agentIcon} label={agentLabel} />
+        )}
         {props.streaming ? (
           <span className="st-message-bubble__avatar-status" aria-hidden="true" />
         ) : null}
       </span>
       <span className="st-message-bubble__agent-copy">
         <strong>{agentLabel}</strong>
-        {props.streaming ? <small>正在回复</small> : null}
+        {props.modelLabel || props.occurredAt || props.tokenLabel ? (
+          <span className="st-message-bubble__agent-meta" data-testid="message-agent-meta">
+            {props.modelLabel ? <span>{props.modelLabel}</span> : null}
+            {props.occurredAt ? <time>{props.occurredAt}</time> : null}
+            {props.tokenLabel ? <span>{props.tokenLabel}</span> : null}
+          </span>
+        ) : null}
+        {props.streaming && !thinking ? <small>输出中</small> : null}
       </span>
     </>
   ) : null;
@@ -139,14 +165,33 @@ export function MessageBubble(props: MessageBubbleProps) {
           </div>
         )
       ) : null}
-      <div className="st-message-bubble__body" data-format={renderMarkdown ? 'markdown' : 'plain'}>
-        {renderMarkdown ? (
+      <div
+        className="st-message-bubble__body"
+        data-format={renderMarkdown ? 'markdown' : 'plain'}
+        data-state={thinking ? 'thinking' : 'message'}
+      >
+        {props.mentionLabel ? (
+          <span className="st-message-bubble__mention" data-testid="message-mention">
+            @{props.mentionLabel}
+          </span>
+        ) : null}
+        {thinking ? (
+          <span className="st-message-bubble__thinking" data-testid="message-thinking">
+            <LoaderCircle aria-hidden="true" size={14} />
+            <span>{agentLabel} 正在思考...</span>
+          </span>
+        ) : renderMarkdown ? (
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.children as string}</ReactMarkdown>
         ) : (
           props.children
         )}
-        {props.streaming ? <span className="st-message-bubble__cursor" aria-hidden="true" /> : null}
+        {props.streaming && !thinking ? (
+          <span className="st-message-bubble__cursor" aria-hidden="true" />
+        ) : null}
       </div>
+      {!showsAgent && props.occurredAt ? (
+        <time className="st-message-bubble__user-time">{props.occurredAt}</time>
+      ) : null}
     </article>
   );
 }

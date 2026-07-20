@@ -7,7 +7,17 @@ import type {
   ResumeRunPayload,
   ContinueEventReplayPayload,
   BindWorkspaceFolderPayload,
+  BindWorkspaceGitRepositoryPayload,
   CreateTaskPayload,
+  DelegateSubtaskPayload,
+  RecordHandoffPayload,
+  ResolveWorktreeIntegrationPayload,
+  ListBrowserIdentitiesPayload,
+  CreateBrowserIdentityPayload,
+  UpdateBrowserIdentityPayload,
+  DeleteBrowserIdentityPayload,
+  SetTaskBrowserIdentityPayload,
+  DescribeTaskExecutionAccessPayload,
   CreateWorkspacePayload,
   ListTasksPayload,
   ListWorkspacesPayload,
@@ -65,7 +75,135 @@ import type {
   MergeArtifactVersionsPayload,
   ListArtifactMergeConflictsPayload,
   ResolveArtifactMergeConflictPayload,
+  CreateGroupPayload,
+  GetGroupPayload,
+  ListGroupsPayload,
+  UpdateGroupPayload,
+  AddGroupMemberPayload,
+  RemoveGroupMemberPayload,
+  UpdateGroupMemberResponsibilityPayload,
+  SetGroupLeadPayload,
+  CreateGroupTaskPayload,
+  ResolveApplicationToolConfirmationPayload,
+  CreateAutomationPayload,
+  UpdateAutomationPayload,
+  DeleteAutomationPayload,
+  GetAutomationPayload,
+  ListAutomationsPayload,
+  TriggerAutomationPayload,
+  ListAutomationExecutionsPayload,
 } from '@sync-think/protocol';
+
+export function parseListBrowserIdentitiesPayload(
+  value: unknown,
+): ListBrowserIdentitiesPayload | undefined {
+  return value === undefined || (isRecord(value) && hasOnlyKeys(value, [])) ? {} : undefined;
+}
+
+export function parseCreateBrowserIdentityPayload(
+  value: unknown,
+): CreateBrowserIdentityPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['name', 'makeDefault']) ||
+    typeof value.name !== 'string' ||
+    !value.name.trim() ||
+    value.name.length > 128 ||
+    (value.makeDefault !== undefined && typeof value.makeDefault !== 'boolean')
+  ) return undefined;
+  return { name: value.name.trim(), ...(value.makeDefault === true ? { makeDefault: true } : {}) };
+}
+
+export function parseUpdateBrowserIdentityPayload(
+  value: unknown,
+): UpdateBrowserIdentityPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['id', 'name', 'makeDefault']) ||
+    typeof value.id !== 'string' ||
+    !value.id.trim() ||
+    value.id.length > 256 ||
+    (value.name !== undefined &&
+      (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 128)) ||
+    (value.makeDefault !== undefined && typeof value.makeDefault !== 'boolean') ||
+    (value.name === undefined && value.makeDefault !== true)
+  ) return undefined;
+  return {
+    id: value.id.trim(),
+    ...(typeof value.name === 'string' ? { name: value.name.trim() } : {}),
+    ...(value.makeDefault === true ? { makeDefault: true } : {}),
+  };
+}
+
+export function parseDeleteBrowserIdentityPayload(
+  value: unknown,
+): DeleteBrowserIdentityPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['id']) ||
+    typeof value.id !== 'string' ||
+    !value.id.trim() ||
+    value.id.length > 256
+  ) return undefined;
+  return { id: value.id.trim() };
+}
+
+export function parseSetTaskBrowserIdentityPayload(
+  value: unknown,
+): SetTaskBrowserIdentityPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'browserIdentityId']) ||
+    typeof value.taskId !== 'string' ||
+    !value.taskId.trim() ||
+    value.taskId.length > 256 ||
+    typeof value.browserIdentityId !== 'string' ||
+    !value.browserIdentityId.trim() ||
+    value.browserIdentityId.length > 256
+  ) return undefined;
+  return {
+    taskId: value.taskId.trim() as SetTaskBrowserIdentityPayload['taskId'],
+    browserIdentityId: value.browserIdentityId.trim(),
+  };
+}
+
+export function parseDescribeTaskExecutionAccessPayload(
+  value: unknown,
+): DescribeTaskExecutionAccessPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'agentVersionId']) ||
+    typeof value.taskId !== 'string' ||
+    !value.taskId.trim() ||
+    value.taskId.length > 256 ||
+    typeof value.agentVersionId !== 'string' ||
+    !value.agentVersionId.trim() ||
+    value.agentVersionId.length > 256
+  ) return undefined;
+  return {
+    taskId: value.taskId.trim() as DescribeTaskExecutionAccessPayload['taskId'],
+    agentVersionId: value.agentVersionId.trim() as DescribeTaskExecutionAccessPayload['agentVersionId'],
+  };
+}
+
+export function parseResolveWorktreeIntegrationPayload(
+  value: unknown,
+): ResolveWorktreeIntegrationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['childTaskId', 'strategy']) ||
+    typeof value.childTaskId !== 'string' ||
+    !value.childTaskId.trim() ||
+    value.childTaskId.length > 256 ||
+    (value.strategy !== 'accept-child' && value.strategy !== 'keep-parent')
+  ) {
+    return undefined;
+  }
+  return {
+    childTaskId: value.childTaskId.trim() as ResolveWorktreeIntegrationPayload['childTaskId'],
+    strategy: value.strategy,
+  };
+}
 import {
   MAX_INLINE_ARTIFACT_CONTENT_BYTES,
   MAX_REVIEW_ITERATIONS,
@@ -101,13 +239,305 @@ const EVENT_CATEGORIES = new Set<EventCategory>([
   'system',
 ]);
 
-export function parseCreateWorkspacePayload(value: unknown): CreateWorkspacePayload | undefined {
-  if (!isRecord(value)) return undefined;
+export function parseResolveApplicationToolConfirmationPayload(
+  value: unknown,
+): ResolveApplicationToolConfirmationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['confirmationId', 'threadId']) ||
+    typeof value.confirmationId !== 'string' ||
+    value.confirmationId.trim().length === 0 ||
+    value.confirmationId.length > 256 ||
+    typeof value.threadId !== 'string' ||
+    value.threadId.trim().length === 0 ||
+    value.threadId.length > 256
+  ) {
+    return undefined;
+  }
+  return {
+    confirmationId: value.confirmationId.trim(),
+    threadId: value.threadId.trim() as ResolveApplicationToolConfirmationPayload['threadId'],
+  };
+}
+
+const AUTOMATION_BASE_KEYS = [
+  'name',
+  'workspaceId',
+  'target',
+  'instruction',
+  'approvalMode',
+  'trigger',
+  'timezone',
+  'concurrencyPolicy',
+  'maxConcurrency',
+  'maxRetries',
+  'enabled',
+] as const;
+const AUTOMATION_CONCURRENCY_POLICIES = new Set(['skip', 'queue', 'parallel']);
+
+function parseAutomationBase(value: Record<string, unknown>): CreateAutomationPayload | undefined {
   if (
     typeof value.name !== 'string' ||
     value.name.trim().length === 0 ||
-    value.name.length > 256
+    value.name.length > 256 ||
+    typeof value.workspaceId !== 'string' ||
+    value.workspaceId.trim().length === 0 ||
+    value.workspaceId.length > 256 ||
+    typeof value.instruction !== 'string' ||
+    value.instruction.trim().length === 0 ||
+    value.instruction.length > 32_000 ||
+    !isRecord(value.target) ||
+    !isRecord(value.trigger)
   ) {
+    return undefined;
+  }
+  let target: CreateAutomationPayload['target'];
+  if (
+    value.target.type === 'agent' &&
+    hasOnlyKeys(value.target, ['type', 'agentVersionId']) &&
+    typeof value.target.agentVersionId === 'string' &&
+    value.target.agentVersionId.trim().length > 0 &&
+    value.target.agentVersionId.length <= 256
+  ) {
+    target = {
+      type: 'agent',
+      agentVersionId: value.target.agentVersionId.trim() as never,
+    };
+  } else if (
+    value.target.type === 'group' &&
+    hasOnlyKeys(value.target, ['type', 'groupId']) &&
+    typeof value.target.groupId === 'string' &&
+    value.target.groupId.trim().length > 0 &&
+    value.target.groupId.length <= 256
+  ) {
+    target = { type: 'group', groupId: value.target.groupId.trim() as never };
+  } else {
+    return undefined;
+  }
+  let trigger: CreateAutomationPayload['trigger'];
+  if (
+    value.trigger.type === 'cron' &&
+    hasOnlyKeys(value.trigger, ['type', 'expression']) &&
+    typeof value.trigger.expression === 'string' &&
+    value.trigger.expression.trim().length > 0 &&
+    value.trigger.expression.length <= 256
+  ) {
+    trigger = { type: 'cron', expression: value.trigger.expression.trim() };
+  } else if (value.trigger.type === 'webhook' && hasOnlyKeys(value.trigger, ['type'])) {
+    trigger = { type: 'webhook' };
+  } else {
+    return undefined;
+  }
+  if (
+    value.approvalMode !== undefined &&
+    (typeof value.approvalMode !== 'string' || !APPROVAL_MODES.has(value.approvalMode))
+  ) {
+    return undefined;
+  }
+  if (
+    value.concurrencyPolicy !== undefined &&
+    (typeof value.concurrencyPolicy !== 'string' ||
+      !AUTOMATION_CONCURRENCY_POLICIES.has(value.concurrencyPolicy))
+  ) {
+    return undefined;
+  }
+  if (
+    value.maxConcurrency !== undefined &&
+    (!Number.isInteger(value.maxConcurrency) ||
+      (value.maxConcurrency as number) < 1 ||
+      (value.maxConcurrency as number) > 8)
+  ) {
+    return undefined;
+  }
+  if (
+    value.maxRetries !== undefined &&
+    (!Number.isInteger(value.maxRetries) ||
+      (value.maxRetries as number) < 0 ||
+      (value.maxRetries as number) > 2)
+  ) {
+    return undefined;
+  }
+  if (
+    value.timezone !== undefined &&
+    (typeof value.timezone !== 'string' ||
+      value.timezone.trim().length === 0 ||
+      value.timezone.length > 128)
+  ) {
+    return undefined;
+  }
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') return undefined;
+  return {
+    name: value.name.trim(),
+    workspaceId: value.workspaceId.trim() as CreateAutomationPayload['workspaceId'],
+    target,
+    instruction: value.instruction.trim(),
+    trigger,
+    ...(value.approvalMode !== undefined
+      ? { approvalMode: value.approvalMode as CreateAutomationPayload['approvalMode'] }
+      : {}),
+    ...(typeof value.timezone === 'string' ? { timezone: value.timezone.trim() } : {}),
+    ...(value.concurrencyPolicy !== undefined
+      ? {
+          concurrencyPolicy:
+            value.concurrencyPolicy as CreateAutomationPayload['concurrencyPolicy'],
+        }
+      : {}),
+    ...(value.maxConcurrency !== undefined
+      ? { maxConcurrency: value.maxConcurrency as number }
+      : {}),
+    ...(value.maxRetries !== undefined ? { maxRetries: value.maxRetries as number } : {}),
+    ...(value.enabled !== undefined ? { enabled: value.enabled as boolean } : {}),
+  };
+}
+
+export function parseCreateAutomationPayload(value: unknown): CreateAutomationPayload | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, AUTOMATION_BASE_KEYS)) return undefined;
+  return parseAutomationBase(value);
+}
+
+export function parseUpdateAutomationPayload(value: unknown): UpdateAutomationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [...AUTOMATION_BASE_KEYS, 'automationId', 'expectedVersion']) ||
+    typeof value.automationId !== 'string' ||
+    value.automationId.trim().length === 0 ||
+    value.automationId.length > 256 ||
+    !Number.isInteger(value.expectedVersion) ||
+    (value.expectedVersion as number) < 1
+  ) {
+    return undefined;
+  }
+  const base = parseAutomationBase(value);
+  return base
+    ? {
+        ...base,
+        automationId: value.automationId.trim() as UpdateAutomationPayload['automationId'],
+        expectedVersion: value.expectedVersion as number,
+      }
+    : undefined;
+}
+
+function parseAutomationIdAndVersion(value: unknown): DeleteAutomationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['automationId', 'expectedVersion']) ||
+    typeof value.automationId !== 'string' ||
+    value.automationId.trim().length === 0 ||
+    value.automationId.length > 256 ||
+    !Number.isInteger(value.expectedVersion) ||
+    (value.expectedVersion as number) < 1
+  ) {
+    return undefined;
+  }
+  return {
+    automationId: value.automationId.trim() as DeleteAutomationPayload['automationId'],
+    expectedVersion: value.expectedVersion as number,
+  };
+}
+
+export const parseDeleteAutomationPayload = parseAutomationIdAndVersion;
+
+export function parseGetAutomationPayload(value: unknown): GetAutomationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['automationId']) ||
+    typeof value.automationId !== 'string' ||
+    value.automationId.trim().length === 0 ||
+    value.automationId.length > 256
+  ) {
+    return undefined;
+  }
+  return { automationId: value.automationId.trim() as GetAutomationPayload['automationId'] };
+}
+
+export function parseListAutomationsPayload(value: unknown): ListAutomationsPayload | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['workspaceId', 'includeDisabled', 'limit'])) {
+    return undefined;
+  }
+  if (
+    value.workspaceId !== undefined &&
+    (typeof value.workspaceId !== 'string' ||
+      value.workspaceId.trim().length === 0 ||
+      value.workspaceId.length > 256)
+  ) {
+    return undefined;
+  }
+  if (value.includeDisabled !== undefined && typeof value.includeDisabled !== 'boolean') {
+    return undefined;
+  }
+  if (
+    value.limit !== undefined &&
+    (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 500)
+  ) {
+    return undefined;
+  }
+  return {
+    ...(typeof value.workspaceId === 'string'
+      ? {
+          workspaceId: value.workspaceId.trim() as NonNullable<
+            ListAutomationsPayload['workspaceId']
+          >,
+        }
+      : {}),
+    ...(value.includeDisabled !== undefined
+      ? { includeDisabled: value.includeDisabled as boolean }
+      : {}),
+    ...(value.limit !== undefined ? { limit: value.limit as number } : {}),
+  };
+}
+
+export function parseTriggerAutomationPayload(
+  value: unknown,
+): TriggerAutomationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['automationId', 'input']) ||
+    typeof value.automationId !== 'string' ||
+    value.automationId.trim().length === 0 ||
+    value.automationId.length > 256 ||
+    (value.input !== undefined && (typeof value.input !== 'string' || value.input.length > 32_000))
+  ) {
+    return undefined;
+  }
+  return {
+    automationId: value.automationId.trim() as TriggerAutomationPayload['automationId'],
+    ...(typeof value.input === 'string' && value.input.trim() ? { input: value.input.trim() } : {}),
+  };
+}
+
+export function parseListAutomationExecutionsPayload(
+  value: unknown,
+): ListAutomationExecutionsPayload | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['automationId', 'limit'])) return undefined;
+  if (
+    value.automationId !== undefined &&
+    (typeof value.automationId !== 'string' ||
+      value.automationId.trim().length === 0 ||
+      value.automationId.length > 256)
+  ) {
+    return undefined;
+  }
+  if (
+    value.limit !== undefined &&
+    (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 500)
+  ) {
+    return undefined;
+  }
+  return {
+    ...(typeof value.automationId === 'string'
+      ? {
+          automationId: value.automationId.trim() as NonNullable<
+            ListAutomationExecutionsPayload['automationId']
+          >,
+        }
+      : {}),
+    ...(value.limit !== undefined ? { limit: value.limit as number } : {}),
+  };
+}
+
+export function parseCreateWorkspacePayload(value: unknown): CreateWorkspacePayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.name !== 'string' || value.name.trim().length === 0 || value.name.length > 256) {
     return undefined;
   }
   if (
@@ -166,6 +596,29 @@ export function parseBindWorkspaceFolderPayload(
   };
 }
 
+export function parseBindWorkspaceGitRepositoryPayload(
+  value: unknown,
+): BindWorkspaceGitRepositoryPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.workspaceId !== 'string' ||
+    !value.workspaceId.trim() ||
+    value.workspaceId.length > 256 ||
+    typeof value.repositoryUrl !== 'string' ||
+    !value.repositoryUrl.trim() ||
+    value.repositoryUrl.length > 4096 ||
+    (value.defaultRef !== undefined &&
+      (typeof value.defaultRef !== 'string' || !value.defaultRef.trim() || value.defaultRef.length > 512))
+  ) {
+    return undefined;
+  }
+  return {
+    workspaceId: value.workspaceId.trim() as BindWorkspaceGitRepositoryPayload['workspaceId'],
+    repositoryUrl: value.repositoryUrl.trim(),
+    ...(typeof value.defaultRef === 'string' ? { defaultRef: value.defaultRef.trim() } : {}),
+  };
+}
+
 export function parseListWorkspacesPayload(value: unknown): ListWorkspacesPayload | undefined {
   if (value === undefined || value === null) return {};
   if (!isRecord(value)) return undefined;
@@ -199,19 +652,118 @@ export function parseCreateTaskPayload(value: unknown): CreateTaskPayload | unde
   return { ...value, acceptanceCriteria } as unknown as CreateTaskPayload;
 }
 
+export function parseDelegateSubtaskPayload(value: unknown): DelegateSubtaskPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'workspaceId',
+      'parentTaskId',
+      'delegateAgentVersionId',
+      'title',
+      'goal',
+      'requiredEvidence',
+      'acceptanceConditions',
+      'allowedTools',
+      'dependsOnTaskIds',
+      'delegatingAgentVersionId',
+      'delegationBatchId',
+    ]) ||
+    !boundedAgentText(value.workspaceId, 256) ||
+    !boundedAgentText(value.parentTaskId, 256) ||
+    !boundedAgentText(value.delegateAgentVersionId, 256) ||
+    !boundedAgentText(value.title, 512) ||
+    !boundedAgentText(value.goal, 10_000) ||
+    (value.requiredEvidence !== undefined &&
+      !validAgentIdList(value.requiredEvidence, 64, 2_000)) ||
+    (value.acceptanceConditions !== undefined &&
+      !validAgentIdList(value.acceptanceConditions, 64, 2_000)) ||
+    (value.allowedTools !== undefined && !validAgentIdList(value.allowedTools, 64, 256)) ||
+    (value.dependsOnTaskIds !== undefined &&
+      !validAgentIdList(value.dependsOnTaskIds, 64, 256)) ||
+    (value.delegatingAgentVersionId !== undefined &&
+      !boundedAgentText(value.delegatingAgentVersionId, 256)) ||
+    (value.delegationBatchId !== undefined && !boundedAgentText(value.delegationBatchId, 256))
+  ) {
+    return undefined;
+  }
+  return {
+    workspaceId: value.workspaceId.trim() as DelegateSubtaskPayload['workspaceId'],
+    parentTaskId: value.parentTaskId.trim() as DelegateSubtaskPayload['parentTaskId'],
+    delegateAgentVersionId:
+      value.delegateAgentVersionId.trim() as DelegateSubtaskPayload['delegateAgentVersionId'],
+    title: value.title.trim(),
+    goal: value.goal.trim(),
+    requiredEvidence: (value.requiredEvidence as string[] | undefined)?.map((item) => item.trim()),
+    acceptanceConditions: (value.acceptanceConditions as string[] | undefined)?.map((item) =>
+      item.trim(),
+    ),
+    allowedTools: (value.allowedTools as string[] | undefined)?.map((item) => item.trim()),
+    ...(value.dependsOnTaskIds === undefined
+      ? {}
+      : {
+          dependsOnTaskIds: (value.dependsOnTaskIds as string[]).map(
+            (item) => item.trim() as DelegateSubtaskPayload['parentTaskId'],
+          ),
+        }),
+    ...(value.delegatingAgentVersionId === undefined
+      ? {}
+      : {
+          delegatingAgentVersionId:
+            value.delegatingAgentVersionId.trim() as DelegateSubtaskPayload['delegateAgentVersionId'],
+        }),
+    ...(value.delegationBatchId === undefined
+      ? {}
+      : { delegationBatchId: value.delegationBatchId.trim() }),
+  };
+}
+
+export function parseRecordHandoffPayload(value: unknown): RecordHandoffPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'taskId',
+      'fromAgentVersionId',
+      'toAgentVersionId',
+      'summary',
+      'evidenceRefs',
+      'status',
+    ]) ||
+    !boundedAgentText(value.taskId, 256) ||
+    !boundedAgentText(value.fromAgentVersionId, 256) ||
+    !boundedAgentText(value.toAgentVersionId, 256) ||
+    value.fromAgentVersionId.trim() === value.toAgentVersionId.trim() ||
+    !boundedAgentText(value.summary, 10_000) ||
+    (value.evidenceRefs !== undefined && !validAgentIdList(value.evidenceRefs, 64, 512)) ||
+    (value.status !== undefined &&
+      value.status !== 'completed' &&
+      value.status !== 'blocked' &&
+      value.status !== 'needs-review')
+  ) {
+    return undefined;
+  }
+  return {
+    taskId: value.taskId.trim() as RecordHandoffPayload['taskId'],
+    fromAgentVersionId:
+      value.fromAgentVersionId.trim() as RecordHandoffPayload['fromAgentVersionId'],
+    toAgentVersionId: value.toAgentVersionId.trim() as RecordHandoffPayload['toAgentVersionId'],
+    summary: value.summary.trim(),
+    evidenceRefs: (value.evidenceRefs as string[] | undefined)?.map((item) => item.trim()),
+    status: value.status as RecordHandoffPayload['status'],
+  };
+}
+
 export function parseListTasksPayload(value: unknown): ListTasksPayload | undefined {
   if (!isRecord(value)) return undefined;
   if (typeof value.workspaceId !== 'string' || value.workspaceId.length === 0) return undefined;
-  if (
-    value.includeArchived !== undefined &&
-    typeof value.includeArchived !== 'boolean'
-  ) {
+  if (value.includeArchived !== undefined && typeof value.includeArchived !== 'boolean') {
     return undefined;
   }
   return value as unknown as ListTasksPayload;
 }
 
-export function parseArchiveTaskPayload(value: unknown): import('@sync-think/protocol').ArchiveTaskPayload | undefined {
+export function parseArchiveTaskPayload(
+  value: unknown,
+): import('@sync-think/protocol').ArchiveTaskPayload | undefined {
   if (!isRecord(value)) return undefined;
   if (
     typeof value.taskId !== 'string' ||
@@ -230,8 +782,20 @@ export function parseUnarchiveTaskPayload(
   value: unknown,
 ): import('@sync-think/protocol').UnarchiveTaskPayload | undefined {
   return parseArchiveTaskPayload(value) as
-    | import('@sync-think/protocol').UnarchiveTaskPayload
-    | undefined;
+    import('@sync-think/protocol').UnarchiveTaskPayload | undefined;
+}
+
+export function parseDiscardEmptyTaskPayload(
+  value: unknown,
+): import('@sync-think/protocol').DiscardEmptyTaskPayload | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['taskId', 'expectedTaskVersion'])) return undefined;
+  const parsed = parseArchiveTaskPayload(value);
+  return parsed
+    ? {
+        taskId: parsed.taskId,
+        expectedTaskVersion: parsed.expectedTaskVersion,
+      }
+    : undefined;
 }
 
 export function parseOpenTaskPayload(value: unknown): OpenTaskPayload | undefined {
@@ -406,6 +970,37 @@ export function parseAppendMessagePayload(value: unknown): AppendMessagePayload 
   }
   for (const field of ['agentVersionId', 'modelId', 'credentialRefId', 'runId', 'stepId']) {
     if (value[field] !== undefined && typeof value[field] !== 'string') return undefined;
+  }
+  if (value.attachments !== undefined) {
+    if (!Array.isArray(value.attachments) || value.attachments.length > 10) return undefined;
+    for (const attachment of value.attachments) {
+      if (
+        !isRecord(attachment) ||
+        typeof attachment.id !== 'string' ||
+        attachment.id.length < 1 ||
+        attachment.id.length > 128 ||
+        (attachment.kind !== 'image' &&
+          attachment.kind !== 'file' &&
+          attachment.kind !== 'folder') ||
+        typeof attachment.name !== 'string' ||
+        attachment.name.length < 1 ||
+        attachment.name.length > 512 ||
+        typeof attachment.mimeType !== 'string' ||
+        attachment.mimeType.length < 1 ||
+        attachment.mimeType.length > 256 ||
+        typeof attachment.size !== 'number' ||
+        !Number.isSafeInteger(attachment.size) ||
+        attachment.size < 0 ||
+        typeof attachment.managedRef !== 'string' ||
+        attachment.managedRef.length < 1 ||
+        attachment.managedRef.length > 4_096 ||
+        attachment.readOnly !== true ||
+        (attachment.sha256 !== undefined &&
+          (typeof attachment.sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(attachment.sha256)))
+      ) {
+        return undefined;
+      }
+    }
   }
   return value as unknown as AppendMessagePayload;
 }
@@ -757,11 +1352,7 @@ export function parseMergeArtifactVersionsPayload(
 export function parseListArtifactMergeConflictsPayload(
   value: unknown,
 ): ListArtifactMergeConflictsPayload | undefined {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ARTIFACT_SCOPE_KEYS) ||
-    !hasArtifactScope(value)
-  ) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ARTIFACT_SCOPE_KEYS) || !hasArtifactScope(value)) {
     return undefined;
   }
   return value as unknown as ListArtifactMergeConflictsPayload;
@@ -1098,6 +1689,7 @@ const AGENT_DEFINITION_KEYS = [
   'developerInstructions',
   'inputContract',
   'outputContract',
+  'maxConcurrency',
   'defaultModelId',
   'defaultCredentialGroupId',
   'pinnedCredentialRefId',
@@ -1129,9 +1721,12 @@ function boundedAgentText(value: unknown, max: number): value is string {
 function validAgentVisualIdentity(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ['icon', 'color']) &&
+    hasOnlyKeys(value, ['icon', 'color', 'avatarPath']) &&
     boundedAgentText(value.icon, 128) &&
-    boundedAgentText(value.color, 64)
+    boundedAgentText(value.color, 64) &&
+    (value.avatarPath === undefined ||
+      (typeof value.avatarPath === 'string' &&
+        /^avatars\/[a-f0-9]{64}\.(?:png|jpg|webp)$/.test(value.avatarPath)))
   );
 }
 
@@ -1187,6 +1782,16 @@ function validAgentDefinition(value: Record<string, unknown>, options: { full: b
   )
     return false;
   if (value.visualIdentity !== undefined && !validAgentVisualIdentity(value.visualIdentity)) {
+    return false;
+  }
+  const validMaxConcurrency =
+    Number.isSafeInteger(value.maxConcurrency) &&
+    Number(value.maxConcurrency) >= 1 &&
+    Number(value.maxConcurrency) <= 16;
+  if (
+    (options.full && !validMaxConcurrency) ||
+    (!options.full && value.maxConcurrency !== undefined && !validMaxConcurrency)
+  ) {
     return false;
   }
   if (value.agentId !== undefined && !boundedAgentText(value.agentId, 128)) return false;
@@ -2218,4 +2823,364 @@ export function parseImportCcSwitchPayload(value: unknown): ImportCcSwitchPayloa
     if (typeof value.dbPath !== 'string' || value.dbPath.length > 4096) return undefined;
   }
   return value as unknown as ImportCcSwitchPayload;
+}
+
+function parseGroupMember(value: unknown): CreateGroupPayload['members'][number] | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['agentVersionId', 'responsibility'])) {
+    return undefined;
+  }
+  if (
+    typeof value.agentVersionId !== 'string' ||
+    value.agentVersionId.trim().length === 0 ||
+    value.agentVersionId.length > 256 ||
+    typeof value.responsibility !== 'string' ||
+    value.responsibility.trim().length === 0 ||
+    value.responsibility.length > 2_000
+  ) {
+    return undefined;
+  }
+  return {
+    agentVersionId:
+      value.agentVersionId.trim() as CreateGroupPayload['members'][number]['agentVersionId'],
+    responsibility: value.responsibility.trim(),
+  };
+}
+
+function parseGroupMembers(value: unknown): CreateGroupPayload['members'] | undefined {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 32) return undefined;
+  const result: CreateGroupPayload['members'] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const member = parseGroupMember(raw);
+    if (!member || seen.has(member.agentVersionId)) return undefined;
+    seen.add(member.agentVersionId);
+    result.push(member);
+  }
+  return result;
+}
+
+function parseGroupVisualIdentity(
+  value: unknown,
+): CreateGroupPayload['visualIdentity'] | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['icon', 'color', 'avatarPath'])) return undefined;
+  if (
+    typeof value.icon !== 'string' ||
+    value.icon.trim().length === 0 ||
+    value.icon.length > 64 ||
+    typeof value.color !== 'string' ||
+    value.color.trim().length === 0 ||
+    value.color.length > 64
+  ) {
+    return undefined;
+  }
+  if (
+    value.avatarPath !== undefined &&
+    (typeof value.avatarPath !== 'string' ||
+      value.avatarPath.trim().length === 0 ||
+      value.avatarPath.length > 4_096)
+  ) {
+    return undefined;
+  }
+  return {
+    icon: value.icon.trim(),
+    color: value.color.trim(),
+    ...(typeof value.avatarPath === 'string' ? { avatarPath: value.avatarPath.trim() } : {}),
+  };
+}
+
+function isGroupKind(value: unknown): value is CreateGroupPayload['kind'] {
+  return value === 'fixed' || value === 'temporary';
+}
+
+function isGroupCollaborationMode(
+  value: unknown,
+): value is NonNullable<CreateGroupPayload['collaborationMode']> {
+  return value === 'parallel' || value === 'sequential';
+}
+
+function isApprovalMode(value: unknown): value is NonNullable<CreateGroupPayload['approvalMode']> {
+  return value === 'request' || value === 'delegate' || value === 'full' || value === 'custom';
+}
+
+function parseGroupConcurrency(value: unknown): number | undefined {
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 16) {
+    return undefined;
+  }
+  return value as number;
+}
+
+export function parseCreateGroupPayload(value: unknown): CreateGroupPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'name',
+      'description',
+      'kind',
+      'visualIdentity',
+      'leadAgentVersionId',
+      'approvalMode',
+      'collaborationMode',
+      'maxConcurrency',
+      'members',
+    ])
+  ) {
+    return undefined;
+  }
+  if (
+    typeof value.name !== 'string' ||
+    value.name.trim().length === 0 ||
+    value.name.length > 256 ||
+    (value.description !== undefined &&
+      (typeof value.description !== 'string' || value.description.length > 4_000)) ||
+    !isGroupKind(value.kind) ||
+    typeof value.leadAgentVersionId !== 'string' ||
+    value.leadAgentVersionId.trim().length === 0 ||
+    value.leadAgentVersionId.length > 256
+  ) {
+    return undefined;
+  }
+  if (value.approvalMode !== undefined && !isApprovalMode(value.approvalMode)) return undefined;
+  if (value.collaborationMode !== undefined && !isGroupCollaborationMode(value.collaborationMode)) {
+    return undefined;
+  }
+  const maxConcurrency =
+    value.maxConcurrency === undefined ? undefined : parseGroupConcurrency(value.maxConcurrency);
+  if (value.maxConcurrency !== undefined && maxConcurrency === undefined) return undefined;
+  const visualIdentity =
+    value.visualIdentity === undefined ? undefined : parseGroupVisualIdentity(value.visualIdentity);
+  if (value.visualIdentity !== undefined && visualIdentity === undefined) return undefined;
+  const members = parseGroupMembers(value.members);
+  if (!members) return undefined;
+  const leadAgentVersionId = value.leadAgentVersionId.trim();
+  if (!members.some((member) => member.agentVersionId === leadAgentVersionId)) return undefined;
+
+  return {
+    name: value.name.trim(),
+    ...(value.description !== undefined ? { description: value.description.trim() } : {}),
+    kind: value.kind,
+    ...(visualIdentity ? { visualIdentity } : {}),
+    leadAgentVersionId: leadAgentVersionId as CreateGroupPayload['leadAgentVersionId'],
+    ...(value.approvalMode !== undefined ? { approvalMode: value.approvalMode } : {}),
+    ...(value.collaborationMode !== undefined
+      ? { collaborationMode: value.collaborationMode }
+      : {}),
+    ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
+    members,
+  };
+}
+
+export function parseGetGroupPayload(value: unknown): GetGroupPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['groupId']) ||
+    typeof value.groupId !== 'string' ||
+    value.groupId.trim().length === 0 ||
+    value.groupId.length > 256
+  ) {
+    return undefined;
+  }
+  return { groupId: value.groupId.trim() as GetGroupPayload['groupId'] };
+}
+
+export function parseListGroupsPayload(value: unknown): ListGroupsPayload | undefined {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value) || !hasOnlyKeys(value, ['kind', 'limit'])) return undefined;
+  if (value.kind !== undefined && !isGroupKind(value.kind)) return undefined;
+  if (
+    value.limit !== undefined &&
+    (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 500)
+  ) {
+    return undefined;
+  }
+  return {
+    ...(value.kind !== undefined ? { kind: value.kind } : {}),
+    ...(value.limit !== undefined ? { limit: value.limit as number } : {}),
+  };
+}
+
+export function parseUpdateGroupPayload(value: unknown): UpdateGroupPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'groupId',
+      'expectedVersion',
+      'name',
+      'description',
+      'kind',
+      'visualIdentity',
+      'leadAgentVersionId',
+      'approvalMode',
+      'collaborationMode',
+      'maxConcurrency',
+      'members',
+    ]) ||
+    typeof value.groupId !== 'string' ||
+    value.groupId.trim().length === 0 ||
+    value.groupId.length > 256 ||
+    !Number.isInteger(value.expectedVersion) ||
+    (value.expectedVersion as number) < 1
+  ) {
+    return undefined;
+  }
+  const updateKeys = [
+    'name',
+    'description',
+    'kind',
+    'visualIdentity',
+    'leadAgentVersionId',
+    'approvalMode',
+    'collaborationMode',
+    'maxConcurrency',
+    'members',
+  ].filter((key) => value[key] !== undefined);
+  if (updateKeys.length === 0) return undefined;
+  if (
+    value.name !== undefined &&
+    (typeof value.name !== 'string' || value.name.trim().length === 0 || value.name.length > 256)
+  ) {
+    return undefined;
+  }
+  if (
+    value.description !== undefined &&
+    (typeof value.description !== 'string' || value.description.length > 4_000)
+  ) {
+    return undefined;
+  }
+  if (value.kind !== undefined && !isGroupKind(value.kind)) return undefined;
+  if (
+    value.leadAgentVersionId !== undefined &&
+    (typeof value.leadAgentVersionId !== 'string' ||
+      value.leadAgentVersionId.trim().length === 0 ||
+      value.leadAgentVersionId.length > 256)
+  ) {
+    return undefined;
+  }
+  if (value.approvalMode !== undefined && !isApprovalMode(value.approvalMode)) return undefined;
+  if (value.collaborationMode !== undefined && !isGroupCollaborationMode(value.collaborationMode)) {
+    return undefined;
+  }
+  const maxConcurrency =
+    value.maxConcurrency === undefined ? undefined : parseGroupConcurrency(value.maxConcurrency);
+  if (value.maxConcurrency !== undefined && maxConcurrency === undefined) return undefined;
+  const visualIdentity =
+    value.visualIdentity === undefined ? undefined : parseGroupVisualIdentity(value.visualIdentity);
+  if (value.visualIdentity !== undefined && visualIdentity === undefined) return undefined;
+  const members = value.members === undefined ? undefined : parseGroupMembers(value.members);
+  if (value.members !== undefined && !members) return undefined;
+  const leadAgentVersionId =
+    typeof value.leadAgentVersionId === 'string' ? value.leadAgentVersionId.trim() : undefined;
+  if (
+    members &&
+    leadAgentVersionId &&
+    !members.some((member) => member.agentVersionId === leadAgentVersionId)
+  ) {
+    return undefined;
+  }
+  return {
+    groupId: value.groupId.trim() as UpdateGroupPayload['groupId'],
+    expectedVersion: value.expectedVersion as number,
+    ...(typeof value.name === 'string' ? { name: value.name.trim() } : {}),
+    ...(typeof value.description === 'string' ? { description: value.description.trim() } : {}),
+    ...(value.kind !== undefined ? { kind: value.kind } : {}),
+    ...(visualIdentity ? { visualIdentity } : {}),
+    ...(leadAgentVersionId
+      ? { leadAgentVersionId: leadAgentVersionId as UpdateGroupPayload['leadAgentVersionId'] }
+      : {}),
+    ...(value.approvalMode !== undefined ? { approvalMode: value.approvalMode } : {}),
+    ...(value.collaborationMode !== undefined
+      ? { collaborationMode: value.collaborationMode }
+      : {}),
+    ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
+    ...(members ? { members } : {}),
+  };
+}
+
+function parseGroupMutationBase(
+  value: unknown,
+): { groupId: string; expectedVersion: number } | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.groupId !== 'string' ||
+    value.groupId.trim().length === 0 ||
+    value.groupId.length > 256 ||
+    !Number.isInteger(value.expectedVersion) ||
+    (value.expectedVersion as number) < 1
+  ) {
+    return undefined;
+  }
+  return { groupId: value.groupId.trim(), expectedVersion: value.expectedVersion as number };
+}
+
+export function parseAddGroupMemberPayload(value: unknown): AddGroupMemberPayload | undefined {
+  const base = parseGroupMutationBase(value);
+  if (!base || !isRecord(value) || !hasOnlyKeys(value, ['groupId', 'expectedVersion', 'member'])) {
+    return undefined;
+  }
+  const member = parseGroupMember(value.member);
+  if (!member) return undefined;
+  return { ...base, groupId: base.groupId as AddGroupMemberPayload['groupId'], member };
+}
+
+export function parseRemoveGroupMemberPayload(
+  value: unknown,
+): RemoveGroupMemberPayload | undefined {
+  const base = parseGroupMutationBase(value);
+  if (
+    !base ||
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['groupId', 'expectedVersion', 'agentVersionId']) ||
+    typeof value.agentVersionId !== 'string' ||
+    value.agentVersionId.trim().length === 0 ||
+    value.agentVersionId.length > 256
+  ) {
+    return undefined;
+  }
+  return {
+    ...base,
+    groupId: base.groupId as RemoveGroupMemberPayload['groupId'],
+    agentVersionId: value.agentVersionId.trim() as RemoveGroupMemberPayload['agentVersionId'],
+  };
+}
+
+export function parseUpdateGroupMemberResponsibilityPayload(
+  value: unknown,
+): UpdateGroupMemberResponsibilityPayload | undefined {
+  const base = parseGroupMutationBase(value);
+  if (
+    !base ||
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['groupId', 'expectedVersion', 'agentVersionId', 'responsibility']) ||
+    typeof value.agentVersionId !== 'string' ||
+    value.agentVersionId.trim().length === 0 ||
+    value.agentVersionId.length > 256
+  ) {
+    return undefined;
+  }
+  if (
+    typeof value.responsibility !== 'string' ||
+    value.responsibility.trim().length === 0 ||
+    value.responsibility.length > 2_000
+  ) {
+    return undefined;
+  }
+  return {
+    ...base,
+    groupId: base.groupId as UpdateGroupMemberResponsibilityPayload['groupId'],
+    agentVersionId:
+      value.agentVersionId.trim() as UpdateGroupMemberResponsibilityPayload['agentVersionId'],
+    responsibility: value.responsibility.trim(),
+  };
+}
+
+export function parseSetGroupLeadPayload(value: unknown): SetGroupLeadPayload | undefined {
+  return parseRemoveGroupMemberPayload(value) as SetGroupLeadPayload | undefined;
+}
+
+export function parseCreateGroupTaskPayload(value: unknown): CreateGroupTaskPayload | undefined {
+  if (!isRecord(value) || typeof value.groupId !== 'string' || value.groupId.trim().length === 0) {
+    return undefined;
+  }
+  const task = parseCreateTaskPayload(value);
+  if (!task) return undefined;
+  return { ...task, groupId: value.groupId.trim() as CreateGroupTaskPayload['groupId'] };
 }

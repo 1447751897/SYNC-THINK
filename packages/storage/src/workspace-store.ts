@@ -237,6 +237,9 @@ export class SqliteWorkspaceStore {
       if (parent.workspaceId !== input.workspaceId) {
         throw new Error('Parent task must belong to the same workspace');
       }
+      if (parent.parentTaskId) {
+        throw new Error('Only one level of child tasks is supported');
+      }
     }
 
     const now = input.now ?? new Date().toISOString();
@@ -281,10 +284,47 @@ export class SqliteWorkspaceStore {
     };
   }
 
-  listTasks(
-    workspaceId: WorkspaceId,
-    options?: { includeArchived?: boolean },
-  ): TaskRecord[] {
+  /**
+   * Removes only the untouched product placeholder created by the instant-new-task path.
+   * The guarded no-op result keeps navigation races from deleting real work.
+   */
+  discardEmptyTask(taskId: TaskId, expectedTaskVersion: number): boolean {
+    if (!Number.isInteger(expectedTaskVersion) || expectedTaskVersion < 0) {
+      throw new Error('expectedTaskVersion must be a non-negative integer');
+    }
+    const discard = this.raw.transaction(() => {
+      const task = this.getTask(taskId);
+      if (
+        !task ||
+        task.version !== expectedTaskVersion ||
+        task.version !== 0 ||
+        !isUntitledTaskTitle(task.title)
+      ) {
+        return false;
+      }
+      const child = this.raw
+        .prepare('SELECT id FROM task WHERE parent_task_id = ? LIMIT 1')
+        .get(taskId) as { id: string } | undefined;
+      if (child) return false;
+      const message = this.raw
+        .prepare('SELECT id FROM message WHERE thread_id = ? LIMIT 1')
+        .get(task.threadId) as { id: string } | undefined;
+      if (message) return false;
+      const persistedMessageEvent = this.raw
+        .prepare("SELECT id FROM event WHERE task_id = ? AND type = 'message.appended' LIMIT 1")
+        .get(taskId) as { id: string } | undefined;
+      if (persistedMessageEvent) return false;
+
+      this.raw.prepare('DELETE FROM event WHERE task_id = ?').run(taskId);
+      this.raw.prepare('DELETE FROM group_task WHERE task_id = ?').run(taskId);
+      this.raw.prepare('DELETE FROM task_execution_context WHERE task_id = ?').run(taskId);
+      this.raw.prepare('DELETE FROM thread WHERE id = ?').run(task.threadId);
+      return this.raw.prepare('DELETE FROM task WHERE id = ? AND version = 0').run(taskId).changes === 1;
+    });
+    return discard.immediate();
+  }
+
+  listTasks(workspaceId: WorkspaceId, options?: { includeArchived?: boolean }): TaskRecord[] {
     const includeArchived = Boolean(options?.includeArchived);
     const rows = this.raw
       .prepare(
@@ -309,7 +349,7 @@ export class SqliteWorkspaceStore {
    */
   setTaskStatus(
     taskId: TaskId,
-    status: 'active' | 'paused' | 'completed' | 'archived',
+    status: 'active' | 'blocked' | 'paused' | 'completed' | 'archived',
     expectedTaskVersion: number,
     options?: { cascade?: boolean; now?: string },
   ): { task: TaskRecord; affectedTaskIds: TaskId[] } {
@@ -331,9 +371,7 @@ export class SqliteWorkspaceStore {
       }
 
       const allInWorkspace = this.listTasks(root.workspaceId, { includeArchived: true });
-      const targets = cascade
-        ? collectTaskSubtreeIds(allInWorkspace, taskId)
-        : [taskId];
+      const targets = cascade ? collectTaskSubtreeIds(allInWorkspace, taskId) : [taskId];
 
       const affected: TaskId[] = [];
       for (const id of targets) {
@@ -403,9 +441,8 @@ export class SqliteWorkspaceStore {
         .run(mode, changedAt, taskId, expectedTaskVersion);
 
       if (result.changes !== 1) {
-        const current = this.raw
-          .prepare('SELECT version FROM task WHERE id = ?')
-          .get(taskId) as { version: number } | undefined;
+        const current = this.raw.prepare('SELECT version FROM task WHERE id = ?').get(taskId) as
+          { version: number } | undefined;
         if (!current) {
           throw new Error(`Task not found: ${taskId}`);
         }
@@ -430,18 +467,13 @@ export class SqliteWorkspaceStore {
       throw new Error(`Task not found: ${taskId}`);
     }
     const openedAt = now ?? new Date().toISOString();
-    this.raw
-      .prepare(
-        `UPDATE task SET last_opened_at = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(openedAt, openedAt, taskId);
+    this.raw.prepare(`UPDATE task SET last_opened_at = ? WHERE id = ?`).run(openedAt, taskId);
     const updated = this.getTask(taskId);
     if (!updated) {
       throw new Error(`Task not found after open: ${taskId}`);
     }
     return updated;
   }
-
 
   getTaskByThreadId(threadId: ThreadId): TaskRecord | undefined {
     const row = this.raw
@@ -533,10 +565,7 @@ export class SqliteWorkspaceStore {
       }
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
       const value = payload as Record<string, unknown>;
-      if (
-        !Number.isInteger(value.taskVersion) ||
-        (value.taskVersion as number) < 0
-      ) {
+      if (!Number.isInteger(value.taskVersion) || (value.taskVersion as number) < 0) {
         continue;
       }
 
@@ -556,10 +585,7 @@ export class SqliteWorkspaceStore {
       if (!taskId) continue;
 
       const version = value.taskVersion as number;
-      maxVersionByTask.set(
-        taskId,
-        Math.max(maxVersionByTask.get(taskId) ?? 0, version),
-      );
+      maxVersionByTask.set(taskId, Math.max(maxVersionByTask.get(taskId) ?? 0, version));
     }
 
     const changedAt = now ?? new Date().toISOString();

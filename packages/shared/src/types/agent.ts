@@ -15,6 +15,7 @@ export type MemoryScope = 'task' | 'project' | 'global';
 export interface AgentVisualIdentity {
   icon: string;
   color: string;
+  avatarPath?: string;
 }
 
 export interface AgentPermissions {
@@ -23,6 +24,29 @@ export interface AgentPermissions {
   browser: string[];
   desktop: string[];
   network: string[];
+}
+
+/** Explicit category denial used to distinguish user settings from legacy empty defaults. */
+export const AGENT_PERMISSION_DISABLED = '__sync_think_disabled__';
+
+export function isLegacyAgentPermissions(permissions: AgentPermissions): boolean {
+  return (
+    permissions.file.length === 0 &&
+    permissions.command.length === 0 &&
+    permissions.browser.length === 0 &&
+    permissions.desktop.length === 0 &&
+    permissions.network.length === 0
+  );
+}
+
+export function isAgentPermissionCategoryEnabled(
+  values: readonly string[] | undefined,
+  legacyDefault = false,
+): boolean {
+  return (
+    legacyDefault ||
+    Boolean(values?.some((value) => value !== AGENT_PERMISSION_DISABLED))
+  );
 }
 
 export const MAX_REVIEW_ITERATIONS = 100;
@@ -53,6 +77,8 @@ export interface AgentVersion {
   developerInstructions: string;
   inputContract: string;
   outputContract: string;
+  /** Maximum number of tasks this Agent may run concurrently. */
+  maxConcurrency: number;
   /** Persistent default model — remains until user changes it (§5.3). */
   defaultModelId: ModelId;
   defaultCredentialGroupId: CredentialGroupId;

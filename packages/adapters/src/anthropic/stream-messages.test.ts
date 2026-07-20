@@ -63,6 +63,37 @@ describe('streamAnthropicMessages', () => {
     fetchMock.mockReset();
   });
 
+  it('sends image parts as Anthropic base64 image blocks', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream(['data: {"type":"message_stop"}\n\n']),
+      text: async () => '',
+    } as unknown as Response);
+    await collect(
+      streamAnthropicMessages(
+        req({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Inspect this' },
+                { type: 'image', imageUrl: 'data:image/png;base64,AQID' },
+              ],
+            },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body.messages[0].content).toEqual([
+      { type: 'text', text: 'Inspect this' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AQID' } },
+    ]);
+  });
+
   it('streams text-delta from Anthropic SSE and finishes', async () => {
     const body = sseStream([
       'event: content_block_delta\n',

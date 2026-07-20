@@ -19,6 +19,8 @@ export function buildComposeModelOptions(
         providerId: provider.providerId,
         surface: provider.surface,
         protocol: model.protocol || provider.protocol,
+        supportsVision:
+          model.capabilitiesConfirmed === true && (model.capabilities ?? []).includes('vision'),
       });
     }
   }

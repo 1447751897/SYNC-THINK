@@ -8,6 +8,8 @@
     "pretest": "node scripts/ensure-managed-pnpm.mjs",
     "dev:runtime": "pnpm --filter @sync-think/runtime dev",
     "dev:desktop": "node scripts/dev-desktop.mjs",
+    "cli": "pnpm --filter @sync-think/cli dev --",
+    "mcp": "pnpm --filter @sync-think/cli dev -- mcp",
     "dev:runtime:pipe-test": "tsx scripts/pipe-client.mjs",
     "prebuild": "node scripts/ensure-managed-pnpm.mjs",
     "build": "turbo run build",

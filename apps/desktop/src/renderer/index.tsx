@@ -2,22 +2,19 @@ import { StrictMode, useCallback, useEffect, useMemo, useReducer, useRef, useSta
 import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
 import {
-  AppShell,
   Compose,
   ContinuumRail,
   MessageBubble,
-  TraceList,
   ProvidersPanel,
   AgentWorkspace,
   MemoryDiagnosticsPanel,
   ApprovalCenterPanel,
-  PlanRevisionPanel,
-  ExecutionGraphPanel,
   ArtifactVersionsPanel,
-  ManifestPanel,
   ProjectCreateDialog,
   WorkspaceNav,
+  applyTheme,
   type ComposeAgentOption,
+  type ComposeGroupOption,
   type ComposeModelOption,
   type ComposeSendOptions,
   type ComposeWorkspaceOption,
@@ -32,6 +29,8 @@ import {
   type AgentBindingSkillOption,
   type AgentBindingMcpOption,
   type AgentWorkspaceListItem,
+  type AgentWorkspaceTab,
+  type AgentCreateInput,
   type AgentDefinitionView,
   type AgentVersionHistoryView,
   type AgentDefinitionSaveInput,
@@ -70,6 +69,18 @@ import type {
   ArtifactListItem,
   ArtifactMergeConflictListItem,
   PolicyVersionSummary,
+  CreateGroupPayload,
+  UpdateGroupPayload,
+  AddGroupMemberPayload,
+  RemoveGroupMemberPayload,
+  UpdateGroupMemberResponsibilityPayload,
+  SetGroupLeadPayload,
+  CreateGroupTaskPayload,
+  CreateAutomationPayload,
+  UpdateAutomationPayload,
+  AutomationRuntimeStatus,
+  BrowserIdentitySummary,
+  DescribeTaskExecutionAccessResponse,
 } from '@sync-think/protocol';
 import {
   deriveTaskTitleFromPrompt,
@@ -77,24 +88,23 @@ import {
   ulid,
   type ArtifactMergeConflictResolutionStrategy,
   type PlanRevision,
-  type PlanStepDraft,
+  type GroupDefinition,
+  type AutomationDefinition,
+  type AutomationExecution,
+  type Event,
 } from '@sync-think/shared';
 import {
-  Activity,
   AlignLeft,
   ArrowRight,
   Bot,
   BrainCircuit,
-  Check,
-  ChevronLeft,
-  Circle,
   Columns2,
-  Files,
   FolderKanban,
+  FolderOpen,
+  FileText,
   GitBranch,
   Monitor,
   Moon,
-  PackageCheck,
   RefreshCw,
   ServerCog,
   ShieldCheck,
@@ -102,7 +112,14 @@ import {
   X,
 } from 'lucide-react';
 import { projectBeginnerWorkspace } from './beginner-workspace.js';
-import { findParentTaskLink, projectChildTasks, summarizeChildTasks } from './child-tasks.js';
+import {
+  projectAgentGroupMemberships,
+  projectAgentRelatedTasks,
+  projectTaskConversationSummaries,
+  projectTaskGroupIds,
+  projectTaskPrimaryAgentVersions,
+} from './agent-profile-projection.js';
+import { findParentTaskLink } from './child-tasks.js';
 import { projectContinuumEvidence, shouldShowContinuumStrip } from './continuum-evidence.js';
 import { projectConversation } from './m0-projection.js';
 import { formatProviderDiscoveryError } from './provider-error-copy.js';
@@ -113,6 +130,7 @@ import {
   runtimeViewReducer,
 } from './runtime-view-state.js';
 import {
+  deriveProjectNameFromFolderPath,
   pickLastOpenedTaskId,
   resolveExpectedTaskVersion,
   resolvePreferredTask,
@@ -125,8 +143,24 @@ import {
   sanitizeSelectedModelId,
 } from './compose-models.js';
 import { classifyAppendMessageFailure } from './append-message-error.js';
+import { artifactDisplayName, isUserFacingArtifact } from './artifact-presentation.js';
+import { serializeComposeFiles } from './compose-attachment-sources.js';
+import {
+  TalkAutomationWorkspace,
+  TalkConversationTaskWorkspace,
+  TalkGlobalNav,
+  TalkGroupsWorkspace,
+  TalkProjectsWorkspace,
+  TalkSettingsWorkspace,
+  TalkSkillsWorkspace,
+  TalkTopBar,
+  type TalkProductSection,
+  type TalkSettingsTab,
+  type TalkTaskDetailTab,
+} from './talk-workspace.js';
 import {
   buildAgentCreatePayload,
+  buildAgentBootstrapBinding,
   buildAgentVersionPayload,
   canSaveAgentBindingForSelection,
   createM2LoadRequestGate,
@@ -136,12 +170,26 @@ import {
   isM2RefreshEvent,
   mergeTaskVersionForTarget,
   projectAgentWorkspace,
-  projectM2ExecutionGraph,
 } from './m2-workspace.js';
 import {
   buildConversationCollaborationPlan,
   inferConversationCollaborationIntent,
 } from './collaboration-intent.js';
+import {
+  ConversationExecutionLogs,
+  ConversationTaskProgress,
+  TaskArtifactDialog,
+  TaskArtifactDirectory,
+  type TaskArtifactDirectoryItem,
+} from './conversation-detail-rail.js';
+import { projectConversationLogs } from './conversation-log-projection.js';
+import {
+  projectConversationTaskProgress,
+  toTaskProgressState,
+  type ProgressAgentIdentity,
+} from './conversation-progress-projection.js';
+import type { TaskProgressChildTask } from './conversation-detail-rail.js';
+import type { ComposeDraft } from '@sync-think/ui-kit';
 import {
   projectM1SessionReadiness,
   isM1SessionChipJumpable,
@@ -242,13 +290,18 @@ import {
   type ConversationFailureCtaAction,
 } from './conversation-stream-readiness.js';
 import {
+  applyFontSizePreference,
+  normalizeFontSizePreference,
   readConversationLayoutPreference,
+  readFontSizePreference,
   readThemePreference,
   readTraceCollapsedPreference,
   writeConversationLayoutPreference,
+  writeFontSizePreference,
   writeThemePreference,
   writeTraceCollapsedPreference,
   type ConversationLayoutPreference,
+  type FontSizePreference,
   type ThemePreference,
 } from './ui-preferences.js';
 import './renderer.css';
@@ -261,9 +314,41 @@ interface ConversationAgentIdentity {
   name: string;
   icon: string;
   color: string;
+  avatarUrl?: string;
 }
 
-type RightRailTab = 'overview' | 'trace' | 'graph' | 'approvals' | 'artifacts';
+function toConversationAgentIdentity(
+  version: {
+    agentId: unknown;
+    name: string;
+    visualIdentity?: { icon?: string; color?: string; avatarPath?: string };
+  },
+  avatarUrls: ReadonlyMap<string, string>,
+): ConversationAgentIdentity {
+  const avatarPath = version.visualIdentity?.avatarPath;
+  return {
+    agentId: String(version.agentId),
+    name: version.name,
+    icon: version.visualIdentity?.icon ?? 'bot',
+    color: version.visualIdentity?.color ?? '#64748b',
+    ...(avatarPath && avatarUrls.has(avatarPath) ? { avatarUrl: avatarUrls.get(avatarPath) } : {}),
+  };
+}
+
+function toConversationGroupIdentity(
+  group: GroupDefinition | undefined,
+  avatarUrls: ReadonlyMap<string, string>,
+): ConversationAgentIdentity {
+  const avatarPath = group?.visualIdentity.avatarPath;
+  return {
+    name: group?.name ?? '群聊',
+    icon: group?.visualIdentity.icon ?? 'users',
+    color: group?.visualIdentity.color ?? '#0d9488',
+    ...(avatarPath && avatarUrls.has(avatarPath) ? { avatarUrl: avatarUrls.get(avatarPath) } : {}),
+  };
+}
+
+type RightRailTab = 'overview' | 'trace' | 'artifacts';
 
 const leftPrimaryToolOrder: readonly LeftInstrumentId[] = ['agent', 'providers', 'approvals'];
 
@@ -273,6 +358,17 @@ function taskStatusLabel(status: string): string {
   if (status === 'completed') return '已完成';
   if (status === 'archived') return '已归档';
   return '等待开始';
+}
+
+function formatConversationTime(value?: string): string | undefined {
+  if (!value) return undefined;
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return undefined;
+  return timestamp.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 }
 
 const conversationLayoutOptions: Array<{
@@ -544,6 +640,7 @@ function connectionDetail(state: string): string {
 
 function DesktopShell() {
   const [theme, setTheme] = useState<Theme>(() => readThemePreference());
+  const [fontSize, setFontSize] = useState<FontSizePreference>(() => readFontSizePreference());
   const [conversationLayout, setConversationLayout] = useState<ConversationLayoutPreference>(() =>
     readConversationLayoutPreference(),
   );
@@ -570,6 +667,18 @@ function DesktopShell() {
   const [m1ObsSecondaryOpen, setM1ObsSecondaryOpen] = useState(false);
   const [leftInstrument, setLeftInstrument] = useState<LeftInstrumentId>('providers');
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
+  const [productSection, setProductSection] = useState<TalkProductSection>('tasks');
+  const [agentWorkspaceDefaultTab, setAgentWorkspaceDefaultTab] =
+    useState<AgentWorkspaceTab>('overview');
+  const [settingsDefaultTab, setSettingsDefaultTab] = useState<TalkSettingsTab>('runtime');
+  const [projectWorkspaceId, setProjectWorkspaceId] = useState<string | null>(null);
+  const [productNavCollapsed, setProductNavCollapsed] = useState(false);
+  useEffect(() => {
+    applyTheme(document.documentElement, theme);
+  }, [theme]);
+  useEffect(() => {
+    applyFontSizePreference(document.documentElement, fontSize);
+  }, [fontSize]);
   const leftToolButtonRefs = useRef<Partial<Record<LeftInstrumentId, HTMLButtonElement | null>>>(
     {},
   );
@@ -592,6 +701,17 @@ function DesktopShell() {
   /** Session-only: expand right rail while there is no active task (default collapsed). */
   const [emptyRailExpanded, setEmptyRailExpanded] = useState(false);
   const [previewMessages, setPreviewMessages] = useState<string[]>([]);
+  const [composeDrafts, setComposeDrafts] = useState<ReadonlyMap<string, ComposeDraft>>(
+    () => new Map(),
+  );
+  const [previewImage, setPreviewImage] = useState<{
+    name: string;
+    url: string;
+  } | null>(null);
+  const [previewImageScale, setPreviewImageScale] = useState(1);
+  const [messageImagePreviews, setMessageImagePreviews] = useState<
+    ReadonlyMap<string, string | null>
+  >(() => new Map());
   const [runtimeView, dispatchRuntimeView] = useReducer(
     runtimeViewReducer,
     Boolean(window.syncThink?.runtime),
@@ -624,6 +744,12 @@ function DesktopShell() {
   const [reconnectNonce, setReconnectNonce] = useState(0);
   const [sendPending, setSendPending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [confirmationBusyIds, setConfirmationBusyIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [confirmationErrors, setConfirmationErrors] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
   const [cancelPending, setCancelPending] = useState(false);
   const collaborationPreparationRef = useRef(false);
   const [collaborationStatus, setCollaborationStatus] = useState<{
@@ -644,6 +770,12 @@ function DesktopShell() {
   const [projectCreateBusy, setProjectCreateBusy] = useState(false);
   const [projectCreateError, setProjectCreateError] = useState<string | null>(null);
   const [bindingWorkspaceId, setBindingWorkspaceId] = useState<string | null>(null);
+  const [integrationBusyTaskId, setIntegrationBusyTaskId] = useState<string | null>(null);
+  const [browserIdentities, setBrowserIdentities] = useState<BrowserIdentitySummary[]>([]);
+  const [browserIdentityBusy, setBrowserIdentityBusy] = useState(false);
+  const [browserIdentityError, setBrowserIdentityError] = useState<string | null>(null);
+  const [taskExecutionAccess, setTaskExecutionAccess] =
+    useState<DescribeTaskExecutionAccessResponse | null>(null);
   const [active, setActive] = useState<ActiveTaskSelection | null>(null);
   const [navQuery, setNavQuery] = useState('');
   const [providers, setProviders] = useState<readonly ProviderPanelItem[]>([]);
@@ -653,6 +785,26 @@ function DesktopShell() {
   const [providerStatus, setProviderStatus] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [agents, setAgents] = useState<readonly AgentWorkspaceListItem[]>([]);
+  const [groups, setGroups] = useState<readonly GroupDefinition[]>([]);
+  const [groupLoading, setGroupLoading] = useState(false);
+  const [groupBusy, setGroupBusy] = useState(false);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const [automations, setAutomations] = useState<readonly AutomationDefinition[]>([]);
+  const [automationExecutions, setAutomationExecutions] = useState<readonly AutomationExecution[]>(
+    [],
+  );
+  const [automationRuntime, setAutomationRuntime] = useState<AutomationRuntimeStatus>({
+    schedulerAvailable: false,
+    webhookAvailable: false,
+  });
+  const [automationLoading, setAutomationLoading] = useState(false);
+  const [automationBusy, setAutomationBusy] = useState(false);
+  const [automationError, setAutomationError] = useState<string | null>(null);
+  const [automationSecret, setAutomationSecret] = useState<{
+    automationId: string;
+    url?: string;
+    secret: string;
+  } | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const selectedAgentIdRef = useRef<string | null>(null);
   const agentLoadRequestRef = useRef(0);
@@ -663,6 +815,9 @@ function DesktopShell() {
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [agentAvatarUrls, setAgentAvatarUrls] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
   const [agentStatus, setAgentStatus] = useState<string | null>(null);
   const [skills, setSkills] = useState<readonly AgentBindingSkillOption[]>([]);
   const [skillBusy, setSkillBusy] = useState(false);
@@ -698,6 +853,8 @@ function DesktopShell() {
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const [approvalPolicies, setApprovalPolicies] = useState<ApprovalPolicyView[]>([]);
+  const [conversationApprovalMode, setConversationApprovalMode] =
+    useState<ApprovalModeView>('full');
   const approvalLoadGateRef = useRef(createM2LoadRequestGate());
   const policyLoadGateRef = useRef(createM2LoadRequestGate());
   const planLoadGateRef = useRef(createM2LoadRequestGate());
@@ -705,50 +862,93 @@ function DesktopShell() {
   const artifactLoadGateRef = useRef(createM2LoadRequestGate());
   const openTaskLoadGateRef = useRef(createM2LoadRequestGate());
   const [rightRailTab, setRightRailTab] = useState<RightRailTab>('overview');
-  const [planRevision, setPlanRevision] = useState<PlanRevision | null>(null);
   const [planRevisions, setPlanRevisions] = useState<PlanRevision[]>([]);
-  const [planBusy, setPlanBusy] = useState(false);
-  const [planError, setPlanError] = useState<string | null>(null);
   const [runGraph, setRunGraph] = useState<RunGraphResponse | null>(null);
-  const [selectedGraphStepId, setSelectedGraphStepId] = useState<string | null>(null);
+  const [progressClockMs, setProgressClockMs] = useState(() => Date.now());
   const [graphBusy, setGraphBusy] = useState(false);
   const [graphError, setGraphError] = useState<string | null>(null);
   const [artifactItems, setArtifactItems] = useState<ArtifactListItem[]>([]);
+  const [artifactVersionContents, setArtifactVersionContents] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const [artifactConflicts, setArtifactConflicts] = useState<ArtifactMergeConflictListItem[]>([]);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [artifactDialogOpen, setArtifactDialogOpen] = useState(false);
+  const artifactDialogReturnFocusRef = useRef<HTMLElement | null>(null);
   const [artifactComparison, setArtifactComparison] = useState<ArtifactComparisonView | null>(null);
   const [artifactBusy, setArtifactBusy] = useState(false);
   const [artifactError, setArtifactError] = useState<string | null>(null);
-  const [selectedManifestId, setSelectedManifestId] = useState<string | null>(null);
-  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [m2RefreshNonce, setM2RefreshNonce] = useState(0);
   const m2RefreshTimerRef = useRef<number | null>(null);
-  const [peekManifest, setPeekManifest] = useState<ManifestInspectView | null>(null);
-  const [peekBusy, setPeekBusy] = useState(false);
-  const [peekStatus, setPeekStatus] = useState<string | null>(null);
-  const [activeExcludeSourceIds, setActiveExcludeSourceIds] = useState<string[]>([]);
-  const [amendBusy, setAmendBusy] = useState(false);
-  const [amendStatus, setAmendStatus] = useState<string | null>(null);
+  const runtimeEventBatchRef = useRef<Event[]>([]);
+  const runtimeEventBatchTimerRef = useRef<number | null>(null);
 
   const threadId = active?.threadId ?? FALLBACK_THREAD_ID;
-
-  useEffect(() => {
-    setSelectedManifestId(null);
-    setSelectedTraceId(null);
-    setPeekManifest(null);
-    setPeekStatus(null);
-    setActiveExcludeSourceIds([]);
-    setAmendStatus(null);
-  }, [threadId]);
   const threadIdRef = useRef(threadId);
   threadIdRef.current = threadId;
   const activeTaskIdRef = useRef(active?.taskId ?? null);
   activeTaskIdRef.current = active?.taskId ?? null;
+  const composeDraftKey = active ? `${active.workspaceId}:${active.taskId}` : 'new';
+  const composeDraft = composeDrafts.get(composeDraftKey);
+  useEffect(() => setPreviewImageScale(1), [previewImage?.url]);
+  useEffect(() => {
+    if (!previewImage) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreviewImage(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [previewImage]);
 
   const projection = useMemo(
     () => projectConversation(runtimeView.eventHistory, threadId, active?.taskId),
     [runtimeView.eventHistory, threadId, active?.taskId],
   );
+  useEffect(() => {
+    const imageAttachments = projection.messages.flatMap((message) =>
+      (message.attachments ?? []).filter(
+        (attachment) => attachment.kind === 'image' && attachment.managedRef,
+      ),
+    );
+    const missing = imageAttachments.filter(
+      (attachment) => !messageImagePreviews.has(attachment.id),
+    );
+    if (missing.length === 0) return;
+    const api = window.syncThink?.runtime;
+    if (!api?.loadMessageAttachmentPreview) return;
+    let cancelled = false;
+    void Promise.all(
+      missing.map(async (attachment) => {
+        try {
+          const url = await api.loadMessageAttachmentPreview({
+            managedRef: attachment.managedRef!,
+            mimeType: attachment.mimeType,
+            ...(attachment.sha256 ? { sha256: attachment.sha256 } : {}),
+          });
+          return [attachment.id, url] as const;
+        } catch {
+          return [attachment.id, null] as const;
+        }
+      }),
+    ).then((loaded) => {
+      if (cancelled) return;
+      setMessageImagePreviews((current) => {
+        const next = new Map(current);
+        for (const [id, url] of loaded) next.set(id, url);
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [messageImagePreviews, projection.messages]);
+  const messageManifestByRunId = useMemo(() => {
+    const manifests = new Map<string, (typeof projection.manifests)[number]>();
+    for (const manifest of projection.manifests) {
+      if (manifest.runId) manifests.set(manifest.runId, manifest);
+    }
+    return manifests;
+  }, [projection.manifests]);
   const m2Identity = useMemo(
     () => deriveM2WorkspaceIdentity(runtimeView.eventHistory, active?.taskId),
     [runtimeView.eventHistory, active?.taskId],
@@ -760,14 +960,64 @@ function DesktopShell() {
       ),
     [allAgentVersions],
   );
+  const taskPrimaryAgentVersions = useMemo(
+    () => projectTaskPrimaryAgentVersions(runtimeView.eventHistory),
+    [runtimeView.eventHistory],
+  );
+  const taskGroupIds = useMemo(
+    () => projectTaskGroupIds(runtimeView.eventHistory),
+    [runtimeView.eventHistory],
+  );
+  const groupById = useMemo(
+    () => new Map(groups.map((group) => [String(group.id), group] as const)),
+    [groups],
+  );
+  const activeConversationGroup = useMemo(() => {
+    const groupId = active?.taskId ? taskGroupIds.get(String(active.taskId)) : undefined;
+    return groupId ? groupById.get(groupId) : undefined;
+  }, [active?.taskId, groupById, taskGroupIds]);
   const fallbackConversationAgentIdentity = useMemo<ConversationAgentIdentity>(
     () => ({
       agentId: agentDefinition?.agentId ?? agentBinding?.agentId ?? selectedAgentId ?? undefined,
       name: agentDefinition?.name ?? agentBinding?.name ?? 'Agent',
       icon: agentDefinition?.visualIdentity?.icon ?? 'bot',
       color: agentDefinition?.visualIdentity?.color ?? '#64748b',
+      ...(agentDefinition?.visualIdentity?.avatarPath &&
+      agentAvatarUrls.has(agentDefinition.visualIdentity.avatarPath)
+        ? { avatarUrl: agentAvatarUrls.get(agentDefinition.visualIdentity.avatarPath) }
+        : {}),
     }),
-    [agentDefinition, agentBinding, selectedAgentId],
+    [agentDefinition, agentBinding, selectedAgentId, agentAvatarUrls],
+  );
+  const activeConversationAgentIdentity = useMemo(() => {
+    const agentVersionId = active?.taskId
+      ? taskPrimaryAgentVersions.get(String(active.taskId))
+      : undefined;
+    const exactVersion = agentVersionId ? agentVersionById.get(agentVersionId) : undefined;
+    return exactVersion
+      ? toConversationAgentIdentity(exactVersion, agentAvatarUrls)
+      : fallbackConversationAgentIdentity;
+  }, [
+    active?.taskId,
+    agentAvatarUrls,
+    agentVersionById,
+    fallbackConversationAgentIdentity,
+    taskPrimaryAgentVersions,
+  ]);
+  const activeConversationAgentVersionId = active?.taskId
+    ? (taskPrimaryAgentVersions.get(String(active.taskId)) ?? agentBinding?.agentVersionId)
+    : agentBinding?.agentVersionId;
+  const activeConversationIdentity = useMemo(
+    () =>
+      active?.participationMode === 'collaboration'
+        ? toConversationGroupIdentity(activeConversationGroup, agentAvatarUrls)
+        : activeConversationAgentIdentity,
+    [
+      active?.participationMode,
+      activeConversationAgentIdentity,
+      activeConversationGroup,
+      agentAvatarUrls,
+    ],
   );
   const conversationAgentIdentityByMessageId = useMemo(() => {
     const identities = new Map<string, ConversationAgentIdentity>();
@@ -779,17 +1029,31 @@ function DesktopShell() {
       identities.set(
         message.id,
         exactVersion
-          ? {
-              agentId: String(exactVersion.agentId),
-              name: exactVersion.name,
-              icon: exactVersion.visualIdentity.icon,
-              color: exactVersion.visualIdentity.color,
-            }
-          : fallbackConversationAgentIdentity,
+          ? toConversationAgentIdentity(exactVersion, agentAvatarUrls)
+          : activeConversationIdentity,
       );
     }
     return identities;
-  }, [projection.messages, agentVersionById, fallbackConversationAgentIdentity]);
+  }, [projection.messages, agentVersionById, activeConversationIdentity, agentAvatarUrls]);
+  const conversationMentionLabelByMessageId = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const message of projection.messages) {
+      if (message.mentionAgentVersionId) {
+        const target = agentVersionById.get(message.mentionAgentVersionId);
+        if (target?.name) labels.set(message.id, target.name);
+        continue;
+      }
+      if (message.role !== 'user' || !message.targetAgentVersionId) continue;
+      const target = agentVersionById.get(message.targetAgentVersionId);
+      const group = message.targetGroupId ? groupById.get(message.targetGroupId) : undefined;
+      if (group && String(group.leadAgentVersionId) === String(message.targetAgentVersionId)) {
+        labels.set(message.id, group.name);
+      } else if (target?.name) {
+        labels.set(message.id, target.name);
+      }
+    }
+    return labels;
+  }, [agentVersionById, groupById, projection.messages]);
   const delegateAgentVersions = useMemo(
     () =>
       allAgentVersions.filter(isApprovalDelegateAgentVersion).map((version) => ({
@@ -803,6 +1067,15 @@ function DesktopShell() {
   const isStreaming = projection.stream.state === 'streaming';
 
   useEffect(() => {
+    if (!isStreaming && (!runGraph || toTaskProgressState(runGraph.run.state) !== 'running')) {
+      return undefined;
+    }
+    setProgressClockMs(Date.now());
+    const timer = window.setInterval(() => setProgressClockMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [isStreaming, runGraph?.run.id, runGraph?.run.state]);
+
+  useEffect(() => {
     approvalLoadGateRef.current.invalidate();
     policyLoadGateRef.current.invalidate();
     planLoadGateRef.current.invalidate();
@@ -812,268 +1085,45 @@ function DesktopShell() {
     setApprovalItems([]);
     setApprovalPendingCount(0);
     setApprovalPolicies([]);
+    setConversationApprovalMode('full');
     setApprovalLoading(false);
-    setPlanRevision(null);
     setPlanRevisions([]);
-    setPlanError(null);
     setRunGraph(null);
-    setSelectedGraphStepId(null);
     setGraphError(null);
     setArtifactItems([]);
     setArtifactConflicts([]);
     setSelectedArtifactId(null);
+    setArtifactDialogOpen(false);
     setArtifactComparison(null);
     setArtifactError(null);
-    setSelectedTraceId(null);
-    setSelectedManifestId(null);
     setRightRailTab('overview');
   }, [active?.taskId]);
 
-  const PEEK_MANIFEST_ID = 'peek:live';
-
-  const manifestInspectViews: ManifestInspectView[] = useMemo(() => {
-    const fromEvents: ManifestInspectView[] = projection.manifests.map((m) => ({
-      id: m.id,
-      packetId: m.packetId,
-      proofHash: m.proofHash,
-      runId: m.runId,
-      modelId: m.modelId,
-      providerModelId: m.providerModelId,
-      resolutionSource: m.resolutionSource,
-      credentialResolutionSource: m.credentialResolutionSource,
-      credentialRefId: m.credentialRefId,
-      agentVersionId: m.agentVersionId,
-      fallbackIndex: m.fallbackIndex,
-      tokenEstimate: m.tokenEstimate,
-      includedSourceIds: m.includedSourceIds,
-      excludedSourceIds: m.excludedSourceIds,
-      included: m.included,
-      excluded: m.excluded,
-      summaries: m.summaries,
-      truncations: m.truncations,
-      crossTaskRefs: m.crossTaskRefs,
-      evidenceRefsForMemory: m.evidenceRefsForMemory,
-      occurredAt: m.occurredAt,
-    }));
-    if (!peekManifest) return fromEvents;
-    // Keep durable history, append live peek as newest inspectable entry.
-    const withoutOldPeek = fromEvents.filter((m) => m.id !== PEEK_MANIFEST_ID);
-    return [...withoutOldPeek, peekManifest];
-  }, [projection.manifests, peekManifest]);
-
-  const peekContextNow = useCallback(async () => {
-    const runtime = window.syncThink?.runtime;
-    if (!runtime?.peekContextPacket) {
-      setPeekStatus('当前环境未连接 Runtime，无法预览上下文');
-      return;
-    }
-    setPeekBusy(true);
-    setPeekStatus(null);
-    try {
-      const result = await runtime.peekContextPacket({
-        threadId: threadId as never,
-        userText: '（预览：尚未发送的上下文）',
-      });
-      const view: ManifestInspectView = {
-        id: PEEK_MANIFEST_ID,
-        packetId: result.packetId,
-        proofHash: result.proofHash,
-        modelId: result.modelId,
-        providerModelId: result.providerModelId,
-        resolutionSource: result.resolutionSource,
-        credentialResolutionSource: result.credentialResolutionSource,
-        credentialRefId: result.credentialRefId,
-        agentVersionId: result.agentVersionId,
-        agentVersion: result.agentVersion,
-        skillVersionIds: result.skillVersionIds,
-        mcpServerIds: result.mcpServerIds,
-        policyId: result.policyId,
-        tokenEstimate: result.tokenEstimate,
-        includedSourceIds: result.includedSourceIds,
-        excludedSourceIds: result.excludedSourceIds,
-        included: result.includedSources,
-        excluded: result.excludedSources,
-        summaries: result.summaries,
-        truncations: result.truncations,
-        crossTaskRefs: result.crossTaskRefs,
-        evidenceRefsForMemory: result.evidenceRefsForMemory,
-        occurredAt: result.peekedAt,
-      };
-      setPeekManifest(view);
-      setSelectedManifestId(PEEK_MANIFEST_ID);
-      const memCount = result.evidenceRefsForMemory?.length ?? 0;
-      const skillN = result.skillVersionIds?.length ?? 0;
-      const mcpN = result.mcpServerIds?.length ?? 0;
-      const toolN = (result.includedSources ?? []).filter((s) => s.kind === 'tool-schema').length;
-      const ver = result.agentVersion != null ? `agent v${result.agentVersion}` : 'agent';
-      setPeekStatus(
-        memCount > 0
-          ? `预览完成 · ${ver} · skills ${skillN} · mcp ${mcpN}（入包 ${toolN}） · 记忆证据 ${memCount} · ~${result.tokenEstimate} tok`
-          : `预览完成 · ${ver} · skills ${skillN} · mcp ${mcpN}（入包 ${toolN}） · ~${result.tokenEstimate} tok · 无项目记忆`,
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '预览上下文失败';
-      setPeekStatus(message || '预览上下文失败');
-    } finally {
-      setPeekBusy(false);
-    }
-  }, [threadId]);
-
-  const amendExcludeSource = useCallback(
-    async (sourceId: string) => {
-      const runtime = window.syncThink?.runtime;
-      if (!runtime?.amendContextPacket) {
-        setAmendStatus('当前环境未连接 Runtime，无法修订上下文');
-        return;
-      }
-      setAmendBusy(true);
-      setAmendStatus(null);
-      try {
-        const next = [...new Set([...activeExcludeSourceIds, sourceId])];
-        const result = await runtime.amendContextPacket({
-          threadId: threadId as never,
-          excludeSourceIds: next,
-        });
-        setActiveExcludeSourceIds(result.excludeSourceIds ?? []);
-        const refused = result.refusedProtectedIds ?? [];
-        if (refused.length > 0) {
-          setAmendStatus(
-            `受保护来源不可排除 · ${refused.slice(0, 2).join(', ')}${refused.length > 2 ? '…' : ''}`,
-          );
-        } else {
-          setAmendStatus(
-            `已修订 · 强制排除 ${(result.excludeSourceIds ?? []).length} 项 · 请再点「预览上下文」`,
-          );
-        }
-        // Auto re-peek so Manifest stays observable
-        if (runtime.peekContextPacket) {
-          try {
-            const peek = await runtime.peekContextPacket({
-              threadId: threadId as never,
-              userText: '（预览：尚未发送的上下文）',
-            });
-            const view: ManifestInspectView = {
-              id: PEEK_MANIFEST_ID,
-              packetId: peek.packetId,
-              proofHash: peek.proofHash,
-              modelId: peek.modelId,
-              providerModelId: peek.providerModelId,
-              resolutionSource: peek.resolutionSource,
-              credentialResolutionSource: peek.credentialResolutionSource,
-              credentialRefId: peek.credentialRefId,
-              agentVersionId: peek.agentVersionId,
-              agentVersion: peek.agentVersion,
-              skillVersionIds: peek.skillVersionIds,
-              mcpServerIds: peek.mcpServerIds,
-              policyId: peek.policyId,
-              tokenEstimate: peek.tokenEstimate,
-              includedSourceIds: peek.includedSourceIds,
-              excludedSourceIds: peek.excludedSourceIds,
-              included: peek.includedSources,
-              excluded: peek.excludedSources,
-              summaries: peek.summaries,
-              truncations: peek.truncations,
-              crossTaskRefs: peek.crossTaskRefs,
-              evidenceRefsForMemory: peek.evidenceRefsForMemory,
-              occurredAt: peek.peekedAt,
-            };
-            setPeekManifest(view);
-            setSelectedManifestId(PEEK_MANIFEST_ID);
-            setPeekStatus(
-              `修订后预览 · ~${peek.tokenEstimate} tok · 排除 ${(result.excludeSourceIds ?? []).length}`,
-            );
-          } catch {
-            /* peek is best-effort after amend */
-          }
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : '修订上下文失败';
-        setAmendStatus(message || '修订上下文失败');
-      } finally {
-        setAmendBusy(false);
-      }
-    },
-    [activeExcludeSourceIds, threadId],
-  );
-
-  const clearContextAmendments = useCallback(async () => {
-    const runtime = window.syncThink?.runtime;
-    if (!runtime?.amendContextPacket) {
-      setAmendStatus('当前环境未连接 Runtime，无法清除修订');
-      return;
-    }
-    setAmendBusy(true);
-    setAmendStatus(null);
-    try {
-      const result = await runtime.amendContextPacket({
-        threadId: threadId as never,
-        clearAll: true,
-      });
-      setActiveExcludeSourceIds(result.excludeSourceIds ?? []);
-      setAmendStatus('已恢复自动选择');
-      if (runtime.peekContextPacket) {
-        try {
-          const peek = await runtime.peekContextPacket({
-            threadId: threadId as never,
-            userText: '（预览：尚未发送的上下文）',
-          });
-          const view: ManifestInspectView = {
-            id: PEEK_MANIFEST_ID,
-            packetId: peek.packetId,
-            proofHash: peek.proofHash,
-            modelId: peek.modelId,
-            providerModelId: peek.providerModelId,
-            resolutionSource: peek.resolutionSource,
-            credentialResolutionSource: peek.credentialResolutionSource,
-            credentialRefId: peek.credentialRefId,
-            agentVersionId: peek.agentVersionId,
-            agentVersion: peek.agentVersion,
-            skillVersionIds: peek.skillVersionIds,
-            mcpServerIds: peek.mcpServerIds,
-            policyId: peek.policyId,
-            tokenEstimate: peek.tokenEstimate,
-            includedSourceIds: peek.includedSourceIds,
-            excludedSourceIds: peek.excludedSourceIds,
-            included: peek.includedSources,
-            excluded: peek.excludedSources,
-            summaries: peek.summaries,
-            truncations: peek.truncations,
-            crossTaskRefs: peek.crossTaskRefs,
-            evidenceRefsForMemory: peek.evidenceRefsForMemory,
-            occurredAt: peek.peekedAt,
-          };
-          setPeekManifest(view);
-          setSelectedManifestId(PEEK_MANIFEST_ID);
-          setPeekStatus(`已恢复 · ~${peek.tokenEstimate} tok`);
-        } catch {
-          /* ignore */
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '清除修订失败';
-      setAmendStatus(message || '清除修订失败');
-    } finally {
-      setAmendBusy(false);
-    }
-  }, [threadId]);
-
-  const handleTraceSelect = useCallback(
-    (id: string | null) => {
-      setSelectedTraceId(id);
-      if (id !== null && projection.manifests.some((manifest) => manifest.id === id)) {
-        setSelectedManifestId(id);
-      }
-    },
-    [projection.manifests],
-  );
-
-  const handleManifestSelect = useCallback(
-    (id: string | null) => {
-      setSelectedManifestId(id);
-      if (id !== null && projection.manifests.some((manifest) => manifest.id === id)) {
-        setSelectedTraceId(id);
-      }
-    },
+  const manifestInspectViews: ManifestInspectView[] = useMemo(
+    () =>
+      projection.manifests.map((manifest) => ({
+        id: manifest.id,
+        packetId: manifest.packetId,
+        proofHash: manifest.proofHash,
+        runId: manifest.runId,
+        modelId: manifest.modelId,
+        providerModelId: manifest.providerModelId,
+        resolutionSource: manifest.resolutionSource,
+        credentialResolutionSource: manifest.credentialResolutionSource,
+        credentialRefId: manifest.credentialRefId,
+        agentVersionId: manifest.agentVersionId,
+        fallbackIndex: manifest.fallbackIndex,
+        tokenEstimate: manifest.tokenEstimate,
+        includedSourceIds: manifest.includedSourceIds,
+        excludedSourceIds: manifest.excludedSourceIds,
+        included: manifest.included,
+        excluded: manifest.excluded,
+        summaries: manifest.summaries,
+        truncations: manifest.truncations,
+        crossTaskRefs: manifest.crossTaskRefs,
+        evidenceRefsForMemory: manifest.evidenceRefsForMemory,
+        occurredAt: manifest.occurredAt,
+      })),
     [projection.manifests],
   );
 
@@ -1573,10 +1623,10 @@ function DesktopShell() {
       artifactLoadGateRef.current.invalidate();
       openTaskLoadGateRef.current.invalidate();
       setActive(selection);
-      if (selection && options?.syncTaskVersion !== false) {
+      if (options?.syncTaskVersion !== false) {
         dispatchRuntimeView({
-          type: 'append-succeeded',
-          taskVersion: selection.taskVersion,
+          type: 'task-selected',
+          taskVersion: selection?.taskVersion ?? 0,
         });
       }
     },
@@ -1636,6 +1686,32 @@ function DesktopShell() {
     m1DogfoodFillBoard.primaryCta.action,
   ]);
 
+  const loadBrowserIdentities = useCallback(async () => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.listBrowserIdentities) return;
+    try {
+      const response = await runtime.listBrowserIdentities();
+      setBrowserIdentities(response.identities);
+      setBrowserIdentityError(null);
+    } catch (error) {
+      setBrowserIdentityError(error instanceof Error ? error.message : '浏览器身份加载失败');
+    }
+  }, []);
+
+  const loadTaskExecutionAccess = useCallback(async (taskId: string, agentVersionId: string) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.describeTaskExecutionAccess) return;
+    try {
+      const response = await runtime.describeTaskExecutionAccess({
+        taskId: taskId as never,
+        agentVersionId: agentVersionId as never,
+      });
+      setTaskExecutionAccess(response);
+    } catch {
+      setTaskExecutionAccess(null);
+    }
+  }, []);
+
   const loadSkills = useCallback(async () => {
     const runtime = window.syncThink?.runtime;
     if (!runtime?.listSkills) return;
@@ -1659,6 +1735,172 @@ function DesktopShell() {
       setMcpError(message || '加载 MCP 失败');
     }
   }, []);
+
+  const loadGroups = useCallback(async () => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.listGroups) return;
+    setGroupLoading(true);
+    setGroupError(null);
+    try {
+      const result = await runtime.listGroups({});
+      const avatarPaths = result.groups
+        .map((group) => group.visualIdentity.avatarPath)
+        .filter((value): value is string => Boolean(value));
+      const avatarEntries = runtime.loadAgentAvatar
+        ? await Promise.all(
+            [...new Set(avatarPaths)].map(async (avatarPath) => {
+              try {
+                const loaded = await runtime.loadAgentAvatar(avatarPath);
+                return [avatarPath, loaded.avatarUrl] as const;
+              } catch {
+                return null;
+              }
+            }),
+          )
+        : [];
+      const avatarUrls = new Map(
+        avatarEntries.filter((entry): entry is readonly [string, string] => entry !== null),
+      );
+      setGroups(result.groups);
+      setAgentAvatarUrls((current) => new Map([...current, ...avatarUrls]));
+    } catch (error) {
+      setGroupError(error instanceof Error ? error.message : '群聊加载失败');
+    } finally {
+      setGroupLoading(false);
+    }
+  }, []);
+
+  const loadAutomations = useCallback(async () => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.listAutomations || !runtime.listAutomationExecutions) return;
+    setAutomationLoading(true);
+    setAutomationError(null);
+    try {
+      const [definitions, history] = await Promise.all([
+        runtime.listAutomations({ includeDisabled: true, limit: 500 }),
+        runtime.listAutomationExecutions({ limit: 500 }),
+      ]);
+      setAutomations(definitions.automations);
+      setAutomationRuntime(definitions.runtime);
+      setAutomationExecutions(history.executions);
+    } catch (error) {
+      setAutomationError(error instanceof Error ? error.message : '自动化加载失败');
+    } finally {
+      setAutomationLoading(false);
+    }
+  }, []);
+
+  const commitGroup = useCallback((group: GroupDefinition) => {
+    setGroups((current) => {
+      const exists = current.some((item) => item.id === group.id);
+      const next = exists
+        ? current.map((item) => (item.id === group.id ? group : item))
+        : [group, ...current];
+      return [...next].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    });
+  }, []);
+
+  const createGroup = useCallback(
+    async (payload: CreateGroupPayload) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.createGroup) return;
+      setGroupBusy(true);
+      setGroupError(null);
+      try {
+        commitGroup((await runtime.createGroup(payload)).group);
+      } catch (error) {
+        setGroupError(error instanceof Error ? error.message : '群聊创建失败');
+      } finally {
+        setGroupBusy(false);
+      }
+    },
+    [commitGroup],
+  );
+
+  const updateGroup = useCallback(
+    async (payload: UpdateGroupPayload) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.updateGroup) return;
+      setGroupBusy(true);
+      setGroupError(null);
+      try {
+        commitGroup((await runtime.updateGroup(payload)).group);
+      } catch (error) {
+        setGroupError(error instanceof Error ? error.message : '群聊保存失败');
+      } finally {
+        setGroupBusy(false);
+      }
+    },
+    [commitGroup],
+  );
+
+  const addGroupMember = useCallback(
+    async (payload: AddGroupMemberPayload) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.addGroupMember) return;
+      setGroupBusy(true);
+      setGroupError(null);
+      try {
+        commitGroup((await runtime.addGroupMember(payload)).group);
+      } catch (error) {
+        setGroupError(error instanceof Error ? error.message : '成员添加失败');
+      } finally {
+        setGroupBusy(false);
+      }
+    },
+    [commitGroup],
+  );
+
+  const removeGroupMember = useCallback(
+    async (payload: RemoveGroupMemberPayload) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.removeGroupMember) return;
+      setGroupBusy(true);
+      setGroupError(null);
+      try {
+        commitGroup((await runtime.removeGroupMember(payload)).group);
+      } catch (error) {
+        setGroupError(error instanceof Error ? error.message : '成员移除失败');
+      } finally {
+        setGroupBusy(false);
+      }
+    },
+    [commitGroup],
+  );
+
+  const updateGroupMemberResponsibility = useCallback(
+    async (payload: UpdateGroupMemberResponsibilityPayload) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.updateGroupMemberResponsibility) return;
+      setGroupBusy(true);
+      setGroupError(null);
+      try {
+        commitGroup((await runtime.updateGroupMemberResponsibility(payload)).group);
+      } catch (error) {
+        setGroupError(error instanceof Error ? error.message : '成员职责保存失败');
+      } finally {
+        setGroupBusy(false);
+      }
+    },
+    [commitGroup],
+  );
+
+  const setGroupLead = useCallback(
+    async (payload: SetGroupLeadPayload) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.setGroupLead) return;
+      setGroupBusy(true);
+      setGroupError(null);
+      try {
+        commitGroup((await runtime.setGroupLead(payload)).group);
+      } catch (error) {
+        setGroupError(error instanceof Error ? error.message : '主智能体保存失败');
+      } finally {
+        setGroupBusy(false);
+      }
+    },
+    [commitGroup],
+  );
 
   const loadAgent = useCallback(async (preferredAgentId?: string) => {
     const runtime = window.syncThink?.runtime;
@@ -1699,12 +1941,47 @@ function DesktopShell() {
         (version) => String(version.agentId) === agentId,
       );
       const projected = projectAgentWorkspace(listResult.agents, agentId, selectedVersions);
+      const avatarPaths = [
+        ...listResult.agents.map((agent) => agent.visualIdentity.avatarPath),
+        ...exactAgentVersions.map((version) => version.visualIdentity.avatarPath),
+      ].filter((value): value is string => Boolean(value));
+      const avatarEntries = runtime.loadAgentAvatar
+        ? await Promise.all(
+            [...new Set(avatarPaths)].map(async (avatarPath) => {
+              try {
+                const loaded = await runtime.loadAgentAvatar(avatarPath);
+                return [avatarPath, loaded.avatarUrl] as const;
+              } catch {
+                return null;
+              }
+            }),
+          )
+        : [];
+      if (requestId !== agentLoadRequestRef.current) return;
+      const avatarUrls = new Map(
+        avatarEntries.filter((entry): entry is readonly [string, string] => entry !== null),
+      );
+      const withAvatar = <T extends { visualIdentity?: { avatarPath?: string } }>(value: T): T => ({
+        ...value,
+        ...(value.visualIdentity
+          ? {
+              visualIdentity: {
+                ...value.visualIdentity,
+                ...(value.visualIdentity.avatarPath &&
+                avatarUrls.has(value.visualIdentity.avatarPath)
+                  ? { avatarUrl: avatarUrls.get(value.visualIdentity.avatarPath) }
+                  : {}),
+              },
+            }
+          : {}),
+      });
       selectedAgentIdRef.current = projected.selectedAgentId;
       setSelectedAgentId(projected.selectedAgentId);
-      setAgents(projected.agents);
+      setAgentAvatarUrls((current) => new Map([...current, ...avatarUrls]));
+      setAgents(projected.agents.map(withAvatar));
       setAgentBinding(toAgentBindingView(bindingResult.agent));
-      setAgentDefinition(projected.definition);
-      setAgentVersions(projected.versions);
+      setAgentDefinition(projected.definition ? withAvatar(projected.definition) : null);
+      setAgentVersions(projected.versions.map(withAvatar));
       setAllAgentVersions(exactAgentVersions);
     } catch (error) {
       if (requestId !== agentLoadRequestRef.current) return;
@@ -1807,32 +2084,51 @@ function DesktopShell() {
     }
   };
 
-  const createAgent = async () => {
+  const pickAgentAvatar = useCallback(async () => {
     const runtime = window.syncThink?.runtime;
-    if (!runtime?.createAgent || !agentBinding) {
-      setAgentError('请先连接 Runtime 并配置一个可用的智能体运行时');
-      return;
+    if (!runtime?.pickAgentAvatar) {
+      setAgentError('当前环境无法选择头像');
+      return null;
     }
-    const name = window.prompt('智能体名称', '新智能体')?.trim();
-    if (!name) return;
-    const role = window.prompt('智能体角色', 'specialist')?.trim();
-    if (!role) return;
+    try {
+      const result = await runtime.pickAgentAvatar();
+      return result.canceled
+        ? null
+        : { avatarPath: result.avatarPath, avatarUrl: result.avatarUrl };
+    } catch (error) {
+      setAgentError(error instanceof Error ? error.message : '头像读取失败');
+      return null;
+    }
+  }, []);
+
+  const createAgent = async (input: AgentCreateInput): Promise<string | null> => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.createAgent) {
+      setAgentError('请先连接 Runtime');
+      return null;
+    }
+    const creationBinding =
+      agentBinding ?? buildAgentBootstrapBinding(input, agentModels, agentCredentials);
+    if (!creationBinding) {
+      setAgentError('请先在模型源导入供应商、密钥分组和可用模型');
+      return null;
+    }
 
     setAgentBusy(true);
     setAgentError(null);
     setAgentStatus(null);
     try {
-      const result = await runtime.createAgent(
-        buildAgentCreatePayload({ name, role }, agentBinding),
-      );
+      const result = await runtime.createAgent(buildAgentCreatePayload(input, creationBinding));
       const agentId = String(result.agent.agentId);
       selectedAgentIdRef.current = agentId;
       setSelectedAgentId(agentId);
       await loadAgent(agentId);
       setAgentStatus(`已新建 ${result.agent.name} · v${result.agent.version}`);
+      return agentId;
     } catch (error) {
       const message = error instanceof Error ? error.message : '新建智能体失败';
       setAgentError(message || '新建智能体失败');
+      return null;
     } finally {
       setAgentBusy(false);
     }
@@ -2670,7 +2966,12 @@ function DesktopShell() {
         taskId: taskId as never,
       });
       if (!policyLoadGateRef.current.isCurrent(requestToken)) return;
-      setApprovalPolicies(result.policies.map(toApprovalPolicyView));
+      const policies = result.policies.map(toApprovalPolicyView);
+      setApprovalPolicies(policies);
+      const taskPolicies = policies
+        .filter((policy) => policy.scopeType === 'task' && policy.scopeId === taskId)
+        .sort((left, right) => right.version - left.version);
+      setConversationApprovalMode(taskPolicies[0]?.approvalMode ?? 'full');
     } catch (error) {
       if (!policyLoadGateRef.current.isCurrent(requestToken)) return;
       const message = error instanceof Error ? error.message : '批准策略加载失败';
@@ -2711,6 +3012,21 @@ function DesktopShell() {
     }
   };
 
+  const changeConversationApprovalMode = async (mode: ApprovalModeView) => {
+    if (!active) return;
+    const current = approvalPolicies
+      .filter((policy) => policy.scopeType === 'task' && policy.scopeId === active.taskId)
+      .sort((left, right) => right.version - left.version)[0];
+    setConversationApprovalMode(mode);
+    await saveApprovalPolicy({
+      ...(current ? { policyId: current.policyId } : {}),
+      scopeType: 'task',
+      scopeId: active.taskId,
+      approvalMode: mode,
+      rules: [...(current?.rules ?? [])],
+    });
+  };
+
   const syncTaskVersion = useCallback((targetTaskId: string, taskVersion: number) => {
     if (activeTaskIdRef.current !== targetTaskId) return;
     setActive((current) => mergeTaskVersionForTarget(current, targetTaskId, taskVersion));
@@ -2721,14 +3037,12 @@ function DesktopShell() {
     const workspaceId = active?.workspaceId;
     const taskId = active?.taskId;
     const planId = m2Identity.planId;
-    const targetRevision = m2Identity.revision;
     const requestToken = planLoadGateRef.current.begin(
       `${workspaceId ?? ''}\u0000${taskId ?? ''}\u0000${planId ?? ''}`,
     );
     const runtime = window.syncThink?.runtime;
     if (!runtime?.listPlanRevisions || !planId) {
       if (planLoadGateRef.current.isCurrent(requestToken)) {
-        setPlanRevision(null);
         setPlanRevisions([]);
       }
       return;
@@ -2740,105 +3054,11 @@ function DesktopShell() {
       if (!planLoadGateRef.current.isCurrent(requestToken)) return;
       const revisions = [...result.revisions].sort((left, right) => left.revision - right.revision);
       setPlanRevisions(revisions);
-      setPlanRevision(
-        revisions.find((item) => item.revision === targetRevision) ?? revisions.at(-1) ?? null,
-      );
-    } catch (error) {
+    } catch {
       if (!planLoadGateRef.current.isCurrent(requestToken)) return;
-      const message = error instanceof Error ? error.message : '计划版本加载失败';
-      setPlanError(message || '计划版本加载失败');
+      setPlanRevisions([]);
     }
   }, [active?.workspaceId, active?.taskId, m2Identity.planId, m2Identity.revision]);
-
-  const createDefaultPlan = async () => {
-    const runtime = window.syncThink?.runtime;
-    if (
-      !runtime?.createPlan ||
-      !active ||
-      active.participationMode !== 'collaboration' ||
-      !agentBinding?.agentVersionId
-    ) {
-      setPlanError('先打开协作模式任务并为智能体保存运行时配置，再创建计划。');
-      return;
-    }
-    setPlanBusy(true);
-    setPlanError(null);
-    const targetTaskId = active.taskId;
-    try {
-      const stepId = ulid() as PlanStepDraft['id'];
-      const result = await runtime.createPlan({
-        taskId: active.taskId as never,
-        expectedTaskVersion: resolveExpectedTaskVersion(active.taskVersion, projection.taskVersion),
-        title: active.title,
-        steps: [
-          {
-            id: stepId,
-            title: '执行任务',
-            instructions: active.goal,
-            agentVersionId: agentBinding.agentVersionId as never,
-            dependsOn: [],
-          },
-        ],
-      });
-      setPlanRevision(result);
-      setPlanRevisions([result]);
-      if (activeTaskIdRef.current !== targetTaskId) return;
-      syncTaskVersion(targetTaskId, result.taskVersion);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '创建计划失败';
-      setPlanError(message || '创建计划失败');
-    } finally {
-      setPlanBusy(false);
-    }
-  };
-
-  const reviseCurrentPlan = async (input: {
-    planId: string;
-    expectedRevision: number;
-    title: string;
-    steps: PlanStepDraft[];
-  }) => {
-    const runtime = window.syncThink?.runtime;
-    if (!runtime?.revisePlan) return;
-    setPlanBusy(true);
-    setPlanError(null);
-    try {
-      const result = await runtime.revisePlan({
-        planId: input.planId as never,
-        expectedRevision: input.expectedRevision,
-        title: input.title,
-        steps: input.steps,
-      });
-      setPlanRevision(result);
-      setPlanRevisions((current) => [...current, result]);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '保存计划新版本失败';
-      setPlanError(message || '保存计划新版本失败');
-    } finally {
-      setPlanBusy(false);
-    }
-  };
-
-  const approveCurrentPlan = async (input: { planId: string; revision: number }) => {
-    const runtime = window.syncThink?.runtime;
-    if (!runtime?.approvePlan) return;
-    setPlanBusy(true);
-    setPlanError(null);
-    try {
-      const graph = await runtime.approvePlan({
-        planId: input.planId as never,
-        revision: input.revision,
-      });
-      setRunGraph(graph);
-      setRightRailTab('graph');
-      await loadPlanRevisions();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '批准计划失败';
-      setPlanError(message || '批准计划失败');
-    } finally {
-      setPlanBusy(false);
-    }
-  };
 
   const loadRunGraph = useCallback(async () => {
     const workspaceId = active?.workspaceId;
@@ -2893,13 +3113,12 @@ function DesktopShell() {
         });
         if (!graphLoadGateRef.current.isCurrent(requestToken)) return;
         setRunGraph(graph);
-        setSelectedGraphStepId(input.stepId ?? null);
-        setRightRailTab('graph');
+        setRightRailTab('trace');
       } catch (error) {
         if (!graphLoadGateRef.current.isCurrent(requestToken)) return;
         const message = error instanceof Error ? error.message : '审批执行图加载失败';
         setGraphError(message || '审批执行图加载失败');
-        setRightRailTab('graph');
+        setRightRailTab('trace');
       } finally {
         if (graphLoadGateRef.current.isCurrent(requestToken)) setGraphBusy(false);
       }
@@ -3322,6 +3541,8 @@ function DesktopShell() {
     loadMcpServers,
     loadApprovals,
     loadMemory,
+    loadAutomations,
+    loadWorkspaceCatalog,
   });
   eventRefreshHandlersRef.current = {
     loadProviders,
@@ -3330,13 +3551,28 @@ function DesktopShell() {
     loadMcpServers,
     loadApprovals,
     loadMemory,
+    loadAutomations,
+    loadWorkspaceCatalog,
   };
 
   useEffect(() => {
     const runtime = window.syncThink?.runtime;
     if (!runtime) return;
     const removeListener = runtime.onEvent((event) => {
-      dispatchRuntimeView({ type: 'event-received', event, threadId: threadIdRef.current });
+      runtimeEventBatchRef.current.push(event);
+      if (runtimeEventBatchTimerRef.current === null) {
+        runtimeEventBatchTimerRef.current = window.setTimeout(() => {
+          runtimeEventBatchTimerRef.current = null;
+          const events = runtimeEventBatchRef.current.splice(0);
+          if (events.length > 0) {
+            dispatchRuntimeView({
+              type: 'events-received',
+              events,
+              threadId: threadIdRef.current,
+            });
+          }
+        }, 40);
+      }
       if (isM2RefreshEvent(event)) {
         if (m2RefreshTimerRef.current !== null) {
           window.clearTimeout(m2RefreshTimerRef.current);
@@ -3395,6 +3631,16 @@ function DesktopShell() {
       if (event.type === 'approval.requested' || event.type === 'approval.decided') {
         void eventRefreshHandlersRef.current.loadMemory();
       }
+      if (event.type.startsWith('automation.')) {
+        void eventRefreshHandlersRef.current.loadAutomations();
+      }
+      if (
+        event.type.startsWith('subtask.') ||
+        event.type === 'task.created' ||
+        event.type.startsWith('task.execution-')
+      ) {
+        void eventRefreshHandlersRef.current.loadWorkspaceCatalog(activeTaskIdRef.current);
+      }
     });
     return () => {
       removeListener();
@@ -3402,6 +3648,11 @@ function DesktopShell() {
         window.clearTimeout(m2RefreshTimerRef.current);
         m2RefreshTimerRef.current = null;
       }
+      if (runtimeEventBatchTimerRef.current !== null) {
+        window.clearTimeout(runtimeEventBatchTimerRef.current);
+        runtimeEventBatchTimerRef.current = null;
+      }
+      runtimeEventBatchRef.current = [];
     };
     // Event subscription is mount-stable; reconnect does not rebind.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3419,6 +3670,9 @@ function DesktopShell() {
         void loadAgent();
         void loadSkills();
         void loadMcpServers();
+        void loadGroups();
+        void loadAutomations();
+        void loadBrowserIdentities();
         void loadMemory();
       },
       onFailed: (error) => {
@@ -3456,6 +3710,24 @@ function DesktopShell() {
   }, [loadPlanRevisions, runtimeView.connectionState]);
 
   useEffect(() => {
+    if (
+      runtimeView.connectionState !== 'online' ||
+      !active?.taskId ||
+      !activeConversationAgentVersionId
+    ) {
+      setTaskExecutionAccess(null);
+      return;
+    }
+    void loadTaskExecutionAccess(active.taskId, String(activeConversationAgentVersionId));
+  }, [
+    active?.taskId,
+    activeConversationAgentVersionId,
+    conversationApprovalMode,
+    loadTaskExecutionAccess,
+    runtimeView.connectionState,
+  ]);
+
+  useEffect(() => {
     if (runtimeView.connectionState !== 'online') return;
     void loadRunGraph();
     void loadArtifacts();
@@ -3489,6 +3761,147 @@ function DesktopShell() {
     setReconnectNonce((n) => n + 1);
   }, []);
 
+  const createGroupTask = useCallback(
+    async (
+      payload: CreateGroupTaskPayload,
+      replacementTask?: Pick<ActiveTaskSelection, 'taskId' | 'taskVersion' | 'workspaceId'>,
+    ) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.createGroupTask) return;
+      setGroupBusy(true);
+      setGroupError(null);
+      try {
+        const response = await runtime.createGroupTask(payload);
+        let replacementWarning: string | null = null;
+        if (replacementTask) {
+          if (!runtime.archiveTask) {
+            replacementWarning = '小队任务已创建，但原空对话未能自动归档';
+          } else {
+            try {
+              await runtime.archiveTask({
+                taskId: replacementTask.taskId as never,
+                expectedTaskVersion: replacementTask.taskVersion,
+                cascade: true,
+              });
+            } catch {
+              replacementWarning = '小队任务已创建，但原空对话归档失败';
+            }
+          }
+        }
+        setProductSection('tasks');
+        await loadWorkspaceCatalog(String(response.taskId));
+        if (replacementWarning) setGroupError(replacementWarning);
+      } catch (error) {
+        setGroupError(error instanceof Error ? error.message : '协作任务创建失败');
+      } finally {
+        setGroupBusy(false);
+      }
+    },
+    [loadWorkspaceCatalog],
+  );
+
+  const createAutomation = useCallback(
+    async (payload: CreateAutomationPayload) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.createAutomation) return;
+      setAutomationBusy(true);
+      setAutomationError(null);
+      try {
+        const response = await runtime.createAutomation(payload);
+        if (response.webhookSecret) {
+          setAutomationSecret({
+            automationId: String(response.automation.id),
+            ...(response.webhookUrl ? { url: response.webhookUrl } : {}),
+            secret: response.webhookSecret,
+          });
+        }
+        await loadAutomations();
+      } catch (error) {
+        setAutomationError(error instanceof Error ? error.message : '自动化创建失败');
+      } finally {
+        setAutomationBusy(false);
+      }
+    },
+    [loadAutomations],
+  );
+
+  const updateAutomation = useCallback(
+    async (payload: UpdateAutomationPayload) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.updateAutomation) return;
+      setAutomationBusy(true);
+      setAutomationError(null);
+      try {
+        const response = await runtime.updateAutomation(payload);
+        if (response.webhookSecret) {
+          setAutomationSecret({
+            automationId: String(response.automation.id),
+            ...(response.webhookUrl ? { url: response.webhookUrl } : {}),
+            secret: response.webhookSecret,
+          });
+        }
+        await loadAutomations();
+      } catch (error) {
+        setAutomationError(error instanceof Error ? error.message : '自动化保存失败');
+      } finally {
+        setAutomationBusy(false);
+      }
+    },
+    [loadAutomations],
+  );
+
+  const deleteAutomation = useCallback(
+    async (automationId: string, expectedVersion: number) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.deleteAutomation) return;
+      setAutomationBusy(true);
+      setAutomationError(null);
+      try {
+        await runtime.deleteAutomation({ automationId: automationId as never, expectedVersion });
+        setAutomationSecret((current) => (current?.automationId === automationId ? null : current));
+        await loadAutomations();
+      } catch (error) {
+        setAutomationError(error instanceof Error ? error.message : '自动化删除失败');
+      } finally {
+        setAutomationBusy(false);
+      }
+    },
+    [loadAutomations],
+  );
+
+  const triggerAutomation = useCallback(
+    async (automationId: string, input?: string) => {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.triggerAutomation) return;
+      setAutomationBusy(true);
+      setAutomationError(null);
+      try {
+        const response = await runtime.triggerAutomation({
+          automationId: automationId as never,
+          ...(input?.trim() ? { input: input.trim() } : {}),
+        });
+        await Promise.all([
+          loadAutomations(),
+          loadWorkspaceCatalog(response.taskId ? String(response.taskId) : null),
+        ]);
+        if (response.taskId) setProductSection('tasks');
+      } catch (error) {
+        setAutomationError(error instanceof Error ? error.message : '自动化运行失败');
+      } finally {
+        setAutomationBusy(false);
+      }
+    },
+    [loadAutomations, loadWorkspaceCatalog],
+  );
+
+  const openAutomationTask = useCallback(
+    async (taskId: string) => {
+      setProductSection('tasks');
+      await loadWorkspaceCatalog(taskId);
+    },
+    [loadWorkspaceCatalog],
+  );
+
   const openTaskById = async (taskId: string) => {
     if (!active) return;
     const tasks = tasksByWorkspace.get(active.workspaceId) ?? [];
@@ -3500,14 +3913,60 @@ function DesktopShell() {
     await openTask(toNavTask(target));
   };
 
-  const openTask = async (task: WorkspaceNavTask) => {
-    setLeftDrawerOpen(false);
-    // Parent surface: keep the progress rail open when jumping among related tasks.
-    if (rightRailTab !== 'overview') setRightRailTab('overview');
-    if (traceCollapsed) {
-      setTraceCollapsed(false);
-      writeTraceCollapsedPreference(false);
+  const discardBlankActiveTask = async (nextTaskId?: string) => {
+    const current = active;
+    if (
+      !current ||
+      current.taskId === nextTaskId ||
+      current.taskVersion !== 0 ||
+      !isUntitledTaskTitle(current.title)
+    ) {
+      return false;
     }
+    const draftKey = `${current.workspaceId}:${current.taskId}`;
+    const draft = composeDrafts.get(draftKey);
+    if (draft?.text.trim() || draft?.attachments.length) return false;
+
+    const runtime = window.syncThink?.runtime;
+    let discarded = false;
+    if (runtime?.discardEmptyTask) {
+      try {
+        discarded = (
+          await runtime.discardEmptyTask({
+            taskId: current.taskId as never,
+            expectedTaskVersion: 0,
+          })
+        ).discarded;
+      } catch {
+        return false;
+      }
+    } else if (current.taskId.startsWith('preview-task-')) {
+      discarded = true;
+    }
+    if (!discarded) return false;
+
+    setTasksByWorkspace((existing) => {
+      const next = new Map(existing);
+      next.set(
+        current.workspaceId,
+        (next.get(current.workspaceId) ?? []).filter(
+          (task) => String(task.taskId) !== current.taskId,
+        ),
+      );
+      return next;
+    });
+    setComposeDrafts((existing) => {
+      const next = new Map(existing);
+      next.delete(draftKey);
+      return next;
+    });
+    return true;
+  };
+
+  const openTask = async (task: WorkspaceNavTask) => {
+    await discardBlankActiveTask(String(task.taskId));
+    setLeftDrawerOpen(false);
+    if (rightRailTab !== 'overview') setRightRailTab('overview');
     const requestToken = openTaskLoadGateRef.current.begin(
       `${task.workspaceId}\u0000${task.taskId}`,
     );
@@ -3607,8 +4066,6 @@ function DesktopShell() {
     }
 
     collaborationPreparationRef.current = true;
-    setPlanBusy(true);
-    setPlanError(null);
     setCollaborationStatus({
       taskId: input.task.taskId,
       tone: 'working',
@@ -3656,7 +4113,6 @@ function DesktopShell() {
         steps,
       });
       if (activeTaskIdRef.current === input.task.taskId) {
-        setPlanRevision(plan);
         setPlanRevisions([plan]);
         syncTaskVersion(input.task.taskId, plan.taskVersion);
       }
@@ -3671,11 +4127,9 @@ function DesktopShell() {
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       const failure = message || '协作计划准备失败，请继续对话或重新打开任务后再试。';
-      setPlanError(failure);
       setCollaborationStatus({ taskId: input.task.taskId, tone: 'error', text: failure });
     } finally {
       collaborationPreparationRef.current = false;
-      setPlanBusy(false);
     }
   };
 
@@ -3716,6 +4170,32 @@ function DesktopShell() {
     }
   };
 
+  const createWorkspaceFromFolder = async () => {
+    const runtime = window.syncThink?.runtime;
+    setProjectCreateError(null);
+    setWorkspaceError(null);
+    if (!runtime?.pickFolder || !runtime.createWorkspace) {
+      setWorkspaceError('当前环境无法从文件夹创建项目，请重启应用后重试');
+      return;
+    }
+    setProjectCreateBusy(true);
+    try {
+      const picked = await runtime.pickFolder();
+      if (picked.canceled || !picked.path) return;
+      const created = await runtime.createWorkspace({
+        name: deriveProjectNameFromFolderPath(picked.path),
+        folderPath: picked.path,
+      });
+      setProjectWorkspaceId(String(created.workspaceId));
+      await loadWorkspaceCatalog(active?.taskId ?? null);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+      setWorkspaceError(`从文件夹创建项目失败${detail}`);
+    } finally {
+      setProjectCreateBusy(false);
+    }
+  };
+
   const bindWorkspaceFolder = async (workspaceId: string) => {
     const runtime = window.syncThink?.runtime;
     setWorkspaceError(null);
@@ -3743,6 +4223,131 @@ function DesktopShell() {
       setWorkspaceError(`文件夹绑定失败${detail}`);
     } finally {
       setBindingWorkspaceId(null);
+    }
+  };
+
+  const bindWorkspaceGitRepository = async (
+    workspaceId: string,
+    repositoryUrl: string,
+    defaultRef?: string,
+  ) => {
+    const runtime = window.syncThink?.runtime;
+    setWorkspaceError(null);
+    setBindingWorkspaceId(workspaceId);
+    try {
+      if (!runtime?.bindWorkspaceGitRepository) {
+        setWorkspaceError('当前 Runtime 不支持 Git 仓库绑定，请重启应用后重试');
+        return;
+      }
+      await runtime.bindWorkspaceGitRepository({
+        workspaceId: workspaceId as never,
+        repositoryUrl,
+        defaultRef,
+      });
+      await loadWorkspaceCatalog(active?.taskId ?? null);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+      setWorkspaceError(`Git 仓库绑定失败${detail}`);
+    } finally {
+      setBindingWorkspaceId(null);
+    }
+  };
+
+  const createBrowserIdentity = async (input: { name: string; makeDefault?: boolean }) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.createBrowserIdentity) throw new Error('当前 Runtime 不支持浏览器身份管理');
+    setBrowserIdentityBusy(true);
+    setBrowserIdentityError(null);
+    try {
+      await runtime.createBrowserIdentity(input);
+      await Promise.all([loadBrowserIdentities(), loadWorkspaceCatalog(active?.taskId ?? null)]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '浏览器身份创建失败';
+      setBrowserIdentityError(message);
+      throw error;
+    } finally {
+      setBrowserIdentityBusy(false);
+    }
+  };
+
+  const updateBrowserIdentity = async (input: {
+    id: string;
+    name?: string;
+    makeDefault?: boolean;
+  }) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.updateBrowserIdentity) throw new Error('当前 Runtime 不支持浏览器身份管理');
+    setBrowserIdentityBusy(true);
+    setBrowserIdentityError(null);
+    try {
+      await runtime.updateBrowserIdentity(input);
+      await Promise.all([loadBrowserIdentities(), loadWorkspaceCatalog(active?.taskId ?? null)]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '浏览器身份更新失败';
+      setBrowserIdentityError(message);
+      throw error;
+    } finally {
+      setBrowserIdentityBusy(false);
+    }
+  };
+
+  const deleteBrowserIdentity = async (id: string) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.deleteBrowserIdentity) throw new Error('当前 Runtime 不支持浏览器身份管理');
+    setBrowserIdentityBusy(true);
+    setBrowserIdentityError(null);
+    try {
+      await runtime.deleteBrowserIdentity({ id });
+      await loadBrowserIdentities();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '浏览器身份删除失败';
+      setBrowserIdentityError(message);
+      throw error;
+    } finally {
+      setBrowserIdentityBusy(false);
+    }
+  };
+
+  const setActiveTaskBrowserIdentity = async (browserIdentityId: string) => {
+    const runtime = window.syncThink?.runtime;
+    if (!active || !runtime?.setTaskBrowserIdentity) return;
+    setBrowserIdentityBusy(true);
+    setBrowserIdentityError(null);
+    try {
+      await runtime.setTaskBrowserIdentity({
+        taskId: active.taskId as never,
+        browserIdentityId,
+      });
+      await loadWorkspaceCatalog(active.taskId);
+      if (activeConversationAgentVersionId) {
+        await loadTaskExecutionAccess(active.taskId, String(activeConversationAgentVersionId));
+      }
+    } catch (error) {
+      setBrowserIdentityError(error instanceof Error ? error.message : '任务浏览器身份切换失败');
+    } finally {
+      setBrowserIdentityBusy(false);
+    }
+  };
+
+  const resolveChildWorktreeIntegration = async (
+    childTaskId: string,
+    strategy: 'accept-child' | 'keep-parent',
+  ) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.resolveWorktreeIntegration) {
+      setWorkspaceError('当前 Runtime 不支持子任务改动处理，请重启应用后重试');
+      return;
+    }
+    setIntegrationBusyTaskId(childTaskId);
+    setWorkspaceError(null);
+    try {
+      await runtime.resolveWorktreeIntegration({ childTaskId: childTaskId as never, strategy });
+      await loadWorkspaceCatalog(active?.taskId ?? null);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+      setWorkspaceError(`子任务改动处理失败${detail}`);
+    } finally {
+      setIntegrationBusyTaskId(null);
     }
   };
 
@@ -3868,6 +4473,9 @@ function DesktopShell() {
 
   /** Instant create under a project — no modal (product path). */
   const createTask = async (workspaceId: string, options?: { parentTaskId?: string }) => {
+    if (!options?.parentTaskId || options.parentTaskId !== active?.taskId) {
+      await discardBlankActiveTask();
+    }
     const runtime = window.syncThink?.runtime;
     const parentTaskId = options?.parentTaskId;
     const title = parentTaskId ? '子任务' : '新任务';
@@ -3937,8 +4545,7 @@ function DesktopShell() {
         ? candidates.find((task) => task.taskId === lastOpenedTaskId)
         : undefined) ?? candidates.at(-1);
     if (!target) {
-      const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
-      setWorkspaceError(`项目「${workspace?.name ?? workspaceId}」还没有任务，请先新建任务。`);
+      await createTask(workspaceId);
       return;
     }
     await openTask(toNavTask(target));
@@ -3984,19 +4591,22 @@ function DesktopShell() {
     if (sendPending || !canSendRuntimeMessage(runtimeView.connectionState)) return false;
     const runtime = window.syncThink?.runtime;
     const targetTask = active;
+    const attachments = options?.attachments ?? [];
+    const messageText = text.trim() || (attachments.length > 0 ? '请查看以下附件。' : '');
+    if (!messageText) return false;
     const collaborationIntent = inferConversationCollaborationIntent(text);
     if (!runtime) {
-      setPreviewMessages((messages) => [...messages, text]);
+      setPreviewMessages((messages) => [...messages, messageText]);
       if (targetTask) {
         const generatedTitle =
           targetTask.taskVersion === 0 && isUntitledTaskTitle(targetTask.title)
-            ? deriveTaskTitleFromPrompt(text)
+            ? deriveTaskTitleFromPrompt(messageText)
             : undefined;
         applyTaskMessageResult({
           task: targetTask,
           taskVersion: targetTask.taskVersion + 1,
           taskTitle: generatedTitle,
-          taskGoal: generatedTitle ? text.trim() : undefined,
+          taskGoal: generatedTitle ? messageText : undefined,
         });
         if (collaborationIntent.shouldUpgrade) {
           setCollaborationStatus({
@@ -4018,8 +4628,14 @@ function DesktopShell() {
           runtimeView.taskVersion,
         ),
         role: 'user',
-        text,
+        text: messageText,
+        ...(attachments.length ? { attachments } : {}),
         ...(options?.modelId ? { modelId: options.modelId as never } : {}),
+        ...(options?.agentVersionId
+          ? { agentVersionId: options.agentVersionId as never }
+          : targetTask?.participationMode !== 'collaboration' && activeConversationAgentVersionId
+            ? { agentVersionId: activeConversationAgentVersionId as never }
+            : {}),
       });
       dispatchRuntimeView({ type: 'append-succeeded', taskVersion: response.taskVersion });
       if (targetTask) {
@@ -4031,7 +4647,8 @@ function DesktopShell() {
         });
         if (
           collaborationIntent.shouldUpgrade &&
-          targetTask.participationMode !== 'automatic' &&
+          !taskGroupIds.has(targetTask.taskId) &&
+          targetTask.participationMode === 'conversation' &&
           planRevisions.length === 0
         ) {
           void prepareConversationCollaboration({
@@ -4041,7 +4658,7 @@ function DesktopShell() {
               title: response.taskTitle ?? targetTask.title,
               goal: response.taskGoal ?? targetTask.goal,
             },
-            prompt: text,
+            prompt: messageText,
             expectedTaskVersion: response.taskVersion,
           });
         }
@@ -4061,6 +4678,73 @@ function DesktopShell() {
       return false;
     } finally {
       setSendPending(false);
+    }
+  };
+
+  const pickComposeAttachments = useCallback(async (kind: 'files' | 'folder') => {
+    const bridge = window.syncThink?.runtime;
+    if (!bridge?.pickMessageAttachments) throw new Error('当前桌面版本不支持附件选择');
+    return bridge.pickMessageAttachments(kind);
+  }, []);
+
+  const importComposeFiles = useCallback(async (files: readonly File[]) => {
+    const bridge = window.syncThink?.runtime;
+    if (!bridge?.stageMessageFileData) throw new Error('当前桌面版本不支持拖放附件');
+    return bridge.stageMessageFileData(await serializeComposeFiles(files));
+  }, []);
+
+  const bindComposeAttachmentFolder = useCallback(
+    async (attachment: import('@sync-think/ui-kit').ComposeAttachment) => {
+      const bridge = window.syncThink?.runtime;
+      if (!active?.workspaceId || !bridge?.bindWorkspaceFolder) {
+        throw new Error('请先打开项目任务');
+      }
+      await bridge.bindWorkspaceFolder({
+        workspaceId: active.workspaceId as never,
+        folderPath: attachment.managedRef,
+      });
+      await loadWorkspaceCatalog(active.taskId);
+    },
+    [active?.taskId, active?.workspaceId, loadWorkspaceCatalog],
+  );
+
+  const resolveApplicationToolConfirmation = async (
+    confirmationId: string,
+    decision: 'confirm' | 'reject',
+  ) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime || !threadId || confirmationBusyIds.has(confirmationId)) return;
+    setConfirmationBusyIds((current) => new Set(current).add(confirmationId));
+    setConfirmationErrors((current) => {
+      const next = new Map(current);
+      next.delete(confirmationId);
+      return next;
+    });
+    try {
+      const payload = { confirmationId, threadId: threadId as never };
+      if (decision === 'confirm') {
+        const response = await runtime.confirmApplicationTool(payload);
+        if (response.status === 'failed') {
+          setConfirmationErrors((current) =>
+            new Map(current).set(confirmationId, response.errorSummary ?? '操作执行失败'),
+          );
+        }
+      } else {
+        await runtime.rejectApplicationTool(payload);
+      }
+    } catch (error) {
+      setConfirmationErrors((current) =>
+        new Map(current).set(
+          confirmationId,
+          error instanceof Error ? error.message : '无法处理这个操作请求',
+        ),
+      );
+    } finally {
+      setConfirmationBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(confirmationId);
+        return next;
+      });
     }
   };
 
@@ -4183,20 +4867,36 @@ function DesktopShell() {
 
       if (normalized === 'none') return;
 
+      if (normalized === 'agent') {
+        setProductSection('friends');
+        setLeftDrawerOpen(false);
+        return;
+      }
+      if (normalized === 'providers') {
+        setProductSection('providers');
+        setLeftDrawerOpen(false);
+        return;
+      }
+      if (normalized === 'workspaces') {
+        setProductSection('projects');
+        setLeftDrawerOpen(false);
+        return;
+      }
+      if (normalized === 'settings') {
+        setProductSection('settings');
+        setLeftDrawerOpen(false);
+        return;
+      }
+
       if (normalized === 'manifest' || normalized === 'trace') {
+        setRightRailTab('trace');
         if (traceCollapsed) {
           setTraceCollapsed(false);
           writeTraceCollapsedPreference(false);
         }
         // Defer flash until rail expands
         window.setTimeout(() => {
-          if (normalized === 'manifest') {
-            flashInstrument(
-              '[data-testid="manifest-panel"], .st-demo-trace__manifest, .st-manifest',
-            );
-          } else {
-            flashInstrument('[data-testid="trace-list-wrap"], .st-demo-trace, .st-trace');
-          }
+          flashInstrument('.st-conversation-execution-logs, .st-demo-trace');
         }, 80);
         return;
       }
@@ -5745,49 +6445,115 @@ function DesktopShell() {
   const taskTitle = active?.title ?? '选择或创建一个任务';
   const folderPath = active?.folderPath ?? '未绑定文件夹';
   const taskStatus = active?.status ?? 'idle';
-  const executionGraphView = useMemo(
+  const visibleArtifactItems = useMemo(
     () =>
-      runGraph
-        ? projectM2ExecutionGraph(
-            runGraph,
-            runtimeView.eventHistory,
-            artifactItems,
-            agentVersionById,
-          )
-        : null,
-    [runGraph, runtimeView.eventHistory, artifactItems, agentVersionById],
+      artifactItems.filter((item) => {
+        const latestVersion = item.versions.reduce<(typeof item.versions)[number] | undefined>(
+          (latest, version) => (!latest || version.version > latest.version ? version : latest),
+          undefined,
+        );
+        const producerStep = latestVersion
+          ? runGraph?.steps.find((step) => String(step.id) === String(latestVersion.sourceStepId))
+          : undefined;
+        return isUserFacingArtifact({
+          name: item.artifact.name,
+          stepTitle: producerStep?.title,
+          selected: Boolean(item.selectedVersionId),
+          merged: item.versions.some((version) => version.status === 'merged'),
+          hasConflict: artifactConflicts.some(
+            ({ conflict }) => String(conflict.artifactId) === String(item.artifact.id),
+          ),
+        });
+      }),
+    [artifactConflicts, artifactItems, runGraph],
   );
   const selectedArtifactItem = useMemo(
     () =>
-      artifactItems.find((item) => String(item.artifact.id) === selectedArtifactId) ??
-      artifactItems[0] ??
+      visibleArtifactItems.find((item) => String(item.artifact.id) === selectedArtifactId) ??
+      visibleArtifactItems[0] ??
       null,
-    [artifactItems, selectedArtifactId],
+    [selectedArtifactId, visibleArtifactItems],
   );
-  const artifactVersionsView: ArtifactVersionsView | null = useMemo(
-    () =>
-      selectedArtifactItem
-        ? {
-            id: String(selectedArtifactItem.artifact.id),
-            name: selectedArtifactItem.artifact.name,
-            selectedVersionId: selectedArtifactItem.selectedVersionId
-              ? String(selectedArtifactItem.selectedVersionId)
-              : undefined,
-            versions: selectedArtifactItem.versions.map((version) => ({
-              id: String(version.id),
-              artifactId: String(version.artifactId),
-              version: version.version,
-              sourceStepId: String(version.sourceStepId),
-              status: version.status,
-              contentHash: version.contentHash,
-              mimeType: version.mimeType,
-              parentVersionIds: version.parentVersionIds.map(String),
-              createdAt: version.createdAt,
-            })),
-          }
-        : null,
-    [selectedArtifactItem],
-  );
+  const artifactVersionsView: ArtifactVersionsView | null = useMemo(() => {
+    if (!selectedArtifactItem) return null;
+    const latestVersion = selectedArtifactItem.versions.reduce<
+      (typeof selectedArtifactItem.versions)[number] | undefined
+    >(
+      (latest, version) => (!latest || version.version > latest.version ? version : latest),
+      undefined,
+    );
+    const producerStep = latestVersion
+      ? runGraph?.steps.find((step) => String(step.id) === String(latestVersion.sourceStepId))
+      : undefined;
+    const presentation = {
+      name: selectedArtifactItem.artifact.name,
+      stepTitle: producerStep?.title,
+      selected: Boolean(selectedArtifactItem.selectedVersionId),
+      merged: selectedArtifactItem.versions.some((version) => version.status === 'merged'),
+    };
+    return {
+      id: String(selectedArtifactItem.artifact.id),
+      name: artifactDisplayName(presentation),
+      selectedVersionId: selectedArtifactItem.selectedVersionId
+        ? String(selectedArtifactItem.selectedVersionId)
+        : undefined,
+      versions: selectedArtifactItem.versions.map((version) => ({
+        id: String(version.id),
+        artifactId: String(version.artifactId),
+        version: version.version,
+        sourceStepId: String(version.sourceStepId),
+        status: version.status,
+        contentHash: version.contentHash,
+        mimeType: version.mimeType,
+        parentVersionIds: version.parentVersionIds.map(String),
+        createdAt: version.createdAt,
+        content: artifactVersionContents.get(String(version.id)),
+      })),
+    };
+  }, [artifactVersionContents, runGraph, selectedArtifactItem]);
+  useEffect(() => {
+    if (!artifactDialogOpen || !artifactVersionsView || !active || !m2Identity.runId) return;
+    const selectedVersion =
+      artifactVersionsView.versions.find(
+        (version) => version.id === artifactVersionsView.selectedVersionId,
+      ) ?? artifactVersionsView.versions.at(-1);
+    if (!selectedVersion || artifactVersionContents.has(selectedVersion.id)) return;
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.getArtifactVersion) return;
+    let cancelled = false;
+    void runtime
+      .getArtifactVersion({
+        workspaceId: active.workspaceId as never,
+        taskId: active.taskId as never,
+        runId: m2Identity.runId as never,
+        artifactVersionId: selectedVersion.id as never,
+      })
+      .then(
+        ({ version }) => {
+          if (cancelled) return;
+          setArtifactVersionContents((current) => {
+            const next = new Map(current);
+            next.set(
+              selectedVersion.id,
+              version.content ??
+                (version.contentRef
+                  ? `该产物保存在文件：${version.contentRef}`
+                  : '这个产物没有可预览的文本内容。'),
+            );
+            return next;
+          });
+        },
+        () => {
+          if (cancelled) return;
+          setArtifactVersionContents((current) =>
+            new Map(current).set(selectedVersion.id, '内容读取失败，请稍后重试。'),
+          );
+        },
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [active, artifactDialogOpen, artifactVersionContents, artifactVersionsView, m2Identity.runId]);
   const artifactMergeSteps: ArtifactMergeStepView[] = useMemo(
     () =>
       runGraph?.steps
@@ -5817,6 +6583,138 @@ function DesktopShell() {
           : undefined,
       })),
     [artifactConflicts],
+  );
+  const modelLabelById = useMemo(
+    () => new Map(composeModels.map((model) => [model.modelId, model.label] as const)),
+    [composeModels],
+  );
+  const activeGroupResponsibilityByAgentVersionId = useMemo(
+    () =>
+      new Map(
+        (activeConversationGroup?.members ?? []).map(
+          (member) => [String(member.agentVersionId), member.responsibility] as const,
+        ),
+      ),
+    [activeConversationGroup],
+  );
+  const conversationLogAgents = useMemo<ReadonlyMap<string, ProgressAgentIdentity>>(
+    () =>
+      new Map(
+        allAgentVersions.map((version) => {
+          const avatarPath = version.visualIdentity.avatarPath;
+          return [
+            String(version.agentVersionId),
+            {
+              agentVersionId: String(version.agentVersionId),
+              name: version.name,
+              role: version.role,
+              responsibility: activeGroupResponsibilityByAgentVersionId.get(
+                String(version.agentVersionId),
+              ),
+              defaultModelId: String(version.defaultModelId),
+              color: version.visualIdentity.color,
+              ...(avatarPath && agentAvatarUrls.has(avatarPath)
+                ? { avatarUrl: agentAvatarUrls.get(avatarPath) }
+                : {}),
+            },
+          ] as const;
+        }),
+      ),
+    [allAgentVersions, activeGroupResponsibilityByAgentVersionId, agentAvatarUrls],
+  );
+  const conversationLogs = useMemo(
+    () =>
+      projectConversationLogs({
+        events: runtimeView.eventHistory,
+        threadId,
+        taskId: active?.taskId,
+        agents: conversationLogAgents,
+      }),
+    [active?.taskId, conversationLogAgents, runtimeView.eventHistory, threadId],
+  );
+  const taskProgress = useMemo(
+    () =>
+      projectConversationTaskProgress({
+        runGraph,
+        turns: conversationLogs,
+        events: runtimeView.eventHistory,
+        agents: conversationLogAgents,
+        modelLabelsById: modelLabelById,
+        nowMs: progressClockMs,
+      }),
+    [
+      conversationLogAgents,
+      conversationLogs,
+      modelLabelById,
+      progressClockMs,
+      runGraph,
+      runtimeView.eventHistory,
+    ],
+  );
+
+  const taskArtifactDirectoryItems = useMemo<TaskArtifactDirectoryItem[]>(
+    () =>
+      visibleArtifactItems.map((item) => {
+        const latestVersion = item.versions.reduce<(typeof item.versions)[number] | undefined>(
+          (latest, version) => (!latest || version.version > latest.version ? version : latest),
+          undefined,
+        );
+        const selectedVersion = item.selectedVersionId
+          ? item.versions.find((version) => String(version.id) === String(item.selectedVersionId))
+          : undefined;
+        const producerVersion = latestVersion;
+        const producerStep = producerVersion
+          ? runGraph?.steps.find((step) => String(step.id) === String(producerVersion.sourceStepId))
+          : undefined;
+        const producerAgentId = producerStep ? String(producerStep.agentVersionId) : undefined;
+        const producerAgent = producerAgentId
+          ? conversationLogAgents.get(producerAgentId)
+          : undefined;
+        const producerModelId = producerStep
+          ? String(
+              producerStep.modelOverrideId ??
+                agentVersionById.get(String(producerStep.agentVersionId))?.defaultModelId ??
+                '',
+            )
+          : '';
+        const hasConflict = artifactConflicts.some(
+          ({ conflict }) => String(conflict.artifactId) === String(item.artifact.id),
+        );
+        const presentation = {
+          name: item.artifact.name,
+          stepTitle: producerStep?.title,
+          selected: Boolean(item.selectedVersionId),
+          merged: item.versions.some((version) => version.status === 'merged'),
+          hasConflict,
+        };
+        return {
+          id: String(item.artifact.id),
+          name: artifactDisplayName(presentation),
+          mimeType: producerVersion?.mimeType ?? 'application/octet-stream',
+          latestVersion: latestVersion?.version,
+          selectedVersion: selectedVersion?.version,
+          producerName: producerAgent?.name,
+          modelLabel: producerModelId
+            ? (modelLabelById.get(producerModelId) ?? producerModelId)
+            : undefined,
+          createdAt: producerVersion?.createdAt ?? item.artifact.createdAt,
+          state: hasConflict
+            ? 'conflict'
+            : producerVersion?.status === 'incomplete'
+              ? 'failed'
+              : producerVersion
+                ? 'ready'
+                : 'pending',
+        };
+      }),
+    [
+      agentVersionById,
+      artifactConflicts,
+      conversationLogAgents,
+      modelLabelById,
+      runGraph,
+      visibleArtifactItems,
+    ],
   );
   const activeLeftTool = leftToolMeta[leftInstrument];
   const ActiveLeftToolIcon = activeLeftTool.icon;
@@ -5850,6 +6748,7 @@ function DesktopShell() {
           : undefined;
         return {
           agentId: agent.agentId,
+          agentVersionId: latest ? String(latest.agentVersionId) : undefined,
           name: agent.name,
           role: agent.role,
           color: latest?.visualIdentity?.color,
@@ -5859,6 +6758,258 @@ function DesktopShell() {
       }),
     [agents, latestAgentById, composeModels],
   );
+  const composeMentionAgents: ComposeAgentOption[] | undefined = useMemo(() => {
+    if (!activeConversationGroup) return undefined;
+    return activeConversationGroup.members.flatMap((member) => {
+      const version = agentVersionById.get(String(member.agentVersionId));
+      if (!version) return [];
+      const model = version.defaultModelId
+        ? composeModels.find((option) => option.modelId === String(version.defaultModelId))
+        : undefined;
+      return [
+        {
+          agentId: String(version.agentId),
+          agentVersionId: String(version.agentVersionId),
+          name: version.name,
+          role: member.responsibility || version.role,
+          color: version.visualIdentity?.color,
+          icon: version.visualIdentity?.icon,
+          modelLabel: model?.providerModelId ?? model?.label,
+        },
+      ];
+    });
+  }, [activeConversationGroup, agentVersionById, composeModels]);
+  const composeGroups: ComposeGroupOption[] = useMemo(
+    () =>
+      groups.map((group) => ({
+        groupId: String(group.id),
+        name: group.name,
+        leadName: agentVersionById.get(String(group.leadAgentVersionId))?.name ?? '未命名智能体',
+        memberCount: group.members.length,
+        color: group.visualIdentity.color,
+        icon: group.visualIdentity.icon,
+      })),
+    [agentVersionById, groups],
+  );
+  const selectComposeGroup = useCallback(
+    async (groupId: string) => {
+      if (!active || String(activeConversationGroup?.id ?? '') === groupId) return;
+      const group = groupById.get(groupId);
+      if (!group) {
+        setGroupError('选择的小队已不存在，请刷新后重试');
+        return;
+      }
+      const hasConversation = projection.messages.length + previewMessages.length > 0;
+      const replacementTask = hasConversation
+        ? undefined
+        : {
+            taskId: active.taskId,
+            taskVersion: active.taskVersion,
+            workspaceId: active.workspaceId,
+          };
+      await createGroupTask(
+        {
+          groupId: group.id,
+          workspaceId: active.workspaceId as never,
+          title: active.title,
+          goal: active.goal,
+        },
+        replacementTask,
+      );
+    },
+    [
+      active,
+      activeConversationGroup?.id,
+      createGroupTask,
+      groupById,
+      previewMessages.length,
+      projection.messages.length,
+    ],
+  );
+  const groupAgentOptions = useMemo(
+    () =>
+      agents.flatMap((agent) => {
+        const latest = latestAgentById.get(agent.agentId);
+        if (!latest) return [];
+        return [
+          {
+            agentVersionId: String(latest.agentVersionId),
+            name: latest.name,
+            role: latest.role,
+            color: latest.visualIdentity?.color,
+          },
+        ];
+      }),
+    [agents, latestAgentById],
+  );
+  const allCatalogTasks = useMemo(
+    () => [...tasksByWorkspace.values()].flatMap((tasks) => [...tasks]),
+    [tasksByWorkspace],
+  );
+  const agentVersionIdentities = useMemo(
+    () =>
+      allAgentVersions.map((version) => ({
+        agentId: String(version.agentId),
+        agentVersionId: String(version.agentVersionId),
+      })),
+    [allAgentVersions],
+  );
+  const agentRelatedTasksById = useMemo(
+    () =>
+      projectAgentRelatedTasks(runtimeView.eventHistory, allCatalogTasks, agentVersionIdentities),
+    [runtimeView.eventHistory, allCatalogTasks, agentVersionIdentities],
+  );
+  const taskParticipantNamesById = useMemo(() => {
+    const namesByTask = new Map<string, Set<string>>();
+    for (const agent of agents) {
+      for (const task of agentRelatedTasksById.get(agent.agentId) ?? []) {
+        const taskId = String(task.taskId);
+        const names = namesByTask.get(taskId) ?? new Set<string>();
+        names.add(agent.name);
+        namesByTask.set(taskId, names);
+      }
+    }
+    return namesByTask;
+  }, [agentRelatedTasksById, agents]);
+  const taskConversationSummaries = useMemo(
+    () => projectTaskConversationSummaries(runtimeView.eventHistory, allCatalogTasks),
+    [allCatalogTasks, runtimeView.eventHistory],
+  );
+  const talkConversationTasks = useMemo(() => {
+    return allCatalogTasks.map((task) => {
+      const taskId = String(task.taskId);
+      const groupConversation = task.participationMode === 'collaboration';
+      const taskGroupId = taskGroupIds.get(taskId);
+      const taskGroup = taskGroupId ? groupById.get(taskGroupId) : undefined;
+      const taskAgentVersionId = taskPrimaryAgentVersions.get(taskId);
+      const taskAgentVersion = taskAgentVersionId
+        ? agentVersionById.get(taskAgentVersionId)
+        : undefined;
+      const taskAgentIdentity = groupConversation
+        ? undefined
+        : taskAgentVersion
+          ? toConversationAgentIdentity(taskAgentVersion, agentAvatarUrls)
+          : taskId === active?.taskId
+            ? activeConversationAgentIdentity
+            : undefined;
+      const participantNames = [...(taskParticipantNamesById.get(taskId) ?? [])];
+      const taskParticipantIdentity = groupConversation
+        ? toConversationGroupIdentity(taskGroup, agentAvatarUrls)
+        : (taskAgentIdentity ?? {
+            name: participantNames[0] ?? 'Agent',
+            icon: 'bot',
+            color: '#64748b',
+          });
+      const participantLabel = groupConversation
+        ? taskGroup
+          ? `${taskGroup.name} · ${taskGroup.members.length} Agent`
+          : participantNames.length > 0
+            ? `${participantNames.length} 名 Agent`
+            : '群聊'
+        : taskParticipantIdentity.name;
+      return {
+        taskId,
+        workspaceId: String(task.workspaceId),
+        parentTaskId: task.parentTaskId ? String(task.parentTaskId) : undefined,
+        title: task.title,
+        summary: taskConversationSummaries.get(taskId) ?? task.goal,
+        participantLabel,
+        participantIcon: taskParticipantIdentity.icon,
+        participantColor: taskParticipantIdentity.color,
+        participantAvatarUrl: taskParticipantIdentity.avatarUrl,
+        workspaceName:
+          workspaces.find((workspace) => String(workspace.workspaceId) === String(task.workspaceId))
+            ?.name ?? '未归档',
+        updatedAt: task.updatedAt,
+        status: task.status,
+        kind: groupConversation ? ('group' as const) : ('direct' as const),
+      };
+    });
+  }, [
+    active?.taskId,
+    activeConversationAgentIdentity,
+    agentAvatarUrls,
+    agentVersionById,
+    allCatalogTasks,
+    groupById,
+    taskConversationSummaries,
+    taskGroupIds,
+    taskPrimaryAgentVersions,
+    taskParticipantNamesById,
+    workspaces,
+  ]);
+  const projectConversationTasks = useMemo(
+    () =>
+      talkConversationTasks.filter(
+        (task) => task.workspaceId === (projectWorkspaceId ?? active?.workspaceId),
+      ),
+    [active?.workspaceId, projectWorkspaceId, talkConversationTasks],
+  );
+  const agentGroupMembershipsById = useMemo(
+    () => projectAgentGroupMemberships(groups, agentVersionIdentities),
+    [groups, agentVersionIdentities],
+  );
+  const talkAgentItems = useMemo(() => {
+    const busyAgentVersionIds = new Set(
+      (runGraph?.steps ?? [])
+        .filter((step) => step.state === 'running')
+        .map((step) => String(step.agentVersionId)),
+    );
+    return agents.map((agent) => {
+      const latest = latestAgentById.get(agent.agentId);
+      const busy = latest && busyAgentVersionIds.has(String(latest.agentVersionId));
+      const currentTaskCount = (agentRelatedTasksById.get(agent.agentId) ?? []).filter(
+        (task) => !['completed', 'cancelled', 'archived'].includes(task.status),
+      ).length;
+      return {
+        ...agent,
+        statusLabel: runtimeView.connectionState !== 'online' ? '离线' : busy ? '忙碌中' : '在线',
+        taskCount: currentTaskCount,
+      };
+    });
+  }, [agents, latestAgentById, runGraph, runtimeView.connectionState, agentRelatedTasksById]);
+  const profileAgentId = selectedAgentId ?? talkAgentItems[0]?.agentId ?? null;
+  const profileRelatedTasks = useMemo(
+    () =>
+      (profileAgentId ? (agentRelatedTasksById.get(profileAgentId) ?? []) : []).map((task) => ({
+        taskId: String(task.taskId),
+        title: task.title,
+        status: taskStatusLabel(task.status),
+      })),
+    [profileAgentId, agentRelatedTasksById],
+  );
+  const profileGroupMemberships = profileAgentId
+    ? (agentGroupMembershipsById.get(profileAgentId) ?? [])
+    : [];
+  const handleProductSectionChange = useCallback(
+    (section: TalkProductSection) => {
+      if (section === 'friends') setAgentWorkspaceDefaultTab('overview');
+      if (section === 'settings') setSettingsDefaultTab('runtime');
+      setProductSection(section);
+      setLeftDrawerOpen(false);
+      if (section === 'groups') void loadGroups();
+      if (section === 'automation') void loadAutomations();
+      if (section === 'friends') {
+        void loadAgent(selectedAgentIdRef.current ?? undefined);
+        void loadGroups();
+      }
+      if (section === 'providers') void loadProviders();
+      if (section === 'settings') void loadBrowserIdentities();
+      if (section === 'skills') {
+        void loadSkills();
+        void loadMcpServers();
+      }
+    },
+    [
+      loadAgent,
+      loadAutomations,
+      loadBrowserIdentities,
+      loadGroups,
+      loadMcpServers,
+      loadProviders,
+      loadSkills,
+    ],
+  );
   const continuumEntries = useMemo(
     () =>
       projectContinuumEvidence({
@@ -5866,18 +7017,23 @@ function DesktopShell() {
         taskTitle: active?.title,
         workspaceName: active?.workspaceName,
         memoryEntries,
-        artifacts: artifactItems.map((item) => {
-          const latestVersion = item.versions[item.versions.length - 1];
+        artifacts: taskArtifactDirectoryItems.map((item) => {
           return {
-            id: String(item.artifact.id),
-            name: item.artifact.name,
-            versionLabel: latestVersion ? `v${latestVersion.version}` : undefined,
+            id: item.id,
+            name: item.name,
+            versionLabel: item.latestVersion ? `v${item.latestVersion}` : undefined,
           };
         }),
         approvalPendingCount,
         messageCount: projection.messages.length,
       }),
-    [active, memoryEntries, artifactItems, approvalPendingCount, projection.messages.length],
+    [
+      active,
+      memoryEntries,
+      taskArtifactDirectoryItems,
+      approvalPendingCount,
+      projection.messages.length,
+    ],
   );
   const showContinuumStrip = shouldShowContinuumStrip(continuumEntries);
   const workspaceTasksForActive = useMemo(() => {
@@ -5885,11 +7041,67 @@ function DesktopShell() {
     const all = [...(tasksByWorkspace.get(active.workspaceId) ?? [])];
     return showArchivedTasks ? all : all.filter((task) => task.status !== 'archived');
   }, [active, tasksByWorkspace, showArchivedTasks]);
-  const childTasks = useMemo(
-    () => projectChildTasks(workspaceTasksForActive, active?.taskId),
-    [workspaceTasksForActive, active?.taskId],
+  const childTaskProgressItems = useMemo<TaskProgressChildTask[]>(
+    () =>
+      active
+        ? workspaceTasksForActive
+            .filter((task) => String(task.parentTaskId ?? '') === String(active.taskId))
+            .map((task) => {
+              const agentVersionId = taskPrimaryAgentVersions.get(String(task.taskId));
+              const integrationEvent = [...runtimeView.eventHistory]
+                .reverse()
+                .find(
+                  (event) =>
+                    String(event.payload.childTaskId ?? '') === String(task.taskId) &&
+                    (event.type === 'subtask.integration-resolved' ||
+                      event.type === 'subtask.completed'),
+                );
+              const result =
+                integrationEvent?.payload.result &&
+                typeof integrationEvent.payload.result === 'object' &&
+                !Array.isArray(integrationEvent.payload.result)
+                  ? (integrationEvent.payload.result as Record<string, unknown>)
+                  : undefined;
+              const execution =
+                result?.execution &&
+                typeof result.execution === 'object' &&
+                !Array.isArray(result.execution)
+                  ? (result.execution as Record<string, unknown>)
+                  : undefined;
+              const rawIntegrationStatus = String(
+                integrationEvent?.payload.integrationStatus ?? execution?.integrationStatus ?? '',
+              );
+              const integrationStatus = [
+                'clean',
+                'pending-integration',
+                'integrated',
+                'conflicted',
+                'kept-parent',
+              ].includes(rawIntegrationStatus)
+                ? (rawIntegrationStatus as TaskProgressChildTask['integrationStatus'])
+                : undefined;
+              const conflictFiles = Array.isArray(execution?.conflictFiles)
+                ? execution.conflictFiles.map(String)
+                : undefined;
+              return {
+                taskId: String(task.taskId),
+                title: task.title,
+                status: toTaskProgressState(task.status),
+                summary: task.goal,
+                assignee: agentVersionId ? agentVersionById.get(agentVersionId)?.name : undefined,
+                integrationStatus,
+                conflictFiles,
+              };
+            })
+        : [],
+    [
+      active,
+      agentVersionById,
+      runtimeView.eventHistory,
+      taskPrimaryAgentVersions,
+      workspaceTasksForActive,
+    ],
   );
-  const childTasksSummary = useMemo(() => summarizeChildTasks(childTasks), [childTasks]);
   const parentTaskLink = useMemo(() => {
     if (!active) return null;
     const current = workspaceTasksForActive.find((task) => task.taskId === active.taskId);
@@ -5905,7 +7117,7 @@ function DesktopShell() {
     agentReady: Boolean(agentBinding?.defaultModelId && composeModels.length > 0),
     streaming: isStreaming,
     messageCount: projection.messages.length,
-    artifactCount: artifactItems.length,
+    artifactCount: visibleArtifactItems.length,
     approvalCount: approvalPendingCount,
   });
   const showConversationAlert =
@@ -5927,13 +7139,7 @@ function DesktopShell() {
       return;
     }
     if (beginnerWorkspace.action === 'approvals') {
-      if (active) {
-        setTraceCollapsed(false);
-        writeTraceCollapsedPreference(false);
-      } else {
-        setEmptyRailExpanded(true);
-      }
-      setRightRailTab('approvals');
+      navigateToInstrument('approvals');
       return;
     }
     if (beginnerWorkspace.action === 'artifacts') {
@@ -5989,2630 +7195,2901 @@ function DesktopShell() {
     'project-create-dialog',
   );
 
-  return (
-    <AppShell
-      theme={theme}
-      hideReadiness
-      traceTitle={rightRailTab === 'overview' ? '任务进度' : '执行详情'}
-      traceAriaLabel="任务与执行详情"
-      traceCollapsed={shellTraceCollapsed}
-      onTraceCollapsedChange={(collapsed) => {
-        if (!active) {
-          setEmptyRailExpanded(!collapsed);
-          return;
-        }
-        setTraceCollapsed(collapsed);
-        writeTraceCollapsedPreference(collapsed);
-      }}
-      leftNav={[
-        projectCreateDialog,
-        <div className="st-demo-nav-stack" key="product-navigation-stack">
-          <header className="st-product-brand">
-            <span className="st-product-brand__mark" aria-hidden="true">
-              ST
-            </span>
-            <span className="st-product-brand__copy">
-              <strong>SYNC-THINK</strong>
-              <small>智能体工作台</small>
-            </span>
-          </header>
-          <nav
-            className="st-product-nav"
-            data-testid="product-navigation"
-            role="tablist"
-            aria-label="主导航"
-          >
-            <button
-              type="button"
-              role="tab"
-              className="st-product-nav__item"
-              data-testid="product-nav-tasks"
-              data-active={leftDrawerOpen ? '0' : '1'}
-              aria-selected={!leftDrawerOpen}
-              onClick={() => dismissLeftDrawer(false)}
-            >
-              <FolderKanban aria-hidden="true" size={16} strokeWidth={1.8} />
-              <span>项目</span>
-            </button>
-            {leftPrimaryToolOrder.map((instrumentId) => {
-              const item = leftInstrumentSwitch.items.find(
-                (candidate) => candidate.id === instrumentId,
-              );
-              if (!item) return null;
-              const ToolIcon = leftToolMeta[instrumentId].icon;
-              const toolLabel = leftToolMeta[instrumentId].label;
-              const pressed = leftDrawerOpen && leftInstrument === instrumentId;
-              return (
-                <button
-                  key={instrumentId}
-                  ref={(node) => {
-                    leftToolButtonRefs.current[instrumentId] = node;
-                  }}
-                  type="button"
-                  role="tab"
-                  className="st-product-nav__item"
-                  data-testid={item.testId}
-                  data-id={instrumentId}
-                  data-active={pressed ? '1' : '0'}
-                  aria-selected={pressed}
-                  onClick={() => {
-                    const next = resolveLeftInstrumentDrawer(
-                      { active: leftInstrument, open: leftDrawerOpen },
-                      instrumentId,
-                    );
-                    setLeftInstrument(next.active);
-                    setLeftDrawerOpen(next.open);
-                  }}
-                >
-                  <ToolIcon aria-hidden="true" size={16} strokeWidth={1.8} />
-                  <span>{toolLabel}</span>
-                  {item.badge ? (
-                    <em
-                      className="st-product-nav__badge"
-                      data-testid={`left-inst-badge-${instrumentId}`}
-                    >
-                      {item.badge}
-                    </em>
-                  ) : null}
-                </button>
-              );
-            })}
-          </nav>
-          <div className="st-demo-nav-stack__workspaces" data-instrument="workspaces">
-            <WorkspaceNav
-              hideReadiness
-              hideFooter
-              hideBrand
-              sectionLabel="我的项目"
-              searchPlaceholder="搜索任务…"
-              createWorkspaceLabel="新建项目"
-              emptyTitle="还没有项目"
-              emptyHint="先建项目再开任务；文件夹可稍后绑定。"
-              workspaces={navWorkspaces}
-              tasksByWorkspace={navTasks}
-              activeTaskId={active?.taskId ?? null}
-              query={navQuery}
-              onQueryChange={setNavQuery}
-              onSelectTask={(task) => void openTask(task)}
-              onCreateWorkspace={openProjectCreateDialog}
-              onBindWorkspaceFolder={(workspaceId) => void bindWorkspaceFolder(workspaceId)}
-              onCreateTask={(workspaceId) => void createTask(workspaceId)}
-              onCreateChildTask={(workspaceId, parentTaskId) =>
-                void createTask(workspaceId, { parentTaskId })
-              }
-              onArchiveTask={(task) => void archiveTask(task)}
-              onUnarchiveTask={(task) => void unarchiveTask(task)}
-              showArchived={showArchivedTasks}
-              onShowArchivedChange={setShowArchivedTasks}
-              archivedCount={archivedTaskCount}
-              connectionState={runtimeView.connectionState}
-              loading={workspaceLoading}
-              bindingWorkspaceId={bindingWorkspaceId}
-              errorMessage={workspaceError}
-            />
-          </div>
-          <div
-            className="st-demo-nav-stack__switch"
-            data-testid="left-instrument-switch"
-            data-active={leftInstrumentSwitch.active}
-            data-open={leftDrawerOpen ? '1' : '0'}
-            data-soft-craft={leftInstrumentSwitch.softCraftRound}
-            data-claims-closed="0"
-            role="navigation"
-            aria-label="辅助导航"
-          >
-            {(() => {
-              const item = leftInstrumentSwitch.items.find(
-                (candidate) => candidate.id === 'memory',
-              );
-              const pressed = leftDrawerOpen && leftInstrument === 'memory';
-              return (
-                <button
-                  ref={(node) => {
-                    leftToolButtonRefs.current.memory = node;
-                  }}
-                  type="button"
-                  className="st-product-nav__item st-product-nav__item--secondary"
-                  data-testid={item?.testId ?? 'left-inst-memory'}
-                  data-active={pressed ? '1' : '0'}
-                  aria-pressed={pressed}
-                  onClick={() => {
-                    const next = resolveLeftInstrumentDrawer(
-                      { active: leftInstrument, open: leftDrawerOpen },
-                      'memory',
-                    );
-                    setLeftInstrument(next.active);
-                    setLeftDrawerOpen(next.open);
-                  }}
-                >
-                  <BrainCircuit aria-hidden="true" size={16} strokeWidth={1.8} />
-                  <span>记忆</span>
-                  {item?.badge ? <em className="st-product-nav__badge">{item.badge}</em> : null}
-                </button>
-              );
-            })()}
-          </div>
-          <div
-            className="st-demo-nav-stack__runtime"
-            data-testid="left-runtime-status"
-            data-state={runtimeView.connectionState}
-            title={connectionDetail(runtimeView.connectionState)}
-          >
-            <span className="st-demo-nav-stack__runtime-dot" aria-hidden="true" />
-            <span>Runtime {connectionDetail(runtimeView.connectionState).split(' · ')[0]}</span>
-          </div>
-          {leftDrawerOpen ? (
-            <>
-              <button
-                type="button"
-                className="st-demo-nav-stack__drawer-backdrop"
-                data-testid="left-tool-drawer-backdrop"
-                aria-label="关闭工具抽屉"
-                tabIndex={-1}
-                onClick={() => dismissLeftDrawer(false)}
-              />
-              <section
-                className="st-demo-nav-stack__drawer"
-                data-testid="left-tool-drawer"
-                data-instrument={leftInstrument}
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="left-tool-drawer-title"
-              >
-                <header className="st-demo-nav-stack__drawer-header">
-                  <ActiveLeftToolIcon aria-hidden="true" size={17} strokeWidth={1.8} />
-                  <strong id="left-tool-drawer-title">{activeLeftTool.label}</strong>
-                  {activeLeftToolItem?.badge ? (
-                    <span className="st-demo-nav-stack__drawer-badge">
-                      {activeLeftToolItem.badge}
-                    </span>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="st-demo-nav-stack__drawer-close"
-                    aria-label="关闭工具抽屉"
-                    title="关闭"
-                    onClick={() => dismissLeftDrawer(true)}
-                  >
-                    <X aria-hidden="true" size={17} strokeWidth={1.8} />
-                  </button>
-                </header>
-                <div className="st-demo-nav-stack__drawer-body">
-                  <div
-                    className="st-demo-nav-stack__providers"
-                    data-instrument="providers"
-                    data-active={leftInstrument === 'providers' ? '1' : '0'}
-                    hidden={leftInstrument !== 'providers'}
-                  >
-                    <ProvidersPanel
-                      providers={providers}
-                      loading={providerLoading}
-                      busy={providerBusy}
-                      error={providerError}
-                      statusNote={providerStatus}
-                      onCreate={(input) => void createProvider(input)}
-                      onUpdate={(input) => void updateProvider(input)}
-                      onPreviewCcSwitchImport={() => previewCcSwitchImport()}
-                      onImportCcSwitch={(sourceIds) => void importCcSwitch(sourceIds)}
-                      onDiscover={(providerId) => void discoverProviderModels(providerId)}
-                      onAddModel={(providerId, providerModelId, displayName) =>
-                        void addProviderModel(providerId, providerModelId, displayName)
-                      }
-                      onProbeCapabilities={(providerId, modelId) =>
-                        void probeProviderCapabilities(providerId, modelId)
-                      }
-                      onConfirmCapabilities={(modelId, capabilities, confirmed) =>
-                        void confirmProviderCapabilities(modelId, capabilities, confirmed)
-                      }
-                    />
-                  </div>
-                  <div
-                    className="st-demo-nav-stack__agent"
-                    data-instrument="agent"
-                    data-active={leftInstrument === 'agent' ? '1' : '0'}
-                    hidden={leftInstrument !== 'agent'}
-                  >
-                    <AgentWorkspace
-                      agents={agents}
-                      selectedAgentId={selectedAgentId}
-                      binding={agentBinding}
-                      definition={agentDefinition}
-                      versions={agentVersions}
-                      allAgentVersions={allAgentVersions.map((version) => ({
-                        agentVersionId: String(version.agentVersionId),
-                        agentId: String(version.agentId),
-                        agentName: version.name,
-                        version: version.version,
-                        reviewerCapable:
-                          version.reviewBehavior.role === 'reviewer' ||
-                          version.reviewBehavior.role === 'executor-reviewer',
-                        title: version.name,
-                      }))}
-                      models={agentModels}
-                      credentials={agentCredentials}
-                      skills={skills}
-                      skillBusy={skillBusy}
-                      skillError={skillError}
-                      skillStatusNote={skillStatus}
-                      mcpServers={mcpServers}
-                      mcpBusy={mcpBusy}
-                      mcpProbeBusy={mcpProbeBusy}
-                      mcpError={mcpError}
-                      mcpStatusNote={mcpStatus}
-                      loading={agentLoading}
-                      busy={agentBusy}
-                      error={agentError}
-                      statusNote={agentStatus}
-                      onSelectAgent={selectAgent}
-                      onCreateAgent={() => void createAgent()}
-                      onSaveDefinition={(input) => void saveAgentDefinition(input)}
-                      onSave={(input) => void saveAgentBinding(input)}
-                      onImportSkill={(md) => void importSkill(md)}
-                      onRegisterMcp={(input) => void registerMcp(input)}
-                      onProbeMcpPolicy={(input) => void probeMcpPolicy(input)}
-                      onRequestMcpTool={(input) => void requestMcpTool(input)}
-                      mcpRequestBusy={mcpRequestBusy}
-                      onProbeMcpSpawn={(input) => void probeMcpSpawn(input)}
-                      onCallMcpTool={(input) => void callMcpTool(input)}
-                      onRefreshMcpTools={(input) => void refreshMcpTools(input)}
-                      mcpCallBusy={mcpCallBusy}
-                      mcpRefreshBusy={mcpRefreshBusy}
-                      mcpSpawnBusy={mcpSpawnBusy}
-                    />
-                  </div>
-                  <div
-                    className="st-demo-nav-stack__memory"
-                    data-instrument="memory"
-                    data-active={leftInstrument === 'memory' ? '1' : '0'}
-                    hidden={leftInstrument !== 'memory'}
-                  >
-                    <MemoryDiagnosticsPanel
-                      entries={memoryEntries}
-                      changes={memoryChanges}
-                      diagnostics={diagnostics}
-                      loading={memoryLoading}
-                      busy={memoryBusy}
-                      error={memoryError}
-                      statusNote={memoryStatus}
-                      onDecide={(input) => void decideMemoryChange(input)}
-                      onRollback={(input) => void rollbackMemoryChange(input)}
-                      onRefresh={() => void loadMemory()}
-                      onNavigate={navigateFromDiagnostics}
-                    />
-                  </div>
-                  <div
-                    className="st-demo-nav-stack__approval"
-                    data-instrument="approvals"
-                    data-active={leftInstrument === 'approvals' ? '1' : '0'}
-                    hidden={leftInstrument !== 'approvals'}
-                  >
-                    <ApprovalCenterPanel
-                      items={approvalItems}
-                      policies={approvalPolicies}
-                      delegateAgentVersions={delegateAgentVersions}
-                      defaultPolicyScope={
-                        active ? { scopeType: 'task', scopeId: active.taskId } : undefined
-                      }
-                      pendingCount={approvalPendingCount}
-                      humanOnlyActions={approvalHumanOnlyActions}
-                      modes={approvalModes}
-                      loading={approvalLoading}
-                      busy={approvalBusy}
-                      error={approvalError}
-                      statusNote={approvalStatus}
-                      onRefresh={() => void loadApprovals()}
-                      onDecide={(input) => void decideApprovalItem(input)}
-                      onSavePolicy={(input) => void saveApprovalPolicy(input)}
-                      onNavigateToRunStep={(input) => void navigateToApprovalRunStep(input)}
-                    />
-                  </div>
-                </div>
-              </section>
-            </>
-          ) : null}
-        </div>,
-      ]}
-      contextRail={
-        <div className="st-demo-context">
-          <header className="st-demo-task-header">
-            <div className="st-demo-task-heading">
-              <span className="st-demo-path" title={folderPath}>
-                {active ? (
-                  <>
-                    <span>{active.workspaceName}</span>
-                    {parentTaskLink ? (
-                      <>
-                        <span aria-hidden="true"> / </span>
-                        <button
-                          type="button"
-                          className="st-demo-path__link"
-                          data-testid="task-parent-breadcrumb"
-                          title={`回到主任务：${parentTaskLink.title}`}
-                          onClick={() => void openTaskById(parentTaskLink.taskId)}
-                        >
-                          {parentTaskLink.title}
-                        </button>
-                      </>
-                    ) : null}
-                    <span aria-hidden="true"> / </span>
-                    <span>任务</span>
-                  </>
-                ) : (
-                  '任务'
-                )}
-              </span>
-              <div className="st-demo-task-heading__title">
-                <h1>{taskTitle}</h1>
-                <span className="st-demo-status" data-status={taskStatus}>
-                  <span aria-hidden="true" /> {taskStatusLabel(taskStatus)}
-                  {lastOpenedId && active?.taskId === lastOpenedId ? ' · 已恢复' : ''}
-                </span>
-              </div>
-              {showContinuumStrip ? (
-                <div className="st-demo-continuum-strip" data-testid="product-continuum-strip">
-                  <ContinuumRail
-                    hideReadiness
-                    entries={continuumEntries}
-                    hasActiveTask={Boolean(active)}
-                    streaming={isStreaming}
-                    emptyState={null}
-                  />
-                </div>
-              ) : null}
-            </div>
-            <div className="st-demo-header-tools">
-              <div
-                className="st-demo-theme-switch st-demo-layout-switch"
-                role="group"
-                aria-label="对话布局"
-                data-testid="conversation-layout-switch"
-              >
-                {conversationLayoutOptions.map((option) => {
-                  const Icon = option.icon;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      aria-label={option.label}
-                      title={option.label}
-                      aria-pressed={conversationLayout === option.value}
-                      data-selected={conversationLayout === option.value}
-                      data-layout-option={option.value}
-                      onClick={() => {
-                        setConversationLayout(option.value);
-                        writeConversationLayoutPreference(option.value);
-                      }}
-                    >
-                      <Icon aria-hidden="true" size={15} strokeWidth={1.8} />
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="st-demo-theme-switch" role="group" aria-label="主题">
-                {themeOptions.map((option) => {
-                  const Icon = option.icon;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      aria-label={option.label}
-                      title={option.label}
-                      aria-pressed={theme === option.value}
-                      data-selected={theme === option.value}
-                      onClick={() => {
-                        setTheme(option.value);
-                        writeThemePreference(option.value as ThemePreference);
-                      }}
-                    >
-                      <Icon aria-hidden="true" size={15} strokeWidth={1.8} />
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </header>
-          {beginnerWorkspace.showNextStepStrip ? (
-            <div
-              className="st-beginner-next-step"
-              data-testid="beginner-next-step"
-              data-state={beginnerWorkspace.state}
-            >
-              <span className="st-beginner-next-step__icon" aria-hidden="true">
-                <ArrowRight size={15} strokeWidth={2} />
-              </span>
-              <span className="st-beginner-next-step__copy">
-                <strong>需要你处理</strong>
-                <span>{beginnerWorkspace.nextAction}</span>
-              </span>
-              {beginnerWorkspace.actionLabel ? (
-                <button type="button" onClick={handleBeginnerAction}>
-                  {beginnerWorkspace.actionLabel}
-                  <ArrowRight aria-hidden="true" size={13} strokeWidth={1.9} />
-                </button>
-              ) : (
-                <span className="st-beginner-next-step__status">
-                  {beginnerWorkspace.statusLabel}
-                </span>
-              )}
-            </div>
-          ) : null}
-          {SHOW_M1_VALIDATION_WORKBENCH ? (
-            <details
-              className="st-demo-m1-obs"
-              data-testid="m1-obs-layout"
-              data-soft-craft={m1ObsLayout.softCraftRound}
-              data-primary={m1ObsLayout.primaryOrder.join(',')}
-              data-workspace-open={m1ObsWorkspaceOpen ? '1' : '0'}
-              data-secondary-open={m1ObsSecondaryOpen ? '1' : '0'}
-              data-claims-closed="0"
-              aria-label="M1 观测布局"
-              open={m1ObsWorkspaceOpen}
-              onToggle={(event) => {
-                setM1ObsWorkspaceOpen(event.currentTarget.open);
-              }}
-            >
-              <summary className="st-demo-m1-obs__summary" data-testid="m1-obs-workspace-summary">
-                <span
-                  className="st-demo-m1-obs__status"
-                  data-level={m1HardgateStrip.level}
-                  aria-hidden="true"
-                />
-                <strong>{m1ObsLayout.workspaceLabel}</strong>
-                <span className="st-demo-m1-obs__counts">
-                  外网手测 {m1HardgateStrip.handtest.current}/{m1HardgateStrip.handtest.required}
-                  <i aria-hidden="true" />
-                  dogfood {m1HardgateStrip.dogfood.current}/{m1HardgateStrip.dogfood.required}
-                </span>
-                <small>{m1ObsLayout.workspaceHint}</small>
-                <span className="st-demo-m1-obs__chevron" aria-hidden="true" />
-              </summary>
-              <div className="st-demo-m1-obs__body" data-testid="m1-obs-workspace-body">
-                <div
-                  className="st-demo-m1-rail"
-                  data-testid="m1-obs-primary"
-                  aria-label="M1 主路径"
-                >
-                  <div className="st-demo-m1-rail__head">
-                    <span className="st-demo-m1-rail__kicker">主路径</span>
-                    <strong data-testid="m1-obs-primary-summary">{m1ObsLayout.summary}</strong>
-                    <small>soft · 不关 M1</small>
-                  </div>
-                  <div
-                    className="st-demo-m1-hardgate"
-                    data-testid="m1-hardgate-strip"
-                    data-level={m1HardgateStrip.level}
-                    data-hard={m1HardgateStrip.hardGatesMet ? '1' : '0'}
-                    data-claims-closed="0"
-                    data-soft-craft={m1HardgateStrip.softCraftRound}
-                    data-handtest={m1HardgateStrip.handtest.percent}
-                    data-dogfood={m1HardgateStrip.dogfood.percent}
-                    data-primary-cta={m1HardgateStrip.primaryCta.action}
-                    aria-label="M1 硬门槛进度"
-                  >
-                    <div className="st-demo-m1-hardgate__head">
-                      <span className="st-demo-m1-hardgate__kicker">硬门槛</span>
-                      <strong data-testid="m1-hardgate-summary">{m1HardgateStrip.summary}</strong>
-                      <span
-                        className="st-demo-m1-hardgate__level"
-                        data-level={m1HardgateStrip.level}
-                        data-testid="m1-hardgate-level"
-                      >
-                        {m1HardgateStrip.level === 'evidence-ready'
-                          ? '可讨论'
-                          : m1HardgateStrip.level === 'soft-only'
-                            ? '仅 soft'
-                            : m1HardgateStrip.level === 'partial'
-                              ? '进行中'
-                              : '未开始'}
-                      </span>
-                    </div>
-                    <div className="st-demo-m1-hardgate__meters" data-testid="m1-hardgate-meters">
-                      {m1HardgateStrip.meters.map((meter) => (
-                        <div
-                          key={meter.id}
-                          className="st-demo-m1-hardgate__meter"
-                          data-testid={`m1-hardgate-meter-${meter.id}`}
-                          data-id={meter.id}
-                          data-ok={meter.ok ? '1' : '0'}
-                          data-partial={meter.partial ? '1' : '0'}
-                          data-percent={meter.percent}
-                        >
-                          <div className="st-demo-m1-hardgate__meter-top">
-                            <span className="st-demo-m1-hardgate__meter-label">{meter.label}</span>
-                            <span
-                              className="st-demo-m1-hardgate__meter-badge"
-                              data-ok={meter.ok ? '1' : '0'}
-                            >
-                              {meter.badge}
-                            </span>
-                            <span className="st-demo-m1-hardgate__meter-frac">
-                              {meter.current}/{meter.required}
-                            </span>
-                          </div>
-                          <div
-                            className="st-demo-m1-hardgate__bar"
-                            role="progressbar"
-                            aria-valuenow={meter.percent}
-                            aria-valuemin={0}
-                            aria-valuemax={100}
-                            aria-label={meter.label}
-                          >
-                            <i
-                              style={{ width: `${meter.percent}%` }}
-                              data-ok={meter.ok ? '1' : '0'}
-                            />
-                          </div>
-                          <p className="st-demo-m1-hardgate__meter-detail">{meter.detail}</p>
-                          <button
-                            type="button"
-                            className="st-demo-m1-hardgate__meter-cta"
-                            data-testid={`m1-hardgate-meter-cta-${meter.id}`}
-                            data-action={meter.ctaAction}
-                            onClick={() => handleM1HardgateCta(meter.ctaAction)}
-                          >
-                            {meter.ctaLabel}
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="st-demo-m1-hardgate__actions">
-                      <button
-                        type="button"
-                        className="st-demo-m1-hardgate__cta"
-                        data-testid="m1-hardgate-primary-cta"
-                        data-action={m1HardgateStrip.primaryCta.action}
-                        onClick={() => handleM1HardgateCta(m1HardgateStrip.primaryCta.action)}
-                      >
-                        {m1HardgateStrip.primaryCta.label}
-                      </button>
-                      {m1HardgateStrip.secondaryCtas.slice(0, 3).map((cta) => (
-                        <button
-                          key={cta.action}
-                          type="button"
-                          className="st-demo-m1-hardgate__ghost"
-                          data-testid={`m1-hardgate-secondary-${cta.action}`}
-                          data-action={cta.action}
-                          onClick={() => handleM1HardgateCta(cta.action)}
-                        >
-                          {cta.label}
-                        </button>
-                      ))}
-                    </div>
-                    <p className="st-demo-m1-hardgate__note" data-testid="m1-hardgate-note">
-                      {m1HardgateStrip.note}
-                    </p>
-                  </div>
-                  <div
-                    className="st-demo-m1-next"
-                    data-testid="m1-next-action"
-                    data-kind={m1NextAction.kind}
-                    data-level={m1NextAction.level}
-                    data-gate={m1NextAction.gate}
-                    data-cta-action={m1NextAction.ctaAction}
-                    data-fill-level={m1DogfoodFillBoard.level}
-                    aria-label="M1 下一步行动"
-                  >
-                    <div className="st-demo-m1-next__head">
-                      <span className="st-demo-m1-next__kicker">下一步</span>
-                      <strong data-testid="m1-next-title">{m1NextAction.title}</strong>
-                      <span
-                        className="st-demo-m1-next__gate"
-                        data-testid="m1-next-gate"
-                        data-gate={m1NextAction.gate}
-                      >
-                        {m1NextAction.gate === 'hard' ? '硬门槛' : '本机 soft'}
-                      </span>
-                    </div>
-                    <p className="st-demo-m1-next__body" data-testid="m1-next-body">
-                      {m1NextAction.body}
-                    </p>
-                    <div className="st-demo-m1-next__actions">
-                      <button
-                        type="button"
-                        className="st-demo-m1-next__cta"
-                        data-testid="m1-next-cta"
-                        data-action={m1NextAction.ctaAction}
-                        data-jump={m1NextAction.jumpTarget}
-                        data-cta-action={m1NextAction.ctaAction}
-                        data-open-doc={m1NextAction.openDoc ?? ''}
-                        onClick={handleM1NextAction}
-                      >
-                        {m1NextAction.ctaLabel}
-                      </button>
-                      <small data-testid="m1-next-priority">P{m1NextAction.priority}</small>
-                    </div>
-                  </div>
-                  <div
-                    className="st-demo-m1-extfocus"
-                    data-testid="m1-external-focus"
-                    data-level={m1ExternalFocus.level}
-                    data-pending={m1ExternalFocus.externalPending}
-                    data-total={m1ExternalFocus.externalTotal}
-                    data-pass={m1ExternalFocus.externalPass}
-                    data-soft-gaps={m1ExternalFocus.softLiveGaps}
-                    data-focus-id={m1ExternalFocus.focus?.id ?? ''}
-                    data-focus-section={m1ExternalFocus.focus?.section ?? ''}
-                    data-primary-cta={m1ExternalFocus.primaryCta.action}
-                    data-claims-closed="0"
-                    data-claims-doc="0"
-                    aria-label="下一外网手测项聚焦 · 不关 M1"
-                  >
-                    <div className="st-demo-m1-extfocus__head">
-                      <span className="st-demo-m1-extfocus__kicker">下一外网项</span>
-                      <strong data-testid="m1-external-focus-title">{m1ExternalFocus.title}</strong>
-                      <span
-                        className="st-demo-m1-extfocus__level"
-                        data-level={m1ExternalFocus.level}
-                        data-testid="m1-external-focus-level"
-                      >
-                        {m1ExternalFocus.level === 'focus'
-                          ? '待证'
-                          : m1ExternalFocus.level === 'soft-first'
-                            ? '先 soft'
-                            : m1ExternalFocus.level === 'clear'
-                              ? '队列空'
-                              : '空'}
-                      </span>
-                    </div>
-                    <p className="st-demo-m1-extfocus__body" data-testid="m1-external-focus-body">
-                      {m1ExternalFocus.body}
-                    </p>
-                    <div
-                      className="st-demo-m1-extfocus__chips"
-                      data-testid="m1-external-focus-chips"
-                    >
-                      <span data-kind="pending">
-                        外网待证 {m1ExternalFocus.externalPending}/{m1ExternalFocus.externalTotal}
-                      </span>
-                      <span data-kind="pass">外网 soft 见过 {m1ExternalFocus.externalPass}</span>
-                      <span data-kind="doc">
-                        文档 {m1ExternalFocus.docChecked}/{m1ExternalFocus.docTotal}
-                      </span>
-                      <span data-kind="soft">本机缺口 {m1ExternalFocus.softLiveGaps}</span>
-                    </div>
-                    {m1ExternalFocus.focus ? (
-                      <div
-                        className="st-demo-m1-extfocus__focus"
-                        data-testid="m1-external-focus-card"
-                        data-item={m1ExternalFocus.focus.id}
-                        data-section={m1ExternalFocus.focus.section}
-                        data-jumpable={m1ExternalFocus.focus.jumpable ? '1' : '0'}
-                      >
-                        <span className="st-demo-m1-extfocus__sec">
-                          {m1ExternalFocus.focus.sectionLabel}
-                        </span>
-                        <span className="st-demo-m1-extfocus__label">
-                          {m1ExternalFocus.focus.label}
-                        </span>
-                        <span className="st-demo-m1-extfocus__detail">
-                          {m1ExternalFocus.focus.detail}
-                        </span>
-                        <span className="st-demo-m1-extfocus__hint">
-                          {m1ExternalFocus.focus.hint}
-                        </span>
-                      </div>
-                    ) : null}
-                    {m1ExternalFocus.queue.length > 0 ? (
-                      <ul
-                        className="st-demo-m1-extfocus__queue"
-                        data-testid="m1-external-focus-queue"
-                        data-count={m1ExternalFocus.queue.length}
-                      >
-                        {m1ExternalFocus.queue.map((q) => (
-                          <li
-                            key={q.id}
-                            data-item={q.id}
-                            data-section={q.section}
-                            data-testid={'m1-external-focus-queue-' + q.id}
-                          >
-                            <span className="st-demo-m1-extfocus__q-sec">{q.section}</span>
-                            <span className="st-demo-m1-extfocus__q-label">{q.label}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    <div
-                      className="st-demo-m1-extfocus__actions"
-                      data-testid="m1-external-focus-actions"
-                    >
-                      {isM1ExternalFocusCtaActionable(m1ExternalFocus.primaryCta.action) ? (
-                        <button
-                          type="button"
-                          className="st-demo-m1-extfocus__primary"
-                          data-testid="m1-external-focus-primary"
-                          data-action={m1ExternalFocus.primaryCta.action}
-                          title={m1ExternalFocus.primaryCta.label}
-                          onClick={() =>
-                            handleM1ExternalFocusCta(m1ExternalFocus.primaryCta.action)
-                          }
-                        >
-                          {m1ExternalFocus.primaryCta.label}
-                        </button>
-                      ) : null}
-                      {m1ExternalFocus.secondaryCtas.map((cta) => (
-                        <button
-                          key={cta.action}
-                          type="button"
-                          className="st-demo-m1-extfocus__secondary"
-                          data-testid={'m1-external-focus-cta-' + cta.action}
-                          data-action={cta.action}
-                          title={cta.label}
-                          onClick={() => handleM1ExternalFocusCta(cta.action)}
-                        >
-                          {cta.label}
-                        </button>
-                      ))}
-                    </div>
-                    <p className="st-demo-m1-extfocus__note" data-testid="m1-external-focus-note">
-                      {m1ExternalFocus.summary} · 点主按钮跳面板/开文档 · 复制运行单可离线填 ·
-                      不自动勾 · 不关 M1
-                    </p>
-                  </div>
-                  <div
-                    className="st-demo-m1-path"
-                    data-testid="m1-exit-path"
-                    data-level={m1ExitPath.level}
-                    data-progress={m1ExitPath.progressPercent}
-                    data-remaining-hard={m1ExitPath.remainingHardSteps}
-                    data-remaining-soft={m1ExitPath.remainingSoftSteps}
-                    data-claims-closed="0"
-                    data-focus={m1ExitPath.focusStepId ?? ''}
-                    aria-label="M1 退出路径"
-                  >
-                    <div className="st-demo-m1-path__head">
-                      <span className="st-demo-m1-path__kicker">退出路径</span>
-                      <strong data-testid="m1-exit-path-summary">{m1ExitPath.summary}</strong>
-                      <span
-                        className="st-demo-m1-path__progress"
-                        data-testid="m1-exit-path-progress"
-                        data-percent={m1ExitPath.progressPercent}
-                        title="本路径只展示证据进度，M1 状态以验证区为准"
-                      >
-                        {m1ExitPath.progressPercent}%
-                      </span>
-                      <button
-                        type="button"
-                        className="st-demo-m1-path__copy"
-                        data-testid="m1-exit-path-copy"
-                        data-action="copy-exit-path"
-                        title="复制有序退出路径（不含密钥 · 不关 M1）"
-                        onClick={() => void copyM1ExitPath()}
-                      >
-                        复制路径
-                      </button>
-                    </div>
-                    <div
-                      className="st-demo-m1-path__bar"
-                      data-testid="m1-exit-path-bar"
-                      aria-hidden="true"
-                    >
-                      <span
-                        className="st-demo-m1-path__bar-fill"
-                        style={{ width: m1ExitPath.progressPercent + '%' }}
-                      />
-                    </div>
-                    <ol className="st-demo-m1-path__steps" data-testid="m1-exit-path-steps">
-                      {m1ExitPath.steps.map((step) => {
-                        const actionable = isM1ExitPathStepActionable(step.ctaAction);
-                        const focused = step.id === m1ExitPath.focusStepId;
-                        return (
-                          <li
-                            key={step.id}
-                            data-step={step.id}
-                            data-kind={step.kind}
-                            data-status={step.status}
-                            data-gate={step.gate}
-                            data-focus={focused ? '1' : '0'}
-                            data-testid={`m1-exit-path-step-${step.id}`}
-                          >
-                            <span className="st-demo-m1-path__order">{step.order}</span>
-                            <div className="st-demo-m1-path__main">
-                              <span className="st-demo-m1-path__title">{step.title}</span>
-                              <span className="st-demo-m1-path__detail">{step.detail}</span>
-                            </div>
-                            <span className="st-demo-m1-path__status" data-status={step.status}>
-                              {step.status === 'done'
-                                ? '完成'
-                                : step.status === 'doing'
-                                  ? '进行中'
-                                  : step.status === 'blocked'
-                                    ? '阻塞'
-                                    : '待做'}
-                            </span>
-                            {actionable ? (
-                              <button
-                                type="button"
-                                className="st-demo-m1-path__cta"
-                                data-testid={`m1-exit-path-cta-${step.id}`}
-                                data-action={step.ctaAction}
-                                data-focus={focused ? '1' : '0'}
-                                title={step.detail}
-                                onClick={() => handleM1ExitPathStep(step.ctaAction)}
-                              >
-                                {step.ctaLabel}
-                              </button>
-                            ) : (
-                              <span className="st-demo-m1-path__cta-na">—</span>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ol>
-                    <p className="st-demo-m1-path__hint" data-testid="m1-exit-path-hint">
-                      有序硬门槛辅助 · 不自动勾手测 · 不写 dogfood · 进度封顶 99% · M2 已完成 ·
-                      仍不自动关 M1
-                    </p>
-                  </div>
-                </div>
-                <details
-                  className="st-demo-m1-more"
-                  data-testid="m1-obs-secondary"
-                  open={m1ObsSecondaryOpen}
-                  onToggle={(e) => {
-                    const el = e.currentTarget as HTMLDetailsElement;
-                    setM1ObsSecondaryOpen(el.open);
-                  }}
-                >
-                  <summary
-                    className="st-demo-m1-more__summary"
-                    data-testid="m1-obs-secondary-summary"
-                  >
-                    <span className="st-demo-m1-more__kicker">更多 soft 观测</span>
-                    <strong>{m1ObsLayout.secondarySummary}</strong>
-                    <em data-testid="m1-obs-secondary-hint">
-                      {m1ObsSecondaryOpen ? '收起' : '展开'}
-                    </em>
-                  </summary>
-                  <div className="st-demo-m1-more__body" data-testid="m1-obs-secondary-body">
-                    <div
-                      className="st-demo-m1-strip"
-                      data-testid="m1-session-readiness"
-                      data-level={m1SessionReadiness.level}
-                      aria-label="M1 会话就绪"
-                    >
-                      <div className="st-demo-m1-strip__head">
-                        <span className="st-demo-m1-strip__kicker">会话就绪</span>
-                        <strong data-testid="m1-session-summary">
-                          {m1SessionReadiness.summary}
-                        </strong>
-                        <small>M1 soft · 非退出证据</small>
-                      </div>
-                      <ul className="st-demo-m1-strip__chips" data-testid="m1-session-chips">
-                        {m1SessionReadiness.chips.map((chip) => {
-                          const jumpable = isM1SessionChipJumpable(chip.jumpTarget);
-                          return (
-                            <li
-                              key={chip.id}
-                              data-ok={chip.ok}
-                              data-jump={chip.jumpTarget}
-                              data-jumpable={jumpable ? '1' : '0'}
-                              data-testid={`m1-session-chip-${chip.id}`}
-                            >
-                              {jumpable ? (
-                                <button
-                                  type="button"
-                                  className="st-demo-m1-strip__chip-btn"
-                                  title={chip.jumpHint}
-                                  aria-label={`${chip.label}：${chip.detail}。${chip.jumpHint}`}
-                                  data-testid={`m1-session-chip-jump-${chip.id}`}
-                                  onClick={() => handleSessionChipJump(chip.jumpTarget)}
-                                >
-                                  <span className="st-demo-m1-strip__chip-label">{chip.label}</span>
-                                  <span className="st-demo-m1-strip__chip-detail">
-                                    {chip.detail}
-                                  </span>
-                                </button>
-                              ) : (
-                                <span
-                                  className="st-demo-m1-strip__chip-static"
-                                  title={chip.jumpHint}
-                                  aria-label={`${chip.label}：${chip.detail}`}
-                                >
-                                  <span className="st-demo-m1-strip__chip-label">{chip.label}</span>
-                                  <span className="st-demo-m1-strip__chip-detail">
-                                    {chip.detail}
-                                  </span>
-                                </span>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                      <p className="st-demo-m1-strip__note" data-testid="m1-session-note">
-                        {m1SessionReadiness.note}
-                      </p>
-                    </div>
-                    <div
-                      className="st-demo-m1-exit"
-                      data-testid="m1-exit-evidence"
-                      data-level={m1ExitEvidence.level}
-                      data-hard={m1ExitEvidence.hardGatesMet ? '1' : '0'}
-                      aria-label="M1 退出证据进度"
-                    >
-                      <div className="st-demo-m1-exit__head">
-                        <span className="st-demo-m1-exit__kicker">退出证据</span>
-                        <strong data-testid="m1-exit-summary">{m1ExitEvidence.summary}</strong>
-                        <button
-                          type="button"
-                          className="st-demo-m1-exit__refresh"
-                          data-testid="m1-exit-refresh"
-                          title="重新读取手测清单与 dogfood 日记"
-                          onClick={() => setExitEvidenceTick((n) => n + 1)}
-                        >
-                          刷新
-                        </button>
-                        <button
-                          type="button"
-                          className="st-demo-m1-exit__copy"
-                          data-testid="m1-soft-snapshot-copy"
-                          data-action="copy-soft-snapshot"
-                          title="复制本机 soft 快照到剪贴板，便于粘贴到手测备注或 dogfood（不含密钥，不能替代外网手测）"
-                          onClick={() => void copyM1SoftSnapshot()}
-                        >
-                          复制 soft 快照
-                        </button>
-                        <button
-                          type="button"
-                          className="st-demo-m1-exit__copy"
-                          data-testid="m1-dogfood-draft-copy"
-                          data-action="copy-dogfood-draft"
-                          title="复制今日 dogfood 日记草稿到剪贴板（含 soft 状态 · 非自动写盘 · 不能直接算有效日）"
-                          onClick={() => void copyM1DogfoodDraft()}
-                        >
-                          复制 dogfood 草稿
-                        </button>
-                        <button
-                          type="button"
-                          className="st-demo-m1-exit__copy"
-                          data-testid="m1-soft-regression-copy"
-                          data-action="copy-soft-regression"
-                          title="复制 soft 回归矩阵（自动 vs 手测 · 不含密钥 · 不能替代外网手测）"
-                          onClick={() => void copyM1SoftRegression()}
-                        >
-                          复制回归矩阵
-                        </button>
-                        <button
-                          type="button"
-                          className="st-demo-m1-exit__copy st-demo-m1-exit__copy--primary"
-                          data-testid="m1-evidence-bundle-copy"
-                          data-action="copy-evidence-bundle"
-                          title="一键复制 soft 证据包：快照 + 手测进度 + 回归 + 退出路径 + 文档差异 + dogfood 草稿 + 下一步（不含密钥 · 不关 M1）"
-                          onClick={() => void copyM1EvidenceBundle()}
-                        >
-                          导出证据包
-                        </button>
-                        <button
-                          type="button"
-                          className="st-demo-m1-exit__copy"
-                          data-testid="m1-exit-path-copy-head"
-                          data-action="copy-exit-path"
-                          title="复制 M1 退出路径（有序硬门槛步骤 · 不含密钥）"
-                          onClick={() => void copyM1ExitPath()}
-                        >
-                          复制退出路径
-                        </button>
-                        <small>硬门槛 · 不自动关 M1</small>
-                      </div>
-                      <div
-                        className="st-demo-m1-bundle"
-                        data-testid="m1-evidence-bundle"
-                        data-level={m1EvidenceBundlePreview.level}
-                        data-claims-closed="0"
-                        data-sections={M1_EVIDENCE_BUNDLE_SECTIONS.length}
-                        aria-label="M1 soft 证据包导出"
-                      >
-                        <div className="st-demo-m1-bundle__head">
-                          <span className="st-demo-m1-bundle__kicker">证据包</span>
-                          <strong data-testid="m1-evidence-bundle-headline">
-                            {m1EvidenceBundlePreview.headline}
-                          </strong>
-                          <button
-                            type="button"
-                            className="st-demo-m1-bundle__export"
-                            data-testid="m1-evidence-bundle-export"
-                            data-action="copy-evidence-bundle"
-                            title="一键复制完整 soft 证据包到剪贴板"
-                            onClick={() => void copyM1EvidenceBundle()}
-                          >
-                            一键导出
-                          </button>
-                        </div>
-                        <p
-                          className="st-demo-m1-bundle__detail"
-                          data-testid="m1-evidence-bundle-detail"
-                        >
-                          {m1EvidenceBundlePreview.detail}
-                        </p>
-                        <ul className="st-demo-m1-bundle__toc" data-testid="m1-evidence-bundle-toc">
-                          {M1_EVIDENCE_BUNDLE_SECTIONS.map((sec) => (
-                            <li
-                              key={sec.id}
-                              data-section={sec.id}
-                              data-required={sec.required ? '1' : '0'}
-                              data-testid={`m1-evidence-bundle-sec-${sec.id}`}
-                            >
-                              <span>{sec.title}</span>
-                              <em>{sec.required ? '必含' : '可选'}</em>
-                            </li>
-                          ))}
-                        </ul>
-                        <p
-                          className="st-demo-m1-bundle__hint"
-                          data-testid="m1-evidence-bundle-hint"
-                        >
-                          粘贴辅助 · 不含密钥 · 不自动勾手测 · 不写 dogfood · 不关 M1
-                        </p>
-                      </div>
-                      <ul className="st-demo-m1-exit__chips" data-testid="m1-exit-chips">
-                        {m1ExitEvidence.chips.map((chip) => {
-                          const actionable = isM1ExitChipActionable(chip.id);
-                          const chipAction = resolveM1ExitChipAction(chip.id);
-                          const openDoc = chipAction.kind === 'open-doc' ? chipAction.openDoc : '';
-                          return (
-                            <li
-                              key={chip.id}
-                              data-ok={chip.ok}
-                              data-actionable={actionable ? '1' : '0'}
-                              data-chip-action={chipAction.kind}
-                              data-open-doc={openDoc}
-                              data-testid={`m1-exit-chip-${chip.id}`}
-                            >
-                              {actionable ? (
-                                <button
-                                  type="button"
-                                  className="st-demo-m1-exit__chip-btn"
-                                  data-testid={`m1-exit-chip-btn-${chip.id}`}
-                                  title={chipAction.hint}
-                                  onClick={() => handleM1ExitChip(chip.id)}
-                                >
-                                  <span className="st-demo-m1-exit__chip-label">{chip.label}</span>
-                                  <span className="st-demo-m1-exit__chip-detail">
-                                    {chip.detail}
-                                  </span>
-                                </button>
-                              ) : (
-                                <>
-                                  <span className="st-demo-m1-exit__chip-label">{chip.label}</span>
-                                  <span className="st-demo-m1-exit__chip-detail">
-                                    {chip.detail}
-                                  </span>
-                                </>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                      <div
-                        className="st-demo-m1-dogfood-fill"
-                        data-testid="m1-dogfood-fill"
-                        data-level={m1DogfoodFillBoard.level}
-                        data-real={m1DogfoodFillBoard.realDays}
-                        data-required={m1DogfoodFillBoard.required}
-                        data-remaining={m1DogfoodFillBoard.remainingDays}
-                        data-draft={m1DogfoodFillBoard.draftDays}
-                        data-scaffold={m1DogfoodFillBoard.scaffoldDays}
-                        data-missing={m1DogfoodFillBoard.missingSlots.length}
-                        data-primary-cta={m1DogfoodFillBoard.primaryCta.action}
-                        data-claims-closed="0"
-                        data-claims-dogfood-real="0"
-                        aria-label="dogfood 多日补填板 · 草稿不计有效日 · 不关 M1"
-                      >
-                        <div className="st-demo-m1-dogfood-fill__head">
-                          <span className="st-demo-m1-dogfood-fill__kicker">dogfood 补填</span>
-                          <strong data-testid="m1-dogfood-fill-summary">
-                            {m1DogfoodFillBoard.summary}
-                          </strong>
-                          <span
-                            className="st-demo-m1-dogfood-fill__level"
-                            data-level={m1DogfoodFillBoard.level}
-                            data-testid="m1-dogfood-fill-level"
-                          >
-                            {m1DogfoodFillBoard.level === 'empty'
-                              ? '尚无日记'
-                              : m1DogfoodFillBoard.level === 'scaffold-only'
-                                ? '仅脚手架'
-                                : m1DogfoodFillBoard.level === 'partial'
-                                  ? '部分有效'
-                                  : m1DogfoodFillBoard.level === 'ready-count'
-                                    ? '数字已满'
-                                    : m1DogfoodFillBoard.level === 'blocked-fake'
-                                      ? '仅草稿'
-                                      : m1DogfoodFillBoard.level}
-                          </span>
-                        </div>
-                        <div
-                          className="st-demo-m1-dogfood-fill__chips"
-                          data-testid="m1-dogfood-fill-chips"
-                        >
-                          <span data-kind="real">
-                            有效 {m1DogfoodFillBoard.realDays}/{m1DogfoodFillBoard.required}
-                          </span>
-                          <span data-kind="remain">仍差 {m1DogfoodFillBoard.remainingDays}</span>
-                          <span data-kind="draft">草稿 {m1DogfoodFillBoard.draftDays}</span>
-                          <span data-kind="scaffold">脚手架 {m1DogfoodFillBoard.scaffoldDays}</span>
-                          <span data-kind="missing">
-                            缺文件 {m1DogfoodFillBoard.missingSlots.length}
-                          </span>
-                        </div>
-                        <div className="st-demo-m1-dogfood-fill__actions">
-                          {m1DogfoodFillBoard.primaryCta.action !== 'none' ? (
-                            <button
-                              type="button"
-                              className="st-demo-m1-dogfood-fill__primary"
-                              data-testid="m1-dogfood-fill-primary"
-                              data-action={m1DogfoodFillBoard.primaryCta.action}
-                              data-target={m1DogfoodFillBoard.primaryCta.targetDate ?? ''}
-                              title={m1DogfoodFillBoard.primaryCta.label}
-                              onClick={() => handleM1DogfoodFillPrimary()}
-                            >
-                              {m1DogfoodFillBoard.primaryCta.label}
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="st-demo-m1-dogfood-fill__primary"
-                              data-testid="m1-dogfood-fill-primary"
-                              data-action="none"
-                              disabled
-                              title="有效日门槛已满 · M1 状态见验证区"
-                            >
-                              {m1DogfoodFillBoard.primaryCta.label || '有效日数字已满'}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="st-demo-m1-dogfood-fill__copy"
-                            data-testid="m1-dogfood-fill-copy"
-                            data-action="copy-fill-board"
-                            title="复制多日补填板（不含密钥 · 草稿不计有效日）"
-                            onClick={() => void copyM1DogfoodFillBoard()}
-                          >
-                            复制多日补填
-                          </button>
-                        </div>
-                        {m1DogfoodFillBoard.rows.length > 0 ? (
-                          <ul
-                            className="st-demo-m1-dogfood-fill__list"
-                            data-testid="m1-dogfood-fill-list"
-                            data-count={m1DogfoodFillBoard.rows.length}
-                          >
-                            {m1DogfoodFillBoard.rows.slice(0, 8).map((row) => (
-                              <li
-                                key={row.date}
-                                data-kind={row.kind}
-                                data-real={row.countsAsReal ? '1' : '0'}
-                                data-cta={row.ctaAction}
-                                data-testid={`m1-dogfood-fill-row-${row.date}`}
-                                title={`${row.fillHint} · ${row.ctaLabel || ''}`}
-                              >
-                                {row.ctaAction !== 'none' ? (
-                                  <button
-                                    type="button"
-                                    className="st-demo-m1-dogfood-fill__row-btn"
-                                    data-testid={`m1-dogfood-fill-cta-${row.date}`}
-                                    data-action={row.ctaAction}
-                                    data-kind={row.kind}
-                                    onClick={() => handleM1DogfoodFillRow(row)}
-                                  >
-                                    <span className="st-demo-m1-dogfood-fill__date">
-                                      {row.date}
-                                    </span>
-                                    <span className="st-demo-m1-dogfood-fill__kind">
-                                      {row.kind === 'real'
-                                        ? '有效'
-                                        : row.kind === 'draft'
-                                          ? '草稿'
-                                          : row.kind === 'missing'
-                                            ? '缺文件'
-                                            : '脚手架'}
-                                    </span>
-                                    <span className="st-demo-m1-dogfood-fill__status">
-                                      {row.statusLabel}
-                                    </span>
-                                    <span className="st-demo-m1-dogfood-fill__hint">
-                                      {row.fillHint}
-                                    </span>
-                                    <span className="st-demo-m1-dogfood-fill__cta">
-                                      {row.ctaLabel}
-                                    </span>
-                                  </button>
-                                ) : (
-                                  <>
-                                    <span className="st-demo-m1-dogfood-fill__date">
-                                      {row.date}
-                                    </span>
-                                    <span className="st-demo-m1-dogfood-fill__kind">
-                                      {row.kind}
-                                    </span>
-                                    <span className="st-demo-m1-dogfood-fill__status">
-                                      {row.statusLabel}
-                                    </span>
-                                    <span className="st-demo-m1-dogfood-fill__hint">
-                                      {row.fillHint}
-                                    </span>
-                                  </>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        ) : null}
-                        <p
-                          className="st-demo-m1-dogfood-fill__note"
-                          data-testid="m1-dogfood-fill-note"
-                        >
-                          点行打开当日日记 · 粘贴草稿 / 脚手架不计有效日 · ≥3 真实天仍是硬门槛 ·
-                          不关 M1
-                        </p>
-                      </div>
-                      {m1ExitEvidence.dogfoodDays.length > 0 ? (
-                        <ul
-                          className="st-demo-m1-dogfood-days"
-                          data-testid="m1-dogfood-days"
-                          data-count={m1ExitEvidence.dogfoodDays.length}
-                          data-draft-count={m1ExitEvidence.dogfoodDraftDays}
-                          aria-label="dogfood 按日明细 · 点击打开当日日记 · 草稿不计有效日"
-                        >
-                          {m1ExitEvidence.dogfoodDays.map((day) => (
-                            <li
-                              key={day.date}
-                              data-kind={day.boardKind || day.kind}
-                              data-paste-assist={day.isPasteAssist ? '1' : '0'}
-                              data-date={day.date}
-                              data-openable="1"
-                              data-testid={`m1-dogfood-day-${day.date}`}
-                              title={
-                                day.reasons && day.reasons.length > 0
-                                  ? day.reasons.join(' · ')
-                                  : day.statusLabel
-                              }
-                            >
-                              <button
-                                type="button"
-                                className="st-demo-m1-dogfood-days__btn"
-                                data-testid={`m1-dogfood-day-btn-${day.date}`}
-                                data-action="open-dogfood-day"
-                                data-date={day.date}
-                                data-kind={day.boardKind || day.kind}
-                                title={`打开 ${day.fileName || day.date + '.md'} · ${
-                                  day.reasons?.join(' · ') || day.statusLabel
-                                }（不自动勾选 · 草稿不计有效）`}
-                                onClick={() => openM1DogfoodDay(day.date)}
-                              >
-                                <span className="st-demo-m1-dogfood-days__date">{day.date}</span>
-                                <span
-                                  className="st-demo-m1-dogfood-days__kind"
-                                  data-kind={day.boardKind || day.kind}
-                                >
-                                  {day.boardKind === 'draft' || day.isPasteAssist
-                                    ? '草稿'
-                                    : day.kind === 'real'
-                                      ? '有效'
-                                      : '脚手架'}
-                                </span>
-                                <span className="st-demo-m1-dogfood-days__status">
-                                  {day.statusLabel}
-                                </span>
-                                {day.reasons && day.reasons.length > 0 ? (
-                                  <span
-                                    className="st-demo-m1-dogfood-days__reasons"
-                                    data-testid={`m1-dogfood-day-reasons-${day.date}`}
-                                  >
-                                    {day.reasons.slice(0, 2).join(' · ')}
-                                  </span>
-                                ) : null}
-                                <span
-                                  className="st-demo-m1-dogfood-days__open-hint"
-                                  aria-hidden="true"
-                                >
-                                  打开
-                                </span>
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-
-                      <div
-                        className="st-demo-m1-regression"
-                        data-testid="m1-soft-regression"
-                        data-auto-pass={m1SoftRegression.autoPass}
-                        data-auto-total={m1SoftRegression.autoTotal}
-                        data-hand-gaps={m1SoftRegression.handGaps}
-                        data-external-gaps={m1SoftRegression.externalGaps}
-                        data-filter={regressionListFilter}
-                        data-filter-count={m1SoftRegressionFilteredRows.length}
-                        data-claims-closed="0"
-                        aria-label="M1 soft 回归矩阵 · 自动 vs 手测 · 可筛选可跳转"
-                      >
-                        <div className="st-demo-m1-regression__head">
-                          <span className="st-demo-m1-regression__kicker">soft 回归</span>
-                          <strong data-testid="m1-soft-regression-summary">
-                            auto {m1SoftRegression.autoPass}/{m1SoftRegression.autoTotal}
-                            {' · '}
-                            手测缺口 {m1SoftRegression.handGaps}
-                            {' · '}
-                            外网 {m1SoftRegression.externalGaps}
-                          </strong>
-                          <button
-                            type="button"
-                            className="st-demo-m1-exit__copy"
-                            data-testid="m1-soft-regression-copy-inline"
-                            data-action="copy-soft-regression"
-                            title="复制完整 markdown 矩阵"
-                            onClick={() => void copyM1SoftRegression()}
-                          >
-                            复制
-                          </button>
-                        </div>
-                        <div
-                          className="st-demo-m1-regression-filters"
-                          data-testid="m1-soft-regression-filters"
-                          role="toolbar"
-                          aria-label="回归矩阵筛选"
-                        >
-                          {(
-                            [
-                              { id: 'all' as const, label: '全部' },
-                              { id: 'gaps' as const, label: '缺口' },
-                              { id: 'external' as const, label: '外网' },
-                              { id: 'auto-fail' as const, label: 'auto红' },
-                            ] as const
-                          ).map((f) => (
-                            <button
-                              key={f.id}
-                              type="button"
-                              className="st-demo-m1-regression-filters__btn"
-                              data-testid={`m1-soft-regression-filter-${f.id}`}
-                              data-filter={f.id}
-                              data-active={regressionListFilter === f.id ? '1' : '0'}
-                              aria-pressed={regressionListFilter === f.id}
-                              onClick={() => setRegressionListFilter(f.id)}
-                            >
-                              {f.label}
-                              <span className="st-demo-m1-regression-filters__count">
-                                {m1SoftRegressionFilterCounts[f.id]}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                        <ul
-                          className="st-demo-m1-regression__rows"
-                          data-testid="m1-soft-regression-rows"
-                          data-count={m1SoftRegressionFilteredRows.length}
-                          data-filter={regressionListFilter}
-                        >
-                          {m1SoftRegressionFilteredRows.slice(0, 12).map((row) => {
-                            const actionable = isM1SoftRegressionRowActionable(row.id);
-                            const rowAction = resolveM1SoftRegressionRowAction(row.id);
-                            return (
-                              <li
-                                key={row.id}
-                                data-id={row.id}
-                                data-area={row.area}
-                                data-auto={row.auto}
-                                data-hand={row.hand}
-                                data-action={rowAction.kind}
-                                data-testid={`m1-soft-regression-row-${row.id}`}
-                                title={row.note + (rowAction.hint ? ' · ' + rowAction.hint : '')}
-                              >
-                                {actionable ? (
-                                  <button
-                                    type="button"
-                                    className="st-demo-m1-regression__row-btn"
-                                    data-testid={`m1-soft-regression-row-btn-${row.id}`}
-                                    data-action={rowAction.kind}
-                                    title={rowAction.ctaLabel + ' · ' + rowAction.hint}
-                                    onClick={() => handleM1SoftRegressionRow(row.id)}
-                                  >
-                                    <span className="st-demo-m1-regression__label">
-                                      {row.label}
-                                    </span>
-                                    <span
-                                      className="st-demo-m1-regression__cell"
-                                      data-side="auto"
-                                      data-cell={row.auto}
-                                    >
-                                      {row.auto}
-                                    </span>
-                                    <span
-                                      className="st-demo-m1-regression__cell"
-                                      data-side="hand"
-                                      data-cell={row.hand}
-                                    >
-                                      {row.hand}
-                                    </span>
-                                    <span className="st-demo-m1-regression__cta">
-                                      {rowAction.ctaLabel}
-                                    </span>
-                                  </button>
-                                ) : (
-                                  <>
-                                    <span className="st-demo-m1-regression__label">
-                                      {row.label}
-                                    </span>
-                                    <span
-                                      className="st-demo-m1-regression__cell"
-                                      data-side="auto"
-                                      data-cell={row.auto}
-                                    >
-                                      {row.auto}
-                                    </span>
-                                    <span
-                                      className="st-demo-m1-regression__cell"
-                                      data-side="hand"
-                                      data-cell={row.hand}
-                                    >
-                                      {row.hand}
-                                    </span>
-                                  </>
-                                )}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                        <p
-                          className="st-demo-m1-regression__hint"
-                          data-testid="m1-soft-regression-hint"
-                        >
-                          {m1ExitEvidence.hardGatesMet
-                            ? `筛选看缺口 · 外网手测 ${m1ExitEvidence.handtestChecked}/${m1ExitEvidence.handtestTotal} · dogfood ${m1ExitEvidence.dogfoodRealDays}/${m1ExitEvidence.dogfoodRequired} · M1 已完成`
-                            : m1ExitEvidence.handtestOk
-                              ? `筛选看缺口 · 外网手测 ${m1ExitEvidence.handtestChecked}/${m1ExitEvidence.handtestTotal} 已完成 · dogfood ${m1ExitEvidence.dogfoodRealDays}/${m1ExitEvidence.dogfoodRequired}`
-                              : '筛选看缺口 · 点行跳转/打开文档 · 自动绿不替代外网手测与 dogfood'}
-                        </p>
-                      </div>
-                      <p className="st-demo-m1-exit__note" data-testid="m1-exit-note">
-                        {m1ExitEvidence.note}
-                        {m1ExitEvidence.loadNote ? ` · ${m1ExitEvidence.loadNote}` : ''}
-                      </p>
-                      {m1OpenDocFeedback ? (
-                        <p
-                          className="st-demo-m1-open-feedback"
-                          data-testid="m1-open-doc-feedback"
-                          data-level={m1OpenDocFeedback.level}
-                          data-ok={m1OpenDocFeedback.dataOk}
-                          data-created={m1OpenDocFeedback.dataCreated}
-                          data-open-doc={m1OpenDocFeedback.openDocId}
-                          data-basename={m1OpenDocFeedback.basename ?? ''}
-                          role="status"
-                        >
-                          {m1OpenDocFeedback.message}
-                        </p>
-                      ) : null}
-                    </div>
-                    <div
-                      className="st-demo-m1-handtest"
-                      data-testid="m1-handtest-checklist"
-                      data-level={m1HandtestChecklist.level}
-                      aria-label="M1 手测清单对照"
-                    >
-                      <div className="st-demo-m1-handtest__head">
-                        <span className="st-demo-m1-handtest__kicker">手测对照</span>
-                        <strong data-testid="m1-handtest-summary">
-                          {m1HandtestChecklist.summary}
-                        </strong>
-                        <small>
-                          本机 {m1HandtestChecklist.livePass}/{m1HandtestChecklist.liveTotal} · 文档{' '}
-                          {m1HandtestChecklist.docChecked}/{m1HandtestChecklist.docTotal || '—'}
-                        </small>
-                        <div className="st-demo-m1-handtest__opens" data-testid="m1-handtest-opens">
-                          <button
-                            type="button"
-                            className="st-demo-m1-handtest__open"
-                            data-testid="m1-handtest-open-doc"
-                            data-open-doc="handtest"
-                            title="打开 14-external-gateway-handtest.md"
-                            onClick={() =>
-                              void openM1EvidenceDoc('handtest', { alsoJump: 'providers' })
-                            }
-                          >
-                            打开手测文档
-                          </button>
-                          <button
-                            type="button"
-                            className="st-demo-m1-handtest__open"
-                            data-testid="m1-handtest-open-dogfood"
-                            data-open-doc="dogfood-today"
-                            title="打开或创建今日 dogfood 日记"
-                            onClick={() => void openM1EvidenceDoc('dogfood-today')}
-                          >
-                            今日 dogfood
-                          </button>
-                          <button
-                            type="button"
-                            className="st-demo-m1-handtest__open"
-                            data-testid="m1-handtest-copy-snapshot"
-                            data-action="copy-soft-snapshot"
-                            title="复制本机 soft 快照（不含密钥）"
-                            onClick={() => void copyM1SoftSnapshot()}
-                          >
-                            复制 soft 快照
-                          </button>
-                          <button
-                            type="button"
-                            className="st-demo-m1-handtest__open"
-                            data-testid="m1-handtest-copy-paste"
-                            data-action="copy-handtest-paste"
-                            title="复制手测进度粘贴稿（按分区 · 非文档勾选 · 不含密钥）"
-                            onClick={() => void copyM1HandtestPaste()}
-                          >
-                            复制手测进度
-                          </button>
-                          <button
-                            type="button"
-                            className="st-demo-m1-handtest__open"
-                            data-testid="m1-handtest-copy-doc-diff"
-                            data-action="copy-handtest-doc-diff"
-                            title="复制文档↔本机差异（soft · 不关 M1 · 不含密钥）"
-                            onClick={() => void copyM1HandtestDocDiff()}
-                          >
-                            复制文档差异
-                          </button>
-                          <button
-                            type="button"
-                            className="st-demo-m1-handtest__open"
-                            data-testid="m1-handtest-copy-dogfood-draft"
-                            data-action="copy-dogfood-draft"
-                            title="复制 dogfood 日记草稿（非自动写盘）"
-                            onClick={() => void copyM1DogfoodDraft()}
-                          >
-                            dogfood 草稿
-                          </button>
-                          <button
-                            type="button"
-                            className="st-demo-m1-handtest__open"
-                            data-testid="m1-handtest-copy-regression"
-                            data-action="copy-soft-regression"
-                            title="复制 soft 回归矩阵（自动 vs 手测 · 非退出证据）"
-                            onClick={() => void copyM1SoftRegression()}
-                          >
-                            回归矩阵
-                          </button>
-                          <button
-                            type="button"
-                            className="st-demo-m1-handtest__open st-demo-m1-handtest__open--primary"
-                            data-testid="m1-handtest-copy-evidence-bundle"
-                            data-action="copy-evidence-bundle"
-                            title="一键导出 soft 证据包（不含密钥 · 不关 M1）"
-                            onClick={() => void copyM1EvidenceBundle()}
-                          >
-                            证据包
-                          </button>
-                        </div>
-                      </div>
-                      <div
-                        className="st-demo-m1-docdiff"
-                        data-testid="m1-handtest-doc-diff"
-                        data-level={m1HandtestDocDiff.level}
-                        data-live-ahead={m1HandtestDocDiff.liveAhead}
-                        data-doc-ahead={m1HandtestDocDiff.docAhead}
-                        data-external-gap={m1HandtestDocDiff.externalGap}
-                        data-primary-cta={m1HandtestDocDiff.primaryCta.kind}
-                        data-claims-closed="0"
-                        aria-label="文档与本机手测差异"
-                      >
-                        <div className="st-demo-m1-docdiff__head">
-                          <span className="st-demo-m1-docdiff__kicker">文档 ↔ 本机</span>
-                          <strong data-testid="m1-handtest-doc-diff-summary">
-                            {m1HandtestDocDiff.summary}
-                          </strong>
-                          <span
-                            className="st-demo-m1-docdiff__level"
-                            data-level={m1HandtestDocDiff.level}
-                          >
-                            {m1HandtestDocDiff.level === 'quiet'
-                              ? '对齐安静'
-                              : m1HandtestDocDiff.level === 'critical'
-                                ? '需复核'
-                                : m1HandtestDocDiff.level === 'empty'
-                                  ? '无数据'
-                                  : '有差异'}
-                          </span>
-                        </div>
-                        <div
-                          className="st-demo-m1-docdiff__chips"
-                          data-testid="m1-handtest-doc-diff-chips"
-                        >
-                          <span data-kind="live-ahead" title="本机已绿但文档未勾">
-                            本机领先 {m1HandtestDocDiff.liveAhead}
-                          </span>
-                          <span data-kind="doc-ahead" title="文档已勾但本机未绿">
-                            文档领先 {m1HandtestDocDiff.docAhead}
-                          </span>
-                          <span data-kind="external" title="需外网真实路径">
-                            外网待证 {m1HandtestDocDiff.externalGap}
-                          </span>
-                          <span data-kind="aligned" title="本机与文档均已勾">
-                            对齐已勾 {m1HandtestDocDiff.alignedPass}
-                          </span>
-                        </div>
-                        {m1HandtestDocDiff.primaryCta.kind !== 'none' ? (
-                          <button
-                            type="button"
-                            className="st-demo-m1-docdiff__primary"
-                            data-testid="m1-handtest-doc-diff-primary"
-                            data-live-ahead={m1HandtestDocDiff.primaryCta.liveAhead}
-                            title={m1HandtestDocDiff.primaryCta.label}
-                            onClick={() => handleM1HandtestDocDiffPrimary()}
-                          >
-                            {m1HandtestDocDiff.primaryCta.label}
-                          </button>
-                        ) : null}
-                        {m1HandtestDocDiffAttention.length > 0 ? (
-                          <ul
-                            className="st-demo-m1-docdiff__list"
-                            data-testid="m1-handtest-doc-diff-list"
-                            data-count={m1HandtestDocDiffAttention.length}
-                          >
-                            {m1HandtestDocDiffAttention.slice(0, 8).map((row) => {
-                              const actionable = isM1HandtestDocDiffCtaActionable(row.ctaKind);
-                              return (
-                                <li
-                                  key={row.id}
-                                  data-kind={row.kind}
-                                  data-cta={row.ctaKind}
-                                  data-jumpable={row.jumpable ? '1' : '0'}
-                                  data-testid={`m1-handtest-doc-diff-row-${row.id}`}
-                                  title={`${row.hint} · ${row.ctaLabel || ''}`}
-                                >
-                                  {actionable ? (
-                                    <button
-                                      type="button"
-                                      className="st-demo-m1-docdiff__row-btn"
-                                      data-testid={`m1-handtest-doc-diff-cta-${row.id}`}
-                                      data-action={row.ctaKind}
-                                      data-kind={row.kind}
-                                      onClick={() => handleM1HandtestDocDiffRow(row)}
-                                    >
-                                      <span className="st-demo-m1-docdiff__kind">
-                                        {row.kind === 'live-ahead'
-                                          ? '本机领先'
-                                          : row.kind === 'doc-ahead'
-                                            ? '文档领先'
-                                            : row.kind === 'external-gap'
-                                              ? '外网待证'
-                                              : '未映射'}
-                                      </span>
-                                      <span className="st-demo-m1-docdiff__label">{row.label}</span>
-                                      <span className="st-demo-m1-docdiff__hint">{row.hint}</span>
-                                      <span className="st-demo-m1-docdiff__cta">
-                                        {row.ctaLabel}
-                                      </span>
-                                    </button>
-                                  ) : (
-                                    <>
-                                      <span className="st-demo-m1-docdiff__kind">
-                                        {row.kind === 'live-ahead'
-                                          ? '本机领先'
-                                          : row.kind === 'doc-ahead'
-                                            ? '文档领先'
-                                            : row.kind === 'external-gap'
-                                              ? '外网待证'
-                                              : '未映射'}
-                                      </span>
-                                      <span className="st-demo-m1-docdiff__label">{row.label}</span>
-                                      <span className="st-demo-m1-docdiff__hint">{row.hint}</span>
-                                    </>
-                                  )}
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        ) : (
-                          <p
-                            className="st-demo-m1-docdiff__empty"
-                            data-testid="m1-handtest-doc-diff-empty"
-                          >
-                            {m1ExitEvidence.hardGatesMet
-                              ? `暂无待关注差异 · 外网 ${m1ExitEvidence.handtestChecked}/${m1ExitEvidence.handtestTotal}、dogfood ${m1ExitEvidence.dogfoodRealDays}/${m1ExitEvidence.dogfoodRequired} 已完成`
-                              : m1ExitEvidence.handtestOk
-                                ? `暂无待关注差异 · 外网手测 ${m1ExitEvidence.handtestChecked}/${m1ExitEvidence.handtestTotal} 已完成，dogfood ${m1ExitEvidence.dogfoodRealDays}/${m1ExitEvidence.dogfoodRequired}`
-                                : '暂无待关注差异 · 对齐结果仍须人手确认'}
-                          </p>
-                        )}
-                        <p className="st-demo-m1-docdiff__note">
-                          可点差异行 · 打开文档 / 跳转面板 · 不自动勾 · 不改变 M1 状态
-                        </p>
-                      </div>
-                      <ul
-                        className="st-demo-m1-handtest-sections"
-                        data-testid="m1-handtest-sections"
-                        data-count={m1HandtestSectionBoard.sections.length}
-                        aria-label="手测分区进度"
-                      >
-                        {m1HandtestSectionBoard.sections.map((sec) => {
-                          const focus = sec.focusItemId
-                            ? m1HandtestChecklist.items.find((it) => it.id === sec.focusItemId)
-                            : null;
-                          const jumpable = focus
-                            ? isM1HandtestItemJumpable(focus.jumpTarget)
-                            : false;
-                          return (
-                            <li
-                              key={sec.id}
-                              data-section={sec.id}
-                              data-level={sec.level}
-                              data-testid={`m1-handtest-section-${sec.id}`}
-                            >
-                              {jumpable && focus ? (
-                                <button
-                                  type="button"
-                                  className="st-demo-m1-handtest-sections__btn"
-                                  data-testid={`m1-handtest-section-btn-${sec.id}`}
-                                  data-action="jump-handtest-section"
-                                  title={`${sec.label} · ${sec.detail}`}
-                                  onClick={() => handleHandtestItemJump(focus.jumpTarget)}
-                                >
-                                  <span className="st-demo-m1-handtest-sections__label">
-                                    {sec.label}
-                                  </span>
-                                  <span className="st-demo-m1-handtest-sections__score">
-                                    {sec.pass}/{sec.total}
-                                  </span>
-                                  <span className="st-demo-m1-handtest-sections__detail">
-                                    {sec.detail}
-                                  </span>
-                                </button>
-                              ) : (
-                                <div
-                                  className="st-demo-m1-handtest-sections__static"
-                                  data-testid={`m1-handtest-section-static-${sec.id}`}
-                                  title={sec.detail}
-                                >
-                                  <span className="st-demo-m1-handtest-sections__label">
-                                    {sec.label}
-                                  </span>
-                                  <span className="st-demo-m1-handtest-sections__score">
-                                    {sec.pass}/{sec.total}
-                                  </span>
-                                  <span className="st-demo-m1-handtest-sections__detail">
-                                    {sec.detail}
-                                  </span>
-                                </div>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                      <p
-                        className="st-demo-m1-handtest-sections__summary"
-                        data-testid="m1-handtest-sections-summary"
-                      >
-                        {m1HandtestSectionBoard.summary}
-                      </p>
-                      <div
-                        className="st-demo-m1-handtest-filters"
-                        data-testid="m1-handtest-filters"
-                        data-filter={handtestListFilter}
-                        role="group"
-                        aria-label="手测项筛选"
-                      >
-                        {(
-                          [
-                            { id: 'all' as const, label: '全部' },
-                            { id: 'gaps' as const, label: '缺口' },
-                            { id: 'external' as const, label: '外网' },
-                          ] as const
-                        ).map((f) => (
-                          <button
-                            key={f.id}
-                            type="button"
-                            className="st-demo-m1-handtest-filters__btn"
-                            data-testid={`m1-handtest-filter-${f.id}`}
-                            data-active={handtestListFilter === f.id ? '1' : '0'}
-                            data-filter={f.id}
-                            aria-pressed={handtestListFilter === f.id}
-                            onClick={() => setHandtestListFilter(f.id)}
-                          >
-                            {f.label}
-                            <span className="st-demo-m1-handtest-filters__count">
-                              {m1HandtestFilterCounts[f.id]}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                      <ul
-                        className="st-demo-m1-handtest__list"
-                        data-testid="m1-handtest-list"
-                        data-filter={handtestListFilter}
-                        data-count={m1HandtestFilteredItems.length}
-                      >
-                        {m1HandtestFilteredItems.map((item) => {
-                          const jumpable = isM1HandtestItemJumpable(item.jumpTarget);
-                          const docEntry = m1HandtestDocMapById.get(item.id);
-                          const docChecked =
-                            docEntry && docEntry.docChecked != null
-                              ? docEntry.docChecked
-                                ? '1'
-                                : '0'
-                              : '';
-                          const docBadge =
-                            docEntry && docEntry.docChecked != null
-                              ? docEntry.docChecked
-                                ? '文档✓'
-                                : '文档□'
-                              : '文档—';
-                          return (
-                            <li
-                              key={item.id}
-                              data-status={item.status}
-                              data-gate={item.gate}
-                              data-jump={item.jumpTarget}
-                              data-jumpable={jumpable ? '1' : '0'}
-                              data-doc-checked={docChecked}
-                              data-testid={`m1-handtest-item-${item.id}`}
-                              title={`${item.jumpHint || item.hint} · ${item.detail}${
-                                docEntry?.docLabel ? ' · 文档: ' + docEntry.docLabel : ''
-                              }`}
-                            >
-                              {jumpable ? (
-                                <button
-                                  type="button"
-                                  className="st-demo-m1-handtest__jump"
-                                  data-testid={`m1-handtest-jump-${item.id}`}
-                                  onClick={() => handleHandtestItemJump(item.jumpTarget)}
-                                >
-                                  <span className="st-demo-m1-handtest__mark" aria-hidden="true">
-                                    {item.status === 'pass'
-                                      ? '✓'
-                                      : item.status === 'fail'
-                                        ? '!'
-                                        : '·'}
-                                  </span>
-                                  <span className="st-demo-m1-handtest__label">{item.label}</span>
-                                  <span className="st-demo-m1-handtest__gate">
-                                    {item.gate === 'external' ? '外网' : '本机'}
-                                  </span>
-                                  <span
-                                    className="st-demo-m1-handtest__doc"
-                                    data-testid={`m1-handtest-doc-${item.id}`}
-                                    data-doc-checked={docChecked}
-                                  >
-                                    {docBadge}
-                                  </span>
-                                  <span className="st-demo-m1-handtest__detail">{item.detail}</span>
-                                </button>
-                              ) : (
-                                <>
-                                  <span className="st-demo-m1-handtest__mark" aria-hidden="true">
-                                    {item.status === 'pass'
-                                      ? '✓'
-                                      : item.status === 'fail'
-                                        ? '!'
-                                        : '·'}
-                                  </span>
-                                  <span className="st-demo-m1-handtest__label">{item.label}</span>
-                                  <span className="st-demo-m1-handtest__gate">
-                                    {item.gate === 'external' ? '外网' : '本机'}
-                                  </span>
-                                  <span
-                                    className="st-demo-m1-handtest__doc"
-                                    data-testid={`m1-handtest-doc-${item.id}`}
-                                    data-doc-checked={docChecked}
-                                  >
-                                    {docBadge}
-                                  </span>
-                                  <span className="st-demo-m1-handtest__detail">{item.detail}</span>
-                                </>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                      <details
-                        className="st-demo-m1-handtest__limits"
-                        data-testid="m1-known-limits"
-                      >
-                        <summary>当前里程碑状态（以验证区为准）</summary>
-                        <ul>
-                          {m1CurrentMilestoneCopy.map((line) => (
-                            <li key={line}>{line}</li>
-                          ))}
-                          <li>
-                            API Key 只进安全存储；界面与日志应仅见遮罩，勿把真实密钥写进仓库。
-                          </li>
-                        </ul>
-                      </details>
-                      <p className="st-demo-m1-handtest__note" data-testid="m1-handtest-note">
-                        {m1HandtestChecklist.note}
-                      </p>
-                    </div>
-                  </div>
-                </details>
-              </div>
-            </details>
-          ) : null}
-        </div>
+  const talkProvidersWorkspace = (
+    <ProvidersPanel
+      providers={providers}
+      loading={providerLoading}
+      busy={providerBusy}
+      error={providerError}
+      statusNote={providerStatus}
+      onCreate={(input) => void createProvider(input)}
+      onUpdate={(input) => void updateProvider(input)}
+      onPreviewCcSwitchImport={() => previewCcSwitchImport()}
+      onImportCcSwitch={(sourceIds) => void importCcSwitch(sourceIds)}
+      onDiscover={(providerId) => void discoverProviderModels(providerId)}
+      onAddModel={(providerId, providerModelId, displayName) =>
+        void addProviderModel(providerId, providerModelId, displayName)
       }
-      conversation={
-        <div
-          className="st-demo-thread st-thread"
-          data-layout={conversationLayout}
-          data-testid="conversation-thread"
-        >
-          {showConversationAlert ? (
-            <div
-              className="st-conversation-alert"
-              role="status"
-              data-testid="conversation-stream-readiness"
-              data-level={conversationStreamReadiness.level}
-              data-connection={runtimeView.connectionState}
-              aria-label="对话状态"
-            >
-              <span className="st-conversation-alert__dot" aria-hidden="true" />
-              <span className="st-conversation-alert__copy">
-                <strong data-testid="conversation-stream-title">
-                  {conversationStreamReadiness.title}
-                </strong>
-                <small data-testid="conversation-stream-subtitle">
-                  {conversationStreamReadiness.failure?.recovery ?? beginnerWorkspace.nextAction}
-                </small>
-              </span>
-              {conversationStreamReadiness.showReconnectCta ? (
-                <button
-                  type="button"
-                  data-testid="conversation-runtime-reconnect-cta"
-                  disabled={runtimeView.connectionState === 'connecting'}
-                  onClick={() => reconnectRuntime()}
-                >
-                  <RefreshCw aria-hidden="true" size={13} strokeWidth={2} />
-                  {conversationStreamReadiness.reconnectCtaLabel}
-                </button>
-              ) : conversationStreamReadiness.showFailureCta ? (
-                <button
-                  type="button"
-                  data-testid="conversation-stream-failure-cta"
-                  data-action={conversationStreamReadiness.failureCtaAction}
-                  onClick={() => handleStreamFailureCta()}
-                >
-                  {conversationStreamReadiness.failureCtaLabel}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-
-          {active && collaborationStatus?.taskId === active.taskId ? (
-            <div
-              className="st-conversation-collaboration-status"
-              data-testid="conversation-collaboration-status"
-              data-tone={collaborationStatus.tone}
-              role={collaborationStatus.tone === 'error' ? 'alert' : 'status'}
-            >
-              <GitBranch aria-hidden="true" size={15} strokeWidth={1.8} />
-              <span>{collaborationStatus.text}</span>
-            </div>
-          ) : null}
-
-          {active && active.participationMode !== 'conversation' ? (
-            <div className="st-m2-plan-flow" data-testid="m2-plan-flow">
-              {planRevision ? (
-                <PlanRevisionPanel
-                  revision={planRevision}
-                  revisions={planRevisions}
-                  busy={planBusy}
-                  error={planError}
-                  onRevise={
-                    active.participationMode === 'collaboration'
-                      ? (input) => void reviseCurrentPlan(input)
-                      : undefined
-                  }
-                  onApprove={
-                    active.participationMode === 'collaboration'
-                      ? (input) => void approveCurrentPlan(input)
-                      : undefined
-                  }
-                  onSelectRevision={(revision) => {
-                    const selected = planRevisions.find((item) => item.revision === revision);
-                    if (selected) setPlanRevision(selected);
-                  }}
-                />
-              ) : (
-                <section className="st-m2-plan-empty" aria-label="执行计划">
-                  <div>
-                    <strong>尚无执行计划</strong>
-                    <p>从当前任务目标创建草稿，然后补充 Agent 分工、依赖和模型覆盖。</p>
-                  </div>
-                  <button
-                    type="button"
-                    hidden={active.participationMode !== 'collaboration'}
-                    disabled={
-                      active.participationMode !== 'collaboration' ||
-                      planBusy ||
-                      !agentBinding?.agentVersionId
-                    }
-                    onClick={() => void createDefaultPlan()}
-                  >
-                    <GitBranch aria-hidden="true" size={14} strokeWidth={1.9} />
-                    创建计划草稿
-                  </button>
-                  {planError ? <p role="alert">{planError}</p> : null}
-                </section>
-              )}
-            </div>
-          ) : null}
-
-          {projection.messages.length === 0 && previewMessages.length === 0 ? (
-            <div
-              className="st-beginner-empty"
-              data-testid="conversation-empty"
-              data-connection={runtimeView.connectionState}
-              data-has-task={active ? 'true' : 'false'}
-              data-state={beginnerWorkspace.state}
-            >
-              <span className="st-beginner-empty__mark" aria-hidden="true">
-                <Bot size={18} strokeWidth={1.7} />
-              </span>
-              <h2 data-testid="conversation-empty-title">{beginnerWorkspace.emptyTitle}</h2>
-              <p data-testid="conversation-empty-hint">{beginnerWorkspace.emptyHint}</p>
-              {beginnerWorkspace.actionLabel ? (
-                <button
-                  type="button"
-                  data-testid="conversation-empty-cta"
-                  onClick={handleBeginnerAction}
-                >
-                  {beginnerWorkspace.actionLabel}
-                  <ArrowRight aria-hidden="true" size={14} strokeWidth={1.9} />
-                </button>
-              ) : null}
-              {!active ? (
-                <p className="st-beginner-empty__aside" data-testid="conversation-empty-aside">
-                  本地文件夹可在项目菜单里稍后绑定，不挡开始。
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-
-          {projection.messages.map((message) => {
-            const agentIdentity =
-              conversationAgentIdentityByMessageId.get(message.id) ??
-              fallbackConversationAgentIdentity;
-            return (
-              <MessageBubble
-                key={message.id}
-                role={message.role === 'system' ? 'system' : message.role}
-                layout={conversationLayout}
-                streaming={Boolean(message.streaming)}
-                agentLabel={agentIdentity.name}
-                agentIcon={agentIdentity.icon}
-                agentColor={agentIdentity.color}
-                onAgentActivate={() => {
-                  if (
-                    agentIdentity.agentId &&
-                    agentIdentity.agentId !== selectedAgentIdRef.current
-                  ) {
-                    selectAgent(agentIdentity.agentId);
-                  }
-                  navigateToInstrument('agent');
-                }}
-              >
-                {message.text || (message.streaming ? '…' : '')}
-              </MessageBubble>
-            );
-          })}
-
-          {previewMessages.map((text, index) => (
-            <MessageBubble key={`preview-${index}`} role="user" layout={conversationLayout}>
-              {text}
-            </MessageBubble>
-          ))}
-        </div>
+      onProbeCapabilities={(providerId, modelId) =>
+        void probeProviderCapabilities(providerId, modelId)
       }
-
-      trace={
-        <div className="st-demo-trace" data-tab={rightRailTab}>
-          {rightRailTab === 'overview' ? (
-            <div
-              className="st-task-overview"
-              data-testid="right-rail-overview"
-              data-state={beginnerWorkspace.state}
-              data-dense={beginnerWorkspace.showProgressSteps ? '1' : '0'}
-            >
-              <header className="st-task-overview__status">
-                <span className="st-task-overview__status-dot" aria-hidden="true" />
-                <span>
-                  <strong>{beginnerWorkspace.statusLabel}</strong>
-                  <small>{beginnerWorkspace.statusDetail}</small>
-                </span>
-              </header>
-
-              {parentTaskLink ? (
-                <section
-                  className="st-task-overview__parent"
-                  data-testid="right-rail-parent-task"
-                  aria-labelledby="task-parent-label"
-                >
-                  <span id="task-parent-label">所属主任务</span>
-                  <button
-                    type="button"
-                    data-testid="right-rail-open-parent"
-                    onClick={() => void openTaskById(parentTaskLink.taskId)}
-                  >
-                    <GitBranch aria-hidden="true" size={14} strokeWidth={1.8} />
-                    <span>
-                      <strong>{parentTaskLink.title}</strong>
-                      <small>返回主任务查看子任务进度</small>
-                    </span>
-                    <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
-                  </button>
-                </section>
-              ) : null}
-
-              {active && !parentTaskLink ? (
-                <section
-                  className="st-task-overview__children"
-                  data-testid="right-rail-child-tasks"
-                  aria-labelledby="task-children-label"
-                >
-                  <header>
-                    <span id="task-children-label">子任务</span>
-                    {childTasks.length > 0 ? <small>{childTasksSummary}</small> : null}
-                  </header>
-                  {childTasks.length > 0 ? (
-                    <ul className="st-task-overview__child-list">
-                      {childTasks.map((child) => (
-                        <li key={child.taskId} data-tone={child.tone}>
-                          <button
-                            type="button"
-                            className="st-task-overview__child-btn"
-                            data-testid={`right-rail-child-${child.taskId}`}
-                            data-tone={child.tone}
-                            title={child.goal || child.title}
-                            onClick={() => void openTaskById(child.taskId)}
-                          >
-                            <span
-                              className="st-task-overview__child-dot"
-                              data-tone={child.tone}
-                              aria-hidden="true"
-                            />
-                            <span className="st-task-overview__child-copy">
-                              <strong>{child.title}</strong>
-                              <small>{child.statusLabel}</small>
-                            </span>
-                            <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="st-task-overview__children-empty">
-                      左侧任务旁点 + 可拆子任务；进度会在这里浮现。
-                    </p>
-                  )}
-                  <button
-                    type="button"
-                    className="st-task-overview__children-add"
-                    data-testid="right-rail-add-child"
-                    onClick={() =>
-                      void createTask(active.workspaceId, { parentTaskId: active.taskId })
-                    }
-                  >
-                    + 新建子任务
-                  </button>
-                </section>
-              ) : null}
-
-              {active ? (
-                <section
-                  className="st-task-overview__lifecycle"
-                  data-testid="right-rail-task-lifecycle"
-                >
-                  {(tasksByWorkspace.get(active.workspaceId) ?? []).find(
-                    (task) => task.taskId === active.taskId,
-                  )?.status === 'archived' ? (
-                    <button
-                      type="button"
-                      data-testid="right-rail-unarchive-task"
-                      onClick={() => {
-                        const full = (tasksByWorkspace.get(active.workspaceId) ?? []).find(
-                          (task) => task.taskId === active.taskId,
-                        );
-                        if (full) void unarchiveTask(full);
-                      }}
-                    >
-                      恢复此任务
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      data-testid="right-rail-archive-task"
-                      onClick={() => {
-                        const full = (tasksByWorkspace.get(active.workspaceId) ?? []).find(
-                          (task) => task.taskId === active.taskId,
-                        );
-                        if (full) void archiveTask(full);
-                      }}
-                    >
-                      归档此任务
-                    </button>
-                  )}
-                  <p>归档后默认从列表隐藏，可随时恢复；不会删除对话记录。</p>
-                </section>
-              ) : null}
-
-              {beginnerWorkspace.showProgressSteps ? (
-                <ol className="st-task-overview__steps" aria-label="任务进度">
-                  {beginnerWorkspace.steps.map((step) => (
-                    <li key={step.id} data-state={step.state}>
-                      <span className="st-task-overview__step-mark" aria-hidden="true">
-                        {step.state === 'complete' ? (
-                          <Check size={12} strokeWidth={2.2} />
-                        ) : (
-                          <Circle size={10} strokeWidth={2} />
-                        )}
-                      </span>
-                      <span>
-                        <strong>{step.label}</strong>
-                        <small>{step.detail}</small>
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-              ) : null}
-
-              {active ? (
-                <section className="st-task-overview__agent" aria-labelledby="task-owner-label">
-                  <span id="task-owner-label">当前智能体</span>
-                  <button type="button" onClick={() => navigateToInstrument('agent')}>
-                    <span
-                      className="st-task-overview__avatar"
-                      style={{
-                        ['--st-agent-identity-color' as string]:
-                          fallbackConversationAgentIdentity.color,
-                      }}
-                    >
-                      <Bot aria-hidden="true" size={15} strokeWidth={1.9} />
-                    </span>
-                    <span>
-                      <strong>{fallbackConversationAgentIdentity.name}</strong>
-                      <small title={activeModelLabel}>{activeModelLabel}</small>
-                    </span>
-                    <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
-                  </button>
-                </section>
-              ) : null}
-
-              {approvalPendingCount > 0 ? (
-                <button
-                  type="button"
-                  className="st-task-overview__approval"
-                  onClick={() => setRightRailTab('approvals')}
-                >
-                  <ShieldCheck aria-hidden="true" size={15} strokeWidth={1.8} />
-                  <span>
-                    <strong>{approvalPendingCount} 项等待确认</strong>
-                    <small>查看后决定是否继续</small>
-                  </span>
-                  <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
-                </button>
-              ) : null}
-
-              {active || artifactItems.length > 0 ? (
-                <section
-                  className="st-task-overview__artifacts"
-                  aria-labelledby="task-artifacts-label"
-                >
-                  <header>
-                    <span id="task-artifacts-label">产物</span>
-                    {artifactItems.length > 0 ? <small>{artifactItems.length}</small> : null}
-                  </header>
-                  {artifactItems.length > 0 ? (
-                    <ul>
-                      {artifactItems.slice(0, 3).map((item) => {
-                        const latestVersion = item.versions[item.versions.length - 1];
-                        return (
-                          <li key={String(item.artifact.id)}>
-                            <PackageCheck aria-hidden="true" size={15} strokeWidth={1.7} />
-                            <span>
-                              <strong>{item.artifact.name}</strong>
-                              <small>
-                                {latestVersion ? `版本 ${latestVersion.version}` : '等待生成版本'}
-                              </small>
-                            </span>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  ) : (
-                    <p>生成的文件和版本会出现在这里。</p>
-                  )}
-                  {artifactItems.length > 0 ? (
-                    <button type="button" onClick={() => setRightRailTab('artifacts')}>
-                      查看全部产物
-                      <ArrowRight aria-hidden="true" size={13} strokeWidth={1.8} />
-                    </button>
-                  ) : null}
-                </section>
-              ) : null}
-
-              {active ? (
-                <button
-                  type="button"
-                  className="st-task-overview__details"
-                  data-testid="right-rail-open-details"
-                  onClick={() => setRightRailTab('trace')}
-                >
-                  <Activity aria-hidden="true" size={14} strokeWidth={1.8} />
-                  执行详情
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="st-execution-details__back"
-                onClick={() => setRightRailTab('overview')}
-              >
-                <ChevronLeft aria-hidden="true" size={14} strokeWidth={1.9} />
-                返回任务进度
-              </button>
-              <nav className="st-m2-rail-tabs" role="tablist" aria-label="执行详情">
-                {(
-                  [
-                    ['trace', '轨迹', Activity],
-                    ['graph', '执行图', GitBranch],
-                    ['approvals', '审批', ShieldCheck],
-                    ['artifacts', '产物', Files],
-                  ] as const
-                ).map(([id, label, Icon]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    role="tab"
-                    aria-selected={rightRailTab === id}
-                    data-selected={rightRailTab === id ? '1' : '0'}
-                    data-testid={`right-rail-tab-${id}`}
-                    onClick={() => setRightRailTab(id)}
-                  >
-                    <Icon aria-hidden="true" size={13} strokeWidth={1.9} />
-                    {label}
-                    {id === 'approvals' && approvalPendingCount > 0 ? (
-                      <span>{approvalPendingCount}</span>
-                    ) : null}
-                    {id === 'artifacts' && artifactItems.length > 0 ? (
-                      <span>{artifactItems.length}</span>
-                    ) : null}
-                  </button>
-                ))}
-              </nav>
-              <div className="st-demo-run-summary">
-                <span
-                  className="st-demo-run-summary__pulse"
-                  aria-hidden="true"
-                  data-state={projection.stream.state}
-                />
-                <span>
-                  <strong data-testid="run-summary-state">
-                    Run ·{' '}
-                    {conversationStreamReadiness.checks.find((c) => c.id === 'stream')?.detail ??
-                      projection.stream.state}
-                  </strong>
-                  <small>
-                    {isStreaming
-                      ? projection.stream.notice
-                        ? projection.stream.notice
-                        : projection.stream.modelId
-                          ? `streaming · ${projection.stream.modelId}`
-                          : 'streaming'
-                      : projection.stream.state === 'paused'
-                        ? (projection.stream.errorSummary ?? 'paused')
-                        : projection.stream.notice
-                          ? projection.stream.notice
-                          : active
-                            ? active.title
-                            : '无活动任务'}
-                  </small>
-                </span>
-                <span className="st-demo-run-summary__count">
-                  {projection.trace.length}
-                  {manifestInspectViews.length > 0 ? ` · M${manifestInspectViews.length}` : ''}
-                  {peekStatus ? ` · ${peekStatus}` : ''}
-                </span>
-              </div>
-            </>
-          )}
-          {rightRailTab === 'trace' ? (
-            <div className="st-m2-rail-panel" role="tabpanel" data-testid="right-rail-trace">
-              <div className="st-demo-trace__manifest" data-instrument="manifest">
-                <ManifestPanel
-                  hideReadiness
-                  manifests={manifestInspectViews}
-                  selectedId={selectedManifestId}
-                  onSelect={handleManifestSelect}
-                  onPeek={() => void peekContextNow()}
-                  peekBusy={peekBusy}
-                  peekLabel={peekBusy ? '预览中…' : '预览上下文'}
-                  onExcludeSource={(id) => void amendExcludeSource(id)}
-                  onClearAmendments={() => void clearContextAmendments()}
-                  amendBusy={amendBusy}
-                  activeExcludeSourceIds={activeExcludeSourceIds}
-                  amendStatus={amendStatus}
-                />
-              </div>
-              <TraceList
-                hideReadiness
-                selectedId={selectedTraceId}
-                onSelectItem={handleTraceSelect}
-                hasActiveTask={Boolean(active)}
-                streaming={isStreaming}
-                items={projection.trace}
-                emptyState={
-                  isStreaming
-                    ? '轨迹写入中…'
-                    : active
-                      ? '尚无轨迹 · 发送消息后会出现模型调用与恢复事件'
-                      : '尚无轨迹 · 先打开任务再发送消息'
-                }
-              />
-            </div>
-          ) : null}
-          {rightRailTab === 'graph' ? (
-            <div className="st-m2-rail-panel" role="tabpanel" data-testid="right-rail-graph">
-              {graphError ? (
-                <p className="st-m2-rail-error" role="alert">
-                  {graphError}
-                </p>
-              ) : null}
-              {executionGraphView ? (
-                <ExecutionGraphPanel
-                  graph={executionGraphView}
-                  selectedStepId={selectedGraphStepId}
-                  busy={graphBusy}
-                  onPause={() => void mutateOrchestrationRun('pause')}
-                  onResume={() => void mutateOrchestrationRun('resume')}
-                  onCancel={() => void mutateOrchestrationRun('cancel')}
-                />
-              ) : (
-                <div className="st-m2-rail-empty">
-                  <GitBranch aria-hidden="true" size={20} strokeWidth={1.6} />
-                  <strong>尚无执行图</strong>
-                  <p>在协作模式批准计划后，这里显示并行步骤、依赖、Agent 与重试状态。</p>
-                </div>
-              )}
-            </div>
-          ) : null}
-          {rightRailTab === 'approvals' ? (
-            <div className="st-m2-rail-panel" role="tabpanel" data-testid="right-rail-approvals">
-              <ApprovalCenterPanel
-                items={approvalItems}
-                policies={approvalPolicies}
-                delegateAgentVersions={delegateAgentVersions}
-                defaultPolicyScope={
-                  active ? { scopeType: 'task', scopeId: active.taskId } : undefined
-                }
-                pendingCount={approvalPendingCount}
-                humanOnlyActions={approvalHumanOnlyActions}
-                modes={approvalModes}
-                loading={approvalLoading}
-                busy={approvalBusy}
-                error={approvalError}
-                statusNote={approvalStatus}
-                onRefresh={() => {
-                  void loadApprovals();
-                  void loadPolicies();
-                }}
-                onDecide={(input) => void decideApprovalItem(input)}
-                onSavePolicy={(input) => void saveApprovalPolicy(input)}
-                onNavigateToRunStep={(input) => void navigateToApprovalRunStep(input)}
-              />
-            </div>
-          ) : null}
-          {rightRailTab === 'artifacts' ? (
-            <div className="st-m2-rail-panel" role="tabpanel" data-testid="right-rail-artifacts">
-              {artifactError ? (
-                <p className="st-m2-rail-error" role="alert">
-                  {artifactError}
-                </p>
-              ) : null}
-              {artifactItems.length > 1 ? (
-                <label className="st-m2-artifact-picker">
-                  <span>产物</span>
-                  <select
-                    value={String(selectedArtifactItem?.artifact.id ?? '')}
-                    onChange={(event) => {
-                      setSelectedArtifactId(event.target.value);
-                      setArtifactComparison(null);
-                    }}
-                  >
-                    {artifactItems.map((item) => (
-                      <option key={String(item.artifact.id)} value={String(item.artifact.id)}>
-                        {item.artifact.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              {artifactVersionsView ? (
-                <ArtifactVersionsPanel
-                  artifact={artifactVersionsView}
-                  comparison={artifactComparison}
-                  mergeSteps={artifactMergeSteps}
-                  conflicts={artifactConflictViews}
-                  busy={artifactBusy}
-                  onCompare={(left, right) => void compareArtifacts(left, right)}
-                  onSelect={(artifactId, versionId) => void selectArtifact(artifactId, versionId)}
-                  onMerge={(artifactId, left, right, mergeStepId) =>
-                    void mergeArtifacts(artifactId, left, right, mergeStepId)
-                  }
-                  onResolveConflict={(conflictId, strategy, content) =>
-                    void resolveArtifactConflict(conflictId, strategy, content)
-                  }
-                />
-              ) : (
-                <div className="st-m2-rail-empty">
-                  <Files aria-hidden="true" size={20} strokeWidth={1.6} />
-                  <strong>尚无产物版本</strong>
-                  <p>步骤写入候选产物后，这里保留全部版本并支持比较、选择与合并。</p>
-                </div>
-              )}
-            </div>
-          ) : null}
-        </div>
-      }
-      compose={
-        <div className="st-demo-compose-wrap">
-          {sendError ? (
-            <p className="st-demo-compose-error" role="alert" data-testid="compose-send-error">
-              {sendError}
-            </p>
-          ) : null}
-          <Compose
-            mode={active?.participationMode ?? 'conversation'}
-            placeholder={
-              active
-                ? `@${fallbackConversationAgentIdentity.name} · 描述你希望完成的工作…`
-                : '创建任务后即可在这里输入…'
-            }
-            disabled={
-              sendPending ||
-              !active ||
-              isStreaming ||
-              !canSendRuntimeMessage(runtimeView.connectionState)
-            }
-            streaming={isStreaming}
-            cancelDisabled={cancelPending}
-            models={composeModels}
-            selectedModelId={safeSelectedModelId}
-            onModelChange={setSelectedModelId}
-            defaultModelLabel={agentDefaultModelLabel}
-            connectionState={runtimeView.connectionState}
-            hasActiveTask={Boolean(active)}
-            agentDefaultSet={Boolean(agentBinding?.defaultModelId)}
-            workspaces={composeWorkspaces}
-            selectedWorkspaceId={active?.workspaceId ?? null}
-            onWorkspaceChange={(workspaceId) => void switchComposeWorkspace(workspaceId)}
-            agents={composeAgents}
-            selectedAgentId={selectedAgentId ?? fallbackConversationAgentIdentity.agentId ?? null}
-            onAgentChange={(agentId) => selectAgent(agentId)}
-            onOpenAgentCenter={() => navigateToInstrument('agent')}
-            onReconnect={reconnectRuntime}
-            onConfigureModel={() => navigateToInstrument('agent')}
-            onCancel={() => void cancelStream()}
-            onSend={sendMessage}
-          />
-        </div>
+      onConfirmCapabilities={(modelId, capabilities, confirmed) =>
+        void confirmProviderCapabilities(modelId, capabilities, confirmed)
       }
     />
+  );
+
+  const talkAgentWorkspace = (
+    <AgentWorkspace
+      defaultTab={agentWorkspaceDefaultTab}
+      agents={talkAgentItems}
+      selectedAgentId={selectedAgentId}
+      relatedTasks={profileRelatedTasks}
+      groupMemberships={profileGroupMemberships}
+      binding={agentBinding}
+      definition={agentDefinition}
+      versions={agentVersions}
+      allAgentVersions={allAgentVersions.map((version) => ({
+        agentVersionId: String(version.agentVersionId),
+        agentId: String(version.agentId),
+        agentName: version.name,
+        version: version.version,
+        reviewerCapable:
+          version.reviewBehavior.role === 'reviewer' ||
+          version.reviewBehavior.role === 'executor-reviewer',
+        title: version.name,
+      }))}
+      models={agentModels}
+      credentials={agentCredentials}
+      skills={skills}
+      skillBusy={skillBusy}
+      skillError={skillError}
+      skillStatusNote={skillStatus}
+      mcpServers={mcpServers}
+      mcpBusy={mcpBusy}
+      mcpProbeBusy={mcpProbeBusy}
+      mcpError={mcpError}
+      mcpStatusNote={mcpStatus}
+      loading={agentLoading}
+      busy={agentBusy}
+      error={agentError}
+      statusNote={agentStatus}
+      onSelectAgent={selectAgent}
+      onCreateAgent={(input) => createAgent(input)}
+      onStartTask={(agentId) => {
+        selectAgent(agentId);
+        const workspaceId = active?.workspaceId ?? workspaces[0]?.workspaceId;
+        if (workspaceId) void createTask(String(workspaceId));
+        else openProjectCreateDialog();
+        setProductSection('tasks');
+      }}
+      onJoinGroup={(agentId) => {
+        selectAgent(agentId);
+        setProductSection('groups');
+      }}
+      onOpenTask={(taskId) => void openAutomationTask(taskId)}
+      onPickAvatar={pickAgentAvatar}
+      onSaveDefinition={(input) => void saveAgentDefinition(input)}
+      onSave={(input) => void saveAgentBinding(input)}
+      onImportSkill={(md) => void importSkill(md)}
+      onRegisterMcp={(input) => void registerMcp(input)}
+      onProbeMcpPolicy={(input) => void probeMcpPolicy(input)}
+      onRequestMcpTool={(input) => void requestMcpTool(input)}
+      mcpRequestBusy={mcpRequestBusy}
+      onProbeMcpSpawn={(input) => void probeMcpSpawn(input)}
+      onCallMcpTool={(input) => void callMcpTool(input)}
+      onRefreshMcpTools={(input) => void refreshMcpTools(input)}
+      mcpCallBusy={mcpCallBusy}
+      mcpRefreshBusy={mcpRefreshBusy}
+      mcpSpawnBusy={mcpSpawnBusy}
+    />
+  );
+
+  const talkApprovalPanel = (
+    <ApprovalCenterPanel
+      items={approvalItems}
+      policies={approvalPolicies}
+      delegateAgentVersions={delegateAgentVersions}
+      defaultPolicyScope={active ? { scopeType: 'task', scopeId: active.taskId } : undefined}
+      pendingCount={approvalPendingCount}
+      humanOnlyActions={approvalHumanOnlyActions}
+      modes={approvalModes}
+      loading={approvalLoading}
+      busy={approvalBusy}
+      error={approvalError}
+      statusNote={approvalStatus}
+      onRefresh={() => void loadApprovals()}
+      onDecide={(input) => void decideApprovalItem(input)}
+      onSavePolicy={(input) => void saveApprovalPolicy(input)}
+      onNavigateToRunStep={(input) => void navigateToApprovalRunStep(input)}
+    />
+  );
+
+  const talkTaskDetailTab: TalkTaskDetailTab =
+    rightRailTab === 'overview' ? 'progress' : rightRailTab === 'artifacts' ? 'files' : 'execution';
+  const handleTalkTaskDetailTabChange = (tab: TalkTaskDetailTab) => {
+    if (tab === 'progress') {
+      setRightRailTab('overview');
+      return;
+    }
+    if (tab === 'files') {
+      setRightRailTab('artifacts');
+      return;
+    }
+    setRightRailTab('trace');
+  };
+
+  const manageBrowserIdentities = () => {
+    setSettingsDefaultTab('browser');
+    setProductSection('settings');
+    setLeftDrawerOpen(false);
+    void loadBrowserIdentities();
+  };
+
+  const talkResourceWorkspace =
+    productSection === 'friends' ? (
+      talkAgentWorkspace
+    ) : productSection === 'providers' ? (
+      talkProvidersWorkspace
+    ) : productSection === 'groups' ? (
+      <TalkGroupsWorkspace
+        groups={groups}
+        agents={groupAgentOptions}
+        workspaces={workspaces}
+        defaultWorkspaceId={active?.workspaceId ?? projectWorkspaceId ?? workspaces[0]?.workspaceId}
+        loading={groupLoading}
+        busy={groupBusy}
+        error={groupError}
+        onCreate={createGroup}
+        onUpdate={updateGroup}
+        onAddMember={addGroupMember}
+        onRemoveMember={removeGroupMember}
+        onUpdateResponsibility={updateGroupMemberResponsibility}
+        onSetLead={setGroupLead}
+        onCreateTask={createGroupTask}
+      />
+    ) : productSection === 'automation' ? (
+      <TalkAutomationWorkspace
+        automations={automations}
+        executions={automationExecutions}
+        runtime={automationRuntime}
+        workspaces={workspaces}
+        agents={groupAgentOptions}
+        groups={groups}
+        loading={automationLoading}
+        busy={automationBusy}
+        error={automationError}
+        revealedSecret={automationSecret}
+        onCreate={createAutomation}
+        onUpdate={updateAutomation}
+        onDelete={deleteAutomation}
+        onTrigger={triggerAutomation}
+        onOpenTask={openAutomationTask}
+        onDismissSecret={() => setAutomationSecret(null)}
+      />
+    ) : productSection === 'skills' ? (
+      <TalkSkillsWorkspace
+        skills={skills}
+        mcpServers={mcpServers}
+        skillBusy={skillBusy}
+        mcpBusy={mcpBusy}
+        error={skillError ?? mcpError}
+        onImportSkill={(skillMd) => void importSkill(skillMd)}
+        onRegisterMcp={(input) => void registerMcp(input)}
+      />
+    ) : (
+      <TalkSettingsWorkspace
+        defaultTab={settingsDefaultTab}
+        theme={theme}
+        fontSize={fontSize}
+        runtimeState={runtimeView.connectionState}
+        runtime={automationRuntime}
+        workspaceCount={workspaces.length}
+        agentCount={agents.length}
+        providerCount={providers.length}
+        groupCount={groups.length}
+        browserIdentities={browserIdentities}
+        browserIdentityBusy={browserIdentityBusy}
+        browserIdentityError={browserIdentityError}
+        onCreateBrowserIdentity={createBrowserIdentity}
+        onUpdateBrowserIdentity={updateBrowserIdentity}
+        onDeleteBrowserIdentity={deleteBrowserIdentity}
+        onThemeChange={(nextTheme) => {
+          setTheme(nextTheme);
+          writeThemePreference(nextTheme as ThemePreference);
+        }}
+        onFontSizeChange={(nextSize) => {
+          const normalized = normalizeFontSizePreference(nextSize);
+          setFontSize(normalized);
+          writeFontSizePreference(normalized);
+        }}
+      />
+    );
+
+  return (
+    <div
+      className="st-talk-root"
+      data-section={productSection}
+      data-nav-collapsed={productNavCollapsed ? '1' : '0'}
+    >
+      {projectCreateDialog}
+      <TalkGlobalNav
+        section={productSection}
+        collapsed={productNavCollapsed}
+        theme={theme}
+        runtimeState={runtimeView.connectionState}
+        onSectionChange={handleProductSectionChange}
+        onCollapsedChange={setProductNavCollapsed}
+        onThemeChange={(nextTheme) => {
+          setTheme(nextTheme);
+          writeThemePreference(nextTheme as ThemePreference);
+        }}
+      />
+      <section className="st-talk-stage">
+        <TalkTopBar
+          section={productSection}
+          runtimeState={runtimeView.connectionState}
+          workspaceName={active?.workspaceName}
+          taskTitle={active?.title}
+        />
+        <div className="st-talk-stage__body">
+          {productSection === 'projects' ? (
+            <TalkProjectsWorkspace
+              workspaces={workspaces}
+              tasksByWorkspace={tasksByWorkspace}
+              activeWorkspaceId={projectWorkspaceId ?? active?.workspaceId}
+              activeTaskId={active?.taskId}
+              bindingWorkspaceId={bindingWorkspaceId}
+              error={workspaceError}
+              onCreateProject={openProjectCreateDialog}
+              onCreateProjectFromFolder={createWorkspaceFromFolder}
+              onBindFolder={(workspaceId) => void bindWorkspaceFolder(workspaceId)}
+              onBindGitRepository={(workspaceId, repositoryUrl, defaultRef) =>
+                bindWorkspaceGitRepository(workspaceId, repositoryUrl, defaultRef)
+              }
+              onCreateTask={async (workspaceId) => {
+                await createTask(workspaceId);
+              }}
+              onOpenTask={async (task) => {
+                await openTask(toNavTask(task));
+              }}
+              onClearTask={() => applySelection(null)}
+              onSelectProject={setProjectWorkspaceId}
+            />
+          ) : null}
+          {productSection === 'tasks' || productSection === 'projects' ? (
+            <TalkConversationTaskWorkspace
+              tasks={
+                productSection === 'projects' ? projectConversationTasks : talkConversationTasks
+              }
+              activeTaskId={active?.taskId ?? null}
+              activeTaskTitle={active?.title ?? null}
+              activeWorkspaceName={active?.workspaceName ?? null}
+              participantName={activeConversationIdentity.name}
+              participantIcon={activeConversationIdentity.icon}
+              participantKind={active?.participationMode === 'collaboration' ? 'group' : 'direct'}
+              participantColor={activeConversationIdentity.color}
+              participantAvatarUrl={activeConversationIdentity.avatarUrl}
+              modelLabel={projection.stream.modelId ?? activeModelLabel}
+              taskStatusLabel={active ? taskStatusLabel(active.status) : null}
+              detailTab={talkTaskDetailTab}
+              showArchived={showArchivedTasks}
+              archivedCount={archivedTaskCount}
+              onShowArchivedChange={setShowArchivedTasks}
+              onCreateConversation={() => {
+                const targetWorkspaceId =
+                  productSection === 'projects'
+                    ? (projectWorkspaceId ?? active?.workspaceId)
+                    : (active?.workspaceId ?? workspaces[0]?.workspaceId);
+                if (targetWorkspaceId) {
+                  void createTask(targetWorkspaceId);
+                } else {
+                  openProjectCreateDialog();
+                }
+              }}
+              onSelectTask={(taskId) => {
+                const task = allCatalogTasks.find(
+                  (candidate) => String(candidate.taskId) === taskId,
+                );
+                if (task) void openTask(toNavTask(task));
+              }}
+              onCreateChildTask={(taskId) => {
+                const task = allCatalogTasks.find(
+                  (candidate) => String(candidate.taskId) === taskId,
+                );
+                if (task) {
+                  void createTask(String(task.workspaceId), { parentTaskId: String(task.taskId) });
+                }
+              }}
+              onArchiveTask={(taskId) => {
+                const task = allCatalogTasks.find(
+                  (candidate) => String(candidate.taskId) === taskId,
+                );
+                if (task) void archiveTask(task);
+              }}
+              onUnarchiveTask={(taskId) => {
+                const task = allCatalogTasks.find(
+                  (candidate) => String(candidate.taskId) === taskId,
+                );
+                if (task) void unarchiveTask(task);
+              }}
+              parentTaskTitle={parentTaskLink?.title}
+              onOpenParentTask={
+                parentTaskLink ? () => void openTaskById(parentTaskLink.taskId) : undefined
+              }
+              onDetailTabChange={handleTalkTaskDetailTabChange}
+              onPause={() => void mutateOrchestrationRun('pause')}
+              onTerminate={() => {
+                if (runGraph) {
+                  void mutateOrchestrationRun('cancel');
+                } else {
+                  void cancelStream();
+                }
+              }}
+              canPause={Boolean(runGraph)}
+              canTerminate={Boolean(runGraph || projection.stream.runId)}
+              actionBusy={graphBusy || cancelPending}
+              conversationLayout={conversationLayout}
+              onConversationLayoutChange={(layout) => {
+                setConversationLayout(layout);
+                writeConversationLayoutPreference(layout);
+              }}
+              theme={theme}
+              hideReadiness
+              traceTitle={rightRailTab === 'overview' ? '任务进度' : '执行详情'}
+              traceAriaLabel="任务与执行详情"
+              traceCollapsed={shellTraceCollapsed}
+              onTraceCollapsedChange={(collapsed) => {
+                if (!active) {
+                  setEmptyRailExpanded(!collapsed);
+                  return;
+                }
+                setTraceCollapsed(collapsed);
+                writeTraceCollapsedPreference(collapsed);
+              }}
+              leftNav={[
+                <div className="st-talk-left-nav" key="product-navigation-stack">
+                  <div className="st-demo-nav-stack st-talk-context-nav">
+                    <header className="st-product-brand">
+                      <span className="st-product-brand__mark" aria-hidden="true">
+                        ST
+                      </span>
+                      <span className="st-product-brand__copy">
+                        <strong>SYNC-THINK</strong>
+                        <small>智能体工作台</small>
+                      </span>
+                    </header>
+                    <nav
+                      className="st-product-nav"
+                      data-testid="product-navigation"
+                      role="tablist"
+                      aria-label="主导航"
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        className="st-product-nav__item"
+                        data-testid="product-nav-tasks"
+                        data-active={leftDrawerOpen ? '0' : '1'}
+                        aria-selected={!leftDrawerOpen}
+                        onClick={() => dismissLeftDrawer(false)}
+                      >
+                        <FolderKanban aria-hidden="true" size={16} strokeWidth={1.8} />
+                        <span>项目</span>
+                      </button>
+                      {leftPrimaryToolOrder.map((instrumentId) => {
+                        const item = leftInstrumentSwitch.items.find(
+                          (candidate) => candidate.id === instrumentId,
+                        );
+                        if (!item) return null;
+                        const ToolIcon = leftToolMeta[instrumentId].icon;
+                        const toolLabel = leftToolMeta[instrumentId].label;
+                        const pressed = leftDrawerOpen && leftInstrument === instrumentId;
+                        return (
+                          <button
+                            key={instrumentId}
+                            ref={(node) => {
+                              leftToolButtonRefs.current[instrumentId] = node;
+                            }}
+                            type="button"
+                            role="tab"
+                            className="st-product-nav__item"
+                            data-testid={item.testId}
+                            data-id={instrumentId}
+                            data-active={pressed ? '1' : '0'}
+                            aria-selected={pressed}
+                            onClick={() => {
+                              const next = resolveLeftInstrumentDrawer(
+                                { active: leftInstrument, open: leftDrawerOpen },
+                                instrumentId,
+                              );
+                              setLeftInstrument(next.active);
+                              setLeftDrawerOpen(next.open);
+                            }}
+                          >
+                            <ToolIcon aria-hidden="true" size={16} strokeWidth={1.8} />
+                            <span>{toolLabel}</span>
+                            {item.badge ? (
+                              <em
+                                className="st-product-nav__badge"
+                                data-testid={`left-inst-badge-${instrumentId}`}
+                              >
+                                {item.badge}
+                              </em>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </nav>
+                    <div className="st-demo-nav-stack__workspaces" data-instrument="workspaces">
+                      <WorkspaceNav
+                        hideReadiness
+                        hideFooter
+                        hideBrand
+                        sectionLabel={productSection === 'tasks' ? '对话任务' : '项目'}
+                        searchPlaceholder={
+                          productSection === 'tasks' ? '搜索对话任务…' : '搜索项目…'
+                        }
+                        createWorkspaceLabel="新建项目"
+                        emptyTitle="还没有项目"
+                        emptyHint="先建项目再开任务；文件夹可稍后绑定。"
+                        workspaces={navWorkspaces}
+                        tasksByWorkspace={navTasks}
+                        activeTaskId={active?.taskId ?? null}
+                        query={navQuery}
+                        onQueryChange={setNavQuery}
+                        onSelectTask={(task) => void openTask(task)}
+                        onCreateWorkspace={openProjectCreateDialog}
+                        onBindWorkspaceFolder={(workspaceId) =>
+                          void bindWorkspaceFolder(workspaceId)
+                        }
+                        onCreateTask={(workspaceId) => void createTask(workspaceId)}
+                        onCreateChildTask={(workspaceId, parentTaskId) =>
+                          void createTask(workspaceId, { parentTaskId })
+                        }
+                        onArchiveTask={(task) => void archiveTask(task)}
+                        onUnarchiveTask={(task) => void unarchiveTask(task)}
+                        showArchived={showArchivedTasks}
+                        onShowArchivedChange={setShowArchivedTasks}
+                        archivedCount={archivedTaskCount}
+                        connectionState={runtimeView.connectionState}
+                        loading={workspaceLoading}
+                        bindingWorkspaceId={bindingWorkspaceId}
+                        errorMessage={workspaceError}
+                      />
+                    </div>
+                    <div
+                      className="st-demo-nav-stack__switch"
+                      data-testid="left-instrument-switch"
+                      data-active={leftInstrumentSwitch.active}
+                      data-open={leftDrawerOpen ? '1' : '0'}
+                      data-soft-craft={leftInstrumentSwitch.softCraftRound}
+                      data-claims-closed="0"
+                      role="navigation"
+                      aria-label="辅助导航"
+                    >
+                      {(() => {
+                        const item = leftInstrumentSwitch.items.find(
+                          (candidate) => candidate.id === 'memory',
+                        );
+                        const pressed = leftDrawerOpen && leftInstrument === 'memory';
+                        return (
+                          <button
+                            ref={(node) => {
+                              leftToolButtonRefs.current.memory = node;
+                            }}
+                            type="button"
+                            className="st-product-nav__item st-product-nav__item--secondary"
+                            data-testid={item?.testId ?? 'left-inst-memory'}
+                            data-active={pressed ? '1' : '0'}
+                            aria-pressed={pressed}
+                            onClick={() => {
+                              const next = resolveLeftInstrumentDrawer(
+                                { active: leftInstrument, open: leftDrawerOpen },
+                                'memory',
+                              );
+                              setLeftInstrument(next.active);
+                              setLeftDrawerOpen(next.open);
+                            }}
+                          >
+                            <BrainCircuit aria-hidden="true" size={16} strokeWidth={1.8} />
+                            <span>记忆</span>
+                            {item?.badge ? (
+                              <em className="st-product-nav__badge">{item.badge}</em>
+                            ) : null}
+                          </button>
+                        );
+                      })()}
+                    </div>
+                    <div
+                      className="st-demo-nav-stack__runtime"
+                      data-testid="left-runtime-status"
+                      data-state={runtimeView.connectionState}
+                      title={connectionDetail(runtimeView.connectionState)}
+                    >
+                      <span className="st-demo-nav-stack__runtime-dot" aria-hidden="true" />
+                      <span>
+                        Runtime {connectionDetail(runtimeView.connectionState).split(' · ')[0]}
+                      </span>
+                    </div>
+                    {leftDrawerOpen ? (
+                      <>
+                        <button
+                          type="button"
+                          className="st-demo-nav-stack__drawer-backdrop"
+                          data-testid="left-tool-drawer-backdrop"
+                          aria-label="关闭工具抽屉"
+                          tabIndex={-1}
+                          onClick={() => dismissLeftDrawer(false)}
+                        />
+                        <section
+                          className="st-demo-nav-stack__drawer"
+                          data-testid="left-tool-drawer"
+                          data-instrument={leftInstrument}
+                          role="dialog"
+                          aria-modal="true"
+                          aria-labelledby="left-tool-drawer-title"
+                        >
+                          <header className="st-demo-nav-stack__drawer-header">
+                            <ActiveLeftToolIcon aria-hidden="true" size={17} strokeWidth={1.8} />
+                            <strong id="left-tool-drawer-title">{activeLeftTool.label}</strong>
+                            {activeLeftToolItem?.badge ? (
+                              <span className="st-demo-nav-stack__drawer-badge">
+                                {activeLeftToolItem.badge}
+                              </span>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="st-demo-nav-stack__drawer-close"
+                              aria-label="关闭工具抽屉"
+                              title="关闭"
+                              onClick={() => dismissLeftDrawer(true)}
+                            >
+                              <X aria-hidden="true" size={17} strokeWidth={1.8} />
+                            </button>
+                          </header>
+                          <div className="st-demo-nav-stack__drawer-body">
+                            <div
+                              className="st-demo-nav-stack__providers"
+                              data-instrument="providers"
+                              data-active={leftInstrument === 'providers' ? '1' : '0'}
+                              hidden={leftInstrument !== 'providers'}
+                            >
+                              <ProvidersPanel
+                                providers={providers}
+                                loading={providerLoading}
+                                busy={providerBusy}
+                                error={providerError}
+                                statusNote={providerStatus}
+                                onCreate={(input) => void createProvider(input)}
+                                onUpdate={(input) => void updateProvider(input)}
+                                onPreviewCcSwitchImport={() => previewCcSwitchImport()}
+                                onImportCcSwitch={(sourceIds) => void importCcSwitch(sourceIds)}
+                                onDiscover={(providerId) => void discoverProviderModels(providerId)}
+                                onAddModel={(providerId, providerModelId, displayName) =>
+                                  void addProviderModel(providerId, providerModelId, displayName)
+                                }
+                                onProbeCapabilities={(providerId, modelId) =>
+                                  void probeProviderCapabilities(providerId, modelId)
+                                }
+                                onConfirmCapabilities={(modelId, capabilities, confirmed) =>
+                                  void confirmProviderCapabilities(modelId, capabilities, confirmed)
+                                }
+                              />
+                            </div>
+                            <div
+                              className="st-demo-nav-stack__agent"
+                              data-instrument="agent"
+                              data-active={leftInstrument === 'agent' ? '1' : '0'}
+                              hidden={leftInstrument !== 'agent'}
+                            >
+                              <AgentWorkspace
+                                agents={agents}
+                                selectedAgentId={selectedAgentId}
+                                relatedTasks={profileRelatedTasks}
+                                groupMemberships={profileGroupMemberships}
+                                binding={agentBinding}
+                                definition={agentDefinition}
+                                versions={agentVersions}
+                                allAgentVersions={allAgentVersions.map((version) => ({
+                                  agentVersionId: String(version.agentVersionId),
+                                  agentId: String(version.agentId),
+                                  agentName: version.name,
+                                  version: version.version,
+                                  reviewerCapable:
+                                    version.reviewBehavior.role === 'reviewer' ||
+                                    version.reviewBehavior.role === 'executor-reviewer',
+                                  title: version.name,
+                                }))}
+                                models={agentModels}
+                                credentials={agentCredentials}
+                                skills={skills}
+                                skillBusy={skillBusy}
+                                skillError={skillError}
+                                skillStatusNote={skillStatus}
+                                mcpServers={mcpServers}
+                                mcpBusy={mcpBusy}
+                                mcpProbeBusy={mcpProbeBusy}
+                                mcpError={mcpError}
+                                mcpStatusNote={mcpStatus}
+                                loading={agentLoading}
+                                busy={agentBusy}
+                                error={agentError}
+                                statusNote={agentStatus}
+                                onSelectAgent={selectAgent}
+                                onCreateAgent={(input) => createAgent(input)}
+                                onStartTask={(agentId) => {
+                                  selectAgent(agentId);
+                                  const workspaceId =
+                                    active?.workspaceId ?? workspaces[0]?.workspaceId;
+                                  if (workspaceId) void createTask(String(workspaceId));
+                                  else openProjectCreateDialog();
+                                  setProductSection('tasks');
+                                }}
+                                onJoinGroup={(agentId) => {
+                                  selectAgent(agentId);
+                                  setProductSection('groups');
+                                }}
+                                onOpenTask={(taskId) => void openAutomationTask(taskId)}
+                                onPickAvatar={pickAgentAvatar}
+                                onSaveDefinition={(input) => void saveAgentDefinition(input)}
+                                onSave={(input) => void saveAgentBinding(input)}
+                                onImportSkill={(md) => void importSkill(md)}
+                                onRegisterMcp={(input) => void registerMcp(input)}
+                                onProbeMcpPolicy={(input) => void probeMcpPolicy(input)}
+                                onRequestMcpTool={(input) => void requestMcpTool(input)}
+                                mcpRequestBusy={mcpRequestBusy}
+                                onProbeMcpSpawn={(input) => void probeMcpSpawn(input)}
+                                onCallMcpTool={(input) => void callMcpTool(input)}
+                                onRefreshMcpTools={(input) => void refreshMcpTools(input)}
+                                mcpCallBusy={mcpCallBusy}
+                                mcpRefreshBusy={mcpRefreshBusy}
+                                mcpSpawnBusy={mcpSpawnBusy}
+                              />
+                            </div>
+                            <div
+                              className="st-demo-nav-stack__memory"
+                              data-instrument="memory"
+                              data-active={leftInstrument === 'memory' ? '1' : '0'}
+                              hidden={leftInstrument !== 'memory'}
+                            >
+                              <MemoryDiagnosticsPanel
+                                entries={memoryEntries}
+                                changes={memoryChanges}
+                                diagnostics={diagnostics}
+                                loading={memoryLoading}
+                                busy={memoryBusy}
+                                error={memoryError}
+                                statusNote={memoryStatus}
+                                onDecide={(input) => void decideMemoryChange(input)}
+                                onRollback={(input) => void rollbackMemoryChange(input)}
+                                onRefresh={() => void loadMemory()}
+                                onNavigate={navigateFromDiagnostics}
+                              />
+                            </div>
+                            <div
+                              className="st-demo-nav-stack__approval"
+                              data-instrument="approvals"
+                              data-active={leftInstrument === 'approvals' ? '1' : '0'}
+                              hidden={leftInstrument !== 'approvals'}
+                            >
+                              {talkApprovalPanel}
+                            </div>
+                          </div>
+                        </section>
+                      </>
+                    ) : null}
+                  </div>
+                </div>,
+              ]}
+              contextRail={
+                <div className="st-demo-context">
+                  <header className="st-demo-task-header">
+                    <div className="st-demo-task-heading">
+                      <span className="st-demo-path" title={folderPath}>
+                        {active ? (
+                          <>
+                            <span>{active.workspaceName}</span>
+                            <span aria-hidden="true"> / </span>
+                            <span>任务</span>
+                          </>
+                        ) : (
+                          '任务'
+                        )}
+                      </span>
+                      <div className="st-demo-task-heading__title">
+                        <h1>{taskTitle}</h1>
+                        <span className="st-demo-status" data-status={taskStatus}>
+                          <span aria-hidden="true" /> {taskStatusLabel(taskStatus)}
+                          {lastOpenedId && active?.taskId === lastOpenedId ? ' · 已恢复' : ''}
+                        </span>
+                      </div>
+                      {showContinuumStrip ? (
+                        <div
+                          className="st-demo-continuum-strip"
+                          data-testid="product-continuum-strip"
+                        >
+                          <ContinuumRail
+                            hideReadiness
+                            entries={continuumEntries}
+                            hasActiveTask={Boolean(active)}
+                            streaming={isStreaming}
+                            emptyState={null}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="st-demo-header-tools">
+                      <div
+                        className="st-demo-theme-switch st-demo-layout-switch"
+                        role="group"
+                        aria-label="对话布局"
+                        data-testid="conversation-layout-switch"
+                      >
+                        {conversationLayoutOptions.map((option) => {
+                          const Icon = option.icon;
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              aria-label={option.label}
+                              title={option.label}
+                              aria-pressed={conversationLayout === option.value}
+                              data-selected={conversationLayout === option.value}
+                              data-layout-option={option.value}
+                              onClick={() => {
+                                setConversationLayout(option.value);
+                                writeConversationLayoutPreference(option.value);
+                              }}
+                            >
+                              <Icon aria-hidden="true" size={15} strokeWidth={1.8} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="st-demo-theme-switch" role="group" aria-label="主题">
+                        {themeOptions.map((option) => {
+                          const Icon = option.icon;
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              aria-label={option.label}
+                              title={option.label}
+                              aria-pressed={theme === option.value}
+                              data-selected={theme === option.value}
+                              onClick={() => {
+                                setTheme(option.value);
+                                writeThemePreference(option.value as ThemePreference);
+                              }}
+                            >
+                              <Icon aria-hidden="true" size={15} strokeWidth={1.8} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </header>
+                  {beginnerWorkspace.showNextStepStrip ? (
+                    <div
+                      className="st-beginner-next-step"
+                      data-testid="beginner-next-step"
+                      data-state={beginnerWorkspace.state}
+                    >
+                      <span className="st-beginner-next-step__icon" aria-hidden="true">
+                        <ArrowRight size={15} strokeWidth={2} />
+                      </span>
+                      <span className="st-beginner-next-step__copy">
+                        <strong>需要你处理</strong>
+                        <span>{beginnerWorkspace.nextAction}</span>
+                      </span>
+                      {beginnerWorkspace.actionLabel ? (
+                        <button type="button" onClick={handleBeginnerAction}>
+                          {beginnerWorkspace.actionLabel}
+                          <ArrowRight aria-hidden="true" size={13} strokeWidth={1.9} />
+                        </button>
+                      ) : (
+                        <span className="st-beginner-next-step__status">
+                          {beginnerWorkspace.statusLabel}
+                        </span>
+                      )}
+                    </div>
+                  ) : null}
+                  {SHOW_M1_VALIDATION_WORKBENCH ? (
+                    <details
+                      className="st-demo-m1-obs"
+                      data-testid="m1-obs-layout"
+                      data-soft-craft={m1ObsLayout.softCraftRound}
+                      data-primary={m1ObsLayout.primaryOrder.join(',')}
+                      data-workspace-open={m1ObsWorkspaceOpen ? '1' : '0'}
+                      data-secondary-open={m1ObsSecondaryOpen ? '1' : '0'}
+                      data-claims-closed="0"
+                      aria-label="M1 观测布局"
+                      open={m1ObsWorkspaceOpen}
+                      onToggle={(event) => {
+                        setM1ObsWorkspaceOpen(event.currentTarget.open);
+                      }}
+                    >
+                      <summary
+                        className="st-demo-m1-obs__summary"
+                        data-testid="m1-obs-workspace-summary"
+                      >
+                        <span
+                          className="st-demo-m1-obs__status"
+                          data-level={m1HardgateStrip.level}
+                          aria-hidden="true"
+                        />
+                        <strong>{m1ObsLayout.workspaceLabel}</strong>
+                        <span className="st-demo-m1-obs__counts">
+                          外网手测 {m1HardgateStrip.handtest.current}/
+                          {m1HardgateStrip.handtest.required}
+                          <i aria-hidden="true" />
+                          dogfood {m1HardgateStrip.dogfood.current}/
+                          {m1HardgateStrip.dogfood.required}
+                        </span>
+                        <small>{m1ObsLayout.workspaceHint}</small>
+                        <span className="st-demo-m1-obs__chevron" aria-hidden="true" />
+                      </summary>
+                      <div className="st-demo-m1-obs__body" data-testid="m1-obs-workspace-body">
+                        <div
+                          className="st-demo-m1-rail"
+                          data-testid="m1-obs-primary"
+                          aria-label="M1 主路径"
+                        >
+                          <div className="st-demo-m1-rail__head">
+                            <span className="st-demo-m1-rail__kicker">主路径</span>
+                            <strong data-testid="m1-obs-primary-summary">
+                              {m1ObsLayout.summary}
+                            </strong>
+                            <small>soft · 不关 M1</small>
+                          </div>
+                          <div
+                            className="st-demo-m1-hardgate"
+                            data-testid="m1-hardgate-strip"
+                            data-level={m1HardgateStrip.level}
+                            data-hard={m1HardgateStrip.hardGatesMet ? '1' : '0'}
+                            data-claims-closed="0"
+                            data-soft-craft={m1HardgateStrip.softCraftRound}
+                            data-handtest={m1HardgateStrip.handtest.percent}
+                            data-dogfood={m1HardgateStrip.dogfood.percent}
+                            data-primary-cta={m1HardgateStrip.primaryCta.action}
+                            aria-label="M1 硬门槛进度"
+                          >
+                            <div className="st-demo-m1-hardgate__head">
+                              <span className="st-demo-m1-hardgate__kicker">硬门槛</span>
+                              <strong data-testid="m1-hardgate-summary">
+                                {m1HardgateStrip.summary}
+                              </strong>
+                              <span
+                                className="st-demo-m1-hardgate__level"
+                                data-level={m1HardgateStrip.level}
+                                data-testid="m1-hardgate-level"
+                              >
+                                {m1HardgateStrip.level === 'evidence-ready'
+                                  ? '可讨论'
+                                  : m1HardgateStrip.level === 'soft-only'
+                                    ? '仅 soft'
+                                    : m1HardgateStrip.level === 'partial'
+                                      ? '进行中'
+                                      : '未开始'}
+                              </span>
+                            </div>
+                            <div
+                              className="st-demo-m1-hardgate__meters"
+                              data-testid="m1-hardgate-meters"
+                            >
+                              {m1HardgateStrip.meters.map((meter) => (
+                                <div
+                                  key={meter.id}
+                                  className="st-demo-m1-hardgate__meter"
+                                  data-testid={`m1-hardgate-meter-${meter.id}`}
+                                  data-id={meter.id}
+                                  data-ok={meter.ok ? '1' : '0'}
+                                  data-partial={meter.partial ? '1' : '0'}
+                                  data-percent={meter.percent}
+                                >
+                                  <div className="st-demo-m1-hardgate__meter-top">
+                                    <span className="st-demo-m1-hardgate__meter-label">
+                                      {meter.label}
+                                    </span>
+                                    <span
+                                      className="st-demo-m1-hardgate__meter-badge"
+                                      data-ok={meter.ok ? '1' : '0'}
+                                    >
+                                      {meter.badge}
+                                    </span>
+                                    <span className="st-demo-m1-hardgate__meter-frac">
+                                      {meter.current}/{meter.required}
+                                    </span>
+                                  </div>
+                                  <div
+                                    className="st-demo-m1-hardgate__bar"
+                                    role="progressbar"
+                                    aria-valuenow={meter.percent}
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-label={meter.label}
+                                  >
+                                    <i
+                                      style={{ width: `${meter.percent}%` }}
+                                      data-ok={meter.ok ? '1' : '0'}
+                                    />
+                                  </div>
+                                  <p className="st-demo-m1-hardgate__meter-detail">
+                                    {meter.detail}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-hardgate__meter-cta"
+                                    data-testid={`m1-hardgate-meter-cta-${meter.id}`}
+                                    data-action={meter.ctaAction}
+                                    onClick={() => handleM1HardgateCta(meter.ctaAction)}
+                                  >
+                                    {meter.ctaLabel}
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="st-demo-m1-hardgate__actions">
+                              <button
+                                type="button"
+                                className="st-demo-m1-hardgate__cta"
+                                data-testid="m1-hardgate-primary-cta"
+                                data-action={m1HardgateStrip.primaryCta.action}
+                                onClick={() =>
+                                  handleM1HardgateCta(m1HardgateStrip.primaryCta.action)
+                                }
+                              >
+                                {m1HardgateStrip.primaryCta.label}
+                              </button>
+                              {m1HardgateStrip.secondaryCtas.slice(0, 3).map((cta) => (
+                                <button
+                                  key={cta.action}
+                                  type="button"
+                                  className="st-demo-m1-hardgate__ghost"
+                                  data-testid={`m1-hardgate-secondary-${cta.action}`}
+                                  data-action={cta.action}
+                                  onClick={() => handleM1HardgateCta(cta.action)}
+                                >
+                                  {cta.label}
+                                </button>
+                              ))}
+                            </div>
+                            <p className="st-demo-m1-hardgate__note" data-testid="m1-hardgate-note">
+                              {m1HardgateStrip.note}
+                            </p>
+                          </div>
+                          <div
+                            className="st-demo-m1-next"
+                            data-testid="m1-next-action"
+                            data-kind={m1NextAction.kind}
+                            data-level={m1NextAction.level}
+                            data-gate={m1NextAction.gate}
+                            data-cta-action={m1NextAction.ctaAction}
+                            data-fill-level={m1DogfoodFillBoard.level}
+                            aria-label="M1 下一步行动"
+                          >
+                            <div className="st-demo-m1-next__head">
+                              <span className="st-demo-m1-next__kicker">下一步</span>
+                              <strong data-testid="m1-next-title">{m1NextAction.title}</strong>
+                              <span
+                                className="st-demo-m1-next__gate"
+                                data-testid="m1-next-gate"
+                                data-gate={m1NextAction.gate}
+                              >
+                                {m1NextAction.gate === 'hard' ? '硬门槛' : '本机 soft'}
+                              </span>
+                            </div>
+                            <p className="st-demo-m1-next__body" data-testid="m1-next-body">
+                              {m1NextAction.body}
+                            </p>
+                            <div className="st-demo-m1-next__actions">
+                              <button
+                                type="button"
+                                className="st-demo-m1-next__cta"
+                                data-testid="m1-next-cta"
+                                data-action={m1NextAction.ctaAction}
+                                data-jump={m1NextAction.jumpTarget}
+                                data-cta-action={m1NextAction.ctaAction}
+                                data-open-doc={m1NextAction.openDoc ?? ''}
+                                onClick={handleM1NextAction}
+                              >
+                                {m1NextAction.ctaLabel}
+                              </button>
+                              <small data-testid="m1-next-priority">P{m1NextAction.priority}</small>
+                            </div>
+                          </div>
+                          <div
+                            className="st-demo-m1-extfocus"
+                            data-testid="m1-external-focus"
+                            data-level={m1ExternalFocus.level}
+                            data-pending={m1ExternalFocus.externalPending}
+                            data-total={m1ExternalFocus.externalTotal}
+                            data-pass={m1ExternalFocus.externalPass}
+                            data-soft-gaps={m1ExternalFocus.softLiveGaps}
+                            data-focus-id={m1ExternalFocus.focus?.id ?? ''}
+                            data-focus-section={m1ExternalFocus.focus?.section ?? ''}
+                            data-primary-cta={m1ExternalFocus.primaryCta.action}
+                            data-claims-closed="0"
+                            data-claims-doc="0"
+                            aria-label="下一外网手测项聚焦 · 不关 M1"
+                          >
+                            <div className="st-demo-m1-extfocus__head">
+                              <span className="st-demo-m1-extfocus__kicker">下一外网项</span>
+                              <strong data-testid="m1-external-focus-title">
+                                {m1ExternalFocus.title}
+                              </strong>
+                              <span
+                                className="st-demo-m1-extfocus__level"
+                                data-level={m1ExternalFocus.level}
+                                data-testid="m1-external-focus-level"
+                              >
+                                {m1ExternalFocus.level === 'focus'
+                                  ? '待证'
+                                  : m1ExternalFocus.level === 'soft-first'
+                                    ? '先 soft'
+                                    : m1ExternalFocus.level === 'clear'
+                                      ? '队列空'
+                                      : '空'}
+                              </span>
+                            </div>
+                            <p
+                              className="st-demo-m1-extfocus__body"
+                              data-testid="m1-external-focus-body"
+                            >
+                              {m1ExternalFocus.body}
+                            </p>
+                            <div
+                              className="st-demo-m1-extfocus__chips"
+                              data-testid="m1-external-focus-chips"
+                            >
+                              <span data-kind="pending">
+                                外网待证 {m1ExternalFocus.externalPending}/
+                                {m1ExternalFocus.externalTotal}
+                              </span>
+                              <span data-kind="pass">
+                                外网 soft 见过 {m1ExternalFocus.externalPass}
+                              </span>
+                              <span data-kind="doc">
+                                文档 {m1ExternalFocus.docChecked}/{m1ExternalFocus.docTotal}
+                              </span>
+                              <span data-kind="soft">本机缺口 {m1ExternalFocus.softLiveGaps}</span>
+                            </div>
+                            {m1ExternalFocus.focus ? (
+                              <div
+                                className="st-demo-m1-extfocus__focus"
+                                data-testid="m1-external-focus-card"
+                                data-item={m1ExternalFocus.focus.id}
+                                data-section={m1ExternalFocus.focus.section}
+                                data-jumpable={m1ExternalFocus.focus.jumpable ? '1' : '0'}
+                              >
+                                <span className="st-demo-m1-extfocus__sec">
+                                  {m1ExternalFocus.focus.sectionLabel}
+                                </span>
+                                <span className="st-demo-m1-extfocus__label">
+                                  {m1ExternalFocus.focus.label}
+                                </span>
+                                <span className="st-demo-m1-extfocus__detail">
+                                  {m1ExternalFocus.focus.detail}
+                                </span>
+                                <span className="st-demo-m1-extfocus__hint">
+                                  {m1ExternalFocus.focus.hint}
+                                </span>
+                              </div>
+                            ) : null}
+                            {m1ExternalFocus.queue.length > 0 ? (
+                              <ul
+                                className="st-demo-m1-extfocus__queue"
+                                data-testid="m1-external-focus-queue"
+                                data-count={m1ExternalFocus.queue.length}
+                              >
+                                {m1ExternalFocus.queue.map((q) => (
+                                  <li
+                                    key={q.id}
+                                    data-item={q.id}
+                                    data-section={q.section}
+                                    data-testid={'m1-external-focus-queue-' + q.id}
+                                  >
+                                    <span className="st-demo-m1-extfocus__q-sec">{q.section}</span>
+                                    <span className="st-demo-m1-extfocus__q-label">{q.label}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                            <div
+                              className="st-demo-m1-extfocus__actions"
+                              data-testid="m1-external-focus-actions"
+                            >
+                              {isM1ExternalFocusCtaActionable(m1ExternalFocus.primaryCta.action) ? (
+                                <button
+                                  type="button"
+                                  className="st-demo-m1-extfocus__primary"
+                                  data-testid="m1-external-focus-primary"
+                                  data-action={m1ExternalFocus.primaryCta.action}
+                                  title={m1ExternalFocus.primaryCta.label}
+                                  onClick={() =>
+                                    handleM1ExternalFocusCta(m1ExternalFocus.primaryCta.action)
+                                  }
+                                >
+                                  {m1ExternalFocus.primaryCta.label}
+                                </button>
+                              ) : null}
+                              {m1ExternalFocus.secondaryCtas.map((cta) => (
+                                <button
+                                  key={cta.action}
+                                  type="button"
+                                  className="st-demo-m1-extfocus__secondary"
+                                  data-testid={'m1-external-focus-cta-' + cta.action}
+                                  data-action={cta.action}
+                                  title={cta.label}
+                                  onClick={() => handleM1ExternalFocusCta(cta.action)}
+                                >
+                                  {cta.label}
+                                </button>
+                              ))}
+                            </div>
+                            <p
+                              className="st-demo-m1-extfocus__note"
+                              data-testid="m1-external-focus-note"
+                            >
+                              {m1ExternalFocus.summary} · 点主按钮跳面板/开文档 · 复制运行单可离线填
+                              · 不自动勾 · 不关 M1
+                            </p>
+                          </div>
+                          <div
+                            className="st-demo-m1-path"
+                            data-testid="m1-exit-path"
+                            data-level={m1ExitPath.level}
+                            data-progress={m1ExitPath.progressPercent}
+                            data-remaining-hard={m1ExitPath.remainingHardSteps}
+                            data-remaining-soft={m1ExitPath.remainingSoftSteps}
+                            data-claims-closed="0"
+                            data-focus={m1ExitPath.focusStepId ?? ''}
+                            aria-label="M1 退出路径"
+                          >
+                            <div className="st-demo-m1-path__head">
+                              <span className="st-demo-m1-path__kicker">退出路径</span>
+                              <strong data-testid="m1-exit-path-summary">
+                                {m1ExitPath.summary}
+                              </strong>
+                              <span
+                                className="st-demo-m1-path__progress"
+                                data-testid="m1-exit-path-progress"
+                                data-percent={m1ExitPath.progressPercent}
+                                title="本路径只展示证据进度，M1 状态以验证区为准"
+                              >
+                                {m1ExitPath.progressPercent}%
+                              </span>
+                              <button
+                                type="button"
+                                className="st-demo-m1-path__copy"
+                                data-testid="m1-exit-path-copy"
+                                data-action="copy-exit-path"
+                                title="复制有序退出路径（不含密钥 · 不关 M1）"
+                                onClick={() => void copyM1ExitPath()}
+                              >
+                                复制路径
+                              </button>
+                            </div>
+                            <div
+                              className="st-demo-m1-path__bar"
+                              data-testid="m1-exit-path-bar"
+                              aria-hidden="true"
+                            >
+                              <span
+                                className="st-demo-m1-path__bar-fill"
+                                style={{ width: m1ExitPath.progressPercent + '%' }}
+                              />
+                            </div>
+                            <ol className="st-demo-m1-path__steps" data-testid="m1-exit-path-steps">
+                              {m1ExitPath.steps.map((step) => {
+                                const actionable = isM1ExitPathStepActionable(step.ctaAction);
+                                const focused = step.id === m1ExitPath.focusStepId;
+                                return (
+                                  <li
+                                    key={step.id}
+                                    data-step={step.id}
+                                    data-kind={step.kind}
+                                    data-status={step.status}
+                                    data-gate={step.gate}
+                                    data-focus={focused ? '1' : '0'}
+                                    data-testid={`m1-exit-path-step-${step.id}`}
+                                  >
+                                    <span className="st-demo-m1-path__order">{step.order}</span>
+                                    <div className="st-demo-m1-path__main">
+                                      <span className="st-demo-m1-path__title">{step.title}</span>
+                                      <span className="st-demo-m1-path__detail">{step.detail}</span>
+                                    </div>
+                                    <span
+                                      className="st-demo-m1-path__status"
+                                      data-status={step.status}
+                                    >
+                                      {step.status === 'done'
+                                        ? '完成'
+                                        : step.status === 'doing'
+                                          ? '进行中'
+                                          : step.status === 'blocked'
+                                            ? '阻塞'
+                                            : '待做'}
+                                    </span>
+                                    {actionable ? (
+                                      <button
+                                        type="button"
+                                        className="st-demo-m1-path__cta"
+                                        data-testid={`m1-exit-path-cta-${step.id}`}
+                                        data-action={step.ctaAction}
+                                        data-focus={focused ? '1' : '0'}
+                                        title={step.detail}
+                                        onClick={() => handleM1ExitPathStep(step.ctaAction)}
+                                      >
+                                        {step.ctaLabel}
+                                      </button>
+                                    ) : (
+                                      <span className="st-demo-m1-path__cta-na">—</span>
+                                    )}
+                                  </li>
+                                );
+                              })}
+                            </ol>
+                            <p className="st-demo-m1-path__hint" data-testid="m1-exit-path-hint">
+                              有序硬门槛辅助 · 不自动勾手测 · 不写 dogfood · 进度封顶 99% · M2
+                              已完成 · 仍不自动关 M1
+                            </p>
+                          </div>
+                        </div>
+                        <details
+                          className="st-demo-m1-more"
+                          data-testid="m1-obs-secondary"
+                          open={m1ObsSecondaryOpen}
+                          onToggle={(e) => {
+                            const el = e.currentTarget as HTMLDetailsElement;
+                            setM1ObsSecondaryOpen(el.open);
+                          }}
+                        >
+                          <summary
+                            className="st-demo-m1-more__summary"
+                            data-testid="m1-obs-secondary-summary"
+                          >
+                            <span className="st-demo-m1-more__kicker">更多 soft 观测</span>
+                            <strong>{m1ObsLayout.secondarySummary}</strong>
+                            <em data-testid="m1-obs-secondary-hint">
+                              {m1ObsSecondaryOpen ? '收起' : '展开'}
+                            </em>
+                          </summary>
+                          <div
+                            className="st-demo-m1-more__body"
+                            data-testid="m1-obs-secondary-body"
+                          >
+                            <div
+                              className="st-demo-m1-strip"
+                              data-testid="m1-session-readiness"
+                              data-level={m1SessionReadiness.level}
+                              aria-label="M1 会话就绪"
+                            >
+                              <div className="st-demo-m1-strip__head">
+                                <span className="st-demo-m1-strip__kicker">会话就绪</span>
+                                <strong data-testid="m1-session-summary">
+                                  {m1SessionReadiness.summary}
+                                </strong>
+                                <small>M1 soft · 非退出证据</small>
+                              </div>
+                              <ul
+                                className="st-demo-m1-strip__chips"
+                                data-testid="m1-session-chips"
+                              >
+                                {m1SessionReadiness.chips.map((chip) => {
+                                  const jumpable = isM1SessionChipJumpable(chip.jumpTarget);
+                                  return (
+                                    <li
+                                      key={chip.id}
+                                      data-ok={chip.ok}
+                                      data-jump={chip.jumpTarget}
+                                      data-jumpable={jumpable ? '1' : '0'}
+                                      data-testid={`m1-session-chip-${chip.id}`}
+                                    >
+                                      {jumpable ? (
+                                        <button
+                                          type="button"
+                                          className="st-demo-m1-strip__chip-btn"
+                                          title={chip.jumpHint}
+                                          aria-label={`${chip.label}：${chip.detail}。${chip.jumpHint}`}
+                                          data-testid={`m1-session-chip-jump-${chip.id}`}
+                                          onClick={() => handleSessionChipJump(chip.jumpTarget)}
+                                        >
+                                          <span className="st-demo-m1-strip__chip-label">
+                                            {chip.label}
+                                          </span>
+                                          <span className="st-demo-m1-strip__chip-detail">
+                                            {chip.detail}
+                                          </span>
+                                        </button>
+                                      ) : (
+                                        <span
+                                          className="st-demo-m1-strip__chip-static"
+                                          title={chip.jumpHint}
+                                          aria-label={`${chip.label}：${chip.detail}`}
+                                        >
+                                          <span className="st-demo-m1-strip__chip-label">
+                                            {chip.label}
+                                          </span>
+                                          <span className="st-demo-m1-strip__chip-detail">
+                                            {chip.detail}
+                                          </span>
+                                        </span>
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                              <p className="st-demo-m1-strip__note" data-testid="m1-session-note">
+                                {m1SessionReadiness.note}
+                              </p>
+                            </div>
+                            <div
+                              className="st-demo-m1-exit"
+                              data-testid="m1-exit-evidence"
+                              data-level={m1ExitEvidence.level}
+                              data-hard={m1ExitEvidence.hardGatesMet ? '1' : '0'}
+                              aria-label="M1 退出证据进度"
+                            >
+                              <div className="st-demo-m1-exit__head">
+                                <span className="st-demo-m1-exit__kicker">退出证据</span>
+                                <strong data-testid="m1-exit-summary">
+                                  {m1ExitEvidence.summary}
+                                </strong>
+                                <button
+                                  type="button"
+                                  className="st-demo-m1-exit__refresh"
+                                  data-testid="m1-exit-refresh"
+                                  title="重新读取手测清单与 dogfood 日记"
+                                  onClick={() => setExitEvidenceTick((n) => n + 1)}
+                                >
+                                  刷新
+                                </button>
+                                <button
+                                  type="button"
+                                  className="st-demo-m1-exit__copy"
+                                  data-testid="m1-soft-snapshot-copy"
+                                  data-action="copy-soft-snapshot"
+                                  title="复制本机 soft 快照到剪贴板，便于粘贴到手测备注或 dogfood（不含密钥，不能替代外网手测）"
+                                  onClick={() => void copyM1SoftSnapshot()}
+                                >
+                                  复制 soft 快照
+                                </button>
+                                <button
+                                  type="button"
+                                  className="st-demo-m1-exit__copy"
+                                  data-testid="m1-dogfood-draft-copy"
+                                  data-action="copy-dogfood-draft"
+                                  title="复制今日 dogfood 日记草稿到剪贴板（含 soft 状态 · 非自动写盘 · 不能直接算有效日）"
+                                  onClick={() => void copyM1DogfoodDraft()}
+                                >
+                                  复制 dogfood 草稿
+                                </button>
+                                <button
+                                  type="button"
+                                  className="st-demo-m1-exit__copy"
+                                  data-testid="m1-soft-regression-copy"
+                                  data-action="copy-soft-regression"
+                                  title="复制 soft 回归矩阵（自动 vs 手测 · 不含密钥 · 不能替代外网手测）"
+                                  onClick={() => void copyM1SoftRegression()}
+                                >
+                                  复制回归矩阵
+                                </button>
+                                <button
+                                  type="button"
+                                  className="st-demo-m1-exit__copy st-demo-m1-exit__copy--primary"
+                                  data-testid="m1-evidence-bundle-copy"
+                                  data-action="copy-evidence-bundle"
+                                  title="一键复制 soft 证据包：快照 + 手测进度 + 回归 + 退出路径 + 文档差异 + dogfood 草稿 + 下一步（不含密钥 · 不关 M1）"
+                                  onClick={() => void copyM1EvidenceBundle()}
+                                >
+                                  导出证据包
+                                </button>
+                                <button
+                                  type="button"
+                                  className="st-demo-m1-exit__copy"
+                                  data-testid="m1-exit-path-copy-head"
+                                  data-action="copy-exit-path"
+                                  title="复制 M1 退出路径（有序硬门槛步骤 · 不含密钥）"
+                                  onClick={() => void copyM1ExitPath()}
+                                >
+                                  复制退出路径
+                                </button>
+                                <small>硬门槛 · 不自动关 M1</small>
+                              </div>
+                              <div
+                                className="st-demo-m1-bundle"
+                                data-testid="m1-evidence-bundle"
+                                data-level={m1EvidenceBundlePreview.level}
+                                data-claims-closed="0"
+                                data-sections={M1_EVIDENCE_BUNDLE_SECTIONS.length}
+                                aria-label="M1 soft 证据包导出"
+                              >
+                                <div className="st-demo-m1-bundle__head">
+                                  <span className="st-demo-m1-bundle__kicker">证据包</span>
+                                  <strong data-testid="m1-evidence-bundle-headline">
+                                    {m1EvidenceBundlePreview.headline}
+                                  </strong>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-bundle__export"
+                                    data-testid="m1-evidence-bundle-export"
+                                    data-action="copy-evidence-bundle"
+                                    title="一键复制完整 soft 证据包到剪贴板"
+                                    onClick={() => void copyM1EvidenceBundle()}
+                                  >
+                                    一键导出
+                                  </button>
+                                </div>
+                                <p
+                                  className="st-demo-m1-bundle__detail"
+                                  data-testid="m1-evidence-bundle-detail"
+                                >
+                                  {m1EvidenceBundlePreview.detail}
+                                </p>
+                                <ul
+                                  className="st-demo-m1-bundle__toc"
+                                  data-testid="m1-evidence-bundle-toc"
+                                >
+                                  {M1_EVIDENCE_BUNDLE_SECTIONS.map((sec) => (
+                                    <li
+                                      key={sec.id}
+                                      data-section={sec.id}
+                                      data-required={sec.required ? '1' : '0'}
+                                      data-testid={`m1-evidence-bundle-sec-${sec.id}`}
+                                    >
+                                      <span>{sec.title}</span>
+                                      <em>{sec.required ? '必含' : '可选'}</em>
+                                    </li>
+                                  ))}
+                                </ul>
+                                <p
+                                  className="st-demo-m1-bundle__hint"
+                                  data-testid="m1-evidence-bundle-hint"
+                                >
+                                  粘贴辅助 · 不含密钥 · 不自动勾手测 · 不写 dogfood · 不关 M1
+                                </p>
+                              </div>
+                              <ul className="st-demo-m1-exit__chips" data-testid="m1-exit-chips">
+                                {m1ExitEvidence.chips.map((chip) => {
+                                  const actionable = isM1ExitChipActionable(chip.id);
+                                  const chipAction = resolveM1ExitChipAction(chip.id);
+                                  const openDoc =
+                                    chipAction.kind === 'open-doc' ? chipAction.openDoc : '';
+                                  return (
+                                    <li
+                                      key={chip.id}
+                                      data-ok={chip.ok}
+                                      data-actionable={actionable ? '1' : '0'}
+                                      data-chip-action={chipAction.kind}
+                                      data-open-doc={openDoc}
+                                      data-testid={`m1-exit-chip-${chip.id}`}
+                                    >
+                                      {actionable ? (
+                                        <button
+                                          type="button"
+                                          className="st-demo-m1-exit__chip-btn"
+                                          data-testid={`m1-exit-chip-btn-${chip.id}`}
+                                          title={chipAction.hint}
+                                          onClick={() => handleM1ExitChip(chip.id)}
+                                        >
+                                          <span className="st-demo-m1-exit__chip-label">
+                                            {chip.label}
+                                          </span>
+                                          <span className="st-demo-m1-exit__chip-detail">
+                                            {chip.detail}
+                                          </span>
+                                        </button>
+                                      ) : (
+                                        <>
+                                          <span className="st-demo-m1-exit__chip-label">
+                                            {chip.label}
+                                          </span>
+                                          <span className="st-demo-m1-exit__chip-detail">
+                                            {chip.detail}
+                                          </span>
+                                        </>
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                              <div
+                                className="st-demo-m1-dogfood-fill"
+                                data-testid="m1-dogfood-fill"
+                                data-level={m1DogfoodFillBoard.level}
+                                data-real={m1DogfoodFillBoard.realDays}
+                                data-required={m1DogfoodFillBoard.required}
+                                data-remaining={m1DogfoodFillBoard.remainingDays}
+                                data-draft={m1DogfoodFillBoard.draftDays}
+                                data-scaffold={m1DogfoodFillBoard.scaffoldDays}
+                                data-missing={m1DogfoodFillBoard.missingSlots.length}
+                                data-primary-cta={m1DogfoodFillBoard.primaryCta.action}
+                                data-claims-closed="0"
+                                data-claims-dogfood-real="0"
+                                aria-label="dogfood 多日补填板 · 草稿不计有效日 · 不关 M1"
+                              >
+                                <div className="st-demo-m1-dogfood-fill__head">
+                                  <span className="st-demo-m1-dogfood-fill__kicker">
+                                    dogfood 补填
+                                  </span>
+                                  <strong data-testid="m1-dogfood-fill-summary">
+                                    {m1DogfoodFillBoard.summary}
+                                  </strong>
+                                  <span
+                                    className="st-demo-m1-dogfood-fill__level"
+                                    data-level={m1DogfoodFillBoard.level}
+                                    data-testid="m1-dogfood-fill-level"
+                                  >
+                                    {m1DogfoodFillBoard.level === 'empty'
+                                      ? '尚无日记'
+                                      : m1DogfoodFillBoard.level === 'scaffold-only'
+                                        ? '仅脚手架'
+                                        : m1DogfoodFillBoard.level === 'partial'
+                                          ? '部分有效'
+                                          : m1DogfoodFillBoard.level === 'ready-count'
+                                            ? '数字已满'
+                                            : m1DogfoodFillBoard.level === 'blocked-fake'
+                                              ? '仅草稿'
+                                              : m1DogfoodFillBoard.level}
+                                  </span>
+                                </div>
+                                <div
+                                  className="st-demo-m1-dogfood-fill__chips"
+                                  data-testid="m1-dogfood-fill-chips"
+                                >
+                                  <span data-kind="real">
+                                    有效 {m1DogfoodFillBoard.realDays}/{m1DogfoodFillBoard.required}
+                                  </span>
+                                  <span data-kind="remain">
+                                    仍差 {m1DogfoodFillBoard.remainingDays}
+                                  </span>
+                                  <span data-kind="draft">草稿 {m1DogfoodFillBoard.draftDays}</span>
+                                  <span data-kind="scaffold">
+                                    脚手架 {m1DogfoodFillBoard.scaffoldDays}
+                                  </span>
+                                  <span data-kind="missing">
+                                    缺文件 {m1DogfoodFillBoard.missingSlots.length}
+                                  </span>
+                                </div>
+                                <div className="st-demo-m1-dogfood-fill__actions">
+                                  {m1DogfoodFillBoard.primaryCta.action !== 'none' ? (
+                                    <button
+                                      type="button"
+                                      className="st-demo-m1-dogfood-fill__primary"
+                                      data-testid="m1-dogfood-fill-primary"
+                                      data-action={m1DogfoodFillBoard.primaryCta.action}
+                                      data-target={m1DogfoodFillBoard.primaryCta.targetDate ?? ''}
+                                      title={m1DogfoodFillBoard.primaryCta.label}
+                                      onClick={() => handleM1DogfoodFillPrimary()}
+                                    >
+                                      {m1DogfoodFillBoard.primaryCta.label}
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="st-demo-m1-dogfood-fill__primary"
+                                      data-testid="m1-dogfood-fill-primary"
+                                      data-action="none"
+                                      disabled
+                                      title="有效日门槛已满 · M1 状态见验证区"
+                                    >
+                                      {m1DogfoodFillBoard.primaryCta.label || '有效日数字已满'}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-dogfood-fill__copy"
+                                    data-testid="m1-dogfood-fill-copy"
+                                    data-action="copy-fill-board"
+                                    title="复制多日补填板（不含密钥 · 草稿不计有效日）"
+                                    onClick={() => void copyM1DogfoodFillBoard()}
+                                  >
+                                    复制多日补填
+                                  </button>
+                                </div>
+                                {m1DogfoodFillBoard.rows.length > 0 ? (
+                                  <ul
+                                    className="st-demo-m1-dogfood-fill__list"
+                                    data-testid="m1-dogfood-fill-list"
+                                    data-count={m1DogfoodFillBoard.rows.length}
+                                  >
+                                    {m1DogfoodFillBoard.rows.slice(0, 8).map((row) => (
+                                      <li
+                                        key={row.date}
+                                        data-kind={row.kind}
+                                        data-real={row.countsAsReal ? '1' : '0'}
+                                        data-cta={row.ctaAction}
+                                        data-testid={`m1-dogfood-fill-row-${row.date}`}
+                                        title={`${row.fillHint} · ${row.ctaLabel || ''}`}
+                                      >
+                                        {row.ctaAction !== 'none' ? (
+                                          <button
+                                            type="button"
+                                            className="st-demo-m1-dogfood-fill__row-btn"
+                                            data-testid={`m1-dogfood-fill-cta-${row.date}`}
+                                            data-action={row.ctaAction}
+                                            data-kind={row.kind}
+                                            onClick={() => handleM1DogfoodFillRow(row)}
+                                          >
+                                            <span className="st-demo-m1-dogfood-fill__date">
+                                              {row.date}
+                                            </span>
+                                            <span className="st-demo-m1-dogfood-fill__kind">
+                                              {row.kind === 'real'
+                                                ? '有效'
+                                                : row.kind === 'draft'
+                                                  ? '草稿'
+                                                  : row.kind === 'missing'
+                                                    ? '缺文件'
+                                                    : '脚手架'}
+                                            </span>
+                                            <span className="st-demo-m1-dogfood-fill__status">
+                                              {row.statusLabel}
+                                            </span>
+                                            <span className="st-demo-m1-dogfood-fill__hint">
+                                              {row.fillHint}
+                                            </span>
+                                            <span className="st-demo-m1-dogfood-fill__cta">
+                                              {row.ctaLabel}
+                                            </span>
+                                          </button>
+                                        ) : (
+                                          <>
+                                            <span className="st-demo-m1-dogfood-fill__date">
+                                              {row.date}
+                                            </span>
+                                            <span className="st-demo-m1-dogfood-fill__kind">
+                                              {row.kind}
+                                            </span>
+                                            <span className="st-demo-m1-dogfood-fill__status">
+                                              {row.statusLabel}
+                                            </span>
+                                            <span className="st-demo-m1-dogfood-fill__hint">
+                                              {row.fillHint}
+                                            </span>
+                                          </>
+                                        )}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : null}
+                                <p
+                                  className="st-demo-m1-dogfood-fill__note"
+                                  data-testid="m1-dogfood-fill-note"
+                                >
+                                  点行打开当日日记 · 粘贴草稿 / 脚手架不计有效日 · ≥3
+                                  真实天仍是硬门槛 · 不关 M1
+                                </p>
+                              </div>
+                              {m1ExitEvidence.dogfoodDays.length > 0 ? (
+                                <ul
+                                  className="st-demo-m1-dogfood-days"
+                                  data-testid="m1-dogfood-days"
+                                  data-count={m1ExitEvidence.dogfoodDays.length}
+                                  data-draft-count={m1ExitEvidence.dogfoodDraftDays}
+                                  aria-label="dogfood 按日明细 · 点击打开当日日记 · 草稿不计有效日"
+                                >
+                                  {m1ExitEvidence.dogfoodDays.map((day) => (
+                                    <li
+                                      key={day.date}
+                                      data-kind={day.boardKind || day.kind}
+                                      data-paste-assist={day.isPasteAssist ? '1' : '0'}
+                                      data-date={day.date}
+                                      data-openable="1"
+                                      data-testid={`m1-dogfood-day-${day.date}`}
+                                      title={
+                                        day.reasons && day.reasons.length > 0
+                                          ? day.reasons.join(' · ')
+                                          : day.statusLabel
+                                      }
+                                    >
+                                      <button
+                                        type="button"
+                                        className="st-demo-m1-dogfood-days__btn"
+                                        data-testid={`m1-dogfood-day-btn-${day.date}`}
+                                        data-action="open-dogfood-day"
+                                        data-date={day.date}
+                                        data-kind={day.boardKind || day.kind}
+                                        title={`打开 ${day.fileName || day.date + '.md'} · ${
+                                          day.reasons?.join(' · ') || day.statusLabel
+                                        }（不自动勾选 · 草稿不计有效）`}
+                                        onClick={() => openM1DogfoodDay(day.date)}
+                                      >
+                                        <span className="st-demo-m1-dogfood-days__date">
+                                          {day.date}
+                                        </span>
+                                        <span
+                                          className="st-demo-m1-dogfood-days__kind"
+                                          data-kind={day.boardKind || day.kind}
+                                        >
+                                          {day.boardKind === 'draft' || day.isPasteAssist
+                                            ? '草稿'
+                                            : day.kind === 'real'
+                                              ? '有效'
+                                              : '脚手架'}
+                                        </span>
+                                        <span className="st-demo-m1-dogfood-days__status">
+                                          {day.statusLabel}
+                                        </span>
+                                        {day.reasons && day.reasons.length > 0 ? (
+                                          <span
+                                            className="st-demo-m1-dogfood-days__reasons"
+                                            data-testid={`m1-dogfood-day-reasons-${day.date}`}
+                                          >
+                                            {day.reasons.slice(0, 2).join(' · ')}
+                                          </span>
+                                        ) : null}
+                                        <span
+                                          className="st-demo-m1-dogfood-days__open-hint"
+                                          aria-hidden="true"
+                                        >
+                                          打开
+                                        </span>
+                                      </button>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : null}
+
+                              <div
+                                className="st-demo-m1-regression"
+                                data-testid="m1-soft-regression"
+                                data-auto-pass={m1SoftRegression.autoPass}
+                                data-auto-total={m1SoftRegression.autoTotal}
+                                data-hand-gaps={m1SoftRegression.handGaps}
+                                data-external-gaps={m1SoftRegression.externalGaps}
+                                data-filter={regressionListFilter}
+                                data-filter-count={m1SoftRegressionFilteredRows.length}
+                                data-claims-closed="0"
+                                aria-label="M1 soft 回归矩阵 · 自动 vs 手测 · 可筛选可跳转"
+                              >
+                                <div className="st-demo-m1-regression__head">
+                                  <span className="st-demo-m1-regression__kicker">soft 回归</span>
+                                  <strong data-testid="m1-soft-regression-summary">
+                                    auto {m1SoftRegression.autoPass}/{m1SoftRegression.autoTotal}
+                                    {' · '}
+                                    手测缺口 {m1SoftRegression.handGaps}
+                                    {' · '}
+                                    外网 {m1SoftRegression.externalGaps}
+                                  </strong>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-exit__copy"
+                                    data-testid="m1-soft-regression-copy-inline"
+                                    data-action="copy-soft-regression"
+                                    title="复制完整 markdown 矩阵"
+                                    onClick={() => void copyM1SoftRegression()}
+                                  >
+                                    复制
+                                  </button>
+                                </div>
+                                <div
+                                  className="st-demo-m1-regression-filters"
+                                  data-testid="m1-soft-regression-filters"
+                                  role="toolbar"
+                                  aria-label="回归矩阵筛选"
+                                >
+                                  {(
+                                    [
+                                      { id: 'all' as const, label: '全部' },
+                                      { id: 'gaps' as const, label: '缺口' },
+                                      { id: 'external' as const, label: '外网' },
+                                      { id: 'auto-fail' as const, label: 'auto红' },
+                                    ] as const
+                                  ).map((f) => (
+                                    <button
+                                      key={f.id}
+                                      type="button"
+                                      className="st-demo-m1-regression-filters__btn"
+                                      data-testid={`m1-soft-regression-filter-${f.id}`}
+                                      data-filter={f.id}
+                                      data-active={regressionListFilter === f.id ? '1' : '0'}
+                                      aria-pressed={regressionListFilter === f.id}
+                                      onClick={() => setRegressionListFilter(f.id)}
+                                    >
+                                      {f.label}
+                                      <span className="st-demo-m1-regression-filters__count">
+                                        {m1SoftRegressionFilterCounts[f.id]}
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                                <ul
+                                  className="st-demo-m1-regression__rows"
+                                  data-testid="m1-soft-regression-rows"
+                                  data-count={m1SoftRegressionFilteredRows.length}
+                                  data-filter={regressionListFilter}
+                                >
+                                  {m1SoftRegressionFilteredRows.slice(0, 12).map((row) => {
+                                    const actionable = isM1SoftRegressionRowActionable(row.id);
+                                    const rowAction = resolveM1SoftRegressionRowAction(row.id);
+                                    return (
+                                      <li
+                                        key={row.id}
+                                        data-id={row.id}
+                                        data-area={row.area}
+                                        data-auto={row.auto}
+                                        data-hand={row.hand}
+                                        data-action={rowAction.kind}
+                                        data-testid={`m1-soft-regression-row-${row.id}`}
+                                        title={
+                                          row.note + (rowAction.hint ? ' · ' + rowAction.hint : '')
+                                        }
+                                      >
+                                        {actionable ? (
+                                          <button
+                                            type="button"
+                                            className="st-demo-m1-regression__row-btn"
+                                            data-testid={`m1-soft-regression-row-btn-${row.id}`}
+                                            data-action={rowAction.kind}
+                                            title={rowAction.ctaLabel + ' · ' + rowAction.hint}
+                                            onClick={() => handleM1SoftRegressionRow(row.id)}
+                                          >
+                                            <span className="st-demo-m1-regression__label">
+                                              {row.label}
+                                            </span>
+                                            <span
+                                              className="st-demo-m1-regression__cell"
+                                              data-side="auto"
+                                              data-cell={row.auto}
+                                            >
+                                              {row.auto}
+                                            </span>
+                                            <span
+                                              className="st-demo-m1-regression__cell"
+                                              data-side="hand"
+                                              data-cell={row.hand}
+                                            >
+                                              {row.hand}
+                                            </span>
+                                            <span className="st-demo-m1-regression__cta">
+                                              {rowAction.ctaLabel}
+                                            </span>
+                                          </button>
+                                        ) : (
+                                          <>
+                                            <span className="st-demo-m1-regression__label">
+                                              {row.label}
+                                            </span>
+                                            <span
+                                              className="st-demo-m1-regression__cell"
+                                              data-side="auto"
+                                              data-cell={row.auto}
+                                            >
+                                              {row.auto}
+                                            </span>
+                                            <span
+                                              className="st-demo-m1-regression__cell"
+                                              data-side="hand"
+                                              data-cell={row.hand}
+                                            >
+                                              {row.hand}
+                                            </span>
+                                          </>
+                                        )}
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                                <p
+                                  className="st-demo-m1-regression__hint"
+                                  data-testid="m1-soft-regression-hint"
+                                >
+                                  {m1ExitEvidence.hardGatesMet
+                                    ? `筛选看缺口 · 外网手测 ${m1ExitEvidence.handtestChecked}/${m1ExitEvidence.handtestTotal} · dogfood ${m1ExitEvidence.dogfoodRealDays}/${m1ExitEvidence.dogfoodRequired} · M1 已完成`
+                                    : m1ExitEvidence.handtestOk
+                                      ? `筛选看缺口 · 外网手测 ${m1ExitEvidence.handtestChecked}/${m1ExitEvidence.handtestTotal} 已完成 · dogfood ${m1ExitEvidence.dogfoodRealDays}/${m1ExitEvidence.dogfoodRequired}`
+                                      : '筛选看缺口 · 点行跳转/打开文档 · 自动绿不替代外网手测与 dogfood'}
+                                </p>
+                              </div>
+                              <p className="st-demo-m1-exit__note" data-testid="m1-exit-note">
+                                {m1ExitEvidence.note}
+                                {m1ExitEvidence.loadNote ? ` · ${m1ExitEvidence.loadNote}` : ''}
+                              </p>
+                              {m1OpenDocFeedback ? (
+                                <p
+                                  className="st-demo-m1-open-feedback"
+                                  data-testid="m1-open-doc-feedback"
+                                  data-level={m1OpenDocFeedback.level}
+                                  data-ok={m1OpenDocFeedback.dataOk}
+                                  data-created={m1OpenDocFeedback.dataCreated}
+                                  data-open-doc={m1OpenDocFeedback.openDocId}
+                                  data-basename={m1OpenDocFeedback.basename ?? ''}
+                                  role="status"
+                                >
+                                  {m1OpenDocFeedback.message}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div
+                              className="st-demo-m1-handtest"
+                              data-testid="m1-handtest-checklist"
+                              data-level={m1HandtestChecklist.level}
+                              aria-label="M1 手测清单对照"
+                            >
+                              <div className="st-demo-m1-handtest__head">
+                                <span className="st-demo-m1-handtest__kicker">手测对照</span>
+                                <strong data-testid="m1-handtest-summary">
+                                  {m1HandtestChecklist.summary}
+                                </strong>
+                                <small>
+                                  本机 {m1HandtestChecklist.livePass}/
+                                  {m1HandtestChecklist.liveTotal} · 文档{' '}
+                                  {m1HandtestChecklist.docChecked}/
+                                  {m1HandtestChecklist.docTotal || '—'}
+                                </small>
+                                <div
+                                  className="st-demo-m1-handtest__opens"
+                                  data-testid="m1-handtest-opens"
+                                >
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-handtest__open"
+                                    data-testid="m1-handtest-open-doc"
+                                    data-open-doc="handtest"
+                                    title="打开 14-external-gateway-handtest.md"
+                                    onClick={() =>
+                                      void openM1EvidenceDoc('handtest', { alsoJump: 'providers' })
+                                    }
+                                  >
+                                    打开手测文档
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-handtest__open"
+                                    data-testid="m1-handtest-open-dogfood"
+                                    data-open-doc="dogfood-today"
+                                    title="打开或创建今日 dogfood 日记"
+                                    onClick={() => void openM1EvidenceDoc('dogfood-today')}
+                                  >
+                                    今日 dogfood
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-handtest__open"
+                                    data-testid="m1-handtest-copy-snapshot"
+                                    data-action="copy-soft-snapshot"
+                                    title="复制本机 soft 快照（不含密钥）"
+                                    onClick={() => void copyM1SoftSnapshot()}
+                                  >
+                                    复制 soft 快照
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-handtest__open"
+                                    data-testid="m1-handtest-copy-paste"
+                                    data-action="copy-handtest-paste"
+                                    title="复制手测进度粘贴稿（按分区 · 非文档勾选 · 不含密钥）"
+                                    onClick={() => void copyM1HandtestPaste()}
+                                  >
+                                    复制手测进度
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-handtest__open"
+                                    data-testid="m1-handtest-copy-doc-diff"
+                                    data-action="copy-handtest-doc-diff"
+                                    title="复制文档↔本机差异（soft · 不关 M1 · 不含密钥）"
+                                    onClick={() => void copyM1HandtestDocDiff()}
+                                  >
+                                    复制文档差异
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-handtest__open"
+                                    data-testid="m1-handtest-copy-dogfood-draft"
+                                    data-action="copy-dogfood-draft"
+                                    title="复制 dogfood 日记草稿（非自动写盘）"
+                                    onClick={() => void copyM1DogfoodDraft()}
+                                  >
+                                    dogfood 草稿
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-handtest__open"
+                                    data-testid="m1-handtest-copy-regression"
+                                    data-action="copy-soft-regression"
+                                    title="复制 soft 回归矩阵（自动 vs 手测 · 非退出证据）"
+                                    onClick={() => void copyM1SoftRegression()}
+                                  >
+                                    回归矩阵
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-handtest__open st-demo-m1-handtest__open--primary"
+                                    data-testid="m1-handtest-copy-evidence-bundle"
+                                    data-action="copy-evidence-bundle"
+                                    title="一键导出 soft 证据包（不含密钥 · 不关 M1）"
+                                    onClick={() => void copyM1EvidenceBundle()}
+                                  >
+                                    证据包
+                                  </button>
+                                </div>
+                              </div>
+                              <div
+                                className="st-demo-m1-docdiff"
+                                data-testid="m1-handtest-doc-diff"
+                                data-level={m1HandtestDocDiff.level}
+                                data-live-ahead={m1HandtestDocDiff.liveAhead}
+                                data-doc-ahead={m1HandtestDocDiff.docAhead}
+                                data-external-gap={m1HandtestDocDiff.externalGap}
+                                data-primary-cta={m1HandtestDocDiff.primaryCta.kind}
+                                data-claims-closed="0"
+                                aria-label="文档与本机手测差异"
+                              >
+                                <div className="st-demo-m1-docdiff__head">
+                                  <span className="st-demo-m1-docdiff__kicker">文档 ↔ 本机</span>
+                                  <strong data-testid="m1-handtest-doc-diff-summary">
+                                    {m1HandtestDocDiff.summary}
+                                  </strong>
+                                  <span
+                                    className="st-demo-m1-docdiff__level"
+                                    data-level={m1HandtestDocDiff.level}
+                                  >
+                                    {m1HandtestDocDiff.level === 'quiet'
+                                      ? '对齐安静'
+                                      : m1HandtestDocDiff.level === 'critical'
+                                        ? '需复核'
+                                        : m1HandtestDocDiff.level === 'empty'
+                                          ? '无数据'
+                                          : '有差异'}
+                                  </span>
+                                </div>
+                                <div
+                                  className="st-demo-m1-docdiff__chips"
+                                  data-testid="m1-handtest-doc-diff-chips"
+                                >
+                                  <span data-kind="live-ahead" title="本机已绿但文档未勾">
+                                    本机领先 {m1HandtestDocDiff.liveAhead}
+                                  </span>
+                                  <span data-kind="doc-ahead" title="文档已勾但本机未绿">
+                                    文档领先 {m1HandtestDocDiff.docAhead}
+                                  </span>
+                                  <span data-kind="external" title="需外网真实路径">
+                                    外网待证 {m1HandtestDocDiff.externalGap}
+                                  </span>
+                                  <span data-kind="aligned" title="本机与文档均已勾">
+                                    对齐已勾 {m1HandtestDocDiff.alignedPass}
+                                  </span>
+                                </div>
+                                {m1HandtestDocDiff.primaryCta.kind !== 'none' ? (
+                                  <button
+                                    type="button"
+                                    className="st-demo-m1-docdiff__primary"
+                                    data-testid="m1-handtest-doc-diff-primary"
+                                    data-live-ahead={m1HandtestDocDiff.primaryCta.liveAhead}
+                                    title={m1HandtestDocDiff.primaryCta.label}
+                                    onClick={() => handleM1HandtestDocDiffPrimary()}
+                                  >
+                                    {m1HandtestDocDiff.primaryCta.label}
+                                  </button>
+                                ) : null}
+                                {m1HandtestDocDiffAttention.length > 0 ? (
+                                  <ul
+                                    className="st-demo-m1-docdiff__list"
+                                    data-testid="m1-handtest-doc-diff-list"
+                                    data-count={m1HandtestDocDiffAttention.length}
+                                  >
+                                    {m1HandtestDocDiffAttention.slice(0, 8).map((row) => {
+                                      const actionable = isM1HandtestDocDiffCtaActionable(
+                                        row.ctaKind,
+                                      );
+                                      return (
+                                        <li
+                                          key={row.id}
+                                          data-kind={row.kind}
+                                          data-cta={row.ctaKind}
+                                          data-jumpable={row.jumpable ? '1' : '0'}
+                                          data-testid={`m1-handtest-doc-diff-row-${row.id}`}
+                                          title={`${row.hint} · ${row.ctaLabel || ''}`}
+                                        >
+                                          {actionable ? (
+                                            <button
+                                              type="button"
+                                              className="st-demo-m1-docdiff__row-btn"
+                                              data-testid={`m1-handtest-doc-diff-cta-${row.id}`}
+                                              data-action={row.ctaKind}
+                                              data-kind={row.kind}
+                                              onClick={() => handleM1HandtestDocDiffRow(row)}
+                                            >
+                                              <span className="st-demo-m1-docdiff__kind">
+                                                {row.kind === 'live-ahead'
+                                                  ? '本机领先'
+                                                  : row.kind === 'doc-ahead'
+                                                    ? '文档领先'
+                                                    : row.kind === 'external-gap'
+                                                      ? '外网待证'
+                                                      : '未映射'}
+                                              </span>
+                                              <span className="st-demo-m1-docdiff__label">
+                                                {row.label}
+                                              </span>
+                                              <span className="st-demo-m1-docdiff__hint">
+                                                {row.hint}
+                                              </span>
+                                              <span className="st-demo-m1-docdiff__cta">
+                                                {row.ctaLabel}
+                                              </span>
+                                            </button>
+                                          ) : (
+                                            <>
+                                              <span className="st-demo-m1-docdiff__kind">
+                                                {row.kind === 'live-ahead'
+                                                  ? '本机领先'
+                                                  : row.kind === 'doc-ahead'
+                                                    ? '文档领先'
+                                                    : row.kind === 'external-gap'
+                                                      ? '外网待证'
+                                                      : '未映射'}
+                                              </span>
+                                              <span className="st-demo-m1-docdiff__label">
+                                                {row.label}
+                                              </span>
+                                              <span className="st-demo-m1-docdiff__hint">
+                                                {row.hint}
+                                              </span>
+                                            </>
+                                          )}
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                ) : (
+                                  <p
+                                    className="st-demo-m1-docdiff__empty"
+                                    data-testid="m1-handtest-doc-diff-empty"
+                                  >
+                                    {m1ExitEvidence.hardGatesMet
+                                      ? `暂无待关注差异 · 外网 ${m1ExitEvidence.handtestChecked}/${m1ExitEvidence.handtestTotal}、dogfood ${m1ExitEvidence.dogfoodRealDays}/${m1ExitEvidence.dogfoodRequired} 已完成`
+                                      : m1ExitEvidence.handtestOk
+                                        ? `暂无待关注差异 · 外网手测 ${m1ExitEvidence.handtestChecked}/${m1ExitEvidence.handtestTotal} 已完成，dogfood ${m1ExitEvidence.dogfoodRealDays}/${m1ExitEvidence.dogfoodRequired}`
+                                        : '暂无待关注差异 · 对齐结果仍须人手确认'}
+                                  </p>
+                                )}
+                                <p className="st-demo-m1-docdiff__note">
+                                  可点差异行 · 打开文档 / 跳转面板 · 不自动勾 · 不改变 M1 状态
+                                </p>
+                              </div>
+                              <ul
+                                className="st-demo-m1-handtest-sections"
+                                data-testid="m1-handtest-sections"
+                                data-count={m1HandtestSectionBoard.sections.length}
+                                aria-label="手测分区进度"
+                              >
+                                {m1HandtestSectionBoard.sections.map((sec) => {
+                                  const focus = sec.focusItemId
+                                    ? m1HandtestChecklist.items.find(
+                                        (it) => it.id === sec.focusItemId,
+                                      )
+                                    : null;
+                                  const jumpable = focus
+                                    ? isM1HandtestItemJumpable(focus.jumpTarget)
+                                    : false;
+                                  return (
+                                    <li
+                                      key={sec.id}
+                                      data-section={sec.id}
+                                      data-level={sec.level}
+                                      data-testid={`m1-handtest-section-${sec.id}`}
+                                    >
+                                      {jumpable && focus ? (
+                                        <button
+                                          type="button"
+                                          className="st-demo-m1-handtest-sections__btn"
+                                          data-testid={`m1-handtest-section-btn-${sec.id}`}
+                                          data-action="jump-handtest-section"
+                                          title={`${sec.label} · ${sec.detail}`}
+                                          onClick={() => handleHandtestItemJump(focus.jumpTarget)}
+                                        >
+                                          <span className="st-demo-m1-handtest-sections__label">
+                                            {sec.label}
+                                          </span>
+                                          <span className="st-demo-m1-handtest-sections__score">
+                                            {sec.pass}/{sec.total}
+                                          </span>
+                                          <span className="st-demo-m1-handtest-sections__detail">
+                                            {sec.detail}
+                                          </span>
+                                        </button>
+                                      ) : (
+                                        <div
+                                          className="st-demo-m1-handtest-sections__static"
+                                          data-testid={`m1-handtest-section-static-${sec.id}`}
+                                          title={sec.detail}
+                                        >
+                                          <span className="st-demo-m1-handtest-sections__label">
+                                            {sec.label}
+                                          </span>
+                                          <span className="st-demo-m1-handtest-sections__score">
+                                            {sec.pass}/{sec.total}
+                                          </span>
+                                          <span className="st-demo-m1-handtest-sections__detail">
+                                            {sec.detail}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                              <p
+                                className="st-demo-m1-handtest-sections__summary"
+                                data-testid="m1-handtest-sections-summary"
+                              >
+                                {m1HandtestSectionBoard.summary}
+                              </p>
+                              <div
+                                className="st-demo-m1-handtest-filters"
+                                data-testid="m1-handtest-filters"
+                                data-filter={handtestListFilter}
+                                role="group"
+                                aria-label="手测项筛选"
+                              >
+                                {(
+                                  [
+                                    { id: 'all' as const, label: '全部' },
+                                    { id: 'gaps' as const, label: '缺口' },
+                                    { id: 'external' as const, label: '外网' },
+                                  ] as const
+                                ).map((f) => (
+                                  <button
+                                    key={f.id}
+                                    type="button"
+                                    className="st-demo-m1-handtest-filters__btn"
+                                    data-testid={`m1-handtest-filter-${f.id}`}
+                                    data-active={handtestListFilter === f.id ? '1' : '0'}
+                                    data-filter={f.id}
+                                    aria-pressed={handtestListFilter === f.id}
+                                    onClick={() => setHandtestListFilter(f.id)}
+                                  >
+                                    {f.label}
+                                    <span className="st-demo-m1-handtest-filters__count">
+                                      {m1HandtestFilterCounts[f.id]}
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                              <ul
+                                className="st-demo-m1-handtest__list"
+                                data-testid="m1-handtest-list"
+                                data-filter={handtestListFilter}
+                                data-count={m1HandtestFilteredItems.length}
+                              >
+                                {m1HandtestFilteredItems.map((item) => {
+                                  const jumpable = isM1HandtestItemJumpable(item.jumpTarget);
+                                  const docEntry = m1HandtestDocMapById.get(item.id);
+                                  const docChecked =
+                                    docEntry && docEntry.docChecked != null
+                                      ? docEntry.docChecked
+                                        ? '1'
+                                        : '0'
+                                      : '';
+                                  const docBadge =
+                                    docEntry && docEntry.docChecked != null
+                                      ? docEntry.docChecked
+                                        ? '文档✓'
+                                        : '文档□'
+                                      : '文档—';
+                                  return (
+                                    <li
+                                      key={item.id}
+                                      data-status={item.status}
+                                      data-gate={item.gate}
+                                      data-jump={item.jumpTarget}
+                                      data-jumpable={jumpable ? '1' : '0'}
+                                      data-doc-checked={docChecked}
+                                      data-testid={`m1-handtest-item-${item.id}`}
+                                      title={`${item.jumpHint || item.hint} · ${item.detail}${
+                                        docEntry?.docLabel ? ' · 文档: ' + docEntry.docLabel : ''
+                                      }`}
+                                    >
+                                      {jumpable ? (
+                                        <button
+                                          type="button"
+                                          className="st-demo-m1-handtest__jump"
+                                          data-testid={`m1-handtest-jump-${item.id}`}
+                                          onClick={() => handleHandtestItemJump(item.jumpTarget)}
+                                        >
+                                          <span
+                                            className="st-demo-m1-handtest__mark"
+                                            aria-hidden="true"
+                                          >
+                                            {item.status === 'pass'
+                                              ? '✓'
+                                              : item.status === 'fail'
+                                                ? '!'
+                                                : '·'}
+                                          </span>
+                                          <span className="st-demo-m1-handtest__label">
+                                            {item.label}
+                                          </span>
+                                          <span className="st-demo-m1-handtest__gate">
+                                            {item.gate === 'external' ? '外网' : '本机'}
+                                          </span>
+                                          <span
+                                            className="st-demo-m1-handtest__doc"
+                                            data-testid={`m1-handtest-doc-${item.id}`}
+                                            data-doc-checked={docChecked}
+                                          >
+                                            {docBadge}
+                                          </span>
+                                          <span className="st-demo-m1-handtest__detail">
+                                            {item.detail}
+                                          </span>
+                                        </button>
+                                      ) : (
+                                        <>
+                                          <span
+                                            className="st-demo-m1-handtest__mark"
+                                            aria-hidden="true"
+                                          >
+                                            {item.status === 'pass'
+                                              ? '✓'
+                                              : item.status === 'fail'
+                                                ? '!'
+                                                : '·'}
+                                          </span>
+                                          <span className="st-demo-m1-handtest__label">
+                                            {item.label}
+                                          </span>
+                                          <span className="st-demo-m1-handtest__gate">
+                                            {item.gate === 'external' ? '外网' : '本机'}
+                                          </span>
+                                          <span
+                                            className="st-demo-m1-handtest__doc"
+                                            data-testid={`m1-handtest-doc-${item.id}`}
+                                            data-doc-checked={docChecked}
+                                          >
+                                            {docBadge}
+                                          </span>
+                                          <span className="st-demo-m1-handtest__detail">
+                                            {item.detail}
+                                          </span>
+                                        </>
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                              <details
+                                className="st-demo-m1-handtest__limits"
+                                data-testid="m1-known-limits"
+                              >
+                                <summary>当前里程碑状态（以验证区为准）</summary>
+                                <ul>
+                                  {m1CurrentMilestoneCopy.map((line) => (
+                                    <li key={line}>{line}</li>
+                                  ))}
+                                  <li>
+                                    API Key
+                                    只进安全存储；界面与日志应仅见遮罩，勿把真实密钥写进仓库。
+                                  </li>
+                                </ul>
+                              </details>
+                              <p
+                                className="st-demo-m1-handtest__note"
+                                data-testid="m1-handtest-note"
+                              >
+                                {m1HandtestChecklist.note}
+                              </p>
+                            </div>
+                          </div>
+                        </details>
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
+              }
+              conversation={
+                <div
+                  className="st-demo-thread st-thread"
+                  data-layout={conversationLayout}
+                  data-testid="conversation-thread"
+                >
+                  {showConversationAlert ? (
+                    <div
+                      className="st-conversation-alert"
+                      role="status"
+                      data-testid="conversation-stream-readiness"
+                      data-level={conversationStreamReadiness.level}
+                      data-connection={runtimeView.connectionState}
+                      aria-label="对话状态"
+                    >
+                      <span className="st-conversation-alert__dot" aria-hidden="true" />
+                      <span className="st-conversation-alert__copy">
+                        <strong data-testid="conversation-stream-title">
+                          {conversationStreamReadiness.title}
+                        </strong>
+                        <small data-testid="conversation-stream-subtitle">
+                          {conversationStreamReadiness.failure?.recovery ??
+                            beginnerWorkspace.nextAction}
+                        </small>
+                      </span>
+                      {conversationStreamReadiness.showReconnectCta ? (
+                        <button
+                          type="button"
+                          data-testid="conversation-runtime-reconnect-cta"
+                          disabled={runtimeView.connectionState === 'connecting'}
+                          onClick={() => reconnectRuntime()}
+                        >
+                          <RefreshCw aria-hidden="true" size={13} strokeWidth={2} />
+                          {conversationStreamReadiness.reconnectCtaLabel}
+                        </button>
+                      ) : conversationStreamReadiness.showFailureCta ? (
+                        <button
+                          type="button"
+                          data-testid="conversation-stream-failure-cta"
+                          data-action={conversationStreamReadiness.failureCtaAction}
+                          onClick={() => handleStreamFailureCta()}
+                        >
+                          {conversationStreamReadiness.failureCtaLabel}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {active && collaborationStatus?.taskId === active.taskId ? (
+                    <div
+                      className="st-conversation-collaboration-status"
+                      data-testid="conversation-collaboration-status"
+                      data-tone={collaborationStatus.tone}
+                      role={collaborationStatus.tone === 'error' ? 'alert' : 'status'}
+                    >
+                      <GitBranch aria-hidden="true" size={15} strokeWidth={1.8} />
+                      <span>{collaborationStatus.text}</span>
+                    </div>
+                  ) : null}
+
+                  {projection.messages.length === 0 && previewMessages.length === 0 ? (
+                    <div
+                      className="st-beginner-empty"
+                      data-testid="conversation-empty"
+                      data-connection={runtimeView.connectionState}
+                      data-has-task={active ? 'true' : 'false'}
+                      data-state={beginnerWorkspace.state}
+                    >
+                      <span className="st-beginner-empty__mark" aria-hidden="true">
+                        <Bot size={18} strokeWidth={1.7} />
+                      </span>
+                      <h2 data-testid="conversation-empty-title">{beginnerWorkspace.emptyTitle}</h2>
+                      <p data-testid="conversation-empty-hint">{beginnerWorkspace.emptyHint}</p>
+                      {beginnerWorkspace.actionLabel ? (
+                        <button
+                          type="button"
+                          data-testid="conversation-empty-cta"
+                          onClick={handleBeginnerAction}
+                        >
+                          {beginnerWorkspace.actionLabel}
+                          <ArrowRight aria-hidden="true" size={14} strokeWidth={1.9} />
+                        </button>
+                      ) : null}
+                      {!active ? (
+                        <p
+                          className="st-beginner-empty__aside"
+                          data-testid="conversation-empty-aside"
+                        >
+                          本地文件夹可在项目菜单里稍后绑定，不挡开始。
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {projection.messages.map((message) => {
+                    if (message.confirmation) {
+                      const confirmation = message.confirmation;
+                      const busy = confirmationBusyIds.has(confirmation.id);
+                      const actionError = confirmationErrors.get(confirmation.id);
+                      const statusLabel =
+                        confirmation.status === 'confirmed'
+                          ? '已允许'
+                          : confirmation.status === 'rejected'
+                            ? '已拒绝'
+                            : confirmation.status === 'failed'
+                              ? '执行失败'
+                              : confirmation.status === 'expired'
+                                ? '已过期'
+                                : '等待确认';
+                      return (
+                        <section
+                          key={message.id}
+                          className="st-application-confirmation"
+                          data-status={confirmation.status}
+                          data-testid="application-tool-confirmation"
+                          aria-label="SYNC-THINK 操作确认"
+                        >
+                          <span className="st-application-confirmation__icon" aria-hidden="true">
+                            <ShieldCheck size={17} strokeWidth={1.8} />
+                          </span>
+                          <span className="st-application-confirmation__content">
+                            <small>智能体请求执行操作</small>
+                            <strong>{confirmation.summary}</strong>
+                            {actionError || confirmation.errorSummary ? (
+                              <em role="alert">{actionError ?? confirmation.errorSummary}</em>
+                            ) : null}
+                          </span>
+                          {confirmation.status === 'pending' ? (
+                            <span className="st-application-confirmation__actions">
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() =>
+                                  void resolveApplicationToolConfirmation(confirmation.id, 'reject')
+                                }
+                              >
+                                拒绝
+                              </button>
+                              <button
+                                type="button"
+                                className="is-primary"
+                                disabled={busy}
+                                onClick={() =>
+                                  void resolveApplicationToolConfirmation(
+                                    confirmation.id,
+                                    'confirm',
+                                  )
+                                }
+                              >
+                                {busy ? '处理中…' : '允许一次'}
+                              </button>
+                            </span>
+                          ) : (
+                            <span className="st-application-confirmation__status">
+                              {statusLabel}
+                            </span>
+                          )}
+                        </section>
+                      );
+                    }
+                    const agentIdentity =
+                      conversationAgentIdentityByMessageId.get(message.id) ??
+                      activeConversationIdentity;
+                    const messageManifest = message.runId
+                      ? messageManifestByRunId.get(message.runId)
+                      : undefined;
+                    const messageModel = message.modelId
+                      ? composeModels.find((model) => model.modelId === message.modelId)
+                      : undefined;
+                    const messageModelLabel =
+                      message.modelLabel ??
+                      messageModel?.providerModelId ??
+                      messageManifest?.providerModelId ??
+                      message.modelId ??
+                      messageManifest?.modelId;
+                    const tokenLabel =
+                      messageManifest?.tokenEstimate === undefined
+                        ? undefined
+                        : `~${messageManifest.tokenEstimate.toLocaleString('en-US')} tok`;
+                    return (
+                      <MessageBubble
+                        key={message.id}
+                        role={message.role === 'system' ? 'system' : message.role}
+                        layout={conversationLayout}
+                        streaming={Boolean(message.streaming)}
+                        agentLabel={agentIdentity.name}
+                        agentIcon={agentIdentity.icon}
+                        agentColor={agentIdentity.color}
+                        agentAvatarUrl={agentIdentity.avatarUrl}
+                        modelLabel={message.role === 'assistant' ? messageModelLabel : undefined}
+                        occurredAt={formatConversationTime(message.occurredAt)}
+                        tokenLabel={message.role === 'assistant' ? tokenLabel : undefined}
+                        mentionLabel={conversationMentionLabelByMessageId.get(message.id)}
+                        onAgentActivate={() => {
+                          if (!agentIdentity.agentId) {
+                            setProductSection('groups');
+                            return;
+                          }
+                          if (agentIdentity.agentId !== selectedAgentIdRef.current) {
+                            selectAgent(agentIdentity.agentId);
+                          }
+                          navigateToInstrument('agent');
+                        }}
+                      >
+                        {message.attachments?.length ? (
+                          <div className="st-message-attachments">
+                            <p>{message.text}</p>
+                            <div>
+                              {message.attachments.map((attachment) =>
+                                attachment.kind === 'image' &&
+                                Boolean(messageImagePreviews.get(attachment.id)) ? (
+                                  <button
+                                    key={attachment.id}
+                                    type="button"
+                                    className="st-message-attachment-image"
+                                    aria-label={`查看图片 ${attachment.name}`}
+                                    onClick={() =>
+                                      setPreviewImage({
+                                        name: attachment.name,
+                                        url: messageImagePreviews.get(attachment.id)!,
+                                      })
+                                    }
+                                  >
+                                    <img
+                                      src={messageImagePreviews.get(attachment.id)!}
+                                      alt={attachment.name}
+                                    />
+                                    <span>{attachment.name}</span>
+                                  </button>
+                                ) : (
+                                  <span key={attachment.id} data-kind={attachment.kind}>
+                                    {attachment.kind === 'folder' ? (
+                                      <FolderOpen aria-hidden="true" size={14} />
+                                    ) : (
+                                      <FileText aria-hidden="true" size={14} />
+                                    )}
+                                    <span>
+                                      <strong>{attachment.name}</strong>
+                                      <small>
+                                        {attachment.kind === 'folder'
+                                          ? '只读文件夹'
+                                          : attachment.kind === 'image' &&
+                                              messageImagePreviews.has(attachment.id) &&
+                                              !messageImagePreviews.get(attachment.id)
+                                            ? '图片不可用'
+                                            : `${Math.max(1, Math.ceil(attachment.size / 1024))} KB`}
+                                      </small>
+                                    </span>
+                                  </span>
+                                ),
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          message.text
+                        )}
+                      </MessageBubble>
+                    );
+                  })}
+
+                  {previewMessages.map((text, index) => (
+                    <MessageBubble key={`preview-${index}`} role="user" layout={conversationLayout}>
+                      {text}
+                    </MessageBubble>
+                  ))}
+                </div>
+              }
+
+              trace={
+                <div className="st-demo-trace" data-tab={rightRailTab}>
+                  {rightRailTab === 'overview' ? (
+                    active ? (
+                      <>
+                        {graphError ? (
+                          <p className="st-m2-rail-error" role="alert">
+                            {graphError}
+                          </p>
+                        ) : null}
+                        <ConversationTaskProgress
+                          projectName={active.workspaceName}
+                          ownerLabel={activeConversationIdentity.name}
+                          summary={taskProgress.summary}
+                          steps={taskProgress.steps}
+                          participants={taskProgress.participants}
+                          childTasks={childTaskProgressItems}
+                          onOpenTask={(taskId) => void openTaskById(taskId)}
+                          onResolveChildIntegration={(taskId, strategy) =>
+                            void resolveChildWorktreeIntegration(taskId, strategy)
+                          }
+                          integrationBusyTaskId={integrationBusyTaskId}
+                          accessDetails={taskExecutionAccess}
+                          permissionMode={conversationApprovalMode}
+                          permissionBusy={approvalBusy}
+                          onPermissionModeChange={(mode) =>
+                            changeConversationApprovalMode(mode as ApprovalModeView)
+                          }
+                          browserIdentities={browserIdentities}
+                          selectedBrowserIdentityId={
+                            workspaceTasksForActive.find((task) => task.taskId === active?.taskId)
+                              ?.execution?.browserIdentityId ?? null
+                          }
+                          browserIdentityBusy={browserIdentityBusy}
+                          onBrowserIdentityChange={(identityId) =>
+                            setActiveTaskBrowserIdentity(identityId)
+                          }
+                          onManageBrowserIdentities={manageBrowserIdentities}
+                        />
+                      </>
+                    ) : (
+                      <div className="st-conversation-rail-empty st-conversation-rail-empty--centered">
+                        <strong>选择一个对话任务</strong>
+                        <span>打开任务后查看进度、参与智能体和模型。</span>
+                      </div>
+                    )
+                  ) : null}
+
+                  {rightRailTab === 'artifacts' ? (
+                    <div role="tabpanel" data-testid="right-rail-artifacts">
+                      {artifactError ? (
+                        <p className="st-m2-rail-error" role="alert">
+                          {artifactError}
+                        </p>
+                      ) : null}
+                      <TaskArtifactDirectory
+                        items={taskArtifactDirectoryItems}
+                        onOpenArtifact={(artifactId) => {
+                          artifactDialogReturnFocusRef.current =
+                            document.activeElement instanceof HTMLElement
+                              ? document.activeElement
+                              : null;
+                          setSelectedArtifactId(artifactId);
+                          setArtifactComparison(null);
+                          setArtifactDialogOpen(true);
+                        }}
+                      />
+                      {artifactDialogOpen && artifactVersionsView ? (
+                        <TaskArtifactDialog
+                          artifactName={artifactVersionsView.name}
+                          returnFocusRef={artifactDialogReturnFocusRef}
+                          onClose={() => setArtifactDialogOpen(false)}
+                        >
+                          <ArtifactVersionsPanel
+                            artifact={artifactVersionsView}
+                            comparison={artifactComparison}
+                            mergeSteps={artifactMergeSteps}
+                            conflicts={artifactConflictViews}
+                            busy={artifactBusy}
+                            onCompare={(left, right) => void compareArtifacts(left, right)}
+                            onSelect={(artifactId, versionId) =>
+                              void selectArtifact(artifactId, versionId)
+                            }
+                            onMerge={(artifactId, left, right, mergeStepId) =>
+                              void mergeArtifacts(artifactId, left, right, mergeStepId)
+                            }
+                            onResolveConflict={(conflictId, strategy, content) =>
+                              void resolveArtifactConflict(conflictId, strategy, content)
+                            }
+                          />
+                        </TaskArtifactDialog>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {rightRailTab === 'trace' ? (
+                    <div role="tabpanel" data-testid="right-rail-trace">
+                      <ConversationExecutionLogs turns={conversationLogs} />
+                    </div>
+                  ) : null}
+                </div>
+              }
+              compose={
+                <div className="st-demo-compose-wrap">
+                  {sendError ? (
+                    <p
+                      className="st-demo-compose-error"
+                      role="alert"
+                      data-testid="compose-send-error"
+                    >
+                      {sendError}
+                    </p>
+                  ) : null}
+                  <Compose
+                    mode={active?.participationMode ?? 'conversation'}
+                    placeholder={
+                      active
+                        ? `@${activeConversationIdentity.name} · 描述你希望完成的工作…`
+                        : '创建任务后即可在这里输入…'
+                    }
+                    disabled={
+                      sendPending ||
+                      !active ||
+                      isStreaming ||
+                      !canSendRuntimeMessage(runtimeView.connectionState)
+                    }
+                    streaming={isStreaming}
+                    cancelDisabled={cancelPending}
+                    models={composeModels}
+                    selectedModelId={safeSelectedModelId}
+                    onModelChange={setSelectedModelId}
+                    defaultModelLabel={agentDefaultModelLabel}
+                    connectionState={runtimeView.connectionState}
+                    hasActiveTask={Boolean(active)}
+                    agentDefaultSet={Boolean(agentBinding?.defaultModelId)}
+                    workspaces={composeWorkspaces}
+                    selectedWorkspaceId={active?.workspaceId ?? null}
+                    onWorkspaceChange={(workspaceId) => void switchComposeWorkspace(workspaceId)}
+                    onCreateWorkspace={openProjectCreateDialog}
+                    onCreateWorkspaceFromFolder={createWorkspaceFromFolder}
+                    workspaceActionBusy={projectCreateBusy}
+                    agents={composeAgents}
+                    mentionAgents={composeMentionAgents}
+                    groups={composeGroups}
+                    selectedAgentId={
+                      selectedAgentId ?? fallbackConversationAgentIdentity.agentId ?? null
+                    }
+                    selectedGroupId={
+                      activeConversationGroup ? String(activeConversationGroup.id) : null
+                    }
+                    onAgentChange={(agentId) => selectAgent(agentId)}
+                    onGroupChange={(groupId) => void selectComposeGroup(groupId)}
+                    participantBusy={groupBusy}
+                    onOpenAgentCenter={() => navigateToInstrument('agent')}
+                    onReconnect={reconnectRuntime}
+                    onConfigureModel={() => navigateToInstrument('agent')}
+                    onCancel={() => void cancelStream()}
+                    onSend={sendMessage}
+                    onPickAttachments={pickComposeAttachments}
+                    onImportFiles={importComposeFiles}
+                    onBindAttachmentFolder={bindComposeAttachmentFolder}
+                    defaultModelId={agentBinding?.defaultModelId ?? null}
+                    draftKey={composeDraftKey}
+                    draft={composeDraft}
+                    onDraftChange={(draft) =>
+                      setComposeDrafts((current) => {
+                        const next = new Map(current);
+                        next.set(composeDraftKey, draft);
+                        return next;
+                      })
+                    }
+                  />
+                </div>
+              }
+            />
+          ) : (
+            <div className="st-talk-section-surface" data-section={productSection}>
+              {talkResourceWorkspace}
+            </div>
+          )}
+        </div>
+        {previewImage
+          ? createPortal(
+              <div
+                className="st-message-image-viewer"
+                role="dialog"
+                aria-modal="true"
+                aria-label={`预览图片 ${previewImage.name}`}
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget) setPreviewImage(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') setPreviewImage(null);
+                }}
+                tabIndex={-1}
+              >
+                <button
+                  type="button"
+                  aria-label="关闭图片预览"
+                  onClick={() => setPreviewImage(null)}
+                >
+                  <X size={18} aria-hidden="true" />
+                </button>
+                <div className="st-message-image-viewer__stage">
+                  <img
+                    src={previewImage.url}
+                    alt={previewImage.name}
+                    style={{ transform: `scale(${previewImageScale})` }}
+                  />
+                </div>
+                <div
+                  className="st-message-image-viewer__controls"
+                  role="toolbar"
+                  aria-label="图片缩放"
+                >
+                  <button
+                    type="button"
+                    aria-label="缩小"
+                    onClick={() => setPreviewImageScale((scale) => Math.max(0.5, scale - 0.25))}
+                  >
+                    −
+                  </button>
+                  <span>{Math.round(previewImageScale * 100)}%</span>
+                  <button
+                    type="button"
+                    aria-label="放大"
+                    onClick={() => setPreviewImageScale((scale) => Math.min(3, scale + 0.25))}
+                  >
+                    +
+                  </button>
+                  <button type="button" onClick={() => setPreviewImageScale(1)}>
+                    重置
+                  </button>
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
+      </section>
+    </div>
   );
 }
 

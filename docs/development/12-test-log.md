@@ -1,3 +1,68 @@
+## 2026-07-19 · 项目执行环境与浏览器身份最终验证
+
+- 聚焦 Runtime：Production Step + shared execution tools **2 files / 23 tests PASS**；workspace Runtime pipe **5/5**；执行环境/命令校验 **6/6**。
+- 聚焦 Storage/Protocol/Desktop/UI Kit：执行环境 Store **5/5**；Protocol **19/19**；Desktop Git/身份/权限/worktree bridge 与项目资料 **28/28**；Compose **40/40**。
+- 真实 Worker：Windows UI Automation `list-windows` 通过；Workers 全量 **9 files / 53 tests PASS**，Playwright profile 在全仓并发下的 Crashpad 文件锁通过禁用崩溃报告与有界关闭清理修复。
+- 回归修复：首次全仓测试发现同步本地任务错误发布 `task.execution-ready`，修复为仅 pending 远程准备发布状态事件；Runtime 全量 **50 files / 284 tests PASS**。
+- 全仓测试：`pnpm test -- --force` -> **21/21 tasks PASS，0 cache**。
+- 全仓类型检查：`pnpm typecheck -- --force` -> **21/21 tasks PASS，0 cache**。
+- 全仓构建：`pnpm build -- --force` -> **12/12 tasks PASS，0 cache**；Desktop main、sandbox preload、renderer 与 Runtime/Workers 均为最新产物。
+- 差异检查：`git diff --check` PASS；仅有工作区既有 CRLF/LF 转换提示，无空白错误。
+- 重启验证：QA Runtime PID `38580` 恢复原数据库并监听 `sync-think-dev-0001`；主资源读取到 `https://github.com/1447751897/SYNC-THINK.git` / `main`。Electron PID `8076` 正常响应、本次 stderr 为 0，并完成 Runtime hello；生产 Runtime `43748` 未触碰。
+
+## 2026-07-18 · Figma Talk 产品页 fidelity 最终验证
+
+- TDD RED：资源页统一契约首次运行 **2 failures / 33 passed**，准确命中缺少 `st-talk-resource-page`、Skill 页面测试标识和分区全高 overflow 规则。
+- 主计划聚焦 Desktop：`talk-workspace`、`beginner-desktop-shell`、`m2-workspace`、进度/日志/右栏/Agent 投影共 **7 files / 63 tests PASS**；独立审查修复后，Projects/Bootstrap 聚焦为 **3 files / 48 tests PASS**。
+- 主计划聚焦 UI Kit：`AgentWorkspace`、`ProvidersPanel`、`MessageBubble` 共 **3 files / 37 tests PASS**；审查修复后 AgentWorkspace **14 tests PASS**；Storage `workspace-store` **18 tests PASS**。
+- Desktop 全量：**62 files / 419 tests PASS**；其中 `build-assets` 真实执行 Desktop TypeScript、preload 与 renderer 构建。
+- UI Kit 全量：**21 files / 239 tests PASS**。
+- 全仓测试：`pnpm exec turbo run test --concurrency=1 --force` -> **21/21 tasks PASS，0 cache**；Storage **22/224**、Runtime **46/265**真实执行。
+- 全仓类型检查：`pnpm exec turbo run typecheck --concurrency=1 --force` -> **21/21 tasks PASS，0 cache**。
+- 全仓构建：`pnpm exec turbo run build --concurrency=1 --force` -> **12/12 tasks PASS，0 cache**；Desktop main、sandbox preload、renderer assets 已重新生成。
+- 独立审查：无 Critical；发现的 3 个 Important 已通过项目设置视图、空项目清理/定向创建和首个 Agent bootstrap/error 回归修复。
+- 运行门禁：只停止旧 Electron，保留 Runtime `43748/51248`；新 Electron `70140` 的标题为 `SYNC-THINK`、`Responding=True`、stderr `0 bytes`。
+- 视觉边界：本轮不代替用户进行最终页面接受；Figma 原型和用户截图仍是设计真源，用户将在最新桌面中检查 1:1 视觉表现。
+
+## 2026-07-18 · 对话任务进度、产物目录与分 Agent 日志验证
+
+- 聚焦：`conversation-log-projection`、`conversation-progress-projection`、`conversation-detail-rail`、`beginner-desktop-shell`、`talk-workspace`、`m2-renderer-wiring` 共 **6 files / 48 tests PASS**。
+- Desktop 全量：**62 files / 400 tests PASS**；包含真实事件关联、无 Run 空态、fallback 后模型、产物版本状态、日志阶段折叠、弹窗关闭/焦点恢复、任务父子层级、归档和审批工具入口。
+- UI Kit 全量：**21 files / 233 tests PASS**；原产物版本操作和审批面板行为未回归。
+- 全仓测试：`turbo run test --concurrency=1 --force` -> **21/21 tasks PASS，0 cache**；Storage **22/224**、Runtime **46/265**真实执行。
+- 全仓类型检查：`turbo run typecheck --concurrency=1 --force` -> **21/21 tasks PASS，0 cache**。
+- 全仓构建：`turbo run build --concurrency=1 --force` -> **12/12 tasks PASS，0 cache**；Desktop main、sandbox preload、renderer assets 已重新生成。
+- 差异检查：`git diff --check` PASS；仅有工作区既有 CRLF/LF 转换提示，无空白错误。
+- 视觉边界：本轮按用户要求不启动 Electron、不由代理查看页面；自动化覆盖结构和交互，不声明新的视觉 1:1 验收。
+
+## 2026-07-18 · Figma 对话任务替换自动化验证
+
+- 聚焦合同：`talk-workspace.test.tsx` **10/10**、`beginner-desktop-shell.test.ts` **13/13**，合计 **23/23 PASS**。
+- Desktop 全量：**59 files / 386 tests PASS**。
+- UI Kit 全量：**21 files / 233 tests PASS**；消息 Agent/模型/时间/token 元数据回归覆盖通过。
+- 全仓测试：`turbo run test --concurrency=1 --force` -> **21/21 tasks PASS，0 cache**；Storage **22/224**、Runtime **46/265**真实执行。
+- 全仓类型检查：`turbo run typecheck --concurrency=1 --force` -> **21/21 tasks PASS，0 cache**。
+- 全仓构建：`turbo run build --concurrency=1 --force` -> **12/12 tasks PASS，0 cache**；Desktop main、sandbox preload、renderer assets 均生成。
+- 差异检查：`git diff --check` PASS；仅存在既有 CRLF/LF 提示，无空白错误。
+- 运行环境：系统 Node `24.14.1`；Node 20 生产在线重启仍是独立门禁。
+- 视觉边界：用户明确要求自行重构后查看，本轮没有启动 Electron 或进行新页面截图；因此只记录结构、交互接线和自动化结果，不宣称本次改造已经过新的 1:1 实窗验收。
+
+## 2026-07-18 · Talk V8 最新桌面验证（实窗门禁仍 open）
+
+- Desktop 聚焦：`talk-workspace.test.tsx` **9/9 PASS**；覆盖群聊创建/编辑 payload、Skill 导入、MCP 注册、设置页状态/计数/主题。
+- UI Kit 聚焦：`AgentWorkspace.test.tsx` **11/11 PASS**；覆盖在线/忙碌/离线筛选。
+- Desktop 首轮全量：**384/385**，稳定失败于设置页标题缺少显式主题 token。
+- 修复后：`beginner-desktop-shell.test.ts` **13/13 PASS**；Desktop **59 files / 385 tests PASS**；UI Kit **21 files / 233 tests PASS**。
+- 类型与构建：Desktop、UI Kit typecheck **PASS**；两包 build **PASS**；最新 Electron main/preload/renderer 已生成。
+- 环境边界：上述纯前端验证在沙箱内使用 Node 24，不加载 SQLite；Node 20 全仓回归尚未执行。
+- 实窗首轮 RED：1440 档对话页正常，但好友页主区持续空白；同一问题影响全部非任务页。根因是隐藏左栏后保留 `0 + 1fr` Grid，主内容自动进入 0px 第一列。
+- 布局 TDD：`beginner-desktop-shell.test.ts` 单列契约先 **12/13 RED**，CSS 改为 `grid-template-columns: minmax(0, 1fr)` 后 **13/13 GREEN**；Desktop 再次 **59 files / 385 tests PASS** 并重建。
+- 1440×900：浅/深主题检查任务、项目、好友、群聊/创建表单、自动化、模型源、Skill & MCP、设置；Runtime、Scheduler、Webhook 真实在线，无裁切或重叠。
+- 1280×720：检查任务三栏、导航折叠/展开、浅/深主题、好友、群聊创建表单、设置和模型源；无横向溢出、按钮文字覆盖或列重叠。
+- Console：Electron DevTools 显示 `No Issues`，仅有 React DevTools 开发提示；打开 DevTools 前 Electron stderr 为空，打开后新增 3 条 DevTools 内部诊断（language-mismatch、`Autofill.enable`、`Autofill.setAddresses`），没有 SYNC-THINK Renderer 错误。Runtime PID `51248` 与 Electron 4 个进程存活。
+- 环境说明：Playwright 安装缺少 `playwright-core`；实窗改用已配置的 Windows Computer Use 连接。开发参数直接启动一度被 reviewer 404 拒绝，因此使用现有受批准 Electron 启动与原生窗口尺寸操作完成检查，没有使用 `--no-sandbox`。
+- 结论：代码、桌面/UI Kit 包级回归、类型检查、构建和双尺寸双主题实窗通过；Node 20 全仓门禁和生产重启保持 **open**。
+
 ## 2026-07-16 · 对话 Agent 身份与顶部减负 TDD
 
 - 用户反馈：顶部 `决策 / 记忆 / 上下文` 无法理解；M1 验证在里程碑关闭后不再需要；助手回复需要参考 Multica 暴露 Agent 头像与身份。
@@ -142,6 +207,46 @@
 - 真实 Runtime replay：`highWatermark=7`，序列 `1..7`，`monotonic=true`
 - Electron：1427×894 折叠/展开截图通过；干净重启 stderr 为空；Runtime/Provider/任务/Compose 恢复
 - 结论：自动化与本机 UI 可测；外网 0/18、dogfood 0/3 仍未完成，M1 open
+
+## 2026-07-18 · 对话流式、Agent 身份一致性与字号偏好
+
+### TDD 证据
+
+```text
+RED: 空 assistant 流式 turn 没有 message-thinking
+GREEN: 思考态出现，首段文本到达后消失并继续 streaming
+
+RED: 任务主 AgentVersion projector 不存在，任务列表使用通用 Bot
+GREEN: task-scoped ordered projection；reviewer/其他 task 不泄漏
+
+RED: 字号偏好无 13-18 边界、根变量会被 Talk 默认值覆盖
+GREEN: localStorage 持久化 + documentElement 变量 + typography tokens
+
+RED: 任务摘要单行、用户时间固定字号、思考 spinner 不响应 reduced-motion
+GREEN: 两行摘要 + 缩放时间 + reduced-motion 停止旋转
+
+RED: Talk 图标缺少 brain/image；群组 avatarPath 不进入共享 URL Map
+GREEN: 完整图标 SVG + 群组头像加载 + Agent/群组函数式 Map 合并
+```
+
+### 聚焦与包级验证
+
+| 命令/范围                                         | 结果                          |
+| ------------------------------------------------- | ----------------------------- |
+| UI Kit MessageBubble focused                      | **9/9 PASS**                  |
+| Desktop projection/preferences/Talk/event focused | **65/65 PASS**                |
+| `pnpm --filter @sync-think/desktop test`          | **62 files / 410 tests PASS** |
+| `pnpm --filter @sync-think/ui-kit test`           | **21 files / 236 tests PASS** |
+
+### 全仓强制门禁
+
+| 命令                                          | 结果                 |
+| --------------------------------------------- | -------------------- |
+| `turbo run test --concurrency=1 --force`      | **21/21 tasks PASS** |
+| `turbo run typecheck --concurrency=1 --force` | **21/21 tasks PASS** |
+| `turbo run build --concurrency=1 --force`     | **12/12 tasks PASS** |
+
+Prettier 与 `git diff --check` 通过；最终独立审查无 P1/P2。Desktop build 已重新生成 main、sandbox preload 和 renderer assets。只重启 Desktop 后，新 Electron 根进程 `24144` 的窗口标题为 `SYNC-THINK`、`Responding=True`，stderr 为 `0 bytes`；Runtime `43748` 与 QA Runtime `51248` 均未重启。
 
 ## 2026-07-16 · 新人桌面工作区验证
 
@@ -2162,6 +2267,49 @@ Locked IA：右侧 Run 轨迹可折叠并**记住偏好**；完整浅色/深色�
 
 **Manifest §10.3 版本元数据 soft craft 已落地并通过复跑；runtime tsc 阻塞已解除。** 整个 M1 保持 open。
 
+## 2026-07-19 · 对话附件与真实执行日志
+
+### 历史图片续传修复补充
+
+- 根因：历史 `message.appended` 原先只编译为文字 Provider 消息，附件引用没有进入历史上下文；后续轮次只加载当前轮附件。
+- 修复：同一任务最近 6 张图片在原用户消息位置保留，Provider 调用前重新从不可变快照加载；图片所属消息优先保留，SHA-256 变化会失败关闭。
+- 定向结果：Runtime **15/15**、Runtime 全量 **47 files / 272 tests**、Runtime typecheck、Desktop 附件 **4/4**、Desktop build 通过。
+- 进程：QA Runtime `70324`，Electron `72788`，生产 Runtime `43748` 未重启。
+
+### 自动化结果
+
+| 范围 | 结果 |
+| --- | --- |
+| Shared | 5 files / 21 tests passed |
+| Protocol | 4 files / 19 tests passed |
+| Adapters | 6 files / 50 tests passed |
+| UI Kit | 21 files / 247 passed / 2 existing skipped |
+| Desktop | 65 files / 442 tests passed |
+| Runtime | 47 files / 269 tests passed |
+| Storage | 22 files / 225 tests passed |
+| Root test | 21 / 21 tasks passed, 0 cache |
+| Root typecheck | 21 / 21 tasks passed |
+| Root build | 12 / 12 tasks passed |
+| `git diff --check` | passed；仅既有 CRLF/LF 提示 |
+
+### 覆盖行为
+
+1. 文件不可变快照、剪贴板无路径图片、文件夹只读引用、格式/数量校验。
+2. Composer 选择、拖放/粘贴、预览、移除、附件发送与非视觉模型门禁。
+3. OpenAI Chat `image_url`、Responses `input_image`、Anthropic base64 image block。
+4. Runtime 文本摘录、目录清单、图片延迟加载、checkpoint 元数据恢复。
+5. 日志工具请求/结果配对，命令、cwd、退出码、输出、耗时和密钥脱敏。
+6. 原有协作意图、任务路由、fallback、流式、Provider 与桌面构建回归。
+7. `DOMStringList` 拖放兼容、Renderer 字节序列化、拖入态、大图预览与附件自动增高。
+8. 内部产物筛选、旧 `Step output` 友好命名、单版本真实正文读取与技术控件隐藏。
+9. 顺带修正 `0027_runtime_stream_compaction` 已存在但两个迁移顺序测试仍停在 `0026` 的基线遗漏。
+
+### 真实进程
+
+- QA Runtime：PID `39376`，原数据库恢复成功，pipe `sync-think-dev-0001`，Electron hello accepted。
+- Electron：PID `21848`，`Responding=True`，启动 stderr `0 bytes`，窗口标题 `SYNC-THINK`。
+- Production Runtime：PID `43748` 保持存活且未重启。
+
 - TDD RED：M1 workspace disclosure 缺失；GREEN：`m1-obs-layout` **7/7**
 - TDD RED：WorkspaceNav `hideReadiness` 未生效；GREEN：WorkspaceNav **14/14**
 - TDD RED：混合内存/持久事件 replay `[1,2,3,1]`；GREEN：MCP 定向 + Runtime 全量 **22 files / 71 tests**
@@ -2171,3 +2319,84 @@ Locked IA：右侧 Run 轨迹可折叠并**记住偏好**；完整浅色/深色�
 - 真实 Runtime replay：`highWatermark=7`，序列 `1..7`，`monotonic=true`
 - Electron：1427×894 折叠/展开截图通过；干净重启 stderr 为空；Runtime/Provider/任务/Compose 恢复
 - 结论：自动化与本机 UI 可测；外网 0/18、dogfood 0/3 仍未完成，M1 open
+## 2026-07-19 - Attachment continuity and child-task rail
+
+- `pnpm --filter @sync-think/runtime build`: PASS
+- `pnpm --filter @sync-think/desktop build`: PASS
+- Desktop: 65 test files / 442 tests PASS
+- UI Kit: 21 test files / 247 passed / 2 existing skipped
+- Focused attachment and progress tests: 21/21 PASS
+## 2026-07-19 - Automatic child-task closure
+
+Validated behavior:
+
+1. two dependency-free child tasks start before either completes when the assigned Agent has concurrency 2;
+2. a dependent child starts only after its prerequisite emits `subtask.completed`;
+3. all children execute automatically and the parent lead produces a follow-up completion after one `subtask.parent-resumed` event;
+4. parent completion messages carry `messageAgentVersionId`/`fromAgentVersionId`, while task identity remains the parent lead;
+5. Runtime and SQLite storage reject grandchild creation;
+6. packets persist `retryLimit: 5`; failed prerequisites terminate blocked dependents.
+
+Commands and results:
+
+```text
+Runtime focused: 2 files / 5 tests passed
+Desktop identity/history: 3 files / 38 tests passed
+Desktop detail/workspace: 4 files / 40 tests passed
+Storage workspace: 1 file / 18 tests passed
+Workers isolated: 7 files / 50 tests passed
+pnpm build: 12/12 tasks passed
+pnpm typecheck: 21/21 tasks passed
+pnpm exec turbo run test --concurrency=1 --force: 21/21 tasks passed, 0 cached
+Runtime full: 47 files / 273 tests passed
+UI Kit full: 247 passed / 2 skipped
+pnpm lint: blocked before source analysis because the repository has no ESLint 9 eslint.config.js
+pnpm test (parallel Turbo): Workers process tests contend under whole-repo concurrency; isolated Workers and the forced serial whole-repo gate are green
+```
+
+Restart verification: QA Runtime PID `46448` restored `.tmp-runtime-qa/sync-think.db` and listened on `sync-think-dev-0001`; Electron root PID `39688` opened a responding `SYNC-THINK` window with zero-byte stderr and completed Runtime hello. Production Runtime PID `43748` was untouched.
+
+## 2026-07-19 - 项目执行环境与浏览器身份验证
+
+覆盖行为：
+
+1. Git 任务创建、复用和父子独立 worktree；父任务未提交改动继承；dirty worktree 到期不删除。
+2. 非 Git 本地目录单写租约和 blocked 恢复语义。
+3. 对话真实文件、命令、Git、浏览器工具及执行事件持久化。
+4. Git 仓库绑定协议、Runtime 命令、Desktop IPC 与设置 UI。
+5. Playwright 独立持久化 profile、身份串行租约和关闭超时回归。
+6. `0028_project_execution_environments` 新建与历史迁移顺序。
+
+结果：
+
+```text
+Storage: 23 files / 229 tests passed
+Runtime: 50 files / 280 tests passed
+Desktop: 65 files / 446 tests passed
+Workers: 8 files / 52 tests passed
+Protocol: 4 files / 19 tests passed
+Adapters: 6 files / 50 tests passed
+Core: 16 files / 148 tests passed
+UI Kit: 21 files / 247 passed / 2 existing skipped
+CLI: 1 file / 4 tests passed
+Shared: 5 files / 21 tests passed
+Secure Store: 2 files / 11 tests passed
+Test Fixtures: no test files, passWithNoTests
+pnpm typecheck: 21/21 tasks passed
+pnpm build: 12/12 tasks passed
+```
+
+浏览器关闭回归原先在全 Workers 并行负载下超过 Vitest 10 秒 hook 上限；改为每个 context 最多等待 4 秒，并增加永不返回的 fake context 测试后，Workers 全套在约 2 秒内完成。
+
+重启验证：QA Runtime PID `24904` 恢复 `.tmp-runtime-qa/sync-think.db`，监听 `sync-think-dev-0001` 并收到 Electron hello；Electron PID `29064` 的 `SYNC-THINK` 窗口 `Responding=True`，本次启动 stderr 为 0 bytes。生产 Runtime PID `43748` 未重启。
+## 2026-07-19 · @协作、本轮任务与 Runtime 连接边界验证
+
+- Desktop 全量：**65 files / 453 tests PASS**。
+- Storage 全量：**23 files / 233 tests PASS**。
+- UI Kit 全量：**250 passed / 2 existing skipped**。
+- Runtime 原子回滚 + pipe 请求边界：**2 files / 9 tests PASS**；持久化失败后同一 socket 可继续处理下一请求。
+- Runtime 全量：默认临时目录串行主套件 **49 files / 284 tests PASS**；受限环境中附件 realpath 套件改用仓库受控临时目录，**1 file / 3 tests PASS**；合计 **287/287**。
+- Workers 全量：**9 files / 53 tests PASS**，包含真实 Windows UI Automation 窗口读取。
+- Runtime 与 Workers typecheck：**PASS**。
+- 构建：`pnpm -r --workspace-concurrency=1 --if-present build` -> **12 workspace packages PASS**；Desktop sandbox preload、renderer 和 Runtime 均已生成。
+- 根 `pnpm run build` 的 Turbo 并发派生进程在受限环境读取 `C:\Users\zhuzhenyu` 时触发 `EPERM`；这是沙箱路径限制，等价串行 workspace 构建已完整通过。

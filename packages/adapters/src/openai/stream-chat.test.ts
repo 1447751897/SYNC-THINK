@@ -63,6 +63,37 @@ describe('streamOpenAIChatCompletions', () => {
     fetchMock.mockReset();
   });
 
+  it('sends image parts as OpenAI chat image_url content', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream(['data: [DONE]\n\n']),
+      text: async () => '',
+    } as unknown as Response);
+    await collect(
+      streamOpenAIChatCompletions(
+        req({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Inspect this' },
+                { type: 'image', imageUrl: 'data:image/png;base64,AQID' },
+              ],
+            },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body.messages[0].content).toEqual([
+      { type: 'text', text: 'Inspect this' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' } },
+    ]);
+  });
+
   it('streams text-delta events from SSE and finishes', async () => {
     const body = sseStream([
       'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',

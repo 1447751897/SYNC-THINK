@@ -6,6 +6,7 @@ import {
   createProviderCallControl,
   providerAbortEvent,
 } from '../call-control.js';
+import { createOpenAIToolNameMap, type OpenAIToolNameMap } from './tool-name-map.js';
 
 export class ProviderCallError extends Error {
   readonly failureClass: FailureClass;
@@ -30,7 +31,10 @@ export function joinChatCompletionsUrl(baseUrl: string): string {
   return `${root}/chat/completions`;
 }
 
-function toOpenAIMessages(request: ProviderCallRequest): Array<Record<string, unknown>> {
+function toOpenAIMessages(
+  request: ProviderCallRequest,
+  toolNames: OpenAIToolNameMap,
+): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   if (request.systemPrompt && request.systemPrompt.trim().length > 0) {
     out.push({ role: 'system', content: request.systemPrompt });
@@ -48,7 +52,7 @@ function toOpenAIMessages(request: ProviderCallRequest): Array<Record<string, un
           id: part.toolCall!.id,
           type: 'function',
           function: {
-            name: part.toolCall!.name,
+            name: toolNames.toWireName(part.toolCall!.name),
             arguments: part.toolCall!.argumentsJson,
           },
         }));
@@ -57,10 +61,20 @@ function toOpenAIMessages(request: ProviderCallRequest): Array<Record<string, un
         continue;
       }
     }
-    if (!content && message.role !== 'assistant') continue;
+    const multimodalContent: Array<Record<string, unknown>> | undefined =
+      message.role === 'user' && Array.isArray(message.content)
+        ? message.content.reduce<Array<Record<string, unknown>>>((parts, part) => {
+            if (part.type === 'text' && part.text) parts.push({ type: 'text', text: part.text });
+            if (part.type === 'image' && part.imageUrl) {
+              parts.push({ type: 'image_url', image_url: { url: part.imageUrl } });
+            }
+            return parts;
+          }, [])
+        : undefined;
+    if (!content && !multimodalContent?.length && message.role !== 'assistant') continue;
     out.push({
       role: message.role,
-      content,
+      content: multimodalContent?.length ? multimodalContent : content,
     });
   }
   return out;
@@ -140,10 +154,11 @@ export async function* streamOpenAIChatCompletions(
   const timeoutMs = options.timeoutMs ?? 120_000;
   const control = createProviderCallControl(request.signal, timeoutMs);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const toolNames = createOpenAIToolNameMap(request);
 
   const body = {
     model: request.modelId,
-    messages: toOpenAIMessages(request),
+    messages: toOpenAIMessages(request, toolNames),
     stream: true,
     ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
     ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
@@ -152,7 +167,7 @@ export async function* streamOpenAIChatCompletions(
           tools: request.tools.map((tool) => ({
             type: 'function',
             function: {
-              name: tool.name,
+              name: toolNames.toWireName(tool.name),
               description: tool.description,
               parameters: tool.inputSchema,
             },
@@ -206,7 +221,7 @@ export async function* streamOpenAIChatCompletions(
     const contentType = response.headers?.get?.('content-type') ?? '';
     if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
       const text = await response.text();
-      yield* emitFromJsonCompletion(text, apiKey);
+      yield* emitFromJsonCompletion(text, apiKey, toolNames);
       return;
     }
 
@@ -214,9 +229,9 @@ export async function* streamOpenAIChatCompletions(
       // Node fetch may expose body as ReadableStream; if missing, try text parse.
       const text = await response.text();
       if (text.includes('data:')) {
-        yield* emitFromSseText(text, apiKey);
+        yield* emitFromSseText(text, apiKey, toolNames);
       } else {
-        yield* emitFromJsonCompletion(text, apiKey);
+        yield* emitFromJsonCompletion(text, apiKey, toolNames);
       }
       return;
     }
@@ -247,7 +262,9 @@ export async function* streamOpenAIChatCompletions(
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? '';
       for (const line of lines) {
-        for (const event of parseSseLine(line, apiKey, parseState)) yield event;
+        for (const event of parseSseLine(line, apiKey, parseState)) {
+          yield toolNames.restoreEvent(event);
+        }
         if (parseState.finished) break;
       }
     }
@@ -255,10 +272,14 @@ export async function* streamOpenAIChatCompletions(
     if (!parseState.finished) {
       // Flush remaining buffer.
       if (buffer.trim().length > 0) {
-        for (const event of parseSseLine(buffer, apiKey, parseState)) yield event;
+        for (const event of parseSseLine(buffer, apiKey, parseState)) {
+          yield toolNames.restoreEvent(event);
+        }
       }
       if (!parseState.finished) {
-        for (const event of finishChatStream(parseState, 'stop')) yield event;
+        for (const event of finishChatStream(parseState, 'stop')) {
+          yield toolNames.restoreEvent(event);
+        }
       }
     }
   } finally {
@@ -404,18 +425,26 @@ function finishChatStream(
   return events;
 }
 
-async function* emitFromSseText(text: string, apiKey: string): AsyncIterable<AdapterEvent> {
+async function* emitFromSseText(
+  text: string,
+  apiKey: string,
+  toolNames: OpenAIToolNameMap,
+): AsyncIterable<AdapterEvent> {
   const state: ChatParseState = { toolCalls: new Map(), emitted: new Set(), finished: false };
   for (const line of text.split(/\r?\n/)) {
-    for (const event of parseSseLine(line, apiKey, state)) yield event;
+    for (const event of parseSseLine(line, apiKey, state)) yield toolNames.restoreEvent(event);
     if (state.finished) break;
   }
   if (!state.finished) {
-    for (const event of finishChatStream(state, 'stop')) yield event;
+    for (const event of finishChatStream(state, 'stop')) yield toolNames.restoreEvent(event);
   }
 }
 
-async function* emitFromJsonCompletion(text: string, apiKey: string): AsyncIterable<AdapterEvent> {
+async function* emitFromJsonCompletion(
+  text: string,
+  apiKey: string,
+  toolNames: OpenAIToolNameMap,
+): AsyncIterable<AdapterEvent> {
   let json: unknown;
   try {
     json = JSON.parse(text);
@@ -463,14 +492,14 @@ async function* emitFromJsonCompletion(text: string, apiKey: string): AsyncItera
   const toolCalls = root.choices?.[0]?.message?.tool_calls ?? [];
   for (const [index, call] of toolCalls.entries()) {
     if (!call.function?.name) continue;
-    yield {
+    yield toolNames.restoreEvent({
       type: 'tool-call',
       toolCall: {
         id: call.id ?? `tool-call-${index + 1}`,
         name: call.function.name,
         argumentsJson: call.function.arguments ?? '{}',
       },
-    };
+    });
   }
   const finish = root.choices?.[0]?.finish_reason;
   yield {

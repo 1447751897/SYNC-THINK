@@ -236,6 +236,11 @@ async function openLegacyConflictStore() {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     await runMigrations(dbPath);
   } finally {

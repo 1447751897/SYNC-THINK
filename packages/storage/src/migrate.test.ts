@@ -38,6 +38,11 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -234,6 +239,11 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -414,8 +424,15 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
 
 describe('migration planner (pure)', () => {
   it('appends provider execution checkpoints after optional project folder binding', () => {
-    expect(MIGRATIONS.at(-2)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.slice(21).map((migration) => migration.name)).toEqual([
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
+    ]);
   });
 
   it.runIf(canOpenNativeSqlite())(
@@ -424,7 +441,7 @@ describe('migration planner (pure)', () => {
       const dir = mkdtempSync(join(tmpdir(), 'sync-think-project-folder-migration-'));
       const dbPath = join(dir, 'sync-think.db');
       try {
-        const trailing = MIGRATIONS.splice(-2);
+        const trailing = MIGRATIONS.splice(21);
         try {
           await runMigrations(dbPath);
         } finally {
@@ -465,6 +482,11 @@ describe('migration planner (pure)', () => {
         expect((await runMigrations(dbPath)).applied).toEqual([
           '0022_optional_project_folder',
           '0023_provider_execution_checkpoint',
+          '0024_agent_groups',
+          '0025_agent_runtime_profile',
+          '0026_automation',
+          '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -520,26 +542,26 @@ describe('migration planner (pure)', () => {
   );
 
   it('appends the complete AgentVersion migration after reviewer/rework', () => {
-    expect(MIGRATIONS.at(-7)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-5)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0021_merge_step_conflict_resolution');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.slice(16).map((migration) => migration.name)).toEqual([
+      '0017_reviewer_rework',
+      '0018_complete_agent_version',
+      '0019_review_source_evidence_integrity',
+      '0020_review_bounds_integrity',
+      '0021_merge_step_conflict_resolution',
+      '0022_optional_project_folder',
+      '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
+    ]);
   });
 
   it('reserves 0016 for production execution fencing after frozen 0015', () => {
-    expect(MIGRATIONS.at(-9)?.name).toBe('0015_capability_authorization');
-    expect(MIGRATIONS.at(-8)?.name).toBe('0016_production_execution');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-5)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0021_merge_step_conflict_resolution');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0023_provider_execution_checkpoint');
-    const through0015 = MIGRATIONS.slice(0, -8).map((migration) => migration.name);
+    expect(MIGRATIONS[14]?.name).toBe('0015_capability_authorization');
+    expect(MIGRATIONS[15]?.name).toBe('0016_production_execution');
+    const through0015 = MIGRATIONS.slice(0, 15).map((migration) => migration.name);
     expect(planMigrations(through0015).applied).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',
@@ -549,13 +571,18 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
   });
 
   it('appends capability authorization after the frozen 0014 migration', () => {
-    expect(MIGRATIONS.at(-10)?.name).toBe('0014_scheduler_fencing');
-    expect(MIGRATIONS.at(-9)?.name).toBe('0015_capability_authorization');
-    const through0014 = MIGRATIONS.slice(0, -9).map((migration) => migration.name);
+    expect(MIGRATIONS[13]?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS[14]?.name).toBe('0015_capability_authorization');
+    const through0014 = MIGRATIONS.slice(0, 14).map((migration) => migration.name);
     expect(planMigrations(through0014).applied).toEqual([
       '0015_capability_authorization',
       '0016_production_execution',
@@ -566,6 +593,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
   });
 
@@ -592,6 +624,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
   });
 
@@ -611,6 +648,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
   });
 
@@ -629,6 +671,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
   });
 
@@ -664,6 +711,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -692,6 +744,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -723,6 +780,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -758,6 +820,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -794,6 +861,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -831,6 +903,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -869,6 +946,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -909,6 +991,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -941,6 +1028,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -970,6 +1062,11 @@ describe('migration planner (pure)', () => {
       '0021_merge_step_conflict_resolution',
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
+      '0024_agent_groups',
+      '0025_agent_runtime_profile',
+      '0026_automation',
+      '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1095,24 +1192,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   it('upgrades a complete 0017 AgentVersion without rewriting history and uses safe defaults', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-agent-version-upgrade-'));
     const dbPath = join(dir, 'sync-think.db');
-    const providerCheckpointMigration =
-      MIGRATIONS.at(-1)?.name === '0023_provider_execution_checkpoint'
-        ? MIGRATIONS.pop()
-        : undefined;
-    const optionalProjectFolderMigration =
-      MIGRATIONS.at(-1)?.name === '0022_optional_project_folder' ? MIGRATIONS.pop() : undefined;
-    const mergeResolutionMigration =
-      MIGRATIONS.at(-1)?.name === '0021_merge_step_conflict_resolution'
-        ? MIGRATIONS.pop()
-        : undefined;
-    const boundsMigration =
-      MIGRATIONS.at(-1)?.name === '0020_review_bounds_integrity' ? MIGRATIONS.pop() : undefined;
-    const sourceEvidenceMigration =
-      MIGRATIONS.at(-1)?.name === '0019_review_source_evidence_integrity'
-        ? MIGRATIONS.pop()
-        : undefined;
-    const completeMigration =
-      MIGRATIONS.at(-1)?.name === '0018_complete_agent_version' ? MIGRATIONS.pop() : undefined;
+    const trailingMigrations = MIGRATIONS.splice(17);
     try {
       await runMigrations(dbPath);
       const before = await openDatabaseAsync({ path: dbPath });
@@ -1137,12 +1217,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         before.raw.close();
       }
 
-      if (completeMigration) MIGRATIONS.push(completeMigration);
-      if (sourceEvidenceMigration) MIGRATIONS.push(sourceEvidenceMigration);
-      if (boundsMigration) MIGRATIONS.push(boundsMigration);
-      if (mergeResolutionMigration) MIGRATIONS.push(mergeResolutionMigration);
-      if (optionalProjectFolderMigration) MIGRATIONS.push(optionalProjectFolderMigration);
-      if (providerCheckpointMigration) MIGRATIONS.push(providerCheckpointMigration);
+      MIGRATIONS.push(...trailingMigrations);
       expect((await runMigrations(dbPath)).applied).toEqual([
         '0018_complete_agent_version',
         '0019_review_source_evidence_integrity',
@@ -1150,6 +1225,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
 
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1179,13 +1259,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         after.raw.close();
       }
     } finally {
-      for (const migration of [
-        completeMigration,
-        sourceEvidenceMigration,
-        boundsMigration,
-        mergeResolutionMigration,
-        optionalProjectFolderMigration,
-      ]) {
+      for (const migration of trailingMigrations) {
         if (migration && !MIGRATIONS.includes(migration)) MIGRATIONS.push(migration);
       }
       rmSync(dir, { recursive: true, force: true });
@@ -1246,6 +1320,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1290,6 +1369,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
 
       const upgraded = await openDatabaseAsync({ path: dbPath });
@@ -1303,7 +1387,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         upgraded.raw.close();
       }
     } finally {
-      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0023_provider_execution_checkpoint') {
+      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0028_project_execution_environments') {
         MIGRATIONS.push(...trailingMigrations);
       }
       rmSync(dir, { recursive: true, force: true });
@@ -1429,7 +1513,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   });
 
   it('appends 0014 scheduler fencing and exact Step output mapping', async () => {
-    expect(MIGRATIONS.at(-10)?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS[13]?.name).toBe('0014_scheduler_fencing');
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduler-fencing-migration-'));
     const dbPath = join(dir, 'sync-think.db');
     try {
@@ -1560,6 +1644,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1617,6 +1706,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1649,6 +1743,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1680,6 +1779,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1718,6 +1822,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
 
       const { raw } = await openDatabaseAsync({ path: dbPath });
@@ -1825,6 +1934,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1882,6 +1996,11 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0021_merge_step_conflict_resolution',
         '0022_optional_project_folder',
         '0023_provider_execution_checkpoint',
+        '0024_agent_groups',
+        '0025_agent_runtime_profile',
+        '0026_automation',
+        '0027_runtime_stream_compaction',
+      '0028_project_execution_environments',
       ]);
 
       const { raw } = await openDatabaseAsync({ path: dbPath });

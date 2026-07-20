@@ -1,5 +1,30 @@
-import type { MessageId, ThreadId, AgentVersionId, ModelId, CredentialRefId, RunId, StepId } from './ids.js';
+import type {
+  MessageId,
+  ThreadId,
+  AgentVersionId,
+  ModelId,
+  CredentialRefId,
+  RunId,
+  StepId,
+} from './ids.js';
 import type { MessageRole } from './enums.js';
+
+export type MessageAttachmentKind = 'image' | 'file' | 'folder';
+
+/**
+ * Persisted attachment metadata. `managedRef` points to a local immutable snapshot for files;
+ * folder references are explicitly read-only and are only authorized for the current turn.
+ */
+export interface MessageAttachment {
+  id: string;
+  kind: MessageAttachmentKind;
+  name: string;
+  mimeType: string;
+  size: number;
+  sha256?: string;
+  managedRef: string;
+  readOnly: true;
+}
 
 export interface MessageBlock {
   type: 'text' | 'code' | 'image' | 'plan' | 'tool-call' | 'tool-result' | 'error';

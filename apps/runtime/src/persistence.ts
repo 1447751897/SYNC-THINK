@@ -9,6 +9,7 @@ import {
   SqliteWorkspaceStore,
   SqliteProviderStore,
   SqliteAgentStore,
+  SqliteGroupStore,
   SqliteMemoryStore,
   SqliteSkillStore,
   SqliteMcpStore,
@@ -19,6 +20,8 @@ import {
   SqliteArtifactStore,
   SqliteProductionExecutionStore,
   SqliteUnitOfWork,
+  SqliteAutomationStore,
+  SqliteExecutionEnvironmentStore,
 } from '@sync-think/storage';
 import {
   SecureStore,
@@ -29,9 +32,10 @@ import {
 } from '@sync-think/secure-store';
 import { Runtime, type RuntimeOptions } from './runtime.js';
 import { createProductionStepExecutor } from './orchestration/production-step-executor.js';
+import { TaskExecutionEnvironmentManager } from './task-execution-environment.js';
 
 export interface OpenPersistentRuntimeOptions
-  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'unitOfWork' | 'secureStore'> {
+  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'executionEnvironmentStore' | 'taskEnvironmentManager' | 'providerStore' | 'agentStore' | 'groupStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'unitOfWork' | 'automationStore' | 'secureStore'> {
   dbPath: string;
   secureStoreBackend?: SecureStoreBackend;
   secureStoreKeyPath?: string;
@@ -110,8 +114,27 @@ export async function openPersistentRuntime(
   try {
     const unitOfWork = new SqliteUnitOfWork(connection.raw);
     const workspaceStore = new SqliteWorkspaceStore(connection.raw);
+    const executionEnvironmentStore = new SqliteExecutionEnvironmentStore(connection.raw);
+    const runtimeDataRoot = databasePath === ':memory:' ? join(homedir(), '.sync-think') : dirname(databasePath);
+    for (const workspace of workspaceStore.listWorkspaces()) {
+      executionEnvironmentStore.ensureWorkspaceDefaults({
+        workspaceId: workspace.id,
+        folderPath: workspace.folderPath,
+        browserProfilePath: join(runtimeDataRoot, 'browser-profiles', 'default'),
+      });
+    }
+    const taskEnvironmentManager = new TaskExecutionEnvironmentManager({
+      store: executionEnvironmentStore,
+      workspaceStore,
+      worktreeRoot: join(runtimeDataRoot, 'worktrees'),
+      repositoryCacheRoot: join(runtimeDataRoot, 'repository-cache'),
+      browserProfileRoot: join(runtimeDataRoot, 'browser-profiles'),
+    });
+    taskEnvironmentManager.cleanupExpired();
     const providerStore = new SqliteProviderStore(connection.raw);
     const agentStore = new SqliteAgentStore(connection.raw);
+    const groupStore = new SqliteGroupStore(connection.raw);
+    const stateStore = new SqliteEventCheckpointStore(connection.raw);
     const orchestrationStore = new SqliteOrchestrationStore(connection.raw);
     const artifactStore = new SqliteArtifactStore(connection.raw);
     const productionExecutionStore = new SqliteProductionExecutionStore(connection.raw);
@@ -122,6 +145,9 @@ export async function openPersistentRuntime(
         agentStore,
         providerStore,
         workspaceStore,
+        executionEnvironmentStore,
+        groupStore,
+        eventStore: stateStore,
         orchestrationStore,
         executionStore: productionExecutionStore,
         secureStore,
@@ -130,10 +156,14 @@ export async function openPersistentRuntime(
       });
     runtime = new Runtime({
       ...runtimeOptions,
-      stateStore: new SqliteEventCheckpointStore(connection.raw),
+      stateStore,
       workspaceStore,
+      executionEnvironmentStore,
+      taskEnvironmentManager,
       providerStore,
       agentStore,
+      groupStore,
+      automationStore: new SqliteAutomationStore(connection.raw),
       memoryStore: new SqliteMemoryStore(connection.raw),
       skillStore: new SqliteSkillStore(connection.raw),
       mcpStore: new SqliteMcpStore(connection.raw),

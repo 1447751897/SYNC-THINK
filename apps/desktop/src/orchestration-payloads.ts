@@ -1,5 +1,6 @@
 import type {
   CompareArtifactVersionsPayload,
+  GetArtifactVersionPayload,
   ListArtifactMergeConflictsPayload,
   ListArtifactsPayload,
   ListPoliciesPayload,
@@ -275,6 +276,19 @@ export function parseArtifactListPayload(value: unknown): ListArtifactsPayload {
   return value as unknown as ListArtifactsPayload;
 }
 
+export function parseArtifactGetVersionPayload(value: unknown): GetArtifactVersionPayload {
+  assertRendererSafeOrchestrationPayload(value);
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['workspaceId', 'taskId', 'runId', 'artifactVersionId']) ||
+    !artifactScope(value) ||
+    !artifactId(value.artifactVersionId)
+  ) {
+    return invalid('artifact-get-version');
+  }
+  return value as unknown as GetArtifactVersionPayload;
+}
+
 export function parseArtifactComparePayload(value: unknown): CompareArtifactVersionsPayload {
   assertRendererSafeOrchestrationPayload(value);
   if (
@@ -453,6 +467,7 @@ const AGENT_KEYS = [
   'developerInstructions',
   'inputContract',
   'outputContract',
+  'maxConcurrency',
   'defaultModelId',
   'defaultCredentialGroupId',
   'pinnedCredentialRefId',
@@ -478,9 +493,10 @@ function agentIdList(value: unknown, max = 64, itemMax = MAX_ID): value is strin
 function agentVisualIdentity(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ['icon', 'color']) &&
+    hasOnlyKeys(value, ['icon', 'color', 'avatarPath']) &&
     boundedText(value.icon, 128) &&
-    boundedText(value.color, 64)
+    boundedText(value.color, 64) &&
+    (value.avatarPath === undefined || boundedText(value.avatarPath, 4_096))
   );
 }
 
@@ -535,6 +551,13 @@ function validAgentPayload(value: Record<string, unknown>, full: boolean): boole
   )
     return false;
   if (value.visualIdentity !== undefined && !agentVisualIdentity(value.visualIdentity)) {
+    return false;
+  }
+  const validMaxConcurrency =
+    Number.isSafeInteger(value.maxConcurrency) &&
+    Number(value.maxConcurrency) >= 1 &&
+    Number(value.maxConcurrency) <= 16;
+  if ((full && !validMaxConcurrency) || (!full && value.maxConcurrency !== undefined && !validMaxConcurrency)) {
     return false;
   }
   if (value.agentId !== undefined && !boundedText(value.agentId, 128)) return false;

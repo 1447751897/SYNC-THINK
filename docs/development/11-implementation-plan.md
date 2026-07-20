@@ -1,3 +1,39 @@
+## 2026-07-19 · 项目执行位置与独立浏览器身份闭环
+
+规格：`docs/superpowers/specs/2026-07-19-chat-attachments-execution-logs-design.md` §9-12
+
+- [x] 项目资料显示当前 Git 仓库地址和默认分支，编辑弹窗预填现有绑定
+- [x] 旧本地资源与后绑定远程仓库自动合并到主资源，重复保存更新主记录
+- [x] 远程 Git 克隆/更新异步准备，任务可先返回 pending 并发布 ready/blocked 状态变化
+- [x] 每个任务使用持久 managed worktree；并行子任务隔离工作树并继承父任务快照
+- [x] 子任务结果自动压缩为提交并 cherry-pick 回父任务，冲突支持采用子任务或保留父任务
+- [x] 浏览器身份创建、重命名、默认、删除保护、任务级选择和子任务继承
+- [x] Composer 有效权限详情展示访问模式、执行位置、基线、浏览器身份、实际工具与 Agent 能力上限
+- [x] 对话 Run 与 Production Step 共享文件、命令、Git、Playwright 浏览器和 Windows UI Automation 工具实现
+- [x] Runtime pipe、Desktop IPC、权限过滤、真实 UIA、worktree、Storage 与协议回归
+- [x] 全仓 test 21/21、typecheck 21/21、build 12/12、`git diff --check` 通过
+- [x] 重启 QA Runtime/Electron 并核对旧 Git 绑定自动合并
+
+## 2026-07-18 · Talk V8 Agent-aware 功能闭环
+
+规格：`docs/superpowers/specs/2026-07-18-agent-aware-talk-workspace-design.md`
+
+- [x] Talk V8 全局导航与任务/项目/好友/群聊/自动化/模型源/Skill & MCP/设置页面
+- [x] SYNC-THINK 平台身份、当前 thread 真实上下文和跨任务隔离
+- [x] Runtime Command Gateway、CLI、stdio MCP 与外部配置 preview/confirm
+- [x] 内置 Agent application-tool 多轮调用、工具结果回传和 Desktop 确认卡
+- [x] 持久群聊、唯一主智能体、成员职责、subtask/handoff、成员执行和最终总结
+- [x] Automation Store、Cron/时区、HMAC Webhook、并发、重试、独立任务和运行历史
+- [x] Agent 状态、最大并发、受管头像上传和消息头像投影
+- [x] 189 个测试文件 / 1399 项；12 个工作区包的 typecheck、build 全部通过
+- [x] 1440×900 浅/深主题代表页面实窗；任务/项目双栏和浅色设置对比度修复
+- [x] 开发态 1280×720、隔离 userData、软件渲染 QA 参数及生产禁用边界测试
+- [x] 1440×900、1280×720 浅/深主题 Electron 实窗和关键交互门禁
+- [x] 任务页替换为独立 Figma Talk 对话工作区，锁定 200/240/fluid/260 与 52/114 几何
+- [x] 保留真实任务、Composer、流式、路由、审批、子任务、产物、Trace/Manifest/执行图和归档回调
+- [x] Figma 任务页自动化门禁：Desktop 386、UI Kit 233、全仓 test/typecheck/build 全绿
+- [ ] Node 20 生产 Runtime + 最新 Electron 最终在线重启
+
 ## 2026-07-16 · 对话 Agent 身份与产品界面减负（已完成）
 
 - [x] 写入用户确认规格，覆盖旧的“消息隐藏 Agent 名称”决定
@@ -47,6 +83,23 @@
 - [ ] M1 硬门槛：`14-external-gateway-handtest.md` 外网 UI 手测 0/18
 - [ ] M1 硬门槛：dogfood ≥3 真实天（当前 0/3）
 - [ ] **勿**启动 M2 / **勿**仅靠 soft 关 M1
+
+## 2026-07-19 - 项目执行位置与 managed worktree
+
+- [x] 新增 Project Resource / Execution Profile / Browser Identity / Task Execution Context 模型与迁移。
+- [x] Git 任务默认独立 managed worktree，同一任务复用，并行写子任务隔离。
+- [x] 子任务从父任务当前 checkout 快照继承 tracked/untracked 改动。
+- [x] 非 Git 目录实施单写租约，阻塞不计入普通失败重试。
+- [x] 对话 Run 暴露真实文件、命令、Git 和浏览器工具并持久化执行事件。
+- [x] 实现型子任务缺少执行证据时保持 blocked；权限更新后复用原子任务恢复。
+- [x] Git 仓库绑定命令、桌面设置入口和执行位置展示。
+- [x] managed worktree 7 天清理；dirty/leased worktree 保留。
+- [x] 独立持久化浏览器身份、子任务继承和有界关闭。
+- [ ] 子任务 worktree 结果自动 merge/cherry-pick 回父任务，并提供冲突处理 UI。
+- [ ] Browser Identity 创建/编辑/删除与任务级选择。
+- [ ] Composer 有效权限详情弹层与执行日志权限快照完全对齐。
+- [ ] Production Step Executor 复用统一执行工具实现。
+- [ ] 远程 Git 镜像克隆改为异步、可取消、可观察的准备任务。
 
 ## 14. 2026-07-16 新人桌面工作区切片（完成）
 
@@ -957,3 +1010,19 @@ Until then: no business feature coding; docs-only adjustments allowed.
 - [ ] M1 硬门槛：`14-external-gateway-handtest.md` 外网 UI 手测 0/18
 - [ ] M1 硬门槛：dogfood ≥3 真实天（当前 0/3）
 - [ ] **勿**启动 M2 / **勿**仅靠 soft 关 M1
+## 2026-07-19 · @协作、本轮任务与执行日志（完成）
+
+规格：`docs/superpowers/specs/2026-07-19-mention-task-progress-log-design.md`
+
+- [x] 用户、委派、交接和回传消息显示精确 `@` 目标
+- [x] 子任务后续对话保持精确委派 AgentVersion
+- [x] “本轮任务”排除应用工具、MCP、命令、文件、Git、浏览器和 fallback 事件
+- [x] 每用户消息一轮的 Multica 式执行日志、Agent 阶段、筛选与展开证据
+- [x] 右栏信息层级精简，隐藏内部群组版本和原始执行标识
+- [x] 父任务原位展开/收起子任务，父子双向导航且任务选择不重排
+- [x] `task.discardEmpty` Desktop/Protocol/Runtime/Storage 全链路与并发保护
+- [x] 普通完全访问对话真实工具、策略优先级、Provider 中止和后台任务关闭修复
+- [x] Runtime 请求级异常边界：单命令失败保持已认证 pipe 连接
+- [x] Desktop 453、Storage 233、UI Kit 250、Runtime 287、Workers 53 回归通过
+- [x] Runtime/Workers typecheck 与 12 workspace 串行 build 通过
+- [ ] 重启最新 Runtime/Electron 并由用户完成桌面视觉验收

@@ -3,12 +3,25 @@
 
 export type ConversationLayoutPreference = 'default' | 'single';
 export type ThemePreference = 'light' | 'dark' | 'system';
+export type FontSizePreference = 13 | 14 | 15 | 16 | 17 | 18;
+
+export const DEFAULT_FONT_SIZE: FontSizePreference = 14;
+export const MIN_FONT_SIZE: FontSizePreference = 13;
+export const MAX_FONT_SIZE: FontSizePreference = 18;
 
 export const UI_PREF_KEYS = {
   conversationLayout: 'sync-think.conversationLayout',
+  fontSize: 'sync-think.fontSize',
   theme: 'sync-think.theme',
   traceCollapsed: 'sync-think.traceCollapsed',
 } as const;
+
+export function normalizeFontSizePreference(value: unknown): FontSizePreference {
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+  return Number.isInteger(parsed) && parsed >= MIN_FONT_SIZE && parsed <= MAX_FONT_SIZE
+    ? (parsed as FontSizePreference)
+    : DEFAULT_FONT_SIZE;
+}
 
 function safeGet(key: string): string | null {
   try {
@@ -58,9 +71,7 @@ export function writeConversationLayoutPreference(
   safeSet(UI_PREF_KEYS.conversationLayout, layout);
 }
 
-export function readThemePreference(
-  storage?: Pick<Storage, 'getItem'>,
-): ThemePreference {
+export function readThemePreference(storage?: Pick<Storage, 'getItem'>): ThemePreference {
   const raw = storage
     ? (() => {
         try {
@@ -89,10 +100,50 @@ export function writeThemePreference(
   safeSet(UI_PREF_KEYS.theme, theme);
 }
 
+export function readFontSizePreference(storage?: Pick<Storage, 'getItem'>): FontSizePreference {
+  const raw = storage
+    ? (() => {
+        try {
+          return storage.getItem(UI_PREF_KEYS.fontSize);
+        } catch {
+          return null;
+        }
+      })()
+    : safeGet(UI_PREF_KEYS.fontSize);
+  return raw === null ? DEFAULT_FONT_SIZE : normalizeFontSizePreference(raw);
+}
+
+export function writeFontSizePreference(
+  size: FontSizePreference,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  const value = String(normalizeFontSizePreference(size));
+  if (storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.fontSize, value);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.fontSize, value);
+}
+
+export function applyFontSizePreference(
+  root: {
+    setAttribute(name: string, value: string): void;
+    style: { setProperty(name: string, value: string): void };
+  },
+  size: FontSizePreference,
+): void {
+  const normalized = normalizeFontSizePreference(size);
+  root.setAttribute('data-st-font-size', String(normalized));
+  root.style.setProperty('--st-user-font-size', `${normalized}px`);
+  root.style.setProperty('--st-user-font-scale', String(normalized / DEFAULT_FONT_SIZE));
+}
+
 /** Default: expanded (false). Collapsing does not pause Run — only UI rail. */
-export function readTraceCollapsedPreference(
-  storage?: Pick<Storage, 'getItem'>,
-): boolean {
+export function readTraceCollapsedPreference(storage?: Pick<Storage, 'getItem'>): boolean {
   const raw = storage
     ? (() => {
         try {

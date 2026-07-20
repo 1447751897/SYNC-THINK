@@ -205,7 +205,14 @@ class FallbackChainProvider implements ProviderAdapter {
   readonly calls: string[] = [];
   constructor(
     private readonly failProviderModelId: string,
-    private readonly failureClass: 'timeout' | 'rate-limit' | 'auth' | 'acceptance' | 'permission' = 'timeout',
+    private readonly failureClass:
+      | 'transient'
+      | 'timeout'
+      | 'rate-limit'
+      | 'auth'
+      | 'acceptance'
+      | 'permission' = 'timeout',
+    private readonly errorMessage?: string,
   ) {}
 
   async discoverModels(): Promise<string[]> {
@@ -218,7 +225,7 @@ class FallbackChainProvider implements ProviderAdapter {
       yield {
         type: 'error',
         failureClass: this.failureClass,
-        message: `simulated ${this.failureClass} on ${request.modelId}`,
+        message: this.errorMessage ?? `simulated ${this.failureClass} on ${request.modelId}`,
       };
       return;
     }
@@ -256,7 +263,11 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     const secureKey = join(dir, 'secure', 'key.bin');
     const installId = `test-fb-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-    const adapter = new FallbackChainProvider('alpha-model', 'timeout');
+    const adapter = new FallbackChainProvider(
+      'alpha-model',
+      'transient',
+      'Provider Responses call failed (502) - upstream error',
+    );
     const session = await openPersistentRuntime({
       installId,
       dbPath,
@@ -355,12 +366,16 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     });
     expect(append.error).toBeUndefined();
 
+    const firstRetry = await reader.waitForEvent((t) => t === 'run.retry.scheduled', 6_000);
+    const secondRetry = await reader.waitForEvent((t) => t === 'run.retry.scheduled', 6_000);
     const fallbackSelected = await reader.waitForEvent((t) => t === 'run.fallback.selected', 6_000);
     const completed = await reader.waitForEvent((t) => t === 'run.completed', 8_000);
 
-    // Provider called default (alpha) then fallback (beta); never gamma.
+    // A gateway 502 retries the same model twice before walking to fallback.
     // Prefer event evidence, but adapter call order is authoritative for the walk.
-    expect(adapter.calls).toEqual(['alpha-model', 'beta-model']);
+    expect(adapter.calls).toEqual(['alpha-model', 'alpha-model', 'alpha-model', 'beta-model']);
+    expect(firstRetry).toBeDefined();
+    expect(secondRetry).toBeDefined();
     expect(fallbackSelected ?? completed).toBeDefined();
     expect(completed).toBeDefined();
 
@@ -370,7 +385,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     expect(blob.includes(beta.modelId) || blob.includes('beta-model')).toBe(true);
     expect(blob).not.toContain('sk-fallback-test-key');
     expect(adapter.calls[0]).toBe('alpha-model');
-    expect(adapter.calls[1]).toBe('beta-model');
+    expect(adapter.calls[3]).toBe('beta-model');
     if (fallbackSelected) {
       const fbBlob = JSON.stringify(fallbackSelected);
       expect(fbBlob.includes('agentFallback') || fbBlob.includes('run.fallback.selected')).toBe(true);
@@ -478,12 +493,19 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     });
 
     const paused = await reader.waitForEvent((t) => t === 'run.paused', 8_000);
-    // Default + one fallback attempted; no third silent model.
-    expect(adapter.calls).toEqual(['alpha-model', 'beta-model']);
+    // Default + one configured fallback, each with two bounded timeout retries.
+    expect(adapter.calls).toEqual([
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'beta-model',
+      'beta-model',
+      'beta-model',
+    ]);
     expect(paused).toBeDefined();
     const blob = JSON.stringify(paused);
     expect(blob.includes('fallback_exhausted') || eventType(paused!) === 'run.paused').toBe(true);
-    expect(adapter.calls.length).toBe(2);
+    expect(adapter.calls.length).toBe(6);
 
     reader.close();
     sock.destroy();

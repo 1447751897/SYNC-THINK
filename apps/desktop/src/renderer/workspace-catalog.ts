@@ -51,6 +51,12 @@ export function pickLastOpenedTaskId(
   return best?.taskId ?? null;
 }
 
+export function deriveProjectNameFromFolderPath(folderPath: string): string {
+  const normalized = folderPath.trim().replace(/[\\/]+$/, '');
+  const name = normalized.split(/[\\/]/).filter(Boolean).at(-1)?.trim();
+  return name || '新项目';
+}
+
 export function resolvePreferredTask(
   workspaces: readonly WorkspaceSummary[],
   tasksByWorkspace: ReadonlyMap<string, readonly TaskSummary[]>,
@@ -91,7 +97,14 @@ export function upsertTaskInMap(
 ): Map<string, readonly TaskSummary[]> {
   const next = new Map(tasksByWorkspace);
   const existing = next.get(task.workspaceId) ?? [];
-  const without = existing.filter((item) => item.taskId !== task.taskId);
-  next.set(task.workspaceId, [...without, task]);
+  const existingIndex = existing.findIndex((item) => item.taskId === task.taskId);
+  if (existingIndex === -1) {
+    next.set(task.workspaceId, [...existing, task]);
+    return next;
+  }
+  next.set(
+    task.workspaceId,
+    existing.map((item, index) => (index === existingIndex ? task : item)),
+  );
   return next;
 }

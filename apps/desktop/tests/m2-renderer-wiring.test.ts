@@ -68,15 +68,16 @@ describe('M2 renderer wiring', () => {
     expect(source).toMatch(/clearTimeout\(/);
   });
 
-  it('keeps trace selection independent and deep-links exact Run and Step state', () => {
-    expect(source).toContain('selectedTraceId');
-    expect(source).toContain('setSelectedTraceId');
+  it('routes legacy Run deep-links into per-turn execution logs without nested trace state', () => {
+    expect(source).not.toContain('selectedTraceId');
+    expect(source).not.toContain('setSelectedTraceId');
     expect(source).toContain('navigateToApprovalRunStep');
-    expect(source).toContain('selectedStepId={selectedGraphStepId}');
+    expect(source).toContain("setRightRailTab('trace')");
+    expect(source).toContain('projectConversationLogs');
     expect(source).toMatch(/getRunGraph\([\s\S]{0,400}input\.runId/);
   });
 
-  it('upgrades collaboration from the conversation and keeps approval in the same pane', () => {
+  it('upgrades ad-hoc collaboration without exposing the legacy plan editor', () => {
     expect(source).not.toContain('automatic-plan-cta');
     expect(source).not.toContain('automatic-policy-cta');
     expect(source).not.toContain('<ModeSwitch');
@@ -84,12 +85,14 @@ describe('M2 renderer wiring', () => {
     expect(source).toContain('conversation-collaboration-status');
     expect(source).toContain("mode: 'collaboration'");
     expect(source).toContain('runtime.createPlan({');
-    expect(source).toContain('<PlanRevisionPanel');
-    expect(source).toContain('approveCurrentPlan(input)');
+    expect(source).not.toContain('<PlanRevisionPanel');
+    expect(source).toContain('!taskGroupIds.has(targetTask.taskId)');
   });
 
   it('wires task-scoped collaboration and exact reviewer catalogs', () => {
-    expect(source).toContain("targetTask.participationMode !== 'automatic'");
+    expect(source).toContain("targetTask.participationMode === 'conversation'");
+    expect(source).toContain('mentionAgents={composeMentionAgents}');
+    expect(source).toContain('agentVersionId: options.agentVersionId as never');
     expect(source).toContain('planRevisions.length === 0');
     expect(source).not.toContain('approvalPolicies.length');
     expect(source).toContain('allAgentVersions={allAgentVersions.map');
@@ -109,9 +112,9 @@ describe('M2 renderer wiring', () => {
     expect(source).toContain('resolveArtifactMergeConflict');
   });
 
-  it('uses a ready explicit merge Step and keeps Automatic plans read-only', () => {
+  it('uses a ready explicit merge Step without exposing the legacy plan editor', () => {
     expect(source).not.toContain('sourceStepId: right.sourceStepId');
     expect(source).toContain('sourceStepId: mergeStepId');
-    expect(source).toContain("active.participationMode === 'collaboration'");
+    expect(source).not.toContain('<PlanRevisionPanel');
   });
 });

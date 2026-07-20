@@ -22,6 +22,7 @@ export interface ArtifactVersionView {
   mimeType: string;
   parentVersionIds: readonly string[];
   createdAt: string;
+  content?: string;
 }
 
 export interface ArtifactVersionsView {
@@ -155,6 +156,32 @@ export function ArtifactVersionsPanel({
     const version = versions.find((candidate) => candidate.id === versionId);
     return version ? `v${version.version}` : versionId.slice(0, 12);
   };
+
+  if (versions.length === 1) {
+    const version = versions[0]!;
+    return (
+      <section
+        className="st-artifacts st-artifacts--single"
+        data-testid="artifact-versions"
+        aria-label="产物内容"
+      >
+        <header className="st-artifacts__single-header">
+          <span>
+            <strong>{artifact.name}</strong>
+            <small>
+              {STATUS_LABEL[version.status] ?? version.status} · v{version.version} ·{' '}
+              {new Date(version.createdAt).toLocaleString('zh-CN')}
+            </small>
+          </span>
+          <em>{version.mimeType}</em>
+        </header>
+        <section className="st-artifacts__preview" aria-label="内容预览">
+          <h3>内容预览</h3>
+          <pre>{version.content ?? '正在读取内容…'}</pre>
+        </section>
+      </section>
+    );
+  }
 
   return (
     <section className="st-artifacts" data-testid="artifact-versions" aria-label="产物版本">

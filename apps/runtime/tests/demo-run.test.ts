@@ -10,11 +10,7 @@ import {
   type ProviderCallRequest,
 } from '@sync-think/adapters';
 import { decodeFrames, encodeFrame, pipePathPortable, type Frame } from '@sync-think/protocol';
-import {
-  openDatabaseAsync,
-  runMigrations,
-  SqliteEventCheckpointStore,
-} from '@sync-think/storage';
+import { openDatabaseAsync, runMigrations, SqliteEventCheckpointStore } from '@sync-think/storage';
 import type { RunId, WorkspaceId } from '@sync-think/shared';
 import { Runtime, type RuntimeStateStore } from '../src/runtime.js';
 
@@ -62,10 +58,7 @@ function createFrameInbox(socket: Socket) {
   };
 }
 
-async function waitFor(
-  predicate: () => boolean,
-  timeoutMs: number = 1_500,
-): Promise<boolean> {
+async function waitFor(predicate: () => boolean, timeoutMs: number = 1_500): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return true;
@@ -448,12 +441,14 @@ describe('M0 fake provider run', () => {
       expect(types).toContain('provider.usage');
       expect(types).toContain('message.delta');
       expect(types[types.length - 1]).toBe('run.completed');
-      expect(events.map((event) => event.sequence)).toEqual(
-        events.map((_, index) => index + 1),
-      );
-      expect(store.loadLatestCheckpoint(checkpointRunId)?.lastEventSequence).toBe(
-        events.length,
-      );
+      expect(events.every((event) => !Object.hasOwn(event.payload, 'run'))).toBe(true);
+      expect(
+        connection.raw
+          .prepare('SELECT COUNT(*) AS count FROM checkpoint WHERE run_id = ?')
+          .get(checkpointRunId),
+      ).toEqual({ count: 1 });
+      expect(events.map((event) => event.sequence)).toEqual(events.map((_, index) => index + 1));
+      expect(store.loadLatestCheckpoint(checkpointRunId)?.lastEventSequence).toBe(events.length);
       expect(runtime.currentHealthcheck()).toMatchObject({ ok: true, inFlightRuns: 0 });
     } finally {
       socket.destroy();
@@ -511,9 +506,7 @@ describe('M0 fake provider run', () => {
       expect((append.payload as { streamId?: string }).streamId).toBeTruthy();
       expect(
         await waitFor(() =>
-          firstStore
-            .listEvents(workspaceId, 0)
-            .some((event) => event.type === 'message.delta'),
+          firstStore.listEvents(workspaceId, 0).some((event) => event.type === 'message.delta'),
         ),
       ).toBe(true);
       expect(
@@ -539,9 +532,7 @@ describe('M0 fake provider run', () => {
     try {
       expect(
         await waitFor(() =>
-          secondStore
-            .listEvents(workspaceId, 0)
-            .some((event) => event.type === 'run.completed'),
+          secondStore.listEvents(workspaceId, 0).some((event) => event.type === 'run.completed'),
         ),
       ).toBe(true);
       const events = secondStore.listEvents(workspaceId, 0);
@@ -554,9 +545,7 @@ describe('M0 fake provider run', () => {
           .map((event) => event.payload.textDelta)
           .join(''),
       ).toBe('[fake-mini] Echo from fake provider: resume without duplicate ');
-      expect(events.map((event) => event.sequence)).toEqual(
-        events.map((_, index) => index + 1),
-      );
+      expect(events.map((event) => event.sequence)).toEqual(events.map((_, index) => index + 1));
       expect(secondStore.loadLatestCheckpoint(checkpointRunId)).toMatchObject({
         lastEventSequence: events.length,
         state: { demoRuns: [] },
@@ -566,7 +555,7 @@ describe('M0 fake provider run', () => {
       secondConnection.raw.close();
     }
   });
-it('cancels an in-flight demo run and persists run.cancelled', async () => {
+  it('cancels an in-flight demo run and persists run.cancelled', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-demo-cancel-'));
     tempDirs.push(dir);
     const dbPath = join(dir, 'sync-think.db');

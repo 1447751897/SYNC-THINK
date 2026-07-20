@@ -10,6 +10,8 @@ import {
   runMigrations,
   SqliteAgentStore,
   SqliteApprovalStore,
+  SqliteEventCheckpointStore,
+  SqliteGroupStore,
   SqliteOrchestrationStore,
   SqliteProductionExecutionStore,
   SqliteProviderStore,
@@ -19,6 +21,7 @@ import {
 import { openPersistentRuntime } from '../persistence.js';
 import { Scheduler } from './scheduler.js';
 import { createProductionStepExecutor } from './production-step-executor.js';
+import { buildGroupCollaborationPlan } from '../group-collaboration.js';
 
 const dirs: string[] = [];
 const PRODUCTION_SECRET_CANARY = 'sk-production-secret-canary-Q1-7f4d9c2a';
@@ -130,11 +133,17 @@ async function seedProductionRun(prefix: string) {
 function productionExecutor(
   fixture: Awaited<ReturnType<typeof seedProductionRun>>,
   adapter: ProviderAdapter,
+  scope: {
+    groupStore?: SqliteGroupStore;
+    eventStore?: SqliteEventCheckpointStore;
+  } = {},
 ) {
   return createProductionStepExecutor({
     agentStore: new SqliteAgentStore(fixture.connection.raw),
     providerStore: fixture.providerStore,
     workspaceStore: new SqliteWorkspaceStore(fixture.connection.raw),
+    groupStore: scope.groupStore,
+    eventStore: scope.eventStore,
     orchestrationStore: fixture.orchestration,
     executionStore: new SqliteProductionExecutionStore(fixture.connection.raw),
     secureStore: fixture.secureStore,
@@ -244,6 +253,364 @@ function expectLatestReservationUncompleted(
 }
 
 describe('production Step execution reservations', () => {
+  it('injects SYNC-THINK identity and only the current thread history into Scheduler calls', async () => {
+    const f = await seedProductionRun('sync-think-production-context-');
+    const eventStore = new SqliteEventCheckpointStore(f.connection.raw);
+    eventStore.commitTransition({
+      events: [
+        {
+          id: 'event-context-user-1' as never,
+          workspaceId: 'workspace-production' as never,
+          taskId: 'task-production' as never,
+          messageId: 'message-context-user-1' as never,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt: '2026-07-18T00:00:00.000Z',
+          payload: {
+            threadId: 'thread-production',
+            messageId: 'message-context-user-1',
+            role: 'user',
+            text: 'first current-thread request',
+          },
+        },
+        {
+          id: 'event-context-assistant-1' as never,
+          workspaceId: 'workspace-production' as never,
+          taskId: 'task-production' as never,
+          messageId: 'message-context-assistant-1' as never,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt: '2026-07-18T00:01:00.000Z',
+          payload: {
+            threadId: 'thread-production',
+            messageId: 'message-context-assistant-1',
+            role: 'assistant',
+            text: 'first current-thread answer',
+          },
+        },
+        {
+          id: 'event-context-user-2' as never,
+          workspaceId: 'workspace-production' as never,
+          taskId: 'task-production' as never,
+          messageId: 'message-context-user-2' as never,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt: '2026-07-18T00:02:00.000Z',
+          payload: {
+            threadId: 'thread-production',
+            messageId: 'message-context-user-2',
+            role: 'user',
+            text: 'latest current-thread request',
+          },
+        },
+        {
+          id: 'event-context-sibling' as never,
+          workspaceId: 'workspace-production' as never,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt: '2026-07-18T00:03:00.000Z',
+          payload: {
+            threadId: 'thread-sibling',
+            messageId: 'message-context-sibling',
+            role: 'user',
+            text: 'sibling-task-secret-marker',
+          },
+        },
+      ],
+    });
+    const requests: Parameters<ProviderAdapter['call']>[0][] = [];
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(request): AsyncIterable<AdapterEvent> {
+        requests.push(request);
+        yield { type: 'text-delta', text: 'context verified' };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const claimed = f.orchestration.claimReadySteps({
+      runId: f.graph.run.id,
+      stepIds: ['production-step' as never],
+      ownerId: 'production-context-owner',
+      leaseExpiresAt: '9999-12-31T23:59:59.999Z',
+    }).claimedSteps[0]!;
+
+    try {
+      await productionExecutor(f, adapter, { eventStore }).execute({
+        runId: f.graph.run.id,
+        step: claimed,
+        idempotencyKey: claimed.idempotencyKey!,
+        artifactVersions: [],
+        signal: new AbortController().signal,
+      });
+      const request = requests[0]!;
+      expect(request.systemPrompt).toContain('platform.name: SYNC-THINK');
+      expect(request.systemPrompt).toContain('task.id: task-production');
+      const text = request.messages
+        .map((message) => (typeof message.content === 'string' ? message.content : ''))
+        .join('\n');
+      expect(text).toContain('first current-thread request');
+      expect(text).toContain('first current-thread answer');
+      expect(text).toContain('latest current-thread request');
+      expect(text).not.toContain('sibling-task-secret-marker');
+      expect(text.indexOf('first current-thread request')).toBeLessThan(
+        text.indexOf('first current-thread answer'),
+      );
+      expect(text.indexOf('first current-thread answer')).toBeLessThan(
+        text.indexOf('latest current-thread request'),
+      );
+      expect(
+        eventStore
+          .listAllEvents(0)
+          .find((event) => event.type === 'context.packet.built')?.payload,
+      ).toMatchObject({
+        surface: 'project',
+        agentVersionId: f.agent.id,
+        historyIncludedEventIds: [
+          'event-context-user-1',
+          'event-context-assistant-1',
+          'event-context-user-2',
+        ],
+        historyExcludedEventIds: [],
+      });
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
+  it('uses a lead single decision without invoking an unassigned group member', async () => {
+    const f = await seedProductionRun('sync-think-production-group-single-');
+    const agents = new SqliteAgentStore(f.connection.raw);
+    const lead = agents.createAgent({
+      name: 'Lead',
+      role: 'lead',
+      developerInstructions: 'Decide and summarize.',
+      inputContract: 'complete task packet',
+      outputContract: 'delegation decision or final summary',
+      defaultModelId: f.agent.defaultModelId,
+      defaultCredentialGroupId: f.agent.defaultCredentialGroupId,
+    });
+    const groupStore = new SqliteGroupStore(f.connection.raw);
+    const group = groupStore.create({
+      name: 'Adaptive group',
+      kind: 'fixed',
+      leadAgentVersionId: lead.id,
+      approvalMode: 'full',
+      collaborationMode: 'parallel',
+      maxConcurrency: 2,
+      members: [
+        { agentVersionId: lead.id, responsibility: 'decide and summarize' },
+        { agentVersionId: f.agent.id, responsibility: 'implement delegated work' },
+      ],
+    });
+    groupStore.attachTask(group.id, 'task-production' as never);
+    let index = 0;
+    const revision = f.orchestration.createPlanDraft({
+      taskId: 'task-production' as never,
+      title: 'Adaptive group run',
+      steps: buildGroupCollaborationPlan({
+        group,
+        taskTitle: 'Production',
+        taskGoal: 'Execute once',
+        userMessage: 'answer directly',
+        createStepId: () => `group-single-${++index}`,
+      }),
+    });
+    const graph = f.orchestration.approvePlan({
+      planId: revision.planId,
+      revision: revision.revision,
+    });
+    const eventStore = new SqliteEventCheckpointStore(f.connection.raw);
+    eventStore.commitTransition({
+      events: [
+        {
+          id: 'event-group-single-user' as never,
+          workspaceId: 'workspace-production' as never,
+          taskId: 'task-production' as never,
+          messageId: 'message-group-single-user' as never,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt: '2026-07-18T00:00:00.000Z',
+          payload: {
+            threadId: 'thread-production',
+            messageId: 'message-group-single-user',
+            role: 'user',
+            text: 'answer directly',
+          },
+        },
+      ],
+    });
+    const requests: Parameters<ProviderAdapter['call']>[0][] = [];
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(request): AsyncIterable<AdapterEvent> {
+        requests.push(request);
+        const output =
+          requests.length === 1
+            ? JSON.stringify({
+                mode: 'single',
+                reason: 'The lead can answer without delegation.',
+                assignments: [],
+              })
+            : 'lead-only final answer';
+        yield { type: 'text-delta', text: output };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const scheduler = new Scheduler({
+      store: f.orchestration,
+      executor: productionExecutor(f, adapter, { groupStore, eventStore }),
+      unitOfWork: new SqliteUnitOfWork(f.connection.raw),
+      ownerId: 'group-single-owner',
+    });
+
+    try {
+      await scheduler.runUntilIdle(graph.run.id);
+      expect(requests).toHaveLength(2);
+      expect(requests.every((request) => request.systemPrompt?.includes('surface: group'))).toBe(
+        true,
+      );
+      const artifacts = f.orchestration.listRunArtifactVersions(graph.run.id);
+      expect(artifacts.some((artifact) => artifact.metadata.executionKind === 'group-skip')).toBe(
+        true,
+      );
+      expect(
+        f.orchestration.getGraph(graph.run.id)?.steps.every((step) => step.state === 'completed'),
+      ).toBe(true);
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
+  it('sends a delegated member only its isolated packet and explicit handoff history', async () => {
+    const f = await seedProductionRun('sync-think-production-group-delegate-');
+    const agents = new SqliteAgentStore(f.connection.raw);
+    const lead = agents.createAgent({
+      name: 'Lead',
+      role: 'lead',
+      developerInstructions: 'Delegate precisely and summarize.',
+      inputContract: 'complete task packet',
+      outputContract: 'structured decision',
+      defaultModelId: f.agent.defaultModelId,
+      defaultCredentialGroupId: f.agent.defaultCredentialGroupId,
+    });
+    const groupStore = new SqliteGroupStore(f.connection.raw);
+    const group = groupStore.create({
+      name: 'Delegating group',
+      kind: 'fixed',
+      leadAgentVersionId: lead.id,
+      approvalMode: 'full',
+      collaborationMode: 'parallel',
+      maxConcurrency: 2,
+      members: [
+        { agentVersionId: lead.id, responsibility: 'delegate and summarize' },
+        { agentVersionId: f.agent.id, responsibility: 'implement exact subtask' },
+      ],
+    });
+    groupStore.attachTask(group.id, 'task-production' as never);
+    let index = 0;
+    const revision = f.orchestration.createPlanDraft({
+      taskId: 'task-production' as never,
+      title: 'Delegating group run',
+      steps: buildGroupCollaborationPlan({
+        group,
+        taskTitle: 'Production',
+        taskGoal: 'Execute once',
+        userMessage: 'private full conversation marker',
+        createStepId: () => `group-delegate-${++index}`,
+      }),
+    });
+    const graph = f.orchestration.approvePlan({
+      planId: revision.planId,
+      revision: revision.revision,
+    });
+    const eventStore = new SqliteEventCheckpointStore(f.connection.raw);
+    eventStore.commitTransition({
+      events: [
+        {
+          id: 'event-group-delegate-user' as never,
+          workspaceId: 'workspace-production' as never,
+          taskId: 'task-production' as never,
+          messageId: 'message-group-delegate-user' as never,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt: '2026-07-18T00:00:00.000Z',
+          payload: {
+            threadId: 'thread-production',
+            messageId: 'message-group-delegate-user',
+            role: 'user',
+            text: 'private full conversation marker',
+          },
+        },
+      ],
+    });
+    const requests: Parameters<ProviderAdapter['call']>[0][] = [];
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(request): AsyncIterable<AdapterEvent> {
+        requests.push(request);
+        const output =
+          requests.length === 1
+            ? JSON.stringify({
+                mode: 'delegate',
+                reason: 'A focused implementation is required.',
+                assignments: [
+                  {
+                    agentVersionId: f.agent.id,
+                    goal: 'Implement only the isolated change.',
+                    requiredEvidence: ['focused test output'],
+                    acceptanceConditions: ['focused tests pass'],
+                    allowedTools: [],
+                  },
+                ],
+              })
+            : requests.length === 2
+              ? 'member result with focused evidence'
+              : 'lead delegated final answer';
+        yield { type: 'text-delta', text: output };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const scheduler = new Scheduler({
+      store: f.orchestration,
+      executor: productionExecutor(f, adapter, { groupStore, eventStore }),
+      unitOfWork: new SqliteUnitOfWork(f.connection.raw),
+      ownerId: 'group-delegate-owner',
+    });
+
+    try {
+      await scheduler.runUntilIdle(graph.run.id);
+      expect(requests).toHaveLength(3);
+      const memberRequest = requests[1]!;
+      const memberText = memberRequest.messages
+        .map((message) => (typeof message.content === 'string' ? message.content : ''))
+        .join('\n');
+      expect(memberText).toContain('Isolated subtask packet');
+      expect(memberText).toContain('Implement only the isolated change.');
+      expect(memberText).not.toContain('private full conversation marker');
+      expect(memberText).not.toContain('A focused implementation is required.');
+      expect(memberRequest.tools).toBeUndefined();
+      const finalText = requests[2]!.messages
+        .map((message) => (typeof message.content === 'string' ? message.content : ''))
+        .join('\n');
+      expect(finalText).toContain('private full conversation marker');
+      expect(finalText).toContain('member result with focused evidence');
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
   it('executes approved workspace tools across Provider turns and persists an inspectable trace artifact', async () => {
     const f = await seedProductionRun('sync-think-production-tools-');
     f.connection.raw
@@ -327,6 +694,14 @@ describe('production Step execution reservations', () => {
         'run_command',
         'git_status',
         'git_diff',
+        'browser_navigate',
+        'browser_extract',
+        'browser_click',
+        'browser_fill',
+        'desktop_list_windows',
+        'desktop_snapshot',
+        'desktop_invoke',
+        'desktop_fill',
       ]);
       expect(
         requests
@@ -364,6 +739,60 @@ describe('production Step execution reservations', () => {
       f.connection.raw.close();
     }
   }, 30_000);
+
+  it('filters shared execution tools by the Agent capability ceiling', async () => {
+    const f = await seedProductionRun('sync-think-production-tool-permissions-');
+    f.connection.raw
+      .prepare('UPDATE workspace SET folder_path = ? WHERE id = ?')
+      .run(f.dir, 'workspace-production');
+    f.connection.raw
+      .prepare('UPDATE model SET capabilities_json = ? WHERE id = ?')
+      .run(JSON.stringify(['text', 'tool-calling']), f.agent.defaultModelId);
+    f.connection.raw
+      .prepare('UPDATE agent_version SET permissions_json = ? WHERE id = ?')
+      .run(
+        JSON.stringify({ file: ['*'], command: [], browser: [], desktop: [], network: [] }),
+        f.agent.id,
+      );
+    const requests: Parameters<ProviderAdapter['call']>[0][] = [];
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(request): AsyncIterable<AdapterEvent> {
+        requests.push(request);
+        yield { type: 'text-delta', text: 'No tool call required.' };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const claimed = f.orchestration.claimReadySteps({
+      runId: f.graph.run.id,
+      stepIds: ['production-step' as never],
+      ownerId: 'production-tool-permission-owner',
+      leaseExpiresAt: '9999-12-31T23:59:59.999Z',
+    }).claimedSteps[0]!;
+
+    try {
+      await productionExecutor(f, adapter).execute({
+        runId: f.graph.run.id,
+        step: claimed,
+        idempotencyKey: claimed.idempotencyKey!,
+        artifactVersions: [],
+        signal: new AbortController().signal,
+      });
+      expect(requests[0]!.tools?.map((tool) => tool.name)).toEqual([
+        'read_file',
+        'list_files',
+        'write_file',
+        'git_status',
+        'git_diff',
+      ]);
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
 
   it('fails safely when a Provider exceeds the bounded tool-call loop', async () => {
     const f = await seedProductionRun('sync-think-production-tool-limit-');
@@ -955,7 +1384,7 @@ describe('production Step execution reservations', () => {
         const graph = f.orchestration.getGraph(f.graph.run.id)!;
         const running = graph.steps.find((step) => step.state === 'running')!;
         const context = f.orchestration.getReviewStepContext(graph.run.id, running.id);
-        const prompt = request.messages[0]?.content;
+        const prompt = request.messages.at(-1)?.content;
         prompts.push(typeof prompt === 'string' ? prompt : JSON.stringify(prompt));
         if (!context) {
           roles.push('target');
@@ -1164,7 +1593,7 @@ describe('production Step execution reservations', () => {
         const graph = f.orchestration.getGraph(f.graph.run.id)!;
         const running = graph.steps.find((step) => step.state === 'running')!;
         const context = f.orchestration.getReviewStepContext(graph.run.id, running.id);
-        const prompt = request.messages[0]?.content;
+        const prompt = request.messages.at(-1)?.content;
         prompts.push(typeof prompt === 'string' ? prompt : JSON.stringify(prompt));
         if (context?.kind === 'rework') {
           roles.push('rework-1');

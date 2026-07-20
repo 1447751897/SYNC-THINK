@@ -25,6 +25,17 @@
   ArtifactVersion,
   ArtifactVersionId,
   ArtifactVersionSummary,
+  GroupCollaborationMode,
+  GroupDefinition,
+  GroupId,
+  GroupKind,
+  GroupVisualIdentity,
+  AutomationConcurrencyPolicy,
+  AutomationDefinition,
+  AutomationExecution,
+  AutomationId,
+  AutomationTarget,
+  MessageAttachment,
 } from '@sync-think/shared';
 import { ulid } from '@sync-think/shared';
 import type { Feature } from './version.js';
@@ -36,18 +47,34 @@ export type CommandType =
   | 'runtime.healthcheck'
   | 'workspace.create'
   | 'workspace.bindFolder'
+  | 'workspace.bindGitRepository'
   | 'workspace.list'
   | 'task.create'
+  | 'task.delegateSubtask'
+  | 'task.recordHandoff'
+  | 'task.resolveWorktreeIntegration'
+  | 'task.setBrowserIdentity'
+  | 'task.describeExecutionAccess'
   | 'task.list'
   | 'task.open'
   | 'task.search'
   | 'task.archive'
   | 'task.unarchive'
+  | 'task.discardEmpty'
   | 'task.setParticipationMode'
   | 'task.appendMessage'
   | 'runtime.subscribeEvents'
   | 'runtime.continueEventReplay'
   | 'runtime.unsubscribeEvents'
+  | 'application.tool.confirm'
+  | 'application.tool.reject'
+  | 'automation.create'
+  | 'automation.update'
+  | 'automation.delete'
+  | 'automation.get'
+  | 'automation.list'
+  | 'automation.trigger'
+  | 'automation.execution.list'
   | 'context.packet.peek'
   | 'context.packet.amend'
   | 'plan.draft'
@@ -80,6 +107,15 @@ export type CommandType =
   | 'agent.create'
   | 'agent.listVersions'
   | 'agent.createVersion'
+  | 'group.create'
+  | 'group.get'
+  | 'group.list'
+  | 'group.update'
+  | 'group.member.add'
+  | 'group.member.remove'
+  | 'group.member.updateResponsibility'
+  | 'group.setLead'
+  | 'group.task.create'
   | 'skill.import'
   | 'skill.list'
   | 'mcp.register'
@@ -99,7 +135,11 @@ export type CommandType =
   | 'approval.list'
   | 'approval.evaluate'
   | 'approval.enqueue'
-  | 'approval.decide';
+  | 'approval.decide'
+  | 'browserIdentity.list'
+  | 'browserIdentity.create'
+  | 'browserIdentity.update'
+  | 'browserIdentity.delete';
 
 export interface CommandRequest<T = unknown> {
   /** Routed by type; runtime dispatches by union. */
@@ -159,6 +199,21 @@ export interface BindWorkspaceFolderResponse {
   updatedAt: string;
 }
 
+export interface BindWorkspaceGitRepositoryPayload {
+  workspaceId: WorkspaceId;
+  repositoryUrl: string;
+  defaultRef?: string;
+}
+
+export interface BindWorkspaceGitRepositoryResponse {
+  workspaceId: WorkspaceId;
+  resourceId: string;
+  repositoryUrl: string;
+  defaultRef?: string;
+  resourceType: 'git_repository';
+  updatedAt: string;
+}
+
 export interface ListWorkspacesPayload {
   /** Reserved for future filters; currently unused. */
 }
@@ -169,10 +224,96 @@ export interface WorkspaceSummary {
   name: string;
   createdAt: string;
   updatedAt: string;
+  resourceType?: 'local_directory' | 'git_repository';
+  repositoryUrl?: string;
+  executionProfileId?: string;
+  executionProfileName?: string;
+  executionMode?: 'auto' | 'local' | 'managed_worktree';
+  defaultRef?: string;
+  browserIdentityId?: string;
+  browserIdentityName?: string;
 }
 
 export interface ListWorkspacesResponse {
   workspaces: WorkspaceSummary[];
+}
+
+export interface BrowserIdentitySummary {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListBrowserIdentitiesPayload {}
+
+export interface ListBrowserIdentitiesResponse {
+  identities: BrowserIdentitySummary[];
+}
+
+export interface CreateBrowserIdentityPayload {
+  name: string;
+  makeDefault?: boolean;
+}
+
+export interface CreateBrowserIdentityResponse {
+  identity: BrowserIdentitySummary;
+}
+
+export interface UpdateBrowserIdentityPayload {
+  id: string;
+  name?: string;
+  makeDefault?: boolean;
+}
+
+export interface UpdateBrowserIdentityResponse {
+  identity: BrowserIdentitySummary;
+}
+
+export interface DeleteBrowserIdentityPayload {
+  id: string;
+}
+
+export interface DeleteBrowserIdentityResponse {
+  id: string;
+  deleted: true;
+}
+
+export interface SetTaskBrowserIdentityPayload {
+  taskId: TaskId;
+  browserIdentityId: string;
+}
+
+export interface SetTaskBrowserIdentityResponse {
+  taskId: TaskId;
+  browserIdentityId: string;
+  browserIdentityName: string;
+}
+
+export interface DescribeTaskExecutionAccessPayload {
+  taskId: TaskId;
+  agentVersionId: AgentVersionId;
+}
+
+export interface DescribeTaskExecutionAccessResponse {
+  taskId: TaskId;
+  agentVersionId: AgentVersionId;
+  approvalMode: ApprovalMode;
+  executionMode: 'none' | 'local_serial' | 'managed_worktree';
+  executionState: 'pending' | 'ready' | 'blocked' | 'cleanup_pending' | 'retained' | 'cleaned';
+  executionPath?: string;
+  baseRef?: string;
+  browserIdentityId?: string;
+  browserIdentityName?: string;
+  effectiveToolNames: string[];
+  capabilityCeiling: {
+    file: string[];
+    command: string[];
+    browser: string[];
+    desktop: string[];
+    network: string[];
+  };
 }
 
 export interface CreateTaskPayload {
@@ -191,6 +332,68 @@ export interface CreateTaskResponse {
   participationMode: ParticipationMode;
   parentTaskId?: TaskId;
   createdAt: string;
+}
+
+export interface DelegateSubtaskPayload {
+  workspaceId: WorkspaceId;
+  parentTaskId: TaskId;
+  delegateAgentVersionId: AgentVersionId;
+  title: string;
+  goal: string;
+  requiredEvidence?: string[];
+  acceptanceConditions?: string[];
+  allowedTools?: string[];
+  /** Empty means immediately runnable; non-empty dependencies enforce serial execution. */
+  dependsOnTaskIds?: TaskId[];
+  /** Runtime-owned attribution injected for in-app Agent calls. */
+  delegatingAgentVersionId?: AgentVersionId;
+  /** Runtime-owned join key shared by parallel delegations from one parent Run. */
+  delegationBatchId?: string;
+}
+
+export interface SubtaskPacket {
+  goal: string;
+  requiredEvidence: string[];
+  acceptanceConditions: string[];
+  allowedTools: string[];
+  handoffHistory: string[];
+  dependsOnTaskIds: TaskId[];
+  retryLimit: number;
+}
+
+export interface DelegateSubtaskResponse extends CreateTaskResponse {
+  delegateAgentVersionId: AgentVersionId;
+  packet: SubtaskPacket;
+  eventId: string;
+  reused?: boolean;
+}
+
+export interface RecordHandoffPayload {
+  taskId: TaskId;
+  fromAgentVersionId: AgentVersionId;
+  toAgentVersionId: AgentVersionId;
+  summary: string;
+  evidenceRefs?: string[];
+  status?: 'completed' | 'blocked' | 'needs-review';
+}
+
+export interface RecordHandoffResponse {
+  taskId: TaskId;
+  eventId: string;
+  recordedAt: string;
+}
+
+export interface ResolveWorktreeIntegrationPayload {
+  childTaskId: TaskId;
+  strategy: 'accept-child' | 'keep-parent';
+}
+
+export interface ResolveWorktreeIntegrationResponse {
+  childTaskId: TaskId;
+  parentTaskId: TaskId;
+  integrationStatus: 'integrated' | 'kept-parent';
+  integrationCommit?: string;
+  changedFiles: string[];
 }
 
 export interface ListTasksPayload {
@@ -224,6 +427,16 @@ export interface UnarchiveTaskResponse {
   unarchivedTaskIds: TaskId[];
 }
 
+export interface DiscardEmptyTaskPayload {
+  taskId: TaskId;
+  expectedTaskVersion: number;
+}
+
+export interface DiscardEmptyTaskResponse {
+  taskId: TaskId;
+  discarded: boolean;
+}
+
 export interface TaskSummary {
   taskId: TaskId;
   workspaceId: WorkspaceId;
@@ -237,6 +450,16 @@ export interface TaskSummary {
   lastOpenedAt?: string;
   createdAt: string;
   updatedAt: string;
+  execution?: {
+    mode: 'none' | 'local_serial' | 'managed_worktree';
+    state: 'pending' | 'ready' | 'blocked' | 'cleanup_pending' | 'retained' | 'cleaned';
+    executionPath?: string;
+    baseRef?: string;
+    headRef?: string;
+    browserIdentityId?: string;
+    blockedReason?: string;
+    cleanupAfter?: string;
+  };
 }
 
 export interface ListTasksResponse {
@@ -283,6 +506,8 @@ export interface AppendMessagePayload {
   /** Set when assistant message originates from a Run step. */
   runId?: RunId;
   stepId?: string;
+  /** Local managed snapshots selected by the user. Binary data never crosses Runtime IPC. */
+  attachments?: MessageAttachment[];
 }
 
 export interface AppendMessageResponse {
@@ -323,9 +548,7 @@ export interface OrchestrationRunMutationPayload {
   expectedTaskVersion: number;
 }
 
-export type CancelRunPayload =
-  | ConversationCancelRunPayload
-  | OrchestrationRunMutationPayload;
+export type CancelRunPayload = ConversationCancelRunPayload | OrchestrationRunMutationPayload;
 
 export type PauseRunPayload = OrchestrationRunMutationPayload;
 export type ResumeRunPayload = OrchestrationRunMutationPayload;
@@ -516,7 +739,6 @@ export interface ResolveArtifactMergeConflictResponse {
   taskVersion: number;
 }
 
-
 export interface CreateProviderPayload {
   name: string;
   baseUrl: string;
@@ -637,8 +859,6 @@ export interface ImportCcSwitchResponse {
   failedCount: number;
 }
 
-
-
 export interface ListProvidersPayload {
   /** Reserved for filters. */
 }
@@ -680,9 +900,6 @@ export interface AddModelsResponse {
   providerId: import('@sync-think/shared').ProviderId;
   models: ProviderModelSummary[];
 }
-
-
-
 
 export interface ProbeCapabilitiesPayload {
   /** Probe one model, or omit modelId to probe all models for the provider. */
@@ -730,6 +947,7 @@ export interface AgentBindingSummary {
   version: number;
   name: string;
   role: string;
+  maxConcurrency: number;
   defaultModelId: import('@sync-think/shared').ModelId;
   fallbackModelIds: import('@sync-think/shared').ModelId[];
   pauseOnFailure: boolean;
@@ -763,7 +981,6 @@ export interface UpdateAgentBindingPayload {
   /** When provided, replaces Agent MCP server allowlist on new version (section 9.3). */
   mcpServerIds?: string[];
 }
-
 
 export interface UpdateAgentBindingResponse {
   agent: AgentBindingSummary;
@@ -801,6 +1018,7 @@ export interface CreateAgentPayload {
   developerInstructions: string;
   inputContract: string;
   outputContract: string;
+  maxConcurrency?: number;
   defaultModelId: import('@sync-think/shared').ModelId;
   defaultCredentialGroupId?: import('@sync-think/shared').CredentialGroupId;
   pinnedCredentialRefId?: import('@sync-think/shared').CredentialRefId;
@@ -839,6 +1057,7 @@ export interface CreateAgentVersionPayload {
   developerInstructions: string;
   inputContract: string;
   outputContract: string;
+  maxConcurrency: number;
   defaultModelId: import('@sync-think/shared').ModelId;
   defaultCredentialGroupId?: import('@sync-think/shared').CredentialGroupId;
   pinnedCredentialRefId?: import('@sync-think/shared').CredentialRefId | null;
@@ -858,7 +1077,6 @@ export interface CreateAgentVersionPayload {
 export interface CreateAgentVersionResponse {
   agent: AgentDefinitionSummary;
 }
-
 
 // --- Skill library (SKILL.md import subset 搂9.2) ---
 
@@ -995,15 +1213,6 @@ export interface ProbeMcpPolicyResponse {
   toolName: string;
 }
 
-
-
-
-
-
-
-
-
-
 // --- MCP tool request 鈫?Approval Center (搂9.3 / 搂13; no real spawn) ---
 
 export interface RequestMcpToolPayload {
@@ -1052,8 +1261,6 @@ export interface RequestMcpToolResponse {
   trusted: boolean;
 }
 
-
-
 // --- MCP real local-stdio spawn probe (搂9.3 / 搂14; process host only, no JSON-RPC tools) ---
 
 export interface ProbeMcpSpawnPayload {
@@ -1095,8 +1302,6 @@ export interface ProbeMcpSpawnResponse {
   endpoint?: string;
   transport: string;
 }
-
-
 
 // --- MCP real tool call via JSON-RPC (搂9.3 / 搂13 / 搂14) ---
 // Gates: Agent allowlist 鈫?sensitivity 鈫?approval (or priorApprovalId) 鈫?LocalStdio spawn + tools/call
@@ -1286,7 +1491,6 @@ export interface PeekContextPacketResponse {
   peekedAt: string;
 }
 
-
 // --- Context Packet amend (thread-scoped user overrides; 搂10.3) ---
 
 export interface AmendContextPacketPayload {
@@ -1402,17 +1606,10 @@ export interface RollbackMemoryResponse {
   change: MemoryChangeSummary;
 }
 
-
 // --- Scoped approval policies ---
 
 export type PolicyScopeType =
-  | 'user'
-  | 'workspace'
-  | 'project'
-  | 'task'
-  | 'agent'
-  | 'workflow'
-  | 'run';
+  'user' | 'workspace' | 'project' | 'task' | 'agent' | 'workflow' | 'run';
 
 export interface PolicyScopeRef {
   scopeType: PolicyScopeType;
@@ -1462,7 +1659,6 @@ export interface ListPoliciesResponse {
   policies: PolicyVersionSummary[];
   resolved: ResolvedPolicySummary;
 }
-
 
 // --- Approval Center (搂13 / 搂15.1 item 8) ---
 
@@ -1620,9 +1816,209 @@ export interface ListDiagnosticsResponse {
   diagnostics: DiagnosticSummary[];
 }
 
-export type PauseResumeCancelResponse = { runId: RunId; state: import('@sync-think/shared').RunState };
+export interface GroupMemberInput {
+  agentVersionId: AgentVersionId;
+  responsibility: string;
+}
+
+export interface CreateGroupPayload {
+  name: string;
+  description?: string;
+  kind: GroupKind;
+  visualIdentity?: GroupVisualIdentity;
+  leadAgentVersionId: AgentVersionId;
+  approvalMode?: ApprovalMode;
+  collaborationMode?: GroupCollaborationMode;
+  maxConcurrency?: number;
+  members: GroupMemberInput[];
+}
+
+export interface CreateGroupResponse {
+  group: GroupDefinition;
+}
+
+export interface GetGroupPayload {
+  groupId: GroupId;
+}
+
+export interface GetGroupResponse {
+  group: GroupDefinition;
+}
+
+export interface ListGroupsPayload {
+  kind?: GroupKind;
+  limit?: number;
+}
+
+export interface ListGroupsResponse {
+  groups: GroupDefinition[];
+}
+
+export interface UpdateGroupPayload {
+  groupId: GroupId;
+  expectedVersion: number;
+  name?: string;
+  description?: string;
+  kind?: GroupKind;
+  visualIdentity?: GroupVisualIdentity;
+  leadAgentVersionId?: AgentVersionId;
+  approvalMode?: ApprovalMode;
+  collaborationMode?: GroupCollaborationMode;
+  maxConcurrency?: number;
+  members?: GroupMemberInput[];
+}
+
+export interface UpdateGroupResponse {
+  group: GroupDefinition;
+}
+
+export interface AddGroupMemberPayload {
+  groupId: GroupId;
+  expectedVersion: number;
+  member: GroupMemberInput;
+}
+
+export interface RemoveGroupMemberPayload {
+  groupId: GroupId;
+  expectedVersion: number;
+  agentVersionId: AgentVersionId;
+}
+
+export interface UpdateGroupMemberResponsibilityPayload {
+  groupId: GroupId;
+  expectedVersion: number;
+  agentVersionId: AgentVersionId;
+  responsibility: string;
+}
+
+export interface SetGroupLeadPayload {
+  groupId: GroupId;
+  expectedVersion: number;
+  agentVersionId: AgentVersionId;
+}
+
+export type GroupMemberMutationResponse = UpdateGroupResponse;
+
+export interface CreateGroupTaskPayload extends Omit<CreateTaskPayload, 'parentTaskId'> {
+  groupId: GroupId;
+  parentTaskId?: TaskId;
+}
+
+export interface CreateGroupTaskResponse extends CreateTaskResponse {
+  groupId: GroupId;
+}
+
+export interface ResolveApplicationToolConfirmationPayload {
+  confirmationId: string;
+  threadId: ThreadId;
+}
+
+export interface ConfirmApplicationToolResponse {
+  confirmationId: string;
+  status: 'confirmed' | 'failed';
+  command: CommandType;
+  result?: unknown;
+  errorSummary?: string;
+  auditEventId: string;
+}
+
+export interface RejectApplicationToolResponse {
+  confirmationId: string;
+  status: 'rejected';
+  command: CommandType;
+  auditEventId: string;
+}
+
+export interface CreateAutomationPayload {
+  name: string;
+  workspaceId: WorkspaceId;
+  target: AutomationTarget;
+  instruction: string;
+  approvalMode?: ApprovalMode;
+  trigger: AutomationTriggerInput;
+  timezone?: string;
+  concurrencyPolicy?: AutomationConcurrencyPolicy;
+  maxConcurrency?: number;
+  maxRetries?: number;
+  enabled?: boolean;
+}
+
+export type AutomationTriggerInput = { type: 'cron'; expression: string } | { type: 'webhook' };
+
+export interface UpdateAutomationPayload extends CreateAutomationPayload {
+  automationId: AutomationId;
+  expectedVersion: number;
+}
+
+export interface DeleteAutomationPayload {
+  automationId: AutomationId;
+  expectedVersion: number;
+}
+
+export interface GetAutomationPayload {
+  automationId: AutomationId;
+}
+
+export interface ListAutomationsPayload {
+  workspaceId?: WorkspaceId;
+  includeDisabled?: boolean;
+  limit?: number;
+}
+
+export interface TriggerAutomationPayload {
+  automationId: AutomationId;
+  input?: string;
+}
+
+export interface ListAutomationExecutionsPayload {
+  automationId?: AutomationId;
+  limit?: number;
+}
+
+export interface AutomationRuntimeStatus {
+  schedulerAvailable: boolean;
+  webhookAvailable: boolean;
+  webhookBaseUrl?: string;
+}
+
+export interface AutomationCommandResponse {
+  automation: AutomationDefinition;
+  webhookUrl?: string;
+  webhookSecret?: string;
+}
+
+export interface ListAutomationsResponse {
+  automations: AutomationDefinition[];
+  runtime: AutomationRuntimeStatus;
+}
+
+export interface GetAutomationResponse extends AutomationCommandResponse {
+  executions: AutomationExecution[];
+}
+
+export interface DeleteAutomationResponse {
+  automation: AutomationDefinition;
+}
+
+export interface TriggerAutomationResponse {
+  execution: AutomationExecution;
+  taskId?: TaskId;
+}
+
+export interface ListAutomationExecutionsResponse {
+  executions: AutomationExecution[];
+}
+
+export type PauseResumeCancelResponse = {
+  runId: RunId;
+  state: import('@sync-think/shared').RunState;
+};
 
 // Helper: build a typed request envelope.
-export function req<T>(type: CommandType, payload: T, requestId: string = ulid()): CommandRequest<T> {
+export function req<T>(
+  type: CommandType,
+  payload: T,
+  requestId: string = ulid(),
+): CommandRequest<T> {
   return { type, payload, requestId };
 }

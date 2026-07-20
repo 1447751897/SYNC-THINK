@@ -1,9 +1,12 @@
 ﻿export * from './workspace.js';
 export * from './task.js';
+export * from './execution-environment.js';
 export * from './thread.js';   // thread + message tables live together (1:1 area)
 export * from './event.js';
 export * from './checkpoint.js';
 export * from './provider.js';
+export * from './group.js';
+export * from './automation.js';
 export * from './credential-ref.js';
 export * from './migration-meta.js';
 export * from './memory.js';

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
-import { mergeEventHistory } from '../src/event-history.js';
+import { appendEventHistory, mergeEventHistory } from '../src/event-history.js';
 import { projectConversation, projectM0EventHistory } from '../src/renderer/m0-projection.js';
 import {
   canSendRuntimeMessage,
@@ -22,6 +22,38 @@ function eventAt(sequence: number, overrides: Partial<Event> = {}): Event {
 }
 
 describe('desktop runtime event history', () => {
+  it('uses the child Agent only for the delegated completion message', () => {
+    const threadId = 'thread-parent-subtask';
+    const projection = projectConversation(
+      [
+        eventAt(1, {
+          category: 'message',
+          type: 'subtask.completed',
+          taskId: 'parent-task' as Event['taskId'],
+          payload: {
+            threadId,
+            childTaskId: 'child-task',
+            messageAgentVersionId: 'worker-v1',
+            fromAgentVersionId: 'worker-v1',
+            toAgentVersionId: 'lead-v1',
+            text: 'Worker completed the delegated task.',
+          },
+        }),
+      ],
+      threadId,
+      'parent-task',
+    );
+
+    expect(projection.messages).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        agentVersionId: 'worker-v1',
+        mentionAgentVersionId: 'lead-v1',
+        text: 'Worker completed the delegated task.',
+      }),
+    ]);
+  });
+
   it('keeps Run completion separate from review and summarizes M2 orchestration events', () => {
     const threadId = 'thread-m2-trace';
     const events = [
@@ -111,6 +143,40 @@ describe('desktop runtime event history', () => {
     );
 
     expect(history.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('appends ordered streaming batches and falls back for replay overlap', () => {
+    expect(appendEventHistory([eventAt(1)], [eventAt(2), eventAt(3)])).toEqual([
+      eventAt(1),
+      eventAt(2),
+      eventAt(3),
+    ]);
+    expect(
+      appendEventHistory([eventAt(2), eventAt(3)], [eventAt(1), eventAt(3), eventAt(4)]).map(
+        (event) => event.sequence,
+      ),
+    ).toEqual([1, 2, 3, 4]);
+  });
+
+  it('compacts completed Run deltas while retaining the final assistant response', () => {
+    const runId = 'run-complete' as Event['runId'];
+    const threadId = 'thread-desktop-main';
+    const history = appendEventHistory(
+      [],
+      [
+        eventAt(1, { type: 'run.started', runId, payload: { threadId } }),
+        eventAt(2, { type: 'message.delta', runId, payload: { threadId, textDelta: 'hel' } }),
+        eventAt(3, { type: 'message.delta', runId, payload: { threadId, textDelta: 'lo' } }),
+        eventAt(4, {
+          type: 'run.completed',
+          runId,
+          payload: { threadId, assistantText: 'hello' },
+        }),
+      ],
+    );
+
+    expect(history.map((event) => event.sequence)).toEqual([1, 4]);
+    expect(projectConversation(history, threadId).messages.at(-1)?.text).toBe('hello');
   });
 
   it('rebuilds user messages and the latest demo assistant without repeated output', () => {
@@ -420,6 +486,199 @@ describe('desktop runtime event history', () => {
     expect(projection.trace[3]).toMatchObject({
       category: 'recovery',
       summary: expect.stringMatching(/runtime|recover|恢复/i),
+    });
+  });
+});
+
+describe('group conversation projection', () => {
+  it('renders delegation and handoff as exact Agent messages with visible mention targets', () => {
+    const threadId = 'thread-group-visible';
+    const projection = projectConversation(
+      [
+        eventAt(1, {
+          category: 'run',
+          type: 'group.collaboration.started',
+          runId: 'run-group' as Event['runId'],
+          payload: { threadId, groupId: 'group-1', text: '产品小队已开始协作。' },
+        }),
+        eventAt(2, {
+          category: 'run',
+          type: 'group.delegation-decided',
+          runId: 'run-group' as Event['runId'],
+          payload: { threadId, groupId: 'group-1', text: '主智能体已拆分 1 个子任务。' },
+        }),
+        eventAt(3, {
+          category: 'step',
+          type: 'group.subtask-delegated',
+          runId: 'run-group' as Event['runId'],
+          payload: {
+            threadId,
+            groupId: 'group-1',
+            fromAgentVersionId: 'agent-lead-v4',
+            toAgentVersionId: 'agent-research-v2',
+            text: '已将“调研”委派给调研智能体。',
+          },
+        }),
+        eventAt(4, {
+          category: 'message',
+          type: 'group.agent-message',
+          runId: 'run-group' as Event['runId'],
+          stepId: 'step-research' as Event['stepId'],
+          payload: {
+            threadId,
+            role: 'assistant',
+            text: '调研结论',
+            agentVersionId: 'agent-research-v2',
+            mentionAgentVersionId: 'agent-lead-v4',
+            modelId: 'model-research',
+          },
+        }),
+        eventAt(5, {
+          category: 'step',
+          type: 'group.handoff-recorded',
+          runId: 'run-group' as Event['runId'],
+          payload: {
+            threadId,
+            groupId: 'group-1',
+            fromAgentVersionId: 'agent-research-v2',
+            toAgentVersionId: 'agent-lead-v4',
+            text: '调研智能体已交接给主智能体。',
+          },
+        }),
+        eventAt(6, {
+          category: 'message',
+          type: 'group.agent-message',
+          runId: 'run-group' as Event['runId'],
+          stepId: 'step-lead' as Event['stepId'],
+          payload: {
+            threadId,
+            role: 'assistant',
+            text: '主智能体最终总结',
+            agentVersionId: 'agent-lead-v4',
+            modelId: 'model-lead',
+          },
+        }),
+        eventAt(7, {
+          category: 'run',
+          type: 'group.collaboration.completed',
+          runId: 'run-group' as Event['runId'],
+          payload: { threadId, groupId: 'group-1', text: '产品小队已完成协作。' },
+        }),
+      ],
+      threadId,
+    );
+
+    expect(
+      projection.messages
+        .filter((message) => message.role === 'assistant')
+        .map((message) => ({
+          text: message.text,
+          agentVersionId: message.agentVersionId,
+          mentionAgentVersionId: message.mentionAgentVersionId,
+          modelId: message.modelId,
+        })),
+    ).toEqual([
+      {
+        text: '已将“调研”委派给调研智能体。',
+        agentVersionId: 'agent-lead-v4',
+        mentionAgentVersionId: 'agent-research-v2',
+        modelId: undefined,
+      },
+      {
+        text: '调研结论',
+        agentVersionId: 'agent-research-v2',
+        mentionAgentVersionId: 'agent-lead-v4',
+        modelId: 'model-research',
+      },
+      {
+        text: '调研智能体已交接给主智能体。',
+        agentVersionId: 'agent-research-v2',
+        mentionAgentVersionId: 'agent-lead-v4',
+        modelId: undefined,
+      },
+      {
+        text: '主智能体最终总结',
+        agentVersionId: 'agent-lead-v4',
+        mentionAgentVersionId: undefined,
+        modelId: 'model-lead',
+      },
+    ]);
+    expect(projection.messages.filter((message) => message.role === 'system')).toEqual([]);
+    expect(projection.stream.state).toBe('completed');
+  });
+
+  it('keeps the effective user target for visible @ routing', () => {
+    const projection = projectConversation(
+      [
+        eventAt(1, {
+          category: 'message',
+          type: 'message.appended',
+          payload: {
+            threadId: 'thread-target',
+            role: 'user',
+            text: '请检查首页',
+            taskVersion: 1,
+            targetAgentVersionId: 'agent-lead-v4',
+            groupId: 'group-1',
+          },
+        }),
+      ],
+      'thread-target',
+    );
+
+    expect(projection.messages[0]).toMatchObject({
+      role: 'user',
+      targetAgentVersionId: 'agent-lead-v4',
+      targetGroupId: 'group-1',
+    });
+  });
+});
+
+describe('application tool confirmation projection', () => {
+  it('keeps one compact confirmation card and resolves it from the durable event stream', () => {
+    const threadId = 'thread-tool-confirmation';
+    const projection = projectConversation(
+      [
+        eventAt(1, {
+          category: 'tool',
+          type: 'application.tool_confirmation_requested',
+          runId: 'run-tool-confirmation' as Event['runId'],
+          payload: {
+            threadId,
+            confirmationId: 'confirmation-1',
+            toolName: 'sync_think.agent.create',
+            result: JSON.stringify({
+              status: 'confirmation_required',
+              confirmationId: 'confirmation-1',
+              summary: '创建智能体',
+              payloadKeys: ['name', 'role'],
+              expiresAt: '2026-07-18T08:00:00.000Z',
+            }),
+          },
+        }),
+        eventAt(2, {
+          category: 'system',
+          type: 'application.tool_confirmation_resolved',
+          runId: 'run-tool-confirmation' as Event['runId'],
+          payload: {
+            threadId,
+            confirmationId: 'confirmation-1',
+            status: 'confirmed',
+            command: 'agent.create',
+          },
+        }),
+      ],
+      threadId,
+    );
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]?.confirmation).toEqual({
+      id: 'confirmation-1',
+      toolName: 'sync_think.agent.create',
+      summary: '创建智能体',
+      payloadKeys: ['name', 'role'],
+      expiresAt: '2026-07-18T08:00:00.000Z',
+      status: 'confirmed',
     });
   });
 });
@@ -779,6 +1038,79 @@ describe('conversation projection', () => {
     expect(projection.trace.find((t) => /暂停|paused/i.test(t.summary))?.category).toBe('recovery');
   });
 
+  it('shows the provider model chain and actionable 502 reason after fallback exhaustion', () => {
+    const threadId = 'thread-provider-outage';
+    const runId = 'run-provider-outage' as Event['runId'];
+    const projection = projectConversation(
+      [
+        eventAt(1, {
+          category: 'message',
+          type: 'message.appended',
+          payload: { threadId, role: 'user', text: 'hello', taskVersion: 1 },
+        }),
+        eventAt(2, {
+          category: 'run',
+          type: 'run.started',
+          runId,
+          payload: {
+            threadId,
+            modelId: 'model-primary',
+            providerModelId: 'gpt-5.6-sol',
+          },
+        }),
+        eventAt(3, {
+          category: 'run',
+          type: 'run.retry.scheduled',
+          runId,
+          payload: {
+            threadId,
+            modelId: 'model-primary',
+            providerModelId: 'gpt-5.6-sol',
+            attempt: 1,
+            maxAttempts: 2,
+            failureClass: 'transient',
+            errorMessage: 'Provider Responses call failed (502) - upstream error',
+          },
+        }),
+        eventAt(4, {
+          category: 'run',
+          type: 'run.fallback.selected',
+          runId,
+          payload: {
+            threadId,
+            fromModelId: 'model-primary',
+            toModelId: 'model-fallback',
+            fromProviderModelId: 'gpt-5.6-sol',
+            toProviderModelId: 'gpt-5.5',
+            failureClass: 'transient',
+          },
+        }),
+        eventAt(5, {
+          category: 'run',
+          type: 'run.paused',
+          runId,
+          payload: {
+            threadId,
+            reason: 'fallback_exhausted',
+            failureClass: 'transient',
+            errorMessage: 'Provider Responses call failed (502) - upstream error',
+            modelId: 'model-fallback',
+            providerModelId: 'gpt-5.5',
+          },
+        }),
+      ],
+      threadId,
+    );
+
+    const assistant = projection.messages.find((message) => message.role === 'assistant');
+    expect(assistant?.modelLabel).toBe('gpt-5.6-sol -> gpt-5.5');
+    expect(assistant?.text).toMatch(/gpt-5\.6-sol/);
+    expect(assistant?.text).toMatch(/gpt-5\.5/);
+    expect(assistant?.text).toMatch(/502/);
+    expect(projection.stream.errorSummary).toMatch(/502/);
+    expect(projection.trace.some((item) => /重试|retry/i.test(item.summary))).toBe(true);
+  });
+
   it('projects inspectable Manifests from context.packet.built for each model call', () => {
     const threadId = 'thread-manifest';
     const projection = projectConversation(
@@ -1031,7 +1363,7 @@ describe('conversation projection', () => {
     expect(state.connectionState).toBe('online');
     expect(canSendRuntimeMessage(state.connectionState)).toBe(true);
     expect(state.taskVersion).toBe(2);
-    expect(state.eventHistory.map((e) => e.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(state.eventHistory.map((e) => e.sequence)).toEqual([1, 2, 3, 5, 6, 7, 8, 10]);
 
     const projection = projectConversation(state.eventHistory, threadId);
     expect(projection.messages.map((m) => ({ role: m.role, text: m.text }))).toEqual([

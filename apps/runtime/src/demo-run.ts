@@ -1,16 +1,36 @@
-import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
+import type {
+  AdapterEvent,
+  ProviderAdapter,
+  ProviderCallRequest,
+  ProviderMessage,
+  ProviderToolCall,
+} from '@sync-think/adapters';
 import type {
   Event,
   EventCategory,
   ModelResolutionSource,
   ProtocolFamily,
   RunId,
+  MessageAttachment,
 } from '@sync-think/shared';
+import { APPLICATION_TOOL_DEFINITIONS } from '@sync-think/protocol';
+import { EXECUTION_TOOL_SCHEMAS } from './execution-tools.js';
 
 export interface DemoRunState {
   runId: RunId;
   threadId: string;
   userText: string;
+  latestUserMessageId?: string;
+  providerContext?: {
+    systemPrompt: string;
+    messages: ProviderMessage[];
+    history: {
+      includedEventIds: string[];
+      excludedEventIds: string[];
+      tokenEstimate: number;
+      imageAttachments?: MessageAttachment[];
+    };
+  };
   /** Internal model id (catalog) or provider model id for fake. */
   modelId: string;
   /** Provider-facing model string sent to the API. */
@@ -27,8 +47,23 @@ export interface DemoRunState {
   proofHash?: string;
   nextAdapterEventIndex: number;
   assistantText: string;
+  /** Number of completed Provider turns in the in-app application-tool loop. */
+  providerTurn: number;
+  /** Bounded retry count for the current model and Provider turn. */
+  providerRetryAttempt: number;
+  /** True only when the exact model advertises tool-calling. */
+  applicationToolsEnabled: boolean;
+  executionRoot?: string;
+  executionToolNames: string[];
+  effectiveApprovalMode?: string;
+  browserIdentityId?: string;
+  pendingApplicationToolCalls: ProviderToolCall[];
+  startedApplicationToolCallIds: string[];
+  applicationToolResults: Array<{ toolCallId: string; result: string }>;
   /** When true, use demoProvider Fake path (no live secret). */
   useFakeProvider: boolean;
+  /** Metadata only. Image bytes are loaded immediately before a Provider call. */
+  attachments: MessageAttachment[];
 }
 
 export interface DemoRunEventProjection {
@@ -43,6 +78,8 @@ export interface CreateDemoRunInput {
   runId: RunId;
   threadId: string;
   userText: string;
+  latestUserMessageId?: string;
+  providerContext?: DemoRunState['providerContext'];
   modelId?: string;
   providerModelId?: string;
   protocol?: ProtocolFamily;
@@ -56,6 +93,14 @@ export interface CreateDemoRunInput {
   packetId?: string;
   proofHash?: string;
   useFakeProvider?: boolean;
+  providerTurn?: number;
+  providerRetryAttempt?: number;
+  applicationToolsEnabled?: boolean;
+  executionRoot?: string;
+  executionToolNames?: readonly string[];
+  effectiveApprovalMode?: string;
+  browserIdentityId?: string;
+  attachments?: readonly MessageAttachment[];
 }
 
 export function createDemoRun(
@@ -70,6 +115,8 @@ export function createDemoRun(
     runId,
     threadId,
     userText,
+    latestUserMessageId: extras.latestUserMessageId,
+    providerContext: extras.providerContext,
     modelId,
     providerModelId: extras.providerModelId ?? modelId,
     protocol: extras.protocol ?? 'openai-chat',
@@ -83,7 +130,18 @@ export function createDemoRun(
     proofHash: extras.proofHash,
     nextAdapterEventIndex: 0,
     assistantText: '',
+    providerTurn: extras.providerTurn ?? 0,
+    providerRetryAttempt: extras.providerRetryAttempt ?? 0,
+    applicationToolsEnabled: extras.applicationToolsEnabled ?? false,
+    executionRoot: extras.executionRoot,
+    executionToolNames: [...(extras.executionToolNames ?? [])],
+    effectiveApprovalMode: extras.effectiveApprovalMode,
+    browserIdentityId: extras.browserIdentityId,
+    pendingApplicationToolCalls: [],
+    startedApplicationToolCallIds: [],
+    applicationToolResults: [],
     useFakeProvider: useFake,
+    attachments: structuredClone([...(extras.attachments ?? [])]),
   };
 }
 
@@ -91,15 +149,64 @@ export function createDemoProviderRequest(
   run: DemoRunState,
   apiKey: string = 'fake-provider-no-secret',
   signal: AbortSignal = new AbortController().signal,
+  imageParts: readonly import('@sync-think/adapters').ProviderContentPart[] = [],
 ): ProviderCallRequest {
+  const sourceMessages = structuredClone(
+    run.providerContext?.messages ?? [{ role: 'user' as const, content: run.userText }],
+  );
+  const imageByRef = new Map(imageParts.map((part) => [part.imageRef ?? '', part]));
+  const messages = sourceMessages.map((message) => {
+    if (!Array.isArray(message.content)) return message;
+    const content = message.content.flatMap((part) => {
+      if (part.type !== 'image' || !part.imageRef) return [part];
+      const materialized = imageByRef.get(part.imageRef);
+      return materialized ? [structuredClone(materialized)] : [];
+    });
+    return { ...message, content };
+  });
+  const latestUser = [...messages].reverse().find((message) => message.role === 'user');
+  const referencedImageIds = new Set(
+    messages.flatMap((message) =>
+      Array.isArray(message.content)
+        ? message.content.flatMap((part) =>
+            part.type === 'image' && part.imageRef ? [part.imageRef] : [],
+          )
+        : [],
+    ),
+  );
+  const currentImageParts = imageParts.filter((part) => !referencedImageIds.has(part.imageRef ?? ''));
+  if (currentImageParts.length > 0) {
+    if (latestUser) {
+      const textParts =
+        typeof latestUser.content === 'string'
+          ? [{ type: 'text' as const, text: latestUser.content }]
+          : latestUser.content;
+      latestUser.content = [...textParts, ...structuredClone(currentImageParts)];
+    }
+  }
   return {
     protocol: run.protocol,
     baseUrl: run.baseUrl,
     modelId: run.providerModelId,
     apiKey,
-    idempotencyKey: run.runId,
+    idempotencyKey: `${run.runId}:application-turn-${run.providerTurn + 1}`,
     signal,
-    messages: [{ role: 'user', content: run.userText }],
+    systemPrompt: run.providerContext?.systemPrompt,
+    messages,
+    ...(run.applicationToolsEnabled
+      ? {
+          tools: [
+            ...APPLICATION_TOOL_DEFINITIONS.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+            })),
+            ...EXECUTION_TOOL_SCHEMAS.filter((tool) =>
+              run.executionToolNames.includes(tool.name),
+            ),
+          ],
+        }
+      : {}),
     stream: true,
   };
 }
@@ -152,6 +259,10 @@ export function projectAdapterEvent(
       adapterEvent.type === 'text-delta'
         ? run.assistantText + adapterEvent.text
         : run.assistantText,
+    pendingApplicationToolCalls:
+      adapterEvent.type === 'tool-call'
+        ? [...run.pendingApplicationToolCalls, adapterEvent.toolCall]
+        : run.pendingApplicationToolCalls,
   };
   if (adapterEvent.type === 'usage') {
     return {
@@ -189,7 +300,10 @@ export function projectAdapterEvent(
       category: 'tool',
       type: 'tool.requested',
       payload: {
+        threadId: run.threadId,
         toolCall: adapterEvent.toolCall,
+        agentVersionId: run.agentVersionId,
+        modelId: run.modelId,
         adapterEventIndex: run.nextAdapterEventIndex,
         run: nextRun,
       },
@@ -239,7 +353,13 @@ export function parseDemoRuns(value: unknown): DemoRunState[] {
 
 export function applyDemoRunEvent(runs: Map<string, DemoRunState>, event: Event): void {
   if (!event.runId) return;
-  if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled' || event.type === 'run.paused') {
+  if (
+    event.type === 'run.completed' ||
+    event.type === 'run.failed' ||
+    event.type === 'run.cancelled' ||
+    event.type === 'run.paused' ||
+    event.type === 'run.blocked'
+  ) {
     runs.delete(event.runId);
     return;
   }
@@ -267,6 +387,9 @@ function parseDemoRun(value: unknown): DemoRunState {
     runId: run.runId as RunId,
     threadId: run.threadId,
     userText: run.userText,
+    latestUserMessageId:
+      typeof run.latestUserMessageId === 'string' ? run.latestUserMessageId : undefined,
+    providerContext: parseProviderContext(run.providerContext),
     modelId,
     providerModelId: typeof run.providerModelId === 'string' ? run.providerModelId : modelId,
     protocol: (run.protocol as ProtocolFamily) ?? 'openai-chat',
@@ -280,8 +403,194 @@ function parseDemoRun(value: unknown): DemoRunState {
     proofHash: typeof run.proofHash === 'string' ? run.proofHash : undefined,
     nextAdapterEventIndex: run.nextAdapterEventIndex,
     assistantText: run.assistantText,
+    providerTurn:
+      Number.isSafeInteger(run.providerTurn) && Number(run.providerTurn) >= 0
+        ? Number(run.providerTurn)
+        : 0,
+    providerRetryAttempt:
+      Number.isSafeInteger(run.providerRetryAttempt) && Number(run.providerRetryAttempt) >= 0
+        ? Number(run.providerRetryAttempt)
+        : 0,
+    applicationToolsEnabled: run.applicationToolsEnabled === true,
+    executionRoot: typeof run.executionRoot === 'string' ? run.executionRoot : undefined,
+    executionToolNames: parseStringArray(run.executionToolNames),
+    effectiveApprovalMode:
+      typeof run.effectiveApprovalMode === 'string' ? run.effectiveApprovalMode : undefined,
+    browserIdentityId:
+      typeof run.browserIdentityId === 'string' ? run.browserIdentityId : undefined,
+    pendingApplicationToolCalls: parseProviderToolCalls(run.pendingApplicationToolCalls),
+    startedApplicationToolCallIds: parseStringArray(run.startedApplicationToolCallIds),
+    applicationToolResults: parseApplicationToolResults(run.applicationToolResults),
     useFakeProvider: run.useFakeProvider !== false && !run.providerId,
+    attachments: parseMessageAttachments(run.attachments),
   };
+}
+
+function parseMessageAttachments(value: unknown): MessageAttachment[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('Runtime checkpoint contains invalid attachments');
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error('Runtime checkpoint contains an invalid attachment');
+    }
+    const attachment = entry as Partial<MessageAttachment>;
+    if (
+      typeof attachment.id !== 'string' ||
+      (attachment.kind !== 'image' && attachment.kind !== 'file' && attachment.kind !== 'folder') ||
+      typeof attachment.name !== 'string' ||
+      typeof attachment.mimeType !== 'string' ||
+      typeof attachment.size !== 'number' ||
+      typeof attachment.managedRef !== 'string' ||
+      attachment.readOnly !== true ||
+      (attachment.sha256 !== undefined && typeof attachment.sha256 !== 'string')
+    ) {
+      throw new Error('Runtime checkpoint contains an invalid attachment');
+    }
+    return structuredClone(attachment as MessageAttachment);
+  });
+}
+
+const APPLICATION_TOOL_PROTOCOLS = new Set<ProtocolFamily>([
+  'openai-chat',
+  'openai-responses',
+  'anthropic-messages',
+]);
+
+export function resolveApplicationToolsEnabled(input: {
+  protocol?: ProtocolFamily;
+  capabilities?: readonly string[];
+  capabilitiesConfirmed?: boolean;
+  modelId?: string;
+}): boolean {
+  if (input.modelId === 'fake-tool-use') return true;
+  return (
+    input.capabilities?.includes('tool-calling') === true ||
+    (input.protocol !== undefined && APPLICATION_TOOL_PROTOCOLS.has(input.protocol))
+  );
+}
+
+function parseProviderToolCalls(value: unknown): ProviderToolCall[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value))
+    throw new Error('Runtime checkpoint contains invalid application tool calls');
+  return value.map((entry) => {
+    if (
+      !entry ||
+      typeof entry !== 'object' ||
+      Array.isArray(entry) ||
+      typeof (entry as ProviderToolCall).id !== 'string' ||
+      typeof (entry as ProviderToolCall).name !== 'string' ||
+      typeof (entry as ProviderToolCall).argumentsJson !== 'string'
+    ) {
+      throw new Error('Runtime checkpoint contains an invalid application tool call');
+    }
+    return { ...(entry as ProviderToolCall) };
+  });
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) {
+    throw new Error('Runtime checkpoint contains an invalid string array');
+  }
+  return [...value];
+}
+
+function parseApplicationToolResults(
+  value: unknown,
+): Array<{ toolCallId: string; result: string }> {
+  if (value === undefined) return [];
+  if (!Array.isArray(value))
+    throw new Error('Runtime checkpoint contains invalid application tool results');
+  return value.map((entry) => {
+    if (
+      !entry ||
+      typeof entry !== 'object' ||
+      Array.isArray(entry) ||
+      typeof (entry as { toolCallId?: unknown }).toolCallId !== 'string' ||
+      typeof (entry as { result?: unknown }).result !== 'string'
+    ) {
+      throw new Error('Runtime checkpoint contains an invalid application tool result');
+    }
+    return {
+      toolCallId: (entry as { toolCallId: string }).toolCallId,
+      result: (entry as { result: string }).result,
+    };
+  });
+}
+
+function parseProviderContext(value: unknown): DemoRunState['providerContext'] | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Runtime checkpoint contains an invalid provider context');
+  }
+  const context = value as {
+    systemPrompt?: unknown;
+    messages?: unknown;
+    history?: unknown;
+  };
+  if (typeof context.systemPrompt !== 'string' || !Array.isArray(context.messages)) {
+    throw new Error('Runtime checkpoint contains an invalid provider context');
+  }
+  const messages: ProviderMessage[] = context.messages.map((message) => {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+      throw new Error('Runtime checkpoint contains an invalid provider message');
+    }
+    const candidate = message as { role?: unknown; content?: unknown; toolCallId?: unknown };
+    if (
+      (candidate.role !== 'user' &&
+        candidate.role !== 'assistant' &&
+        candidate.role !== 'tool' &&
+        candidate.role !== 'system') ||
+      (typeof candidate.content !== 'string' && !isProviderContentParts(candidate.content)) ||
+      (candidate.toolCallId !== undefined && typeof candidate.toolCallId !== 'string')
+    ) {
+      throw new Error('Runtime checkpoint contains an invalid provider message');
+    }
+    return {
+      role: candidate.role,
+      content: structuredClone(candidate.content) as ProviderMessage['content'],
+      ...(typeof candidate.toolCallId === 'string' ? { toolCallId: candidate.toolCallId } : {}),
+    };
+  });
+  if (!context.history || typeof context.history !== 'object' || Array.isArray(context.history)) {
+    throw new Error('Runtime checkpoint contains an invalid provider history');
+  }
+  const history = context.history as {
+    includedEventIds?: unknown;
+    excludedEventIds?: unknown;
+    tokenEstimate?: unknown;
+    imageAttachments?: unknown;
+  };
+  if (
+    !Array.isArray(history.includedEventIds) ||
+    !history.includedEventIds.every((id) => typeof id === 'string') ||
+    !Array.isArray(history.excludedEventIds) ||
+    !history.excludedEventIds.every((id) => typeof id === 'string') ||
+    !Number.isFinite(history.tokenEstimate) ||
+    (history.tokenEstimate as number) < 0
+  ) {
+    throw new Error('Runtime checkpoint contains an invalid provider history');
+  }
+  return {
+    systemPrompt: context.systemPrompt,
+    messages,
+    history: {
+      includedEventIds: history.includedEventIds as string[],
+      excludedEventIds: history.excludedEventIds as string[],
+      tokenEstimate: history.tokenEstimate as number,
+      imageAttachments: parseMessageAttachments(history.imageAttachments),
+    },
+  };
+}
+
+function isProviderContentParts(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.every((part) => {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return false;
+    const type = (part as { type?: unknown }).type;
+    return type === 'text' || type === 'image' || type === 'tool-call' || type === 'tool-result';
+  });
 }
 
 export type DemoProvider = ProviderAdapter;

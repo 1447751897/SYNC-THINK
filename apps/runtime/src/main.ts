@@ -46,6 +46,8 @@ async function main() {
     installId,
     allowNoToken,
     helloSecret: process.env.SYNC_THINK_PIPE_SECRET,
+    automationWebhookHost: process.env.SYNC_THINK_WEBHOOK_HOST ?? '127.0.0.1',
+    automationWebhookPort: Number(process.env.SYNC_THINK_WEBHOOK_PORT ?? 47_821),
     demoProvider:
       process.env.SYNC_THINK_DISABLE_DEMO_PROVIDER === '1'
         ? undefined

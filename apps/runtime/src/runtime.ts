@@ -4,12 +4,24 @@
 import {
   pipePathPortable,
   encodeFrame,
+  decodeFrames,
+  getApplicationToolDefinition,
   HEADER_BYTES,
   MAX_FRAME_BYTES,
   type AppendMessageResponse,
   type BindWorkspaceFolderResponse,
+  type BindWorkspaceGitRepositoryResponse,
   type ArchiveTaskResponse,
   type CreateTaskResponse,
+  type DelegateSubtaskResponse,
+  type RecordHandoffResponse,
+  type ResolveWorktreeIntegrationResponse,
+  type ListBrowserIdentitiesResponse,
+  type CreateBrowserIdentityResponse,
+  type UpdateBrowserIdentityResponse,
+  type DeleteBrowserIdentityResponse,
+  type SetTaskBrowserIdentityResponse,
+  type DescribeTaskExecutionAccessResponse,
   type CreateWorkspaceResponse,
   type EventReplayPagePayload,
   type EventStreamStartedPayload,
@@ -20,6 +32,7 @@ import {
   type SearchTasksResponse,
   type SetParticipationModeResponse,
   type UnarchiveTaskResponse,
+  type DiscardEmptyTaskResponse,
   type SavePolicyResponse,
   type SavePolicyPayload,
   type ListPoliciesResponse,
@@ -48,6 +61,12 @@ import {
   type CreateAgentResponse,
   type ListAgentVersionsResponse,
   type CreateAgentVersionResponse,
+  type CreateGroupResponse,
+  type GetGroupResponse,
+  type ListGroupsResponse,
+  type UpdateGroupResponse,
+  type GroupMemberMutationResponse,
+  type CreateGroupTaskResponse,
   type ImportSkillResponse,
   type SkillPermissionDiffSummary,
   type ListSkillsResponse,
@@ -87,9 +106,20 @@ import {
   type MergeArtifactVersionsResponse,
   type ListArtifactMergeConflictsResponse,
   type ResolveArtifactMergeConflictResponse,
+  type ConfirmApplicationToolResponse,
+  type RejectApplicationToolResponse,
+  type AutomationCommandResponse,
+  type DeleteAutomationResponse,
+  type GetAutomationResponse,
+  type ListAutomationsResponse,
+  type TriggerAutomationResponse,
+  type ListAutomationExecutionsResponse,
+  type CommandType,
 } from '@sync-think/protocol';
 import {
   ErrorCode,
+  isAgentPermissionCategoryEnabled,
+  isLegacyAgentPermissions,
   deriveTaskTitleFromPrompt,
   isUntitledTaskTitle,
   ulid,
@@ -116,6 +146,11 @@ import {
   type ArtifactVersion,
   type ArtifactVersionSummary,
   type AcceptanceGateId,
+  type AutomationDefinition,
+  type AutomationExecution,
+  type AutomationTriggerSource,
+  type BrowserIdentityId,
+  type ApprovalMode,
 } from '@sync-think/shared';
 import { defaultSurfaceForProtocol, inferProviderSurface } from '@sync-think/shared';
 import {
@@ -126,11 +161,13 @@ import {
   type EventDraft,
   type EventDraftBatch,
   type SqliteWorkspaceStore,
+  type SqliteExecutionEnvironmentStore,
   type TaskRecord,
   type SqliteProviderStore,
   type ProviderCatalogEntry,
   type ModelRecord,
   type SqliteAgentStore,
+  type SqliteGroupStore,
   type SqliteMemoryStore,
   type SqliteSkillStore,
   type SqliteMcpStore,
@@ -141,6 +178,7 @@ import {
   type SqliteArtifactStore,
   type SqliteProductionExecutionStore,
   type SqliteUnitOfWork,
+  type SqliteAutomationStore,
   type PolicyVersionRecord,
   type SkillVersionRecord,
   type MemoryChangeRecord,
@@ -183,26 +221,59 @@ import {
   compareTextSnapshots,
   mergeTextSnapshots,
 } from '@sync-think/core';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 // cc-switch import helpers re-exported via core
 import type { Socket } from 'node:net';
+import type { ProviderContentPart, ProviderToolCall } from '@sync-think/adapters';
+import {
+  buildGroupCollaborationPlan,
+  collectGroupCollaborationRunIds,
+  isGroupDelegationDecisionStep,
+  isGroupFinalSummaryStep,
+  parseGroupDelegationDecision,
+} from './group-collaboration.js';
 import {
   applyDemoRunEvent,
   createDemoProviderRequest,
   createDemoRun,
   parseDemoRuns,
   projectAdapterEvent,
+  resolveApplicationToolsEnabled,
   serializeDemoRuns,
   type DemoProvider,
   type DemoRunState,
 } from './demo-run.js';
+import { compileProviderContext, resolveSyncThinkSurface } from './provider-context.js';
+import { ConfigurationCommandConfirmationGate } from './command-confirmation.js';
+import { AutomationService } from './automation-service.js';
+import { nextCronOccurrence } from './automation-schedule.js';
+import type { TaskExecutionEnvironmentManager } from './task-execution-environment.js';
+import {
+  EXECUTION_TOOL_SCHEMAS,
+  invokeExecutionTool,
+  isExecutionToolName,
+} from './execution-tools.js';
+import {
+  loadImageAttachmentParts,
+  prepareMessageAttachmentContext,
+} from './message-attachments.js';
 import {
   parseAppendMessagePayload,
   parseBindWorkspaceFolderPayload,
+  parseBindWorkspaceGitRepositoryPayload,
   parseCancelRunPayload,
   parseContinueEventReplayPayload,
   parseArchiveTaskPayload,
   parseCreateTaskPayload,
+  parseDelegateSubtaskPayload,
+  parseRecordHandoffPayload,
+  parseResolveWorktreeIntegrationPayload,
+  parseListBrowserIdentitiesPayload,
+  parseCreateBrowserIdentityPayload,
+  parseUpdateBrowserIdentityPayload,
+  parseDeleteBrowserIdentityPayload,
+  parseSetTaskBrowserIdentityPayload,
+  parseDescribeTaskExecutionAccessPayload,
   parseCreateWorkspacePayload,
   parseListTasksPayload,
   parseListWorkspacesPayload,
@@ -210,6 +281,7 @@ import {
   parseSearchTasksPayload,
   parseSetParticipationModePayload,
   parseUnarchiveTaskPayload,
+  parseDiscardEmptyTaskPayload,
   parseSavePolicyPayload,
   parseListPoliciesPayload,
   parseSubscribeEventsPayload,
@@ -229,6 +301,15 @@ import {
   parseCreateAgentPayload,
   parseListAgentVersionsPayload,
   parseCreateAgentVersionPayload,
+  parseCreateGroupPayload,
+  parseGetGroupPayload,
+  parseListGroupsPayload,
+  parseUpdateGroupPayload,
+  parseAddGroupMemberPayload,
+  parseRemoveGroupMemberPayload,
+  parseUpdateGroupMemberResponsibilityPayload,
+  parseSetGroupLeadPayload,
+  parseCreateGroupTaskPayload,
   parseImportSkillPayload,
   parseListSkillsPayload,
   parseRegisterMcpServerPayload,
@@ -263,6 +344,14 @@ import {
   parseMergeArtifactVersionsPayload,
   parseListArtifactMergeConflictsPayload,
   parseResolveArtifactMergeConflictPayload,
+  parseResolveApplicationToolConfirmationPayload,
+  parseCreateAutomationPayload,
+  parseUpdateAutomationPayload,
+  parseDeleteAutomationPayload,
+  parseGetAutomationPayload,
+  parseListAutomationsPayload,
+  parseTriggerAutomationPayload,
+  parseListAutomationExecutionsPayload,
 } from './command-validation.js';
 import { createPipeServer, type PipeServerHandlers } from './pipe/server.js';
 import { healthcheck, type HealthcheckResult, type HealthcheckError } from './healthcheck.js';
@@ -274,6 +363,7 @@ import {
   formatMcpPolicyLabel,
   normalizeMcpProcessPolicy,
   previewMcpOutput,
+  closePlaywrightBrowserWorkers,
 } from '@sync-think/workers';
 
 export interface RuntimeOptions {
@@ -283,11 +373,14 @@ export interface RuntimeOptions {
   checkpoint?: RuntimeCheckpointSnapshot;
   stateStore?: RuntimeStateStore;
   workspaceStore?: SqliteWorkspaceStore;
+  executionEnvironmentStore?: SqliteExecutionEnvironmentStore;
+  taskEnvironmentManager?: TaskExecutionEnvironmentManager;
   workspaceId?: WorkspaceId;
   checkpointRunId?: RunId;
   demoProvider?: DemoProvider;
   providerStore?: SqliteProviderStore;
   agentStore?: SqliteAgentStore;
+  groupStore?: SqliteGroupStore;
   memoryStore?: SqliteMemoryStore;
   approvalStore?: SqliteApprovalStore;
   policyStore?: SqlitePolicyStore;
@@ -296,6 +389,9 @@ export interface RuntimeOptions {
   artifactStore?: SqliteArtifactStore;
   productionExecutionStore?: SqliteProductionExecutionStore;
   unitOfWork?: SqliteUnitOfWork;
+  automationStore?: SqliteAutomationStore;
+  automationWebhookHost?: string;
+  automationWebhookPort?: number;
   stepExecutor?: StepExecutor;
   skillStore?: SqliteSkillStore;
   mcpStore?: SqliteMcpStore;
@@ -309,6 +405,8 @@ export interface RuntimeOptions {
   discoveryByProtocol?: Partial<Record<ProtocolFamily, DemoProvider>>;
   /** Fallback discovery adapter; defaults to demoProvider when present (tests / Fake). */
   discoveryAdapter?: DemoProvider;
+  /** Retry delays for an empty-output transient Provider outage before fallback. */
+  providerRetryDelaysMs?: readonly number[];
 }
 
 export interface RuntimeStateStore {
@@ -352,9 +450,38 @@ interface RuntimeEventSubscription {
   liveCursor: number;
 }
 
+interface PendingAgentConfigurationCommand {
+  id: string;
+  toolName: string;
+  command: CommandType;
+  payload: Record<string, unknown>;
+  confirmationToken: string;
+  threadId: string;
+  runId: RunId;
+  agentVersionId: string;
+  expiresAt: string;
+}
+
 const MAX_REPLAY_EVENTS_PER_PAGE = 64;
 const MAX_REPLAY_SCANNED_EVENTS_PER_PAGE = 256;
 const REPLAY_FRAME_RESERVE_BYTES = 1_024;
+const MAX_APPLICATION_TOOL_TURNS = 8;
+const MAX_APPLICATION_TOOL_ARGUMENT_BYTES = 64 * 1024;
+const MAX_APPLICATION_TOOL_RESULT_BYTES = 24 * 1024;
+const DEFAULT_PROVIDER_RETRY_DELAYS_MS = [400, 1_200] as const;
+const DEFAULT_SUBTASK_RETRY_LIMIT = 5;
+
+interface DelegatedSubtaskDescriptor {
+  eventId: string;
+  parentTaskId: TaskId;
+  childTaskId: TaskId;
+  childThreadId: ThreadId;
+  delegateAgentVersionId: AgentVersionId;
+  delegatingAgentVersionId: AgentVersionId;
+  delegationBatchId: string;
+  title: string;
+  packet: import('@sync-think/protocol').SubtaskPacket;
+}
 
 function canonicalApprovalDetails(
   value: unknown,
@@ -425,11 +552,14 @@ export class Runtime {
   private readonly subscriptions = new Map<string, RuntimeEventSubscription>();
   private readonly stateStore?: RuntimeStateStore;
   private readonly workspaceStore?: SqliteWorkspaceStore;
+  private readonly executionEnvironmentStore?: SqliteExecutionEnvironmentStore;
+  private readonly taskEnvironmentManager?: TaskExecutionEnvironmentManager;
   private readonly workspaceId: WorkspaceId;
   private readonly checkpointRunId: RunId;
   private readonly demoProvider?: DemoProvider;
   private readonly providerStore?: SqliteProviderStore;
   private readonly agentStore?: SqliteAgentStore;
+  private readonly groupStore?: SqliteGroupStore;
   private readonly memoryStore?: SqliteMemoryStore;
   private readonly approvalStore?: SqliteApprovalStore;
   private readonly policyStore?: SqlitePolicyStore;
@@ -438,6 +568,8 @@ export class Runtime {
   private readonly artifactStore?: SqliteArtifactStore;
   private readonly productionExecutionStore?: SqliteProductionExecutionStore;
   private readonly unitOfWork?: SqliteUnitOfWork;
+  private readonly automationStore?: SqliteAutomationStore;
+  private readonly automationService?: AutomationService;
   private readonly scheduler?: Scheduler;
   private readonly skillStore?: SqliteSkillStore;
   private readonly mcpStore?: SqliteMcpStore;
@@ -445,8 +577,17 @@ export class Runtime {
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
   private readonly discoveryAdapter?: DemoProvider;
+  private readonly providerRetryDelaysMs: readonly number[];
   private readonly demoRuns = new Map<string, DemoRunState>();
+  private readonly demoRunAbortControllers = new Map<string, AbortController>();
   private readonly backgroundTasks = new Set<Promise<void>>();
+  private readonly delegatedSubtaskStarting = new Set<string>();
+  private readonly delegatedParentWaking = new Set<string>();
+  private readonly configurationConfirmationGate = new ConfigurationCommandConfirmationGate();
+  private readonly pendingAgentConfigurationCommands = new Map<
+    string,
+    PendingAgentConfigurationCommand
+  >();
   /** Thread-scoped Manifest amendments (force-exclude source ids). In-memory for M1. */
   private readonly threadContextAmendments = new Map<string, { excludeSourceIds: string[] }>();
   private eventSequence = 0;
@@ -455,11 +596,14 @@ export class Runtime {
     this.installId = opts.installId;
     this.stateStore = opts.stateStore;
     this.workspaceStore = opts.workspaceStore;
+    this.executionEnvironmentStore = opts.executionEnvironmentStore;
+    this.taskEnvironmentManager = opts.taskEnvironmentManager;
     this.workspaceId = opts.workspaceId ?? ('workspace-dev' as WorkspaceId);
     this.checkpointRunId = opts.checkpointRunId ?? (`runtime-${opts.installId}` as RunId);
     this.demoProvider = opts.demoProvider;
     this.providerStore = opts.providerStore;
     this.agentStore = opts.agentStore;
+    this.groupStore = opts.groupStore;
     this.memoryStore = opts.memoryStore;
     this.approvalStore = opts.approvalStore;
     this.policyStore = opts.policyStore;
@@ -468,6 +612,7 @@ export class Runtime {
     this.artifactStore = opts.artifactStore;
     this.productionExecutionStore = opts.productionExecutionStore;
     this.unitOfWork = opts.unitOfWork;
+    this.automationStore = opts.automationStore;
     this.scheduler =
       opts.orchestrationStore && opts.stepExecutor
         ? new Scheduler({
@@ -524,6 +669,9 @@ export class Runtime {
       ((taskId) => this.orchestrationStore?.hasApprovedPlan(taskId) === true);
     this.discoveryByProtocol = opts.discoveryByProtocol ?? {};
     this.discoveryAdapter = opts.discoveryAdapter ?? opts.demoProvider;
+    this.providerRetryDelaysMs = (opts.providerRetryDelaysMs ?? DEFAULT_PROVIDER_RETRY_DELAYS_MS)
+      .slice(0, 5)
+      .map((delay) => Math.max(0, Math.min(30_000, Math.floor(delay))));
     if (opts.checkpoint) {
       this.restoreCheckpoint(opts.checkpoint);
     } else if (this.stateStore) {
@@ -574,6 +722,15 @@ export class Runtime {
           this.handleUnsubscribeEvents(socket, frame);
           return;
         }
+        if (frame.type === 'application.tool.confirm') {
+          void this.handleConfirmApplicationTool(socket, frame);
+          return;
+        }
+        if (frame.type === 'application.tool.reject') {
+          this.handleRejectApplicationTool(socket, frame);
+          return;
+        }
+        if (this.handleConfigurationConfirmation(socket, frame)) return;
         if (frame.type === 'workspace.create') {
           this.handleCreateWorkspace(socket, frame);
           return;
@@ -582,12 +739,52 @@ export class Runtime {
           this.handleBindWorkspaceFolder(socket, frame);
           return;
         }
+        if (frame.type === 'workspace.bindGitRepository') {
+          this.handleBindWorkspaceGitRepository(socket, frame);
+          return;
+        }
         if (frame.type === 'workspace.list') {
           this.handleListWorkspaces(socket, frame);
           return;
         }
+        if (frame.type === 'browserIdentity.list') {
+          this.handleListBrowserIdentities(socket, frame);
+          return;
+        }
+        if (frame.type === 'browserIdentity.create') {
+          this.handleCreateBrowserIdentity(socket, frame);
+          return;
+        }
+        if (frame.type === 'browserIdentity.update') {
+          this.handleUpdateBrowserIdentity(socket, frame);
+          return;
+        }
+        if (frame.type === 'browserIdentity.delete') {
+          this.handleDeleteBrowserIdentity(socket, frame);
+          return;
+        }
         if (frame.type === 'task.create') {
           this.handleCreateTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.delegateSubtask') {
+          this.handleDelegateSubtask(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.recordHandoff') {
+          this.handleRecordHandoff(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.resolveWorktreeIntegration') {
+          this.handleResolveWorktreeIntegration(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.setBrowserIdentity') {
+          this.handleSetTaskBrowserIdentity(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.describeExecutionAccess') {
+          this.handleDescribeTaskExecutionAccess(socket, frame);
           return;
         }
         if (frame.type === 'task.list') {
@@ -612,6 +809,10 @@ export class Runtime {
         }
         if (frame.type === 'task.unarchive') {
           this.handleUnarchiveTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.discardEmpty') {
+          this.handleDiscardEmptyTask(socket, frame);
           return;
         }
         if (frame.type === 'task.appendMessage') {
@@ -738,6 +939,70 @@ export class Runtime {
           this.handleCreateAgentVersion(socket, frame);
           return;
         }
+        if (frame.type === 'group.create') {
+          this.handleCreateGroup(socket, frame);
+          return;
+        }
+        if (frame.type === 'group.get') {
+          this.handleGetGroup(socket, frame);
+          return;
+        }
+        if (frame.type === 'group.list') {
+          this.handleListGroups(socket, frame);
+          return;
+        }
+        if (frame.type === 'group.update') {
+          this.handleUpdateGroup(socket, frame);
+          return;
+        }
+        if (frame.type === 'group.member.add') {
+          this.handleAddGroupMember(socket, frame);
+          return;
+        }
+        if (frame.type === 'group.member.remove') {
+          this.handleRemoveGroupMember(socket, frame);
+          return;
+        }
+        if (frame.type === 'group.member.updateResponsibility') {
+          this.handleUpdateGroupMemberResponsibility(socket, frame);
+          return;
+        }
+        if (frame.type === 'group.setLead') {
+          this.handleSetGroupLead(socket, frame);
+          return;
+        }
+        if (frame.type === 'group.task.create') {
+          this.handleCreateGroupTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'automation.create') {
+          void this.handleCreateAutomation(socket, frame);
+          return;
+        }
+        if (frame.type === 'automation.update') {
+          void this.handleUpdateAutomation(socket, frame);
+          return;
+        }
+        if (frame.type === 'automation.delete') {
+          void this.handleDeleteAutomation(socket, frame);
+          return;
+        }
+        if (frame.type === 'automation.get') {
+          this.handleGetAutomation(socket, frame);
+          return;
+        }
+        if (frame.type === 'automation.list') {
+          this.handleListAutomations(socket, frame);
+          return;
+        }
+        if (frame.type === 'automation.trigger') {
+          void this.handleTriggerAutomation(socket, frame);
+          return;
+        }
+        if (frame.type === 'automation.execution.list') {
+          this.handleListAutomationExecutions(socket, frame);
+          return;
+        }
         if (frame.type === 'skill.import') {
           this.handleImportSkill(socket, frame);
           return;
@@ -839,8 +1104,45 @@ export class Runtime {
           }),
         );
       },
+      onFrameError: (socket, frame, error) => {
+        console.warn(
+          '[runtime] command failed before a response could be written',
+          frame.type,
+          this.scrubDiagnosticMessage(error instanceof Error ? error.message : String(error)),
+        );
+        if (socket.destroyed) return;
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: frame.type,
+            payload: {},
+            error: {
+              code: ErrorCode.STORAGE_WRITE_FAILED,
+              message: 'The runtime could not complete this command',
+            },
+          }),
+        );
+      },
       onServerError: (err) => console.warn('[runtime] pipe error', err.message),
     };
+    this.automationService =
+      this.automationStore && this.secureStore && this.workspaceStore
+        ? new AutomationService({
+            store: this.automationStore,
+            secureStore: this.secureStore,
+            host: opts.automationWebhookHost,
+            port: opts.automationWebhookPort,
+            createTask: (input) => this.createAutomationTask(input),
+            startTask: (input) => this.startAutomationTask(input.automation, input.taskId),
+            appendSkippedTaskMessage: (taskId, message) =>
+              this.appendAutomationTaskMessage(taskId, message, 'system'),
+            getTaskInput: (taskId) => this.workspaceStore?.getTask(taskId)?.goal,
+            getTaskState: (taskId, since) => this.getAutomationTaskState(taskId, since),
+            emit: (type, automation, execution, detail) =>
+              this.emitAutomationEvent(type, automation, execution, detail),
+          })
+        : undefined;
   }
 
   currentHealthcheck(): HealthcheckResult | HealthcheckError {
@@ -1154,6 +1456,182 @@ export class Runtime {
     );
   }
 
+  private writeApplicationToolConfirmationError(
+    socket: Socket,
+    frame: Frame,
+    reason: 'caller-mismatch' | 'unknown-confirmation' | 'thread-mismatch' | 'expired',
+  ): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code: ErrorCode.APPROVAL_REQUIRED,
+          message:
+            'This application operation is unavailable, expired, or belongs to another conversation.',
+          detail: { reason },
+        },
+      }),
+    );
+  }
+
+  private appendApplicationToolConfirmationResolution(
+    pending: PendingAgentConfigurationCommand,
+    status: 'confirmed' | 'failed' | 'rejected' | 'expired',
+    errorSummary?: string,
+  ): Event {
+    const task = this.resolveTaskForThread(pending.threadId);
+    const event = this.appendEvent(
+      'system',
+      'application.tool_confirmation_resolved',
+      {
+        threadId: pending.threadId,
+        confirmationId: pending.id,
+        status,
+        command: pending.command,
+        toolName: pending.toolName,
+        agentVersionId: pending.agentVersionId,
+        ...(errorSummary ? { errorSummary } : {}),
+      },
+      undefined,
+      pending.runId,
+      task?.id,
+      task?.workspaceId ?? this.workspaceId,
+    );
+    this.publishEvent(event);
+    return event;
+  }
+
+  private resolvePendingApplicationToolConfirmation(
+    socket: Socket,
+    frame: Frame,
+  ):
+    | {
+        payload: import('@sync-think/protocol').ResolveApplicationToolConfirmationPayload;
+        pending: PendingAgentConfigurationCommand;
+      }
+    | undefined {
+    const payload = parseResolveApplicationToolConfirmationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return undefined;
+    }
+    if (this.commandCallerSurface(frame) !== 'desktop') {
+      this.writeApplicationToolConfirmationError(socket, frame, 'caller-mismatch');
+      return undefined;
+    }
+    const pending = this.pendingAgentConfigurationCommands.get(payload.confirmationId);
+    if (!pending) {
+      this.writeApplicationToolConfirmationError(socket, frame, 'unknown-confirmation');
+      return undefined;
+    }
+    if (pending.threadId !== payload.threadId) {
+      this.writeApplicationToolConfirmationError(socket, frame, 'thread-mismatch');
+      return undefined;
+    }
+    if (
+      !Number.isFinite(Date.parse(pending.expiresAt)) ||
+      Date.parse(pending.expiresAt) <= Date.now()
+    ) {
+      this.pendingAgentConfigurationCommands.delete(payload.confirmationId);
+      this.appendApplicationToolConfirmationResolution(pending, 'expired');
+      this.writeApplicationToolConfirmationError(socket, frame, 'expired');
+      return undefined;
+    }
+    return { payload, pending };
+  }
+
+  private async handleConfirmApplicationTool(socket: Socket, frame: Frame): Promise<void> {
+    const resolved = this.resolvePendingApplicationToolConfirmation(socket, frame);
+    if (!resolved) return;
+    const { payload, pending } = resolved;
+    this.pendingAgentConfigurationCommands.delete(payload.confirmationId);
+
+    let commandResult: Frame;
+    try {
+      commandResult = await this.invokeAgentRuntimeCommand(
+        pending.command,
+        pending.payload,
+        pending.confirmationToken,
+      );
+    } catch (error) {
+      const errorSummary =
+        this.scrubDiagnosticMessage(error instanceof Error ? error.message : 'Command failed') ??
+        'Command failed';
+      const auditEvent = this.appendApplicationToolConfirmationResolution(
+        pending,
+        'failed',
+        errorSummary,
+      );
+      const response: ConfirmApplicationToolResponse = {
+        confirmationId: pending.id,
+        status: 'failed',
+        command: pending.command,
+        errorSummary,
+        auditEventId: String(auditEvent.id),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: response,
+        }),
+      );
+      return;
+    }
+
+    const errorSummary = commandResult.error
+      ? (this.scrubDiagnosticMessage(commandResult.error.message) ?? 'Command failed')
+      : undefined;
+    const status = commandResult.error ? 'failed' : 'confirmed';
+    const auditEvent = this.appendApplicationToolConfirmationResolution(
+      pending,
+      status,
+      errorSummary,
+    );
+    const response: ConfirmApplicationToolResponse = {
+      confirmationId: pending.id,
+      status,
+      command: pending.command,
+      ...(commandResult.error ? {} : { result: commandResult.payload }),
+      ...(errorSummary ? { errorSummary } : {}),
+      auditEventId: String(auditEvent.id),
+    };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: response,
+      }),
+    );
+  }
+
+  private handleRejectApplicationTool(socket: Socket, frame: Frame): void {
+    const resolved = this.resolvePendingApplicationToolConfirmation(socket, frame);
+    if (!resolved) return;
+    const { payload, pending } = resolved;
+    this.pendingAgentConfigurationCommands.delete(payload.confirmationId);
+    const auditEvent = this.appendApplicationToolConfirmationResolution(pending, 'rejected');
+    const response: RejectApplicationToolResponse = {
+      confirmationId: pending.id,
+      status: 'rejected',
+      command: pending.command,
+      auditEventId: String(auditEvent.id),
+    };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: response,
+      }),
+    );
+  }
+
   private handleCreateWorkspace(socket: Socket, frame: Frame): void {
     const payload = parseCreateWorkspacePayload(frame.payload);
     if (!payload) {
@@ -1170,6 +1648,7 @@ export class Runtime {
         name: payload.name,
         allowedRoots: payload.allowedRoots,
       });
+      this.taskEnvironmentManager?.ensureWorkspaceDefaults(created.id, created.folderPath);
       const response: CreateWorkspaceResponse = {
         workspaceId: created.id,
         folderPath: created.folderPath,
@@ -1205,6 +1684,7 @@ export class Runtime {
         folderPath: payload.folderPath,
         allowedRoots: payload.allowedRoots,
       });
+      this.taskEnvironmentManager?.ensureWorkspaceDefaults(updated.id, updated.folderPath);
       if (!updated.folderPath) {
         throw new Error(`Workspace folder binding was not persisted: ${payload.workspaceId}`);
       }
@@ -1228,6 +1708,46 @@ export class Runtime {
     }
   }
 
+  private handleBindWorkspaceGitRepository(socket: Socket, frame: Frame): void {
+    const payload = parseBindWorkspaceGitRepositoryPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const workspace = this.workspaceStore?.getWorkspace(payload.workspaceId);
+    if (!workspace || !this.executionEnvironmentStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      this.taskEnvironmentManager?.ensureWorkspaceDefaults(workspace.id, workspace.folderPath);
+      const resource = this.executionEnvironmentStore.configureResource({
+        workspaceId: workspace.id,
+        type: 'git_repository',
+        repositoryUrl: payload.repositoryUrl,
+        defaultRef: payload.defaultRef,
+      });
+      const response: BindWorkspaceGitRepositoryResponse = {
+        workspaceId: workspace.id,
+        resourceId: String(resource.id),
+        repositoryUrl: resource.repositoryUrl!,
+        defaultRef: resource.defaultRef,
+        resourceType: 'git_repository',
+        updatedAt: resource.updatedAt,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'workspace.bindGitRepository',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
   private handleListWorkspaces(socket: Socket, frame: Frame): void {
     const payload = parseListWorkspacesPayload(frame.payload ?? {});
     if (!payload) {
@@ -1239,13 +1759,28 @@ export class Runtime {
       return;
     }
     const response: ListWorkspacesResponse = {
-      workspaces: this.workspaceStore.listWorkspaces().map((workspace) => ({
-        workspaceId: workspace.id,
-        folderPath: workspace.folderPath,
-        name: workspace.name,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
-      })),
+      workspaces: this.workspaceStore.listWorkspaces().map((workspace) => {
+        const resource = this.executionEnvironmentStore?.getPrimaryResource(workspace.id);
+        const profile = this.executionEnvironmentStore?.getWorkspaceProfile(workspace.id);
+        const browserIdentity = this.executionEnvironmentStore
+          ?.listBrowserIdentities()
+          .find((identity) => identity.id === profile?.browserIdentityId);
+        return {
+          workspaceId: workspace.id,
+          folderPath: workspace.folderPath,
+          name: workspace.name,
+          createdAt: workspace.createdAt,
+          updatedAt: workspace.updatedAt,
+          resourceType: resource?.type,
+          repositoryUrl: resource?.repositoryUrl,
+          executionProfileId: profile?.id,
+          executionProfileName: profile?.name,
+          executionMode: profile?.mode,
+          defaultRef: profile?.defaultRef ?? resource?.defaultRef,
+          browserIdentityId: profile?.browserIdentityId,
+          browserIdentityName: browserIdentity?.name,
+        };
+      }),
     };
     socket.write(
       encodeFrame({
@@ -1255,6 +1790,106 @@ export class Runtime {
         payload: response,
       }),
     );
+  }
+
+  private handleListBrowserIdentities(socket: Socket, frame: Frame): void {
+    const payload = parseListBrowserIdentitiesPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.taskEnvironmentManager) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    const response: ListBrowserIdentitiesResponse = {
+      identities: this.taskEnvironmentManager.listBrowserIdentities().map((identity) => ({
+        id: String(identity.id),
+        name: identity.name,
+        isDefault: identity.isDefault,
+        createdAt: identity.createdAt,
+        updatedAt: identity.updatedAt,
+      })),
+    };
+    socket.write(
+      encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+    );
+  }
+
+  private handleCreateBrowserIdentity(socket: Socket, frame: Frame): void {
+    const payload = parseCreateBrowserIdentityPayload(frame.payload);
+    if (!payload || !this.taskEnvironmentManager) {
+      if (!payload) this.writeMalformedPayload(socket, frame);
+      else this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const identity = this.taskEnvironmentManager.createBrowserIdentity(
+        payload.name,
+        payload.makeDefault,
+      );
+      const response: CreateBrowserIdentityResponse = {
+        identity: {
+          id: String(identity.id),
+          name: identity.name,
+          isDefault: identity.isDefault,
+          createdAt: identity.createdAt,
+          updatedAt: identity.updatedAt,
+        },
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private handleUpdateBrowserIdentity(socket: Socket, frame: Frame): void {
+    const payload = parseUpdateBrowserIdentityPayload(frame.payload);
+    if (!payload || !this.taskEnvironmentManager) {
+      if (!payload) this.writeMalformedPayload(socket, frame);
+      else this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const identity = this.taskEnvironmentManager.updateBrowserIdentity(
+        payload.id as BrowserIdentityId,
+        { name: payload.name, makeDefault: payload.makeDefault },
+      );
+      const response: UpdateBrowserIdentityResponse = {
+        identity: {
+          id: String(identity.id),
+          name: identity.name,
+          isDefault: identity.isDefault,
+          createdAt: identity.createdAt,
+          updatedAt: identity.updatedAt,
+        },
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private handleDeleteBrowserIdentity(socket: Socket, frame: Frame): void {
+    const payload = parseDeleteBrowserIdentityPayload(frame.payload);
+    if (!payload || !this.taskEnvironmentManager) {
+      if (!payload) this.writeMalformedPayload(socket, frame);
+      else this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      this.taskEnvironmentManager.deleteBrowserIdentity(payload.id as BrowserIdentityId);
+      const response: DeleteBrowserIdentityResponse = { id: payload.id, deleted: true };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
   }
 
   private handleCreateTask(socket: Socket, frame: Frame): void {
@@ -1275,6 +1910,7 @@ export class Runtime {
         parentTaskId: payload.parentTaskId,
         acceptanceCriteria: payload.acceptanceCriteria,
       });
+      this.prepareCreatedTaskEnvironment(created.taskId, created.parentTaskId);
       this.threadVersions.set(created.threadId, created.taskVersion);
       const response: CreateTaskResponse = {
         taskId: created.taskId,
@@ -1291,6 +1927,941 @@ export class Runtime {
           type: 'task.create',
           payload: response,
         }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private prepareCreatedTaskEnvironment(taskId: TaskId, parentTaskId?: TaskId): void {
+    const task = this.workspaceStore?.getTask(taskId);
+    if (!task) return;
+    const workspace = this.workspaceStore?.getWorkspace(task.workspaceId);
+    if (!workspace) return;
+    this.taskEnvironmentManager?.ensureWorkspaceDefaults(workspace.id, workspace.folderPath);
+    this.executionEnvironmentStore?.createTaskContext({
+      taskId,
+      workspaceId: task.workspaceId,
+      parentTaskId,
+    });
+    if (this.taskEnvironmentManager) {
+      const initialContext = this.taskEnvironmentManager.prepareTask(taskId);
+      if (initialContext.state !== 'pending') return;
+      const preparation = this.taskEnvironmentManager.prepareTaskAsync(taskId).then((context) => {
+        const currentTask = this.workspaceStore?.getTask(taskId);
+        if (!currentTask) return;
+        const event = this.appendEvent(
+          'system',
+          context.state === 'ready' ? 'task.execution-ready' : 'task.execution-blocked',
+          {
+            threadId: currentTask.threadId,
+            taskId: currentTask.id,
+            mode: context.mode,
+            state: context.state,
+            blockedReason: context.blockedReason,
+            text:
+              context.state === 'ready'
+                ? '任务执行位置已准备完成。'
+                : `任务执行位置未就绪：${context.blockedReason ?? '未知原因'}`,
+          },
+          undefined,
+          undefined,
+          currentTask.id,
+          currentTask.workspaceId,
+        );
+        this.publishEvent(event);
+      });
+      this.trackBackgroundTask(preparation);
+    }
+  }
+
+  private handleDelegateSubtask(socket: Socket, frame: Frame): void {
+    const payload = parseDelegateSubtaskPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore || !this.agentStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const parent = this.workspaceStore.getTask(payload.parentTaskId);
+      if (!parent || parent.workspaceId !== payload.workspaceId) {
+        throw new Error('Parent task is not available in the requested workspace');
+      }
+      if (parent.parentTaskId) {
+        throw new Error('Only one level of child tasks is supported');
+      }
+      const delegateAgent = this.getRequiredAgentVersion(payload.delegateAgentVersionId);
+      const group = this.groupStore?.getForTask(parent.id);
+      if (
+        group &&
+        !group.members.some((member) => member.agentVersionId === payload.delegateAgentVersionId)
+      ) {
+        throw new Error('Delegated AgentVersion is not a member of the bound group');
+      }
+      const dependsOnTaskIds = [...new Set(payload.dependsOnTaskIds ?? [])];
+      for (const dependencyId of dependsOnTaskIds) {
+        const dependency = this.workspaceStore.getTask(dependencyId);
+        if (!dependency || dependency.parentTaskId !== parent.id) {
+          throw new Error('Subtask dependencies must be existing children of the same parent');
+        }
+      }
+      const normalizedGoal = payload.goal.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+      const existingDelegation = this.delegatedSubtaskDescriptors().find((candidate) => {
+        if (
+          candidate.parentTaskId !== parent.id ||
+          candidate.delegateAgentVersionId !== payload.delegateAgentVersionId ||
+          candidate.packet.goal.trim().replace(/\s+/g, ' ').toLocaleLowerCase() !==
+            normalizedGoal ||
+          this.subtaskTerminalEvent(candidate.childTaskId)
+        ) {
+          return false;
+        }
+        const child = this.workspaceStore?.getTask(candidate.childTaskId);
+        return Boolean(
+          child &&
+          (child.status === 'active' || child.status === 'blocked' || child.status === 'paused'),
+        );
+      });
+      if (existingDelegation) {
+        const child = this.workspaceStore.getTask(existingDelegation.childTaskId)!;
+        const response: DelegateSubtaskResponse = {
+          taskId: child.id,
+          threadId: child.threadId,
+          taskVersion: child.version,
+          participationMode: child.participationMode,
+          parentTaskId: child.parentTaskId,
+          createdAt: child.createdAt,
+          delegateAgentVersionId: existingDelegation.delegateAgentVersionId,
+          packet: existingDelegation.packet,
+          eventId: existingDelegation.eventId,
+          reused: true,
+        };
+        socket.write(
+          encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+        );
+        return;
+      }
+      const delegatingAgentVersionId =
+        payload.delegatingAgentVersionId ??
+        group?.leadAgentVersionId ??
+        this.resolveTaskLeadAgentVersionId(parent);
+      this.getRequiredAgentVersion(delegatingAgentVersionId);
+      const delegationBatchId = payload.delegationBatchId ?? String(frame.id);
+      const packet = {
+        goal: payload.goal,
+        requiredEvidence: payload.requiredEvidence ?? [],
+        acceptanceConditions: payload.acceptanceConditions ?? [],
+        allowedTools: payload.allowedTools ?? [],
+        handoffHistory: [],
+        dependsOnTaskIds,
+        retryLimit: DEFAULT_SUBTASK_RETRY_LIMIT,
+      };
+      const { created, delegatedEvent, assignmentEvent } = this.runInUnitOfWork(() => {
+        const created = this.workspaceStore!.createTask({
+          workspaceId: payload.workspaceId,
+          title: payload.title,
+          goal: payload.goal,
+          parentTaskId: payload.parentTaskId,
+          acceptanceCriteria: packet.acceptanceConditions,
+        });
+        const delegatedEvent = this.appendEvent(
+          'step',
+          'subtask.delegated',
+          {
+            threadId: parent.threadId,
+            childTaskId: created.taskId,
+            childThreadId: created.threadId,
+            parentTaskId: parent.id,
+            delegateAgentVersionId: payload.delegateAgentVersionId,
+            delegatingAgentVersionId,
+            agentVersionId: delegatingAgentVersionId,
+            delegationBatchId,
+            packet,
+            callerSurface: this.commandCallerSurface(frame),
+            text: `我已将“${payload.title}”委托给 ${delegateAgent.name}。`,
+          },
+          undefined,
+          undefined,
+          parent.id,
+          parent.workspaceId,
+        );
+        const assignmentEvent = this.appendEvent(
+          'system',
+          'subtask.agent-assigned',
+          {
+            threadId: created.threadId,
+            parentTaskId: parent.id,
+            childTaskId: created.taskId,
+            agentVersionId: payload.delegateAgentVersionId,
+            delegateAgentVersionId: payload.delegateAgentVersionId,
+            delegatingAgentVersionId,
+            delegationBatchId,
+          },
+          undefined,
+          undefined,
+          created.taskId,
+          parent.workspaceId,
+        );
+        return { created, delegatedEvent, assignmentEvent };
+      });
+      const parentPolicy = this.policyStore
+        ?.listApplicable([{ scopeType: 'task', scopeId: parent.id }])
+        .filter((policy) => policy.scopeType === 'task' && policy.scopeId === parent.id)
+        .sort((left, right) => right.version - left.version)[0];
+      if (this.policyStore) {
+        this.policyStore.save({
+          scopeType: 'task',
+          scopeId: created.taskId,
+          approvalMode:
+            parentPolicy?.approvalMode ??
+            group?.approvalMode ??
+            this.getRequiredAgentVersion(delegatingAgentVersionId).approvalMode,
+          rules: parentPolicy?.rules ?? [],
+        });
+      }
+      this.prepareCreatedTaskEnvironment(created.taskId, created.parentTaskId);
+      this.threadVersions.set(created.threadId, created.taskVersion);
+      this.publishEvent(delegatedEvent);
+      this.publishEvent(assignmentEvent);
+      const response: DelegateSubtaskResponse = {
+        taskId: created.taskId,
+        threadId: created.threadId,
+        taskVersion: created.taskVersion,
+        participationMode: created.participationMode,
+        parentTaskId: created.parentTaskId,
+        createdAt: created.createdAt,
+        delegateAgentVersionId: payload.delegateAgentVersionId,
+        packet,
+        eventId: String(delegatedEvent.id),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: response,
+        }),
+      );
+      this.scheduleReadyDelegatedSubtasks();
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private resolveTaskLeadAgentVersionId(task: TaskRecord): AgentVersionId {
+    for (const event of [...this.events].reverse()) {
+      if (event.taskId !== task.id && event.payload.threadId !== task.threadId) continue;
+      for (const key of ['leadAgentVersionId', 'agentVersionId', 'targetAgentVersionId'] as const) {
+        const value = event.payload[key];
+        if (typeof value === 'string' && this.agentStore?.getVersion(value as AgentVersionId)) {
+          return value as AgentVersionId;
+        }
+      }
+    }
+    return this.ensureAgentRecord(DEFAULT_CONVERSATION_AGENT_ID).id;
+  }
+
+  private delegatedSubtaskDescriptors(): DelegatedSubtaskDescriptor[] {
+    return this.events.flatMap((event) => {
+      if (event.type !== 'subtask.delegated') return [];
+      const payload = event.payload;
+      if (
+        typeof payload.parentTaskId !== 'string' ||
+        typeof payload.childTaskId !== 'string' ||
+        typeof payload.childThreadId !== 'string' ||
+        typeof payload.delegateAgentVersionId !== 'string' ||
+        typeof payload.delegatingAgentVersionId !== 'string' ||
+        typeof payload.delegationBatchId !== 'string' ||
+        typeof payload.text !== 'string' ||
+        !payload.packet ||
+        typeof payload.packet !== 'object' ||
+        Array.isArray(payload.packet)
+      ) {
+        return [];
+      }
+      const packet = payload.packet as Record<string, unknown>;
+      const strings = (value: unknown): string[] =>
+        Array.isArray(value)
+          ? value.filter((item): item is string => typeof item === 'string')
+          : [];
+      return [
+        {
+          eventId: String(event.id),
+          parentTaskId: payload.parentTaskId as TaskId,
+          childTaskId: payload.childTaskId as TaskId,
+          childThreadId: payload.childThreadId as ThreadId,
+          delegateAgentVersionId: payload.delegateAgentVersionId as AgentVersionId,
+          delegatingAgentVersionId: payload.delegatingAgentVersionId as AgentVersionId,
+          delegationBatchId: payload.delegationBatchId,
+          title:
+            typeof packet.goal === 'string'
+              ? String(
+                  this.workspaceStore?.getTask(payload.childTaskId as TaskId)?.title ?? packet.goal,
+                )
+              : '子任务',
+          packet: {
+            goal: typeof packet.goal === 'string' ? packet.goal : '',
+            requiredEvidence: strings(packet.requiredEvidence),
+            acceptanceConditions: strings(packet.acceptanceConditions),
+            allowedTools: strings(packet.allowedTools),
+            handoffHistory: strings(packet.handoffHistory),
+            dependsOnTaskIds: strings(packet.dependsOnTaskIds) as TaskId[],
+            retryLimit:
+              typeof packet.retryLimit === 'number'
+                ? packet.retryLimit
+                : DEFAULT_SUBTASK_RETRY_LIMIT,
+          },
+        },
+      ];
+    });
+  }
+
+  private subtaskTerminalEvent(childTaskId: TaskId): Event | undefined {
+    return [...this.events]
+      .reverse()
+      .find(
+        (event) =>
+          (event.type === 'subtask.completed' || event.type === 'subtask.failed') &&
+          event.payload.childTaskId === childTaskId,
+      );
+  }
+
+  private emitSubtaskEvent(
+    category: EventCategory,
+    type: string,
+    payload: Record<string, unknown>,
+    taskId: TaskId,
+    workspaceId: WorkspaceId,
+    runId?: RunId,
+  ): Event {
+    const event = this.runInUnitOfWork(() =>
+      this.appendEvent(category, type, payload, undefined, runId, taskId, workspaceId),
+    );
+    this.publishEvent(event);
+    return event;
+  }
+
+  private activeRunsForAgent(agentVersionId: AgentVersionId): number {
+    return [...this.demoRuns.values()].filter((run) => run.agentVersionId === agentVersionId)
+      .length;
+  }
+
+  private scheduleReadyDelegatedSubtasks(): void {
+    for (const descriptor of this.delegatedSubtaskDescriptors()) {
+      if (this.subtaskTerminalEvent(descriptor.childTaskId)) continue;
+      const task = this.workspaceStore?.getTask(descriptor.childTaskId);
+      if (
+        !task ||
+        task.status === 'blocked' ||
+        task.status === 'archived' ||
+        task.status === 'completed'
+      ) {
+        continue;
+      }
+      const failedDependencyIds = descriptor.packet.dependsOnTaskIds.filter(
+        (dependencyId) => this.subtaskTerminalEvent(dependencyId)?.type === 'subtask.failed',
+      );
+      if (failedDependencyIds.length > 0) {
+        if (this.delegatedSubtaskStarting.has(descriptor.childTaskId)) continue;
+        this.delegatedSubtaskStarting.add(descriptor.childTaskId);
+        const blocked = this.finalizeDelegatedSubtask(descriptor, 'failed', undefined, {
+          errorMessage: `前置子任务未完成：${failedDependencyIds.join('、')}`,
+        }).finally(() => this.delegatedSubtaskStarting.delete(descriptor.childTaskId));
+        this.trackBackgroundTask(blocked);
+        continue;
+      }
+      if (
+        descriptor.packet.dependsOnTaskIds.some(
+          (dependencyId) => this.workspaceStore?.getTask(dependencyId)?.status !== 'completed',
+        )
+      ) {
+        continue;
+      }
+      if ([...this.demoRuns.values()].some((run) => run.threadId === descriptor.childThreadId)) {
+        continue;
+      }
+      const agent = this.agentStore?.getVersion(descriptor.delegateAgentVersionId);
+      if (
+        !agent ||
+        this.activeRunsForAgent(descriptor.delegateAgentVersionId) >= agent.maxConcurrency
+      ) {
+        continue;
+      }
+      if (this.delegatedSubtaskStarting.has(descriptor.childTaskId)) continue;
+      this.delegatedSubtaskStarting.add(descriptor.childTaskId);
+      const start = this.startDelegatedSubtaskAttempt(descriptor).finally(() => {
+        this.delegatedSubtaskStarting.delete(descriptor.childTaskId);
+      });
+      this.trackBackgroundTask(start);
+    }
+    this.scheduleReadyParentBatchWakes();
+  }
+
+  private async startDelegatedSubtaskAttempt(
+    descriptor: DelegatedSubtaskDescriptor,
+  ): Promise<void> {
+    const task = this.workspaceStore?.getTask(descriptor.childTaskId);
+    if (!task || this.subtaskTerminalEvent(descriptor.childTaskId)) return;
+    const attempt =
+      this.events.filter(
+        (event) =>
+          event.type === 'subtask.execution-started' &&
+          event.payload.childTaskId === descriptor.childTaskId,
+      ).length -
+      this.events.filter(
+        (event) =>
+          event.type === 'subtask.blocked' && event.payload.childTaskId === descriptor.childTaskId,
+      ).length;
+    if (attempt > descriptor.packet.retryLimit) {
+      await this.finalizeDelegatedSubtask(descriptor, 'failed', undefined, {
+        errorMessage: '子任务达到自动重试上限。',
+      });
+      return;
+    }
+    const agent = this.getRequiredAgentVersion(descriptor.delegateAgentVersionId);
+    if (attempt === 0) {
+      this.emitSubtaskEvent(
+        'message',
+        'subtask.agent-message',
+        {
+          threadId: task.threadId,
+          parentTaskId: descriptor.parentTaskId,
+          childTaskId: task.id,
+          agentVersionId: descriptor.delegateAgentVersionId,
+          delegationBatchId: descriptor.delegationBatchId,
+          text: `已接收子任务“${task.title}”，现在开始执行。`,
+        },
+        task.id,
+        task.workspaceId,
+      );
+    }
+    this.emitSubtaskEvent(
+      'run',
+      'subtask.execution-started',
+      {
+        threadId: task.threadId,
+        parentTaskId: descriptor.parentTaskId,
+        childTaskId: task.id,
+        agentVersionId: descriptor.delegateAgentVersionId,
+        delegationBatchId: descriptor.delegationBatchId,
+        attempt: attempt + 1,
+        retryLimit: descriptor.packet.retryLimit,
+        text:
+          attempt === 0
+            ? `${agent.name} 开始执行子任务。`
+            : `${agent.name} 正在进行第 ${attempt} 次自动重试。`,
+      },
+      task.id,
+      task.workspaceId,
+    );
+    const instruction = [
+      `执行子任务：${task.title}`,
+      `目标：${descriptor.packet.goal}`,
+      descriptor.packet.requiredEvidence.length
+        ? `所需证据：${descriptor.packet.requiredEvidence.join('；')}`
+        : '',
+      descriptor.packet.acceptanceConditions.length
+        ? `验收条件：${descriptor.packet.acceptanceConditions.join('；')}`
+        : '',
+      '完成后请给出结论、完成内容、关键发现、验证结果和未解决问题。',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const response = await this.invokeInternalRuntimeCommand(
+      'task.appendMessage',
+      {
+        threadId: task.threadId,
+        expectedTaskVersion: task.version,
+        role: 'user',
+        text: instruction,
+        agentVersionId: descriptor.delegateAgentVersionId,
+        stepId: `subtask-auto:${task.id}:${attempt + 1}`,
+      },
+      'agent',
+    );
+    if (!response.error) return;
+    this.emitSubtaskEvent(
+      'run',
+      'subtask.execution-attempt-failed',
+      {
+        threadId: task.threadId,
+        childTaskId: task.id,
+        agentVersionId: descriptor.delegateAgentVersionId,
+        attempt: attempt + 1,
+        errorMessage: this.scrubDiagnosticMessage(response.error.message),
+      },
+      task.id,
+      task.workspaceId,
+    );
+    if (attempt < descriptor.packet.retryLimit) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(5_000, 500 * 2 ** attempt)));
+      this.scheduleReadyDelegatedSubtasks();
+      return;
+    }
+    await this.finalizeDelegatedSubtask(descriptor, 'failed', undefined, {
+      errorMessage: response.error.message,
+    });
+  }
+
+  private handleDelegatedRunTerminal(
+    runId: RunId,
+    run: DemoRunState,
+    type: string,
+    payload: Record<string, unknown>,
+  ): void {
+    const task = this.resolveTaskForThread(run.threadId);
+    if (!task?.parentTaskId) {
+      this.scheduleReadyDelegatedSubtasks();
+      return;
+    }
+    const descriptor = this.delegatedSubtaskDescriptors().find(
+      (candidate) => candidate.childTaskId === task.id,
+    );
+    if (!descriptor || this.subtaskTerminalEvent(task.id)) return;
+    const finish = async () => {
+      if (type === 'run.completed') {
+        if (!this.hasDurableSubtaskEvidence(task.id, runId)) {
+          const blocked = this.workspaceStore!.setTaskStatus(task.id, 'blocked', task.version, {
+            cascade: false,
+          }).task;
+          this.threadVersions.set(blocked.threadId, blocked.version);
+          this.emitSubtaskEvent(
+            'run',
+            'subtask.blocked',
+            {
+              threadId: task.threadId,
+              parentTaskId: task.parentTaskId,
+              childTaskId: task.id,
+              agentVersionId: descriptor.delegateAgentVersionId,
+              reason: '缺少文件、命令、Git、测试或产物执行证据，文本声明不能完成实现子任务。',
+              retryConsumed: false,
+              text: '子任务已暂停：尚未产生可验证的执行证据。',
+            },
+            task.id,
+            task.workspaceId,
+            runId,
+          );
+          return;
+        }
+        await this.finalizeDelegatedSubtask(descriptor, 'completed', runId, payload);
+        return;
+      }
+      const attempts =
+        this.events.filter(
+          (event) =>
+            event.type === 'subtask.execution-started' && event.payload.childTaskId === task.id,
+        ).length -
+        this.events.filter(
+          (event) => event.type === 'subtask.blocked' && event.payload.childTaskId === task.id,
+        ).length;
+      if (attempts <= descriptor.packet.retryLimit) {
+        this.emitSubtaskEvent(
+          'run',
+          'subtask.retry-scheduled',
+          {
+            threadId: task.threadId,
+            childTaskId: task.id,
+            agentVersionId: descriptor.delegateAgentVersionId,
+            nextAttempt: attempts + 1,
+            retryLimit: descriptor.packet.retryLimit,
+            text: `执行失败，准备自动重试（${attempts}/${descriptor.packet.retryLimit}）。`,
+          },
+          task.id,
+          task.workspaceId,
+          runId,
+        );
+        this.scheduleReadyDelegatedSubtasks();
+        return;
+      }
+      await this.finalizeDelegatedSubtask(descriptor, 'failed', runId, payload);
+    };
+    this.trackBackgroundTask(finish());
+  }
+
+  private hasDurableSubtaskEvidence(taskId: TaskId, runId: RunId): boolean {
+    return this.events.some((event) => {
+      if (event.taskId !== taskId && event.runId !== runId) return false;
+      return (
+        event.type === 'execution.tool.completed' ||
+        event.type === 'artifact.created' ||
+        event.type === 'artifact.version-created' ||
+        event.type === 'step.completed' ||
+        event.type === 'test.completed'
+      );
+    });
+  }
+
+  private async finalizeDelegatedSubtask(
+    descriptor: DelegatedSubtaskDescriptor,
+    status: 'completed' | 'failed',
+    runId: RunId | undefined,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    if (this.subtaskTerminalEvent(descriptor.childTaskId)) return;
+    const child = this.workspaceStore?.getTask(descriptor.childTaskId);
+    const parent = this.workspaceStore?.getTask(descriptor.parentTaskId);
+    if (!child || !parent) return;
+    const assistantText =
+      typeof payload.assistantText === 'string'
+        ? payload.assistantText.trim()
+        : typeof payload.errorMessage === 'string'
+          ? payload.errorMessage.trim()
+          : '';
+    const evidenceRefs = this.events
+      .filter(
+        (event) => event.taskId === child.id && typeof event.payload.artifactVersionId === 'string',
+      )
+      .map((event) => String(event.payload.artifactVersionId))
+      .slice(-16);
+    const execution = (() => {
+      try {
+        return status === 'completed'
+          ? this.taskEnvironmentManager?.integrateChildTask(child.id)
+          : this.taskEnvironmentManager?.describeTaskChanges(child.id);
+      } catch {
+        return undefined;
+      }
+    })();
+    const result = {
+      conclusion: assistantText || (status === 'completed' ? '子任务已完成。' : '子任务执行失败。'),
+      completedWork: status === 'completed' ? [child.goal] : [],
+      keyFindings: assistantText ? [assistantText.slice(0, 1_200)] : [],
+      verification: descriptor.packet.acceptanceConditions,
+      unresolvedIssues: status === 'failed' ? [assistantText || '达到自动重试上限'] : [],
+      evidenceRefs,
+      ...(execution ? { execution } : {}),
+    };
+    const updated = this.workspaceStore!.setTaskStatus(
+      child.id,
+      status === 'completed' ? 'completed' : 'paused',
+      child.version,
+      { cascade: false },
+    ).task;
+    if (status === 'completed') {
+      try {
+        this.taskEnvironmentManager?.scheduleCleanup(child.id);
+      } catch {
+        console.warn('[runtime] completed child worktree cleanup could not be scheduled');
+      }
+    }
+    this.threadVersions.set(child.threadId, updated.version);
+    const agent = this.getRequiredAgentVersion(descriptor.delegateAgentVersionId);
+    this.emitSubtaskEvent(
+      'message',
+      status === 'completed' ? 'subtask.completed' : 'subtask.failed',
+      {
+        threadId: parent.threadId,
+        parentTaskId: parent.id,
+        childTaskId: child.id,
+        childThreadId: child.threadId,
+        messageAgentVersionId: descriptor.delegateAgentVersionId,
+        fromAgentVersionId: descriptor.delegateAgentVersionId,
+        toAgentVersionId: descriptor.delegatingAgentVersionId,
+        delegationBatchId: descriptor.delegationBatchId,
+        status,
+        result,
+        text:
+          status === 'completed'
+            ? `${agent.name} 已完成子任务“${child.title}”：${result.conclusion}`
+            : `${agent.name} 未能完成子任务“${child.title}”：${result.conclusion}`,
+      },
+      parent.id,
+      parent.workspaceId,
+      runId,
+    );
+    this.scheduleReadyDelegatedSubtasks();
+  }
+
+  private scheduleReadyParentBatchWakes(): void {
+    const descriptors = this.delegatedSubtaskDescriptors();
+    const keys = new Set(
+      descriptors.map(
+        (descriptor) => `${descriptor.parentTaskId}\u0000${descriptor.delegationBatchId}`,
+      ),
+    );
+    for (const key of keys) {
+      const [parentTaskId, delegationBatchId] = key.split('\u0000');
+      if (!parentTaskId || !delegationBatchId) continue;
+      if (this.delegatedParentWaking.has(key)) continue;
+      const batch = descriptors.filter(
+        (descriptor) =>
+          descriptor.parentTaskId === parentTaskId &&
+          descriptor.delegationBatchId === delegationBatchId,
+      );
+      const terminals = batch.map((descriptor) =>
+        this.subtaskTerminalEvent(descriptor.childTaskId),
+      );
+      if (terminals.some((event) => !event)) continue;
+      if (
+        this.events.some(
+          (event) =>
+            event.type === 'subtask.parent-resumed' &&
+            event.payload.parentTaskId === parentTaskId &&
+            event.payload.delegationBatchId === delegationBatchId,
+        )
+      ) {
+        continue;
+      }
+      const parent = this.workspaceStore?.getTask(parentTaskId as TaskId);
+      if (!parent || [...this.demoRuns.values()].some((run) => run.threadId === parent.threadId)) {
+        continue;
+      }
+      this.delegatedParentWaking.add(key);
+      const wake = this.wakeParentAfterSubtaskBatch(parent, batch, terminals as Event[]).finally(
+        () => this.delegatedParentWaking.delete(key),
+      );
+      this.trackBackgroundTask(wake);
+    }
+  }
+
+  private async wakeParentAfterSubtaskBatch(
+    parent: TaskRecord,
+    batch: readonly DelegatedSubtaskDescriptor[],
+    terminals: readonly Event[],
+  ): Promise<void> {
+    const summaries = terminals.map((event) => String(event.payload.text ?? '')).filter(Boolean);
+    const leadAgentVersionId = batch[0]!.delegatingAgentVersionId;
+    const response = await this.invokeInternalRuntimeCommand(
+      'task.appendMessage',
+      {
+        threadId: parent.threadId,
+        expectedTaskVersion: parent.version,
+        role: 'user',
+        text: [
+          '以下子任务已经全部结束。请作为主智能体验收结果、决定是否返工，并继续父任务：',
+          ...summaries.map((summary, index) => `${index + 1}. ${summary}`),
+        ].join('\n'),
+        agentVersionId: leadAgentVersionId,
+        stepId: `subtask-wake:${parent.id}:${batch[0]!.delegationBatchId}`,
+      },
+      'agent',
+    );
+    if (response.error) return;
+    const latestParent = this.workspaceStore?.getTask(parent.id) ?? parent;
+    this.emitSubtaskEvent(
+      'run',
+      'subtask.parent-resumed',
+      {
+        threadId: parent.threadId,
+        parentTaskId: parent.id,
+        delegationBatchId: batch[0]!.delegationBatchId,
+        agentVersionId: leadAgentVersionId,
+        childTaskIds: batch.map((descriptor) => descriptor.childTaskId),
+        text: '全部子任务结果已交回主智能体，父任务继续执行。',
+      },
+      latestParent.id,
+      latestParent.workspaceId,
+    );
+  }
+
+  private handleRecordHandoff(socket: Socket, frame: Frame): void {
+    const payload = parseRecordHandoffPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore || !this.agentStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const task = this.workspaceStore.getTask(payload.taskId);
+      if (!task) throw new Error(`Task not found: ${payload.taskId}`);
+      this.getRequiredAgentVersion(payload.fromAgentVersionId);
+      this.getRequiredAgentVersion(payload.toAgentVersionId);
+      const group = this.groupStore?.getForTask(task.id);
+      if (
+        group &&
+        (!group.members.some((member) => member.agentVersionId === payload.fromAgentVersionId) ||
+          !group.members.some((member) => member.agentVersionId === payload.toAgentVersionId))
+      ) {
+        throw new Error('Handoff Agents must both belong to the bound group');
+      }
+      const event = this.runInUnitOfWork(() =>
+        this.appendEvent(
+          'step',
+          'subtask.handoff-recorded',
+          {
+            threadId: task.threadId,
+            fromAgentVersionId: payload.fromAgentVersionId,
+            toAgentVersionId: payload.toAgentVersionId,
+            summary: payload.summary,
+            evidenceRefs: payload.evidenceRefs ?? [],
+            status: payload.status ?? 'completed',
+            callerSurface: this.commandCallerSurface(frame),
+            text: payload.summary,
+          },
+          undefined,
+          undefined,
+          task.id,
+          task.workspaceId,
+        ),
+      );
+      this.publishEvent(event);
+      const response: RecordHandoffResponse = {
+        taskId: task.id,
+        eventId: String(event.id),
+        recordedAt: event.occurredAt,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private handleResolveWorktreeIntegration(socket: Socket, frame: Frame): void {
+    const payload = parseResolveWorktreeIntegrationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore || !this.taskEnvironmentManager) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const child = this.workspaceStore.getTask(payload.childTaskId);
+      if (!child?.parentTaskId) throw new Error('Child task is not available');
+      const parent = this.workspaceStore.getTask(child.parentTaskId);
+      if (!parent) throw new Error('Parent task is not available');
+      const result = this.taskEnvironmentManager.resolveChildIntegration(
+        child.id,
+        payload.strategy,
+      );
+      this.emitSubtaskEvent(
+        'run',
+        'subtask.integration-resolved',
+        {
+          threadId: parent.threadId,
+          parentTaskId: parent.id,
+          childTaskId: child.id,
+          strategy: payload.strategy,
+          integrationStatus: result.integrationStatus,
+          integrationCommit: result.integrationCommit,
+          changedFiles: result.changedFiles,
+          text:
+            result.integrationStatus === 'integrated'
+              ? `已采用子任务“${child.title}”的改动。`
+              : `已保留父任务版本并放弃子任务“${child.title}”的冲突改动。`,
+        },
+        parent.id,
+        parent.workspaceId,
+      );
+      const response: ResolveWorktreeIntegrationResponse = {
+        childTaskId: child.id,
+        parentTaskId: parent.id,
+        integrationStatus: result.integrationStatus === 'integrated' ? 'integrated' : 'kept-parent',
+        ...(result.integrationCommit ? { integrationCommit: result.integrationCommit } : {}),
+        changedFiles: result.changedFiles,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'task.resolveWorktreeIntegration',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetTaskBrowserIdentity(socket: Socket, frame: Frame): void {
+    const payload = parseSetTaskBrowserIdentityPayload(frame.payload);
+    if (!payload || !this.taskEnvironmentManager || !this.workspaceStore) {
+      if (!payload) this.writeMalformedPayload(socket, frame);
+      else this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const task = this.workspaceStore.getTask(payload.taskId);
+      if (!task) throw new Error(`Task not found: ${payload.taskId}`);
+      const identity = this.taskEnvironmentManager
+        .listBrowserIdentities()
+        .find((candidate) => String(candidate.id) === payload.browserIdentityId);
+      if (!identity) throw new Error(`BrowserIdentity not found: ${payload.browserIdentityId}`);
+      this.taskEnvironmentManager.prepareTask(task.id);
+      this.taskEnvironmentManager.setTaskBrowserIdentity(task.id, identity.id);
+      const response: SetTaskBrowserIdentityResponse = {
+        taskId: task.id,
+        browserIdentityId: String(identity.id),
+        browserIdentityName: identity.name,
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private handleDescribeTaskExecutionAccess(socket: Socket, frame: Frame): void {
+    const payload = parseDescribeTaskExecutionAccessPayload(frame.payload);
+    if (
+      !payload ||
+      !this.workspaceStore ||
+      !this.executionEnvironmentStore ||
+      !this.taskEnvironmentManager
+    ) {
+      if (!payload) this.writeMalformedPayload(socket, frame);
+      else this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const task = this.workspaceStore.getTask(payload.taskId);
+      if (!task) throw new Error(`Task not found: ${payload.taskId}`);
+      const agent = this.getRequiredAgentVersion(payload.agentVersionId);
+      const context = this.taskEnvironmentManager.prepareTask(task.id);
+      const binding = this.resolveConversationExecutionBinding(task, String(agent.id));
+      const identity = context.browserIdentityId
+        ? this.taskEnvironmentManager
+            .listBrowserIdentities()
+            .find((candidate) => candidate.id === context.browserIdentityId)
+        : undefined;
+      const candidateMode = binding.effectiveApprovalMode ?? agent.approvalMode ?? 'request';
+      const approvalMode: ApprovalMode =
+        candidateMode === 'request' ||
+        candidateMode === 'delegate' ||
+        candidateMode === 'custom' ||
+        candidateMode === 'full'
+          ? candidateMode
+          : 'request';
+      const response: DescribeTaskExecutionAccessResponse = {
+        taskId: task.id,
+        agentVersionId: agent.id,
+        approvalMode,
+        executionMode: context.mode,
+        executionState: context.state,
+        ...(context.executionPath ? { executionPath: context.executionPath } : {}),
+        ...(context.baseRef ? { baseRef: context.baseRef } : {}),
+        ...(identity
+          ? {
+              browserIdentityId: String(identity.id),
+              browserIdentityName: identity.name,
+            }
+          : {}),
+        effectiveToolNames: binding.executionToolNames,
+        capabilityCeiling: {
+          file: [...(agent.permissions?.file ?? [])],
+          command: [...(agent.permissions?.command ?? [])],
+          browser: [...(agent.permissions?.browser ?? [])],
+          desktop: [...(agent.permissions?.desktop ?? [])],
+          network: [...(agent.permissions?.network ?? [])],
+        },
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
       );
     } catch (error) {
       this.writeWorkspaceCommandError(socket, frame, error);
@@ -1325,7 +2896,9 @@ export class Runtime {
     const response: ListTasksResponse = {
       tasks: this.workspaceStore
         .listTasks(payload.workspaceId, { includeArchived: Boolean(payload.includeArchived) })
-        .map((task) => toTaskSummary(task)),
+        .map((task) =>
+          toTaskSummary(task, this.executionEnvironmentStore?.getTaskContext(task.id)),
+        ),
     };
     socket.write(
       encodeFrame({
@@ -1350,7 +2923,7 @@ export class Runtime {
     try {
       const opened = this.workspaceStore.openTask(payload.taskId as TaskId);
       const response: OpenTaskResponse = {
-        task: toTaskSummary(opened),
+        task: toTaskSummary(opened, this.executionEnvironmentStore?.getTaskContext(opened.id)),
       };
       socket.write(
         encodeFrame({
@@ -1393,7 +2966,9 @@ export class Runtime {
     const response: SearchTasksResponse = {
       tasks: this.workspaceStore
         .searchTasks(payload.workspaceId, payload.query)
-        .map((task) => toTaskSummary(task)),
+        .map((task) =>
+          toTaskSummary(task, this.executionEnvironmentStore?.getTaskContext(task.id)),
+        ),
     };
     socket.write(
       encodeFrame({
@@ -1448,7 +3023,8 @@ export class Runtime {
           payload: {},
           error: {
             code: ErrorCode.APPROVAL_REQUIRED,
-            message: 'An approved plan and applicable policy are required before entering automatic mode',
+            message:
+              'An approved plan and applicable policy are required before entering automatic mode',
           },
         }),
       );
@@ -1513,7 +3089,10 @@ export class Runtime {
       if (result.needsProjection) this.recordCommittedEvents(result.committedEvents);
       this.threadVersions.set(result.updated.threadId, result.updated.version);
       const response: SetParticipationModeResponse = {
-        task: toTaskSummary(result.updated),
+        task: toTaskSummary(
+          result.updated,
+          this.executionEnvironmentStore?.getTaskContext(result.updated.id),
+        ),
       };
       socket.write(
         encodeFrame({
@@ -1546,9 +3125,19 @@ export class Runtime {
         payload.expectedTaskVersion,
         { cascade: payload.cascade !== false },
       );
+      for (const taskId of result.affectedTaskIds) {
+        try {
+          this.taskEnvironmentManager?.scheduleCleanup(taskId);
+        } catch {
+          console.warn('[runtime] task worktree cleanup could not be scheduled');
+        }
+      }
       this.threadVersions.set(result.task.threadId, result.task.version);
       const response: ArchiveTaskResponse = {
-        task: toTaskSummary(result.task),
+        task: toTaskSummary(
+          result.task,
+          this.executionEnvironmentStore?.getTaskContext(result.task.id),
+        ),
         archivedTaskIds: result.affectedTaskIds,
       };
       socket.write(
@@ -1583,7 +3172,10 @@ export class Runtime {
       );
       this.threadVersions.set(result.task.threadId, result.task.version);
       const response: UnarchiveTaskResponse = {
-        task: toTaskSummary(result.task),
+        task: toTaskSummary(
+          result.task,
+          this.executionEnvironmentStore?.getTaskContext(result.task.id),
+        ),
         unarchivedTaskIds: result.affectedTaskIds,
       };
       socket.write(
@@ -1591,6 +3183,59 @@ export class Runtime {
           id: frame.id,
           kind: 'response',
           type: 'task.unarchive',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private handleDiscardEmptyTask(socket: Socket, frame: Frame): void {
+    const payload = parseDiscardEmptyTaskPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const task = this.workspaceStore.getTask(payload.taskId);
+      const hasChildren = task
+        ? this.workspaceStore
+            .listTasks(task.workspaceId, { includeArchived: true })
+            .some((candidate) => candidate.parentTaskId === task.id)
+        : false;
+      if (
+        task &&
+        task.version === payload.expectedTaskVersion &&
+        task.version === 0 &&
+        isUntitledTaskTitle(task.title) &&
+        !hasChildren
+      ) {
+        this.taskEnvironmentManager?.discardPreparedTask(task.id);
+      }
+      const discarded = this.workspaceStore.discardEmptyTask(
+        payload.taskId,
+        payload.expectedTaskVersion,
+      );
+      if (discarded && task) {
+        this.threadVersions.delete(task.threadId);
+        for (let index = this.events.length - 1; index >= 0; index -= 1) {
+          if (this.events[index]?.taskId === task.id) this.events.splice(index, 1);
+        }
+      }
+      const response: DiscardEmptyTaskResponse = {
+        taskId: payload.taskId,
+        discarded,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'task.discardEmpty',
           payload: response,
         }),
       );
@@ -2893,6 +4538,32 @@ export class Runtime {
         }),
       );
       for (const event of result.committedEvents) this.publishEvent(event);
+      if (payload.scopeType === 'task') {
+        const blockedTask = this.workspaceStore?.getTask(payload.scopeId as TaskId);
+        if (blockedTask?.status === 'blocked') {
+          const resumed = this.workspaceStore!.setTaskStatus(
+            blockedTask.id,
+            'active',
+            blockedTask.version,
+            { cascade: false },
+          ).task;
+          this.threadVersions.set(resumed.threadId, resumed.version);
+          this.emitSubtaskEvent(
+            'run',
+            'subtask.permission-resumed',
+            {
+              threadId: resumed.threadId,
+              childTaskId: resumed.id,
+              approvalMode: result.policy.approvalMode,
+              retryConsumed: false,
+              text: '访问范围已更新，正在同一子任务中继续执行。',
+            },
+            resumed.id,
+            resumed.workspaceId,
+          );
+          this.scheduleReadyDelegatedSubtasks();
+        }
+      }
     } catch (error) {
       this.writePolicyCommandError(socket, frame, error);
     }
@@ -4015,6 +5686,8 @@ export class Runtime {
         skillVersionIds: payload.skillVersionIds,
         mcpServerIds: payload.mcpServerIds,
       });
+      const followedGroups =
+        this.groupStore?.followLatestAgentVersion(updated.agentId, updated.id) ?? [];
       const summary = this.toAgentBindingSummary(updated);
       const event = this.appendEvent('provider', 'agent.binding_updated', {
         agentId: summary.agentId,
@@ -4025,6 +5698,7 @@ export class Runtime {
         pauseOnFailure: summary.pauseOnFailure,
         skillVersionIds: summary.skillVersionIds,
         mcpServerIds: summary.mcpServerIds,
+        followedGroupIds: followedGroups.map((group) => group.id),
       });
       this.publishEvent(event);
       const response: UpdateAgentBindingResponse = { agent: summary };
@@ -4091,6 +5765,7 @@ export class Runtime {
         developerInstructions: payload.developerInstructions,
         inputContract: payload.inputContract,
         outputContract: payload.outputContract,
+        maxConcurrency: payload.maxConcurrency,
         defaultModelId: payload.defaultModelId,
         defaultCredentialGroupId: payload.defaultCredentialGroupId,
         pinnedCredentialRefId: payload.pinnedCredentialRefId,
@@ -4185,6 +5860,7 @@ export class Runtime {
         developerInstructions: payload.developerInstructions,
         inputContract: payload.inputContract,
         outputContract: payload.outputContract,
+        maxConcurrency: payload.maxConcurrency,
         defaultModelId: payload.defaultModelId,
         defaultCredentialGroupId: payload.defaultCredentialGroupId,
         pinnedCredentialRefId: payload.pinnedCredentialRefId,
@@ -4200,12 +5876,15 @@ export class Runtime {
         reviewBehavior: payload.reviewBehavior,
         artifactRules: payload.artifactRules,
       });
+      const followedGroups =
+        this.groupStore?.followLatestAgentVersion(updated.agentId, updated.id) ?? [];
       const agent = this.toAgentDefinitionSummary(updated);
       const event = this.appendEvent('system', 'agent.version-created', {
         agentId: agent.agentId,
         agentVersionId: agent.agentVersionId,
         previousAgentVersionId: current.id,
         version: agent.version,
+        followedGroupIds: followedGroups.map((group) => group.id),
       });
       this.publishEvent(event);
       const response: CreateAgentVersionResponse = { agent };
@@ -4220,6 +5899,789 @@ export class Runtime {
     } catch (error) {
       this.writeProviderCommandError(socket, frame, error);
     }
+  }
+
+  private handleCreateGroup(socket: Socket, frame: Frame): void {
+    const payload = parseCreateGroupPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.groupStore) {
+      this.writeGroupStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { group, event } = this.runInUnitOfWork(() => {
+        const group = this.groupStore!.create(payload);
+        const event = this.appendEvent('system', 'group.created', {
+          groupId: group.id,
+          version: group.version,
+          name: group.name,
+          kind: group.kind,
+          leadAgentVersionId: group.leadAgentVersionId,
+          memberCount: group.members.length,
+          callerSurface: this.commandCallerSurface(frame),
+        });
+        return { group, event };
+      });
+      this.publishEvent(event);
+      const response: CreateGroupResponse = { group };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'group.create', payload: response }),
+      );
+    } catch (error) {
+      this.writeGroupCommandError(socket, frame, error);
+    }
+  }
+
+  private handleGetGroup(socket: Socket, frame: Frame): void {
+    const payload = parseGetGroupPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.groupStore) {
+      this.writeGroupStoreUnavailable(socket, frame);
+      return;
+    }
+    const group = this.groupStore.get(payload.groupId);
+    if (!group) {
+      this.writeGroupCommandError(socket, frame, new Error(`Group not found: ${payload.groupId}`));
+      return;
+    }
+    const response: GetGroupResponse = { group };
+    socket.write(
+      encodeFrame({ id: frame.id, kind: 'response', type: 'group.get', payload: response }),
+    );
+  }
+
+  private handleListGroups(socket: Socket, frame: Frame): void {
+    const payload = parseListGroupsPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.groupStore) {
+      this.writeGroupStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ListGroupsResponse = { groups: this.groupStore.list(payload) };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'group.list', payload: response }),
+      );
+    } catch (error) {
+      this.writeGroupCommandError(socket, frame, error);
+    }
+  }
+
+  private handleUpdateGroup(socket: Socket, frame: Frame): void {
+    const payload = parseUpdateGroupPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.groupStore) {
+      this.writeGroupStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { group, event } = this.runInUnitOfWork(() => {
+        const group = this.groupStore!.update(payload);
+        const event = this.appendEvent('system', 'group.updated', {
+          groupId: group.id,
+          version: group.version,
+          leadAgentVersionId: group.leadAgentVersionId,
+          memberCount: group.members.length,
+          callerSurface: this.commandCallerSurface(frame),
+        });
+        return { group, event };
+      });
+      this.publishEvent(event);
+      const response: UpdateGroupResponse = { group };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'group.update', payload: response }),
+      );
+    } catch (error) {
+      this.writeGroupCommandError(socket, frame, error);
+    }
+  }
+
+  private handleAddGroupMember(socket: Socket, frame: Frame): void {
+    const payload = parseAddGroupMemberPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    this.mutateGroupMembers(socket, frame, payload.groupId, payload.expectedVersion, (group) => {
+      if (group.members.some((member) => member.agentVersionId === payload.member.agentVersionId)) {
+        throw new Error(`Group member already exists: ${payload.member.agentVersionId}`);
+      }
+      return {
+        members: [...group.members, payload.member],
+        eventType: 'group.member-added',
+        eventPayload: { agentVersionId: payload.member.agentVersionId },
+      };
+    });
+  }
+
+  private handleRemoveGroupMember(socket: Socket, frame: Frame): void {
+    const payload = parseRemoveGroupMemberPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    this.mutateGroupMembers(socket, frame, payload.groupId, payload.expectedVersion, (group) => {
+      if (group.leadAgentVersionId === payload.agentVersionId) {
+        throw new Error('Group lead cannot be removed before another member becomes lead');
+      }
+      if (!group.members.some((member) => member.agentVersionId === payload.agentVersionId)) {
+        throw new Error(`Group member not found: ${payload.agentVersionId}`);
+      }
+      return {
+        members: group.members.filter((member) => member.agentVersionId !== payload.agentVersionId),
+        eventType: 'group.member-removed',
+        eventPayload: { agentVersionId: payload.agentVersionId },
+      };
+    });
+  }
+
+  private handleUpdateGroupMemberResponsibility(socket: Socket, frame: Frame): void {
+    const payload = parseUpdateGroupMemberResponsibilityPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    this.mutateGroupMembers(socket, frame, payload.groupId, payload.expectedVersion, (group) => {
+      if (!group.members.some((member) => member.agentVersionId === payload.agentVersionId)) {
+        throw new Error(`Group member not found: ${payload.agentVersionId}`);
+      }
+      return {
+        members: group.members.map((member) =>
+          member.agentVersionId === payload.agentVersionId
+            ? { ...member, responsibility: payload.responsibility }
+            : member,
+        ),
+        eventType: 'group.member-responsibility-updated',
+        eventPayload: { agentVersionId: payload.agentVersionId },
+      };
+    });
+  }
+
+  private mutateGroupMembers(
+    socket: Socket,
+    frame: Frame,
+    groupId: import('@sync-think/shared').GroupId,
+    expectedVersion: number,
+    mutation: (group: import('@sync-think/shared').GroupDefinition) => {
+      members:
+        | import('@sync-think/shared').GroupMember[]
+        | import('@sync-think/protocol').GroupMemberInput[];
+      eventType: string;
+      eventPayload: Record<string, unknown>;
+    },
+  ): void {
+    if (!this.groupStore) {
+      this.writeGroupStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { group, event } = this.runInUnitOfWork(() => {
+        const current = this.groupStore!.get(groupId);
+        if (!current) throw new Error(`Group not found: ${groupId}`);
+        const next = mutation(current);
+        const group = this.groupStore!.update({
+          groupId,
+          expectedVersion,
+          members: next.members,
+        });
+        const event = this.appendEvent('system', next.eventType, {
+          groupId: group.id,
+          version: group.version,
+          callerSurface: this.commandCallerSurface(frame),
+          ...next.eventPayload,
+        });
+        return { group, event };
+      });
+      this.publishEvent(event);
+      const response: GroupMemberMutationResponse = { group };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      this.writeGroupCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetGroupLead(socket: Socket, frame: Frame): void {
+    const payload = parseSetGroupLeadPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.groupStore) {
+      this.writeGroupStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { group, event } = this.runInUnitOfWork(() => {
+        const group = this.groupStore!.update({
+          groupId: payload.groupId,
+          expectedVersion: payload.expectedVersion,
+          leadAgentVersionId: payload.agentVersionId,
+        });
+        const event = this.appendEvent('system', 'group.lead-updated', {
+          groupId: group.id,
+          version: group.version,
+          leadAgentVersionId: group.leadAgentVersionId,
+          callerSurface: this.commandCallerSurface(frame),
+        });
+        return { group, event };
+      });
+      this.publishEvent(event);
+      const response: GroupMemberMutationResponse = { group };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'group.setLead', payload: response }),
+      );
+    } catch (error) {
+      this.writeGroupCommandError(socket, frame, error);
+    }
+  }
+
+  private handleCreateGroupTask(socket: Socket, frame: Frame): void {
+    const payload = parseCreateGroupTaskPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.groupStore || !this.workspaceStore) {
+      this.writeGroupStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { created, event } = this.runInUnitOfWork(() => {
+        const group = this.groupStore!.get(payload.groupId);
+        if (!group) throw new Error(`Group not found: ${payload.groupId}`);
+        const initial = this.workspaceStore!.createTask({
+          workspaceId: payload.workspaceId,
+          title: payload.title,
+          goal: payload.goal,
+          parentTaskId: payload.parentTaskId,
+          acceptanceCriteria: payload.acceptanceCriteria,
+        });
+        const groupTask = this.workspaceStore!.setParticipationMode(
+          initial.taskId,
+          'collaboration',
+          initial.taskVersion,
+          initial.createdAt,
+        );
+        const created = {
+          ...initial,
+          taskVersion: groupTask.version,
+          participationMode: groupTask.participationMode,
+        };
+        this.groupStore!.attachTask(group.id, created.taskId, created.createdAt);
+        const event = this.appendEvent(
+          'system',
+          'group.task-created',
+          {
+            groupId: group.id,
+            taskId: created.taskId,
+            threadId: created.threadId,
+            leadAgentVersionId: group.leadAgentVersionId,
+            callerSurface: this.commandCallerSurface(frame),
+          },
+          undefined,
+          undefined,
+          created.taskId,
+          payload.workspaceId,
+        );
+        return { created, event };
+      });
+      this.prepareCreatedTaskEnvironment(created.taskId, created.parentTaskId);
+      this.threadVersions.set(created.threadId, created.taskVersion);
+      this.publishEvent(event);
+      const response: CreateGroupTaskResponse = {
+        groupId: payload.groupId,
+        taskId: created.taskId,
+        threadId: created.threadId,
+        taskVersion: created.taskVersion,
+        participationMode: created.participationMode,
+        parentTaskId: created.parentTaskId,
+        createdAt: created.createdAt,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'group.task.create',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeGroupCommandError(socket, frame, error);
+    }
+  }
+
+  private assertAutomationTarget(automation: {
+    workspaceId: WorkspaceId;
+    target: AutomationDefinition['target'];
+  }): void {
+    if (!this.workspaceStore?.getWorkspace(automation.workspaceId)) {
+      throw new Error(`Workspace not found: ${automation.workspaceId}`);
+    }
+    if (automation.target.type === 'agent') {
+      if (!this.agentStore?.getVersion(automation.target.agentVersionId)) {
+        throw new Error(`AgentVersion not found: ${automation.target.agentVersionId}`);
+      }
+      return;
+    }
+    if (!this.groupStore?.get(automation.target.groupId)) {
+      throw new Error(`Group not found: ${automation.target.groupId}`);
+    }
+  }
+
+  private automationRuntimeStatus() {
+    const webhook = this.automationService?.status();
+    return {
+      schedulerAvailable: Boolean(this.automationService),
+      webhookAvailable: webhook?.available === true,
+      ...(webhook?.baseUrl ? { webhookBaseUrl: webhook.baseUrl } : {}),
+    };
+  }
+
+  private webhookPath(): string {
+    return `wh_${randomBytes(18).toString('base64url').toLowerCase()}`;
+  }
+
+  private validateAutomationTimezone(timezone: string): void {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date(0));
+    } catch {
+      throw new Error('automation.timezone_invalid');
+    }
+  }
+
+  private automationCommandResponse(
+    automation: AutomationDefinition,
+    webhookSecret?: string,
+  ): AutomationCommandResponse {
+    const webhookUrl = this.automationService?.webhookUrl(automation);
+    return {
+      automation,
+      ...(webhookUrl ? { webhookUrl } : {}),
+      ...(webhookSecret ? { webhookSecret } : {}),
+    };
+  }
+
+  private handleAutomationError(socket: Socket, frame: Frame, error: unknown): void {
+    const message =
+      this.scrubDiagnosticMessage(error instanceof Error ? error.message : '') ??
+      'Automation command failed';
+    const code = /not found/i.test(message)
+      ? ErrorCode.PROTOCOL_UNEXPECTED_REQUEST
+      : /version_conflict/i.test(message)
+        ? ErrorCode.TASK_VERSION_MISMATCH
+        : /invalid|cron_|timezone_|trigger_|target_/i.test(message)
+          ? ErrorCode.PROTOCOL_FRAME_MALFORMED
+          : ErrorCode.STORAGE_WRITE_FAILED;
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: { code, message },
+      }),
+    );
+  }
+
+  private async handleCreateAutomation(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseCreateAutomationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.automationStore || !this.secureStore) {
+      this.handleAutomationError(socket, frame, new Error('Automation persistence unavailable'));
+      return;
+    }
+    let secretHandle: string | undefined;
+    try {
+      this.assertAutomationTarget(payload);
+      const timezone = payload.timezone ?? 'Asia/Shanghai';
+      this.validateAutomationTimezone(timezone);
+      const now = new Date();
+      const trigger =
+        payload.trigger.type === 'cron'
+          ? ({ type: 'cron', expression: payload.trigger.expression } as const)
+          : ({ type: 'webhook', path: this.webhookPath() } as const);
+      const webhookSecret =
+        trigger.type === 'webhook' ? randomBytes(32).toString('base64url') : undefined;
+      if (webhookSecret) secretHandle = await this.secureStore.storeSecret(webhookSecret);
+      const automation = this.automationStore.create({
+        name: payload.name,
+        workspaceId: payload.workspaceId,
+        target: payload.target,
+        instruction: payload.instruction,
+        approvalMode: payload.approvalMode ?? 'full',
+        trigger,
+        timezone,
+        concurrencyPolicy: payload.concurrencyPolicy ?? 'skip',
+        maxConcurrency: payload.maxConcurrency ?? 1,
+        maxRetries: payload.maxRetries ?? 0,
+        enabled: payload.enabled ?? true,
+        ...(secretHandle ? { webhookSecretHandle: secretHandle } : {}),
+        ...(trigger.type === 'cron' && (payload.enabled ?? true)
+          ? { nextTriggerAt: nextCronOccurrence(trigger.expression, timezone, now) }
+          : {}),
+        now: now.toISOString(),
+      });
+      this.emitAutomationEvent('automation.created', automation, undefined, {
+        callerSurface: this.commandCallerSurface(frame),
+      });
+      const response = this.automationCommandResponse(automation, webhookSecret);
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      if (secretHandle) await this.secureStore.removeSecret(secretHandle).catch(() => undefined);
+      this.handleAutomationError(socket, frame, error);
+    }
+  }
+
+  private async handleUpdateAutomation(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseUpdateAutomationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.automationStore || !this.secureStore) {
+      this.handleAutomationError(socket, frame, new Error('Automation persistence unavailable'));
+      return;
+    }
+    let createdHandle: string | undefined;
+    try {
+      this.assertAutomationTarget(payload);
+      const current = this.automationStore.getRequired(payload.automationId);
+      const currentWebhookHandle = this.automationStore.getWebhookSecretHandle(current.id);
+      const timezone = payload.timezone ?? 'Asia/Shanghai';
+      this.validateAutomationTimezone(timezone);
+      let webhookSecret: string | undefined;
+      let webhookSecretHandle: string | undefined;
+      let trigger: AutomationDefinition['trigger'];
+      if (payload.trigger.type === 'cron') {
+        trigger = { type: 'cron', expression: payload.trigger.expression };
+      } else if (current.trigger.type === 'webhook') {
+        trigger = current.trigger;
+        webhookSecretHandle = currentWebhookHandle;
+      } else {
+        trigger = { type: 'webhook', path: this.webhookPath() };
+        webhookSecret = randomBytes(32).toString('base64url');
+        createdHandle = await this.secureStore.storeSecret(webhookSecret);
+        webhookSecretHandle = createdHandle;
+      }
+      const now = new Date();
+      const automation = this.automationStore.replace({
+        automationId: payload.automationId,
+        expectedVersion: payload.expectedVersion,
+        name: payload.name,
+        workspaceId: payload.workspaceId,
+        target: payload.target,
+        instruction: payload.instruction,
+        approvalMode: payload.approvalMode ?? 'full',
+        trigger,
+        timezone,
+        concurrencyPolicy: payload.concurrencyPolicy ?? 'skip',
+        maxConcurrency: payload.maxConcurrency ?? 1,
+        maxRetries: payload.maxRetries ?? 0,
+        enabled: payload.enabled ?? true,
+        ...(webhookSecretHandle ? { webhookSecretHandle } : {}),
+        ...(trigger.type === 'cron' && (payload.enabled ?? true)
+          ? { nextTriggerAt: nextCronOccurrence(trigger.expression, timezone, now) }
+          : {}),
+        now: now.toISOString(),
+      });
+      if (current.trigger.type === 'webhook' && trigger.type === 'cron') {
+        if (currentWebhookHandle) {
+          await this.secureStore.removeSecret(currentWebhookHandle).catch(() => undefined);
+        }
+      }
+      this.emitAutomationEvent('automation.updated', automation, undefined, {
+        callerSurface: this.commandCallerSurface(frame),
+      });
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: this.automationCommandResponse(automation, webhookSecret),
+        }),
+      );
+    } catch (error) {
+      if (createdHandle) await this.secureStore.removeSecret(createdHandle).catch(() => undefined);
+      this.handleAutomationError(socket, frame, error);
+    }
+  }
+
+  private async handleDeleteAutomation(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseDeleteAutomationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.automationStore) {
+      this.handleAutomationError(socket, frame, new Error('Automation persistence unavailable'));
+      return;
+    }
+    try {
+      const handle = this.automationStore.getWebhookSecretHandle(payload.automationId);
+      const automation = this.automationStore.softDelete(
+        payload.automationId,
+        payload.expectedVersion,
+      );
+      if (handle && this.secureStore) {
+        await this.secureStore.removeSecret(handle).catch(() => undefined);
+      }
+      this.emitAutomationEvent('automation.deleted', automation, undefined, {
+        callerSurface: this.commandCallerSurface(frame),
+      });
+      const response: DeleteAutomationResponse = { automation };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      this.handleAutomationError(socket, frame, error);
+    }
+  }
+
+  private handleGetAutomation(socket: Socket, frame: Frame): void {
+    const payload = parseGetAutomationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const automation = this.automationStore?.getRequired(payload.automationId);
+      if (!automation || !this.automationStore) throw new Error('automation.not_found');
+      const response: GetAutomationResponse = {
+        ...this.automationCommandResponse(automation),
+        executions: this.automationStore.listExecutions({
+          automationId: automation.id,
+          limit: 100,
+        }),
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      this.handleAutomationError(socket, frame, error);
+    }
+  }
+
+  private handleListAutomations(socket: Socket, frame: Frame): void {
+    const payload = parseListAutomationsPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.automationStore) {
+      const response: ListAutomationsResponse = {
+        automations: [],
+        runtime: this.automationRuntimeStatus(),
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+      return;
+    }
+    const response: ListAutomationsResponse = {
+      automations: this.automationStore.list(payload),
+      runtime: this.automationRuntimeStatus(),
+    };
+    socket.write(
+      encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+    );
+  }
+
+  private async handleTriggerAutomation(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseTriggerAutomationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.automationService) {
+      this.handleAutomationError(socket, frame, new Error('Automation Runtime unavailable'));
+      return;
+    }
+    try {
+      const execution = await this.automationService.trigger(
+        payload.automationId,
+        'manual',
+        payload.input,
+      );
+      const response: TriggerAutomationResponse = {
+        execution,
+        ...(execution.taskId ? { taskId: execution.taskId } : {}),
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      this.handleAutomationError(socket, frame, error);
+    }
+  }
+
+  private handleListAutomationExecutions(socket: Socket, frame: Frame): void {
+    const payload = parseListAutomationExecutionsPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const response: ListAutomationExecutionsResponse = {
+      executions: this.automationStore?.listExecutions(payload) ?? [],
+    };
+    socket.write(
+      encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+    );
+  }
+
+  private async createAutomationTask(input: {
+    automation: AutomationDefinition;
+    taskInput: string;
+    source: AutomationTriggerSource;
+    triggerId: string;
+    attempt: number;
+  }): Promise<{ taskId: TaskId }> {
+    const suffix = input.attempt > 0 ? ` · 重试 ${input.attempt}` : '';
+    const title = `${input.automation.name} · ${input.source}${suffix}`;
+    const command = input.automation.target.type === 'group' ? 'group.task.create' : 'task.create';
+    const payload =
+      input.automation.target.type === 'group'
+        ? {
+            groupId: input.automation.target.groupId,
+            workspaceId: input.automation.workspaceId,
+            title,
+            goal: input.taskInput,
+            acceptanceCriteria: [],
+          }
+        : {
+            workspaceId: input.automation.workspaceId,
+            title,
+            goal: input.taskInput,
+            acceptanceCriteria: [],
+          };
+    const created = await this.invokeInternalRuntimeCommand(command, payload);
+    if (created.error) throw new Error(created.error.message);
+    const taskId = (created.payload as { taskId?: unknown }).taskId;
+    if (typeof taskId !== 'string') throw new Error('automation.task_creation_invalid_response');
+
+    if (this.policyStore) {
+      const policy = await this.invokeInternalRuntimeCommand('policy.save', {
+        workspaceId: input.automation.workspaceId,
+        scopeType: 'task',
+        scopeId: taskId,
+        approvalMode: input.automation.approvalMode,
+        rules: [],
+      });
+      if (policy.error) throw new Error(policy.error.message);
+    }
+    return { taskId: taskId as TaskId };
+  }
+
+  private async startAutomationTask(
+    automation: AutomationDefinition,
+    taskId: TaskId,
+  ): Promise<void> {
+    const task = this.workspaceStore?.getTask(taskId);
+    if (!task) throw new Error(`automation.task_not_found:${taskId}`);
+    const response = await this.invokeInternalRuntimeCommand('task.appendMessage', {
+      threadId: task.threadId,
+      expectedTaskVersion: task.version,
+      role: 'user',
+      text: task.goal,
+      ...(automation.target.type === 'agent'
+        ? { agentVersionId: automation.target.agentVersionId }
+        : {}),
+    });
+    if (response.error) throw new Error(response.error.message);
+  }
+
+  private async appendAutomationTaskMessage(
+    taskId: TaskId,
+    message: string,
+    role: 'system' | 'user',
+  ): Promise<void> {
+    const task = this.workspaceStore?.getTask(taskId);
+    if (!task) throw new Error(`automation.task_not_found:${taskId}`);
+    const response = await this.invokeInternalRuntimeCommand('task.appendMessage', {
+      threadId: task.threadId,
+      expectedTaskVersion: task.version,
+      role,
+      text: message,
+    });
+    if (response.error) throw new Error(response.error.message);
+  }
+
+  private getAutomationTaskState(
+    taskId: TaskId,
+    since: string,
+  ): 'running' | 'completed' | 'failed' {
+    const task = this.workspaceStore?.getTask(taskId);
+    if (!task) return 'failed';
+    const sinceMs = Date.parse(since);
+    const events = this.events.filter((event) => {
+      if (event.taskId === taskId) return Date.parse(event.occurredAt) >= sinceMs;
+      return event.payload.threadId === task.threadId && Date.parse(event.occurredAt) >= sinceMs;
+    });
+    for (const event of [...events].reverse()) {
+      if (event.type === 'group.collaboration.completed' || event.type === 'run.completed') {
+        return 'completed';
+      }
+      if (
+        event.type === 'group.collaboration.failed' ||
+        event.type === 'run.failed' ||
+        event.type === 'run.cancelled'
+      ) {
+        return 'failed';
+      }
+    }
+    return 'running';
+  }
+
+  private emitAutomationEvent(
+    type: string,
+    automation: AutomationDefinition,
+    execution?: AutomationExecution,
+    detail: Record<string, unknown> = {},
+  ): void {
+    const task = execution?.taskId ? this.workspaceStore?.getTask(execution.taskId) : undefined;
+    const event = this.appendEvent(
+      type.startsWith('automation.execution.') ? 'run' : 'system',
+      type,
+      {
+        automationId: automation.id,
+        automationName: automation.name,
+        workspaceId: automation.workspaceId,
+        ...(execution
+          ? {
+              executionId: execution.id,
+              triggerId: execution.triggerId,
+              source: execution.source,
+              status: execution.status,
+              attempt: execution.attempt,
+            }
+          : {}),
+        ...(task ? { threadId: task.threadId, taskId: task.id } : {}),
+        ...detail,
+      },
+      undefined,
+      undefined,
+      task?.id,
+      automation.workspaceId,
+    );
+    this.publishEvent(event);
   }
 
   private handleListMemory(socket: Socket, frame: Frame): void {
@@ -4494,6 +6956,7 @@ export class Runtime {
         runId: ulid() as RunId,
         threadId,
         userText: '(amend probe)',
+        agentVersionId: DEFAULT_CONVERSATION_AGENT_ID,
       });
       const kindById = new Map<string, string>();
       for (const s of [...probe.selected.included, ...probe.selected.excluded]) {
@@ -4720,7 +7183,15 @@ export class Runtime {
     }
 
     const graph = runId ? this.orchestrationStore?.getGraph(runId) : undefined;
-    if (runId && (!graph || graph.run.taskId !== taskId)) {
+    const conversationRun = runId ? this.demoRuns.get(runId) : undefined;
+    const conversationRunTask = conversationRun
+      ? this.resolveTaskForThread(conversationRun.threadId)
+      : undefined;
+    const graphOwnsScope = Boolean(graph && graph.run.taskId === taskId);
+    const conversationRunOwnsScope = Boolean(
+      conversationRunTask && conversationRunTask.id === taskId,
+    );
+    if (runId && !graphOwnsScope && !conversationRunOwnsScope) {
       throw new PolicyScopeBoundaryError(
         ErrorCode.RUN_NOT_FOUND,
         'Approval Run scope is not available',
@@ -4734,7 +7205,10 @@ export class Runtime {
       );
     }
 
-    const persistedAgentVersionId = step?.agentVersionId ?? input.agentVersionId;
+    const persistedAgentVersionId =
+      step?.agentVersionId ??
+      (conversationRun?.agentVersionId as AgentVersionId | undefined) ??
+      input.agentVersionId;
     if (
       step &&
       input.agentVersionId !== undefined &&
@@ -4743,6 +7217,16 @@ export class Runtime {
       throw new PolicyScopeBoundaryError(
         ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
         'Approval AgentVersion does not own the Step',
+      );
+    }
+    if (
+      conversationRun &&
+      input.agentVersionId !== undefined &&
+      input.agentVersionId !== conversationRun.agentVersionId
+    ) {
+      throw new PolicyScopeBoundaryError(
+        ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
+        'Approval AgentVersion does not own the conversation Run',
       );
     }
     const agentVersion = persistedAgentVersionId
@@ -4767,6 +7251,10 @@ export class Runtime {
     if (runId) scopes.push({ scopeType: 'run', scopeId: runId });
 
     const policies = this.policyStore?.listApplicable(scopes) ?? [];
+    const groupApprovalMode = taskId
+      ? this.groupStore?.getForTask(taskId)?.approvalMode
+      : undefined;
+    const defaultApprovalMode = groupApprovalMode ?? agentVersion?.approvalMode ?? 'request';
     const resolved = resolveScopedPolicy([
       ...policies.map((policy) => ({
         scope: policy.scopeType,
@@ -4776,12 +7264,12 @@ export class Runtime {
         policyId: policy.policyId,
         version: policy.version,
       })),
-      ...(agentVersion
+      ...(policies.length === 0
         ? [
             {
-              scope: 'agent' as const,
-              scopeId: agentVersion.agentId,
-              approvalMode: agentVersion.approvalMode,
+              scope: groupApprovalMode ? ('task' as const) : ('agent' as const),
+              scopeId: groupApprovalMode ? taskId : agentVersion?.agentId,
+              approvalMode: defaultApprovalMode,
               rules: [],
             },
           ]
@@ -7465,6 +9953,45 @@ export class Runtime {
     );
   }
 
+  private writeGroupStoreUnavailable(socket: Socket, frame: Frame): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code: ErrorCode.STORAGE_WRITE_FAILED,
+          message: 'Group store is not configured on this Runtime',
+        },
+      }),
+    );
+  }
+
+  private writeGroupCommandError(socket: Socket, frame: Frame, error: unknown): void {
+    const message = error instanceof Error ? error.message : 'Group command failed';
+    let code: (typeof ErrorCode)[keyof typeof ErrorCode] = ErrorCode.STORAGE_WRITE_FAILED;
+    if (/group version conflict/i.test(message)) code = ErrorCode.TASK_VERSION_MISMATCH;
+    else if (/task not found/i.test(message)) code = ErrorCode.TASK_NOT_FOUND;
+    else if (/workspace not found/i.test(message)) code = ErrorCode.WORKSPACE_NOT_FOUND;
+    else if (
+      /group not found|member not found|already exists|lead cannot be removed/i.test(message)
+    ) {
+      code = ErrorCode.PROTOCOL_UNEXPECTED_REQUEST;
+    } else if (/must|invalid|duplicate|between|exceeds|empty/i.test(message)) {
+      code = ErrorCode.PROTOCOL_FRAME_MALFORMED;
+    }
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: { code, message },
+      }),
+    );
+  }
+
   private getRequiredAgentVersion(agentVersionId: AgentVersionId | string) {
     if (!this.agentStore) {
       throw new Error('AgentVersion exact lookup requires the Agent store');
@@ -7509,6 +10036,7 @@ export class Runtime {
       version: record.version,
       name: record.name,
       role: record.role,
+      maxConcurrency: record.maxConcurrency,
       defaultModelId: record.defaultModelId,
       fallbackModelIds: [...record.fallbackModelIds],
       pauseOnFailure: record.pauseOnFailure,
@@ -7746,6 +10274,27 @@ export class Runtime {
         return;
       }
     }
+    const boundGroup = persistedTask ? this.groupStore?.getForTask(persistedTask.id) : undefined;
+    const requestedAgentVersionId =
+      typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined;
+    if (
+      boundGroup &&
+      requestedAgentVersionId &&
+      !boundGroup.members.some((member) => member.agentVersionId === requestedAgentVersionId)
+    ) {
+      this.writeUnexpectedRequest(
+        socket,
+        frame,
+        'The mentioned Agent is not a member of this group',
+      );
+      return;
+    }
+    const targetAgentVersionId =
+      requestedAgentVersionId ??
+      boundGroup?.leadAgentVersionId ??
+      (persistedTask && this.agentStore
+        ? this.resolveTaskLeadAgentVersionId(persistedTask)
+        : undefined);
     const currentVersion = persistedTask?.version ?? this.threadVersions.get(payload.threadId) ?? 0;
     if (payload.expectedTaskVersion !== currentVersion) {
       socket.write(
@@ -7763,15 +10312,26 @@ export class Runtime {
       return;
     }
 
-    if (payload.agentVersionId !== undefined) {
+    if (targetAgentVersionId !== undefined) {
       try {
-        this.getRequiredAgentVersion(payload.agentVersionId);
+        this.getRequiredAgentVersion(targetAgentVersionId);
       } catch (error) {
         this.writeProviderCommandError(socket, frame, error);
         return;
       }
     }
 
+    let attachmentContext = '';
+    try {
+      attachmentContext = prepareMessageAttachmentContext(payload.attachments ?? []);
+    } catch (error) {
+      this.writeUnexpectedRequest(
+        socket,
+        frame,
+        error instanceof Error ? error.message : 'Attachment validation failed',
+      );
+      return;
+    }
     const nextVersion = currentVersion + 1;
     const generatedTaskIdentity =
       persistedTask &&
@@ -7790,6 +10350,18 @@ export class Runtime {
       text: payload.text,
       messageId,
       taskVersion: nextVersion,
+      ...(targetAgentVersionId ? { targetAgentVersionId } : {}),
+      ...(boundGroup ? { groupId: boundGroup.id } : {}),
+      ...(this.commandCallerSurface(frame) === 'agent' &&
+      typeof payload.stepId === 'string' &&
+      (payload.stepId.startsWith('subtask-auto:') || payload.stepId.startsWith('subtask-wake:'))
+        ? {
+            internalKind: payload.stepId.startsWith('subtask-auto:')
+              ? 'subtask-auto'
+              : 'subtask-wake',
+          }
+        : {}),
+      ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
       ...(generatedTaskIdentity
         ? {
             taskTitle: generatedTaskIdentity.title,
@@ -7815,16 +10387,29 @@ export class Runtime {
     let demoRun: DemoRunState | undefined;
     if (this.stateStore && payload.role === 'user' && this.canStartModelRun()) {
       demoRunId = ulid() as RunId;
-      const prepared = this.prepareRunBinding({
-        runId: demoRunId,
-        threadId: payload.threadId,
-        userText: payload.text,
-        modelId: typeof payload.modelId === 'string' ? payload.modelId : undefined,
-        credentialRefId:
-          typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
-        agentVersionId:
-          typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
-      });
+      let prepared: ReturnType<Runtime['prepareRunBinding']>;
+      try {
+        prepared = this.prepareRunBinding({
+          runId: demoRunId,
+          threadId: payload.threadId,
+          userText: payload.text,
+          attachmentContext,
+          attachments: payload.attachments ?? [],
+          latestUserMessageId: messageId,
+          modelId: typeof payload.modelId === 'string' ? payload.modelId : undefined,
+          credentialRefId:
+            typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
+          agentVersionId:
+            typeof targetAgentVersionId === 'string' ? targetAgentVersionId : undefined,
+        });
+      } catch (error) {
+        this.writeUnexpectedRequest(
+          socket,
+          frame,
+          error instanceof Error ? error.message : 'Run attachment preparation failed',
+        );
+        return;
+      }
       demoRun = prepared.run;
       projectedRuns.set(demoRunId, demoRun);
       eventDrafts.push({
@@ -7856,7 +10441,14 @@ export class Runtime {
           truncations: prepared.truncations,
           crossTaskRefs: prepared.crossTaskRefs,
           evidenceRefsForMemory: prepared.evidenceRefsForMemory ?? [],
+          historyIncludedEventIds: prepared.historyIncludedEventIds,
+          historyExcludedEventIds: prepared.historyExcludedEventIds,
           tokenEstimate: prepared.tokenEstimate,
+          attachmentCount: payload.attachments?.length ?? 0,
+          executionRoot: demoRun.executionRoot,
+          executionToolNames: demoRun.executionToolNames,
+          effectiveApprovalMode: demoRun.effectiveApprovalMode,
+          browserIdentityId: demoRun.browserIdentityId,
         },
       });
       eventDrafts.push({
@@ -7878,6 +10470,10 @@ export class Runtime {
           protocol: demoRun.protocol,
           useFakeProvider: demoRun.useFakeProvider,
           idempotencyKey: demoRunId,
+          executionRoot: demoRun.executionRoot,
+          executionToolNames: demoRun.executionToolNames,
+          effectiveApprovalMode: demoRun.effectiveApprovalMode,
+          browserIdentityId: demoRun.browserIdentityId,
           run: demoRun,
         },
       });
@@ -7964,7 +10560,7 @@ export class Runtime {
       }),
     );
     for (const event of committedEvents) this.publishEvent(event);
-    if (demoRunId) void this.executeDemoRun(demoRunId);
+    if (demoRunId) this.scheduleDemoRunExecution(demoRunId);
   }
 
   private handleCancelRun(socket: Socket, frame: Frame): void {
@@ -8065,6 +10661,8 @@ export class Runtime {
       );
       return;
     }
+
+    this.demoRunAbortControllers.get(payload.runId)?.abort();
 
     socket.write(
       encodeFrame({
@@ -8243,11 +10841,473 @@ export class Runtime {
     for (const event of events) this.publishEvent(event);
   }
 
+  private appendGroupCollaborationStatus(
+    task: TaskRecord,
+    groupId: string,
+    type: string,
+    text: string,
+    detail: Record<string, unknown> = {},
+  ): void {
+    const event = this.appendEvent(
+      type.startsWith('group.collaboration.') ? 'run' : 'system',
+      type,
+      {
+        threadId: task.threadId,
+        groupId,
+        text,
+        ...detail,
+      },
+      undefined,
+      undefined,
+      task.id,
+      task.workspaceId,
+    );
+    this.publishEvent(event);
+  }
+
+  /** Explicit orchestration entry point; normal group-chat messages do not call this. */
+  startGroupCollaboration(taskId: TaskId, userMessage: string): void {
+    const task = this.workspaceStore?.getTask(taskId);
+    const group = this.groupStore?.getForTask(taskId);
+    if (!task || !group) return;
+    if (!this.hasPlanTransitionStores() || !this.scheduler) {
+      this.appendGroupCollaborationStatus(
+        task,
+        group.id,
+        'group.collaboration.failed',
+        '群聊编排尚未在当前 Runtime 中启用。',
+        { reason: 'orchestration_unavailable' },
+      );
+      return;
+    }
+
+    const activeGroupRuns = this.orchestrationStore!.listRecoverableRunIds()
+      .map((runId) => this.orchestrationStore!.getRun(runId))
+      .filter((run): run is NonNullable<typeof run> => Boolean(run))
+      .filter((run) => this.groupStore!.getForTask(run.taskId)?.id === group.id);
+    if (activeGroupRuns.some((run) => run.taskId === task.id)) {
+      this.appendGroupCollaborationStatus(
+        task,
+        group.id,
+        'group.collaboration.skipped',
+        '这个群聊任务已有一次协作正在执行，请等待完成后继续。',
+        { reason: 'task_run_active' },
+      );
+      return;
+    }
+    if (activeGroupRuns.length >= group.maxConcurrency) {
+      this.appendGroupCollaborationStatus(
+        task,
+        group.id,
+        'group.collaboration.skipped',
+        `群聊已达到 ${group.maxConcurrency} 个并发任务，请稍后重试。`,
+        { reason: 'group_concurrency_limit', maxConcurrency: group.maxConcurrency },
+      );
+      return;
+    }
+
+    try {
+      const steps = buildGroupCollaborationPlan({
+        group,
+        taskTitle: task.title,
+        taskGoal: task.goal,
+        userMessage,
+        createStepId: () => ulid(),
+      });
+      const occurredAt = new Date().toISOString();
+      const result = this.unitOfWork!.run(() => {
+        const revision = this.orchestrationStore!.createPlanDraft({
+          taskId: task.id,
+          title: `${group.name} · ${task.title}`,
+          steps,
+          now: occurredAt,
+        });
+        const graph = this.orchestrationStore!.approvePlan({
+          planId: revision.planId,
+          revision: revision.revision,
+          now: occurredAt,
+        });
+        const eventDrafts: [EventDraft, ...EventDraft[]] = [
+          {
+            id: ulid() as Event['id'],
+            workspaceId: task.workspaceId,
+            taskId: task.id,
+            runId: graph.run.id,
+            category: 'run',
+            type: 'plan.drafted',
+            occurredAt,
+            payload: {
+              threadId: task.threadId,
+              groupId: group.id,
+              planId: revision.planId,
+              planRevisionId: revision.id,
+              revision: revision.revision,
+              title: revision.title,
+              stepCount: revision.steps.length,
+              source: 'group-lead',
+            },
+          },
+          {
+            id: ulid() as Event['id'],
+            workspaceId: task.workspaceId,
+            taskId: task.id,
+            runId: graph.run.id,
+            category: 'run',
+            type: 'plan.approved',
+            occurredAt,
+            payload: {
+              threadId: task.threadId,
+              groupId: group.id,
+              planId: revision.planId,
+              planRevisionId: revision.id,
+              revision: revision.revision,
+              runId: graph.run.id,
+              source: 'group-automatic',
+            },
+          },
+          {
+            id: ulid() as Event['id'],
+            workspaceId: task.workspaceId,
+            taskId: task.id,
+            runId: graph.run.id,
+            category: 'run',
+            type: 'group.collaboration.started',
+            occurredAt,
+            payload: {
+              threadId: task.threadId,
+              groupId: group.id,
+              groupName: group.name,
+              leadAgentVersionId: group.leadAgentVersionId,
+              memberCount: group.members.length,
+              collaborationMode: group.collaborationMode,
+              text: `${group.name} 已开始协作。`,
+            },
+          },
+        ];
+        for (const step of graph.steps) {
+          eventDrafts.push({
+            id: ulid() as Event['id'],
+            workspaceId: task.workspaceId,
+            taskId: task.id,
+            runId: graph.run.id,
+            stepId: step.id,
+            category: 'step',
+            type: 'step.created',
+            occurredAt,
+            payload: {
+              threadId: task.threadId,
+              groupId: group.id,
+              planRevisionId: revision.id,
+              stepId: step.id,
+              planOrder: step.planOrder,
+              title: step.title,
+              agentVersionId: step.agentVersionId,
+              dependsOn: [...step.dependsOn],
+            },
+          });
+        }
+        const committedEvents = this.commitProjectedEvents(
+          eventDrafts,
+          this.threadVersions,
+          this.demoRuns,
+        );
+        return { graph, committedEvents };
+      });
+      this.recordCommittedEvents(result.committedEvents);
+      for (const event of result.committedEvents) this.publishEvent(event);
+      this.scheduleOrchestrationDrain(result.graph.run.id, 'group-collaboration');
+    } catch (error) {
+      this.appendGroupCollaborationStatus(
+        task,
+        group.id,
+        'group.collaboration.failed',
+        '群聊协作计划创建失败。',
+        {
+          reason: this.scrubDiagnosticMessage(
+            error instanceof Error ? error.message : 'group collaboration failed',
+          ),
+        },
+      );
+    }
+  }
+
+  private projectGroupRunConversation(runId: RunId): void {
+    if (!this.stateStore || !this.orchestrationStore || !this.workspaceStore || !this.groupStore) {
+      return;
+    }
+    const graph = this.orchestrationStore.getGraph(runId);
+    if (!graph) return;
+    const task = this.workspaceStore.getTask(graph.run.taskId);
+    const group = task ? this.groupStore.getForTask(task.id) : undefined;
+    if (!task || !group) return;
+    const existingMessageStepIds = new Set(
+      this.events
+        .filter((event) => event.runId === runId && event.type === 'group.agent-message')
+        .map((event) => String(event.stepId ?? event.payload.stepId ?? '')),
+    );
+    const existingDecisionStepIds = new Set(
+      this.events
+        .filter((event) => event.runId === runId && event.type === 'group.delegation-decided')
+        .map((event) => String(event.stepId ?? event.payload.stepId ?? '')),
+    );
+    const existingHandoffStepIds = new Set(
+      this.events
+        .filter((event) => event.runId === runId && event.type === 'group.handoff-recorded')
+        .map((event) => String(event.stepId ?? event.payload.stepId ?? '')),
+    );
+    const existingToolTraceIds = new Set(
+      this.events
+        .filter((event) => event.runId === runId && event.type === 'tool.completed')
+        .map((event) => `${String(event.stepId ?? '')}:${String(event.payload.toolCallId ?? '')}`),
+    );
+    const artifacts = this.orchestrationStore.listRunArtifactVersions(runId);
+    const drafts: EventDraft[] = [];
+    const steps = [...graph.steps].sort((left, right) => left.planOrder - right.planOrder);
+    for (const step of steps) {
+      if (step.state !== 'completed') continue;
+      const toolTrace = artifacts
+        .filter(
+          (artifact) =>
+            artifact.sourceStepId === step.id &&
+            artifact.metadata?.executionKind === 'tool-trace' &&
+            typeof artifact.content === 'string',
+        )
+        .sort((left, right) => right.version - left.version)[0];
+      if (toolTrace?.content) {
+        try {
+          const parsed = JSON.parse(toolTrace.content) as {
+            calls?: Array<{
+              id?: unknown;
+              name?: unknown;
+              arguments?: unknown;
+              result?: unknown;
+              startedAt?: unknown;
+              durationMs?: unknown;
+            }>;
+          };
+          for (const call of parsed.calls ?? []) {
+            if (typeof call.id !== 'string' || typeof call.name !== 'string') continue;
+            if (existingToolTraceIds.has(`${String(step.id)}:${call.id}`)) continue;
+            const occurredAt =
+              typeof call.startedAt === 'string' ? call.startedAt : toolTrace.createdAt;
+            const toolCall = {
+              id: call.id,
+              name: call.name,
+              argumentsJson: JSON.stringify(call.arguments ?? {}),
+            };
+            drafts.push({
+              id: ulid() as Event['id'],
+              workspaceId: task.workspaceId,
+              taskId: task.id,
+              runId,
+              stepId: step.id,
+              category: 'tool',
+              type: 'tool.requested',
+              occurredAt,
+              payload: {
+                threadId: task.threadId,
+                agentVersionId: step.agentVersionId,
+                modelId:
+                  step.modelOverrideId ??
+                  this.agentStore?.getVersion(step.agentVersionId)?.defaultModelId,
+                toolCall,
+              },
+            });
+            drafts.push({
+              id: ulid() as Event['id'],
+              workspaceId: task.workspaceId,
+              taskId: task.id,
+              runId,
+              stepId: step.id,
+              category: 'tool',
+              type: 'tool.completed',
+              occurredAt,
+              payload: {
+                threadId: task.threadId,
+                agentVersionId: step.agentVersionId,
+                modelId:
+                  step.modelOverrideId ??
+                  this.agentStore?.getVersion(step.agentVersionId)?.defaultModelId,
+                toolCallId: call.id,
+                toolName: call.name,
+                result:
+                  typeof call.result === 'string' ? call.result : JSON.stringify(call.result ?? {}),
+                durationMs: typeof call.durationMs === 'number' ? call.durationMs : undefined,
+              },
+            });
+          }
+        } catch {
+          // Invalid legacy trace artifacts remain inspectable as artifacts but are not projected as logs.
+        }
+      }
+      const output = artifacts
+        .filter(
+          (artifact) =>
+            artifact.sourceStepId === step.id &&
+            artifact.metadata?.executionKind !== 'tool-trace' &&
+            typeof artifact.content === 'string',
+        )
+        .sort((left, right) => right.version - left.version)[0];
+      if (!output?.content?.trim()) continue;
+      const agent = this.agentStore?.getVersion(step.agentVersionId);
+      const executionKind = String(output.metadata.executionKind ?? '');
+      if (executionKind === 'group-delegation-decision' || isGroupDelegationDecisionStep(step)) {
+        if (existingDecisionStepIds.has(String(step.id))) continue;
+        const decision = parseGroupDelegationDecision(output.content, group);
+        if (!decision) continue;
+        const leadName = agent?.name ?? '主智能体';
+        drafts.push({
+          id: ulid() as Event['id'],
+          workspaceId: task.workspaceId,
+          taskId: task.id,
+          runId,
+          stepId: step.id,
+          category: 'run',
+          type: 'group.delegation-decided',
+          occurredAt: output.createdAt,
+          payload: {
+            threadId: task.threadId,
+            groupId: group.id,
+            stepId: step.id,
+            agentVersionId: step.agentVersionId,
+            mode: decision.mode,
+            reason: decision.reason,
+            assignmentCount: decision.assignments.length,
+            text:
+              decision.mode === 'single'
+                ? `${leadName} 决定直接完成，不委派其他成员。`
+                : `${leadName} 已拆分 ${decision.assignments.length} 个子任务。`,
+          },
+        });
+        for (const assignment of decision.assignments) {
+          const memberName =
+            this.agentStore?.getVersion(assignment.agentVersionId)?.name ??
+            assignment.agentVersionId;
+          drafts.push({
+            id: ulid() as Event['id'],
+            workspaceId: task.workspaceId,
+            taskId: task.id,
+            runId,
+            stepId: step.id,
+            category: 'step',
+            type: 'group.subtask-delegated',
+            occurredAt: output.createdAt,
+            payload: {
+              threadId: task.threadId,
+              groupId: group.id,
+              stepId: step.id,
+              fromAgentVersionId: group.leadAgentVersionId,
+              toAgentVersionId: assignment.agentVersionId,
+              goal: assignment.goal,
+              requiredEvidence: assignment.requiredEvidence,
+              acceptanceConditions: assignment.acceptanceConditions,
+              allowedTools: assignment.allowedTools,
+              text: `已将“${assignment.goal}”委派给 ${memberName}。`,
+            },
+          });
+        }
+        continue;
+      }
+      if (executionKind === 'group-skip') continue;
+      if (!existingMessageStepIds.has(String(step.id))) {
+        drafts.push({
+          id: ulid() as Event['id'],
+          workspaceId: task.workspaceId,
+          taskId: task.id,
+          runId,
+          stepId: step.id,
+          category: 'message',
+          type: 'group.agent-message',
+          occurredAt: output.createdAt,
+          payload: {
+            threadId: task.threadId,
+            groupId: group.id,
+            role: 'assistant',
+            text: output.content,
+            agentVersionId: step.agentVersionId,
+            modelId: step.modelOverrideId ?? agent?.defaultModelId,
+            stepId: step.id,
+            stepTitle: step.title,
+            phase:
+              isGroupFinalSummaryStep(step) && step.agentVersionId === group.leadAgentVersionId
+                ? 'final-summary'
+                : 'subtask-result',
+            ...(!(isGroupFinalSummaryStep(step) && step.agentVersionId === group.leadAgentVersionId)
+              ? { mentionAgentVersionId: group.leadAgentVersionId }
+              : {}),
+          },
+        });
+      }
+      if (
+        !(isGroupFinalSummaryStep(step) && step.agentVersionId === group.leadAgentVersionId) &&
+        !existingHandoffStepIds.has(String(step.id))
+      ) {
+        drafts.push({
+          id: ulid() as Event['id'],
+          workspaceId: task.workspaceId,
+          taskId: task.id,
+          runId,
+          stepId: step.id,
+          category: 'step',
+          type: 'group.handoff-recorded',
+          occurredAt: output.createdAt,
+          payload: {
+            threadId: task.threadId,
+            groupId: group.id,
+            stepId: step.id,
+            fromAgentVersionId: step.agentVersionId,
+            toAgentVersionId: group.leadAgentVersionId,
+            artifactVersionId: output.id,
+            text: `${agent?.name ?? '成员智能体'} 已将“${step.title}”的结果交接给主智能体。`,
+          },
+        });
+      }
+    }
+
+    const lifecycleType =
+      graph.run.state === 'completed'
+        ? 'group.collaboration.completed'
+        : graph.run.state === 'failed' || graph.run.state === 'cancelled'
+          ? 'group.collaboration.failed'
+          : undefined;
+    if (
+      lifecycleType &&
+      !this.events.some((event) => event.runId === runId && event.type === lifecycleType)
+    ) {
+      drafts.push({
+        id: ulid() as Event['id'],
+        workspaceId: task.workspaceId,
+        taskId: task.id,
+        runId,
+        category: 'run',
+        type: lifecycleType,
+        occurredAt: new Date().toISOString(),
+        payload: {
+          threadId: task.threadId,
+          groupId: group.id,
+          state: graph.run.state,
+          text:
+            lifecycleType === 'group.collaboration.completed'
+              ? `${group.name} 已完成协作。`
+              : `${group.name} 协作未完成。`,
+        },
+      });
+    }
+    const first = drafts[0];
+    if (!first) return;
+    const committed = this.commitEvents([first, ...drafts.slice(1)]);
+    this.recordCommittedEvents(committed);
+    for (const event of committed) this.publishEvent(event);
+  }
+
   private scheduleOrchestrationDrain(runId: RunId, source: string): void {
     if (!this.scheduler) return;
     const task = this.scheduler
       .runUntilIdle(runId)
-      .then(() => this.syncOrchestrationEvents())
+      .then(() => {
+        this.syncOrchestrationEvents();
+        this.projectGroupRunConversation(runId);
+      })
       .catch(() => console.warn(`[runtime] orchestration ${source} failed`));
     this.trackBackgroundTask(task);
   }
@@ -8256,7 +11316,10 @@ export class Runtime {
     if (!this.scheduler) return;
     const task = this.scheduler
       .recover(runId)
-      .then(() => this.syncOrchestrationEvents())
+      .then(() => {
+        this.syncOrchestrationEvents();
+        this.projectGroupRunConversation(runId);
+      })
       .catch(() => console.warn(`[runtime] orchestration ${source} recovery failed`));
     this.trackBackgroundTask(task);
   }
@@ -8297,7 +11360,7 @@ export class Runtime {
   ): Event[] {
     if (!this.stateStore) throw new Error('Runtime state store is not configured');
     const checkpoint: CheckpointDraft = {
-      id: ulid(),
+      id: `runtime-latest:${this.checkpointRunId}`,
       runId: this.checkpointRunId,
       state: {
         schemaVersion: 1,
@@ -8308,16 +11371,532 @@ export class Runtime {
       },
       createdAt: events[events.length - 1].occurredAt,
     };
-    const committed = this.stateStore.commitTransition({ events, checkpoint });
+    const compactEvents = events.map((event) => {
+      const { run: _runtimeCheckpoint, ...payload } = event.payload;
+      return { ...event, payload };
+    }) as unknown as EventDraftBatch;
+    const committed = this.stateStore.commitTransition({ events: compactEvents, checkpoint });
     if (committed.events.length === 0) {
       throw new Error('The event store returned an empty transition');
     }
     return committed.events;
   }
 
+  private persistApplicationToolRunState(
+    runId: RunId,
+    run: DemoRunState,
+    type: string,
+    payload: Record<string, unknown>,
+  ): Event {
+    const task = this.resolveTaskForThread(run.threadId);
+    const projectedRuns = new Map(this.demoRuns);
+    projectedRuns.set(runId, run);
+    const event = this.persistProjectedEvent(
+      {
+        id: ulid() as Event['id'],
+        workspaceId: task?.workspaceId ?? this.workspaceId,
+        taskId: task?.id,
+        runId,
+        category: 'tool',
+        type,
+        occurredAt: new Date().toISOString(),
+        payload: {
+          threadId: run.threadId,
+          agentVersionId: run.agentVersionId,
+          modelId: run.modelId,
+          ...payload,
+          run,
+        },
+      },
+      projectedRuns,
+    );
+    this.demoRuns.set(runId, run);
+    this.publishEvent(event);
+    return event;
+  }
+
+  private parseApplicationToolArguments(toolCall: ProviderToolCall): Record<string, unknown> {
+    if (
+      !toolCall.id.trim() ||
+      toolCall.id.length > 256 ||
+      !toolCall.name.trim() ||
+      toolCall.name.length > 128 ||
+      Buffer.byteLength(toolCall.argumentsJson, 'utf8') > MAX_APPLICATION_TOOL_ARGUMENT_BYTES
+    ) {
+      throw new Error('application.tool_call_invalid');
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(toolCall.argumentsJson) as unknown;
+    } catch {
+      throw new Error('application.tool_arguments_invalid_json');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('application.tool_arguments_not_object');
+    }
+    const payload = parsed as Record<string, unknown>;
+    if ('_confirmationToken' in payload) {
+      throw new Error('application.agent_cannot_self_confirm_configuration');
+    }
+    return payload;
+  }
+
+  private invokeAgentRuntimeCommand(
+    command: CommandType,
+    payload: Record<string, unknown>,
+    confirmationToken?: string,
+  ): Promise<Frame> {
+    return this.invokeInternalRuntimeCommand(command, payload, 'agent', confirmationToken);
+  }
+
+  private invokeInternalRuntimeCommand(
+    command: CommandType,
+    payload: Record<string, unknown>,
+    callerSurface: import('@sync-think/protocol').CommandCallerSurface = 'desktop',
+    confirmationToken?: string,
+  ): Promise<Frame> {
+    return new Promise<Frame>((resolve, reject) => {
+      const requestId = `internal_${ulid()}`;
+      const timer = setTimeout(
+        () => reject(new Error(`application.command_timeout:${command}`)),
+        10_000,
+      );
+      if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+      const socket = {
+        destroyed: false,
+        write: (chunk: Uint8Array | string) => {
+          try {
+            const decoded = decodeFrames(
+              typeof chunk === 'string' ? Buffer.from(chunk) : Buffer.from(chunk),
+            );
+            const response = decoded.frames.find(
+              (candidate) => candidate.kind === 'response' && candidate.id === requestId,
+            );
+            if (response) {
+              clearTimeout(timer);
+              resolve(response);
+            }
+          } catch (error) {
+            clearTimeout(timer);
+            reject(error);
+          }
+          return true;
+        },
+      } as unknown as Socket;
+      try {
+        this.handlers.onFrame(socket, {
+          id: requestId,
+          kind: 'request',
+          type: command,
+          payload,
+          meta: {
+            callerSurface,
+            ...(confirmationToken ? { confirmationToken } : {}),
+          },
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
+  }
+
+  private boundedApplicationToolResult(value: unknown): string {
+    const serialized = JSON.stringify(value);
+    if (Buffer.byteLength(serialized, 'utf8') <= MAX_APPLICATION_TOOL_RESULT_BYTES) {
+      return serialized;
+    }
+    return JSON.stringify({
+      status: 'truncated',
+      byteLength: Buffer.byteLength(serialized, 'utf8'),
+      summary: 'SYNC-THINK application tool result exceeded the model result limit.',
+    });
+  }
+
+  private async invokeApplicationTool(
+    run: DemoRunState,
+    toolCall: ProviderToolCall,
+  ): Promise<{ result: string; confirmationId?: string }> {
+    if (isExecutionToolName(toolCall.name)) {
+      if (!run.executionRoot || !run.executionToolNames.includes(toolCall.name)) {
+        return {
+          result: this.boundedApplicationToolResult({
+            status: 'blocked',
+            code: 'execution.tool_not_available',
+            toolName: toolCall.name,
+          }),
+        };
+      }
+      const task = this.resolveTaskForThread(run.threadId);
+      if (!task) {
+        return {
+          result: this.boundedApplicationToolResult({
+            status: 'error',
+            code: 'execution.task_not_found',
+          }),
+        };
+      }
+      const args = this.parseApplicationToolArguments(toolCall);
+      const kind = toolCall.name.startsWith('browser_')
+        ? 'browser'
+        : toolCall.name === 'run_command'
+          ? 'shell'
+          : toolCall.name.startsWith('git_')
+            ? 'git'
+            : 'file';
+      const approval = this.resolveServerApproval({
+        workspaceId: task.workspaceId,
+        taskId: task.id,
+        runId: run.runId,
+        agentVersionId: run.agentVersionId as AgentVersionId,
+        action: `execution.${toolCall.name}`,
+        kind,
+        actionDetails: args,
+      }).evaluation;
+      if (approval.gate !== 'auto-approve') {
+        return {
+          result: this.boundedApplicationToolResult({
+            status: 'blocked',
+            code: 'execution.approval_required',
+            toolName: toolCall.name,
+            approvalMode: approval.mode,
+            reason: approval.reason,
+          }),
+        };
+      }
+      this.emitSubtaskEvent(
+        'tool',
+        'execution.tool.started',
+        {
+          threadId: run.threadId,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          arguments: args,
+          executionRoot: run.executionRoot,
+          effectiveApprovalMode: run.effectiveApprovalMode,
+          browserIdentityId: run.browserIdentityId,
+        },
+        task.id,
+        task.workspaceId,
+        run.runId,
+      );
+      try {
+        const browserIdentity = run.browserIdentityId
+          ? this.executionEnvironmentStore
+              ?.listBrowserIdentities()
+              .find((identity) => String(identity.id) === run.browserIdentityId)
+          : undefined;
+        const agentPermissions = this.agentStore?.getVersion(
+          run.agentVersionId as AgentVersionId,
+        )?.permissions;
+        const result = await invokeExecutionTool({
+          name: toolCall.name,
+          arguments: args as Record<string, import('@sync-think/shared').JsonValue>,
+          executionRoot: run.executionRoot,
+          browserProfilePath: browserIdentity?.profilePath,
+          allowedSites: agentPermissions?.browser,
+        });
+        this.emitSubtaskEvent(
+          'tool',
+          'execution.tool.completed',
+          {
+            threadId: run.threadId,
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            result,
+            executionRoot: run.executionRoot,
+          },
+          task.id,
+          task.workspaceId,
+          run.runId,
+        );
+        return { result: this.boundedApplicationToolResult(JSON.parse(result)) };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Execution tool failed';
+        this.emitSubtaskEvent(
+          'tool',
+          'execution.tool.failed',
+          {
+            threadId: run.threadId,
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            errorMessage: this.scrubDiagnosticMessage(message),
+          },
+          task.id,
+          task.workspaceId,
+          run.runId,
+        );
+        return {
+          result: this.boundedApplicationToolResult({
+            status: 'error',
+            code: 'execution.tool_failed',
+            message: this.scrubDiagnosticMessage(message),
+          }),
+        };
+      }
+    }
+    const definition = getApplicationToolDefinition(toolCall.name);
+    if (!definition) {
+      return {
+        result: this.boundedApplicationToolResult({
+          status: 'error',
+          code: 'application.tool_unknown',
+          toolName: toolCall.name,
+        }),
+      };
+    }
+    const parsedPayload = this.parseApplicationToolArguments(toolCall);
+    const payload =
+      definition.command === 'task.delegateSubtask'
+        ? {
+            ...parsedPayload,
+            delegatingAgentVersionId: run.agentVersionId,
+            delegationBatchId: String(run.runId),
+          }
+        : parsedPayload;
+    const response = await this.invokeAgentRuntimeCommand(definition.command, payload);
+    if (response.error) {
+      return {
+        result: this.boundedApplicationToolResult({
+          status: 'error',
+          code: response.error.code,
+          message: this.scrubDiagnosticMessage(response.error.message) ?? 'Command failed',
+        }),
+      };
+    }
+
+    const value = response.payload;
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      (value as { status?: unknown }).status === 'confirmation_required' &&
+      typeof (value as { confirmationToken?: unknown }).confirmationToken === 'string'
+    ) {
+      const preview = value as {
+        confirmationToken: string;
+        expiresAt?: string;
+        summary?: string;
+        payloadKeys?: string[];
+      };
+      const task = this.resolveTaskForThread(run.threadId);
+      const approvalAgentVersionId = this.agentStore?.getVersion(
+        run.agentVersionId as AgentVersionId,
+      )?.id;
+      const taskPolicy = task
+        ? this.policyStore
+            ?.listApplicable([{ scopeType: 'task', scopeId: task.id }])
+            .filter((policy) => policy.scopeType === 'task' && policy.scopeId === task.id)
+            .sort((left, right) => right.version - left.version)[0]
+        : undefined;
+      const taskDecision = taskPolicy
+        ? resolveActionDecision({
+            action: definition.name,
+            approvalMode: taskPolicy.approvalMode,
+            rules: taskPolicy.rules,
+          })
+        : undefined;
+      const permission = task
+        ? this.resolveServerApproval({
+            workspaceId: task.workspaceId,
+            taskId: task.id,
+            ...(approvalAgentVersionId ? { agentVersionId: approvalAgentVersionId } : {}),
+            action: definition.name,
+            kind: 'other',
+            actionDetails: payload,
+          }).evaluation
+        : undefined;
+      if (
+        taskDecision?.decision === 'allowed' ||
+        (!taskDecision && permission?.gate === 'auto-approve')
+      ) {
+        const confirmed = await this.invokeAgentRuntimeCommand(
+          definition.command,
+          payload,
+          preview.confirmationToken,
+        );
+        if (confirmed.error) {
+          return {
+            result: this.boundedApplicationToolResult({
+              status: 'error',
+              code: confirmed.error.code,
+              message: this.scrubDiagnosticMessage(confirmed.error.message) ?? 'Command failed',
+            }),
+          };
+        }
+        return { result: this.boundedApplicationToolResult(confirmed.payload ?? {}) };
+      }
+      const confirmationId = `confirmation_${ulid()}`;
+      const pending: PendingAgentConfigurationCommand = {
+        id: confirmationId,
+        toolName: definition.name,
+        command: definition.command,
+        payload: structuredClone(payload),
+        confirmationToken: preview.confirmationToken,
+        threadId: run.threadId,
+        runId: run.runId,
+        agentVersionId: run.agentVersionId,
+        expiresAt: preview.expiresAt ?? new Date(Date.now() + 5 * 60_000).toISOString(),
+      };
+      this.pendingAgentConfigurationCommands.set(confirmationId, pending);
+      return {
+        confirmationId,
+        result: this.boundedApplicationToolResult({
+          status: 'confirmation_required',
+          confirmationId,
+          summary: preview.summary ?? definition.description,
+          payloadKeys: preview.payloadKeys ?? Object.keys(payload).sort(),
+          expiresAt: pending.expiresAt,
+          instruction: 'Wait for the user to approve or reject this SYNC-THINK operation.',
+        }),
+      };
+    }
+    return { result: this.boundedApplicationToolResult(value ?? {}) };
+  }
+
+  private async continueDemoRunAfterApplicationTools(
+    runId: RunId,
+    initialRun: DemoRunState,
+  ): Promise<DemoRunState> {
+    if (initialRun.providerTurn >= MAX_APPLICATION_TOOL_TURNS) {
+      throw new Error('application.tool_turn_limit_reached');
+    }
+    if (initialRun.pendingApplicationToolCalls.length === 0) {
+      throw new Error('application.tool_requests_missing');
+    }
+    let run = initialRun;
+    for (const toolCall of run.pendingApplicationToolCalls) {
+      const completed = run.applicationToolResults.find(
+        (candidate) => candidate.toolCallId === toolCall.id,
+      );
+      if (completed) continue;
+      if (run.startedApplicationToolCallIds.includes(toolCall.id)) {
+        throw new Error('application.tool_execution_outcome_unknown');
+      }
+      run = {
+        ...run,
+        startedApplicationToolCallIds: [...run.startedApplicationToolCallIds, toolCall.id],
+      };
+      this.persistApplicationToolRunState(runId, run, 'application.tool_started', {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      });
+      const invoked = await this.invokeApplicationTool(run, toolCall);
+      run = {
+        ...run,
+        applicationToolResults: [
+          ...run.applicationToolResults,
+          { toolCallId: toolCall.id, result: invoked.result },
+        ],
+      };
+      this.persistApplicationToolRunState(
+        runId,
+        run,
+        invoked.confirmationId
+          ? 'application.tool_confirmation_requested'
+          : 'application.tool_completed',
+        {
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          ...(invoked.confirmationId ? { confirmationId: invoked.confirmationId } : {}),
+          result: invoked.result,
+        },
+      );
+    }
+
+    const assistantParts: ProviderContentPart[] = [];
+    if (run.assistantText.trim()) {
+      assistantParts.push({ type: 'text', text: run.assistantText.trim() });
+    }
+    for (const toolCall of run.pendingApplicationToolCalls) {
+      assistantParts.push({ type: 'tool-call', toolCall });
+    }
+    const existingContext = run.providerContext ?? {
+      systemPrompt: 'You are running inside SYNC-THINK.',
+      messages: [{ role: 'user' as const, content: run.userText }],
+      history: { includedEventIds: [], excludedEventIds: [], tokenEstimate: 1 },
+    };
+    const messages = [
+      ...existingContext.messages,
+      { role: 'assistant' as const, content: assistantParts },
+      ...run.applicationToolResults.map((result) => ({
+        role: 'tool' as const,
+        toolCallId: result.toolCallId,
+        content: result.result,
+      })),
+    ];
+    const nextRun: DemoRunState = {
+      ...run,
+      providerContext: { ...existingContext, messages },
+      providerTurn: run.providerTurn + 1,
+      providerRetryAttempt: 0,
+      nextAdapterEventIndex: 0,
+      assistantText: '',
+      pendingApplicationToolCalls: [],
+      startedApplicationToolCallIds: [],
+      applicationToolResults: [],
+    };
+    this.persistApplicationToolRunState(runId, nextRun, 'application.tool_turn_completed', {
+      providerTurn: nextRun.providerTurn,
+      toolCallCount: run.pendingApplicationToolCalls.length,
+    });
+    return nextRun;
+  }
+
   private async executeDemoRun(runId: RunId): Promise<void> {
     const initialRun = this.demoRuns.get(runId);
     if (!initialRun || this.inFlight.has(runId)) return;
+    const executionTask = this.resolveTaskForThread(initialRun.threadId);
+    let executionLeaseAcquired = false;
+    if (executionTask && this.taskEnvironmentManager) {
+      const executionContext = await this.taskEnvironmentManager.prepareTaskAsync(executionTask.id);
+      if (executionContext.resourceId && executionContext.state !== 'ready') {
+        this.persistDemoRunBlocked(runId, executionContext.blockedReason ?? '任务执行位置尚未就绪');
+        return;
+      }
+      if (executionContext.state === 'ready' && executionContext.mode !== 'none') {
+        try {
+          this.taskEnvironmentManager.acquireWriteLease(executionTask.id, runId);
+          executionLeaseAcquired = true;
+        } catch (error) {
+          this.persistDemoRunBlocked(
+            runId,
+            error instanceof Error ? error.message : '任务执行位置正在被其他任务使用',
+          );
+          return;
+        }
+      }
+
+      // Task creation and execution-location preparation can finish on different ticks. Refresh
+      // the Run binding here so the first Provider turn receives the tools for the location that
+      // was just made ready instead of keeping the empty snapshot captured by appendMessage.
+      const currentRun = this.demoRuns.get(runId);
+      if (currentRun) {
+        const binding = this.resolveConversationExecutionBinding(
+          executionTask,
+          currentRun.agentVersionId,
+        );
+        const bindingChanged =
+          currentRun.executionRoot !== binding.executionRoot ||
+          currentRun.effectiveApprovalMode !== binding.effectiveApprovalMode ||
+          currentRun.browserIdentityId !== binding.browserIdentityId ||
+          currentRun.executionToolNames.length !== binding.executionToolNames.length ||
+          currentRun.executionToolNames.some(
+            (toolName, index) => toolName !== binding.executionToolNames[index],
+          );
+        if (bindingChanged) {
+          const refreshedRun = { ...currentRun, ...binding };
+          this.persistApplicationToolRunState(runId, refreshedRun, 'run.execution-context.bound', {
+            executionRoot: refreshedRun.executionRoot,
+            executionToolNames: refreshedRun.executionToolNames,
+            effectiveApprovalMode: refreshedRun.effectiveApprovalMode,
+            browserIdentityId: refreshedRun.browserIdentityId,
+          });
+        }
+      }
+    }
+    const abortController = new AbortController();
+    this.demoRunAbortControllers.set(runId, abortController);
     this.recordInFlight(runId);
     try {
       // Outer loop: re-enter after section 5.3 fallback walk selects the next model.
@@ -8328,10 +11907,19 @@ export class Runtime {
         try {
           let stream: AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined;
           try {
-            stream = await this.openProviderStream(attemptRun);
+            stream = await this.openProviderStream(attemptRun, abortController.signal);
           } catch (error) {
+            if (abortController.signal.aborted) return;
             const message = error instanceof Error ? error.message : 'provider stream failed';
             const failureClass = this.classifyThrownFailure(error);
+            const retry = await this.tryRetryCurrentProvider(
+              runId,
+              attemptRun,
+              failureClass,
+              message,
+            );
+            if (retry === 'retry') continue;
+            if (retry === 'stopped') return;
             const outcome = this.tryContinueWithFallback(runId, attemptRun, failureClass, message);
             if (outcome === 'continued') continue;
             if (outcome === 'paused') return;
@@ -8349,9 +11937,11 @@ export class Runtime {
           }
 
           let providerEventIndex = 0;
+          let resumeAfterProviderRetry = false;
           let resumeAfterFallback = false;
+          let resumeAfterApplicationTools = false;
 
-          for await (const adapterEvent of stream) {
+          for await (const adapterEvent of abortableAdapterEvents(stream, abortController.signal)) {
             const currentRun = this.demoRuns.get(runId);
             if (!currentRun) break;
 
@@ -8365,6 +11955,17 @@ export class Runtime {
               const failureClass = adapterEvent.failureClass as FailureClass;
               const message =
                 typeof adapterEvent.message === 'string' ? adapterEvent.message : undefined;
+              const retry = await this.tryRetryCurrentProvider(
+                runId,
+                currentRun,
+                failureClass,
+                message,
+              );
+              if (retry === 'retry') {
+                resumeAfterProviderRetry = true;
+                break;
+              }
+              if (retry === 'stopped') return;
               const outcome = this.tryContinueWithFallback(
                 runId,
                 currentRun,
@@ -8379,6 +11980,20 @@ export class Runtime {
                 return;
               }
               // Non-fallbackable: project terminal failure as before.
+            }
+
+            if (adapterEvent.type === 'tool-result' && currentRun.applicationToolsEnabled) {
+              throw new Error('application.provider_supplied_untrusted_tool_result');
+            }
+
+            if (
+              adapterEvent.type === 'finished' &&
+              currentRun.applicationToolsEnabled &&
+              currentRun.pendingApplicationToolCalls.length > 0
+            ) {
+              await this.continueDemoRunAfterApplicationTools(runId, currentRun);
+              resumeAfterApplicationTools = true;
+              break;
             }
 
             const projection = projectAdapterEvent(currentRun, adapterEvent);
@@ -8413,18 +12028,30 @@ export class Runtime {
               } else if (projection.type === 'run.completed') {
                 this.maybeProposeRunMemory(runId, currentRun, projection.payload);
               }
+              this.handleDelegatedRunTerminal(
+                runId,
+                currentRun,
+                projection.type,
+                projection.payload,
+              );
             }
             providerEventIndex++;
             if (projection.terminal) break;
           }
 
-          if (resumeAfterFallback) continue;
+          if (resumeAfterProviderRetry || resumeAfterFallback || resumeAfterApplicationTools) {
+            continue;
+          }
           return;
         } catch (error) {
+          if (abortController.signal.aborted) return;
           const message = error instanceof Error ? error.message : 'provider stream failed';
           const current = this.demoRuns.get(runId);
           if (current) {
             const failureClass = this.classifyThrownFailure(error);
+            const retry = await this.tryRetryCurrentProvider(runId, current, failureClass, message);
+            if (retry === 'retry') continue;
+            if (retry === 'stopped') return;
             const outcome = this.tryContinueWithFallback(runId, current, failureClass, message);
             if (outcome === 'continued') continue;
             if (outcome === 'paused') return;
@@ -8434,8 +12061,22 @@ export class Runtime {
         }
       }
     } finally {
+      if (executionLeaseAcquired && executionTask) {
+        try {
+          this.taskEnvironmentManager?.releaseWriteLease(executionTask.id, runId);
+        } catch {
+          console.warn('[runtime] task execution lease could not be released');
+        }
+      }
+      if (this.demoRunAbortControllers.get(runId) === abortController) {
+        this.demoRunAbortControllers.delete(runId);
+      }
       this.forgetInFlight(runId);
     }
+  }
+
+  private scheduleDemoRunExecution(runId: RunId): void {
+    this.trackBackgroundTask(this.executeDemoRun(runId));
   }
 
   private canLiveStream(): boolean {
@@ -8529,6 +12170,73 @@ export class Runtime {
     return this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
   }
 
+  private compileProviderContextForRun(input: {
+    threadId: string;
+    latestUserMessageId?: string;
+    latestUserText: string;
+    agentVersionId: string;
+    maxHistoryTokens: number;
+  }) {
+    const task = this.resolveTaskForThread(input.threadId);
+    const project = task ? this.workspaceStore?.getWorkspace(task.workspaceId) : undefined;
+    const agent = this.agentStore?.getVersion(input.agentVersionId);
+    const group = task ? this.groupStore?.getForTask(task.id) : undefined;
+    const surface = resolveSyncThinkSurface({
+      events: this.events,
+      taskId: task?.id,
+      hasGroup: Boolean(group),
+      fallback: 'conversation',
+    });
+    return compileProviderContext({
+      events: this.events,
+      threadId: input.threadId,
+      latestUserMessageId: input.latestUserMessageId,
+      latestUserText: input.latestUserText,
+      surface,
+      permissionMode: group?.approvalMode ?? agent?.approvalMode,
+      project: project
+        ? {
+            id: project.id,
+            name: project.name,
+            folderBound: Boolean(project.folderPath),
+            ...(project.folderPath ? { authorizedFolderPath: project.folderPath } : {}),
+          }
+        : undefined,
+      task: task
+        ? {
+            id: task.id,
+            title: task.title,
+            goal: task.goal,
+            status: task.status,
+            acceptanceCriteria: task.acceptanceCriteria,
+          }
+        : undefined,
+      agent: agent
+        ? {
+            id: agent.id,
+            name: agent.name,
+            role: agent.role,
+            developerInstructions: agent.developerInstructions,
+            inputContract: agent.inputContract,
+            outputContract: agent.outputContract,
+          }
+        : undefined,
+      group: group
+        ? {
+            id: group.id,
+            name: group.name,
+            leadAgentVersionId: group.leadAgentVersionId,
+            members: group.members.map((member) => ({
+              agentVersionId: member.agentVersionId,
+              name: this.agentStore?.getVersion(member.agentVersionId)?.name,
+              responsibility: member.responsibility,
+            })),
+          }
+        : undefined,
+      maxHistoryTokens: input.maxHistoryTokens,
+    });
+  }
+
   /**
    * Assemble candidate sources for a model call. Protected task goal /
    * acceptance always enter selection (design section 20.9); overflow drops
@@ -8538,6 +12246,9 @@ export class Runtime {
     runId: RunId;
     threadId: string;
     userText: string;
+    latestUserMessageId?: string;
+    agentVersionId: string;
+    historyTokenEstimate?: number;
     tokenBudget?: number;
     /** Agent allowlist 鈥?only these Skill versions become skill-definition sources (搂9.1). */
     skillVersionIds?: readonly string[];
@@ -8547,6 +12258,28 @@ export class Runtime {
     const task = this.resolveTaskForThread(input.threadId);
     const candidates: ContextSourceRef[] = [];
     const summaries: Array<{ sourceId: string; summary: string }> = [];
+
+    candidates.push({
+      id: 'application:sync-think',
+      kind: 'application-context',
+      tokenEstimate: 72,
+    });
+    summaries.push({
+      sourceId: 'application:sync-think',
+      summary: 'SYNC-THINK local-first Agent desktop workspace',
+    });
+
+    const agent = this.agentStore?.getVersion(input.agentVersionId);
+    const agentInstructions = agent?.developerInstructions ?? 'Default conversation Agent';
+    candidates.push({
+      id: `agent-instructions:${input.agentVersionId}`,
+      kind: 'agent-instructions',
+      tokenEstimate: Math.max(16, Math.ceil(agentInstructions.length / 4)),
+    });
+    summaries.push({
+      sourceId: `agent-instructions:${input.agentVersionId}`,
+      summary: agent ? `${agent.name} · ${agent.role}`.slice(0, 120) : 'default conversation Agent',
+    });
 
     if (task?.goal?.trim()) {
       candidates.push({
@@ -8582,6 +12315,32 @@ export class Runtime {
       summaries.push({
         sourceId: `acceptance:${task.id}`,
         summary: task.acceptanceCriteria.slice(0, 3).join(' · ').slice(0, 120),
+      });
+    }
+
+    const group = task ? this.groupStore?.getForTask(task.id) : undefined;
+    if (group) {
+      const responsibilities = group.members.map((member) => member.responsibility).join('\n');
+      candidates.push({
+        id: `group:${group.id}:v${group.version}`,
+        kind: 'group-definition',
+        tokenEstimate: Math.max(24, Math.ceil((group.name.length + responsibilities.length) / 4)),
+      });
+      summaries.push({
+        sourceId: `group:${group.id}:v${group.version}`,
+        summary: `${group.name} · ${group.members.length} members`,
+      });
+    }
+
+    if ((input.historyTokenEstimate ?? 0) > 0) {
+      candidates.push({
+        id: `conversation-history:${input.threadId}`,
+        kind: 'conversation-history',
+        tokenEstimate: input.historyTokenEstimate!,
+      });
+      summaries.push({
+        sourceId: `conversation-history:${input.threadId}`,
+        summary: 'ordered messages from the current task only',
       });
     }
 
@@ -8643,12 +12402,12 @@ export class Runtime {
     }
 
     candidates.push({
-      id: `msg-${input.runId}`,
-      kind: 'message-excerpt',
+      id: `latest-message:${input.latestUserMessageId ?? input.runId}`,
+      kind: 'latest-user-message',
       tokenEstimate: Math.max(1, Math.ceil(input.userText.length / 4)),
     });
     summaries.push({
-      sourceId: `msg-${input.runId}`,
+      sourceId: `latest-message:${input.latestUserMessageId ?? input.runId}`,
       summary: input.userText.slice(0, 80),
     });
 
@@ -8735,21 +12494,12 @@ export class Runtime {
       }
     }
 
-    candidates.push({
-      id: 'agent-instructions',
-      kind: 'agent-instructions',
-      tokenEstimate: 32,
-    });
-    summaries.push({
-      sourceId: 'agent-instructions',
-      summary: 'default conversation agent',
-    });
-
     const selected = selectContextSources({
       candidates,
       tokenBudget: input.tokenBudget ?? 8_000,
       allowSoftTruncateKinds: [
         'message-excerpt',
+        'conversation-history',
         'file-excerpt',
         'cross-task-ref',
         'project-memory',
@@ -8780,6 +12530,9 @@ export class Runtime {
     runId: RunId;
     threadId: string;
     userText: string;
+    attachmentContext?: string;
+    attachments?: readonly import('@sync-think/shared').MessageAttachment[];
+    latestUserMessageId?: string;
     modelId?: string;
     credentialRefId?: string;
     agentVersionId?: string;
@@ -8800,6 +12553,8 @@ export class Runtime {
     }>;
     crossTaskRefs: string[];
     evidenceRefsForMemory: string[];
+    historyIncludedEventIds: string[];
+    historyExcludedEventIds: string[];
     tokenEstimate: number;
     skillVersionIds: string[];
     mcpServerIds: string[];
@@ -8842,7 +12597,6 @@ export class Runtime {
     if (!modelRecord && resolvedModelId !== 'fake-mini' && this.providerStore) {
       modelRecord = this.providerStore.getModel(resolvedModelId);
     }
-
     const useFake = !modelRecord || !this.providerStore || !this.secureStore;
     const provider = modelRecord
       ? this.providerStore?.getProvider(modelRecord.providerId)
@@ -8855,6 +12609,21 @@ export class Runtime {
     const credential = credentialResolution.credential;
 
     const packetId = ulid();
+    const historyPreview = this.compileProviderContextForRun({
+      threadId: input.threadId,
+      latestUserText: '',
+      agentVersionId,
+      maxHistoryTokens: 24_000,
+    });
+    const historicalImageAttachments = historyPreview.history.imageAttachments ?? [];
+    if (
+      (input.attachments?.some((attachment) => attachment.kind === 'image') ||
+        historicalImageAttachments.length > 0) &&
+      modelRecord &&
+      (!modelRecord.capabilitiesConfirmed || !modelRecord.capabilities.includes('vision'))
+    ) {
+      throw new Error('当前模型未确认支持图片，请切换到具有视觉能力的模型');
+    }
     const {
       task: boundTask,
       selected,
@@ -8865,6 +12634,9 @@ export class Runtime {
       runId: input.runId,
       threadId: input.threadId,
       userText: input.userText,
+      latestUserMessageId: input.latestUserMessageId,
+      agentVersionId,
+      historyTokenEstimate: historyPreview.history.tokenEstimate,
       skillVersionIds: agentMeta.skillVersionIds,
       mcpServerIds: agentMeta.mcpServerIds,
     });
@@ -8877,6 +12649,18 @@ export class Runtime {
       evidenceRefsForMemory: protectedMemoryEvidenceRefs,
     });
     const included = amended.included;
+    const allocatedHistoryTokens =
+      included.find((source) => source.kind === 'conversation-history')?.tokenEstimate ?? 0;
+    const latestUserText = input.attachmentContext
+      ? `${input.userText}\n\n${input.attachmentContext}`
+      : input.userText;
+    const providerContext = this.compileProviderContextForRun({
+      threadId: input.threadId,
+      latestUserMessageId: input.latestUserMessageId,
+      latestUserText,
+      agentVersionId,
+      maxHistoryTokens: allocatedHistoryTokens + Math.max(1, Math.ceil(latestUserText.length / 4)),
+    });
     const built = buildContextPacket({
       packetId,
       taskId: (boundTask?.id ?? this.workspaceId) as unknown as TaskId,
@@ -8896,6 +12680,8 @@ export class Runtime {
     });
 
     const run = createDemoRun(input.runId, input.threadId, input.userText, {
+      latestUserMessageId: input.latestUserMessageId,
+      providerContext,
       modelId: resolvedModelId,
       providerModelId: modelRecord?.providerModelId ?? resolvedModelId,
       protocol: modelRecord?.protocol ?? 'openai-chat',
@@ -8908,6 +12694,14 @@ export class Runtime {
       packetId: built.packet.id,
       proofHash: built.packet.proofHash,
       useFakeProvider: useFake,
+      applicationToolsEnabled: resolveApplicationToolsEnabled({
+        protocol: modelRecord?.protocol,
+        capabilities: modelRecord?.capabilities,
+        capabilitiesConfirmed: modelRecord?.capabilitiesConfirmed,
+        modelId: resolvedModelId,
+      }),
+      ...this.resolveConversationExecutionBinding(boundTask, agentVersionId),
+      attachments: input.attachments ?? [],
     });
 
     return {
@@ -8938,6 +12732,8 @@ export class Runtime {
       })),
       crossTaskRefs: [...built.packet.crossTaskRefs],
       evidenceRefsForMemory: [...(built.manifest.evidenceRefsForMemory ?? [])],
+      historyIncludedEventIds: [...providerContext.history.includedEventIds],
+      historyExcludedEventIds: [...providerContext.history.excludedEventIds],
       tokenEstimate: built.packet.tokenEstimate,
       skillVersionIds: [...agentMeta.skillVersionIds],
       mcpServerIds: [...agentMeta.mcpServerIds],
@@ -8946,8 +12742,129 @@ export class Runtime {
     };
   }
 
+  private resolveConversationExecutionBinding(
+    task: TaskRecord | undefined,
+    agentVersionId: string,
+  ): {
+    executionRoot?: string;
+    executionToolNames: string[];
+    effectiveApprovalMode?: string;
+    browserIdentityId?: string;
+  } {
+    if (!task) return { executionToolNames: [] };
+    const context = this.executionEnvironmentStore?.getTaskContext(task.id);
+    if (!context?.executionPath || context.state !== 'ready') {
+      return { executionToolNames: [] };
+    }
+    const agent = this.agentStore?.getVersion(agentVersionId as AgentVersionId);
+    const permissions = agent?.permissions;
+    const legacyDefault = !permissions || isLegacyAgentPermissions(permissions);
+    const allows = (values: readonly string[] | undefined) =>
+      isAgentPermissionCategoryEnabled(values, legacyDefault);
+    const fileAllowed = allows(permissions?.file);
+    const commandAllowed = allows(permissions?.command);
+    const browserAllowed = allows(permissions?.browser);
+    const desktopAllowed = allows(permissions?.desktop);
+    let names = EXECUTION_TOOL_SCHEMAS.map((tool) => tool.name).filter((name) => {
+      if (name.startsWith('browser_')) return browserAllowed;
+      if (name.startsWith('desktop_')) return desktopAllowed;
+      if (name === 'run_command') return commandAllowed;
+      if (name.startsWith('git_')) return fileAllowed || commandAllowed;
+      return fileAllowed;
+    });
+    const delegated = this.delegatedSubtaskDescriptors().find(
+      (candidate) => candidate.childTaskId === task.id,
+    );
+    if (delegated?.packet.allowedTools.length) {
+      const allowlist = new Set(delegated.packet.allowedTools);
+      names = names.filter((name) => allowlist.has(name));
+    }
+    const taskPolicy = this.policyStore
+      ?.listApplicable([{ scopeType: 'task', scopeId: task.id }])
+      .filter((policy) => policy.scopeType === 'task' && policy.scopeId === task.id)
+      .sort((left, right) => right.version - left.version)[0];
+    const group = this.groupStore?.getForTask(task.id);
+    return {
+      executionRoot: context.executionPath,
+      executionToolNames: names,
+      effectiveApprovalMode:
+        taskPolicy?.approvalMode ?? group?.approvalMode ?? agent?.approvalMode ?? 'request',
+      ...(context.browserIdentityId
+        ? { browserIdentityId: String(context.browserIdentityId) }
+        : {}),
+    };
+  }
+
+  private async tryRetryCurrentProvider(
+    runId: RunId,
+    run: DemoRunState,
+    failureClass: FailureClass,
+    errorMessage?: string,
+  ): Promise<'retry' | 'stopped' | 'none'> {
+    const isEmptyAttempt =
+      run.nextAdapterEventIndex === 0 &&
+      run.assistantText.length === 0 &&
+      run.pendingApplicationToolCalls.length === 0;
+    const isGatewayOutage =
+      failureClass === 'timeout' ||
+      (failureClass === 'transient' &&
+        /(?:\b502\b|\b503\b|\b504\b|network error|econnreset|socket hang up)/i.test(
+          errorMessage ?? '',
+        ));
+    const attempt = run.providerRetryAttempt + 1;
+    const delayMs = this.providerRetryDelaysMs[attempt - 1];
+    if (!isEmptyAttempt || !isGatewayOutage || delayMs === undefined) return 'none';
+
+    const scrubbedMessage = this.scrubDiagnosticMessage(errorMessage);
+    const nextRun: DemoRunState = {
+      ...run,
+      providerRetryAttempt: attempt,
+      nextAdapterEventIndex: 0,
+      assistantText: '',
+    };
+    const projectedRuns = new Map(this.demoRuns);
+    projectedRuns.set(runId, nextRun);
+    try {
+      const event = this.persistProjectedEvent(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: this.workspaceId,
+          runId,
+          category: 'run',
+          type: 'run.retry.scheduled',
+          occurredAt: new Date().toISOString(),
+          payload: {
+            threadId: run.threadId,
+            modelId: run.modelId,
+            providerModelId: run.providerModelId,
+            failureClass,
+            ...(scrubbedMessage ? { errorMessage: scrubbedMessage } : {}),
+            attempt,
+            maxAttempts: this.providerRetryDelaysMs.length,
+            delayMs,
+            providerTurn: run.providerTurn,
+            packetId: run.packetId,
+            run: nextRun,
+          },
+        },
+        projectedRuns,
+      );
+      this.demoRuns.set(runId, nextRun);
+      this.publishEvent(event);
+    } catch (error) {
+      console.warn(
+        '[runtime] provider retry could not be persisted',
+        error instanceof Error ? error.message : 'unknown persistence error',
+      );
+      return 'none';
+    }
+
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    return this.demoRuns.has(runId) ? 'retry' : 'stopped';
+  }
+
   /**
-   * After a model call failure, walk the Agent fallback chain (design section 5.3).
+   * After bounded transient retries, walk the Agent fallback chain (design section 5.3).
    * Never silent-swaps models; pauses when the chain is empty or exhausted.
    */
   private tryContinueWithFallback(
@@ -8961,11 +12878,27 @@ export class Runtime {
     }
 
     const agent = this.resolveAgentModelBinding(run.agentVersionId);
-    const resolution = resolveModelBinding({
+    let resolution = resolveModelBinding({
       agent,
       failedModelId: run.modelId as ModelId,
       failureClass,
     });
+    while (resolution.status === 'resolved' && resolution.source === 'agentFallback') {
+      const candidate = this.providerStore?.getModel(resolution.modelId);
+      const requiresVision = run.attachments.some((attachment) => attachment.kind === 'image');
+      if (
+        !requiresVision ||
+        !candidate ||
+        (candidate.capabilitiesConfirmed && candidate.capabilities.includes('vision'))
+      ) {
+        break;
+      }
+      resolution = resolveModelBinding({
+        agent,
+        failedModelId: resolution.modelId,
+        failureClass,
+      });
+    }
 
     const scrubbedMessage = this.scrubDiagnosticMessage(errorMessage);
 
@@ -9028,6 +12961,9 @@ export class Runtime {
         runId,
         threadId: nextRun.threadId,
         userText: nextRun.userText,
+        latestUserMessageId: nextRun.latestUserMessageId,
+        agentVersionId: nextRun.agentVersionId,
+        historyTokenEstimate: nextRun.providerContext?.history.tokenEstimate,
         skillVersionIds: fallbackAgentMeta.skillVersionIds,
         mcpServerIds: fallbackAgentMeta.mcpServerIds,
       });
@@ -9084,6 +13020,8 @@ export class Runtime {
             })),
             crossTaskRefs: fallbackContextSelection.crossTaskRefs ?? [],
             evidenceRefsForMemory: fallbackAmended.evidenceRefsForMemory,
+            historyIncludedEventIds: nextRun.providerContext?.history.includedEventIds ?? [],
+            historyExcludedEventIds: nextRun.providerContext?.history.excludedEventIds ?? [],
             tokenEstimate: fallbackAmended.tokenEstimate,
           },
         },
@@ -9136,6 +13074,9 @@ export class Runtime {
       runId: run.runId,
       threadId: run.threadId,
       userText: run.userText,
+      latestUserMessageId: run.latestUserMessageId,
+      agentVersionId: run.agentVersionId,
+      historyTokenEstimate: run.providerContext?.history.tokenEstimate,
       skillVersionIds: this.resolveAgentManifestMeta(String(run.agentVersionId)).skillVersionIds,
       mcpServerIds: this.resolveAgentManifestMeta(String(run.agentVersionId)).mcpServerIds,
     });
@@ -9173,6 +13114,16 @@ export class Runtime {
       proofHash: built.packet.proofHash,
       nextAdapterEventIndex: 0,
       assistantText: '',
+      providerRetryAttempt: 0,
+      applicationToolsEnabled: resolveApplicationToolsEnabled({
+        protocol: modelRecord?.protocol,
+        capabilities: modelRecord?.capabilities,
+        capabilitiesConfirmed: modelRecord?.capabilitiesConfirmed,
+        modelId,
+      }),
+      pendingApplicationToolCalls: [],
+      startedApplicationToolCallIds: [],
+      applicationToolResults: [],
       useFakeProvider: useFake,
     };
   }
@@ -9218,6 +13169,10 @@ export class Runtime {
       );
       this.demoRuns.delete(runId);
       this.publishEvent(event);
+      this.handleDelegatedRunTerminal(runId, run, 'run.failed', {
+        failureClass: details.failureClass,
+        errorMessage: details.errorMessage,
+      });
       this.recordRunDiagnostic(runId, run, {
         failureClass: details.failureClass,
         errorMessage: details.errorMessage,
@@ -9226,8 +13181,11 @@ export class Runtime {
         stage: 'paused',
         reason: details.reason,
       });
-    } catch {
-      console.warn('[runtime] demo Run pause could not be persisted');
+    } catch (error) {
+      console.warn(
+        '[runtime] demo Run pause could not be persisted',
+        error instanceof Error ? error.message : 'unknown persistence error',
+      );
     }
   }
 
@@ -9256,14 +13214,26 @@ export class Runtime {
 
   private async openProviderStream(
     run: DemoRunState,
+    signal: AbortSignal,
   ): Promise<AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined> {
+    const attachments = [
+      ...(run.providerContext?.history.imageAttachments ?? []),
+      ...run.attachments,
+    ].filter(
+      (attachment, index, all) =>
+        attachment.kind === 'image' &&
+        all.findIndex((candidate) => candidate.id === attachment.id) === index,
+    );
+    const imageParts = await loadImageAttachmentParts(attachments);
     if (run.useFakeProvider || !run.providerId) {
       if (!this.demoProvider) return undefined;
-      return this.demoProvider.call(createDemoProviderRequest(run));
+      return this.demoProvider.call(createDemoProviderRequest(run, undefined, signal, imageParts));
     }
     if (!this.providerStore || !this.secureStore || !run.credentialRefId) {
       if (this.demoProvider) {
-        return this.demoProvider.call(createDemoProviderRequest(run));
+        return this.demoProvider.call(
+          createDemoProviderRequest(run, undefined, signal, imageParts),
+        );
       }
       return undefined;
     }
@@ -9278,7 +13248,7 @@ export class Runtime {
     if (!apiKey || apiKey.trim().length === 0) {
       throw new Error('Credential secret empty for live provider call');
     }
-    return adapter.call(createDemoProviderRequest(run, apiKey));
+    return adapter.call(createDemoProviderRequest(run, apiKey, signal, imageParts));
   }
 
   private persistDemoRunFailure(
@@ -9315,6 +13285,10 @@ export class Runtime {
       );
       this.demoRuns.delete(runId);
       this.publishEvent(event);
+      this.handleDelegatedRunTerminal(runId, run, 'run.failed', {
+        failureClass,
+        errorMessage: scrubbedMessage,
+      });
       this.recordRunDiagnostic(runId, run, {
         failureClass,
         errorMessage: scrubbedMessage,
@@ -9323,6 +13297,63 @@ export class Runtime {
       });
     } catch {
       console.warn('[runtime] demo Run failure could not be persisted');
+    }
+  }
+
+  private persistDemoRunBlocked(runId: RunId, reason: string): void {
+    const run = this.demoRuns.get(runId);
+    if (!run) return;
+    const projectedRuns = new Map(this.demoRuns);
+    projectedRuns.delete(runId);
+    try {
+      const task = this.resolveTaskForThread(run.threadId);
+      const event = this.persistProjectedEvent(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: task?.workspaceId ?? this.workspaceId,
+          taskId: task?.id,
+          runId,
+          category: 'run',
+          type: 'run.blocked',
+          occurredAt: new Date().toISOString(),
+          payload: {
+            threadId: run.threadId,
+            reason: this.scrubDiagnosticMessage(reason) ?? '任务执行位置尚未就绪',
+            retryConsumed: false,
+            modelId: run.modelId,
+            providerModelId: run.providerModelId,
+            packetId: run.packetId,
+            idempotencyKey: runId,
+          },
+        },
+        projectedRuns,
+      );
+      this.demoRuns.delete(runId);
+      this.publishEvent(event);
+      if (task?.parentTaskId && task.status !== 'blocked') {
+        const blocked = this.workspaceStore?.setTaskStatus(task.id, 'blocked', task.version, {
+          cascade: false,
+        }).task;
+        if (blocked) this.threadVersions.set(blocked.threadId, blocked.version);
+        this.emitSubtaskEvent(
+          'run',
+          'subtask.blocked',
+          {
+            threadId: task.threadId,
+            parentTaskId: task.parentTaskId,
+            childTaskId: task.id,
+            agentVersionId: run.agentVersionId,
+            reason: this.scrubDiagnosticMessage(reason),
+            retryConsumed: false,
+            text: '子任务已暂停，调整访问范围后可在同一任务中继续。',
+          },
+          task.id,
+          task.workspaceId,
+          runId,
+        );
+      }
+    } catch {
+      console.warn('[runtime] demo Run block could not be persisted');
     }
   }
 
@@ -9452,7 +13483,7 @@ export class Runtime {
 
   private resumeDemoRuns(): void {
     if (!this.canStartModelRun()) return;
-    for (const run of this.demoRuns.values()) void this.executeDemoRun(run.runId);
+    for (const run of this.demoRuns.values()) this.scheduleDemoRunExecution(run.runId);
   }
 
   private scrubDiagnosticMessage(message: string | undefined): string | undefined {
@@ -9562,10 +13593,11 @@ export class Runtime {
     messageId?: MessageId,
     runId?: RunId,
     taskId?: TaskId,
+    workspaceId: WorkspaceId = this.workspaceId,
   ): Event {
     const draft: EventDraft = {
       id: ulid() as Event['id'],
-      workspaceId: this.workspaceId,
+      workspaceId,
       taskId,
       messageId,
       runId,
@@ -9589,6 +13621,128 @@ export class Runtime {
     };
     this.events.push(event);
     return event;
+  }
+
+  private commandCallerSurface(frame: Frame): import('@sync-think/protocol').CommandCallerSurface {
+    const surface = frame.meta?.callerSurface;
+    return surface === 'agent' || surface === 'mcp' || surface === 'cli' ? surface : 'desktop';
+  }
+
+  private handleConfigurationConfirmation(socket: Socket, frame: Frame): boolean {
+    if (!this.configurationCommandPayloadIsValid(frame)) return false;
+    const callerSurface = this.commandCallerSurface(frame);
+    const decision = this.configurationConfirmationGate.evaluate({
+      command: frame.type as CommandType,
+      callerSurface,
+      payload: frame.payload,
+      ...(frame.meta?.confirmationToken ? { confirmationToken: frame.meta.confirmationToken } : {}),
+    });
+    if (decision.kind === 'execute' && !decision.confirmed) return false;
+    if (decision.kind === 'execute') {
+      const event = this.appendEvent('system', 'application.command_confirmed', {
+        requestId: frame.id,
+        command: frame.type,
+        callerSurface,
+        payloadDigest: decision.payloadDigest,
+        confirmationTokenHash: decision.tokenHash,
+      });
+      this.publishEvent(event);
+      return false;
+    }
+    if (decision.kind === 'preview') {
+      const event = this.appendEvent('system', 'application.command_confirmation_requested', {
+        requestId: frame.id,
+        command: frame.type,
+        callerSurface,
+        payloadDigest: decision.preview.payloadDigest,
+        confirmationTokenHash: decision.tokenHash,
+        expiresAt: decision.preview.expiresAt,
+      });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: frame.type,
+          payload: { ...decision.preview, auditEventId: String(event.id) },
+        }),
+      );
+      return true;
+    }
+
+    const event = this.appendEvent('system', 'application.command_confirmation_rejected', {
+      requestId: frame.id,
+      command: frame.type,
+      callerSurface,
+      reason: decision.reason,
+    });
+    this.publishEvent(event);
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code: ErrorCode.APPROVAL_REQUIRED,
+          message:
+            'Configuration confirmation is missing, expired, or does not match this command.',
+          detail: { reason: decision.reason, auditEventId: String(event.id) },
+        },
+      }),
+    );
+    return true;
+  }
+
+  private configurationCommandPayloadIsValid(frame: Frame): boolean {
+    switch (frame.type) {
+      case 'workspace.create':
+        return Boolean(parseCreateWorkspacePayload(frame.payload));
+      case 'workspace.bindFolder':
+        return Boolean(parseBindWorkspaceFolderPayload(frame.payload));
+      case 'provider.create':
+        return Boolean(parseCreateProviderPayload(frame.payload));
+      case 'provider.update':
+        return Boolean(parseUpdateProviderPayload(frame.payload));
+      case 'provider.addModels':
+        return Boolean(parseAddModelsPayload(frame.payload));
+      case 'provider.confirmCapabilities':
+        return Boolean(parseConfirmCapabilitiesPayload(frame.payload));
+      case 'provider.importCcSwitch':
+        return Boolean(parseImportCcSwitchPayload(frame.payload));
+      case 'agent.updateBinding':
+        return Boolean(parseUpdateAgentBindingPayload(frame.payload));
+      case 'agent.create':
+        return Boolean(parseCreateAgentPayload(frame.payload));
+      case 'agent.createVersion':
+        return Boolean(parseCreateAgentVersionPayload(frame.payload));
+      case 'group.create':
+        return Boolean(parseCreateGroupPayload(frame.payload));
+      case 'group.update':
+        return Boolean(parseUpdateGroupPayload(frame.payload));
+      case 'group.member.add':
+        return Boolean(parseAddGroupMemberPayload(frame.payload));
+      case 'group.member.remove':
+        return Boolean(parseRemoveGroupMemberPayload(frame.payload));
+      case 'group.member.updateResponsibility':
+        return Boolean(parseUpdateGroupMemberResponsibilityPayload(frame.payload));
+      case 'group.setLead':
+        return Boolean(parseSetGroupLeadPayload(frame.payload));
+      case 'skill.import':
+        return Boolean(parseImportSkillPayload(frame.payload));
+      case 'mcp.register':
+        return Boolean(parseRegisterMcpServerPayload(frame.payload));
+      case 'policy.save':
+        return Boolean(parseSavePolicyPayload(frame.payload));
+      case 'automation.create':
+        return Boolean(parseCreateAutomationPayload(frame.payload));
+      case 'automation.update':
+        return Boolean(parseUpdateAutomationPayload(frame.payload));
+      case 'automation.delete':
+        return Boolean(parseDeleteAutomationPayload(frame.payload));
+      default:
+        return false;
+    }
   }
 
   private publishEvent(event: Event): void {
@@ -9624,20 +13778,36 @@ export class Runtime {
       this.server.listen(path, () => {
         this.handlers.onReady(path);
         this.resumeDemoRuns();
+        this.scheduleReadyDelegatedSubtasks();
         if (this.scheduler) {
+          const groupRunIds = collectGroupCollaborationRunIds(this.events);
           const recovery = this.scheduler
             .recoverAll()
-            .then(() => this.syncOrchestrationEvents())
+            .then(() => {
+              this.syncOrchestrationEvents();
+              for (const runId of groupRunIds) this.projectGroupRunConversation(runId);
+            })
             .catch(() => console.warn('[runtime] orchestration recovery failed'));
           this.trackBackgroundTask(recovery);
         }
-        resolve();
+        const automationReady = this.automationService
+          ?.start()
+          .catch(() => console.warn('[runtime] automation service failed to start'));
+        if (automationReady) {
+          this.trackBackgroundTask(automationReady);
+          void automationReady.finally(resolve);
+        } else {
+          resolve();
+        }
       });
       this.server.on('error', (e) => reject(e));
     });
   }
 
   async stop(): Promise<void> {
+    for (const controller of this.demoRunAbortControllers.values()) controller.abort();
+    await this.automationService?.stop();
+    await closePlaywrightBrowserWorkers();
     await new Promise<void>((resolve) => {
       if (!this.server) {
         resolve();
@@ -9654,7 +13824,60 @@ export class Runtime {
   }
 }
 
-function toTaskSummary(task: TaskRecord): TaskSummary {
+async function* abortableAdapterEvents(
+  source: AsyncIterable<import('@sync-think/adapters').AdapterEvent>,
+  signal: AbortSignal,
+): AsyncIterable<import('@sync-think/adapters').AdapterEvent> {
+  const iterator = source[Symbol.asyncIterator]();
+  try {
+    while (true) {
+      const next = await nextAdapterEventOrAbort(iterator, signal);
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally {
+    if (iterator.return) {
+      const closing = Promise.resolve(iterator.return());
+      if (signal.aborted) void closing.catch(() => undefined);
+      else await closing;
+    }
+  }
+}
+
+function nextAdapterEventOrAbort(
+  iterator: AsyncIterator<import('@sync-think/adapters').AdapterEvent>,
+  signal: AbortSignal,
+): Promise<IteratorResult<import('@sync-think/adapters').AdapterEvent>> {
+  if (signal.aborted) return Promise.reject(adapterAbortError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      reject(adapterAbortError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(iterator.next()).then(
+      (result) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(result);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function adapterAbortError(): Error {
+  const error = new Error('Provider stream was cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function toTaskSummary(
+  task: TaskRecord,
+  execution?: import('@sync-think/shared').TaskExecutionContext,
+): TaskSummary {
   return {
     taskId: task.id,
     workspaceId: task.workspaceId,
@@ -9668,6 +13891,20 @@ function toTaskSummary(task: TaskRecord): TaskSummary {
     lastOpenedAt: task.lastOpenedAt,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
+    ...(execution
+      ? {
+          execution: {
+            mode: execution.mode,
+            state: execution.state,
+            executionPath: execution.executionPath,
+            baseRef: execution.baseRef,
+            headRef: execution.headRef,
+            browserIdentityId: execution.browserIdentityId,
+            blockedReason: execution.blockedReason,
+            cleanupAfter: execution.cleanupAfter,
+          },
+        }
+      : {}),
   };
 }
 

@@ -8,21 +8,13 @@ afterEach(() => cleanup());
 describe('ProvidersPanel', () => {
   it('renders empty state and create form without echoing secrets later', async () => {
     const onCreate = vi.fn().mockResolvedValue(undefined);
-    render(
-      <ProvidersPanel
-        providers={[]}
-        onCreate={onCreate}
-        emptyTitle="空注册表"
-      />,
-    );
+    render(<ProvidersPanel providers={[]} onCreate={onCreate} emptyTitle="空注册表" />);
     expect(screen.getByTestId('provider-empty')).toBeTruthy();
     fireEvent.click(screen.getByTestId('provider-add-toggle'));
     expect(screen.getByTestId('provider-clipboard-notice').textContent).toMatch(
       /系统剪贴板.*安全存储/,
     );
-    expect(screen.getByTestId('provider-submit').textContent).toMatch(
-      /从系统剪贴板读取凭据并创建/,
-    );
+    expect(screen.getByTestId('provider-submit').textContent).toMatch(/从系统剪贴板读取凭据并创建/);
     fireEvent.change(screen.getByTestId('provider-name'), { target: { value: 'Fake' } });
     fireEvent.change(screen.getByTestId('provider-base-url'), {
       target: { value: 'https://fake.example/v1' },
@@ -75,8 +67,8 @@ describe('ProvidersPanel', () => {
         onDiscover={onDiscover}
       />,
     );
-    expect(screen.getByText('Gateway')).toBeTruthy();
-    // Collapsed head shows masked secret chip; expand to reach discover.
+    expect(screen.getAllByText('Gateway').length).toBeGreaterThanOrEqual(2);
+    // The selected provider detail is open by default.
     expect(screen.getByTestId('provider-secret-chip-p1')).toBeTruthy();
     expect(screen.getAllByText(/••••/).length).toBeGreaterThanOrEqual(1);
     fireEvent.click(screen.getByTestId('provider-expand-p1'));
@@ -170,111 +162,21 @@ describe('ProvidersPanel', () => {
         ]}
       />,
     );
-    expect(screen.getByTestId('provider-protocol-p-proto').textContent).toContain('anthropic-messages');
+    expect(screen.getByTestId('provider-protocol-p-proto').textContent).toContain(
+      'anthropic-messages',
+    );
   });
-
 
   it('does not render the provider limitations / observability notice', () => {
     render(<ProvidersPanel providers={[]} />);
     expect(screen.queryByTestId('provider-limitations')).toBeNull();
   });
-  it('shows M1 multi-model readiness strip (empty → partial → ready)', () => {
-    const { rerender } = render(<ProvidersPanel providers={[]} />);
-    const strip = screen.getByTestId('provider-m1-readiness');
-    expect(strip.getAttribute('data-level')).toBe('empty');
-    expect(screen.getByTestId('provider-m1-readiness-badge').textContent).toMatch(/尚未配置/);
-    expect(screen.getByTestId('provider-m1-check-providers').textContent).toMatch(/0\/2/);
-    expect(screen.getByTestId('provider-m1-check-models').textContent).toMatch(/0\/3/);
-    expect(screen.getByTestId('provider-m1-readiness-note').textContent).toMatch(/安全存储|遮罩/);
-
-    const oneProvider = [
-      {
-        providerId: 'p1',
-        name: 'GW-A',
-        baseUrl: 'https://a.example/v1',
-        protocol: 'openai-chat' as const,
-        supportsDiscovery: true,
-        credentials: [
-          {
-            credentialRefId: 'c1',
-            groupName: 'default',
-            label: 'primary',
-            kind: 'api-key',
-            hasSecret: true,
-          },
-        ],
-        models: [
-          {
-            modelId: 'm1',
-            providerModelId: 'a-1',
-            displayName: 'A1',
-            protocol: 'openai-chat',
-            capabilities: ['text'] as const,
-            capabilitiesConfirmed: false,
-          },
-        ],
-        createdAt: new Date().toISOString(),
-      },
-    ];
-    rerender(<ProvidersPanel providers={oneProvider} />);
-    expect(screen.getByTestId('provider-m1-readiness').getAttribute('data-level')).toBe('partial');
-    expect(screen.getByTestId('provider-m1-check-providers').getAttribute('data-ok')).toBe('0');
-    expect(screen.getByTestId('provider-m1-check-secrets').getAttribute('data-ok')).toBe('1');
-    expect(screen.getByText(/1 个 Provider · 1 个模型/)).toBeTruthy();
-
-    const ready = [
-      ...oneProvider,
-      {
-        providerId: 'p2',
-        name: 'GW-B',
-        baseUrl: 'https://b.example/v1',
-        protocol: 'anthropic-messages' as const,
-        supportsDiscovery: true,
-        credentials: [
-          {
-            credentialRefId: 'c2',
-            groupName: 'default',
-            label: 'primary',
-            kind: 'api-key',
-            hasSecret: true,
-          },
-        ],
-        models: [
-          {
-            modelId: 'm2',
-            providerModelId: 'b-1',
-            displayName: 'B1',
-            protocol: 'anthropic-messages',
-            capabilities: ['text'] as const,
-            capabilitiesConfirmed: false,
-          },
-          {
-            modelId: 'm3',
-            providerModelId: 'b-2',
-            displayName: 'B2',
-            protocol: 'anthropic-messages',
-            capabilities: ['text'] as const,
-            capabilitiesConfirmed: false,
-          },
-        ],
-        createdAt: new Date().toISOString(),
-      },
-    ];
-    rerender(<ProvidersPanel providers={ready} />);
-    expect(screen.getByTestId('provider-m1-readiness').getAttribute('data-level')).toBe('ready');
-    expect(screen.getByTestId('provider-m1-readiness-badge').textContent).toMatch(/已达 soft 门槛/);
-    expect(screen.getByTestId('provider-m1-check-providers').getAttribute('data-ok')).toBe('1');
-    expect(screen.getByTestId('provider-m1-check-models').getAttribute('data-ok')).toBe('1');
-    expect(screen.getByTestId('provider-m1-check-protocol').textContent).toMatch(/跨协议|2/);
-    expect(screen.getByTestId('provider-m1-readiness-note').textContent).toMatch(/验证区|dogfood/);
-    expect(screen.getByTestId('provider-m1-readiness-note').textContent).not.toMatch(/仍需.*外网/);
-    // still no plaintext secrets
-    expect(screen.queryByText(/sk-/)).toBeNull();
-    expect(screen.getAllByText(/••••/).length).toBeGreaterThanOrEqual(1);
+  it('keeps M1 readiness out of the user-facing provider workspace', () => {
+    render(<ProvidersPanel providers={[]} />);
+    expect(screen.queryByTestId('provider-m1-readiness')).toBeNull();
+    expect(screen.queryByText(/soft 门槛|dogfood|验证区/)).toBeNull();
   });
-
 });
-
 
 describe('projectProvidersReadiness', () => {
   it('projects empty when no providers', () => {
@@ -474,13 +376,14 @@ describe('projectProvidersReadiness', () => {
     });
     expect(screen.queryByText(/sk-/)).toBeNull();
     expect(screen.getByTestId('provider-cc-item-src-1').getAttribute('data-importable')).toBe('1');
-    expect(screen.getByTestId('provider-cc-item-official').getAttribute('data-importable')).toBe('0');
+    expect(screen.getByTestId('provider-cc-item-official').getAttribute('data-importable')).toBe(
+      '0',
+    );
     fireEvent.click(screen.getByTestId('provider-cc-switch-import'));
     await waitFor(() => {
       expect(onImportCcSwitch).toHaveBeenCalledWith(['src-1']);
     });
   });
-
 
   it('groups providers by surface in CC Switch order', () => {
     render(
@@ -550,14 +453,16 @@ describe('projectProvidersReadiness', () => {
     expect(screen.getByTestId('provider-surface-tab-codex').textContent).toMatch(/Codex/);
     expect(screen.getByTestId('provider-surface-tab-claude').textContent).toMatch(/Claude/);
 
-    const sections = screen.getAllByTestId(/provider-surface-section-/)
-    expect(sections.map((el) => el.getAttribute('data-surface'))).toEqual(['codex', 'claude']);
+    const groups = screen.getAllByTestId(/provider-index-group-/);
+    expect(groups.map((el) => el.getAttribute('data-surface'))).toEqual(['codex', 'claude']);
+    expect(screen.getByTestId('provider-index-group-codex').textContent).toMatch(/Codex Gateway/);
+    expect(screen.getByTestId('provider-index-group-claude').textContent).toMatch(/Claude Gateway/);
 
-    expect(screen.getByTestId('provider-surface-section-codex').textContent).toMatch(/Codex Gateway/);
-    expect(screen.getByTestId('provider-surface-section-claude').textContent).toMatch(/Claude Gateway/);
-    // collapsed by default — expand to inspect body meta; surface chip is on the card head
+    // Only the selected provider owns the detail area.
+    expect(screen.getByTestId('provider-card-p-claude')).toBeTruthy();
+    expect(screen.queryByTestId('provider-card-p-codex')).toBeNull();
+    fireEvent.click(screen.getByTestId('provider-select-p-codex'));
     expect(screen.getByTestId('provider-card-p-codex').textContent).toMatch(/Codex/);
-    fireEvent.click(screen.getByTestId('provider-expand-p-codex'));
     expect(screen.getByTestId('provider-meta-surface-p-codex').textContent).toMatch(/Codex/);
 
     // filter to Claude only
@@ -568,8 +473,7 @@ describe('projectProvidersReadiness', () => {
     expect(screen.getByTestId('provider-card-p-claude')).toBeTruthy();
   });
 
-
-  it('defaults providers to collapsed (models hidden until expand)', () => {
+  it('opens only the selected provider detail by default', () => {
     render(
       <ProvidersPanel
         providers={[
@@ -603,11 +507,10 @@ describe('projectProvidersReadiness', () => {
         ]}
       />,
     );
-    expect(screen.getByTestId('provider-expand-p1').getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByTestId('provider-model-m1')).toBeNull();
+    expect(screen.getByTestId('provider-expand-p1').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByTestId('provider-model-m1')).toBeTruthy();
     fireEvent.click(screen.getByTestId('provider-expand-p1'));
     expect(screen.getByTestId('provider-expand-p1').getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByTestId('provider-model-m1')).toBeTruthy();
   });
-
 });

@@ -162,6 +162,20 @@ describe('Renderer Runtime connection controller', () => {
 });
 
 describe('Renderer Runtime hydration state', () => {
+  it('resets the optimistic version when switching from an older task to a new task', () => {
+    const previousTask = runtimeViewReducer(createInitialRuntimeViewState(true), {
+      type: 'append-succeeded',
+      taskVersion: 23,
+    });
+
+    const selectedTask = runtimeViewReducer(previousTask, {
+      type: 'task-selected',
+      taskVersion: 1,
+    });
+
+    expect(selectedTask.taskVersion).toBe(1);
+  });
+
   it('keeps Compose gated until snapshot and taskVersion are hydrated atomically', () => {
     const threadId = 'thread-desktop-main';
     const initial = createInitialRuntimeViewState(true);

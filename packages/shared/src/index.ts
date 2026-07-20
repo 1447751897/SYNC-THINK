@@ -1,6 +1,7 @@
 ﻿export * from './types/ids.js';
 export * from './types/enums.js';
 export * from './types/workspace.js';
+export * from './types/execution-environment.js';
 export * from './types/task.js';
 export * from './types/plan.js';
 export * from './types/run.js';
@@ -8,6 +9,8 @@ export * from './types/message.js';
 export * from './types/event.js';
 export * from './types/provider.js';
 export * from './types/agent.js';
+export * from './types/group.js';
+export * from './types/automation.js';
 export * from './types/context.js';
 export * from './types/artifact.js';
 export * from './types/review.js';

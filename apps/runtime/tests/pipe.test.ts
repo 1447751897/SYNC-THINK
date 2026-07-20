@@ -1,12 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { connect } from 'node:net';
 import { createHmac, randomBytes } from 'node:crypto';
-import {
-  computeHmac,
-  encodeFrame,
-  MAX_FRAME_BYTES,
-  pipePathPortable,
-} from '@sync-think/protocol';
+import { computeHmac, encodeFrame, MAX_FRAME_BYTES, pipePathPortable } from '@sync-think/protocol';
 import { createPipeServer, type PipeServerHandlers } from '../src/pipe/server.js';
 import { ulidWrapper as _u } from './pipe-helpers.js';
 
@@ -21,7 +16,10 @@ function clientProof(
     .digest('hex');
 }
 
-async function startServer(handlers: PipeServerHandlers, installId: string): Promise<{ server: ReturnType<typeof createPipeServer>; path: string }> {
+async function startServer(
+  handlers: PipeServerHandlers,
+  installId: string,
+): Promise<{ server: ReturnType<typeof createPipeServer>; path: string }> {
   return new Promise((resolve, reject) => {
     const server = createPipeServer(handlers, installId);
     const path = pipePathPortable(installId);
@@ -46,6 +44,84 @@ async function writeAndRead(socket: import('node:net').Socket, frame: unknown): 
 }
 
 describe('named pipe handshake', () => {
+  it('keeps an authenticated connection open when one command handler throws', async () => {
+    const installId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const { server } = await startServer(
+      {
+        expectedInstallId: installId,
+        allowNoToken: true,
+        onReady: () => {},
+        onClientHello: () => {},
+        onClientGone: () => {},
+        onFrame: (socket, frame) => {
+          if (frame.type === 'command.fail') throw new Error('forced command failure');
+          socket.write(
+            encodeFrame({
+              id: frame.id,
+              kind: 'response',
+              type: frame.type,
+              payload: { ok: true },
+            }),
+          );
+        },
+        onFrameError: (socket, frame) => {
+          socket.write(
+            encodeFrame({
+              id: frame.id,
+              kind: 'response',
+              type: frame.type,
+              payload: {},
+              error: {
+                code: 'storage.write_failed',
+                message: 'Command failed',
+              },
+            }),
+          );
+        },
+      },
+      installId,
+    );
+    const socket = connect(pipePathPortable(installId));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('error', reject);
+      });
+      await writeAndRead(socket, {
+        id: 'hello',
+        kind: 'request',
+        type: '__hello',
+        payload: {
+          protocolVersion: 2,
+          appVersion: '0.0.1',
+          installId,
+          nonce: randomBytes(8).toString('hex'),
+          features: ['runtime.healthcheck'],
+        },
+      });
+
+      const failed = (await writeAndRead(socket, {
+        id: 'failed-command',
+        kind: 'request',
+        type: 'command.fail',
+        payload: {},
+      })) as { error?: { code?: string } };
+      expect(failed.error).toMatchObject({ code: 'storage.write_failed' });
+
+      const recovered = (await writeAndRead(socket, {
+        id: 'next-command',
+        kind: 'request',
+        type: 'runtime.healthcheck',
+        payload: {},
+      })) as { payload?: { ok?: boolean } };
+      expect(recovered.payload).toEqual({ ok: true });
+    } finally {
+      socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('closes a client that declares an oversized frame before buffering its body', async () => {
     const installId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const { server } = await startServer(

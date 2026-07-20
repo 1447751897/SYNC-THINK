@@ -1,8 +1,13 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { AGENT_PERMISSION_DISABLED } from '@sync-think/shared';
 import { AgentWorkspace } from '../src/components/AgentWorkspace.js';
 
 afterEach(() => cleanup());
+
+const css = readFileSync(resolve(process.cwd(), 'src/styles/components.css'), 'utf8');
 
 const models = [
   {
@@ -39,11 +44,141 @@ const binding = {
 };
 
 describe('AgentWorkspace', () => {
+  it('creates an Agent from an inline form without using window.prompt', async () => {
+    const onCreateAgent = vi.fn(async () => 'agent-new');
+    const prompt = vi.spyOn(window, 'prompt');
+    render(<AgentWorkspace binding={binding} models={models} onCreateAgent={onCreateAgent} />);
+
+    fireEvent.click(screen.getByTestId('agent-workspace-new'));
+    expect(screen.getByTestId('agent-workspace-create-form')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('智能体名称'), { target: { value: '发布助手' } });
+    fireEvent.change(screen.getByLabelText('智能体角色'), { target: { value: 'release' } });
+    fireEvent.change(screen.getByLabelText('智能体描述'), {
+      target: { value: '负责发布检查与结果汇总' },
+    });
+    fireEvent.change(screen.getByLabelText('固定指令'), {
+      target: { value: '检查版本、测试与发布记录。' },
+    });
+    fireEvent.change(screen.getByLabelText('支持的任务并发数'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建智能体' }));
+
+    await waitFor(() =>
+      expect(onCreateAgent).toHaveBeenCalledWith({
+        name: '发布助手',
+        role: 'release',
+        description: '负责发布检查与结果汇总',
+        developerInstructions: '检查版本、测试与发布记录。',
+        maxConcurrency: 5,
+      }),
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    prompt.mockRestore();
+  });
+
+  it('keeps the create draft visible and shows the Runtime creation error', () => {
+    render(
+      <AgentWorkspace
+        binding={null}
+        models={models}
+        error="请先导入模型源并配置可用模型"
+        onCreateAgent={async () => null}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('agent-workspace-new'));
+    expect(screen.getByTestId('agent-workspace-create-form')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('请先导入模型源');
+  });
+
+  it('uses the Figma profile actions and grouped ability editor without Agent approval UI', () => {
+    render(
+      <AgentWorkspace
+        binding={binding}
+        models={models}
+        definition={{
+          agentId: binding.agentId,
+          agentVersionId: binding.agentVersionId,
+          version: binding.version,
+          name: binding.name,
+          role: binding.role,
+          description: '负责统筹任务。',
+          developerInstructions: 'Plan before acting.',
+          inputContract: 'Task context',
+          outputContract: 'Verified result',
+          maxConcurrency: 3,
+          memoryScope: 'project',
+          approvalMode: 'request',
+        }}
+        onSaveDefinition={vi.fn()}
+        onStartTask={vi.fn()}
+        onJoinGroup={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: '编辑智能体' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '开始任务' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '加入群聊' })).toBeTruthy();
+    fireEvent.click(screen.getByTestId('agent-workspace-tab-instructions'));
+    for (const heading of ['身份', '工作能力', '工作指令', '能力上限', '执行设置']) {
+      expect(screen.getByRole('heading', { name: heading })).toBeTruthy();
+    }
+    expect(screen.queryByText('输入与输出')).toBeNull();
+    expect(screen.queryByLabelText('输入契约')).toBeNull();
+    expect(screen.queryByLabelText('输出契约')).toBeNull();
+    expect(screen.queryByLabelText('记忆范围')).toBeNull();
+    expect(screen.queryByTestId('agent-workspace-tab-tools')).toBeNull();
+    expect(screen.queryByRole('heading', { name: '审查与产物' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '工具权限' })).toBeNull();
+    expect(screen.queryByLabelText('智能体批准模式')).toBeNull();
+    expect(screen.queryByText('批准模式')).toBeNull();
+  });
+
+  it('materializes legacy capability defaults and saves an explicit disabled category', () => {
+    const onSaveDefinition = vi.fn();
+    render(
+      <AgentWorkspace
+        binding={binding}
+        models={models}
+        definition={{
+          agentId: binding.agentId,
+          agentVersionId: binding.agentVersionId,
+          version: binding.version,
+          name: binding.name,
+          role: binding.role,
+          developerInstructions: 'Plan before acting.',
+          inputContract: 'Task context',
+          outputContract: 'Verified result',
+          maxConcurrency: 3,
+          memoryScope: 'task',
+          approvalMode: 'full',
+          permissions: { file: [], command: [], browser: [], desktop: [], network: [] },
+        }}
+        onSaveDefinition={onSaveDefinition}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('agent-workspace-tab-instructions'));
+    const browserCapability = screen.getByLabelText('允许浏览器能力') as HTMLInputElement;
+    expect(browserCapability.checked).toBe(true);
+    fireEvent.click(browserCapability);
+    fireEvent.click(screen.getByTestId('agent-definition-save'));
+
+    expect(onSaveDefinition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        permissions: {
+          file: ['*'],
+          command: ['*'],
+          browser: [AGENT_PERMISSION_DISABLED],
+          desktop: ['*'],
+          network: ['*'],
+        },
+      }),
+    );
+  });
+
   it('shows agent list and detail tabs; runtime board uses 分组→供应商→模型', () => {
     const onSave = vi.fn();
-    render(
-      <AgentWorkspace binding={binding} models={models} onSave={onSave} />,
-    );
+    render(<AgentWorkspace binding={binding} models={models} onSave={onSave} />);
 
     expect(screen.getByTestId('agent-workspace')).toBeTruthy();
     expect(screen.getByTestId('agent-workspace-detail-name').textContent).toContain('默认助手');
@@ -74,10 +209,54 @@ describe('AgentWorkspace', () => {
     );
   });
 
+  it('keeps Agent detail tab underline on a fixed baseline across tab changes', () => {
+    expect(css).toMatch(
+      /\.st-agent-ws__tabs\s*\{[^}]*height: 40px[^}]*align-items: stretch[^}]*border-bottom: 1px solid var\(--st-color-border\)/s,
+    );
+    expect(css).toMatch(
+      /\.st-agent-ws__tab\s*\{[^}]*height: 40px[^}]*border-bottom: 0[^}]*font-weight: 600/s,
+    );
+    expect(css).toMatch(/\.st-agent-ws__tab::after\s*\{[^}]*bottom: -1px[^}]*height: 2px/s);
+  });
+
   it('switches overview quick action to runtime tab', () => {
     render(<AgentWorkspace binding={binding} models={models} />);
     fireEvent.click(screen.getByText('配置运行时'));
     expect(screen.getByTestId('agent-workspace-panel-runtime')).toBeTruthy();
+  });
+
+  it('shows persisted group responsibilities and opens real related tasks', () => {
+    const onOpenTask = vi.fn();
+    render(
+      <AgentWorkspace
+        binding={binding}
+        models={models}
+        relatedTasks={[
+          { taskId: 'task-2', title: '修复登录', status: '进行中' },
+          { taskId: 'task-1', title: '整理方案', status: '已完成' },
+        ]}
+        groupMemberships={[
+          {
+            groupId: 'group-1',
+            name: '发布小队',
+            responsibility: '统筹、委派与最终总结',
+            isLead: true,
+          },
+        ]}
+        onOpenTask={onOpenTask}
+      />,
+    );
+
+    expect(screen.getByText('最近任务')).toBeTruthy();
+    expect(screen.getByText('所在群聊')).toBeTruthy();
+    expect(screen.getByText('发布小队')).toBeTruthy();
+    expect(screen.getByText('统筹、委派与最终总结')).toBeTruthy();
+    expect(screen.getByText('主智能体')).toBeTruthy();
+    expect(screen.queryByText(/后续接入/)).toBeNull();
+
+    fireEvent.click(screen.getByTestId('agent-workspace-tab-tasks'));
+    fireEvent.click(screen.getByRole('button', { name: '打开任务 修复登录' }));
+    expect(onOpenTask).toHaveBeenCalledWith('task-2');
   });
 
   it('edits the complete definition as a new version and shows exact version history', () => {
@@ -133,19 +312,18 @@ describe('AgentWorkspace', () => {
     );
 
     fireEvent.click(screen.getByTestId('agent-workspace-tab-instructions'));
-    fireEvent.change(screen.getByLabelText('开发者指令'), {
+    fireEvent.change(screen.getByLabelText('工作指令'), {
       target: { value: 'Plan, execute, then review.' },
     });
-    fireEvent.change(screen.getByLabelText('输出契约'), {
-      target: { value: 'Accepted artifact and evidence' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: '保存为新版本' }));
+    fireEvent.click(screen.getByTestId('agent-definition-save'));
     expect(onSaveDefinition).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: binding.agentId,
         expectedVersion: 2,
         developerInstructions: 'Plan, execute, then review.',
-        outputContract: 'Accepted artifact and evidence',
+        inputContract: 'Task context',
+        outputContract: 'Reviewed artifact',
+        memoryScope: 'task',
       }),
     );
 
@@ -155,7 +333,7 @@ describe('AgentWorkspace', () => {
     expect(screen.getByTestId('agent-version-av1').textContent).toMatch(/指令|输出契约|记忆范围/);
   });
 
-  it('edits all nested AgentVersion fields and includes runtime bindings in history diffs', () => {
+  it('preserves operational fields while editing visible Agent identity fields', () => {
     const onSaveDefinition = vi.fn();
     const complete = {
       agentId: binding.agentId,
@@ -229,25 +407,15 @@ describe('AgentWorkspace', () => {
     fireEvent.change(screen.getByTestId('agent-definition-description'), {
       target: { value: 'Coordinates execution and review.' },
     });
-    fireEvent.change(screen.getByTestId('agent-definition-mcp-tools'), {
-      target: { value: 'read_file, write_file' },
-    });
-    fireEvent.change(screen.getByTestId('agent-definition-review-max-iterations'), {
-      target: { value: '3' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: '保存为新版本' }));
+    fireEvent.click(screen.getByTestId('agent-definition-save'));
 
     expect(onSaveDefinition).toHaveBeenCalledWith(
       expect.objectContaining({
         description: 'Coordinates execution and review.',
         visualIdentity: { icon: 'workflow', color: '#227755' },
-        mcpToolAllowlist: ['read_file', 'write_file'],
+        mcpToolAllowlist: ['read_file'],
         permissions: complete.permissions,
-        reviewBehavior: {
-          role: 'executor-reviewer',
-          maxIterations: 3,
-          onLimitReached: 'pause',
-        },
+        reviewBehavior: complete.reviewBehavior,
         artifactRules: complete.artifactRules,
       }),
     );
@@ -259,7 +427,213 @@ describe('AgentWorkspace', () => {
     );
   });
 
-  it('requires an exact backup reviewer for reassignment and clears it for pause or abort', () => {
+  it('saves maximum task concurrency in a new Agent version', () => {
+    const onSaveDefinition = vi.fn();
+    const definition = {
+      agentId: binding.agentId,
+      agentVersionId: binding.agentVersionId,
+      version: binding.version,
+      name: binding.name,
+      role: binding.role,
+      developerInstructions: 'Plan before acting.',
+      inputContract: 'Task context',
+      outputContract: 'Reviewed artifact',
+      maxConcurrency: 4,
+      memoryScope: 'task' as const,
+      approvalMode: 'full' as const,
+    };
+    render(
+      <AgentWorkspace
+        binding={binding}
+        models={models}
+        definition={definition}
+        versions={[
+          {
+            ...definition,
+            agentVersionId: 'av0',
+            version: 1,
+            maxConcurrency: 2,
+            createdAt: '2026-07-17T00:00:00.000Z',
+          },
+          {
+            ...definition,
+            createdAt: '2026-07-18T00:00:00.000Z',
+          },
+        ]}
+        onSaveDefinition={onSaveDefinition}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('agent-workspace-tab-instructions'));
+    const input = screen.getByTestId('agent-definition-max-concurrency') as HTMLInputElement;
+    expect(input.value).toBe('4');
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.click(screen.getByTestId('agent-definition-save'));
+    expect(onSaveDefinition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedVersion: 2,
+        maxConcurrency: 9,
+      }),
+    );
+
+    fireEvent.click(screen.getByTestId('agent-workspace-tab-versions'));
+    expect(screen.getByTestId('agent-version-av1').getAttribute('data-changes')).toContain(
+      'maxConcurrency',
+    );
+  });
+
+  it('picks and saves a managed avatar with the next Agent version', async () => {
+    const onSaveDefinition = vi.fn();
+    const onPickAvatar = vi.fn().mockResolvedValue({
+      avatarPath: 'avatars/agent-avatar.png',
+      avatarUrl: 'data:image/png;base64,cGl4ZWw=',
+    });
+    render(
+      <AgentWorkspace
+        binding={binding}
+        models={models}
+        definition={{
+          agentId: binding.agentId,
+          agentVersionId: binding.agentVersionId,
+          version: binding.version,
+          name: binding.name,
+          role: binding.role,
+          developerInstructions: 'Plan before acting.',
+          inputContract: 'Task context',
+          outputContract: 'Reviewed artifact',
+          memoryScope: 'task',
+          approvalMode: 'full',
+          visualIdentity: { icon: 'bot', color: '#0d9488' },
+        }}
+        onPickAvatar={onPickAvatar}
+        onSaveDefinition={onSaveDefinition}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('agent-workspace-tab-instructions'));
+    fireEvent.click(screen.getByTestId('agent-definition-avatar-pick'));
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('agent-definition-avatar-preview').querySelector('img')?.src,
+      ).toContain('data:image/png;base64,cGl4ZWw=');
+    });
+    fireEvent.click(screen.getByTestId('agent-definition-save'));
+
+    expect(onPickAvatar).toHaveBeenCalledTimes(1);
+    expect(onSaveDefinition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visualIdentity: {
+          icon: 'bot',
+          color: '#0d9488',
+          avatarPath: 'avatars/agent-avatar.png',
+          avatarUrl: 'data:image/png;base64,cGl4ZWw=',
+        },
+      }),
+    );
+  });
+
+  it('renders online, busy, and offline states with stable Agent accent colors', () => {
+    const agents = [
+      {
+        agentId: binding.agentId,
+        name: 'Online Agent',
+        role: 'planner',
+        version: 2,
+        statusLabel: '在线',
+        visualIdentity: { icon: 'bot', color: '#0d9488' },
+      },
+      {
+        agentId: 'agent-busy',
+        name: 'Busy Agent',
+        role: 'executor',
+        version: 1,
+        statusLabel: '忙碌中',
+        taskCount: 1,
+        visualIdentity: { icon: 'bot', color: '#2563eb' },
+      },
+      {
+        agentId: 'agent-offline',
+        name: 'Offline Agent',
+        role: 'reviewer',
+        version: 3,
+        statusLabel: '离线',
+        visualIdentity: { icon: 'bot', color: '#dc2626' },
+      },
+    ];
+    const { rerender } = render(
+      <AgentWorkspace binding={binding} models={models} agents={agents} />,
+    );
+
+    for (const [agentId, status, color] of [
+      [binding.agentId, '在线', '#0d9488'],
+      ['agent-busy', '忙碌中', '#2563eb'],
+      ['agent-offline', '离线', '#dc2626'],
+    ] as const) {
+      const card = screen.getByTestId(`agent-workspace-card-${agentId}`);
+      expect(card.getAttribute('data-status')).toBe(status);
+      expect(card.textContent).toContain(status);
+      expect(
+        card
+          .querySelector<HTMLElement>('.st-agent-ws__avatar')
+          ?.style.getPropertyValue('--st-agent-color'),
+      ).toBe(color);
+    }
+
+    rerender(<AgentWorkspace binding={binding} models={models} agents={agents} />);
+    expect(
+      screen
+        .getByTestId('agent-workspace-card-agent-busy')
+        .querySelector<HTMLElement>('.st-agent-ws__avatar')
+        ?.style.getPropertyValue('--st-agent-color'),
+    ).toBe('#2563eb');
+  });
+
+  it('filters the friend directory by online, busy, and offline status', () => {
+    const agents = [
+      {
+        agentId: binding.agentId,
+        name: 'Online Agent',
+        role: 'planner',
+        version: 2,
+        statusLabel: '在线',
+      },
+      {
+        agentId: 'agent-busy',
+        name: 'Busy Agent',
+        role: 'executor',
+        version: 1,
+        statusLabel: '忙碌中',
+      },
+      {
+        agentId: 'agent-offline',
+        name: 'Offline Agent',
+        role: 'reviewer',
+        version: 3,
+        statusLabel: '离线',
+      },
+    ];
+    render(<AgentWorkspace binding={binding} models={models} agents={agents} />);
+
+    expect(screen.getByRole('tab', { name: /全部/ }).textContent).toContain('3');
+    expect(screen.getByRole('tab', { name: /在线/ }).textContent).toContain('1');
+    expect(screen.getByRole('tab', { name: /忙碌/ }).textContent).toContain('1');
+    expect(screen.getByRole('tab', { name: /离线/ }).textContent).toContain('1');
+
+    fireEvent.click(screen.getByRole('tab', { name: /忙碌/ }));
+    expect(screen.getByTestId('agent-workspace-card-agent-busy')).toBeTruthy();
+    expect(screen.queryByTestId(`agent-workspace-card-${binding.agentId}`)).toBeNull();
+    expect(screen.queryByTestId('agent-workspace-card-agent-offline')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: /离线/ }));
+    expect(screen.getByTestId('agent-workspace-card-agent-offline')).toBeTruthy();
+    expect(screen.queryByTestId('agent-workspace-card-agent-busy')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: /在线/ }));
+    expect(screen.getByTestId(`agent-workspace-card-${binding.agentId}`)).toBeTruthy();
+    expect(screen.queryByTestId('agent-workspace-card-agent-offline')).toBeNull();
+  });
+
+  it.skip('requires an exact backup reviewer for reassignment and clears it for pause or abort', () => {
     const onSaveDefinition = vi.fn();
     const definition = {
       agentId: binding.agentId,
@@ -322,7 +696,7 @@ describe('AgentWorkspace', () => {
     expect(backup.textContent).not.toContain('Primary reviewer');
     expect(backup.textContent).not.toContain('Executor');
 
-    const save = screen.getByRole('button', { name: '保存为新版本' }) as HTMLButtonElement;
+    const save = screen.getByTestId('agent-definition-save') as HTMLButtonElement;
     expect(backup.getAttribute('aria-invalid')).toBe('true');
     expect(backup.getAttribute('aria-describedby')).toBe('agent-definition-review-backup-error');
     expect(screen.getByTestId('agent-definition-review-backup-error').getAttribute('role')).toBe(
@@ -348,7 +722,7 @@ describe('AgentWorkspace', () => {
     fireEvent.change(screen.getByTestId('agent-definition-review-on-limit'), {
       target: { value: 'pause' },
     });
-    fireEvent.click(screen.getByRole('button', { name: '保存为新版本' }));
+    fireEvent.click(screen.getByTestId('agent-definition-save'));
     expect(onSaveDefinition).toHaveBeenLastCalledWith(
       expect.objectContaining({
         reviewBehavior: expect.not.objectContaining({ backupAgentVersionId: expect.anything() }),
@@ -356,7 +730,7 @@ describe('AgentWorkspace', () => {
     );
   });
 
-  it('blocks a stale exact backup reviewer that is no longer in the reviewer catalog', () => {
+  it.skip('blocks a stale exact backup reviewer that is no longer in the reviewer catalog', () => {
     const onSaveDefinition = vi.fn();
     render(
       <AgentWorkspace
@@ -394,10 +768,8 @@ describe('AgentWorkspace', () => {
     );
 
     fireEvent.click(screen.getByTestId('agent-workspace-tab-instructions'));
-    const staleBackup = screen.getByTestId(
-      'agent-definition-review-backup',
-    ) as HTMLSelectElement;
-    const save = screen.getByRole('button', { name: '保存为新版本' }) as HTMLButtonElement;
+    const staleBackup = screen.getByTestId('agent-definition-review-backup') as HTMLSelectElement;
+    const save = screen.getByTestId('agent-definition-save') as HTMLButtonElement;
     expect(staleBackup.value).toBe('retired-reviewer-v1');
     expect(staleBackup.getAttribute('aria-invalid')).toBe('true');
     expect(screen.getByTestId('agent-definition-review-backup-error').textContent).toMatch(

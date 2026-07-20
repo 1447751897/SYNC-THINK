@@ -48,9 +48,7 @@ describe('SqliteEventCheckpointStore', () => {
       });
 
       expect([first.events[0].sequence, second.events[0].sequence]).toEqual([1, 2]);
-      expect(
-        store.listAllEvents(0).map((event) => [event.workspaceId, event.sequence]),
-      ).toEqual([
+      expect(store.listAllEvents(0).map((event) => [event.workspaceId, event.sequence])).toEqual([
         [workspaceA, 1],
         [workspaceB, 2],
       ]);
@@ -199,6 +197,40 @@ describe('SqliteEventCheckpointStore', () => {
       expect(second.events[0].sequence).toBe(2);
     } finally {
       reopenedConnection.raw.close();
+    }
+  });
+
+  it('updates the stable Runtime checkpoint without accumulating snapshot rows', async () => {
+    const dbPath = makeDbPath();
+    const workspaceId = 'workspace-runtime-latest' as WorkspaceId;
+    const runId = 'runtime-install-1' as RunId;
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+    try {
+      const store = new SqliteEventCheckpointStore(connection.raw);
+      for (let index = 1; index <= 3; index += 1) {
+        store.commitTransition({
+          events: [eventDraft(`event-runtime-${index}`, workspaceId, `delta-${index}`)],
+          checkpoint: {
+            id: `runtime-latest:${runId}`,
+            runId,
+            state: { threadVersions: [['thread-1', index]] },
+            createdAt: `2026-07-11T00:00:0${index}.000Z`,
+          },
+        });
+      }
+
+      expect(
+        connection.raw
+          .prepare('SELECT COUNT(*) AS count FROM checkpoint WHERE run_id = ?')
+          .get(runId),
+      ).toEqual({ count: 1 });
+      expect(store.loadLatestCheckpoint(runId)).toMatchObject({
+        lastEventSequence: 3,
+        state: { threadVersions: [['thread-1', 3]] },
+      });
+    } finally {
+      connection.raw.close();
     }
   });
 

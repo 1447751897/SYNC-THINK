@@ -417,6 +417,72 @@ Phase 3 再引入端到端（Playwright 测 UI 或 Spectron 替代方案评估�
 
 ---
 
+### TD-015: Runtime Command Gateway 为核心，CLI 与 MCP 为适配器
+
+日期：2026-07-18
+
+状态：已采用
+用户确认：2026-07-18「按推荐来；同时开放给 SYNC-THINK、Codex 和 Claude Code」
+
+背景：Agent 需要感知并操作 SYNC-THINK，外部 Codex / Claude Code 也需要调用同一组应用能力。
+
+对比：
+
+```text
+A. CLI 作为核心
+   优点：命令行调试直接。
+   缺点：UI、Agent 与 CLI 容易形成重复权限、状态和事务逻辑。
+
+B. Runtime Command Gateway 作为核心，Desktop / CLI / MCP 为薄适配器（采用）
+   优点：复用现有命名管道、校验、授权、事件真源和 SQLite 事务；结果一致且可审计。
+   缺点：需要维护适配器的 schema 映射和外部会话认证。
+
+C. 新增 localhost HTTP/gRPC 核心
+   优点：通用调试工具多。
+   缺点：扩大网络攻击面，并与已锁定的认证命名管道边界重复。
+```
+
+决定：
+
+- Runtime 协议命令是唯一应用写入入口。
+- Desktop 继续经 Electron main bridge 调用 Runtime。
+- `sync-think` CLI 只负责参数/输出适配和认证会话发现。
+- 内置 MCP Server 将 Runtime 命令暴露为结构化工具，供内部 Agent 与外部 Codex / Claude Code 使用。
+- 配置类命令采用 preview -> confirm；普通已授权任务操作可直接执行。
+- 所有入口共享 Runtime 侧授权、作用域校验、幂等、事件记录与敏感信息清理。
+- 不建立第二套 localhost 服务或 CLI 专属数据库访问路径。
+
+确认令牌实现约束：
+
+- 外部 `agent` / `mcp` / `cli` 配置调用首次只返回预览；Desktop 明确按钮交互直接执行。
+- 令牌默认有效 5 分钟、只能使用一次，并同时绑定命令、caller surface 和规范化 payload SHA-256 digest。
+- 预览只列出 payload 字段名，不返回字段值；Runtime 只持有令牌 hash 作为审计证据。
+- Runtime 记录 `application.command_confirmation_requested`、`confirmed`、`rejected` 事件。
+- CLI、MCP 与内置对话 Agent 的 application-tool 多轮循环均已接通；工具结果回到下一 Provider turn，配置操作在 Desktop 显示确认卡。
+
+---
+
+### TD-016: Automation 使用 Runtime 内调度 + loopback HMAC Webhook
+
+日期：2026-07-18
+
+状态：已采用
+用户确认：2026-07-18 批准自动化按推荐方案实施
+
+背景：周期任务和外部触发必须复用现有项目、Agent/群聊、权限、任务上下文与事件真源，且每次触发都应成为独立任务。
+
+决定：
+
+- AutomationDefinition 与 Execution 持久化到 SQLite migration `0026_automation`。
+- Runtime 内服务负责五字段 Cron、IANA 时区、并发策略、0-2 次重试和恢复扫描；不在 Renderer 运行计时器。
+- 每次 schedule、webhook 或 manual trigger 都先创建新任务，再通过既有 Agent/群聊执行路径启动；不复用其他任务消息。
+- Webhook 默认只监听 `127.0.0.1:47821`，路径不可预测，请求体用 Secure Store 中的密钥做 HMAC-SHA256 验签，并用常量时间比较。
+- Webhook 密钥只在创建或轮换时返回一次；数据库只保存 secret handle，Renderer 事件和日志不携带密钥。
+- 端口占用不使整个 Runtime 崩溃；健康状态区分 scheduler 可用与 Webhook 可用，Desktop 如实禁用相关操作。
+- Runtime 关闭会停止 HTTP server、调度轮询并等待执行清理，避免重启时端口和子进程泄漏。
+
+---
+
 ## 4. 确认清单（已全部勾选）
 
 - [x] TD-004 better-sqlite3 + Drizzle
@@ -430,6 +496,8 @@ Phase 3 再引入端到端（Playwright 测 UI 或 Spectron 替代方案评估�
 - [x] TD-012 Radix 行为 + 自研皮肤 + Lucide
 - [x] TD-013 electron-builder + 私有更新
 - [x] TD-014 Vitest
+- [x] TD-015 Runtime Command Gateway + CLI/MCP 适配器
+- [x] TD-016 Runtime Automation + loopback HMAC Webhook
 
 确认语：全部接受推荐，计划确认（2026-07-11）
 

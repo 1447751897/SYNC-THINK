@@ -1,6 +1,13 @@
 ﻿import type {
   CreateTaskPayload,
   BindWorkspaceFolderPayload,
+  BindWorkspaceGitRepositoryPayload,
+  ResolveWorktreeIntegrationPayload,
+  CreateBrowserIdentityPayload,
+  UpdateBrowserIdentityPayload,
+  DeleteBrowserIdentityPayload,
+  SetTaskBrowserIdentityPayload,
+  DescribeTaskExecutionAccessPayload,
   CreateWorkspacePayload,
   ListTasksPayload,
   ListWorkspacesPayload,
@@ -69,6 +76,117 @@ export function parseBindWorkspaceFolderPayload(value: unknown): BindWorkspaceFo
     workspaceId: value.workspaceId.trim() as BindWorkspaceFolderPayload['workspaceId'],
     folderPath: value.folderPath.trim(),
     allowedRoots: value.allowedRoots as string[] | undefined,
+  };
+}
+
+export function parseBindWorkspaceGitRepositoryPayload(
+  value: unknown,
+): BindWorkspaceGitRepositoryPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.workspaceId !== 'string' ||
+    !value.workspaceId.trim() ||
+    value.workspaceId.length > 256 ||
+    typeof value.repositoryUrl !== 'string' ||
+    !value.repositoryUrl.trim() ||
+    value.repositoryUrl.length > 4096 ||
+    (value.defaultRef !== undefined &&
+      (typeof value.defaultRef !== 'string' || !value.defaultRef.trim() || value.defaultRef.length > 512))
+  ) {
+    throw new Error('Invalid bind-workspace-git-repository payload');
+  }
+  return {
+    workspaceId: value.workspaceId.trim() as BindWorkspaceGitRepositoryPayload['workspaceId'],
+    repositoryUrl: value.repositoryUrl.trim(),
+    ...(typeof value.defaultRef === 'string' ? { defaultRef: value.defaultRef.trim() } : {}),
+  };
+}
+
+export function parseResolveWorktreeIntegrationPayload(
+  value: unknown,
+): ResolveWorktreeIntegrationPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.childTaskId !== 'string' ||
+    !value.childTaskId.trim() ||
+    value.childTaskId.length > 256 ||
+    (value.strategy !== 'accept-child' && value.strategy !== 'keep-parent')
+  ) {
+    throw new Error('Invalid resolve-worktree-integration payload');
+  }
+  return {
+    childTaskId: value.childTaskId.trim() as ResolveWorktreeIntegrationPayload['childTaskId'],
+    strategy: value.strategy,
+  };
+}
+
+export function parseCreateBrowserIdentityPayload(value: unknown): CreateBrowserIdentityPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.name !== 'string' ||
+    !value.name.trim() ||
+    value.name.length > 128 ||
+    (value.makeDefault !== undefined && typeof value.makeDefault !== 'boolean')
+  ) throw new Error('Invalid create-browser-identity payload');
+  return { name: value.name.trim(), ...(value.makeDefault === true ? { makeDefault: true } : {}) };
+}
+
+export function parseUpdateBrowserIdentityPayload(value: unknown): UpdateBrowserIdentityPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== 'string' ||
+    !value.id.trim() ||
+    value.id.length > 256 ||
+    (value.name !== undefined &&
+      (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 128)) ||
+    (value.makeDefault !== undefined && typeof value.makeDefault !== 'boolean') ||
+    (value.name === undefined && value.makeDefault !== true)
+  ) throw new Error('Invalid update-browser-identity payload');
+  return {
+    id: value.id.trim(),
+    ...(typeof value.name === 'string' ? { name: value.name.trim() } : {}),
+    ...(value.makeDefault === true ? { makeDefault: true } : {}),
+  };
+}
+
+export function parseDeleteBrowserIdentityPayload(value: unknown): DeleteBrowserIdentityPayload {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim() || value.id.length > 256) {
+    throw new Error('Invalid delete-browser-identity payload');
+  }
+  return { id: value.id.trim() };
+}
+
+export function parseSetTaskBrowserIdentityPayload(value: unknown): SetTaskBrowserIdentityPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.taskId !== 'string' ||
+    !value.taskId.trim() ||
+    value.taskId.length > 256 ||
+    typeof value.browserIdentityId !== 'string' ||
+    !value.browserIdentityId.trim() ||
+    value.browserIdentityId.length > 256
+  ) throw new Error('Invalid set-task-browser-identity payload');
+  return {
+    taskId: value.taskId.trim() as SetTaskBrowserIdentityPayload['taskId'],
+    browserIdentityId: value.browserIdentityId.trim(),
+  };
+}
+
+export function parseDescribeTaskExecutionAccessPayload(
+  value: unknown,
+): DescribeTaskExecutionAccessPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.taskId !== 'string' ||
+    !value.taskId.trim() ||
+    value.taskId.length > 256 ||
+    typeof value.agentVersionId !== 'string' ||
+    !value.agentVersionId.trim() ||
+    value.agentVersionId.length > 256
+  ) throw new Error('Invalid describe-task-execution-access payload');
+  return {
+    taskId: value.taskId.trim() as DescribeTaskExecutionAccessPayload['taskId'],
+    agentVersionId: value.agentVersionId.trim() as DescribeTaskExecutionAccessPayload['agentVersionId'],
   };
 }
 
@@ -158,6 +276,27 @@ export function parseUnarchiveTaskPayload(value: unknown): {
   cascade?: boolean;
 } {
   return parseArchiveTaskPayload(value);
+}
+
+export function parseDiscardEmptyTaskPayload(value: unknown): {
+  taskId: string;
+  expectedTaskVersion: number;
+} {
+  if (!isRecord(value)) throw new Error('Invalid discard-empty-task payload');
+  if (
+    typeof value.taskId !== 'string' ||
+    value.taskId.trim().length === 0 ||
+    value.taskId.length > 256 ||
+    !Number.isInteger(value.expectedTaskVersion) ||
+    Number(value.expectedTaskVersion) < 0 ||
+    Object.keys(value).some((key) => key !== 'taskId' && key !== 'expectedTaskVersion')
+  ) {
+    throw new Error('Invalid discard-empty-task payload');
+  }
+  return {
+    taskId: value.taskId.trim(),
+    expectedTaskVersion: Number(value.expectedTaskVersion),
+  };
 }
 
 export function parseOpenTaskPayload(value: unknown): OpenTaskPayload {

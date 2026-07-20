@@ -5,7 +5,12 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -13,8 +18,9 @@
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
+    "@sync-think/protocol": "workspace:*",
     "@sync-think/shared": "workspace:*",
-    "@sync-think/protocol": "workspace:*"
+    "playwright-core": "^1.61.1"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",

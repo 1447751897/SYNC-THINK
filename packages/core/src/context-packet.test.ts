@@ -45,10 +45,14 @@ describe('selectContextSources — protected goals/decisions/acceptance', () => 
   const file = { id: 'src-file', kind: 'file-excerpt' as const, tokenEstimate: 400 };
   const agent = { id: 'src-agent', kind: 'agent-instructions' as const, tokenEstimate: 32 };
 
-  it('exports protected kinds including goal, decision, acceptance', () => {
+  it('exports protected platform, Agent, task and latest-message kinds', () => {
+    expect(PROTECTED_SOURCE_KINDS.has('application-context')).toBe(true);
+    expect(PROTECTED_SOURCE_KINDS.has('agent-instructions')).toBe(true);
     expect(PROTECTED_SOURCE_KINDS.has('task-goal')).toBe(true);
+    expect(PROTECTED_SOURCE_KINDS.has('task-status')).toBe(true);
     expect(PROTECTED_SOURCE_KINDS.has('decision')).toBe(true);
     expect(PROTECTED_SOURCE_KINDS.has('acceptance-criteria')).toBe(true);
+    expect(PROTECTED_SOURCE_KINDS.has('latest-user-message')).toBe(true);
     expect(PROTECTED_SOURCE_KINDS.has('message-excerpt')).toBe(false);
   });
 
@@ -62,8 +66,8 @@ describe('selectContextSources — protected goals/decisions/acceptance', () => 
       'src-goal',
       'src-accept',
       'src-decision',
-      'src-msg',
       'src-agent',
+      'src-msg',
     ]);
     expect(result.excluded).toHaveLength(0);
     expect(result.protectedPreserved).toBe(true);

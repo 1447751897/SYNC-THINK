@@ -10,7 +10,8 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell } fr
 import type { IpcMainInvokeEvent } from 'electron';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import {
   isAllowedM1OpenDocId,
   isValidDogfoodDayDate,
@@ -26,6 +27,13 @@ import type { AppendMessagePayload, CancelRunPayload, Frame } from '@sync-think/
 import {
   parseArchiveTaskPayload,
   parseBindWorkspaceFolderPayload,
+  parseBindWorkspaceGitRepositoryPayload,
+  parseResolveWorktreeIntegrationPayload,
+  parseCreateBrowserIdentityPayload,
+  parseUpdateBrowserIdentityPayload,
+  parseDeleteBrowserIdentityPayload,
+  parseSetTaskBrowserIdentityPayload,
+  parseDescribeTaskExecutionAccessPayload,
   parseCreateTaskPayload,
   parseCreateWorkspacePayload,
   parseListTasksPayload,
@@ -33,6 +41,7 @@ import {
   parseOpenTaskPayload,
   parseSearchTasksPayload,
   parseUnarchiveTaskPayload,
+  parseDiscardEmptyTaskPayload,
 } from '../workspace-payloads.js';
 import {
   parseCreateProviderPayload,
@@ -63,6 +72,17 @@ import {
   parseRefreshMcpToolsPayload,
 } from '../agent-payloads.js';
 import {
+  parseCreateGroupPayload,
+  parseGetGroupPayload,
+  parseListGroupsPayload,
+  parseUpdateGroupPayload,
+  parseAddGroupMemberPayload,
+  parseRemoveGroupMemberPayload,
+  parseUpdateGroupMemberResponsibilityPayload,
+  parseSetGroupLeadPayload,
+  parseCreateGroupTaskPayload,
+} from '../group-payloads.js';
+import {
   parseDecideMemoryPayload,
   parseRollbackMemoryPayload,
   parseListDiagnosticsPayload,
@@ -82,6 +102,7 @@ import {
   parseArtifactComparePayload,
   parseArtifactConflictListPayload,
   parseArtifactConflictResolutionPayload,
+  parseArtifactGetVersionPayload,
   parseArtifactListPayload,
   parseArtifactMergePayload,
   parseArtifactSelectPayload,
@@ -111,9 +132,44 @@ import type { TrustedRendererLocation } from './renderer-security.js';
 import { classifyRuntimeConnectError, RuntimePipeClient } from './runtime-client.js';
 import { RuntimeSession } from './runtime-session.js';
 import type { RuntimeConnectOutcome, RuntimeConnectResult } from '../runtime-bridge-contract.js';
+import { parseResolveApplicationToolConfirmationPayload } from '../application-tool-payloads.js';
+import { avatarDataUrl, inspectAgentAvatar, parseStoredAgentAvatarPath } from './agent-avatar.js';
+import {
+  parseCreateAutomationPayload,
+  parseDeleteAutomationPayload,
+  parseGetAutomationPayload,
+  parseListAutomationExecutionsPayload,
+  parseListAutomationsPayload,
+  parseTriggerAutomationPayload,
+  parseUpdateAutomationPayload,
+} from '../automation-payloads.js';
+import {
+  resolveDevelopmentUserDataPath,
+  resolveInitialWindowSize,
+  shouldDisableDevelopmentHardwareAcceleration,
+} from './window-size.js';
+import {
+  MAX_MESSAGE_ATTACHMENTS,
+  stageMessageAttachmentBuffers,
+  stageMessageAttachments,
+  loadMessageAttachmentPreviewOrNull,
+} from './message-attachments.js';
 
 const INSTALL_ID = process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const developmentUserDataPath = resolveDevelopmentUserDataPath(
+  app.isPackaged,
+  process.env.SYNC_THINK_DEV_USER_DATA_PATH,
+);
+if (developmentUserDataPath) app.setPath('userData', developmentUserDataPath);
+if (
+  shouldDisableDevelopmentHardwareAcceleration(
+    app.isPackaged,
+    process.env.SYNC_THINK_DEV_DISABLE_HARDWARE_ACCELERATION,
+  )
+) {
+  app.disableHardwareAcceleration();
+}
 
 let mainWindow: BrowserWindow | null = null;
 let trustedRendererLocation: TrustedRendererLocation | null = null;
@@ -122,6 +178,11 @@ let runtimeSession: RuntimeSession | null = null;
 
 function createWindow(): void {
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  const initialWindowSize = resolveInitialWindowSize({
+    packaged: app.isPackaged,
+    width: process.env.SYNC_THINK_DEV_WINDOW_WIDTH,
+    height: process.env.SYNC_THINK_DEV_WINDOW_HEIGHT,
+  });
   const parsedDevServerUrl =
     !app.isPackaged && devServerUrl ? parseLoopbackDevServerUrl(devServerUrl) : null;
   const rendererPath = path.join(__dirname, '../renderer/index.html');
@@ -130,8 +191,8 @@ function createWindow(): void {
     : trustedFileLocation(rendererPath);
 
   const window = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    width: initialWindowSize.width,
+    height: initialWindowSize.height,
     minWidth: 1280,
     show: false,
     autoHideMenuBar: true,
@@ -271,6 +332,60 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('task.appendMessage', parseAppendMessagePayload(value));
   });
+  ipcMain.handle('runtime:application-tool-confirm', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'application.tool.confirm',
+      parseResolveApplicationToolConfirmationPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:application-tool-reject', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'application.tool.reject',
+      parseResolveApplicationToolConfirmationPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:automation-create', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('automation.create', parseCreateAutomationPayload(value));
+  });
+  ipcMain.handle('runtime:automation-update', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('automation.update', parseUpdateAutomationPayload(value));
+  });
+  ipcMain.handle('runtime:automation-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('automation.delete', parseDeleteAutomationPayload(value));
+  });
+  ipcMain.handle('runtime:automation-get', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('automation.get', parseGetAutomationPayload(value));
+  });
+  ipcMain.handle('runtime:automation-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('automation.list', parseListAutomationsPayload(value));
+  });
+  ipcMain.handle('runtime:automation-trigger', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('automation.trigger', parseTriggerAutomationPayload(value));
+  });
+  ipcMain.handle('runtime:automation-execution-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'automation.execution.list',
+      parseListAutomationExecutionsPayload(value),
+    );
+  });
   ipcMain.handle('runtime:workspace-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -284,15 +399,76 @@ function setupRuntimeBridge(): void {
       parseBindWorkspaceFolderPayload(value),
     );
   });
+  ipcMain.handle('runtime:workspace-bind-git-repository', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'workspace.bindGitRepository',
+      parseBindWorkspaceGitRepositoryPayload(value),
+    );
+  });
   ipcMain.handle('runtime:workspace-list', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('workspace.list', parseListWorkspacesPayload(value));
   });
+  ipcMain.handle('runtime:browser-identity-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('browserIdentity.list', value ?? {});
+  });
+  ipcMain.handle('runtime:browser-identity-create', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browserIdentity.create',
+      parseCreateBrowserIdentityPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-identity-update', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browserIdentity.update',
+      parseUpdateBrowserIdentityPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-identity-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browserIdentity.delete',
+      parseDeleteBrowserIdentityPayload(value),
+    );
+  });
   ipcMain.handle('runtime:task-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('task.create', parseCreateTaskPayload(value));
+  });
+  ipcMain.handle('runtime:task-resolve-worktree-integration', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'task.resolveWorktreeIntegration',
+      parseResolveWorktreeIntegrationPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:task-set-browser-identity', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'task.setBrowserIdentity',
+      parseSetTaskBrowserIdentityPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:task-describe-execution-access', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'task.describeExecutionAccess',
+      parseDescribeTaskExecutionAccessPayload(value),
+    );
   });
   ipcMain.handle('runtime:task-list', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -323,6 +499,11 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('task.unarchive', parseUnarchiveTaskPayload(value));
+  });
+  ipcMain.handle('runtime:task-discard-empty', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('task.discardEmpty', parseDiscardEmptyTaskPayload(value));
   });
   ipcMain.handle('runtime:plan-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -378,6 +559,11 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('artifact.list', parseArtifactListPayload(value));
+  });
+  ipcMain.handle('runtime:artifact-get-version', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('artifact.getVersion', parseArtifactGetVersionPayload(value));
   });
   ipcMain.handle('runtime:artifact-compare', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -503,6 +689,55 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('agent.createVersion', parseAgentCreateVersionPayload(value));
+  });
+
+  ipcMain.handle('runtime:group-create', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('group.create', parseCreateGroupPayload(value));
+  });
+  ipcMain.handle('runtime:group-get', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('group.get', parseGetGroupPayload(value));
+  });
+  ipcMain.handle('runtime:group-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('group.list', parseListGroupsPayload(value));
+  });
+  ipcMain.handle('runtime:group-update', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('group.update', parseUpdateGroupPayload(value));
+  });
+  ipcMain.handle('runtime:group-member-add', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('group.member.add', parseAddGroupMemberPayload(value));
+  });
+  ipcMain.handle('runtime:group-member-remove', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('group.member.remove', parseRemoveGroupMemberPayload(value));
+  });
+  ipcMain.handle('runtime:group-member-responsibility', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'group.member.updateResponsibility',
+      parseUpdateGroupMemberResponsibilityPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:group-set-lead', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('group.setLead', parseSetGroupLeadPayload(value));
+  });
+  ipcMain.handle('runtime:group-task-create', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('group.task.create', parseCreateGroupTaskPayload(value));
   });
 
   ipcMain.handle('runtime:skill-import', async (event, value: unknown) => {
@@ -781,6 +1016,171 @@ function setupRuntimeBridge(): void {
       return { canceled: true as const, path: null };
     }
     return { canceled: false as const, path: result.filePaths[0]! };
+  });
+  ipcMain.handle('desktop:pick-message-attachments', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const kind = value === 'folder' ? 'folder' : 'files';
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const options =
+      kind === 'folder'
+        ? {
+            title: '添加文件夹',
+            properties: ['openDirectory'] as ['openDirectory'],
+          }
+        : {
+            title: '添加图片或文件',
+            properties: ['openFile', 'multiSelections'] as ['openFile', 'multiSelections'],
+            filters: [
+              {
+                name: '支持的附件',
+                extensions: [
+                  'png',
+                  'jpg',
+                  'jpeg',
+                  'webp',
+                  'gif',
+                  'pdf',
+                  'doc',
+                  'docx',
+                  'xls',
+                  'xlsx',
+                  'txt',
+                  'md',
+                  'json',
+                  'yaml',
+                  'yml',
+                  'xml',
+                  'csv',
+                  'tsv',
+                  'js',
+                  'jsx',
+                  'mjs',
+                  'cjs',
+                  'ts',
+                  'tsx',
+                  'css',
+                  'html',
+                  'htm',
+                  'py',
+                  'java',
+                  'c',
+                  'h',
+                  'cpp',
+                  'hpp',
+                  'cs',
+                  'go',
+                  'rs',
+                  'sh',
+                  'ps1',
+                  'sql',
+                  'toml',
+                  'zip',
+                ],
+              },
+            ],
+          };
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) return [];
+    return stageMessageAttachments(
+      result.filePaths,
+      path.join(app.getPath('userData'), 'message-attachments'),
+    );
+  });
+  ipcMain.handle('desktop:stage-message-files', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (!Array.isArray(value) || value.length > MAX_MESSAGE_ATTACHMENTS) {
+      throw new Error('附件路径无效');
+    }
+    const paths: string[] = [];
+    const buffers: Array<{ name: string; mimeType?: string; bytes: Uint8Array }> = [];
+    for (const entry of value) {
+      if (typeof entry === 'string' && entry.length > 0 && entry.length <= 4_096) {
+        paths.push(entry);
+        continue;
+      }
+      if (
+        !entry ||
+        typeof entry !== 'object' ||
+        Array.isArray(entry) ||
+        typeof (entry as { name?: unknown }).name !== 'string' ||
+        ((entry as { mimeType?: unknown }).mimeType !== undefined &&
+          typeof (entry as { mimeType?: unknown }).mimeType !== 'string') ||
+        !((entry as { bytes?: unknown }).bytes instanceof Uint8Array)
+      ) {
+        throw new Error('附件路径无效');
+      }
+      buffers.push(entry as { name: string; mimeType?: string; bytes: Uint8Array });
+    }
+    const root = path.join(app.getPath('userData'), 'message-attachments');
+    return [
+      ...(await stageMessageAttachments(paths, root)),
+      ...(await stageMessageAttachmentBuffers(buffers, root)),
+    ];
+  });
+  ipcMain.handle('desktop:load-message-attachment-preview', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('附件无效');
+    const input = value as { managedRef?: unknown; mimeType?: unknown; sha256?: unknown };
+    if (typeof input.managedRef !== 'string' || typeof input.mimeType !== 'string') {
+      throw new Error('附件无效');
+    }
+    return loadMessageAttachmentPreviewOrNull(
+      {
+        managedRef: input.managedRef,
+        mimeType: input.mimeType,
+        ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
+      },
+      path.join(app.getPath('userData'), 'message-attachments'),
+    );
+  });
+  ipcMain.handle('desktop:pick-agent-avatar', async (event) => {
+    assertRuntimeIpcSource(event);
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: '选择智能体头像',
+      properties: ['openFile'] as ['openFile'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    };
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) {
+      return { canceled: true as const };
+    }
+    const bytes = await readFile(result.filePaths[0]!);
+    const metadata = inspectAgentAvatar(bytes);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const relativePath = `avatars/${hash}.${metadata.extension}`;
+    const avatarDirectory = path.join(app.getPath('userData'), 'avatars');
+    const targetPath = path.join(avatarDirectory, `${hash}.${metadata.extension}`);
+    await mkdir(avatarDirectory, { recursive: true });
+    try {
+      await writeFile(targetPath, bytes, { flag: 'wx' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    return {
+      canceled: false as const,
+      avatarPath: relativePath,
+      avatarUrl: avatarDataUrl(bytes, metadata.mimeType),
+      width: metadata.width,
+      height: metadata.height,
+    };
+  });
+  ipcMain.handle('desktop:load-agent-avatar', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const relativePath = parseStoredAgentAvatarPath(value);
+    const targetPath = path.join(app.getPath('userData'), ...relativePath.split('/'));
+    const bytes = await readFile(targetPath);
+    const metadata = inspectAgentAvatar(bytes);
+    return {
+      avatarPath: relativePath,
+      avatarUrl: avatarDataUrl(bytes, metadata.mimeType),
+      width: metadata.width,
+      height: metadata.height,
+    };
   });
   ipcMain.handle('runtime:run-cancel', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

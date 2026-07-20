@@ -188,14 +188,14 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 
 产品设计要求动效解释状态；用户要求可获奖级感知力。本项目取 **“可明确感知的功能性动效”**：
 
-| 场景                    | 期望感知               | 时长指引                        |
-| ----------------------- | ---------------------- | ------------------------------- |
-| 打开/折叠轨迹           | 空间呼吸，中栏扩展     | 200–300ms                       |
-| Agent 交接              | 上下文从 A 到 B 的路径 | 250–400ms                       |
-| Context 写入 Continuum  | 证据带被点亮/接入      | 180–280ms                       |
-| 计划待批准              | 轻微但明确的等待态     | 循环须可关，reduced-motion 静态 |
-| 产物生成                | 新版本落入版本架       | 220–320ms                       |
-| 对话升级为协作计划       | 计划区域进入并同步任务状态 | 150–220ms                    |
+| 场景                   | 期望感知                   | 时长指引                        |
+| ---------------------- | -------------------------- | ------------------------------- |
+| 打开/折叠轨迹          | 空间呼吸，中栏扩展         | 200–300ms                       |
+| Agent 交接             | 上下文从 A 到 B 的路径     | 250–400ms                       |
+| Context 写入 Continuum | 证据带被点亮/接入          | 180–280ms                       |
+| 计划待批准             | 轻微但明确的等待态         | 循环须可关，reduced-motion 静态 |
+| 产物生成               | 新版本落入版本架           | 220–320ms                       |
+| 对话升级为协作计划     | 计划区域进入并同步任务状态 | 150–220ms                       |
 
 规则：
 
@@ -262,17 +262,28 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 
 ## 12. 设计变更记录
 
-| 日期       | 变更                                                                                            | 原因                                                         | 影响范围                                                    |
-| ---------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------- |
-| 2026-07-11 | 以 V3 为结构基线初始化前端设计文档与 token                                                      | `/zno-init`                                                  | 全 UI                                                       |
-| 2026-07-11 | 确认 V3 仅锁 IA；视觉/交互升级为可获奖级，Claude 主导原创                                       | 用户确认文档并提高设计标准                                   | 全 UI / tokens 可进化 / 组件必须原创                        |
-| 2026-07-12 | 产品首屏隐藏重复 readiness；M1 验证改为默认折叠单行工作台                                       | 用户反馈页面拥挤，要求参考 Codex 工作台                      | 主工作台密度 / 不改变 Locked IA                             |
-| 2026-07-12 | 左栏采用任务树常驻 + 单层覆盖式工具抽屉；Provider 网络错误改为中文行动提示                      | 用户选择视觉方案 C，并反馈发现模型英文错误                   | 左栏信息层级 / 工具详情 / 错误 UX                           |
-| 2026-07-12 | 助手输出改为无框 Markdown 阅读流；Composer 收为输入 + 模型入口 + 图标操作，正常态不展示重复状态 | 用户要求对照 Codex 输出样式继续减负                          | 对话消息 / Composer / Trace 与 Manifest 信息归属            |
-| 2026-07-15 | Context 结构位改为工作区/任务/对话；M1 验证退出产品表面；助手回复恢复稳定 Agent 头像与名称      | 用户反馈现有标签无法理解，并要求参考 Multica 暴露 Agent 身份 | 任务头 / 对话消息 / Agent 抽屉跳转；不恢复模型与 Run 元信息 |
-| 2026-07-16 | 参考 Multica 重排新人信息层级：文字主导航、任务负责人/模型、单一下一步、右侧任务进度与三步空态  | 用户反馈当前桌面对新人不友好                                 | 主工作台表达；数据合同、Composer 与三栏结构保持不变         |
-| 2026-07-16 | 折叠右轨收敛为仅图标控制，移除折叠态标题和说明文字；协作 CTA 保持单一                           | 1280-1440px 视觉审计发现 44px 右轨出现逐字竖排               | AppShell 折叠态 / 任务操作去重                              |
-| 2026-07-16 | 项目目录改为悬浮提示，项目切换进入 Compose，任务首条消息命名，对话意图自动生成协作计划          | 用户要求减少头部重复信息，并以一条持续对话承载单 Agent 与协作 | 项目树 / Compose / 任务头 / 任务命名 / 协作入口             |
+| 日期       | 变更                                                                                            | 原因                                                             | 影响范围                                                    |
+| ---------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------- |
+| 2026-07-11 | 以 V3 为结构基线初始化前端设计文档与 token                                                      | `/zno-init`                                                      | 全 UI                                                       |
+| 2026-07-11 | 确认 V3 仅锁 IA；视觉/交互升级为可获奖级，Claude 主导原创                                       | 用户确认文档并提高设计标准                                       | 全 UI / tokens 可进化 / 组件必须原创                        |
+| 2026-07-12 | 产品首屏隐藏重复 readiness；M1 验证改为默认折叠单行工作台                                       | 用户反馈页面拥挤，要求参考 Codex 工作台                          | 主工作台密度 / 不改变 Locked IA                             |
+| 2026-07-12 | 左栏采用任务树常驻 + 单层覆盖式工具抽屉；Provider 网络错误改为中文行动提示                      | 用户选择视觉方案 C，并反馈发现模型英文错误                       | 左栏信息层级 / 工具详情 / 错误 UX                           |
+| 2026-07-12 | 助手输出改为无框 Markdown 阅读流；Composer 收为输入 + 模型入口 + 图标操作，正常态不展示重复状态 | 用户要求对照 Codex 输出样式继续减负                              | 对话消息 / Composer / Trace 与 Manifest 信息归属            |
+| 2026-07-15 | Context 结构位改为工作区/任务/对话；M1 验证退出产品表面；助手回复恢复稳定 Agent 头像与名称      | 用户反馈现有标签无法理解，并要求参考 Multica 暴露 Agent 身份     | 任务头 / 对话消息 / Agent 抽屉跳转；不恢复模型与 Run 元信息 |
+| 2026-07-16 | 参考 Multica 重排新人信息层级：文字主导航、任务负责人/模型、单一下一步、右侧任务进度与三步空态  | 用户反馈当前桌面对新人不友好                                     | 主工作台表达；数据合同、Composer 与三栏结构保持不变         |
+| 2026-07-16 | 折叠右轨收敛为仅图标控制，移除折叠态标题和说明文字；协作 CTA 保持单一                           | 1280-1440px 视觉审计发现 44px 右轨出现逐字竖排                   | AppShell 折叠态 / 任务操作去重                              |
+| 2026-07-16 | 项目目录改为悬浮提示，项目切换进入 Compose，任务首条消息命名，对话意图自动生成协作计划          | 用户要求减少头部重复信息，并以一条持续对话承载单 Agent 与协作    | 项目树 / Compose / 任务头 / 任务命名 / 协作入口             |
+| 2026-07-18 | 采用 Figma Talk V8 的全局导航与分区工作台，新增好友、群聊、自动化，审批退出全局导航             | 用户确认原型并要求 1:1 改造，同时保留现有真实运行能力            | 桌面壳 / 任务 / 项目 / Agent / 群聊 / 自动化 / 模型源       |
+| 2026-07-19 | Composer 增加紧凑附件架；执行详情改为按 Agent 展开的真实命令、文件与工具日志                    | 用户要求向 Agent 发送图片/文件/文件夹，并参考 Codex 查看执行记录 | 对话输入 / 消息附件 / 执行详情弹窗                          |
+| 2026-07-19 | 附件改为可见大图预览并自动增高；产物目录只保留关键交付，单版本详情默认展示正文                 | 用户反馈截图粘贴后不可见、拖放失效且内部步骤产物过多难以理解     | Composer / 文件与产物目录 / 产物弹窗                       |
+
+### 12.5 附件与产物减负规则（2026-07-19）
+
+1. 拖入 Composer 时必须显示覆盖式落点反馈；松手后的图片缩略图位于正文上方，不得被固定输入高度裁切。
+2. 有附件时输入区自动增高，但用户手动设置的更大高度优先；附件移除后回到用户原有高度。
+3. “文件与产物”只列用户可交付内容。成员跳过、工具轨迹、委派决策和普通模型回复属于执行详情。
+4. 群聊主智能体最终汇总统一命名为“最终结果”，不得显示带 ULID 的 `Step output` 技术名。
+5. 只有一个版本时直接展示正文；版本 Hash、来源 ID、父版本和对比/合并控制不进入默认界面。
 
 ### 12.1 新人工作区覆盖规则（2026-07-16）
 
@@ -304,3 +315,35 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 4. 任务头不重复显示当前队友、模型或参与模式分段控件，只保留项目/任务、状态和显示控制。
 5. 对话页面始终不变。显式多 Agent 请求或高复杂度端到端请求自动进入协作状态，并在消息流中生成可编辑、需审批的计划。
 6. 自动升级只使用已配置的 AgentVersion 及其模型绑定；不得静默选择未配置模型，计划批准前不得执行。
+
+### 12.4 Talk V8 桌面覆盖规则（2026-07-18）
+
+权威规格：`docs/superpowers/specs/2026-07-18-agent-aware-talk-workspace-design.md`。
+
+1. 增加独立全局文字导航：对话任务、项目、好友、群聊、自动化、模型源、Skill & MCP。
+2. 全局导航与当前页面的上下文列表是两个层级；任务页仍保持左任务列表、中完整对话、右任务详情。
+3. 好友直接映射 Agent 定义；群聊直接映射持久化多 Agent 协作定义，禁止复制 mock 数据。
+4. 审批不再作为全局一级页面，只在相关任务右栏、计划或操作请求中出现。
+5. 项目页可以同时显示项目列表、项目任务、对话和右侧详情；窄屏按右详情、上下文列表的顺序折叠。
+6. Figma 只定义布局、层级和视觉；Runtime、Compose、Provider、任务、审批、产物与事件真源行为保持真实。
+7. 群聊与好友单聊使用相同消息样式和单轮响应；无 `@` 时由主智能体回复，`@成员` 时路由该成员，协作生命周期与委派过程不得渲染为聊天卡片。
+## Task continuity additions
+
+- Treat unsent Composer content as part of the selected task's working state. The draft follows the task when the user changes project or conversation.
+- Show sent images as inspectable conversation content: a compact thumbnail in the message and a focused black overlay viewer with zoom controls.
+- Keep child work inside the task detail rail. The parent task is the coordination surface; child rows are concise, clickable links with status, and child tasks retain a parent breadcrumb.
+
+## Automatic child-task presentation
+
+- Delegation, acceptance, completion, and failure are normal Agent messages, not anonymous system notices.
+- The parent task keeps its lead Agent avatar. A child result message uses the exact child Agent avatar only on that message.
+- Child rows remain indented with a connector and `子任务` label. The parent and child surfaces provide direct two-way navigation.
+- Dependency and retry details stay in execution logs; the conversation shows concise progress and handoff text.
+- `@Agent` does not add a task row. It is only an immediate mention inside the current direct/group conversation.
+
+## Task access and Browser Identity placement
+
+- Task-specific access belongs in the collapsible right task detail rail, not in a Composer popover and not on the Agent profile.
+- The rail directly edits operation permission and Browser Identity, then summarizes execution location, base ref, effective capability categories, and the Agent ceiling without exposing raw tool names.
+- Agent capability ceilings are edited under `好友 → 能力与指令 → 能力上限`. Task settings may narrow that ceiling but never expand it.
+- Browser Identities are managed under `设置 → 浏览器身份`. Product copy explains that each identity isolates cookies, login state, and site data; filesystem profile paths remain hidden.

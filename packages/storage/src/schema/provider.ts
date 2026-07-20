@@ -50,6 +50,7 @@ export const agentVersion = sqliteTable('agent_version', {
   developerInstructions: text('developer_instructions').notNull(),
   inputContract: text('input_contract').notNull(),
   outputContract: text('output_contract').notNull(),
+  maxConcurrency: integer('max_concurrency').notNull().default(3),
   defaultModelId: text('default_model_id').notNull(),
   defaultCredentialGroupId: text('default_credential_group_id').notNull(),
   pinnedCredentialRefId: text('pinned_credential_ref_id'),

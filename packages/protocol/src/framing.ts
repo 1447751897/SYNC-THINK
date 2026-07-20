@@ -8,6 +8,15 @@ export const MAX_FRAME_BYTES = 1 * 1024 * 1024; // 1 MiB cap on wire frames
 
 export const HEADER_BYTES = 4; // uint32 BE length
 
+export type CommandCallerSurface = 'desktop' | 'agent' | 'mcp' | 'cli';
+
+export interface CommandFrameMeta {
+  /** Auditable caller boundary; omitted legacy/Desktop requests default to desktop. */
+  callerSurface?: CommandCallerSurface;
+  /** Single-use Runtime token proving confirmation of one exact configuration payload. */
+  confirmationToken?: string;
+}
+
 // Envelope carrying every message on the pipe.
 export interface Frame<T = unknown> {
   /** Mirrors request id for requests; server messages use the matching id. */
@@ -15,6 +24,7 @@ export interface Frame<T = unknown> {
   kind: 'request' | 'response' | 'event';
   type: string;
   payload: T;
+  meta?: CommandFrameMeta;
   /** Present on responses/events when an error occurred processing the request. */
   error?: AppError;
 }
@@ -25,7 +35,10 @@ export function encodeFrame<T>(frame: Frame<T>): Buffer {
   if (json.length > MAX_FRAME_BYTES) {
     // Caller must instead emit an artifactRef. No silent truncation.
     throw Object.assign(new Error('frame exceeds max'), {
-      appError: { code: ErrorCode.PROTOCOL_FRAME_MALFORMED, message: 'frame too large', } satisfies AppError,
+      appError: {
+        code: ErrorCode.PROTOCOL_FRAME_MALFORMED,
+        message: 'frame too large',
+      } satisfies AppError,
     });
   }
   const out = Buffer.allocUnsafe(HEADER_BYTES + json.length);
@@ -48,7 +61,10 @@ export function decodeFrames(input: Buffer): DecodeStatus {
     const len = buf.readUInt32BE(0);
     if (len <= 0 || len > MAX_FRAME_BYTES) {
       throw Object.assign(new Error('invalid frame length'), {
-        appError: { code: ErrorCode.PROTOCOL_FRAME_MALFORMED, message: 'invalid frame length' } satisfies AppError,
+        appError: {
+          code: ErrorCode.PROTOCOL_FRAME_MALFORMED,
+          message: 'invalid frame length',
+        } satisfies AppError,
       });
     }
     if (buf.length < HEADER_BYTES + len) break;

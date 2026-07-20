@@ -3,6 +3,9 @@ import {
   parseCreateTaskPayload,
   parseCreateWorkspacePayload,
   parseBindWorkspaceFolderPayload,
+  parseBindWorkspaceGitRepositoryPayload,
+  parseResolveWorktreeIntegrationPayload,
+  parseDiscardEmptyTaskPayload,
   parseListTasksPayload,
   parseListWorkspacesPayload,
   parseOpenTaskPayload,
@@ -51,6 +54,51 @@ describe('desktop workspace bridge payload validation', () => {
     expect(() => parseBindWorkspaceFolderPayload({ workspaceId: 'ws_1', folderPath: '  ' })).toThrow(
       /Invalid bind-workspace-folder/,
     );
+  });
+
+  it('validates Git repository binding without accepting secrets', () => {
+    expect(
+      parseBindWorkspaceGitRepositoryPayload({
+        workspaceId: 'ws_1',
+        repositoryUrl: ' https://github.com/example/project.git ',
+        defaultRef: ' main ',
+      }),
+    ).toEqual({
+      workspaceId: 'ws_1',
+      repositoryUrl: 'https://github.com/example/project.git',
+      defaultRef: 'main',
+    });
+    expect(() =>
+      parseBindWorkspaceGitRepositoryPayload({ workspaceId: 'ws_1', repositoryUrl: ' ' }),
+    ).toThrow(/Invalid bind-workspace-git-repository/);
+  });
+
+  it('validates explicit worktree conflict resolution', () => {
+    expect(
+      parseResolveWorktreeIntegrationPayload({
+        childTaskId: ' child-1 ',
+        strategy: 'accept-child',
+      }),
+    ).toEqual({ childTaskId: 'child-1', strategy: 'accept-child' });
+    expect(() =>
+      parseResolveWorktreeIntegrationPayload({ childTaskId: 'child-1', strategy: 'merge-all' }),
+    ).toThrow(/Invalid resolve-worktree-integration/);
+  });
+
+  it('validates guarded empty-task disposal without accepting extra fields', () => {
+    expect(
+      parseDiscardEmptyTaskPayload({ taskId: ' task-blank ', expectedTaskVersion: 0 }),
+    ).toEqual({ taskId: 'task-blank', expectedTaskVersion: 0 });
+    expect(() =>
+      parseDiscardEmptyTaskPayload({
+        taskId: 'task-blank',
+        expectedTaskVersion: 0,
+        force: true,
+      }),
+    ).toThrow(/Invalid discard-empty-task/);
+    expect(() =>
+      parseDiscardEmptyTaskPayload({ taskId: 'task-blank', expectedTaskVersion: -1 }),
+    ).toThrow(/Invalid discard-empty-task/);
   });
 
   it('accepts empty list-workspaces payload', () => {

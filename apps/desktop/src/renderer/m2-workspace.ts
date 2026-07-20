@@ -7,7 +7,10 @@ import type {
   RunGraphResponse,
 } from '@sync-think/protocol';
 import type {
+  AgentBindingCredentialOption,
+  AgentBindingModelOption,
   AgentBindingView,
+  AgentCreateInput,
   AgentDefinitionSaveInput,
   AgentDefinitionView,
   AgentVersionHistoryView,
@@ -59,9 +62,11 @@ export function createM2LoadRequestGate(): M2LoadRequestGate {
   };
 }
 
-export function mergeTaskVersionForTarget<
-  T extends { taskId: string; taskVersion: number },
->(current: T | null, targetTaskId: string, taskVersion: number): T | null {
+export function mergeTaskVersionForTarget<T extends { taskId: string; taskVersion: number }>(
+  current: T | null,
+  targetTaskId: string,
+  taskVersion: number,
+): T | null {
   if (!current || current.taskId !== targetTaskId) return current;
   const nextTaskVersion = Math.max(current.taskVersion, taskVersion);
   return nextTaskVersion === current.taskVersion
@@ -81,6 +86,7 @@ function projectAgentDefinition(agent: AgentDefinitionSummary): AgentDefinitionV
     developerInstructions: agent.developerInstructions,
     inputContract: agent.inputContract,
     outputContract: agent.outputContract,
+    maxConcurrency: agent.maxConcurrency,
     memoryScope: agent.memoryScope,
     approvalMode: agent.approvalMode,
     mcpToolAllowlist: [...agent.mcpToolAllowlist],
@@ -123,6 +129,7 @@ export function projectAgentWorkspace(
       name: agent.name,
       role: agent.role,
       version: agent.version,
+      visualIdentity: { ...agent.visualIdentity },
       defaultModelId: String(agent.defaultModelId),
       skillCount: agent.skillVersionIds.length,
       mcpCount: agent.mcpServerIds.length,
@@ -140,8 +147,18 @@ export function buildAgentVersionPayload(
   definition: AgentDefinitionSaveInput,
   binding: AgentBindingView,
 ): CreateAgentVersionPayload {
+  const { visualIdentity: visualIdentityView, ...definitionWithoutVisualIdentity } = definition;
+  const visualIdentity = visualIdentityView
+    ? {
+        icon: visualIdentityView.icon,
+        color: visualIdentityView.color,
+        ...(visualIdentityView.avatarPath ? { avatarPath: visualIdentityView.avatarPath } : {}),
+      }
+    : undefined;
   return {
-    ...definition,
+    ...definitionWithoutVisualIdentity,
+    approvalMode: 'full',
+    ...(visualIdentity ? { visualIdentity } : {}),
     defaultModelId: binding.defaultModelId,
     fallbackModelIds: [...binding.fallbackModelIds],
     pauseOnFailure: binding.pauseOnFailure,
@@ -155,19 +172,20 @@ export function buildAgentVersionPayload(
 }
 
 export function buildAgentCreatePayload(
-  input: { name: string; role: string },
+  input: AgentCreateInput,
   binding: AgentBindingView,
 ): CreateAgentPayload {
   const name = input.name.trim();
   const role = input.role.trim();
   return {
     name,
-    description: `${role} Agent`,
+    description: input.description.trim(),
     visualIdentity: { icon: 'bot', color: '#64748b' },
     role,
-    developerInstructions: `You are ${name}, responsible for ${role}.`,
+    developerInstructions: input.developerInstructions.trim(),
     inputContract: 'Task goal, context, constraints, and acceptance criteria.',
     outputContract: 'Completed work, artifacts, and verification evidence.',
+    maxConcurrency: input.maxConcurrency,
     defaultModelId: binding.defaultModelId,
     fallbackModelIds: [...binding.fallbackModelIds],
     pauseOnFailure: binding.pauseOnFailure,
@@ -182,7 +200,7 @@ export function buildAgentCreatePayload(
     mcpServerIds: [...(binding.mcpServerIds ?? [])],
     mcpToolAllowlist: [],
     permissions: { file: [], command: [], browser: [], desktop: [], network: [] },
-    approvalMode: 'request',
+    approvalMode: 'full',
     reviewBehavior: { role: 'none', maxIterations: 0, onLimitReached: 'pause' },
     artifactRules: {
       retainVersions: true,
@@ -192,9 +210,35 @@ export function buildAgentCreatePayload(
   } as unknown as CreateAgentPayload;
 }
 
+export function buildAgentBootstrapBinding(
+  input: AgentCreateInput,
+  models: readonly AgentBindingModelOption[],
+  credentials: readonly AgentBindingCredentialOption[],
+): AgentBindingView | null {
+  const model = models[0];
+  if (!model) return null;
+  const credential =
+    credentials.find(
+      (candidate) => model.providerName && candidate.providerName === model.providerName,
+    ) ?? credentials[0];
+  return {
+    agentId: 'agent-bootstrap',
+    agentVersionId: 'agent-version-bootstrap',
+    version: 0,
+    name: input.name.trim(),
+    role: input.role.trim(),
+    defaultModelId: model.modelId,
+    fallbackModelIds: [],
+    pauseOnFailure: true,
+    ...(credential ? { defaultCredentialGroupId: credential.credentialGroupId } : {}),
+    pinnedCredentialRefId: credential?.credentialRefId ?? null,
+    skillVersionIds: [],
+    mcpServerIds: [],
+  };
+}
+
 function belongsToTask(event: Event, taskId: string): boolean {
-  const payloadTaskId =
-    typeof event.payload.taskId === 'string' ? event.payload.taskId : undefined;
+  const payloadTaskId = typeof event.payload.taskId === 'string' ? event.payload.taskId : undefined;
   return String(event.taskId ?? '') === taskId || payloadTaskId === taskId;
 }
 
@@ -209,9 +253,7 @@ export function deriveM2WorkspaceIdentity(
     if (!belongsToTask(event, taskId)) continue;
     const planId = typeof event.payload.planId === 'string' ? event.payload.planId : undefined;
     const planRevisionId =
-      typeof event.payload.planRevisionId === 'string'
-        ? event.payload.planRevisionId
-        : undefined;
+      typeof event.payload.planRevisionId === 'string' ? event.payload.planRevisionId : undefined;
     const revision =
       typeof event.payload.revision === 'number' ? event.payload.revision : undefined;
     if (planId) identity.planId = planId;
@@ -299,9 +341,7 @@ export function resolveAutomaticModeBlocker(input: {
   return null;
 }
 
-export function hasApprovedPlanRevision(
-  revisions: readonly { state: string }[],
-): boolean {
+export function hasApprovedPlanRevision(revisions: readonly { state: string }[]): boolean {
   return revisions.some((revision) => revision.state === 'approved');
 }
 
@@ -311,9 +351,9 @@ export function canSaveAgentBindingForSelection(
 ): boolean {
   return Boolean(
     binding &&
-      selectedAgentId &&
-      typeof binding.agentId === 'string' &&
-      binding.agentId === selectedAgentId,
+    selectedAgentId &&
+    typeof binding.agentId === 'string' &&
+    binding.agentId === selectedAgentId,
   );
 }
 

@@ -89,6 +89,23 @@ Runtime 数据库默认位于：
 
 测试可通过 `SYNC_THINK_DB_PATH` 指向隔离数据库。不得把 `SYNC_THINK_PIPE_SECRET` 写入日志、数据库、Renderer 状态或诊断导出。
 
+Runtime 每次应用新 migration 前会把数据库复制到：
+
+```text
+%LOCALAPPDATA%\SYNC-THINK\backups\
+```
+
+因此生产数据启动必须有该目录的读写权限。受限测试环境应使用 `SYNC_THINK_DB_PATH` 指向隔离目录，不应跳过备份或直接修改生产数据库。
+
+Automation Webhook 默认只监听本机 loopback：
+
+```powershell
+$env:SYNC_THINK_WEBHOOK_HOST = '127.0.0.1'
+$env:SYNC_THINK_WEBHOOK_PORT = '47821'
+```
+
+端口被占用时，Runtime 仍可提供其他能力，Automation 状态会如实标记 Webhook 不可用；释放端口并重启 Runtime 后恢复。不要为了方便把默认地址改成 `0.0.0.0`。
+
 ## 5. Electron 构建边界
 
 Electron 保持以下安全设置：
@@ -111,6 +128,17 @@ apps/desktop/src/preload/index.ts
 
 Renderer 由 `apps/desktop/scripts/build-renderer.mjs` 打包为本地 JS/CSS，CSP 不允许 `unsafe-eval`。
 
+未打包开发版提供受校验的实窗 QA 参数：
+
+```powershell
+$env:SYNC_THINK_DEV_WINDOW_WIDTH = '1280'  # 1280..3840
+$env:SYNC_THINK_DEV_WINDOW_HEIGHT = '720'  # 720..2160
+$env:SYNC_THINK_DEV_USER_DATA_PATH = 'D:\projects\SYNC-THINK\.tmp-runtime-qa\electron-user-data'
+$env:SYNC_THINK_DEV_DISABLE_HARDWARE_ACCELERATION = '1'
+```
+
+窗口尺寸越界、相对 userData 路径和非 `1` 的硬件加速开关会被拒绝。正式打包版始终忽略全部 QA 参数并继续使用 1440×900 默认窗口、正常 userData 和硬件加速策略。不得为了实窗 QA 添加 `--no-sandbox`。
+
 ## 6. 联调检查
 
 1. Runtime 日志出现 `pipe ready` 和 `database ready`。
@@ -119,3 +147,5 @@ Renderer 由 `apps/desktop/scripts/build-renderer.mjs` 打包为本地 JS/CSS，
 4. 关闭 Electron 不应结束 Runtime PID。
 5. Runtime 重启后应从 SQLite checkpoint 续跑；客户端按 cursor 自动重连并补收 durable events。
 6. Electron 控制台不得出现 CSP、安全、preload 或 renderer 异常。
+7. 自动化页应显示 scheduler/Webhook 的真实状态；手动或计划触发必须创建新任务，不能复用其他任务上下文。
+8. Runtime 关闭前应等待 Automation 服务、Scheduler 与 MCP stdio 子进程清理完成。

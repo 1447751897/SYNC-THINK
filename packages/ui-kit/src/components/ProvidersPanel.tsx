@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   Bot,
   Cable,
@@ -305,6 +305,9 @@ export function ProvidersPanel(props: ProvidersPanelProps) {
   const [ccError, setCcError] = useState<string | null>(null);
   /** null = show all surfaces in order */
   const [surfaceFilter, setSurfaceFilter] = useState<ProviderSurface | null>(null);
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(
+    props.providers[0]?.providerId ?? null,
+  );
 
   const readiness = useMemo(
     () => projectProvidersReadiness({ providers: props.providers }),
@@ -317,6 +320,34 @@ export function ProvidersPanel(props: ProvidersPanelProps) {
     if (!surfaceFilter) return surfaceBuckets;
     return surfaceBuckets.filter((b) => b.surface === surfaceFilter);
   }, [surfaceBuckets, surfaceFilter]);
+
+  const visibleProviders = useMemo(
+    () => visibleBuckets.flatMap((bucket) => bucket.providers),
+    [visibleBuckets],
+  );
+
+  useEffect(() => {
+    if (selectedProviderId && visibleProviders.some((item) => item.providerId === selectedProviderId)) {
+      return;
+    }
+    setSelectedProviderId(visibleProviders[0]?.providerId ?? null);
+  }, [selectedProviderId, visibleProviders]);
+
+  const detailBuckets = useMemo(() => {
+    if (!selectedProviderId) return [] as ProviderSurfaceBucket[];
+    return visibleBuckets.flatMap((bucket) => {
+      const provider = bucket.providers.find((item) => item.providerId === selectedProviderId);
+      return provider
+        ? [
+            {
+              ...bucket,
+              providers: [provider],
+              modelCount: provider.models.length,
+            },
+          ]
+        : [];
+    });
+  }, [selectedProviderId, visibleBuckets]);
 
   const resetForm = () => {
     setName('');
@@ -470,58 +501,17 @@ export function ProvidersPanel(props: ProvidersPanelProps) {
         </p>
       ) : null}
 
-      <div
-        className="st-providers__readiness"
-        data-testid="provider-m1-readiness"
-        data-level={readiness.level}
-        aria-label="多模型就绪（M1）"
+      <details
+        className="st-providers__cc-switch"
+        data-testid="provider-cc-switch"
+        open={ccPreview ? true : undefined}
       >
-        <div className="st-providers__readiness-head">
-          <Radar size={12} strokeWidth={1.8} aria-hidden="true" />
-          <span>多模型就绪</span>
-          <small>M1 · ≥2 Provider / ≥3 模型</small>
-          <strong data-testid="provider-m1-readiness-badge">{readiness.badge}</strong>
-        </div>
-        <ul className="st-providers__readiness-list">
-          <li data-ok={readiness.providersOk ? '1' : '0'} data-testid="provider-m1-check-providers">
-            <span className="st-providers__readiness-dot" aria-hidden="true" />
-            Provider {readiness.providerCount}/2
-            {readiness.providersOk ? ' · 已满足' : ' · 还需添加'}
-          </li>
-          <li data-ok={readiness.modelsOk ? '1' : '0'} data-testid="provider-m1-check-models">
-            <span className="st-providers__readiness-dot" aria-hidden="true" />
-            模型 {readiness.modelCount}/3
-            {readiness.modelsOk ? ' · 已满足' : ' · 发现或手动添加'}
-          </li>
-          <li data-ok={readiness.secretsOk ? '1' : '0'} data-testid="provider-m1-check-secrets">
-            <span className="st-providers__readiness-dot" aria-hidden="true" />
-            密钥 {readiness.secretCount > 0 ? '已写入安全存储（遮罩）' : '尚未配置'}
-          </li>
-          <li
-            data-ok={readiness.multiProtocol ? '1' : readiness.protocolCount > 0 ? '1' : '0'}
-            data-testid="provider-m1-check-protocol"
-            data-multi={readiness.multiProtocol ? '1' : '0'}
-          >
-            <span className="st-providers__readiness-dot" aria-hidden="true" />
-            协议种类 {readiness.protocolCount}
-            {readiness.multiProtocol
-              ? ' · 已跨协议'
-              : readiness.protocolCount > 0
-                ? ' · 可混用 OpenAI / Anthropic'
-                : ' · 未配置'}
-          </li>
-        </ul>
-        <p className="st-providers__readiness-note" data-testid="provider-m1-readiness-note">
-          {readiness.note}
-        </p>
-      </div>
-
-      <div className="st-providers__cc-switch" data-testid="provider-cc-switch">
-        <div className="st-providers__cc-switch-head">
+        <summary className="st-providers__cc-switch-head">
           <Download size={13} strokeWidth={1.8} aria-hidden="true" />
           <strong>从 CC Switch 导入</strong>
           <small>预览 → 确认 · 密钥仅写入安全存储</small>
-        </div>
+          <ChevronRight size={13} strokeWidth={1.8} aria-hidden="true" />
+        </summary>
         <div className="st-providers__cc-switch-actions">
           <button
             type="button"
@@ -603,7 +593,7 @@ export function ProvidersPanel(props: ProvidersPanelProps) {
             ))}
           </ul>
         ) : null}
-      </div>
+      </details>
 
       {openForm ? (
         <form
@@ -724,7 +714,65 @@ export function ProvidersPanel(props: ProvidersPanelProps) {
         </div>
       ) : null}
 
-      <div className="st-providers__list" data-loading={props.loading ? 'true' : 'false'}>
+      <div className="st-providers__workspace">
+        <aside className="st-providers__index" aria-label="供应商列表">
+          <header>
+            <div>
+              <strong>供应商</strong>
+              <small>{visibleProviders.length} 个可用配置</small>
+            </div>
+          </header>
+          <div className="st-providers__index-scroll">
+            {visibleBuckets.map((bucket) => {
+              const Icon = SURFACE_ICON[bucket.surface];
+              return (
+                <section
+                  key={bucket.surface}
+                  className="st-providers__index-group"
+                  data-surface={bucket.surface}
+                  data-testid={`provider-index-group-${bucket.surface}`}
+                >
+                  <h3>
+                    <Icon aria-hidden="true" size={12} strokeWidth={1.8} />
+                    <span>{bucket.label}</span>
+                    <em>{bucket.providers.length}</em>
+                  </h3>
+                  {bucket.providers.map((provider) => {
+                    const selected = provider.providerId === selectedProviderId;
+                    return (
+                      <button
+                        key={provider.providerId}
+                        type="button"
+                        className="st-providers__index-item"
+                        data-active={selected ? '1' : '0'}
+                        data-testid={`provider-select-${provider.providerId}`}
+                        onClick={() => {
+                          setSelectedProviderId(provider.providerId);
+                          setExpanded((previous) => ({
+                            ...previous,
+                            [provider.providerId]: true,
+                          }));
+                        }}
+                      >
+                        <span>
+                          <strong>{provider.name}</strong>
+                          <small>{provider.protocol}</small>
+                          <em>
+                            {provider.credentials[0]?.groupName || '未分组'} ·{' '}
+                            {provider.models.length} 个模型
+                          </em>
+                        </span>
+                        <ChevronRight aria-hidden="true" size={13} strokeWidth={1.8} />
+                      </button>
+                    );
+                  })}
+                </section>
+              );
+            })}
+          </div>
+        </aside>
+
+        <div className="st-providers__list" data-loading={props.loading ? 'true' : 'false'}>
         {props.providers.length === 0 ? (
           <div className="st-providers__empty" data-testid="provider-empty">
             <Cable size={18} strokeWidth={1.6} aria-hidden="true" />
@@ -741,7 +789,7 @@ export function ProvidersPanel(props: ProvidersPanelProps) {
             <p>切换上方分组，或点「全部」查看所有模型源。</p>
           </div>
         ) : (
-          visibleBuckets.map((bucket) => {
+          detailBuckets.map((bucket) => {
             const Icon = SURFACE_ICON[bucket.surface];
             return (
               <section
@@ -765,7 +813,7 @@ export function ProvidersPanel(props: ProvidersPanelProps) {
 
                 <div className="st-providers__surface-providers">
                   {bucket.providers.map((provider) => {
-                    const isOpen = expanded[provider.providerId] ?? false;
+                    const isOpen = expanded[provider.providerId] ?? true;
                     const surface = resolveProviderSurface(provider);
                     return (
                       <article
@@ -781,7 +829,7 @@ export function ProvidersPanel(props: ProvidersPanelProps) {
                           onClick={() =>
                             setExpanded((prev) => ({
                               ...prev,
-                              [provider.providerId]: !isOpen,
+                              [provider.providerId]: true,
                             }))
                           }
                           aria-expanded={isOpen}
@@ -1166,6 +1214,7 @@ export function ProvidersPanel(props: ProvidersPanelProps) {
             );
           })
         )}
+        </div>
       </div>
     </section>
   );

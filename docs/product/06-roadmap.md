@@ -19,7 +19,7 @@
 
 ```text
 当前阶段：M1、M2 已完成；Phase 3 进行中
-阶段目标：在已交付 File/Terminal/Git 与模型工具循环的基础上，继续 Browser/UIA、生图和安装分发
+阶段目标：完成 Talk V8 产品壳、Agent 应用工具/群聊协作/自动化，再继续 Browser/UIA、生图和安装分发
 开始日期：2026-07-12
 M2 完成日期：2026-07-15
 M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1）
@@ -45,6 +45,16 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
 1. File、Terminal、Git Worker 已有真实实现，包含 capability allowlist、审批、取消/超时、输出限幅及真实路径 symlink/junction 逃逸防护。
 2. Provider 工具循环已支持文件读/列/写、受限命令及 Git status/diff，并在审批后用持久检查点恢复。
 3. Browser Worker、Windows UIA Worker、图像生成完整管线、安装器、签名和自动更新仍未完成；不满足 Phase 3 退出标准。
+
+补充（2026-07-18）：
+
+1. Talk V8 全局导航、好友资料、持久群聊定义、Skill & MCP 与 Automation 页面已形成可用纵切。
+2. Provider 调用已注入 SYNC-THINK 平台身份并发送当前 thread 的真实有序历史，不隐式扫描兄弟任务。
+3. Runtime Command Gateway 已通过 CLI 与 stdio MCP 对外提供应用工具；外部配置操作使用 5 分钟、单次、payload 绑定的确认令牌。
+4. 内置 Agent 已接 application-tool 多轮循环；群聊已执行显式 subtask/handoff、成员协作和主智能体总结。
+5. Automation Store、Cron/时区、本地 HMAC Webhook、并发/重试、独立任务和运行历史已完成；Agent 头像上传边界已完成。
+6. Talk V8 最新 Desktop/UI Kit 回归、构建、1440×900 和 1280×720 双主题实窗已完成；Node 20 全仓门禁及最终生产在线重启仍待自动审批路由恢复。Phase 3 的 Browser/UIA、生图与安装分发仍未完成。
+7. 对话任务页已进一步替换为独立 Figma Talk 工作区，并通过 Desktop 386、UI Kit 233、全仓 test/typecheck/build 自动化门禁；本次替换后的视觉确认由用户本地查看，Node 20 生产重启门禁不变。
 
 ## 3. Phase 0 - 技术验证
 
@@ -171,6 +181,22 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
 - [ ] 图像生成完整管线与视觉审查闭环。
 - [ ] 安装器、代码签名、自动更新和闭测分发。
 
+Talk V8 / Agent-aware 交付切片（2026-07-18）：
+
+- [x] 全局导航与对话任务、项目、好友、群聊、模型源、Skill & MCP、设置第一纵切。
+- [x] Agent 资料、状态、固定 Prompt、模型绑定和最大并发持久化。
+- [x] 持久 GroupDefinition、唯一主智能体、成员职责、群聊任务绑定。
+- [x] SYNC-THINK 平台身份信封与当前 thread 真实 Provider 历史。
+- [x] Runtime Command Gateway 的 CLI/MCP 适配器与外部配置确认。
+- [x] 内置 Agent application-tool 多轮调用、结果回传和配置确认卡。
+- [x] 群聊 subtask/handoff、成员执行、可见交流与主智能体最终总结。
+- [x] 群聊任务进入统一任务列表和完整对话事件流，可按任务恢复。
+- [x] Automation Store、周期调度、HMAC Webhook、并发、重试和运行历史。
+- [x] 用户头像上传 IPC、格式/大小/尺寸校验和受管持久化路径。
+- [ ] 最新构建的 Node 20 全仓 test/typecheck/build 门禁。
+- [x] 1440×900 与 1280×720 浅色/深色 Electron 实窗视觉及关键导航交互门禁。
+- [ ] 最终生产 Runtime/Desktop 在线重启。
+
 不包含（Later）：
 
 1. 消费级订阅登录与非官方鉴权提取
@@ -211,3 +237,5 @@ MVP 边界（闭测）：Windows 单机 local-first 多模型 Agent 工作台
 | 2026-07-13 | 允许 M1 dogfood 累计期间连续实施 M2 | 用户明确要求 M1/M2 连续完成，且不伪造日历证据                        |
 | 2026-07-15 | M2 完成；M1 保持 1/3 open           | M2 exit demo/QA 通过；M1 仅剩真实 dogfood 日期门槛                   |
 | 2026-07-16 | Phase 3 进入部分实施                | File/Terminal/Git 与模型工具循环已交付；Browser/UIA/安装分发仍待完成 |
+| 2026-07-18 | Talk V8 / Agent-aware 纵切进入实施 | 平台上下文、群聊定义、CLI/MCP 网关已交付；协作执行与自动化仍待完成   |
+| 2026-07-18 | Talk V8 功能闭环                   | 内置应用工具、群聊协作、自动化和头像已交付；仅剩实窗与重启门禁       |

@@ -1,11 +1,26 @@
 ﻿// Preload runs in the renderer with contextIsolation: true. Bridge exposes a
 // narrow window.api so the renderer never touches Node directly (搂19).
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   AppendMessagePayload,
   AppendMessageResponse,
   BindWorkspaceFolderPayload,
   BindWorkspaceFolderResponse,
+  BindWorkspaceGitRepositoryPayload,
+  BindWorkspaceGitRepositoryResponse,
+  ResolveWorktreeIntegrationPayload,
+  ResolveWorktreeIntegrationResponse,
+  ListBrowserIdentitiesResponse,
+  CreateBrowserIdentityPayload,
+  CreateBrowserIdentityResponse,
+  UpdateBrowserIdentityPayload,
+  UpdateBrowserIdentityResponse,
+  DeleteBrowserIdentityPayload,
+  DeleteBrowserIdentityResponse,
+  SetTaskBrowserIdentityPayload,
+  SetTaskBrowserIdentityResponse,
+  DescribeTaskExecutionAccessPayload,
+  DescribeTaskExecutionAccessResponse,
   CancelRunPayload,
   CreateTaskPayload,
   CreateTaskResponse,
@@ -17,6 +32,8 @@ import type {
   ListWorkspacesResponse,
   OpenTaskPayload,
   OpenTaskResponse,
+  DiscardEmptyTaskPayload,
+  DiscardEmptyTaskResponse,
   PauseResumeCancelResponse,
   SearchTasksPayload,
   SearchTasksResponse,
@@ -98,6 +115,8 @@ import type {
   ListPoliciesResponse,
   ListArtifactsPayload,
   ListArtifactsResponse,
+  GetArtifactVersionPayload,
+  GetArtifactVersionResponse,
   CompareArtifactVersionsPayload,
   CompareArtifactVersionsResponse,
   SelectArtifactVersionPayload,
@@ -116,12 +135,44 @@ import type {
   ListAgentVersionsResponse,
   CreateAgentVersionPayload,
   CreateAgentVersionResponse,
+  CreateGroupPayload,
+  CreateGroupResponse,
+  GetGroupPayload,
+  GetGroupResponse,
+  ListGroupsPayload,
+  ListGroupsResponse,
+  UpdateGroupPayload,
+  UpdateGroupResponse,
+  AddGroupMemberPayload,
+  RemoveGroupMemberPayload,
+  UpdateGroupMemberResponsibilityPayload,
+  SetGroupLeadPayload,
+  GroupMemberMutationResponse,
+  CreateGroupTaskPayload,
+  CreateGroupTaskResponse,
+  ResolveApplicationToolConfirmationPayload,
+  ConfirmApplicationToolResponse,
+  RejectApplicationToolResponse,
+  CreateAutomationPayload,
+  UpdateAutomationPayload,
+  DeleteAutomationPayload,
+  GetAutomationPayload,
+  ListAutomationsPayload,
+  TriggerAutomationPayload,
+  ListAutomationExecutionsPayload,
+  AutomationCommandResponse,
+  DeleteAutomationResponse,
+  GetAutomationResponse,
+  ListAutomationsResponse,
+  TriggerAutomationResponse,
+  ListAutomationExecutionsResponse,
 } from '@sync-think/protocol';
 import type {
   RendererCreateProviderPayload,
   RendererUpdateProviderPayload,
 } from '../provider-payloads.js';
 import type { Event } from '@sync-think/shared';
+import type { MessageAttachment } from '@sync-think/shared';
 import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
 
 const api = {
@@ -138,6 +189,50 @@ const api = {
     },
     appendMessage: (payload: AppendMessagePayload) =>
       ipcRenderer.invoke('runtime:append-message', payload) as Promise<AppendMessageResponse>,
+    loadMessageAttachmentPreview: (attachment: {
+      managedRef: string;
+      mimeType: string;
+      sha256?: string;
+    }) =>
+      ipcRenderer.invoke('desktop:load-message-attachment-preview', attachment) as Promise<
+        string | null
+      >,
+    confirmApplicationTool: (payload: ResolveApplicationToolConfirmationPayload) =>
+      ipcRenderer.invoke(
+        'runtime:application-tool-confirm',
+        payload,
+      ) as Promise<ConfirmApplicationToolResponse>,
+    rejectApplicationTool: (payload: ResolveApplicationToolConfirmationPayload) =>
+      ipcRenderer.invoke(
+        'runtime:application-tool-reject',
+        payload,
+      ) as Promise<RejectApplicationToolResponse>,
+    createAutomation: (payload: CreateAutomationPayload) =>
+      ipcRenderer.invoke(
+        'runtime:automation-create',
+        payload,
+      ) as Promise<AutomationCommandResponse>,
+    updateAutomation: (payload: UpdateAutomationPayload) =>
+      ipcRenderer.invoke(
+        'runtime:automation-update',
+        payload,
+      ) as Promise<AutomationCommandResponse>,
+    deleteAutomation: (payload: DeleteAutomationPayload) =>
+      ipcRenderer.invoke('runtime:automation-delete', payload) as Promise<DeleteAutomationResponse>,
+    getAutomation: (payload: GetAutomationPayload) =>
+      ipcRenderer.invoke('runtime:automation-get', payload) as Promise<GetAutomationResponse>,
+    listAutomations: (payload: ListAutomationsPayload = {}) =>
+      ipcRenderer.invoke('runtime:automation-list', payload) as Promise<ListAutomationsResponse>,
+    triggerAutomation: (payload: TriggerAutomationPayload) =>
+      ipcRenderer.invoke(
+        'runtime:automation-trigger',
+        payload,
+      ) as Promise<TriggerAutomationResponse>,
+    listAutomationExecutions: (payload: ListAutomationExecutionsPayload = {}) =>
+      ipcRenderer.invoke(
+        'runtime:automation-execution-list',
+        payload,
+      ) as Promise<ListAutomationExecutionsResponse>,
     cancelRun: (payload: CancelRunPayload) =>
       ipcRenderer.invoke('runtime:run-cancel', payload) as Promise<PauseResumeCancelResponse>,
     createWorkspace: (payload: CreateWorkspacePayload) =>
@@ -147,10 +242,50 @@ const api = {
         'runtime:workspace-bind-folder',
         payload,
       ) as Promise<BindWorkspaceFolderResponse>,
+    bindWorkspaceGitRepository: (payload: BindWorkspaceGitRepositoryPayload) =>
+      ipcRenderer.invoke(
+        'runtime:workspace-bind-git-repository',
+        payload,
+      ) as Promise<BindWorkspaceGitRepositoryResponse>,
     listWorkspaces: (payload: ListWorkspacesPayload = {}) =>
       ipcRenderer.invoke('runtime:workspace-list', payload) as Promise<ListWorkspacesResponse>,
+    listBrowserIdentities: () =>
+      ipcRenderer.invoke(
+        'runtime:browser-identity-list',
+        {},
+      ) as Promise<ListBrowserIdentitiesResponse>,
+    createBrowserIdentity: (payload: CreateBrowserIdentityPayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-identity-create',
+        payload,
+      ) as Promise<CreateBrowserIdentityResponse>,
+    updateBrowserIdentity: (payload: UpdateBrowserIdentityPayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-identity-update',
+        payload,
+      ) as Promise<UpdateBrowserIdentityResponse>,
+    deleteBrowserIdentity: (payload: DeleteBrowserIdentityPayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-identity-delete',
+        payload,
+      ) as Promise<DeleteBrowserIdentityResponse>,
     createTask: (payload: CreateTaskPayload) =>
       ipcRenderer.invoke('runtime:task-create', payload) as Promise<CreateTaskResponse>,
+    resolveWorktreeIntegration: (payload: ResolveWorktreeIntegrationPayload) =>
+      ipcRenderer.invoke(
+        'runtime:task-resolve-worktree-integration',
+        payload,
+      ) as Promise<ResolveWorktreeIntegrationResponse>,
+    setTaskBrowserIdentity: (payload: SetTaskBrowserIdentityPayload) =>
+      ipcRenderer.invoke(
+        'runtime:task-set-browser-identity',
+        payload,
+      ) as Promise<SetTaskBrowserIdentityResponse>,
+    describeTaskExecutionAccess: (payload: DescribeTaskExecutionAccessPayload) =>
+      ipcRenderer.invoke(
+        'runtime:task-describe-execution-access',
+        payload,
+      ) as Promise<DescribeTaskExecutionAccessResponse>,
     listTasks: (payload: ListTasksPayload) =>
       ipcRenderer.invoke('runtime:task-list', payload) as Promise<ListTasksResponse>,
     openTask: (payload: OpenTaskPayload) =>
@@ -167,6 +302,11 @@ const api = {
       ipcRenderer.invoke('runtime:task-unarchive', payload) as Promise<
         import('@sync-think/protocol').UnarchiveTaskResponse
       >,
+    discardEmptyTask: (payload: DiscardEmptyTaskPayload) =>
+      ipcRenderer.invoke(
+        'runtime:task-discard-empty',
+        payload,
+      ) as Promise<DiscardEmptyTaskResponse>,
     createPlan: (payload: PlanDraftPayload) =>
       ipcRenderer.invoke('runtime:plan-create', payload) as Promise<PlanDraftResponse>,
     revisePlan: (payload: PlanRevisePayload) =>
@@ -198,6 +338,11 @@ const api = {
       ipcRenderer.invoke('runtime:policy-list', payload) as Promise<ListPoliciesResponse>,
     listArtifacts: (payload: ListArtifactsPayload) =>
       ipcRenderer.invoke('runtime:artifact-list', payload) as Promise<ListArtifactsResponse>,
+    getArtifactVersion: (payload: GetArtifactVersionPayload) =>
+      ipcRenderer.invoke(
+        'runtime:artifact-get-version',
+        payload,
+      ) as Promise<GetArtifactVersionResponse>,
     compareArtifactVersions: (payload: CompareArtifactVersionsPayload) =>
       ipcRenderer.invoke(
         'runtime:artifact-compare',
@@ -274,6 +419,33 @@ const api = {
         'runtime:agent-create-version',
         payload,
       ) as Promise<CreateAgentVersionResponse>,
+    createGroup: (payload: CreateGroupPayload) =>
+      ipcRenderer.invoke('runtime:group-create', payload) as Promise<CreateGroupResponse>,
+    getGroup: (payload: GetGroupPayload) =>
+      ipcRenderer.invoke('runtime:group-get', payload) as Promise<GetGroupResponse>,
+    listGroups: (payload: ListGroupsPayload = {}) =>
+      ipcRenderer.invoke('runtime:group-list', payload) as Promise<ListGroupsResponse>,
+    updateGroup: (payload: UpdateGroupPayload) =>
+      ipcRenderer.invoke('runtime:group-update', payload) as Promise<UpdateGroupResponse>,
+    addGroupMember: (payload: AddGroupMemberPayload) =>
+      ipcRenderer.invoke(
+        'runtime:group-member-add',
+        payload,
+      ) as Promise<GroupMemberMutationResponse>,
+    removeGroupMember: (payload: RemoveGroupMemberPayload) =>
+      ipcRenderer.invoke(
+        'runtime:group-member-remove',
+        payload,
+      ) as Promise<GroupMemberMutationResponse>,
+    updateGroupMemberResponsibility: (payload: UpdateGroupMemberResponsibilityPayload) =>
+      ipcRenderer.invoke(
+        'runtime:group-member-responsibility',
+        payload,
+      ) as Promise<GroupMemberMutationResponse>,
+    setGroupLead: (payload: SetGroupLeadPayload) =>
+      ipcRenderer.invoke('runtime:group-set-lead', payload) as Promise<GroupMemberMutationResponse>,
+    createGroupTask: (payload: CreateGroupTaskPayload) =>
+      ipcRenderer.invoke('runtime:group-task-create', payload) as Promise<CreateGroupTaskResponse>,
     importSkill: (payload: ImportSkillPayload) =>
       ipcRenderer.invoke('runtime:skill-import', payload) as Promise<ImportSkillResponse>,
     listSkills: (payload: ListSkillsPayload = {}) =>
@@ -322,6 +494,50 @@ const api = {
       ipcRenderer.invoke('desktop:pick-folder') as Promise<{
         canceled: boolean;
         path: string | null;
+      }>,
+    pickMessageAttachments: (kind: 'files' | 'folder') =>
+      ipcRenderer.invoke('desktop:pick-message-attachments', kind) as Promise<
+        Array<MessageAttachment & { previewUrl?: string }>
+      >,
+    stageMessageFiles: async (files: readonly File[]) => {
+      const sources = await Promise.all(
+        files.map(async (file) => {
+          const filePath = webUtils.getPathForFile(file);
+          if (filePath) return filePath;
+          return {
+            name: file.name,
+            mimeType: file.type || undefined,
+            bytes: new Uint8Array(await file.arrayBuffer()),
+          };
+        }),
+      );
+      return ipcRenderer.invoke('desktop:stage-message-files', sources) as Promise<
+        Array<MessageAttachment & { previewUrl?: string }>
+      >;
+    },
+    stageMessageFileData: (
+      sources: readonly { name: string; mimeType?: string; bytes: Uint8Array }[],
+    ) =>
+      ipcRenderer.invoke('desktop:stage-message-files', sources) as Promise<
+        Array<MessageAttachment & { previewUrl?: string }>
+      >,
+    pickAgentAvatar: () =>
+      ipcRenderer.invoke('desktop:pick-agent-avatar') as Promise<
+        | { canceled: true }
+        | {
+            canceled: false;
+            avatarPath: string;
+            avatarUrl: string;
+            width: number;
+            height: number;
+          }
+      >,
+    loadAgentAvatar: (avatarPath: string) =>
+      ipcRenderer.invoke('desktop:load-agent-avatar', avatarPath) as Promise<{
+        avatarPath: string;
+        avatarUrl: string;
+        width: number;
+        height: number;
       }>,
     getM1ExitEvidence: () =>
       ipcRenderer.invoke('desktop:m1-exit-evidence') as Promise<{

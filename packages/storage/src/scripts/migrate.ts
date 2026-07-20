@@ -102,7 +102,287 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0023_provider_execution_checkpoint',
     sql: providerExecutionCheckpointDdlSql(),
   },
+  {
+    name: '0024_agent_groups',
+    sql: agentGroupsDdlSql(),
+  },
+  {
+    name: '0025_agent_runtime_profile',
+    sql: agentRuntimeProfileDdlSql(),
+  },
+  {
+    name: '0026_automation',
+    sql: automationDdlSql(),
+  },
+  {
+    name: '0027_runtime_stream_compaction',
+    sql: runtimeStreamCompactionSql(),
+  },
+  {
+    name: '0028_project_execution_environments',
+    sql: projectExecutionEnvironmentSql(),
+  },
 ];
+
+function projectExecutionEnvironmentSql(): string {
+  return `
+CREATE TABLE project_resource (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  local_path TEXT,
+  repository_url TEXT,
+  default_ref TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT project_resource_type_check CHECK (resource_type IN ('local_directory', 'git_repository')),
+  CONSTRAINT project_resource_location_check CHECK (
+    (resource_type = 'local_directory' AND local_path IS NOT NULL AND repository_url IS NULL) OR
+    (resource_type = 'git_repository' AND (local_path IS NOT NULL OR repository_url IS NOT NULL))
+  ),
+  FOREIGN KEY (workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX project_resource_workspace_location_uidx
+  ON project_resource(workspace_id, resource_type, COALESCE(local_path, ''), COALESCE(repository_url, ''));
+CREATE INDEX project_resource_workspace_idx ON project_resource(workspace_id, created_at);
+
+CREATE TABLE browser_identity (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  profile_path TEXT NOT NULL UNIQUE,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT browser_identity_default_check CHECK (is_default IN (0, 1))
+);
+CREATE UNIQUE INDEX browser_identity_one_default_uidx ON browser_identity(is_default) WHERE is_default = 1;
+
+CREATE TABLE execution_profile (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT,
+  name TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'auto',
+  default_ref TEXT,
+  setup_commands_json TEXT NOT NULL DEFAULT '[]',
+  include_patterns_json TEXT NOT NULL DEFAULT '[]',
+  retention_days INTEGER NOT NULL DEFAULT 7,
+  browser_identity_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT execution_profile_mode_check CHECK (mode IN ('auto', 'local', 'managed_worktree')),
+  CONSTRAINT execution_profile_setup_json_check CHECK (json_valid(setup_commands_json) AND json_type(setup_commands_json) = 'array'),
+  CONSTRAINT execution_profile_include_json_check CHECK (json_valid(include_patterns_json) AND json_type(include_patterns_json) = 'array'),
+  CONSTRAINT execution_profile_retention_check CHECK (retention_days BETWEEN 1 AND 365),
+  FOREIGN KEY (workspace_id) REFERENCES workspace(id) ON DELETE CASCADE,
+  FOREIGN KEY (browser_identity_id) REFERENCES browser_identity(id) ON DELETE SET NULL
+);
+CREATE INDEX execution_profile_workspace_idx ON execution_profile(workspace_id, created_at);
+
+CREATE TABLE task_execution_context (
+  task_id TEXT PRIMARY KEY,
+  resource_id TEXT,
+  execution_profile_id TEXT,
+  browser_identity_id TEXT,
+  mode TEXT NOT NULL DEFAULT 'none',
+  state TEXT NOT NULL DEFAULT 'pending',
+  source_path TEXT,
+  execution_path TEXT,
+  base_ref TEXT,
+  head_ref TEXT,
+  lease_owner_run_id TEXT,
+  blocked_reason TEXT,
+  cleanup_after TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT task_execution_mode_check CHECK (mode IN ('none', 'local_serial', 'managed_worktree')),
+  CONSTRAINT task_execution_state_check CHECK (state IN ('pending', 'ready', 'blocked', 'cleanup_pending', 'retained', 'cleaned')),
+  FOREIGN KEY (task_id) REFERENCES task(id) ON DELETE CASCADE,
+  FOREIGN KEY (resource_id) REFERENCES project_resource(id) ON DELETE RESTRICT,
+  FOREIGN KEY (execution_profile_id) REFERENCES execution_profile(id) ON DELETE SET NULL,
+  FOREIGN KEY (browser_identity_id) REFERENCES browser_identity(id) ON DELETE SET NULL
+);
+CREATE INDEX task_execution_cleanup_idx ON task_execution_context(state, cleanup_after);
+CREATE INDEX task_execution_path_lease_idx ON task_execution_context(execution_path, lease_owner_run_id);
+
+INSERT INTO project_resource (
+  id, workspace_id, resource_type, local_path, repository_url, default_ref, created_at, updated_at
+)
+SELECT 'resource-' || id, id, 'local_directory', folder_path, NULL, NULL, created_at, updated_at
+FROM workspace
+WHERE folder_path IS NOT NULL;
+
+INSERT INTO execution_profile (
+  id, workspace_id, name, mode, default_ref, setup_commands_json,
+  include_patterns_json, retention_days, browser_identity_id, created_at, updated_at
+)
+SELECT 'profile-' || id, id, '默认运行配置', 'auto', NULL, '[]', '[]', 7, NULL, created_at, updated_at
+FROM workspace;
+`;
+}
+
+function runtimeStreamCompactionSql(): string {
+  return `
+DELETE FROM checkpoint
+WHERE run_id LIKE 'runtime-%'
+  AND id NOT IN (
+    SELECT id
+    FROM (
+      SELECT
+        id,
+        ROW_NUMBER() OVER (
+          PARTITION BY run_id
+          ORDER BY last_event_sequence DESC, rowid DESC
+        ) AS rank_in_run
+      FROM checkpoint
+      WHERE run_id LIKE 'runtime-%'
+    )
+    WHERE rank_in_run = 1
+  );
+
+UPDATE event
+SET payload_json = json_remove(payload_json, '$.run')
+WHERE json_valid(payload_json)
+  AND json_type(payload_json, '$.run') IS NOT NULL;
+`;
+}
+
+function automationDdlSql(): string {
+  return `
+CREATE TABLE automation (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  agent_version_id TEXT,
+  group_id TEXT,
+  instruction TEXT NOT NULL,
+  approval_mode TEXT NOT NULL DEFAULT 'full',
+  trigger_type TEXT NOT NULL,
+  cron_expression TEXT,
+  timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+  webhook_path TEXT,
+  webhook_secret_handle TEXT,
+  concurrency_policy TEXT NOT NULL DEFAULT 'skip',
+  max_concurrency INTEGER NOT NULL DEFAULT 1,
+  max_retries INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  version INTEGER NOT NULL DEFAULT 1,
+  last_triggered_at TEXT,
+  next_trigger_at TEXT,
+  deleted_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT automation_target_check CHECK (
+    (target_type = 'agent' AND agent_version_id IS NOT NULL AND group_id IS NULL) OR
+    (target_type = 'group' AND group_id IS NOT NULL AND agent_version_id IS NULL)
+  ),
+  CONSTRAINT automation_trigger_check CHECK (
+    (trigger_type = 'cron' AND cron_expression IS NOT NULL AND webhook_path IS NULL AND webhook_secret_handle IS NULL) OR
+    (trigger_type = 'webhook' AND cron_expression IS NULL AND webhook_path IS NOT NULL AND webhook_secret_handle IS NOT NULL)
+  ),
+  CONSTRAINT automation_approval_mode_check CHECK (approval_mode IN ('request', 'delegate', 'full', 'custom')),
+  CONSTRAINT automation_concurrency_check CHECK (concurrency_policy IN ('skip', 'queue', 'parallel')),
+  CONSTRAINT automation_max_concurrency_check CHECK (max_concurrency BETWEEN 1 AND 8),
+  CONSTRAINT automation_max_retries_check CHECK (max_retries BETWEEN 0 AND 2),
+  CONSTRAINT automation_enabled_check CHECK (enabled IN (0, 1)),
+  CONSTRAINT automation_version_check CHECK (version > 0),
+  FOREIGN KEY (workspace_id) REFERENCES workspace(id) ON DELETE RESTRICT,
+  FOREIGN KEY (agent_version_id) REFERENCES agent_version(id) ON DELETE RESTRICT,
+  FOREIGN KEY (group_id) REFERENCES agent_group(id) ON DELETE RESTRICT
+);
+CREATE INDEX automation_workspace_idx ON automation(workspace_id, updated_at);
+CREATE INDEX automation_schedule_idx ON automation(enabled, next_trigger_at);
+CREATE UNIQUE INDEX automation_webhook_path_uidx ON automation(webhook_path) WHERE webhook_path IS NOT NULL;
+
+CREATE TABLE automation_execution (
+  id TEXT PRIMARY KEY,
+  automation_id TEXT NOT NULL,
+  trigger_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  task_id TEXT,
+  input_digest TEXT NOT NULL,
+  error_summary TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  CONSTRAINT automation_execution_source_check CHECK (source IN ('schedule', 'webhook', 'manual')),
+  CONSTRAINT automation_execution_status_check CHECK (status IN ('queued', 'running', 'completed', 'failed', 'skipped')),
+  CONSTRAINT automation_execution_attempt_check CHECK (attempt BETWEEN 0 AND 2),
+  FOREIGN KEY (automation_id) REFERENCES automation(id) ON DELETE RESTRICT,
+  FOREIGN KEY (task_id) REFERENCES task(id) ON DELETE RESTRICT
+);
+CREATE INDEX automation_execution_automation_idx ON automation_execution(automation_id, created_at);
+CREATE INDEX automation_execution_status_idx ON automation_execution(status, created_at);
+CREATE UNIQUE INDEX automation_execution_trigger_attempt_uidx ON automation_execution(trigger_id, attempt);
+`;
+}
+
+function agentRuntimeProfileDdlSql(): string {
+  return `
+ALTER TABLE agent_version
+  ADD COLUMN max_concurrency INTEGER NOT NULL DEFAULT 3
+  CONSTRAINT agent_version_max_concurrency_check CHECK (max_concurrency BETWEEN 1 AND 16);
+`;
+}
+
+function agentGroupsDdlSql(): string {
+  return `
+CREATE TABLE agent_group (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'fixed',
+  visual_identity_json TEXT NOT NULL DEFAULT '{"icon":"users","color":"#1faa74"}',
+  lead_agent_version_id TEXT NOT NULL,
+  approval_mode TEXT NOT NULL DEFAULT 'full',
+  collaboration_mode TEXT NOT NULL DEFAULT 'parallel',
+  max_concurrency INTEGER NOT NULL DEFAULT 3,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT agent_group_kind_check CHECK (kind IN ('fixed', 'temporary')),
+  CONSTRAINT agent_group_approval_mode_check CHECK (
+    approval_mode IN ('request', 'delegate', 'full', 'custom')
+  ),
+  CONSTRAINT agent_group_collaboration_mode_check CHECK (
+    collaboration_mode IN ('parallel', 'sequential')
+  ),
+  CONSTRAINT agent_group_concurrency_check CHECK (max_concurrency BETWEEN 1 AND 16),
+  CONSTRAINT agent_group_version_check CHECK (version > 0),
+  CONSTRAINT agent_group_visual_identity_check CHECK (json_valid(visual_identity_json)),
+  FOREIGN KEY (lead_agent_version_id) REFERENCES agent_version(id) ON DELETE RESTRICT
+);
+CREATE INDEX agent_group_updated_idx ON agent_group(updated_at);
+
+CREATE TABLE agent_group_member (
+  group_id TEXT NOT NULL,
+  agent_version_id TEXT NOT NULL,
+  responsibility TEXT NOT NULL,
+  sort_order INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (group_id, agent_version_id),
+  CONSTRAINT agent_group_member_responsibility_check CHECK (
+    length(trim(responsibility)) BETWEEN 1 AND 2000
+  ),
+  CONSTRAINT agent_group_member_order_check CHECK (sort_order >= 0),
+  FOREIGN KEY (group_id) REFERENCES agent_group(id) ON DELETE CASCADE,
+  FOREIGN KEY (agent_version_id) REFERENCES agent_version(id) ON DELETE RESTRICT
+);
+CREATE INDEX agent_group_member_agent_idx ON agent_group_member(agent_version_id);
+CREATE INDEX agent_group_member_order_idx ON agent_group_member(group_id, sort_order);
+
+CREATE TABLE group_task (
+  task_id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES task(id) ON DELETE CASCADE,
+  FOREIGN KEY (group_id) REFERENCES agent_group(id) ON DELETE RESTRICT
+);
+CREATE INDEX group_task_group_idx ON group_task(group_id);
+`;
+}
 
 function providerExecutionCheckpointDdlSql(): string {
   return `

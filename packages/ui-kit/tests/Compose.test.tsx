@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
   Compose,
   type ComposeAgentOption,
+  type ComposeGroupOption,
   type ComposeModelOption,
   type ComposeWorkspaceOption,
   projectComposeSendReadiness,
@@ -34,6 +35,97 @@ const sampleModels: ComposeModelOption[] = [
 ];
 
 describe('Compose', () => {
+  it('picks, previews, removes, and sends managed attachments', async () => {
+    const onSend = vi.fn();
+    const onPickAttachments = vi.fn().mockResolvedValue([
+      {
+        id: 'attachment-1',
+        kind: 'image',
+        name: 'screen.png',
+        mimeType: 'image/png',
+        size: 4,
+        managedRef: 'C:/managed/screen.png',
+        readOnly: true,
+        previewUrl: 'data:image/png;base64,AQIDBA==',
+      },
+    ]);
+    render(<Compose mode="conversation" onSend={onSend} onPickAttachments={onPickAttachments} />);
+    fireEvent.click(screen.getByLabelText('添加附件'));
+    fireEvent.click(screen.getByText('图片或文件'));
+    expect(await screen.findByText('screen.png')).toBeTruthy();
+    const textarea = screen.getByLabelText('消息输入') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '检查截图' } });
+    fireEvent.submit(getFormWithin(textarea));
+    expect(onSend).toHaveBeenCalledWith(
+      '检查截图',
+      expect.objectContaining({
+        attachments: [expect.objectContaining({ id: 'attachment-1', kind: 'image' })],
+      }),
+    );
+    expect(screen.queryByText('screen.png')).toBeNull();
+  });
+
+  it('imports pasted files and blocks images on a non-vision model', async () => {
+    const onImportFiles = vi.fn().mockResolvedValue([
+      {
+        id: 'attachment-2',
+        kind: 'image',
+        name: 'paste.png',
+        mimeType: 'image/png',
+        size: 3,
+        managedRef: 'C:/managed/paste.png',
+        readOnly: true,
+      },
+    ]);
+    render(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        models={[{ modelId: 'text-only', label: 'Text only', supportsVision: false }]}
+        selectedModelId="text-only"
+        onImportFiles={onImportFiles}
+      />,
+    );
+    const textarea = screen.getByLabelText('消息输入');
+    const file = new File(['png'], 'paste.png', { type: 'image/png' });
+    fireEvent.paste(textarea, { clipboardData: { files: [file] } });
+    expect(await screen.findByText('paste.png')).toBeTruthy();
+    expect(screen.getByText('当前模型未确认支持图片，请切换到视觉模型')).toBeTruthy();
+    expect(screen.getByLabelText('发送').getAttribute('disabled')).not.toBeNull();
+  });
+
+  it('shows a drop target and imports files from a DOMStringList-compatible drag event', async () => {
+    const onImportFiles = vi.fn().mockResolvedValue([
+      {
+        id: 'attachment-drop',
+        kind: 'image',
+        name: 'dropped.png',
+        mimeType: 'image/png',
+        size: 4,
+        managedRef: 'C:/managed/dropped.png',
+        readOnly: true,
+        previewUrl: 'data:image/png;base64,AQIDBA==',
+      },
+    ]);
+    render(
+      <Compose mode="conversation" onSend={() => undefined} onImportFiles={onImportFiles} />,
+    );
+    const textarea = screen.getByLabelText('消息输入') as HTMLTextAreaElement;
+    const form = getFormWithin(textarea);
+    const file = new File(['drop'], 'dropped.png', { type: 'image/png' });
+    const types = { 0: 'Files', length: 1 } as unknown as readonly string[];
+
+    fireEvent.dragEnter(form, { dataTransfer: { files: [file], types } });
+    expect(form.getAttribute('data-drag-active')).toBe('1');
+    expect(screen.getByText('松开以添加到当前对话')).toBeTruthy();
+
+    fireEvent.dragOver(form, { dataTransfer: { files: [file], types } });
+    fireEvent.drop(form, { dataTransfer: { files: [file], types } });
+
+    expect(await screen.findByText('dropped.png')).toBeTruthy();
+    expect(onImportFiles).toHaveBeenCalledWith([file]);
+    expect(form.getAttribute('data-drag-active')).toBe('0');
+  });
   it('fires onSend with trimmed-at-submit text and clears input', () => {
     const onSend = vi.fn();
     render(<Compose mode="conversation" onSend={onSend} />);
@@ -84,9 +176,7 @@ describe('Compose', () => {
   it('shows cancel while streaming and fires onCancel', () => {
     const onSend = vi.fn();
     const onCancel = vi.fn();
-    render(
-      <Compose mode="conversation" onSend={onSend} streaming onCancel={onCancel} />,
-    );
+    render(<Compose mode="conversation" onSend={onSend} streaming onCancel={onCancel} />);
     const cancel = screen.getByLabelText('停止生成');
     fireEvent.click(cancel);
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -109,7 +199,9 @@ describe('Compose', () => {
     const picker = screen.getByTestId('compose-model-path');
     expect(picker).toBeTruthy();
     expect(picker.getAttribute('data-has-value')).toBe('1');
-    expect(screen.getByTestId('compose-model-path-trigger').textContent).toMatch(/OpenAI|gpt-4o-mini/);
+    expect(screen.getByTestId('compose-model-path-trigger').textContent).toMatch(
+      /OpenAI|gpt-4o-mini/,
+    );
     fireEvent.click(screen.getByTestId('compose-model-path-trigger'));
     expect(screen.getByTestId('compose-model-path-panel')).toBeTruthy();
   });
@@ -133,12 +225,7 @@ describe('Compose', () => {
   it('sends selected modelId with the message', () => {
     const onSend = vi.fn();
     render(
-      <Compose
-        mode="conversation"
-        onSend={onSend}
-        models={sampleModels}
-        selectedModelId="mdl-c"
-      />,
+      <Compose mode="conversation" onSend={onSend} models={sampleModels} selectedModelId="mdl-c" />,
     );
     const textarea = screen.getByLabelText('消息输入') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: 'switch model' } });
@@ -152,12 +239,7 @@ describe('Compose', () => {
   it('sends without modelId when using agent default', () => {
     const onSend = vi.fn();
     render(
-      <Compose
-        mode="conversation"
-        onSend={onSend}
-        models={sampleModels}
-        selectedModelId={null}
-      />,
+      <Compose mode="conversation" onSend={onSend} models={sampleModels} selectedModelId={null} />,
     );
     const textarea = screen.getByLabelText('消息输入') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: 'use default' } });
@@ -194,9 +276,7 @@ describe('Compose', () => {
   });
 
   it('shows empty-registry hint when no models registered', () => {
-    render(
-      <Compose mode="conversation" onSend={() => undefined} models={[]} />,
-    );
+    render(<Compose mode="conversation" onSend={() => undefined} models={[]} />);
     expect(screen.getByTestId('compose-model-empty')).toBeTruthy();
     expect(screen.getByTestId('compose-model-empty').textContent).toBe('暂无模型');
   });
@@ -226,9 +306,7 @@ describe('Compose', () => {
 
   it('cancels stream on Escape when streaming', () => {
     const onCancel = vi.fn();
-    render(
-      <Compose mode="conversation" onSend={() => undefined} streaming onCancel={onCancel} />,
-    );
+    render(<Compose mode="conversation" onSend={() => undefined} streaming onCancel={onCancel} />);
     const textarea = screen.getByLabelText('消息输入');
     fireEvent.keyDown(textarea, { key: 'Escape' });
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -427,6 +505,39 @@ describe('Compose', () => {
     expect(onOpenAgentCenter).toHaveBeenCalledTimes(1);
   });
 
+  it('lists Agents and teams separately and selects a configured team', () => {
+    const onGroupChange = vi.fn();
+    const groups: ComposeGroupOption[] = [
+      {
+        groupId: 'group-1',
+        name: '发布小队',
+        leadName: '规划官',
+        memberCount: 4,
+        color: '#0d9488',
+      },
+    ];
+    render(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        agents={[{ agentId: 'a1', name: '规划官', role: 'planner' }]}
+        groups={groups}
+        selectedAgentId="a1"
+        onAgentChange={() => undefined}
+        onGroupChange={onGroupChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('compose-agent-trigger'));
+    expect(screen.getByText('智能体')).toBeTruthy();
+    expect(screen.getByText('小队')).toBeTruthy();
+    expect(screen.getByTestId('compose-group-option-group-1').textContent).toMatch(
+      /发布小队.*规划官.*4/,
+    );
+    fireEvent.click(screen.getByTestId('compose-group-option-group-1'));
+    expect(onGroupChange).toHaveBeenCalledWith('group-1');
+  });
+
   it('offers @ mention picks while typing', () => {
     const onAgentChange = vi.fn();
     const agents: ComposeAgentOption[] = [
@@ -461,6 +572,38 @@ describe('Compose', () => {
     expect(textarea.value).toMatch(/@审查/);
   });
 
+  it('routes a group-chat @ mention to the exact member without switching the participant', () => {
+    const onSend = vi.fn();
+    const onAgentChange = vi.fn();
+    render(
+      <Compose
+        mode="collaboration"
+        onSend={onSend}
+        agents={[{ agentId: 'lead', name: '主智能体' }]}
+        mentionAgents={[
+          { agentId: 'lead', agentVersionId: 'lead-v3', name: '主智能体' },
+          { agentId: 'designer', agentVersionId: 'designer-v2', name: '设计分析官' },
+        ]}
+        selectedAgentId="lead"
+        onAgentChange={onAgentChange}
+      />,
+    );
+
+    const textarea = screen.getByLabelText('消息输入') as HTMLTextAreaElement;
+    fireEvent.change(textarea, {
+      target: { value: '@设计', selectionStart: 3, selectionEnd: 3 },
+    });
+    fireEvent.click(screen.getByTestId('compose-mention-designer'));
+    expect(onAgentChange).not.toHaveBeenCalled();
+    fireEvent.change(textarea, { target: { value: `${textarea.value}请检查这个方案` } });
+    fireEvent.submit(getFormWithin(textarea));
+
+    expect(onSend).toHaveBeenCalledWith(
+      expect.stringContaining('@设计分析官'),
+      expect.objectContaining({ agentVersionId: 'designer-v2' }),
+    );
+  });
+
   it('switches the active project from the Compose toolbar', () => {
     const onWorkspaceChange = vi.fn();
     const workspaces: ComposeWorkspaceOption[] = [
@@ -492,8 +635,87 @@ describe('Compose', () => {
     expect(onWorkspaceChange).toHaveBeenCalledWith('ws-2');
   });
 
-});
+  it('offers blank-project and folder-project creation from the project menu', () => {
+    const onCreateWorkspace = vi.fn();
+    const onCreateWorkspaceFromFolder = vi.fn();
+    render(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        workspaces={[{ workspaceId: 'ws-1', name: 'SYNC-THINK' }]}
+        selectedWorkspaceId="ws-1"
+        onWorkspaceChange={() => undefined}
+        onCreateWorkspace={onCreateWorkspace}
+        onCreateWorkspaceFromFolder={onCreateWorkspaceFromFolder}
+      />,
+    );
 
+    fireEvent.click(screen.getByTestId('compose-workspace-trigger'));
+    fireEvent.click(screen.getByTestId('compose-workspace-create-blank'));
+    expect(onCreateWorkspace).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('compose-workspace-trigger'));
+    fireEvent.click(screen.getByTestId('compose-workspace-create-folder'));
+    expect(onCreateWorkspaceFromFolder).toHaveBeenCalledTimes(1);
+  });
+
+  it('changes operation permission for the current conversation', () => {
+    const onPermissionModeChange = vi.fn();
+    render(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        permissionMode="full"
+        onPermissionModeChange={onPermissionModeChange}
+        permissionDetails={{
+          approvalMode: 'full',
+          executionMode: 'managed_worktree',
+          executionState: 'ready',
+          baseRef: 'main',
+          browserIdentityName: '工作账号',
+          effectiveToolNames: ['read_file', 'run_command'],
+          capabilityCeiling: {
+            file: ['*'],
+            command: ['*'],
+            browser: ['*'],
+            desktop: [],
+            network: [],
+          },
+        }}
+      />,
+    );
+
+    const select = screen.getByLabelText('当前对话操作权限') as HTMLSelectElement;
+    expect(select.value).toBe('full');
+    fireEvent.change(select, { target: { value: 'request' } });
+    expect(onPermissionModeChange).toHaveBeenCalledWith('request');
+    fireEvent.click(screen.getByLabelText('查看当前任务有效权限'));
+    expect(screen.getByRole('dialog', { name: '当前任务有效权限' })).toBeTruthy();
+    expect(screen.getByText('隔离工作树')).toBeTruthy();
+    expect(screen.getByText('工作账号')).toBeTruthy();
+    expect(screen.getByText('run_command')).toBeTruthy();
+  });
+
+  it('changes the browser identity pinned to the current task', () => {
+    const onBrowserIdentityChange = vi.fn();
+    render(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        browserIdentities={[
+          { id: 'browser-default', name: '默认身份', isDefault: true },
+          { id: 'browser-work', name: '工作账号' },
+        ]}
+        selectedBrowserIdentityId="browser-default"
+        onBrowserIdentityChange={onBrowserIdentityChange}
+      />,
+    );
+    const select = screen.getByLabelText('当前任务浏览器身份') as HTMLSelectElement;
+    expect(select.value).toBe('browser-default');
+    fireEvent.change(select, { target: { value: 'browser-work' } });
+    expect(onBrowserIdentityChange).toHaveBeenCalledWith('browser-work');
+  });
+});
 
 describe('projectComposeSendReadiness', () => {
   it('projects empty when no models and no text', () => {

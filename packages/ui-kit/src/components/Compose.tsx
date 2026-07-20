@@ -6,18 +6,37 @@ import {
   type CSSProperties,
   type FormEvent,
   type KeyboardEvent,
+  type ClipboardEvent,
+  type DragEvent,
 } from 'react';
-import type { ParticipationMode, ProviderSurface } from '@sync-think/shared';
+import {
+  isAgentPermissionCategoryEnabled,
+  isLegacyAgentPermissions,
+  type AgentPermissions,
+  type ApprovalMode,
+  type MessageAttachment,
+  type ParticipationMode,
+  type ProviderSurface,
+} from '@sync-think/shared';
 import {
   ArrowUp,
   Bot,
   Check,
   ChevronDown,
   CircleAlert,
+  FolderOpen,
+  FileText,
+  Image,
+  Paperclip,
   FolderKanban,
+  Globe2,
+  Plus,
   RefreshCw,
   Settings2,
+  ShieldCheck,
   Square,
+  Users,
+  X,
 } from 'lucide-react';
 import { ModelPathPicker } from './ModelPathPicker.js';
 
@@ -33,11 +52,18 @@ export interface ComposeModelOption {
   providerId?: string;
   surface?: ProviderSurface;
   protocol?: string;
+  supportsVision?: boolean;
+}
+
+export interface ComposeAttachment extends MessageAttachment {
+  previewUrl?: string;
 }
 
 /** Compact teammate identity for Compose @-switcher (Multica-style). */
 export interface ComposeAgentOption {
   agentId: string;
+  /** Exact immutable runtime target used by group-chat @ mentions. */
+  agentVersionId?: string;
   name: string;
   role?: string;
   color?: string;
@@ -46,15 +72,56 @@ export interface ComposeAgentOption {
   modelLabel?: string;
 }
 
+/** Existing collaboration team available from the Compose participant picker. */
+export interface ComposeGroupOption {
+  groupId: string;
+  name: string;
+  leadName: string;
+  memberCount: number;
+  color?: string;
+  icon?: string;
+}
+
 export interface ComposeWorkspaceOption {
   workspaceId: string;
   name: string;
   folderPath?: string;
 }
 
+export interface ComposeBrowserIdentityOption {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+}
+
+export interface ComposePermissionDetails {
+  approvalMode: ApprovalMode;
+  executionMode: 'none' | 'local_serial' | 'managed_worktree';
+  executionState: string;
+  executionPath?: string;
+  baseRef?: string;
+  browserIdentityName?: string;
+  effectiveToolNames: readonly string[];
+  capabilityCeiling: {
+    file: readonly string[];
+    command: readonly string[];
+    browser: readonly string[];
+    desktop: readonly string[];
+    network: readonly string[];
+  };
+}
+
 export interface ComposeSendOptions {
   /** Explicit Run model override. Absent / undefined → Agent default. */
   modelId?: string;
+  /** Exact Agent selected by an @ mention in the current group chat. */
+  agentVersionId?: string;
+  attachments?: MessageAttachment[];
+}
+
+export interface ComposeDraft {
+  text: string;
+  attachments: readonly ComposeAttachment[];
 }
 
 export interface ComposeProps {
@@ -63,10 +130,7 @@ export interface ComposeProps {
    * Fired on submit. Second arg carries Run overrides (modelId).
    * Back-compat: callers that only need text may ignore the second parameter.
    */
-  onSend: (
-    text: string,
-    options?: ComposeSendOptions,
-  ) => void | boolean | Promise<void | boolean>;
+  onSend: (text: string, options?: ComposeSendOptions) => void | boolean | Promise<void | boolean>;
   placeholder?: string;
   disabled?: boolean;
   /** When true, shows a cancel control for the active stream. */
@@ -106,23 +170,45 @@ export interface ComposeProps {
   onConfigureModel?: () => void;
   /** Teammate list for Compose-level Agent switch. */
   agents?: readonly ComposeAgentOption[];
+  /** Optional group-member-only list used by @ mentions. */
+  mentionAgents?: readonly ComposeAgentOption[];
   selectedAgentId?: string | null;
   onAgentChange?: (agentId: string) => void;
+  /** Existing teams are selectable but intentionally not creatable from Compose. */
+  groups?: readonly ComposeGroupOption[];
+  selectedGroupId?: string | null;
+  onGroupChange?: (groupId: string) => void | Promise<void>;
+  participantBusy?: boolean;
   /** Open the full Agent workspace / drawer. */
   onOpenAgentCenter?: () => void;
   /** Project context and switcher live beside Agent/model selection. */
   workspaces?: readonly ComposeWorkspaceOption[];
   selectedWorkspaceId?: string | null;
   onWorkspaceChange?: (workspaceId: string) => void;
+  onCreateWorkspace?: () => void | Promise<void>;
+  onCreateWorkspaceFromFolder?: () => void | Promise<void>;
+  workspaceActionBusy?: boolean;
+  /** Operation permission for the current conversation task. */
+  permissionMode?: ApprovalMode;
+  permissionBusy?: boolean;
+  onPermissionModeChange?: (mode: ApprovalMode) => void | Promise<void>;
+  permissionDetails?: ComposePermissionDetails | null;
+  browserIdentities?: readonly ComposeBrowserIdentityOption[];
+  selectedBrowserIdentityId?: string | null;
+  browserIdentityBusy?: boolean;
+  onBrowserIdentityChange?: (identityId: string) => void | Promise<void>;
+  /** Desktop attachment bridge. Files are imported as immutable managed snapshots. */
+  onPickAttachments?: (kind: 'files' | 'folder') => Promise<readonly ComposeAttachment[]>;
+  onImportFiles?: (files: readonly File[]) => Promise<readonly ComposeAttachment[]>;
+  onBindAttachmentFolder?: (attachment: ComposeAttachment) => void | Promise<void>;
+  defaultModelId?: string | null;
+  /** Draft scope. Changing this key restores the draft for the selected task. */
+  draftKey?: string | null;
+  draft?: ComposeDraft;
+  onDraftChange?: (draft: ComposeDraft) => void;
 }
 
-
-export type ComposeSendReadinessLevel =
-  | 'ready'
-  | 'partial'
-  | 'blocked'
-  | 'streaming'
-  | 'empty';
+export type ComposeSendReadinessLevel = 'ready' | 'partial' | 'blocked' | 'streaming' | 'empty';
 
 export interface ComposeSendReadiness {
   level: ComposeSendReadinessLevel;
@@ -172,8 +258,7 @@ export function projectComposeSendReadiness(
   const hasModels = Boolean(input.hasModels);
   const modelsOk = !modelsProvided || hasModels;
   const multiOk = Boolean(input.multiProvider);
-  const agentOk =
-    input.agentDefaultSet === undefined ? true : Boolean(input.agentDefaultSet);
+  const agentOk = input.agentDefaultSet === undefined ? true : Boolean(input.agentDefaultSet);
   const overrideOk = Boolean(input.selectedModelId);
   const streaming = Boolean(input.streaming);
   const blocked = Boolean(input.disabled) && !streaming;
@@ -237,30 +322,94 @@ function safeAgentColor(value: string | undefined): string {
   return value && /^#[0-9a-f]{6}$/i.test(value) ? value : '#64748b';
 }
 
+function permissionModeLabel(mode: ApprovalMode): string {
+  if (mode === 'full') return '完全访问';
+  if (mode === 'delegate') return '替我审批';
+  if (mode === 'custom') return '自定义';
+  return '请求批准';
+}
+
+function executionModeLabel(mode: ComposePermissionDetails['executionMode']): string {
+  if (mode === 'managed_worktree') return '隔离工作树';
+  if (mode === 'local_serial') return '本地目录（串行）';
+  return '仅对话';
+}
+
+function capabilityCeilingLabel(
+  ceiling: ComposePermissionDetails['capabilityCeiling'],
+): string {
+  const legacyDefault = isLegacyAgentPermissions(ceiling as AgentPermissions);
+  const labels = [
+    isAgentPermissionCategoryEnabled(ceiling.file, legacyDefault) ? '文件' : '',
+    isAgentPermissionCategoryEnabled(ceiling.command, legacyDefault) ? '命令' : '',
+    isAgentPermissionCategoryEnabled(ceiling.browser, legacyDefault) ? '浏览器' : '',
+    isAgentPermissionCategoryEnabled(ceiling.desktop, legacyDefault) ? '桌面' : '',
+    isAgentPermissionCategoryEnabled(ceiling.network, legacyDefault) ? '网络' : '',
+  ].filter(Boolean);
+  return labels.length ? labels.join('、') : '沿用兼容能力';
+}
+
 export function Compose(props: ComposeProps) {
   const [val, setVal] = useState('');
   const [internalModelId, setInternalModelId] = useState<string | null>(null);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [permissionDetailsOpen, setPermissionDetailsOpen] = useState(false);
   const agentMenuRef = useRef<HTMLDivElement | null>(null);
   const workspaceMenuRef = useRef<HTMLDivElement | null>(null);
+  const attachmentMenuRef = useRef<HTMLDivElement | null>(null);
+  const dragDepthRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    setVal(props.draft?.text ?? '');
+    setAttachments([...(props.draft?.attachments ?? [])]);
+    setAttachmentError(null);
+    setMentionQuery(null);
+  }, [props.draftKey]);
+
+  const updateDraftText = (next: string) => {
+    setVal(next);
+    props.onDraftChange?.({ text: next, attachments });
+  };
+
+  const updateDraftAttachments = (
+    next: ComposeAttachment[] | ((current: ComposeAttachment[]) => ComposeAttachment[]),
+  ) => {
+    setAttachments((current) => {
+      const resolved = typeof next === 'function' ? next(current) : next;
+      props.onDraftChange?.({ text: val, attachments: resolved });
+      return resolved;
+    });
+  };
 
   const modelsProvided = props.models !== undefined;
   const models = props.models ?? [];
   const isControlled = props.selectedModelId !== undefined;
-  const selectedModelId = isControlled
-    ? (props.selectedModelId ?? null)
-    : internalModelId;
+  const selectedModelId = isControlled ? (props.selectedModelId ?? null) : internalModelId;
 
   const agents = props.agents ?? [];
+  const mentionAgents = props.mentionAgents ?? agents;
+  const hasDedicatedMentionAgents = props.mentionAgents !== undefined;
   const showAgentPicker = agents.length > 0 && Boolean(props.onAgentChange);
+  const showMentionPicker = mentionAgents.length > 0;
+  const groups = props.groups ?? [];
+  const showGroupPicker = groups.length > 0 && Boolean(props.onGroupChange);
+  const showParticipantPicker = showAgentPicker || showGroupPicker;
   const selectedAgent =
     agents.find((agent) => agent.agentId === props.selectedAgentId) ?? agents[0] ?? null;
-  const selectedAgentColor = safeAgentColor(selectedAgent?.color);
+  const selectedGroup = groups.find((group) => group.groupId === props.selectedGroupId) ?? null;
+  const selectedParticipantColor = safeAgentColor(selectedGroup?.color ?? selectedAgent?.color);
   const workspaces = props.workspaces ?? [];
-  const showWorkspacePicker = workspaces.length > 0 && Boolean(props.onWorkspaceChange);
+  const showWorkspacePicker =
+    (workspaces.length > 0 && Boolean(props.onWorkspaceChange)) ||
+    Boolean(props.onCreateWorkspace || props.onCreateWorkspaceFromFolder);
   const selectedWorkspace =
     workspaces.find((workspace) => workspace.workspaceId === props.selectedWorkspaceId) ??
     workspaces[0] ??
@@ -273,18 +422,17 @@ export function Compose(props: ComposeProps) {
   const mentionMatches = useMemo(() => {
     if (mentionQuery == null) return [];
     const q = mentionQuery.trim().toLowerCase();
-    if (!q) return agents.slice(0, 8);
-    return agents
+    if (!q) return mentionAgents.slice(0, 8);
+    return mentionAgents
       .filter(
         (agent) =>
-          agent.name.toLowerCase().includes(q) ||
-          (agent.role ?? '').toLowerCase().includes(q),
+          agent.name.toLowerCase().includes(q) || (agent.role ?? '').toLowerCase().includes(q),
       )
       .slice(0, 8);
-  }, [agents, mentionQuery]);
+  }, [mentionAgents, mentionQuery]);
 
   useEffect(() => {
-    if (!agentMenuOpen && !workspaceMenuOpen) return;
+    if (!agentMenuOpen && !workspaceMenuOpen && !attachmentMenuOpen) return;
     const onPointerDown = (event: MouseEvent) => {
       if (!agentMenuRef.current?.contains(event.target as Node)) {
         setAgentMenuOpen(false);
@@ -292,11 +440,15 @@ export function Compose(props: ComposeProps) {
       if (!workspaceMenuRef.current?.contains(event.target as Node)) {
         setWorkspaceMenuOpen(false);
       }
+      if (!attachmentMenuRef.current?.contains(event.target as Node)) {
+        setAttachmentMenuOpen(false);
+      }
     };
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         setAgentMenuOpen(false);
         setWorkspaceMenuOpen(false);
+        setAttachmentMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', onPointerDown);
@@ -305,7 +457,14 @@ export function Compose(props: ComposeProps) {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [agentMenuOpen, workspaceMenuOpen]);
+  }, [agentMenuOpen, workspaceMenuOpen, attachmentMenuOpen]);
+
+  const effectiveModel = models.find(
+    (model) => model.modelId === (selectedModelId ?? props.defaultModelId),
+  );
+  const imageModelBlocked =
+    attachments.some((attachment) => attachment.kind === 'image') &&
+    effectiveModel?.supportsVision === false;
 
   const blocker = useMemo(() => {
     if (props.streaming) return null;
@@ -332,18 +491,24 @@ export function Compose(props: ComposeProps) {
         tone: 'warn' as const,
       };
     }
+    if (imageModelBlocked) {
+      return {
+        message: '当前模型未确认支持图片，请切换到视觉模型',
+        action: null,
+        tone: 'warn' as const,
+      };
+    }
     return null;
-  },
-    [
-      props.connectionState,
-      props.hasActiveTask,
-      props.agentDefaultSet,
-      props.streaming,
-      modelsProvided,
-      hasModels,
-      selectedModelId,
-    ],
-  );
+  }, [
+    props.connectionState,
+    props.hasActiveTask,
+    props.agentDefaultSet,
+    props.streaming,
+    modelsProvided,
+    hasModels,
+    selectedModelId,
+    imageModelBlocked,
+  ]);
 
   const sendBlocked = Boolean(props.disabled || blocker);
 
@@ -358,10 +523,22 @@ export function Compose(props: ComposeProps) {
     setMentionQuery(null);
   };
 
+  const pickGroup = (groupId: string) => {
+    setAgentMenuOpen(false);
+    setMentionQuery(null);
+    void props.onGroupChange?.(groupId);
+  };
+
   const pickWorkspace = (workspaceId: string) => {
     props.onWorkspaceChange?.(workspaceId);
     setWorkspaceMenuOpen(false);
     setMentionQuery(null);
+  };
+
+  const runWorkspaceAction = (action: (() => void | Promise<void>) | undefined) => {
+    setWorkspaceMenuOpen(false);
+    setMentionQuery(null);
+    void action?.();
   };
 
   const applyMentionPick = (agent: ComposeAgentOption) => {
@@ -372,12 +549,17 @@ export function Compose(props: ComposeProps) {
     const after = current.slice(caret);
     const at = before.lastIndexOf('@');
     if (at < 0) {
-      pickAgent(agent.agentId);
+      if (!hasDedicatedMentionAgents) pickAgent(agent.agentId);
       return;
     }
     const next = `${before.slice(0, at)}@${agent.name} ${after}`;
-    setVal(next);
-    pickAgent(agent.agentId);
+    updateDraftText(next);
+    if (hasDedicatedMentionAgents) {
+      setAgentMenuOpen(false);
+      setMentionQuery(null);
+    } else {
+      pickAgent(agent.agentId);
+    }
     window.setTimeout(() => {
       const node = textareaRef.current;
       if (!node) return;
@@ -387,17 +569,87 @@ export function Compose(props: ComposeProps) {
     }, 0);
   };
 
-  const sendCurrentValue = () => {
-    if (!val.trim() || sendBlocked) return;
-    const submittedValue = val;
-    const modelId = selectedModelId || undefined;
+  const mergeAttachments = (incoming: readonly ComposeAttachment[]) => {
+    setAttachmentError(null);
+    updateDraftAttachments((current) => {
+      const next = [...current];
+      for (const attachment of incoming) {
+        if (
+          next.some(
+            (entry) =>
+              entry.id === attachment.id || (entry.sha256 && entry.sha256 === attachment.sha256),
+          )
+        ) {
+          continue;
+        }
+        if (next.length >= 10) {
+          setAttachmentError('一次最多添加 10 个附件');
+          break;
+        }
+        next.push(attachment);
+      }
+      return next;
+    });
+  };
+
+  const pickAttachments = async (kind: 'files' | 'folder') => {
+    if (!props.onPickAttachments || attachmentBusy) return;
+    setAttachmentMenuOpen(false);
+    setAttachmentBusy(true);
+    setAttachmentError(null);
     try {
-      const result = props.onSend(submittedValue, { modelId });
+      mergeAttachments(await props.onPickAttachments(kind));
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : '附件导入失败');
+    } finally {
+      setAttachmentBusy(false);
+    }
+  };
+
+  const importFiles = async (files: readonly File[]) => {
+    if (!props.onImportFiles || files.length === 0 || attachmentBusy) return;
+    setAttachmentBusy(true);
+    setAttachmentError(null);
+    try {
+      mergeAttachments(await props.onImportFiles(files));
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : '附件导入失败');
+    } finally {
+      setAttachmentBusy(false);
+    }
+  };
+
+  const sendCurrentValue = () => {
+    if ((!val.trim() && attachments.length === 0) || sendBlocked) return;
+    const submittedValue = val;
+    const submittedAttachments = attachments;
+    const modelId = selectedModelId || undefined;
+    const mentionedAgent = mentionAgents.find(
+      (agent) => agent.agentVersionId && submittedValue.includes(`@${agent.name}`),
+    );
+    try {
+      const result = props.onSend(submittedValue, {
+        modelId,
+        ...(submittedAttachments.length
+          ? {
+              attachments: submittedAttachments.map(
+                ({ previewUrl: _previewUrl, ...attachment }) => attachment,
+              ),
+            }
+          : {}),
+        ...(mentionedAgent?.agentVersionId
+          ? { agentVersionId: mentionedAgent.agentVersionId }
+          : {}),
+      });
       if (result && typeof (result as PromiseLike<void | boolean>).then === 'function') {
         void Promise.resolve(result).then(
           (succeeded) => {
             if (succeeded !== false) {
-              setVal((current) => (current === submittedValue ? '' : current));
+              if (val === submittedValue && attachments === submittedAttachments) {
+                props.onDraftChange?.({ text: '', attachments: [] });
+              }
+              if (val === submittedValue) setVal('');
+              if (attachments === submittedAttachments) setAttachments([]);
               setMentionQuery(null);
             }
           },
@@ -406,7 +658,9 @@ export function Compose(props: ComposeProps) {
         return;
       }
       if (result !== false) {
+        props.onDraftChange?.({ text: '', attachments: [] });
         setVal('');
+        setAttachments([]);
         setMentionQuery(null);
       }
     } catch {
@@ -420,8 +674,8 @@ export function Compose(props: ComposeProps) {
   };
 
   const onTextareaChange = (value: string, caret: number) => {
-    setVal(value);
-    if (!showAgentPicker) {
+    updateDraftText(value);
+    if (!showMentionPicker) {
       setMentionQuery(null);
       return;
     }
@@ -459,7 +713,26 @@ export function Compose(props: ComposeProps) {
     }
   };
 
-  const showMentionMenu = mentionQuery != null && showAgentPicker;
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files);
+    if (files.length === 0 || !props.onImportFiles) return;
+    event.preventDefault();
+    void importFiles(files);
+  };
+
+  const onDrop = (event: DragEvent<HTMLFormElement>) => {
+    if (props.onImportFiles) event.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length === 0 || !props.onImportFiles) return;
+    void importFiles(files);
+  };
+
+  const hasDraggedFiles = (event: DragEvent<HTMLFormElement>): boolean =>
+    Array.from(event.dataTransfer.types ?? []).includes('Files');
+
+  const showMentionMenu = mentionQuery != null && showMentionPicker;
 
   return (
     <form
@@ -469,9 +742,35 @@ export function Compose(props: ComposeProps) {
       data-mode={props.mode}
       data-streaming={props.streaming ? '1' : '0'}
       data-has-models={showModelRow ? (hasModels ? '1' : '0') : undefined}
-      data-has-agents={showAgentPicker ? '1' : '0'}
+      data-has-agents={showParticipantPicker ? '1' : '0'}
       data-has-workspaces={showWorkspacePicker ? '1' : '0'}
+      data-has-attachments={attachments.length > 0 ? '1' : '0'}
+      data-drag-active={dragActive ? '1' : '0'}
+      onDragEnter={(event) => {
+        if (!props.onImportFiles || !hasDraggedFiles(event)) return;
+        event.preventDefault();
+        dragDepthRef.current += 1;
+        setDragActive(true);
+      }}
+      onDragLeave={(event) => {
+        if (!props.onImportFiles || !hasDraggedFiles(event)) return;
+        event.preventDefault();
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) setDragActive(false);
+      }}
+      onDragOver={(event) => {
+        if (!props.onImportFiles || !hasDraggedFiles(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+      }}
+      onDrop={onDrop}
     >
+      {dragActive ? (
+        <div className="st-compose__drop-target" role="status">
+          <Image aria-hidden="true" size={19} strokeWidth={1.8} />
+          <strong>松开以添加到当前对话</strong>
+        </div>
+      ) : null}
       {blocker ? (
         <div
           className="st-compose__blocker"
@@ -497,6 +796,57 @@ export function Compose(props: ComposeProps) {
         </div>
       ) : null}
 
+      {attachments.length > 0 ? (
+        <div className="st-compose__attachments" aria-label="待发送附件">
+          {attachments.map((attachment) => (
+            <article
+              key={attachment.id}
+              className="st-compose__attachment"
+              data-kind={attachment.kind}
+            >
+              {attachment.previewUrl ? (
+                <img src={attachment.previewUrl} alt="" />
+              ) : attachment.kind === 'folder' ? (
+                <FolderOpen aria-hidden="true" size={16} />
+              ) : (
+                <FileText aria-hidden="true" size={16} />
+              )}
+              <span>
+                <strong>{attachment.name}</strong>
+                <small>
+                  {attachment.kind === 'folder'
+                    ? '本轮只读'
+                    : `${attachment.kind === 'image' ? '图片' : '文件'} · ${Math.max(1, Math.ceil(attachment.size / 1024))} KB`}
+                </small>
+              </span>
+              {attachment.kind === 'folder' && props.onBindAttachmentFolder ? (
+                <button
+                  type="button"
+                  className="st-compose__attachment-bind"
+                  onClick={() => void props.onBindAttachmentFolder?.(attachment)}
+                >
+                  绑定项目
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="st-compose__attachment-remove"
+                aria-label={`移除附件 ${attachment.name}`}
+                onClick={() =>
+                  updateDraftAttachments((current) => current.filter((entry) => entry.id !== attachment.id))
+                }
+              >
+                <X aria-hidden="true" size={13} />
+              </button>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {attachmentError ? (
+        <div className="st-compose__attachment-error" role="alert">
+          {attachmentError}
+        </div>
+      ) : null}
       <div className="st-compose__input-wrap">
         <textarea
           ref={textareaRef}
@@ -504,13 +854,16 @@ export function Compose(props: ComposeProps) {
           className="st-compose__input"
           placeholder={
             props.placeholder ??
-            (selectedAgent
-              ? `@${selectedAgent.name} · 描述你希望完成的工作…`
-              : '输入指令、粘贴上下文，或继续当前任务…')
+            (selectedGroup
+              ? `@${selectedGroup.name} · 描述你希望小队完成的工作…`
+              : selectedAgent
+                ? `@${selectedAgent.name} · 描述你希望完成的工作…`
+                : '输入指令、粘贴上下文，或继续当前任务…')
           }
           value={val}
           onChange={(e) => onTextareaChange(e.target.value, e.target.selectionStart ?? 0)}
           onKeyDown={onTextareaKeyDown}
+          onPaste={onPaste}
           disabled={props.disabled && !props.streaming}
         />
         {showMentionMenu ? (
@@ -554,7 +907,81 @@ export function Compose(props: ComposeProps) {
       </div>
       <div className="st-compose__toolbar">
         <div className="st-compose__model-control">
-          {showWorkspacePicker && selectedWorkspace ? (
+          {props.permissionMode && props.onPermissionModeChange ? (
+            <div className="st-compose__permission-wrap">
+              <label className="st-compose__permission" data-testid="compose-permission-control">
+                <ShieldCheck size={13} strokeWidth={1.9} aria-hidden="true" />
+                <select
+                  aria-label="当前对话操作权限"
+                  value={props.permissionMode}
+                  disabled={props.streaming || props.permissionBusy}
+                  onChange={(event) =>
+                    void props.onPermissionModeChange?.(event.target.value as ApprovalMode)
+                  }
+                >
+                  <option value="request">请求批准</option>
+                  <option value="delegate">替我审批</option>
+                  <option value="full">完全访问</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
+              {props.permissionDetails ? (
+                <button
+                  type="button"
+                  className="st-compose__permission-details-trigger"
+                  aria-label="查看当前任务有效权限"
+                  aria-expanded={permissionDetailsOpen}
+                  onClick={() => setPermissionDetailsOpen((open) => !open)}
+                >
+                  <Settings2 size={13} aria-hidden="true" />
+                </button>
+              ) : null}
+              {permissionDetailsOpen && props.permissionDetails ? (
+                <div className="st-compose__permission-details" role="dialog" aria-label="当前任务有效权限">
+                  <header>
+                    <strong>当前任务访问范围</strong>
+                    <button type="button" aria-label="关闭权限详情" onClick={() => setPermissionDetailsOpen(false)}>
+                      <X size={13} aria-hidden="true" />
+                    </button>
+                  </header>
+                  <dl>
+                    <div><dt>操作权限</dt><dd>{permissionModeLabel(props.permissionDetails.approvalMode)}</dd></div>
+                    <div><dt>执行位置</dt><dd>{executionModeLabel(props.permissionDetails.executionMode)}</dd></div>
+                    {props.permissionDetails.baseRef ? <div><dt>基准分支</dt><dd>{props.permissionDetails.baseRef}</dd></div> : null}
+                    <div><dt>浏览器身份</dt><dd>{props.permissionDetails.browserIdentityName ?? '未选择'}</dd></div>
+                  </dl>
+                  <section>
+                    <strong>本次可用工具</strong>
+                    <div className="st-compose__permission-chips">
+                      {props.permissionDetails.effectiveToolNames.length ? props.permissionDetails.effectiveToolNames.map((name) => <span key={name}>{name}</span>) : <small>当前没有执行工具</small>}
+                    </div>
+                  </section>
+                  <section>
+                    <strong>智能体能力上限</strong>
+                    <p>{capabilityCeilingLabel(props.permissionDetails.capabilityCeiling)}</p>
+                  </section>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {props.browserIdentities?.length && props.onBrowserIdentityChange ? (
+            <label className="st-compose__permission st-compose__browser-identity">
+              <Globe2 size={13} strokeWidth={1.9} aria-hidden="true" />
+              <select
+                aria-label="当前任务浏览器身份"
+                value={props.selectedBrowserIdentityId ?? props.browserIdentities[0]?.id ?? ''}
+                disabled={props.streaming || props.browserIdentityBusy}
+                onChange={(event) => void props.onBrowserIdentityChange?.(event.target.value)}
+              >
+                {props.browserIdentities.map((identity) => (
+                  <option key={identity.id} value={identity.id}>
+                    {identity.name}{identity.isDefault ? '（默认）' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {showWorkspacePicker ? (
             <div
               className="st-compose__workspace-picker"
               ref={workspaceMenuRef}
@@ -566,11 +993,11 @@ export function Compose(props: ComposeProps) {
                 data-testid="compose-workspace-trigger"
                 aria-haspopup="listbox"
                 aria-expanded={workspaceMenuOpen}
-                aria-label={`切换项目，当前 ${selectedWorkspace.name}`}
+                aria-label={`切换项目，当前 ${selectedWorkspace?.name ?? '未选择'}`}
                 aria-describedby={
-                  selectedWorkspace.folderPath ? 'st-compose-workspace-path-tooltip' : undefined
+                  selectedWorkspace?.folderPath ? 'st-compose-workspace-path-tooltip' : undefined
                 }
-                disabled={props.streaming}
+                disabled={props.streaming || props.workspaceActionBusy}
                 onClick={() => {
                   setAgentMenuOpen(false);
                   setMentionQuery(null);
@@ -578,9 +1005,11 @@ export function Compose(props: ComposeProps) {
                 }}
               >
                 <FolderKanban size={14} strokeWidth={1.8} aria-hidden="true" />
-                <span className="st-compose__workspace-trigger-text">{selectedWorkspace.name}</span>
+                <span className="st-compose__workspace-trigger-text">
+                  {selectedWorkspace?.name ?? '选择项目'}
+                </span>
                 <ChevronDown size={13} strokeWidth={1.8} aria-hidden="true" />
-                {selectedWorkspace.folderPath ? (
+                {selectedWorkspace?.folderPath ? (
                   <span
                     id="st-compose-workspace-path-tooltip"
                     className="st-compose__workspace-tooltip"
@@ -597,8 +1026,40 @@ export function Compose(props: ComposeProps) {
                   role="listbox"
                   aria-label="项目列表"
                 >
+                  {props.onCreateWorkspace || props.onCreateWorkspaceFromFolder ? (
+                    <div className="st-compose__workspace-actions">
+                      {props.onCreateWorkspace ? (
+                        <button
+                          type="button"
+                          data-testid="compose-workspace-create-blank"
+                          disabled={props.workspaceActionBusy}
+                          onClick={() => runWorkspaceAction(props.onCreateWorkspace)}
+                        >
+                          <Plus size={15} strokeWidth={1.8} aria-hidden="true" />
+                          <span>
+                            <strong>新建空白项目</strong>
+                            <small>稍后再绑定工作区</small>
+                          </span>
+                        </button>
+                      ) : null}
+                      {props.onCreateWorkspaceFromFolder ? (
+                        <button
+                          type="button"
+                          data-testid="compose-workspace-create-folder"
+                          disabled={props.workspaceActionBusy}
+                          onClick={() => runWorkspaceAction(props.onCreateWorkspaceFromFolder)}
+                        >
+                          <FolderOpen size={15} strokeWidth={1.8} aria-hidden="true" />
+                          <span>
+                            <strong>使用现有文件夹</strong>
+                            <small>创建并立即绑定工作区</small>
+                          </span>
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {workspaces.map((workspace) => {
-                    const selected = workspace.workspaceId === selectedWorkspace.workspaceId;
+                    const selected = workspace.workspaceId === selectedWorkspace?.workspaceId;
                     return (
                       <button
                         key={workspace.workspaceId}
@@ -624,16 +1085,20 @@ export function Compose(props: ComposeProps) {
               ) : null}
             </div>
           ) : null}
-          {showAgentPicker ? (
-            <div className="st-compose__agent-picker" ref={agentMenuRef} data-open={agentMenuOpen ? '1' : '0'}>
+          {showParticipantPicker ? (
+            <div
+              className="st-compose__agent-picker"
+              ref={agentMenuRef}
+              data-open={agentMenuOpen ? '1' : '0'}
+            >
               <button
                 type="button"
                 className="st-compose__agent-trigger"
                 data-testid="compose-agent-trigger"
                 aria-haspopup="listbox"
                 aria-expanded={agentMenuOpen}
-                disabled={props.streaming}
-                title="切换负责智能体"
+                disabled={props.streaming || props.participantBusy}
+                title="切换智能体或小队"
                 onClick={() => {
                   setWorkspaceMenuOpen(false);
                   setMentionQuery(null);
@@ -642,12 +1107,17 @@ export function Compose(props: ComposeProps) {
               >
                 <span
                   className="st-compose__agent-avatar"
-                  style={{ '--st-compose-agent-color': selectedAgentColor } as CSSProperties}
+                  data-kind={selectedGroup ? 'group' : 'agent'}
+                  style={{ '--st-compose-agent-color': selectedParticipantColor } as CSSProperties}
                 >
-                  <Bot size={13} strokeWidth={1.9} aria-hidden="true" />
+                  {selectedGroup ? (
+                    <Users size={13} strokeWidth={1.9} aria-hidden="true" />
+                  ) : (
+                    <Bot size={13} strokeWidth={1.9} aria-hidden="true" />
+                  )}
                 </span>
                 <span className="st-compose__agent-trigger-text">
-                  @{selectedAgent?.name ?? '智能体'}
+                  @{selectedGroup?.name ?? selectedAgent?.name ?? '选择参与者'}
                 </span>
                 <ChevronDown size={13} strokeWidth={1.8} aria-hidden="true" />
               </button>
@@ -656,41 +1126,86 @@ export function Compose(props: ComposeProps) {
                   className="st-compose__agent-menu"
                   data-testid="compose-agent-menu"
                   role="listbox"
-                  aria-label="智能体列表"
+                  aria-label="智能体与小队列表"
                 >
-                  {agents.map((agent) => {
-                    const color = safeAgentColor(agent.color);
-                    const selected = agent.agentId === selectedAgent?.agentId;
-                    return (
-                      <button
-                        key={agent.agentId}
-                        type="button"
-                        role="option"
-                        aria-selected={selected}
-                        className="st-compose__agent-option"
-                        data-testid={`compose-agent-option-${agent.agentId}`}
-                        data-selected={selected ? '1' : '0'}
-                        onClick={() => pickAgent(agent.agentId)}
-                      >
-                        <span
-                          className="st-compose__agent-avatar"
-                          style={{ '--st-compose-agent-color': color } as CSSProperties}
-                        >
-                          <Bot size={13} strokeWidth={1.9} aria-hidden="true" />
-                        </span>
-                        <span className="st-compose__agent-option-copy">
-                          <strong>{agent.name}</strong>
-                          <small>
-                            {agent.role || '智能体'}
-                            {agent.modelLabel ? ` · ${agent.modelLabel}` : ''}
-                          </small>
-                        </span>
-                        {selected ? (
-                          <Check size={14} strokeWidth={2} aria-hidden="true" />
-                        ) : null}
-                      </button>
-                    );
-                  })}
+                  {showAgentPicker ? (
+                    <div className="st-compose__participant-section">
+                      <span className="st-compose__participant-heading">智能体</span>
+                      {agents.map((agent) => {
+                        const color = safeAgentColor(agent.color);
+                        const selected = !selectedGroup && agent.agentId === selectedAgent?.agentId;
+                        return (
+                          <button
+                            key={agent.agentId}
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            className="st-compose__agent-option"
+                            data-testid={`compose-agent-option-${agent.agentId}`}
+                            data-selected={selected ? '1' : '0'}
+                            disabled={props.participantBusy}
+                            onClick={() => pickAgent(agent.agentId)}
+                          >
+                            <span
+                              className="st-compose__agent-avatar"
+                              style={{ '--st-compose-agent-color': color } as CSSProperties}
+                            >
+                              <Bot size={13} strokeWidth={1.9} aria-hidden="true" />
+                            </span>
+                            <span className="st-compose__agent-option-copy">
+                              <strong>{agent.name}</strong>
+                              <small>
+                                {agent.role || '智能体'}
+                                {agent.modelLabel ? ` · ${agent.modelLabel}` : ''}
+                              </small>
+                            </span>
+                            {selected ? (
+                              <Check size={14} strokeWidth={2} aria-hidden="true" />
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  {showGroupPicker ? (
+                    <div className="st-compose__participant-section">
+                      <span className="st-compose__participant-heading">小队</span>
+                      {groups.map((group) => {
+                        const color = safeAgentColor(group.color);
+                        const selected = group.groupId === selectedGroup?.groupId;
+                        return (
+                          <button
+                            key={group.groupId}
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            className="st-compose__agent-option st-compose__group-option"
+                            data-testid={`compose-group-option-${group.groupId}`}
+                            data-selected={selected ? '1' : '0'}
+                            disabled={props.participantBusy}
+                            onClick={() => pickGroup(group.groupId)}
+                          >
+                            <span
+                              className="st-compose__agent-avatar"
+                              data-kind="group"
+                              style={{ '--st-compose-agent-color': color } as CSSProperties}
+                            >
+                              <Users size={13} strokeWidth={1.9} aria-hidden="true" />
+                            </span>
+                            <span className="st-compose__agent-option-copy">
+                              <strong>{group.name}</strong>
+                              <small>
+                                主智能体 {group.leadName} · {group.memberCount} 名成员
+                              </small>
+                            </span>
+                            {selected ? (
+                              <Check size={14} strokeWidth={2} aria-hidden="true" />
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                   {props.onOpenAgentCenter ? (
                     <button
                       type="button"
@@ -732,6 +1247,32 @@ export function Compose(props: ComposeProps) {
           ) : null}
         </div>
         <div className="st-compose__actions">
+          {props.onPickAttachments ? (
+            <div className="st-compose__attachment-picker" ref={attachmentMenuRef}>
+              <button
+                type="button"
+                className="st-compose__attach"
+                aria-label="添加附件"
+                title="添加图片、文件或文件夹"
+                disabled={props.streaming || attachmentBusy}
+                onClick={() => setAttachmentMenuOpen((open) => !open)}
+              >
+                <Paperclip aria-hidden="true" size={16} />
+              </button>
+              {attachmentMenuOpen ? (
+                <div className="st-compose__attachment-menu">
+                  <button type="button" onClick={() => void pickAttachments('files')}>
+                    <Image aria-hidden="true" size={15} />
+                    图片或文件
+                  </button>
+                  <button type="button" onClick={() => void pickAttachments('folder')}>
+                    <FolderOpen aria-hidden="true" size={15} />
+                    文件夹（本轮只读）
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {props.streaming && props.onCancel ? (
             <button
               type="button"
@@ -749,7 +1290,7 @@ export function Compose(props: ComposeProps) {
               className="st-compose__send"
               aria-label="发送"
               title="发送（Ctrl+Enter）"
-              disabled={sendBlocked || !val.trim()}
+              disabled={sendBlocked || (!val.trim() && attachments.length === 0)}
             >
               <ArrowUp aria-hidden="true" size={17} strokeWidth={2} />
             </button>

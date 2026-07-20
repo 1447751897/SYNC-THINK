@@ -37,6 +37,7 @@ async function openStore() {
   await runMigrations(dbPath);
   const connection = await openDatabaseAsync({ path: dbPath });
   return {
+    dbPath,
     store: new SqliteAgentStore(connection.raw),
     raw: connection.raw,
     close: () => connection.raw.close(),
@@ -207,6 +208,74 @@ describe('SqliteAgentStore', () => {
       expect(store.listAgentVersions(agentId).map((version) => version.id)).toEqual([v1.id, v2.id]);
     } finally {
       close();
+    }
+  });
+
+  it('defaults, versions, validates, and persists maximum task concurrency', async () => {
+    const { dbPath, store, close } = await openStore();
+    const agentId = 'agent-concurrency' as AgentId;
+    let v1: AgentVersionId;
+    let v2: AgentVersionId;
+    try {
+      const defaulted = store.createAgent({
+        agentId: 'agent-concurrency-default' as AgentId,
+        name: 'Default concurrency',
+        role: 'executor',
+        developerInstructions: 'Execute.',
+        inputContract: 'task',
+        outputContract: 'result',
+        defaultModelId: 'model-concurrency' as ModelId,
+      });
+      expect(defaulted.maxConcurrency).toBe(3);
+
+      const created = store.createAgent({
+        agentId,
+        name: 'Concurrent executor',
+        role: 'executor',
+        developerInstructions: 'Execute independent tasks.',
+        inputContract: 'task',
+        outputContract: 'result',
+        maxConcurrency: 8,
+        defaultModelId: 'model-concurrency' as ModelId,
+      });
+      v1 = created.id;
+      expect(created.maxConcurrency).toBe(8);
+
+      const updated = store.updateDefinition({ agentId, maxConcurrency: 5 });
+      v2 = updated.id;
+      expect(updated.version).toBe(2);
+      expect(updated.maxConcurrency).toBe(5);
+      expect(store.getRequiredAgentVersion(v1).maxConcurrency).toBe(8);
+
+      for (const invalid of [0, 17, 1.5]) {
+        expect(() =>
+          store.createAgent({
+            agentId: `agent-concurrency-invalid-${invalid}` as AgentId,
+            name: 'Invalid concurrency',
+            role: 'executor',
+            developerInstructions: 'Execute.',
+            inputContract: 'task',
+            outputContract: 'result',
+            maxConcurrency: invalid,
+            defaultModelId: 'model-concurrency' as ModelId,
+          }),
+        ).toThrow('maxConcurrency must be an integer between 1 and 16');
+        expect(() => store.updateDefinition({ agentId, maxConcurrency: invalid })).toThrow(
+          'maxConcurrency must be an integer between 1 and 16',
+        );
+      }
+    } finally {
+      close();
+    }
+
+    const reopened = await openDatabaseAsync({ path: dbPath, fileMustExist: true });
+    try {
+      const reopenedStore = new SqliteAgentStore(reopened.raw);
+      expect(reopenedStore.getRequiredAgentVersion(v1!).maxConcurrency).toBe(8);
+      expect(reopenedStore.getRequiredAgentVersion(v2!).maxConcurrency).toBe(5);
+      expect(reopenedStore.getLatestVersion(agentId)?.id).toBe(v2!);
+    } finally {
+      reopened.raw.close();
     }
   });
 

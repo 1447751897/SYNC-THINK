@@ -145,9 +145,8 @@ describe('M2 desktop workspace projection', () => {
   });
 
   it('projects complete Agent definitions and preserves exact selection', () => {
-    const project = (
-      m2Workspace as unknown as Record<string, (...args: never[]) => unknown>
-    ).projectAgentWorkspace;
+    const project = (m2Workspace as unknown as Record<string, (...args: never[]) => unknown>)
+      .projectAgentWorkspace;
     expect(typeof project).toBe('function');
     if (typeof project !== 'function') return;
 
@@ -250,12 +249,10 @@ describe('M2 desktop workspace projection', () => {
   });
 
   it('builds Agent create/version commands from the selected runtime binding', () => {
-    const buildVersion = (
-      m2Workspace as unknown as Record<string, (...args: never[]) => unknown>
-    ).buildAgentVersionPayload;
-    const buildCreate = (
-      m2Workspace as unknown as Record<string, (...args: never[]) => unknown>
-    ).buildAgentCreatePayload;
+    const buildVersion = (m2Workspace as unknown as Record<string, (...args: never[]) => unknown>)
+      .buildAgentVersionPayload;
+    const buildCreate = (m2Workspace as unknown as Record<string, (...args: never[]) => unknown>)
+      .buildAgentCreatePayload;
     expect(typeof buildVersion).toBe('function');
     expect(typeof buildCreate).toBe('function');
     if (typeof buildVersion !== 'function' || typeof buildCreate !== 'function') return;
@@ -289,6 +286,7 @@ describe('M2 desktop workspace projection', () => {
 
     expect(buildVersion(definition, binding)).toEqual({
       ...definition,
+      approvalMode: 'full',
       defaultModelId: 'model-planner',
       fallbackModelIds: ['model-fallback'],
       pauseOnFailure: true,
@@ -297,22 +295,112 @@ describe('M2 desktop workspace projection', () => {
       skillVersionIds: ['skill-plan-v1'],
       mcpServerIds: ['mcp-files'],
     });
-    expect(buildCreate({ name: 'Designer', role: 'designer' }, binding)).toMatchObject({
+    expect(
+      buildVersion(
+        {
+          ...definition,
+          visualIdentity: {
+            icon: 'workflow',
+            color: '#0d9488',
+            avatarPath: `avatars/${'a'.repeat(64)}.png`,
+            avatarUrl: 'data:image/png;base64,cGl4ZWw=',
+          },
+        },
+        binding,
+      ),
+    ).toMatchObject({
+      visualIdentity: {
+        icon: 'workflow',
+        color: '#0d9488',
+        avatarPath: `avatars/${'a'.repeat(64)}.png`,
+      },
+    });
+    expect(
+      (
+        buildVersion(
+          {
+            ...definition,
+            visualIdentity: {
+              icon: 'workflow',
+              color: '#0d9488',
+              avatarPath: `avatars/${'a'.repeat(64)}.png`,
+              avatarUrl: 'data:image/png;base64,cGl4ZWw=',
+            },
+          },
+          binding,
+        ) as { visualIdentity?: Record<string, unknown> }
+      ).visualIdentity,
+    ).not.toHaveProperty('avatarUrl');
+    expect(
+      buildCreate(
+        {
+          name: 'Designer',
+          role: 'designer',
+          description: 'Creates product interfaces.',
+          developerInstructions: 'Use the approved Figma language.',
+          maxConcurrency: 5,
+        },
+        binding,
+      ),
+    ).toMatchObject({
       name: 'Designer',
       role: 'designer',
+      description: 'Creates product interfaces.',
+      developerInstructions: 'Use the approved Figma language.',
+      maxConcurrency: 5,
       defaultModelId: 'model-planner',
       defaultCredentialGroupId: 'group-planner',
       pinnedCredentialRefId: 'credential-planner',
       memoryScope: 'project',
-      approvalMode: 'request',
+      approvalMode: 'full',
     });
   });
 
+  it('builds a first-Agent runtime binding from imported models and matching credentials', () => {
+    const bootstrap = (m2Workspace as unknown as Record<string, (...args: never[]) => unknown>)
+      .buildAgentBootstrapBinding;
+    expect(typeof bootstrap).toBe('function');
+    if (typeof bootstrap !== 'function') return;
+
+    const input = {
+      name: '首个助手',
+      role: 'generalist',
+      description: '处理日常任务',
+      developerInstructions: '先理解，再执行。',
+      maxConcurrency: 3,
+    };
+    expect(
+      bootstrap(
+        input,
+        [
+          {
+            modelId: 'model-1',
+            label: 'gpt-main',
+            providerName: 'KMKAPI',
+          },
+        ],
+        [
+          {
+            credentialRefId: 'credential-1',
+            credentialGroupId: 'group-1',
+            groupName: '默认分组',
+            label: '主密钥',
+            providerName: 'KMKAPI',
+          },
+        ],
+      ),
+    ).toMatchObject({
+      name: '首个助手',
+      role: 'generalist',
+      defaultModelId: 'model-1',
+      defaultCredentialGroupId: 'group-1',
+      pinnedCredentialRefId: 'credential-1',
+    });
+    expect(bootstrap(input, [], [])).toBeNull();
+  });
+
   it('wires the full Agent API into the product Agent workspace', () => {
-    const source = readFileSync(
-      new URL('../src/renderer/index.tsx', import.meta.url),
-      'utf8',
-    );
+    const source = readFileSync(new URL('../src/renderer/index.tsx', import.meta.url), 'utf8');
     expect(source).toContain('runtime.listAgents');
     expect(source).toContain('runtime.listAgentVersions');
     expect(source).toContain('runtime.createAgentVersion');
@@ -336,14 +424,10 @@ describe('M2 desktop workspace projection', () => {
       typeof api.isM2RefreshEvent !== 'function' ||
       typeof api.resolveAutomaticModeRecovery !== 'function' ||
       typeof api.isApprovalDelegateAgentVersion !== 'function'
-    ) return;
+    )
+      return;
 
-    expect(
-      api.canSaveAgentBindingForSelection(
-        { agentId: 'agent-old' },
-        'agent-new',
-      ),
-    ).toBe(false);
+    expect(api.canSaveAgentBindingForSelection({ agentId: 'agent-old' }, 'agent-new')).toBe(false);
     expect(api.isM2RefreshEvent({ type: 'review.evidence-recorded' })).toBe(true);
     expect(api.isM2RefreshEvent({ type: 'provider.created' })).toBe(false);
     expect(
@@ -364,7 +448,8 @@ describe('M2 desktop workspace projection', () => {
     if (
       typeof api.hasApprovedPlanRevision !== 'function' ||
       typeof api.resolveVisibleAutomaticModeRecovery !== 'function'
-    ) return;
+    )
+      return;
 
     expect(
       api.hasApprovedPlanRevision([
@@ -407,19 +492,16 @@ describe('M2 desktop workspace projection', () => {
       }),
     ).toBeNull();
 
-    const source = readFileSync(
-      new URL('../src/renderer/index.tsx', import.meta.url),
-      'utf8',
-    );
+    const source = readFileSync(new URL('../src/renderer/index.tsx', import.meta.url), 'utf8');
     expect(source).not.toContain('<ModeSwitch');
     expect(source).toContain('inferConversationCollaborationIntent(text)');
     expect(source).toContain('collaborationIntent.shouldUpgrade');
     expect(source).toContain('prepareConversationCollaboration({');
-    expect(source).toContain("runtime.setParticipationMode({");
+    expect(source).toContain('runtime.setParticipationMode({');
     expect(source).toContain("mode: 'collaboration'");
     expect(source).toContain('runtime.createPlan({');
-    expect(source).toContain('<PlanRevisionPanel');
-    expect(source).toContain('approveCurrentPlan(input)');
+    expect(source).not.toContain('<PlanRevisionPanel');
+    expect(source).toContain('!taskGroupIds.has(targetTask.taskId)');
   });
 
   it('commits only the latest scoped M2 load when Task responses resolve out of order', async () => {
@@ -428,9 +510,8 @@ describe('M2 desktop workspace projection', () => {
       invalidate(): void;
       isCurrent(token: unknown): boolean;
     };
-    const createGate = (
-      m2Workspace as unknown as { createM2LoadRequestGate?: () => RequestGate }
-    ).createM2LoadRequestGate;
+    const createGate = (m2Workspace as unknown as { createM2LoadRequestGate?: () => RequestGate })
+      .createM2LoadRequestGate;
     expect(typeof createGate).toBe('function');
     if (!createGate) return;
 
@@ -464,10 +545,7 @@ describe('M2 desktop workspace projection', () => {
       expect(gate.isCurrent(invalidated), surface).toBe(false);
     }
 
-    const source = readFileSync(
-      new URL('../src/renderer/index.tsx', import.meta.url),
-      'utf8',
-    );
+    const source = readFileSync(new URL('../src/renderer/index.tsx', import.meta.url), 'utf8');
     expect(source).toContain('approvalLoadGateRef.current.begin');
     expect(source).toContain('policyLoadGateRef.current.begin');
     expect(source).toContain('planLoadGateRef.current.begin');
@@ -504,18 +582,14 @@ describe('M2 desktop workspace projection', () => {
     expect(merge(taskB, 'task-b', 5)).toEqual({ ...taskB, taskVersion: 5 });
     expect(merge(taskB, 'task-b', 2)).toEqual(taskB);
 
-    const source = readFileSync(
-      new URL('../src/renderer/index.tsx', import.meta.url),
-      'utf8',
-    );
+    const source = readFileSync(new URL('../src/renderer/index.tsx', import.meta.url), 'utf8');
     expect(source).toContain('activeTaskIdRef.current !== targetTaskId');
     expect(source).toMatch(/syncTaskVersion\([^,]+,\s*result\.taskVersion\)/);
   });
 
   it('finds only the nearest common Artifact ancestor and errors when none exists', () => {
-    const find = (
-      m2Workspace as unknown as Record<string, (...args: never[]) => unknown>
-    ).findNearestCommonArtifactAncestor;
+    const find = (m2Workspace as unknown as Record<string, (...args: never[]) => unknown>)
+      .findNearestCommonArtifactAncestor;
     expect(typeof find).toBe('function');
     if (typeof find !== 'function') return;
 

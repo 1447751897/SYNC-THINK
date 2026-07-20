@@ -198,6 +198,51 @@ describe('LocalStdioMcpWorker', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 10_000);
+
+  it('kills a spawned JSON-RPC process when a tool call is cancelled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-mcp-tool-cancel-'));
+    const marker = join(dir, 'spawned.txt');
+    const fixturePath = fileURLToPath(
+      new URL('./fixtures/cancellable-process.mjs', import.meta.url),
+    );
+    const controller = new AbortController();
+    let pid: number | undefined;
+    try {
+      const eventsPromise = collect(
+        new LocalStdioMcpWorker().exec(
+          {
+            workingDir: process.cwd(),
+            endpoint: `node "${fixturePath}" "${marker}"`,
+            transport: 'local-stdio',
+            policy: { maxOutputBytes: 1024, timeoutMs: 5_000, trusted: false },
+            action: { kind: 'call-tool', toolName: 'wait_for_cancel', toolArguments: {} },
+          },
+          { ...token, signal: controller.signal, beforeStart: () => true },
+        ),
+      );
+      const deadline = Date.now() + 3_000;
+      while (!existsSync(marker)) {
+        if (Date.now() >= deadline) throw new Error('worker process did not write marker');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      pid = Number(readFileSync(marker, 'utf8'));
+      controller.abort(new Error('run.cancelled'));
+      const events = await eventsPromise;
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: 'failed', failureClass: 'acceptance' }),
+      );
+      expect(() => process.kill(pid!, 0)).toThrow();
+    } finally {
+      if (pid) {
+        try {
+          process.kill(pid);
+        } catch {
+          // The expected cancellation path already terminated it.
+        }
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 12_000);
 });
 
 describe('LocalStdioMcpWorker call-tool (JSON-RPC)', () => {

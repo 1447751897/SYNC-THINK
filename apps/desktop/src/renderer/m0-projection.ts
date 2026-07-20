@@ -11,8 +11,65 @@ export interface ConversationMessage {
   streaming?: boolean;
   runId?: string;
   modelId?: string;
+  /** Provider-facing label, including the fallback chain when one was used. */
+  modelLabel?: string;
   agentVersionId?: string;
+  /** Effective route for a user message. */
+  targetAgentVersionId?: string;
+  targetGroupId?: string;
+  /** Agent-to-Agent target rendered as an @ mention. */
+  mentionAgentVersionId?: string;
   occurredAt?: string;
+  confirmation?: ApplicationToolConfirmationView;
+  attachments?: Array<{
+    id: string;
+    kind: 'image' | 'file' | 'folder';
+    name: string;
+    mimeType: string;
+    size: number;
+    sha256?: string;
+    managedRef?: string;
+  }>;
+}
+
+function projectMessageAttachments(value: unknown): ConversationMessage['attachments'] {
+  if (!Array.isArray(value)) return undefined;
+  const attachments = value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const item = entry as Record<string, unknown>;
+    if (
+      typeof item.id !== 'string' ||
+      (item.kind !== 'image' && item.kind !== 'file' && item.kind !== 'folder') ||
+      typeof item.name !== 'string' ||
+      typeof item.mimeType !== 'string' ||
+      typeof item.size !== 'number'
+    ) {
+      return [];
+    }
+    const kind = item.kind as 'image' | 'file' | 'folder';
+    return [
+      {
+        id: item.id,
+        kind,
+        name: item.name,
+        mimeType: item.mimeType,
+        size: item.size,
+        ...(typeof item.sha256 === 'string' ? { sha256: item.sha256 } : {}),
+        ...(typeof item.managedRef === 'string' ? { managedRef: item.managedRef } : {}),
+      },
+    ];
+  });
+  return attachments.length > 0 ? attachments : undefined;
+}
+
+export interface ApplicationToolConfirmationView {
+  id: string;
+  toolName: string;
+  summary: string;
+  payloadKeys: string[];
+  expiresAt: string;
+  status: 'pending' | 'confirmed' | 'failed' | 'rejected' | 'expired';
+  errorSummary?: string;
 }
 
 export interface StreamStatus {
@@ -86,6 +143,46 @@ export interface ConversationProjection {
   assistantText: string;
 }
 
+function providerHttpStatus(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.match(/\b(4\d\d|5\d\d)\b/)?.[1];
+}
+
+function formatProviderPauseMessage(input: {
+  reason: string;
+  failureClass?: string;
+  chain: readonly string[];
+  statuses?: ReadonlyMap<string, string>;
+}): string {
+  const models = input.chain.length > 0 ? input.chain : ['模型'];
+  const statusValues = models.map((model) => input.statuses?.get(model));
+  const commonStatus =
+    statusValues.length > 0 && statusValues.every((status) => status === statusValues[0])
+      ? statusValues[0]
+      : undefined;
+  const chainLabel = models.join(' -> ');
+  if (commonStatus) {
+    const statusCopy = models.length > 1 ? `均返回 ${commonStatus}` : `返回 ${commonStatus}`;
+    return `模型暂时无法连接：${chainLabel} ${statusCopy}，请稍后重试。`;
+  }
+  if (statusValues.some(Boolean)) {
+    const annotated = models
+      .map((model, index) => (statusValues[index] ? `${model} (${statusValues[index]})` : model))
+      .join(' -> ');
+    return `模型暂时无法连接：${annotated}，请稍后重试。`;
+  }
+  if (input.failureClass === 'auth') {
+    return `模型认证失败：${chainLabel}，请检查当前密钥。`;
+  }
+  if (input.reason === 'fallback_exhausted') {
+    return `模型暂时无法连接：${chainLabel} 的 fallback 已尝试完毕，请稍后重试。`;
+  }
+  if (input.reason === 'no_fallback_configured') {
+    return `模型暂时无法连接：${chainLabel}，当前未配置 fallback，请稍后重试。`;
+  }
+  return `本次运行已暂停：${chainLabel}。`;
+}
+
 /**
  * Projects durable event history into an interleaved conversation for one thread.
  * Multi-turn assistants are retained; in-flight runs show a streaming bubble.
@@ -102,11 +199,14 @@ export function projectConversation(
   // Per-run assistant accumulation for the current thread.
   const runText = new Map<string, string>();
   const runModel = new Map<string, string>();
+  const runProviderModelChain = new Map<string, string[]>();
+  const runProviderStatus = new Map<string, Map<string, string>>();
   const runAgentVersion = new Map<string, string>();
   const runTerminal = new Map<string, 'completed' | 'failed' | 'cancelled' | 'paused'>();
   const runOrder: string[] = [];
   /** Maps runId -> message list index of the assistant bubble (if any). */
   const assistantIndexByRun = new Map<string, number>();
+  const confirmationIndexById = new Map<string, number>();
   /** Maps runId -> the user message that triggered it (sequence pairing via order). */
   let latestRunId: string | undefined;
   let latestTerminal: StreamState = 'idle';
@@ -125,12 +225,22 @@ export function projectConversation(
       if (Number.isInteger(event.payload.taskVersion) && Number(event.payload.taskVersion) >= 0) {
         taskVersion = Number(event.payload.taskVersion);
       }
+      if (event.payload.internalKind === 'subtask-auto' || event.payload.internalKind === 'subtask-wake') {
+        continue;
+      }
       if (event.payload.role === 'user' && typeof event.payload.text === 'string') {
         messages.push({
           id: event.id,
           role: 'user',
           text: event.payload.text,
           occurredAt: event.occurredAt,
+          targetAgentVersionId:
+            typeof event.payload.targetAgentVersionId === 'string'
+              ? event.payload.targetAgentVersionId
+              : undefined,
+          targetGroupId:
+            typeof event.payload.groupId === 'string' ? event.payload.groupId : undefined,
+          attachments: projectMessageAttachments(event.payload.attachments),
         });
       } else if (event.payload.role === 'assistant' && typeof event.payload.text === 'string') {
         messages.push({
@@ -151,6 +261,193 @@ export function projectConversation(
       continue;
     }
 
+    if (event.type === 'application.tool_confirmation_requested') {
+      const confirmationId =
+        typeof event.payload.confirmationId === 'string' ? event.payload.confirmationId : undefined;
+      let result: Record<string, unknown> | undefined;
+      if (typeof event.payload.result === 'string') {
+        try {
+          const parsed = JSON.parse(event.payload.result) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            result = parsed as Record<string, unknown>;
+          }
+        } catch {
+          result = undefined;
+        }
+      }
+      if (confirmationId) {
+        const index = messages.length;
+        messages.push({
+          id: event.id,
+          role: 'system',
+          text: '',
+          runId: event.runId,
+          occurredAt: event.occurredAt,
+          confirmation: {
+            id: confirmationId,
+            toolName:
+              typeof event.payload.toolName === 'string'
+                ? event.payload.toolName
+                : 'sync_think.configuration',
+            summary: typeof result?.summary === 'string' ? result.summary : '修改 SYNC-THINK 配置',
+            payloadKeys: Array.isArray(result?.payloadKeys)
+              ? result.payloadKeys.filter((key): key is string => typeof key === 'string')
+              : [],
+            expiresAt: typeof result?.expiresAt === 'string' ? result.expiresAt : '',
+            status: 'pending',
+          },
+        });
+        confirmationIndexById.set(confirmationId, index);
+      }
+      continue;
+    }
+
+    if (event.type === 'application.tool_confirmation_resolved') {
+      const confirmationId =
+        typeof event.payload.confirmationId === 'string' ? event.payload.confirmationId : undefined;
+      const status =
+        event.payload.status === 'confirmed' ||
+        event.payload.status === 'failed' ||
+        event.payload.status === 'rejected' ||
+        event.payload.status === 'expired'
+          ? event.payload.status
+          : undefined;
+      const index = confirmationId ? confirmationIndexById.get(confirmationId) : undefined;
+      if (index !== undefined && status && messages[index]?.confirmation) {
+        messages[index] = {
+          ...messages[index],
+          confirmation: {
+            ...messages[index].confirmation!,
+            status,
+            ...(typeof event.payload.errorSummary === 'string'
+              ? { errorSummary: event.payload.errorSummary }
+              : {}),
+          },
+        };
+      }
+      continue;
+    }
+
+    if (event.type === 'group.agent-message' && typeof event.payload.text === 'string') {
+      messages.push({
+        id: event.id,
+        role: 'assistant',
+        text: event.payload.text,
+        streaming: false,
+        runId: event.runId,
+        modelId: typeof event.payload.modelId === 'string' ? event.payload.modelId : undefined,
+        agentVersionId:
+          typeof event.payload.messageAgentVersionId === 'string'
+            ? event.payload.messageAgentVersionId
+            : typeof event.payload.agentVersionId === 'string'
+            ? event.payload.agentVersionId
+            : undefined,
+        mentionAgentVersionId:
+          typeof event.payload.mentionAgentVersionId === 'string'
+            ? event.payload.mentionAgentVersionId
+            : typeof event.payload.toAgentVersionId === 'string'
+              ? event.payload.toAgentVersionId
+              : undefined,
+        occurredAt: event.occurredAt,
+      });
+      continue;
+    }
+
+    if (event.type === 'group.delegation-decided') {
+      continue;
+    }
+
+    if (
+      (event.type === 'group.subtask-delegated' || event.type === 'group.handoff-recorded') &&
+      typeof event.payload.text === 'string'
+    ) {
+      messages.push({
+        id: event.id,
+        role: 'assistant',
+        text: event.payload.text,
+        runId: event.runId,
+        agentVersionId:
+          typeof event.payload.fromAgentVersionId === 'string'
+            ? event.payload.fromAgentVersionId
+            : typeof event.payload.agentVersionId === 'string'
+              ? event.payload.agentVersionId
+              : undefined,
+        mentionAgentVersionId:
+          typeof event.payload.toAgentVersionId === 'string'
+            ? event.payload.toAgentVersionId
+            : undefined,
+        occurredAt: event.occurredAt,
+      });
+      continue;
+    }
+
+    if (
+      (event.type === 'subtask.delegated' ||
+        event.type === 'subtask.agent-message' ||
+        event.type === 'subtask.completed' ||
+        event.type === 'subtask.failed' ||
+        event.type === 'subtask.handoff-recorded') &&
+      typeof event.payload.text === 'string'
+    ) {
+      messages.push({
+        id: event.id,
+        role: 'assistant',
+        text: event.payload.text,
+        runId: event.runId,
+        agentVersionId:
+          typeof event.payload.messageAgentVersionId === 'string'
+            ? event.payload.messageAgentVersionId
+            : typeof event.payload.agentVersionId === 'string'
+            ? event.payload.agentVersionId
+            : typeof event.payload.fromAgentVersionId === 'string'
+              ? event.payload.fromAgentVersionId
+              : undefined,
+        mentionAgentVersionId:
+          typeof event.payload.toAgentVersionId === 'string'
+            ? event.payload.toAgentVersionId
+            : typeof event.payload.delegateAgentVersionId === 'string'
+              ? event.payload.delegateAgentVersionId
+              : undefined,
+        occurredAt: event.occurredAt,
+      });
+      continue;
+    }
+
+    if (event.type === 'group.collaboration.started' && event.runId) {
+      latestRunId = event.runId;
+      latestTerminal = 'streaming';
+      streamError = undefined;
+      continue;
+    }
+
+    if (
+      event.type === 'group.collaboration.completed' ||
+      event.type === 'group.collaboration.failed' ||
+      event.type === 'group.collaboration.skipped'
+    ) {
+      if (event.runId) {
+        latestRunId = event.runId;
+        runTerminal.set(
+          event.runId,
+          event.type === 'group.collaboration.completed'
+            ? 'completed'
+            : event.type === 'group.collaboration.failed'
+              ? 'failed'
+              : 'cancelled',
+        );
+      }
+      latestTerminal =
+        event.type === 'group.collaboration.completed'
+          ? 'completed'
+          : event.type === 'group.collaboration.failed'
+            ? 'failed'
+            : 'idle';
+      if (event.type === 'group.collaboration.failed') {
+        streamError = typeof event.payload.text === 'string' ? event.payload.text : '群聊协作失败';
+      }
+      continue;
+    }
+
     if (event.type === 'run.started' && event.runId) {
       latestRunId = event.runId;
       runText.set(event.runId, '');
@@ -159,6 +456,13 @@ export function projectConversation(
       if (typeof event.payload.modelId === 'string') {
         runModel.set(event.runId, event.payload.modelId);
       }
+      const providerModelLabel =
+        typeof event.payload.providerModelId === 'string'
+          ? event.payload.providerModelId
+          : typeof event.payload.modelId === 'string'
+            ? event.payload.modelId
+            : undefined;
+      if (providerModelLabel) runProviderModelChain.set(event.runId, [providerModelLabel]);
       if (typeof event.payload.agentVersionId === 'string') {
         runAgentVersion.set(event.runId, event.payload.agentVersionId);
       }
@@ -171,6 +475,7 @@ export function projectConversation(
         streaming: true,
         runId: event.runId,
         modelId: runModel.get(event.runId),
+        modelLabel: providerModelLabel,
         agentVersionId: runAgentVersion.get(event.runId),
         occurredAt: event.occurredAt,
       });
@@ -303,11 +608,22 @@ export function projectConversation(
       if (toModel) {
         runModel.set(event.runId, toModel);
       }
+      const chain = runProviderModelChain.get(event.runId) ?? [fromLabel];
+      if (!chain.includes(fromLabel)) chain.push(fromLabel);
+      if (chain.at(-1) !== toLabel) chain.push(toLabel);
+      runProviderModelChain.set(event.runId, chain);
+      const fallbackStatus = providerHttpStatus(event.payload.errorMessage);
+      if (fallbackStatus) {
+        const statuses = runProviderStatus.get(event.runId) ?? new Map<string, string>();
+        statuses.set(fromLabel, fallbackStatus);
+        runProviderStatus.set(event.runId, statuses);
+      }
       const idx = assistantIndexByRun.get(event.runId);
       if (idx !== undefined && toModel) {
         messages[idx] = {
           ...messages[idx],
           modelId: toModel,
+          modelLabel: chain.join(' -> '),
           streaming: !runTerminal.has(event.runId),
         };
       }
@@ -321,26 +637,57 @@ export function projectConversation(
       continue;
     }
 
+    if (event.type === 'run.retry.scheduled') {
+      const providerModel =
+        typeof event.payload.providerModelId === 'string'
+          ? event.payload.providerModelId
+          : runProviderModelChain.get(event.runId)?.at(-1);
+      const status = providerHttpStatus(event.payload.errorMessage);
+      if (providerModel && status) {
+        const statuses = runProviderStatus.get(event.runId) ?? new Map<string, string>();
+        statuses.set(providerModel, status);
+        runProviderStatus.set(event.runId, statuses);
+      }
+      const attempt = typeof event.payload.attempt === 'number' ? event.payload.attempt : 1;
+      const maxAttempts =
+        typeof event.payload.maxAttempts === 'number' ? event.payload.maxAttempts : attempt;
+      streamNotice = `${providerModel ?? '模型'} 暂时无法连接，正在重试 (${attempt}/${maxAttempts})`;
+      continue;
+    }
+
     if (event.type === 'run.paused') {
       const partial = runText.get(event.runId) ?? '';
       runTerminal.set(event.runId, 'paused');
       const reason = typeof event.payload.reason === 'string' ? event.payload.reason : 'paused';
       const failureClass =
         typeof event.payload.failureClass === 'string' ? event.payload.failureClass : undefined;
-      const reasonLabel =
-        reason === 'no_fallback_configured'
-          ? '无 fallback 配置，已暂停'
-          : reason === 'fallback_exhausted'
-            ? 'Fallback 链已耗尽，已暂停'
-            : `Run 已暂停 · ${reason}`;
-      streamError = failureClass ? `${reasonLabel} · ${failureClass}` : reasonLabel;
+      const chain = runProviderModelChain.get(event.runId) ?? [];
+      const finalProviderModel =
+        typeof event.payload.providerModelId === 'string'
+          ? event.payload.providerModelId
+          : chain.at(-1);
+      if (finalProviderModel && !chain.includes(finalProviderModel)) chain.push(finalProviderModel);
+      const finalStatus = providerHttpStatus(event.payload.errorMessage);
+      if (finalProviderModel && finalStatus) {
+        const statuses = runProviderStatus.get(event.runId) ?? new Map<string, string>();
+        statuses.set(finalProviderModel, finalStatus);
+        runProviderStatus.set(event.runId, statuses);
+      }
+      const failureMessage = formatProviderPauseMessage({
+        reason,
+        failureClass,
+        chain,
+        statuses: runProviderStatus.get(event.runId),
+      });
+      streamError = failureMessage;
       const idx = assistantIndexByRun.get(event.runId);
       if (idx !== undefined) {
         messages[idx] = {
           ...messages[idx],
-          text: partial || messages[idx].text || '（已暂停，可配置 fallback 后重试）',
+          text: partial || messages[idx].text || failureMessage,
           streaming: false,
           modelId: runModel.get(event.runId) ?? messages[idx].modelId,
+          modelLabel: chain.length > 0 ? chain.join(' -> ') : messages[idx].modelLabel,
         };
       }
       if (event.runId === latestRunId) latestTerminal = 'paused';
@@ -618,6 +965,7 @@ function categorize(event: Event): TraceItem['category'] {
   if (event.type === 'run.cancelled') return 'recovery';
   if (event.type === 'run.failed') return 'recovery';
   if (event.type === 'run.paused') return 'recovery';
+  if (event.type === 'run.retry.scheduled') return 'model-call';
   if (event.type === 'run.fallback.selected') return 'model-call';
   if (
     event.type.startsWith('run.') ||
@@ -674,6 +1022,17 @@ function summarize(event: Event): string {
       const fc =
         typeof event.payload.failureClass === 'string' ? event.payload.failureClass : 'unknown';
       return `Run 失败 · ${fc}`;
+    }
+    case 'run.retry.scheduled': {
+      const providerModel =
+        typeof event.payload.providerModelId === 'string'
+          ? event.payload.providerModelId
+          : (modelId ?? '模型');
+      const attempt = typeof event.payload.attempt === 'number' ? event.payload.attempt : 1;
+      const maxAttempts =
+        typeof event.payload.maxAttempts === 'number' ? event.payload.maxAttempts : attempt;
+      const status = providerHttpStatus(event.payload.errorMessage);
+      return `${providerModel} 重试 ${attempt}/${maxAttempts}${status ? ` · ${status}` : ''}`;
     }
     case 'run.cancelled':
       return 'Run 已取消';

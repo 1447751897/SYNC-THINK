@@ -8,8 +8,18 @@ export const PROTOCOL_VERSION = 2;
 // New features should extend this list (delta from prior version).
 export type Feature =
   | 'workspace.bindFolder'
+  | 'workspace.bindGitRepository'
   | 'task.appendMessage'
   | 'task.create'
+  | 'task.delegateSubtask'
+  | 'task.recordHandoff'
+  | 'task.resolveWorktreeIntegration'
+  | 'task.setBrowserIdentity'
+  | 'task.describeExecutionAccess'
+  | 'browserIdentity.list'
+  | 'browserIdentity.create'
+  | 'browserIdentity.update'
+  | 'browserIdentity.delete'
   | 'task.archive'
   | 'task.unarchive'
   | 'task.setParticipationMode'
@@ -49,6 +59,15 @@ export type Feature =
   | 'agent.create'
   | 'agent.listVersions'
   | 'agent.createVersion'
+  | 'group.create'
+  | 'group.get'
+  | 'group.list'
+  | 'group.update'
+  | 'group.member.add'
+  | 'group.member.remove'
+  | 'group.member.updateResponsibility'
+  | 'group.setLead'
+  | 'group.task.create'
   | 'skill.import'
   | 'skill.list'
   | 'mcp.register'
@@ -68,8 +87,18 @@ export type Feature =
 
 export const DEFAULT_FEATURES: Feature[] = [
   'workspace.bindFolder',
+  'workspace.bindGitRepository',
   'task.appendMessage',
   'task.create',
+  'task.delegateSubtask',
+  'task.recordHandoff',
+  'task.resolveWorktreeIntegration',
+  'task.setBrowserIdentity',
+  'task.describeExecutionAccess',
+  'browserIdentity.list',
+  'browserIdentity.create',
+  'browserIdentity.update',
+  'browserIdentity.delete',
   'task.archive',
   'task.unarchive',
   'task.setParticipationMode',
@@ -108,6 +137,15 @@ export const DEFAULT_FEATURES: Feature[] = [
   'agent.create',
   'agent.listVersions',
   'agent.createVersion',
+  'group.create',
+  'group.get',
+  'group.list',
+  'group.update',
+  'group.member.add',
+  'group.member.remove',
+  'group.member.updateResponsibility',
+  'group.setLead',
+  'group.task.create',
   'skill.import',
   'skill.list',
   'mcp.register',
