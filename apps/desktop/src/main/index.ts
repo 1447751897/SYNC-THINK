@@ -42,6 +42,7 @@ import {
   parseSearchTasksPayload,
   parseUnarchiveTaskPayload,
   parseDiscardEmptyTaskPayload,
+  parseSetEmptyTaskWorkspacePayload,
 } from '../workspace-payloads.js';
 import {
   parseCreateProviderPayload,
@@ -513,6 +514,14 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('task.discardEmpty', parseDiscardEmptyTaskPayload(value));
+  });
+  ipcMain.handle('runtime:task-set-empty-workspace', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'task.setEmptyWorkspace',
+      parseSetEmptyTaskWorkspacePayload(value),
+    );
   });
   ipcMain.handle('runtime:plan-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

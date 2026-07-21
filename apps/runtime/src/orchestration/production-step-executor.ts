@@ -232,9 +232,18 @@ async function executeProviderStep(
     context.reviewContext === undefined &&
     workspaceRoot !== undefined &&
     model.capabilities.includes('tool-calling');
-  // Codex three-mode authority: ignore AgentPermissions matrix; mode + bindings decide tools.
+  // Codex three-mode authority: Task.executionMode decides tools; AgentPermissions ignored.
+  const runForMode = options.orchestrationStore.getRun(context.runId);
+  const taskForMode = runForMode
+    ? options.workspaceStore.getTask(runForMode.taskId)
+    : undefined;
+  const workspaceForMode = taskForMode
+    ? options.workspaceStore.getWorkspace(taskForMode.workspaceId)
+    : undefined;
   const modeToolNames = new Set(
     resolveEffectiveExecution({
+      taskMode: taskForMode?.executionMode,
+      projectMode: workspaceForMode?.defaultExecutionMode,
       legacyApprovalMode: agent.approvalMode,
       workspaceRoot,
       candidateToolNames: EXECUTION_TOOL_SCHEMAS.map((tool) => tool.name),

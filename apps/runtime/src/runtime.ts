@@ -1,4 +1,4 @@
-﻿// Runtime - long-lived Agent Runtime process entry. UI lifecycle independent:
+// Runtime - long-lived Agent Runtime process entry. UI lifecycle independent:
 // killing the UI must not terminate active Runs (design 锟?6 / 锟?).
 
 import {
@@ -32,8 +32,10 @@ import {
   type SearchTasksResponse,
   type SetParticipationModeResponse,
   type SetExecutionModeResponse,
+  type SetWorkspaceDefaultExecutionModeResponse,
   type UnarchiveTaskResponse,
   type DiscardEmptyTaskResponse,
+  type SetEmptyTaskWorkspaceResponse,
   type SavePolicyResponse,
   type SavePolicyPayload,
   type ListPoliciesResponse,
@@ -219,6 +221,7 @@ import {
   resolveActionDecision,
   resolveCapabilityAccess,
   resolveEffectiveExecution,
+  captureEffectiveExecutionSnapshot,
   compareTextSnapshots,
   mergeTextSnapshots,
 } from '@sync-think/core';
@@ -283,8 +286,10 @@ import {
   parseSearchTasksPayload,
   parseSetParticipationModePayload,
   parseSetExecutionModePayload,
+  parseSetWorkspaceDefaultExecutionModePayload,
   parseUnarchiveTaskPayload,
   parseDiscardEmptyTaskPayload,
+  parseSetEmptyTaskWorkspacePayload,
   parseSavePolicyPayload,
   parseListPoliciesPayload,
   parseSubscribeEventsPayload,
@@ -752,6 +757,10 @@ export class Runtime {
           this.handleListWorkspaces(socket, frame);
           return;
         }
+        if (frame.type === 'workspace.setDefaultExecutionMode') {
+          this.handleSetWorkspaceDefaultExecutionMode(socket, frame);
+          return;
+        }
         if (frame.type === 'browserIdentity.list') {
           this.handleListBrowserIdentities(socket, frame);
           return;
@@ -822,6 +831,10 @@ export class Runtime {
         }
         if (frame.type === 'task.discardEmpty') {
           this.handleDiscardEmptyTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.setEmptyWorkspace') {
+          this.handleSetEmptyTaskWorkspace(socket, frame);
           return;
         }
         if (frame.type === 'task.appendMessage') {
@@ -1821,12 +1834,14 @@ export class Runtime {
         folderPath: payload.folderPath,
         name: payload.name,
         allowedRoots: payload.allowedRoots,
+        defaultExecutionMode: payload.defaultExecutionMode,
       });
       this.taskEnvironmentManager?.ensureWorkspaceDefaults(created.id, created.folderPath);
       const response: CreateWorkspaceResponse = {
         workspaceId: created.id,
         folderPath: created.folderPath,
         name: created.name,
+        defaultExecutionMode: created.defaultExecutionMode,
         createdAt: created.createdAt,
       };
       socket.write(
@@ -1950,6 +1965,7 @@ export class Runtime {
           executionProfileId: profile?.id,
           executionProfileName: profile?.name,
           executionMode: profile?.mode,
+          productDefaultExecutionMode: workspace.defaultExecutionMode,
           defaultRef: profile?.defaultRef ?? resource?.defaultRef,
           browserIdentityId: profile?.browserIdentityId,
           browserIdentityName: browserIdentity?.name,
@@ -1964,6 +1980,57 @@ export class Runtime {
         payload: response,
       }),
     );
+  }
+
+  private handleSetWorkspaceDefaultExecutionMode(socket: Socket, frame: Frame): void {
+    const payload = parseSetWorkspaceDefaultExecutionModePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.workspaceStore.setWorkspaceDefaultExecutionMode(
+        payload.workspaceId,
+        payload.mode,
+      );
+      const resource = this.executionEnvironmentStore?.getPrimaryResource(updated.id);
+      const profile = this.executionEnvironmentStore?.getWorkspaceProfile(updated.id);
+      const browserIdentity = this.executionEnvironmentStore
+        ?.listBrowserIdentities()
+        .find((identity) => identity.id === profile?.browserIdentityId);
+      const response: SetWorkspaceDefaultExecutionModeResponse = {
+        workspace: {
+          workspaceId: updated.id,
+          folderPath: updated.folderPath,
+          name: updated.name,
+          createdAt: updated.createdAt,
+          updatedAt: updated.updatedAt,
+          resourceType: resource?.type,
+          repositoryUrl: resource?.repositoryUrl,
+          executionProfileId: profile?.id,
+          executionProfileName: profile?.name,
+          executionMode: profile?.mode,
+          productDefaultExecutionMode: updated.defaultExecutionMode,
+          defaultRef: profile?.defaultRef ?? resource?.defaultRef,
+          browserIdentityId: profile?.browserIdentityId,
+          browserIdentityName: browserIdentity?.name,
+        },
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'workspace.setDefaultExecutionMode',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
   }
 
   private handleListBrowserIdentities(socket: Socket, frame: Frame): void {
@@ -2135,12 +2202,15 @@ export class Runtime {
     const workspace = this.workspaceStore?.getWorkspace(task.workspaceId);
     if (!workspace) return;
     this.taskEnvironmentManager?.ensureWorkspaceDefaults(workspace.id, workspace.folderPath);
+    // Only seed the execution context row. Eager worktree checkout is deferred until a
+    // real execution need (run / describe access / tool) so empty placeholders stay discardable.
     this.executionEnvironmentStore?.createTaskContext({
       taskId,
       workspaceId: task.workspaceId,
       parentTaskId,
     });
-    if (this.taskEnvironmentManager) {
+    // Child tasks still prepare immediately so delegated work has an execution location.
+    if (parentTaskId && this.taskEnvironmentManager) {
       const initialContext = this.taskEnvironmentManager.prepareTask(taskId);
       if (initialContext.state !== 'pending') return;
       const preparation = this.taskEnvironmentManager.prepareTaskAsync(taskId).then((context) => {
@@ -2994,7 +3064,18 @@ export class Runtime {
         .listBrowserIdentities()
         .find((candidate) => String(candidate.id) === payload.browserIdentityId);
       if (!identity) throw new Error(`BrowserIdentity not found: ${payload.browserIdentityId}`);
-      this.taskEnvironmentManager.prepareTask(task.id);
+      if (!this.executionEnvironmentStore?.getTaskContext(task.id)) {
+        const workspace = this.workspaceStore.getWorkspace(task.workspaceId);
+        if (workspace) {
+          this.taskEnvironmentManager.ensureWorkspaceDefaults(workspace.id, workspace.folderPath);
+        }
+        this.executionEnvironmentStore?.createTaskContext({
+          taskId: task.id,
+          workspaceId: task.workspaceId,
+          parentTaskId: task.parentTaskId,
+        });
+      }
+      // ensure context exists without managed worktree checkout
       this.taskEnvironmentManager.setTaskBrowserIdentity(task.id, identity.id);
       const response: SetTaskBrowserIdentityResponse = {
         taskId: task.id,
@@ -3025,7 +3106,18 @@ export class Runtime {
       const task = this.workspaceStore.getTask(payload.taskId);
       if (!task) throw new Error(`Task not found: ${payload.taskId}`);
       const agent = this.getRequiredAgentVersion(payload.agentVersionId);
-      const context = this.taskEnvironmentManager.prepareTask(task.id);
+      let context = this.executionEnvironmentStore.getTaskContext(task.id);
+      if (!context) {
+        const workspace = this.workspaceStore.getWorkspace(task.workspaceId);
+        if (workspace) {
+          this.taskEnvironmentManager.ensureWorkspaceDefaults(workspace.id, workspace.folderPath);
+        }
+        context = this.executionEnvironmentStore.createTaskContext({
+          taskId: task.id,
+          workspaceId: task.workspaceId,
+          parentTaskId: task.parentTaskId,
+        });
+      }
       const binding = this.resolveConversationExecutionBinding(task, String(agent.id));
       const identity = context.browserIdentityId
         ? this.taskEnvironmentManager
@@ -3337,37 +3429,67 @@ export class Runtime {
     try {
       const occurredAt = new Date().toISOString();
       const result = this.runInUnitOfWork(() => {
-        const updated = this.workspaceStore!.setExecutionMode(
+        const cascade = this.workspaceStore!.setExecutionModeWithChildInheritance(
           payload.taskId,
           payload.mode,
           payload.expectedTaskVersion,
           occurredAt,
         );
+        const updated = cascade.task;
         const projectedThreadVersions = new Map(this.threadVersions);
         projectedThreadVersions.set(updated.threadId, updated.version);
-        const eventPayload = {
-          taskId: updated.id,
-          threadId: updated.threadId,
-          previousMode,
-          executionMode: updated.executionMode,
-          taskVersion: updated.version,
-        };
+        for (const child of cascade.inheritedChildren) {
+          projectedThreadVersions.set(child.task.threadId, child.task.version);
+        }
+        const eventDrafts: Array<{
+          id: Event['id'];
+          workspaceId: typeof updated.workspaceId;
+          taskId: typeof updated.id;
+          category: 'system';
+          type: 'task.execution-mode.changed';
+          occurredAt: string;
+          payload: Record<string, unknown>;
+        }> = [
+          {
+            id: ulid() as Event['id'],
+            workspaceId: updated.workspaceId,
+            taskId: updated.id,
+            category: 'system',
+            type: 'task.execution-mode.changed',
+            occurredAt,
+            payload: {
+              taskId: updated.id,
+              threadId: updated.threadId,
+              previousMode,
+              executionMode: updated.executionMode,
+              taskVersion: updated.version,
+            },
+          },
+          ...cascade.inheritedChildren.map((child) => ({
+            id: ulid() as Event['id'],
+            workspaceId: child.task.workspaceId,
+            taskId: child.task.id,
+            category: 'system' as const,
+            type: 'task.execution-mode.changed' as const,
+            occurredAt,
+            payload: {
+              taskId: child.task.id,
+              threadId: child.task.threadId,
+              previousMode: child.previousMode,
+              executionMode: child.task.executionMode,
+              taskVersion: child.task.version,
+              reason: 'inherited-from-parent',
+              parentTaskId: updated.id,
+            },
+          })),
+        ];
         if (this.stateStore) {
           return {
             updated,
+            inheritedChildren: cascade.inheritedChildren.map((c) => c.task),
             needsProjection: true,
             committedEvents: this.commitProjectedEvents(
-              [
-                {
-                  id: ulid() as Event['id'],
-                  workspaceId: updated.workspaceId,
-                  taskId: updated.id,
-                  category: 'system',
-                  type: 'task.execution-mode.changed',
-                  occurredAt,
-                  payload: eventPayload,
-                },
-              ],
+              eventDrafts as unknown as EventDraftBatch,
               projectedThreadVersions,
               this.demoRuns,
             ),
@@ -3375,26 +3497,33 @@ export class Runtime {
         }
         return {
           updated,
+          inheritedChildren: cascade.inheritedChildren.map((c) => c.task),
           needsProjection: false,
-          committedEvents: [
+          committedEvents: eventDrafts.map((draft) =>
             this.appendEvent(
-              'system',
-              'task.execution-mode.changed',
-              eventPayload,
+              draft.category,
+              draft.type,
+              draft.payload,
               undefined,
               undefined,
-              updated.id,
+              draft.taskId,
             ),
-          ],
+          ),
         };
       });
 
       if (result.needsProjection) this.recordCommittedEvents(result.committedEvents);
       this.threadVersions.set(result.updated.threadId, result.updated.version);
+      for (const child of result.inheritedChildren) {
+        this.threadVersions.set(child.threadId, child.version);
+      }
       const response: SetExecutionModeResponse = {
         task: toTaskSummary(
           result.updated,
           this.executionEnvironmentStore?.getTaskContext(result.updated.id),
+        ),
+        inheritedChildren: result.inheritedChildren.map((child) =>
+          toTaskSummary(child, this.executionEnvironmentStore?.getTaskContext(child.id)),
         ),
       };
       socket.write(
@@ -3410,7 +3539,6 @@ export class Runtime {
       this.writeTaskModeCommandError(socket, frame, error);
     }
   }
-
   private handleArchiveTask(socket: Socket, frame: Frame): void {
     const payload = parseArchiveTaskPayload(frame.payload);
     if (!payload) {
@@ -3513,7 +3641,7 @@ export class Runtime {
         payload.taskId,
         payload.expectedTaskVersion,
         task && this.taskEnvironmentManager
-          ? () => this.taskEnvironmentManager!.discardPreparedTask(task.id, executionContext)
+          ? () => this.taskEnvironmentManager!.discardPreparedTask(task.id, executionContext, { force: true })
           : undefined,
       );
       if (discarded && task) {
@@ -3534,6 +3662,113 @@ export class Runtime {
           payload: response,
         }),
       );
+    } catch (error) {
+      this.writeWorkspaceCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetEmptyTaskWorkspace(socket: Socket, frame: Frame): void {
+    const payload = parseSetEmptyTaskWorkspacePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.workspaceStore) {
+      this.writeWorkspaceStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const task = this.workspaceStore.getTask(payload.taskId);
+      const executionContext = task
+        ? this.executionEnvironmentStore?.getTaskContext(task.id)
+        : undefined;
+      const previousWorkspaceId = task?.workspaceId;
+      const updated = this.workspaceStore.setEmptyTaskWorkspace(
+        payload.taskId,
+        payload.workspaceId,
+        payload.expectedTaskVersion,
+        task && this.taskEnvironmentManager
+          ? () =>
+              this.taskEnvironmentManager!.discardPreparedTask(task.id, executionContext, {
+                force: true,
+              })
+          : undefined,
+      );
+      if (!updated) {
+        const current = this.workspaceStore.getTask(payload.taskId);
+        if (!current) {
+          throw new Error(`Task not found: ${payload.taskId}`);
+        }
+        if (current.version !== payload.expectedTaskVersion) {
+          this.writeTaskVersionMismatch(
+            socket,
+            frame,
+            current.version,
+            payload.expectedTaskVersion,
+          );
+          return;
+        }
+        // Not empty / has content / child — refuse rather than jump silently.
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'task.setEmptyWorkspace',
+            payload: {},
+            error: {
+              code: ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
+              message: 'Only empty tasks without conversation can switch project in place',
+            },
+          }),
+        );
+        return;
+      }
+
+      // Recreate pending execution context under the new project (no eager worktree).
+      const workspace = this.workspaceStore.getWorkspace(updated.workspaceId);
+      if (workspace) {
+        this.taskEnvironmentManager?.ensureWorkspaceDefaults(workspace.id, workspace.folderPath);
+        this.executionEnvironmentStore?.createTaskContext({
+          taskId: updated.id,
+          workspaceId: updated.workspaceId,
+          parentTaskId: updated.parentTaskId,
+        });
+      }
+      this.threadVersions.set(updated.threadId, updated.version);
+
+      const response: SetEmptyTaskWorkspaceResponse = {
+        task: toTaskSummary(
+          updated,
+          this.executionEnvironmentStore?.getTaskContext(updated.id),
+        ),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'task.setEmptyWorkspace',
+          payload: response,
+        }),
+      );
+
+      if (previousWorkspaceId && previousWorkspaceId !== updated.workspaceId) {
+        const event = this.appendEvent(
+          'system',
+          'task.workspace-reassigned',
+          {
+            taskId: updated.id,
+            threadId: updated.threadId,
+            previousWorkspaceId,
+            workspaceId: updated.workspaceId,
+            taskVersion: updated.version,
+          },
+          undefined,
+          undefined,
+          updated.id,
+          updated.workspaceId,
+        );
+        this.publishEvent(event);
+      }
     } catch (error) {
       this.writeWorkspaceCommandError(socket, frame, error);
     }
@@ -10749,6 +10984,7 @@ export class Runtime {
           executionRoot: demoRun.executionRoot,
           executionToolNames: demoRun.executionToolNames,
           effectiveApprovalMode: demoRun.effectiveApprovalMode,
+          executionSnapshot: demoRun.executionSnapshot,
           browserIdentityId: demoRun.browserIdentityId,
           run: demoRun,
         },
@@ -13203,6 +13439,7 @@ export class Runtime {
     executionRoot?: string;
     executionToolNames: string[];
     effectiveApprovalMode?: string;
+    executionSnapshot?: import('@sync-think/shared').EffectiveExecutionSnapshot;
     browserIdentityId?: string;
   } {
     if (!task) return { executionToolNames: [] };
@@ -13222,29 +13459,36 @@ export class Runtime {
     const delegated = this.delegatedSubtaskDescriptors().find(
       (candidate) => candidate.childTaskId === task.id,
     );
-    // Codex three-mode authority: mode decides tool surface; AgentPermissions matrix is ignored.
+    // Codex three-mode authority: Task.executionMode is product authority; AgentPermissions ignored.
+    const workspace = this.workspaceStore?.getWorkspace(task.workspaceId);
     const effectiveExecution = resolveEffectiveExecution({
+      taskMode: task.executionMode,
+      projectMode: workspace?.defaultExecutionMode,
       legacyApprovalMode: effectivePolicy.approvalMode,
       workspaceRoot: executionRoot,
       candidateToolNames: EXECUTION_TOOL_SCHEMAS.map((tool) => tool.name),
       allowedTools: delegated?.packet.allowedTools,
+      approvalRouting:
+        effectivePolicy.approvalMode === 'delegate' ? 'delegate-agent' : 'user',
     });
+    const executionSnapshot = captureEffectiveExecutionSnapshot(effectiveExecution);
     if (!executionRoot) {
       return {
         executionToolNames: [],
         effectiveApprovalMode: effectiveExecution.legacyApprovalMode,
+        executionSnapshot,
       };
     }
     return {
       executionRoot,
       executionToolNames: effectiveExecution.toolNames,
       effectiveApprovalMode: effectiveExecution.legacyApprovalMode,
+      executionSnapshot,
       ...(context?.browserIdentityId
         ? { browserIdentityId: String(context.browserIdentityId) }
         : {}),
     };
   }
-
   private async tryRetryCurrentProvider(
     runId: RunId,
     run: DemoRunState,

@@ -1,4 +1,4 @@
-import type { ApprovalMode, ExecutionMode } from './enums.js';
+﻿import type { ApprovalMode, ExecutionMode } from './enums.js';
 
 export type ExecutionModeSource = 'task' | 'project' | 'install' | 'legacy-approval' | 'default';
 
@@ -112,4 +112,17 @@ export function resolveExecutionMode(input: {
     };
   }
   return { mode: DEFAULT_EXECUTION_MODE, source: 'default' };
+}
+
+/** Immutable Run-level snapshot of effective execution (audit / resume). */
+export interface EffectiveExecutionSnapshot {
+  mode: ExecutionMode;
+  workspaceRoot?: string;
+  filesystem: 'read' | 'write-workspace' | 'unrestricted';
+  network: 'deny' | 'ask' | 'allow';
+  approval: 'ask-protected' | 'never';
+  approvalRouting: ExecutionApprovalRouting;
+  toolNames: string[];
+  capturedAt: string;
+  source?: ExecutionModeSource;
 }

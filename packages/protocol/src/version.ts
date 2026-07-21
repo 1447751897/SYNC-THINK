@@ -9,6 +9,7 @@ export const PROTOCOL_VERSION = 2;
 export type Feature =
   | 'workspace.bindFolder'
   | 'workspace.bindGitRepository'
+  | 'workspace.setDefaultExecutionMode'
   | 'task.appendMessage'
   | 'task.create'
   | 'task.delegateSubtask'
@@ -24,6 +25,7 @@ export type Feature =
   | 'task.unarchive'
   | 'task.setParticipationMode'
   | 'task.setExecutionMode'
+  | 'task.setEmptyWorkspace'
   | 'runtime.subscribeEvents'
   | 'runtime.continueEventReplay'
   | 'runtime.healthcheck'
@@ -89,6 +91,7 @@ export type Feature =
 export const DEFAULT_FEATURES: Feature[] = [
   'workspace.bindFolder',
   'workspace.bindGitRepository',
+  'workspace.setDefaultExecutionMode',
   'task.appendMessage',
   'task.create',
   'task.delegateSubtask',
@@ -104,6 +107,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'task.unarchive',
   'task.setParticipationMode',
   'task.setExecutionMode',
+  'task.setEmptyWorkspace',
   'runtime.subscribeEvents',
   'runtime.continueEventReplay',
   'runtime.healthcheck',

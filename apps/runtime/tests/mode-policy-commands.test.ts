@@ -104,11 +104,16 @@ async function startFixture(options: {
     nonce: randomBytes(8).toString('hex'),
     features: [
       'workspace.create',
+      'workspace.list',
+      'workspace.setDefaultExecutionMode',
       'task.create',
       'task.list',
       'task.open',
       'task.search',
       'task.setParticipationMode',
+      'task.setExecutionMode',
+      'task.archive',
+      'task.appendMessage',
       'policy.save',
       'policy.list',
       'runtime.subscribeEvents',
@@ -604,6 +609,183 @@ describe('participation mode commands', () => {
   });
 });
 
+describe('codex three-mode project default and inheritance', () => {
+  it('uses project default execution mode for new root tasks and keeps existing task modes', async () => {
+    const fixture = await startFixture();
+    try {
+      const workspace = await send(
+        fixture.socket,
+        fixture.reader,
+        'project-default-create',
+        'workspace.create',
+        {
+          folderPath: join(fixture.dir, 'project-default'),
+          name: 'Project Default Runtime',
+          defaultExecutionMode: 'full-access',
+        },
+      );
+      expect(workspace.error).toBeUndefined();
+      expect(workspace.payload).toMatchObject({
+        defaultExecutionMode: 'full-access',
+      });
+      const workspaceId = (workspace.payload as { workspaceId: string }).workspaceId;
+
+      const listed = await send(fixture.socket, fixture.reader, 'project-default-list', 'workspace.list', {});
+      expect(listed.error).toBeUndefined();
+      expect(listed.payload).toMatchObject({
+        workspaces: [
+          {
+            workspaceId,
+            productDefaultExecutionMode: 'full-access',
+          },
+        ],
+      });
+
+      const root = await send(fixture.socket, fixture.reader, 'project-default-root', 'task.create', {
+        workspaceId,
+        title: 'Root inherits project default',
+        goal: 'Should be full-access',
+      });
+      expect(root.error).toBeUndefined();
+      expect(root.payload).toMatchObject({ executionMode: 'full-access', taskVersion: 0 });
+      const rootTaskId = (root.payload as { taskId: string }).taskId;
+
+      const changedDefault = await send(
+        fixture.socket,
+        fixture.reader,
+        'project-default-set',
+        'workspace.setDefaultExecutionMode',
+        { workspaceId, mode: 'read-only' },
+      );
+      expect(changedDefault.error).toBeUndefined();
+      expect(changedDefault.payload).toMatchObject({
+        workspace: {
+          workspaceId,
+          productDefaultExecutionMode: 'read-only',
+        },
+      });
+
+      const afterChange = await send(
+        fixture.socket,
+        fixture.reader,
+        'project-default-after',
+        'task.create',
+        {
+          workspaceId,
+          title: 'After project default change',
+          goal: 'Should be read-only',
+        },
+      );
+      expect(afterChange.error).toBeUndefined();
+      expect(afterChange.payload).toMatchObject({ executionMode: 'read-only', taskVersion: 0 });
+
+      // Existing task keeps its own mode after project default updates.
+      const opened = await send(fixture.socket, fixture.reader, 'project-default-open', 'task.open', {
+        taskId: rootTaskId,
+      });
+      expect(opened.error).toBeUndefined();
+      expect(opened.payload).toMatchObject({
+        task: { executionMode: 'full-access' },
+      });
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('syncs non-terminal children when parent live mode changes and leaves archived children alone', async () => {
+    const fixture = await startFixture();
+    try {
+      const parent = await createWorkspaceAndTask(fixture, 'parent-live');
+      const liveChild = await send(
+        fixture.socket,
+        fixture.reader,
+        'parent-live-child',
+        'task.create',
+        {
+          workspaceId: parent.workspaceId,
+          parentTaskId: parent.taskId,
+          title: 'Live child',
+          goal: 'Follow parent live mode',
+        },
+      );
+      expect(liveChild.error).toBeUndefined();
+      expect(liveChild.payload).toMatchObject({ executionMode: 'workspace', taskVersion: 0 });
+      const liveChildId = (liveChild.payload as { taskId: string }).taskId;
+
+      const archivedChild = await send(
+        fixture.socket,
+        fixture.reader,
+        'parent-archived-child',
+        'task.create',
+        {
+          workspaceId: parent.workspaceId,
+          parentTaskId: parent.taskId,
+          title: 'Archived child',
+          goal: 'Stay put after archive',
+        },
+      );
+      expect(archivedChild.error).toBeUndefined();
+      const archivedChildId = (archivedChild.payload as { taskId: string }).taskId;
+      const archived = await send(
+        fixture.socket,
+        fixture.reader,
+        'parent-archive-child',
+        'task.archive',
+        { taskId: archivedChildId, expectedTaskVersion: 0 },
+      );
+      expect(archived.error).toBeUndefined();
+
+      const cascade = await send(
+        fixture.socket,
+        fixture.reader,
+        'parent-live-set',
+        'task.setExecutionMode',
+        {
+          taskId: parent.taskId,
+          mode: 'full-access',
+          expectedTaskVersion: parent.taskVersion,
+        },
+      );
+      expect(cascade.error).toBeUndefined();
+      expect(cascade.payload).toMatchObject({
+        task: { taskId: parent.taskId, executionMode: 'full-access' },
+      });
+      const inherited = (
+        cascade.payload as {
+          inheritedChildren?: Array<{ taskId: string; executionMode: string }>;
+        }
+      ).inheritedChildren;
+      expect(inherited).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ taskId: liveChildId, executionMode: 'full-access' }),
+        ]),
+      );
+      expect(inherited?.some((child) => child.taskId === archivedChildId)).toBeFalsy();
+
+      const openedLive = await send(fixture.socket, fixture.reader, 'parent-open-live', 'task.open', {
+        taskId: liveChildId,
+      });
+      expect(openedLive.error).toBeUndefined();
+      expect(openedLive.payload).toMatchObject({
+        task: { executionMode: 'full-access' },
+      });
+
+      const openedArchived = await send(
+        fixture.socket,
+        fixture.reader,
+        'parent-open-archived',
+        'task.open',
+        { taskId: archivedChildId },
+      );
+      expect(openedArchived.error).toBeUndefined();
+      expect(openedArchived.payload).toMatchObject({
+        task: { executionMode: 'workspace' },
+      });
+    } finally {
+      await fixture.close();
+    }
+  });
+});
 describe('scoped policy commands', () => {
   it('saves immutable versions and resolves the server-built workspace/task chain', async () => {
     const fixture = await startFixture();

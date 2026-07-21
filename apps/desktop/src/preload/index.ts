@@ -33,6 +33,8 @@ import type {
   OpenTaskPayload,
   OpenTaskResponse,
   DiscardEmptyTaskPayload,
+  SetEmptyTaskWorkspacePayload,
+  SetEmptyTaskWorkspaceResponse,
   DiscardEmptyTaskResponse,
   PauseResumeCancelResponse,
   SearchTasksPayload,
@@ -314,6 +316,11 @@ const api = {
         'runtime:task-discard-empty',
         payload,
       ) as Promise<DiscardEmptyTaskResponse>,
+    setEmptyTaskWorkspace: (payload: SetEmptyTaskWorkspacePayload) =>
+      ipcRenderer.invoke(
+        'runtime:task-set-empty-workspace',
+        payload,
+      ) as Promise<SetEmptyTaskWorkspaceResponse>,
     createPlan: (payload: PlanDraftPayload) =>
       ipcRenderer.invoke('runtime:plan-create', payload) as Promise<PlanDraftResponse>,
     revisePlan: (payload: PlanRevisePayload) =>

@@ -44,6 +44,7 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -246,6 +247,7 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -435,6 +437,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
   });
 
@@ -491,6 +494,7 @@ describe('migration planner (pure)', () => {
           '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+          '0030_workspace_default_execution_mode',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -560,6 +564,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
   });
 
@@ -582,6 +587,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
   });
 
@@ -605,6 +611,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
   });
 
@@ -637,6 +644,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
   });
 
@@ -662,6 +670,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
   });
 
@@ -686,6 +695,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
   });
 
@@ -727,6 +737,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -761,6 +772,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -798,6 +810,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -839,6 +852,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -881,6 +895,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -924,6 +939,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -968,6 +984,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1014,6 +1031,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1052,6 +1070,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1087,6 +1106,7 @@ describe('migration planner (pure)', () => {
       '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+      '0030_workspace_default_execution_mode',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1251,6 +1271,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
 
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1347,6 +1368,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1397,6 +1419,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
 
       const upgraded = await openDatabaseAsync({ path: dbPath });
@@ -1410,7 +1433,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         upgraded.raw.close();
       }
     } finally {
-      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0029_task_execution_mode') {
+      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0030_workspace_default_execution_mode') {
         MIGRATIONS.push(...trailingMigrations);
       }
       rmSync(dir, { recursive: true, force: true });
@@ -1673,6 +1696,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1736,6 +1760,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1774,6 +1799,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1811,6 +1837,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1855,6 +1882,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
 
       const { raw } = await openDatabaseAsync({ path: dbPath });
@@ -1968,6 +1996,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2031,6 +2060,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_runtime_stream_compaction',
       '0028_project_execution_environments',
       '0029_task_execution_mode',
+        '0030_workspace_default_execution_mode',
       ]);
 
       const { raw } = await openDatabaseAsync({ path: dbPath });

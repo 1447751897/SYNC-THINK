@@ -126,12 +126,23 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0029_task_execution_mode',
     sql: taskExecutionModeSql(),
   },
+  {
+    name: '0030_workspace_default_execution_mode',
+    sql: workspaceDefaultExecutionModeSql(),
+  },
 ];
 
 function taskExecutionModeSql(): string {
   // Codex three-mode authority on each task. Legacy rows default to workspace.
   return `
 ALTER TABLE task ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'workspace';
+`;
+}
+
+function workspaceDefaultExecutionModeSql(): string {
+  // Project-level default for new root tasks. Existing rows default to workspace.
+  return `
+ALTER TABLE workspace ADD COLUMN default_execution_mode TEXT NOT NULL DEFAULT 'workspace';
 `;
 }
 

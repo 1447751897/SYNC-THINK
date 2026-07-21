@@ -1663,6 +1663,42 @@ function DesktopShell() {
         const nextMap = new Map(entries);
         setWorkspaces(nextWorkspaces);
         setTasksByWorkspace(nextMap);
+
+        // Prune empty placeholders left from previous sessions (server owns emptiness guards).
+        const keepTaskId = preferredTaskId ?? null;
+        const pruneTargets: Array<Pick<TaskSummary, 'taskId' | 'taskVersion' | 'workspaceId'>> = [];
+        for (const [, tasks] of nextMap) {
+          for (const task of tasks) {
+            if (keepTaskId && String(task.taskId) === String(keepTaskId)) continue;
+            if (task.status === 'archived' || task.parentTaskId) continue;
+            if (!(task.taskVersion === 0 || isUntitledTaskTitle(task.title))) continue;
+            pruneTargets.push(task);
+          }
+        }
+        if (pruneTargets.length > 0 && runtime.discardEmptyTask) {
+          const prunedIds = new Set<string>();
+          for (const task of pruneTargets) {
+            try {
+              const result = await runtime.discardEmptyTask({
+                taskId: task.taskId as never,
+                expectedTaskVersion: task.taskVersion,
+              });
+              if (result.discarded) prunedIds.add(String(task.taskId));
+            } catch {
+              // leave non-empty / raced rows alone
+            }
+          }
+          if (prunedIds.size > 0) {
+            for (const [workspaceId, tasks] of [...nextMap.entries()]) {
+              nextMap.set(
+                workspaceId,
+                tasks.filter((task) => !prunedIds.has(String(task.taskId))),
+              );
+            }
+            setTasksByWorkspace(new Map(nextMap));
+          }
+        }
+
         const selection = resolvePreferredTask(nextWorkspaces, nextMap, preferredTaskId);
         applySelection(selection);
       } catch {
@@ -3023,21 +3059,6 @@ function DesktopShell() {
     }
   };
 
-  const changeConversationApprovalMode = async (mode: ApprovalModeView) => {
-    if (!active) return;
-    const current = approvalPolicies
-      .filter((policy) => policy.scopeType === 'task' && policy.scopeId === active.taskId)
-      .sort((left, right) => right.version - left.version)[0];
-    setConversationApprovalMode(mode);
-    await saveApprovalPolicy({
-      ...(current ? { policyId: current.policyId } : {}),
-      scopeType: 'task',
-      scopeId: active.taskId,
-      approvalMode: mode,
-      rules: [...(current?.rules ?? [])],
-    });
-  };
-
   const changeConversationExecutionMode = async (mode: ExecutionMode) => {
     if (!active) return;
     const nextMode = normalizeExecutionMode(mode);
@@ -3974,40 +3995,26 @@ function DesktopShell() {
     await openTask(toNavTask(target));
   };
 
-  const discardBlankActiveTask = async (nextTaskId?: string) => {
-    const current = active;
-    if (!current || current.taskId === nextTaskId) {
-      return false;
-    }
-    const draftKey = `${current.workspaceId}:${current.taskId}`;
-    const draft = composeDrafts.get(draftKey);
-    if (draft?.text.trim() || draft?.attachments.length) return false;
+  const hasComposeDraftForTask = (workspaceId: string, taskId: string) => {
+    const draft = composeDrafts.get(`${workspaceId}:${taskId}`);
+    return Boolean(draft?.text.trim() || draft?.attachments.length);
+  };
 
-    const runtime = window.syncThink?.runtime;
-    let discarded = false;
-    if (runtime?.discardEmptyTask) {
-      try {
-        discarded = (
-          await runtime.discardEmptyTask({
-            taskId: current.taskId as never,
-            expectedTaskVersion: current.taskVersion,
-          })
-        ).discarded;
-      } catch {
-        return false;
-      }
-    } else if (current.taskId.startsWith('preview-task-')) {
-      discarded = true;
-    }
-    if (!discarded) return false;
+  const isClientEmptyPlaceholder = (task: TaskSummary) => {
+    if (task.status === 'archived') return false;
+    if (task.parentTaskId) return false;
+    // Server still owns the hard emptiness checks; client only prunes obvious placeholders.
+    // After project reassignment the version may be > 0 while the task remains empty.
+    return task.taskVersion === 0 || isUntitledTaskTitle(task.title);
+  };
 
+  const removeTaskFromLocalState = (workspaceId: string, taskId: string) => {
+    const draftKey = `${workspaceId}:${taskId}`;
     setTasksByWorkspace((existing) => {
       const next = new Map(existing);
       next.set(
-        current.workspaceId,
-        (next.get(current.workspaceId) ?? []).filter(
-          (task) => String(task.taskId) !== current.taskId,
-        ),
+        workspaceId,
+        (next.get(workspaceId) ?? []).filter((task) => String(task.taskId) !== taskId),
       );
       return next;
     });
@@ -4016,8 +4023,61 @@ function DesktopShell() {
       next.delete(draftKey);
       return next;
     });
-    if (activeTaskIdRef.current === current.taskId) applySelection(null);
+  };
+
+  const tryDiscardEmptyTask = async (
+    task: Pick<TaskSummary, 'taskId' | 'taskVersion' | 'workspaceId'>,
+  ): Promise<boolean> => {
+    if (hasComposeDraftForTask(String(task.workspaceId), String(task.taskId))) return false;
+    const runtime = window.syncThink?.runtime;
+    if (runtime?.discardEmptyTask) {
+      try {
+        const result = await runtime.discardEmptyTask({
+          taskId: task.taskId as never,
+          expectedTaskVersion: task.taskVersion,
+        });
+        if (!result.discarded) return false;
+      } catch {
+        return false;
+      }
+    } else if (!String(task.taskId).startsWith('preview-task-')) {
+      return false;
+    }
+    removeTaskFromLocalState(String(task.workspaceId), String(task.taskId));
     return true;
+  };
+
+  /** Discard the current blank task when navigating away; also prune sibling empty placeholders. */
+  const discardBlankActiveTask = async (nextTaskId?: string) => {
+    const current = active;
+    let discardedActive = false;
+    if (current && current.taskId !== nextTaskId) {
+      discardedActive = await tryDiscardEmptyTask({
+        taskId: current.taskId as never,
+        taskVersion: current.taskVersion,
+        workspaceId: current.workspaceId as never,
+      });
+      if (discardedActive && activeTaskIdRef.current === current.taskId) {
+        applySelection(null);
+      }
+    }
+
+    // Prune other empty placeholders in the same project (and lightly across catalog).
+    const runtime = window.syncThink?.runtime;
+    if (runtime?.discardEmptyTask || !runtime) {
+      const keepId = nextTaskId ?? (discardedActive ? undefined : current?.taskId);
+      const catalog = [...tasksByWorkspace.entries()];
+      for (const [workspaceId, tasks] of catalog) {
+        for (const task of tasks) {
+          if (keepId && String(task.taskId) === keepId) continue;
+          if (current && String(task.taskId) === current.taskId) continue;
+          if (!isClientEmptyPlaceholder(task)) continue;
+          if (hasComposeDraftForTask(workspaceId, String(task.taskId))) continue;
+          await tryDiscardEmptyTask(task);
+        }
+      }
+    }
+    return discardedActive;
   };
 
   useEffect(() => {
@@ -4608,6 +4668,110 @@ function DesktopShell() {
   const switchComposeWorkspace = async (workspaceId: string) => {
     if (active?.workspaceId === workspaceId) return;
     setWorkspaceError(null);
+    const runtime = window.syncThink?.runtime;
+    const current = active;
+
+    // Empty / untouched active conversation: reassign project in place (do not create a new task).
+    if (
+      current &&
+      (current.taskVersion === 0 || isUntitledTaskTitle(current.title)) &&
+      current.status !== 'archived' &&
+      !hasComposeDraftForTask(current.workspaceId, current.taskId) &&
+      runtime?.setEmptyTaskWorkspace
+    ) {
+      try {
+        const response = await runtime.setEmptyTaskWorkspace({
+          taskId: current.taskId as never,
+          workspaceId: workspaceId as never,
+          expectedTaskVersion: current.taskVersion,
+        });
+        const moved = response.task;
+        const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
+        setTasksByWorkspace((existing) => {
+          const next = new Map(existing);
+          next.set(
+            current.workspaceId,
+            (next.get(current.workspaceId) ?? []).filter(
+              (task) => String(task.taskId) !== current.taskId,
+            ),
+          );
+          const targetList = [...(next.get(workspaceId) ?? [])];
+          const withoutDup = targetList.filter((task) => String(task.taskId) !== String(moved.taskId));
+          withoutDup.push(moved);
+          next.set(workspaceId, withoutDup);
+          return next;
+        });
+        // Move compose draft key with the task.
+        setComposeDrafts((existing) => {
+          const fromKey = `${current.workspaceId}:${current.taskId}`;
+          const toKey = `${workspaceId}:${current.taskId}`;
+          if (!existing.has(fromKey)) return existing;
+          const next = new Map(existing);
+          const draft = next.get(fromKey);
+          next.delete(fromKey);
+          if (draft) next.set(toKey, draft);
+          return next;
+        });
+        applySelection({
+          taskId: String(moved.taskId),
+          workspaceId: String(moved.workspaceId),
+          threadId: String(moved.threadId),
+          title: moved.title,
+          goal: moved.goal,
+          folderPath: workspace?.folderPath,
+          workspaceName: workspace?.name ?? current.workspaceName,
+          taskVersion: moved.taskVersion,
+          status: moved.status,
+          participationMode: moved.participationMode ?? 'conversation',
+          executionMode: moved.executionMode ?? 'workspace',
+        });
+        // Clean leftover empty placeholders after a successful move.
+        void discardBlankActiveTask(String(moved.taskId));
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '';
+        // Fall through to navigation / create when reassignment is not allowed.
+        if (message && !/empty|not empty|TASK_NOT_EMPTY|Only empty tasks|PROTOCOL_UNEXPECTED/i.test(message)) {
+          setWorkspaceError(`切换项目失败：${message}`);
+          return;
+        }
+      }
+    } else if (current && !runtime?.setEmptyTaskWorkspace) {
+      // Preview / offline: rewrite selection workspace without creating a new row when possible.
+      const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
+      if (workspace && String(current.taskId).startsWith('preview-task-')) {
+        setTasksByWorkspace((existing) => {
+          const next = new Map(existing);
+          const source = (next.get(current.workspaceId) ?? []).filter(
+            (task) => String(task.taskId) !== current.taskId,
+          );
+          next.set(current.workspaceId, source);
+          const preview: TaskSummary = {
+            taskId: current.taskId as never,
+            workspaceId: workspaceId as never,
+            title: current.title,
+            goal: current.goal,
+            status: current.status,
+            participationMode: current.participationMode ?? 'conversation',
+            executionMode: current.executionMode ?? 'workspace',
+            taskVersion: current.taskVersion,
+            threadId: current.threadId as never,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          next.set(workspaceId, [...(next.get(workspaceId) ?? []), preview]);
+          return next;
+        });
+        applySelection({
+          ...current,
+          workspaceId,
+          folderPath: workspace.folderPath,
+          workspaceName: workspace.name,
+        });
+        return;
+      }
+    }
+
     const candidates = (tasksByWorkspace.get(workspaceId) ?? []).filter(
       (task) => task.status !== 'archived',
     );

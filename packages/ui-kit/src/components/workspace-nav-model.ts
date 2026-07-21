@@ -16,6 +16,8 @@ export interface WorkspaceNavTask {
   readonly goal: string;
   readonly status: string;
   readonly participationMode?: 'conversation' | 'collaboration' | 'automatic';
+  /** Codex three-mode execution authority; optional for nav-only projections. */
+  readonly executionMode?: 'read-only' | 'workspace' | 'full-access';
   readonly taskVersion: number;
   readonly threadId: string;
   readonly lastOpenedAt?: string;

@@ -1,3 +1,23 @@
+## 本轮进度：2026-07-20 · Codex 三档执行模式 Phase 3A 闭环
+
+- **目标**：补齐 Project 默认 mode、父任务 live 子任务继承、Run effective-mode snapshot 审计字段。
+- **产品权威不变**：Compose / 详情栏 = `Task.executionMode`；审批中心 = approval policy，不驱动三档。
+- **storage**：migration `0030_workspace_default_execution_mode` 为 workspace 表增加 `default_execution_mode`（默认 `workspace`）；根任务创建继承项目默认；`setExecutionModeWithChildInheritance` 同步未终态子任务；`setWorkspaceDefaultExecutionMode` 写项目默认。
+- **protocol / runtime**：`workspace.setDefaultExecutionMode`；Create/List workspace 投影 `defaultExecutionMode` / `productDefaultExecutionMode`；`task.setExecutionMode` 返回 `inheritedChildren` 并发 `inherited-from-parent` 事件；对话绑定与 `run.started` 固化 `executionSnapshot`。
+- **desktop / ui-kit**：nav task 可携带 `executionMode`；重建 ui-kit 类型后 Desktop typecheck/build 通过；移除未使用的 Composer 审批 mode 切换残留。
+- **已验证（Node 20.20.2）**：
+  - shared/protocol/core/storage typecheck + build 通过
+  - storage migrate + workspace-store **62** 通过；core execution-mode-policy **11** 通过
+  - runtime `mode-policy-commands` + snapshot **17** 通过；runtime typecheck + build 通过
+  - desktop typecheck + build 通过；ui-kit typecheck + build 通过
+  - 隔离 Runtime PID `37460`（`.tmp-runtime-phase3/sync-think.db`，pipe `sync-think-phase3-20260720`）health 含 `workspace.setDefaultExecutionMode` / `task.setExecutionMode`
+  - pipe 冒烟：create workspace → setDefault(`read-only`) → 新 root task 继承 `read-only` → setExecutionMode(`full-access`) 成功
+  - Electron PID `75860` 窗口标题 `SYNC-THINK`、`Responding=True`，Runtime hello accepted
+- **剩余（Phase 3B/3C，非阻塞）**：
+  1. 项目资料页 UI 编辑项目默认 mode（协议/Runtime 已就绪）
+  2. 旧 scoped policy / AgentPermissions 主路径进一步降级与词汇统一
+  3. 全仓 test/typecheck/build 门禁与完整实窗三档验收清单
+
 ## 本轮进度：2026-07-20 · Codex 三档执行模式端到端（Phase 1+2）
 
 - **决策**：废弃“读写/命令/网络细权限 + 多层 scope 继承”作为主模型；用户只面对 Codex 三档。

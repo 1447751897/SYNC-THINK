@@ -1,3 +1,13 @@
+## 2026-07-20 · Codex 三档执行模式 Phase 3A（项目默认 / 子任务继承 / Run snapshot）
+
+- storage migration `0030_workspace_default_execution_mode`：项目默认 `default_execution_mode`；根任务创建继承项目默认；父任务 live mode 变更同步未终态子任务。
+- protocol：`workspace.setDefaultExecutionMode`；CreateWorkspace 响应与 WorkspaceSummary 投影项目默认（`productDefaultExecutionMode`）；`SetExecutionModeResponse.inheritedChildren`。
+- runtime：项目默认读写、父子继承事件（`reason: inherited-from-parent`）、对话工具绑定走 task mode、`run.started` 写入 `executionSnapshot`。
+- core：`captureEffectiveExecutionSnapshot` 固化审计快照。
+- desktop/ui-kit：WorkspaceNavTask 可选 `executionMode`；清理未使用 approval-mode 切换函数；typecheck/build 通过。
+- 定向验证：runtime mode-policy 17、storage 62、core 11；隔离 Runtime + Desktop 冒烟通过（Node 20.20.2）。
+- 后续：项目页默认 mode UI、scoped policy 主路径降级、全仓门禁与完整实窗验收。
+
 ## 2026-07-20 · Codex 三档执行模式权限收敛（Phase 1+2）
 
 - 新增设计：`docs/superpowers/specs/2026-07-20-codex-three-mode-permission-design.md`。

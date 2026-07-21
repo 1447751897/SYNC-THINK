@@ -244,6 +244,9 @@ declare global {
         discardEmptyTask(
           payload: import('@sync-think/protocol').DiscardEmptyTaskPayload,
         ): Promise<import('@sync-think/protocol').DiscardEmptyTaskResponse>;
+        setEmptyTaskWorkspace(
+          payload: import('@sync-think/protocol').SetEmptyTaskWorkspacePayload,
+        ): Promise<import('@sync-think/protocol').SetEmptyTaskWorkspaceResponse>;
         createPlan(payload: PlanDraftPayload): Promise<PlanDraftResponse>;
         revisePlan(payload: PlanRevisePayload): Promise<PlanReviseResponse>;
         listPlanRevisions(payload: PlanListRevisionsPayload): Promise<PlanListRevisionsResponse>;

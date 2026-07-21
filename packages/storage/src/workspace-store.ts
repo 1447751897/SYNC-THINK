@@ -17,6 +17,8 @@ import { assertAllowedWorkspacePath, canonicalizeWorkspacePath } from './path-al
 export interface CreateWorkspaceInput {
   folderPath?: string;
   name: string;
+  /** Project default Codex execution mode for new root tasks. */
+  defaultExecutionMode?: import('@sync-think/shared').ExecutionMode;
   /** Optional path roots that constrain new workspace folders. Empty = first-folder onboarding. */
   allowedRoots?: readonly string[];
   id?: WorkspaceId;
@@ -29,6 +31,8 @@ export interface WorkspaceRecord {
   name: string;
   policyId?: string;
   uiPrefsJson?: string;
+  /** Project default for new root tasks (Codex three-mode). */
+  defaultExecutionMode: import('@sync-think/shared').ExecutionMode;
   createdAt: string;
   updatedAt: string;
 }
@@ -95,6 +99,7 @@ interface WorkspaceRow {
   name: string;
   policy_id: string | null;
   ui_prefs_json: string | null;
+  default_execution_mode?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -146,15 +151,16 @@ export class SqliteWorkspaceStore {
     const id = (input.id ?? ulid()) as WorkspaceId;
     this.raw
       .prepare(
-        `INSERT INTO workspace (id, folder_path, name, policy_id, ui_prefs_json, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, NULL, ?, ?)`,
+        `INSERT INTO workspace (id, folder_path, name, policy_id, ui_prefs_json, default_execution_mode, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)`,
       )
-      .run(id, folderPath, name, now, now);
+      .run(id, folderPath, name, normalizeTaskExecutionMode(input.defaultExecutionMode), now, now);
 
     return {
       id,
       folderPath,
       name,
+      defaultExecutionMode: normalizeTaskExecutionMode(input.defaultExecutionMode),
       createdAt: now,
       updatedAt: now,
     };
@@ -205,7 +211,7 @@ export class SqliteWorkspaceStore {
   listWorkspaces(): WorkspaceRecord[] {
     const rows = this.raw
       .prepare(
-        `SELECT id, folder_path, name, policy_id, ui_prefs_json, created_at, updated_at
+        `SELECT id, folder_path, name, policy_id, ui_prefs_json, default_execution_mode, created_at, updated_at
          FROM workspace
          ORDER BY created_at ASC, id ASC`,
       )
@@ -216,7 +222,7 @@ export class SqliteWorkspaceStore {
   getWorkspace(workspaceId: WorkspaceId): WorkspaceRecord | undefined {
     const row = this.raw
       .prepare(
-        `SELECT id, folder_path, name, policy_id, ui_prefs_json, created_at, updated_at
+        `SELECT id, folder_path, name, policy_id, ui_prefs_json, default_execution_mode, created_at, updated_at
          FROM workspace
          WHERE id = ?`,
       )
@@ -257,9 +263,10 @@ export class SqliteWorkspaceStore {
     if (participationMode !== 'conversation' && participationMode !== 'collaboration') {
       throw new Error(`Unsupported initial participation mode: ${participationMode}`);
     }
-    // Child tasks inherit the parent's live execution mode when not overridden.
+    // Child inherits parent live mode; root tasks inherit Project default then workspace.
+    const projectDefault = workspace.defaultExecutionMode;
     const executionMode = normalizeTaskExecutionMode(
-      input.executionMode ?? parentTask?.executionMode,
+      input.executionMode ?? parentTask?.executionMode ?? projectDefault,
     );
 
     const insert = this.raw.transaction(() => {
@@ -355,6 +362,80 @@ export class SqliteWorkspaceStore {
       );
     });
     return discard.immediate();
+  }
+
+
+  /**
+   * Reassigns an untouched empty placeholder task to another project.
+   * Same emptiness guards as discardEmptyTask; used by Compose project switch.
+   */
+  setEmptyTaskWorkspace(
+    taskId: TaskId,
+    workspaceId: WorkspaceId,
+    expectedTaskVersion: number,
+    beforeReassign?: () => boolean,
+  ): TaskRecord | undefined {
+    if (!Number.isInteger(expectedTaskVersion) || expectedTaskVersion < 0) {
+      throw new Error('expectedTaskVersion must be a non-negative integer');
+    }
+    const reassign = this.raw.transaction(() => {
+      const task = this.getTask(taskId);
+      if (!task || task.version !== expectedTaskVersion) {
+        return undefined;
+      }
+      if (task.workspaceId === workspaceId) {
+        return task;
+      }
+      const target = this.getWorkspace(workspaceId);
+      if (!target) {
+        throw new Error(`Workspace not found: ${workspaceId}`);
+      }
+      if (task.parentTaskId) {
+        return undefined;
+      }
+      const child = this.raw
+        .prepare('SELECT id FROM task WHERE parent_task_id = ? LIMIT 1')
+        .get(taskId) as { id: string } | undefined;
+      if (child) return undefined;
+      const message = this.raw
+        .prepare('SELECT id FROM message WHERE thread_id = ? LIMIT 1')
+        .get(task.threadId) as { id: string } | undefined;
+      if (message) return undefined;
+      const persistedMessageEvent = this.raw
+        .prepare("SELECT id FROM event WHERE task_id = ? AND type = 'message.appended' LIMIT 1")
+        .get(taskId) as { id: string } | undefined;
+      if (persistedMessageEvent) return undefined;
+      for (const [table, column] of [
+        ['plan', 'task_id'],
+        ['run', 'task_id'],
+        ['artifact', 'task_id'],
+        ['approval_request', 'task_id'],
+      ] as const) {
+        const related = this.raw
+          .prepare(`SELECT 1 AS present FROM ${table} WHERE ${column} = ? LIMIT 1`)
+          .get(taskId) as { present: number } | undefined;
+        if (related) return undefined;
+      }
+      if (beforeReassign && !beforeReassign()) return undefined;
+
+      const now = new Date().toISOString();
+      const nextExecutionMode = normalizeTaskExecutionMode(target.defaultExecutionMode);
+      const result = this.raw
+        .prepare(
+          `UPDATE task
+           SET workspace_id = ?, execution_mode = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND version = ?`,
+        )
+        .run(workspaceId, nextExecutionMode, now, taskId, expectedTaskVersion);
+      if (result.changes !== 1) return undefined;
+
+      this.raw.prepare('DELETE FROM task_execution_context WHERE task_id = ?').run(taskId);
+      this.raw.prepare('DELETE FROM group_task WHERE task_id = ?').run(taskId);
+      this.raw.prepare('UPDATE event SET workspace_id = ? WHERE task_id = ?').run(workspaceId, taskId);
+
+      return this.getTask(taskId);
+    });
+    return reassign.immediate();
   }
 
   listTasks(workspaceId: WorkspaceId, options?: { includeArchived?: boolean }): TaskRecord[] {
@@ -535,6 +616,140 @@ export class SqliteWorkspaceStore {
     });
 
     return update.immediate();
+  }
+
+  /**
+   * Strategy A: parent live mode change also updates non-terminal direct children.
+   * Each child is CAS-updated with its current version. Terminal children are skipped.
+   */
+  setExecutionModeWithChildInheritance(
+    taskId: TaskId,
+    mode: import('@sync-think/shared').ExecutionMode | string,
+    expectedTaskVersion: number,
+    now?: string,
+  ): {
+    task: TaskRecord;
+    inheritedChildren: Array<{ previousMode: import('@sync-think/shared').ExecutionMode; task: TaskRecord }>;
+  } {
+    const executionMode = normalizeTaskExecutionMode(mode);
+    if (!Number.isInteger(expectedTaskVersion) || expectedTaskVersion < 0) {
+      throw new Error('expectedTaskVersion must be a non-negative integer');
+    }
+    const changedAt = now ?? new Date().toISOString();
+    const liveStatuses = new Set(['active', 'blocked', 'paused']);
+
+    const run = this.raw.transaction(() => {
+      const parentResult = this.raw
+        .prepare(
+          `UPDATE task
+           SET execution_mode = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND version = ?`,
+        )
+        .run(executionMode, changedAt, taskId, expectedTaskVersion);
+
+      if (parentResult.changes !== 1) {
+        const current = this.raw.prepare('SELECT version FROM task WHERE id = ?').get(taskId) as
+          | { version: number }
+          | undefined;
+        if (!current) {
+          throw new Error(`Task not found: ${taskId}`);
+        }
+        throw new Error(
+          `Task version conflict: expected ${expectedTaskVersion}, actual ${current.version}`,
+        );
+      }
+
+      const parent = this.getTask(taskId);
+      if (!parent) {
+        throw new Error(`Task not found after execution mode update: ${taskId}`);
+      }
+
+      const childRows = this.raw
+        .prepare(
+          `SELECT
+            t.id, t.workspace_id, t.parent_task_id, t.title, t.goal, t.status,
+            t.participation_mode, t.execution_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
+            t.created_at, t.updated_at,
+            th.id AS thread_id
+           FROM task t
+           INNER JOIN thread th ON th.task_id = t.id
+           WHERE t.parent_task_id = ?
+           ORDER BY t.created_at ASC, t.rowid ASC`,
+        )
+        .all(taskId) as Array<TaskRow & { thread_id: string }>;
+
+      const inheritedChildren: Array<{
+        previousMode: import('@sync-think/shared').ExecutionMode;
+        task: TaskRecord;
+      }> = [];
+
+      for (const row of childRows) {
+        const child = mapTask(row, row.thread_id as ThreadId);
+        if (!liveStatuses.has(child.status)) continue;
+        if (child.executionMode === executionMode) continue;
+        const previousMode = child.executionMode;
+        const childUpdate = this.raw
+          .prepare(
+            `UPDATE task
+             SET execution_mode = ?, version = version + 1, updated_at = ?
+             WHERE id = ? AND version = ?`,
+          )
+          .run(executionMode, changedAt, child.id, child.version);
+        if (childUpdate.changes !== 1) {
+          // Concurrent child update — re-read and skip rather than fail the parent change.
+          continue;
+        }
+        const updatedChild = this.getTask(child.id);
+        if (updatedChild) {
+          inheritedChildren.push({ previousMode, task: updatedChild });
+        }
+      }
+
+      return { task: parent, inheritedChildren };
+    });
+
+    return run.immediate();
+  }
+
+  setWorkspaceDefaultExecutionMode(
+    workspaceId: WorkspaceId,
+    mode: import('@sync-think/shared').ExecutionMode | string,
+    now?: string,
+  ): WorkspaceRecord {
+    const executionMode = normalizeTaskExecutionMode(mode);
+    const updatedAt = now ?? new Date().toISOString();
+    const result = this.raw
+      .prepare(
+        `UPDATE workspace
+         SET default_execution_mode = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(executionMode, updatedAt, workspaceId);
+    if (result.changes !== 1) {
+      throw new Error(`Workspace not found: ${workspaceId}`);
+    }
+    const updated = this.getWorkspace(workspaceId);
+    if (!updated) {
+      throw new Error(`Workspace not found after default mode update: ${workspaceId}`);
+    }
+    return updated;
+  }
+
+  listChildTasks(parentTaskId: TaskId): TaskRecord[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT
+          t.id, t.workspace_id, t.parent_task_id, t.title, t.goal, t.status,
+          t.participation_mode, t.execution_mode, t.acceptance_criteria_json, t.version, t.last_opened_at,
+          t.created_at, t.updated_at,
+          th.id AS thread_id
+         FROM task t
+         INNER JOIN thread th ON th.task_id = t.id
+         WHERE t.parent_task_id = ?
+         ORDER BY t.created_at ASC, t.rowid ASC`,
+      )
+      .all(parentTaskId) as Array<TaskRow & { thread_id: string }>;
+    return rows.map((row) => mapTask(row, row.thread_id as ThreadId));
   }
 
   openTask(taskId: TaskId, now?: string): TaskRecord {
@@ -766,6 +981,7 @@ function mapWorkspace(row: WorkspaceRow): WorkspaceRecord {
     name: row.name,
     policyId: row.policy_id ?? undefined,
     uiPrefsJson: row.ui_prefs_json ?? undefined,
+    defaultExecutionMode: normalizeTaskExecutionMode(row.default_execution_mode),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

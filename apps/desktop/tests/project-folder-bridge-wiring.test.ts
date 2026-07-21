@@ -27,6 +27,7 @@ describe('project folder binding desktop wiring', () => {
       'runtime:task-describe-execution-access',
       'runtime:task-resolve-worktree-integration',
       'runtime:task-discard-empty',
+      'runtime:task-set-empty-workspace',
     ]) {
       expect(mainSource).toContain(`ipcMain.handle('${channel}'`);
       expect(preloadSource).toContain(`'${channel}'`);
@@ -41,6 +42,7 @@ describe('project folder binding desktop wiring', () => {
       'describeTaskExecutionAccess',
       'resolveWorktreeIntegration',
       'discardEmptyTask',
+      'setEmptyTaskWorkspace',
     ]) {
       expect(preloadSource).toContain(`${method}:`);
       expect(globalSource).toContain(`${method}(`);

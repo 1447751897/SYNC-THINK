@@ -79,6 +79,7 @@ export {
 
 export {
   resolveEffectiveExecution,
+  captureEffectiveExecutionSnapshot,
   isAutoApprovedByExecutionMode,
   executionModeFromApprovalMode,
   type EffectiveExecution,

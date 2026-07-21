@@ -50,6 +50,7 @@ export type CommandType =
   | 'workspace.bindFolder'
   | 'workspace.bindGitRepository'
   | 'workspace.list'
+  | 'workspace.setDefaultExecutionMode'
   | 'task.create'
   | 'task.delegateSubtask'
   | 'task.recordHandoff'
@@ -62,6 +63,7 @@ export type CommandType =
   | 'task.archive'
   | 'task.unarchive'
   | 'task.discardEmpty'
+  | 'task.setEmptyWorkspace'
   | 'task.setParticipationMode'
   | 'task.setExecutionMode'
   | 'task.appendMessage'
@@ -177,12 +179,15 @@ export interface CreateWorkspacePayload {
   name: string;
   /** Optional allowlisted roots; empty/undefined allows first-folder onboarding. */
   allowedRoots?: string[];
+  /** Project default Codex three-mode for new root tasks. */
+  defaultExecutionMode?: ExecutionMode;
 }
 
 export interface CreateWorkspaceResponse {
   workspaceId: WorkspaceId;
   folderPath?: string;
   name: string;
+  defaultExecutionMode: ExecutionMode;
   createdAt: string;
 }
 
@@ -230,7 +235,10 @@ export interface WorkspaceSummary {
   repositoryUrl?: string;
   executionProfileId?: string;
   executionProfileName?: string;
+  /** Worktree/isolation profile mode (not Codex three-mode). */
   executionMode?: 'auto' | 'local' | 'managed_worktree';
+  /** Project default Codex three-mode for new root tasks. */
+  productDefaultExecutionMode?: ExecutionMode;
   defaultRef?: string;
   browserIdentityId?: string;
   browserIdentityName?: string;
@@ -442,6 +450,17 @@ export interface DiscardEmptyTaskResponse {
   discarded: boolean;
 }
 
+/** Move an untouched empty placeholder task to another project (Compose workspace switch). */
+export interface SetEmptyTaskWorkspacePayload {
+  taskId: TaskId;
+  workspaceId: WorkspaceId;
+  expectedTaskVersion: number;
+}
+
+export interface SetEmptyTaskWorkspaceResponse {
+  task: TaskSummary;
+}
+
 export interface TaskSummary {
   taskId: TaskId;
   workspaceId: WorkspaceId;
@@ -508,6 +527,17 @@ export interface SetExecutionModePayload {
 
 export interface SetExecutionModeResponse {
   task: TaskSummary;
+  /** Non-terminal children that followed parent live mode (strategy A). */
+  inheritedChildren?: TaskSummary[];
+}
+
+export interface SetWorkspaceDefaultExecutionModePayload {
+  workspaceId: WorkspaceId;
+  mode: ExecutionMode;
+}
+
+export interface SetWorkspaceDefaultExecutionModeResponse {
+  workspace: WorkspaceSummary;
 }
 
 export interface AppendMessagePayload {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  captureEffectiveExecutionSnapshot,
   isAutoApprovedByExecutionMode,
   resolveEffectiveExecution,
 } from './execution-mode-policy.js';
@@ -139,5 +140,24 @@ describe('isAutoApprovedByExecutionMode', () => {
         toolAvailable: true,
       }),
     ).toBe(false);
+  });
+});
+
+
+describe('captureEffectiveExecutionSnapshot', () => {
+  it('freezes mode, tools, and approval never for full-access', () => {
+    const effective = resolveEffectiveExecution({
+      taskMode: 'full-access',
+      workspaceRoot: 'D:\\projects\\demo',
+      candidateToolNames: ['read_file', 'write_file', 'run_command'],
+    });
+    const snap = captureEffectiveExecutionSnapshot(effective, '2026-07-20T12:00:00.000Z');
+    expect(snap).toMatchObject({
+      mode: 'full-access',
+      approval: 'never',
+      filesystem: 'unrestricted',
+      capturedAt: '2026-07-20T12:00:00.000Z',
+    });
+    expect(snap.toolNames).toEqual(['read_file', 'write_file', 'run_command']);
   });
 });

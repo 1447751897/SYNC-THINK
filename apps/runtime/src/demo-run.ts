@@ -6,6 +6,7 @@ import type {
   ProviderToolCall,
 } from '@sync-think/adapters';
 import type {
+  EffectiveExecutionSnapshot,
   Event,
   EventCategory,
   ModelResolutionSource,
@@ -56,6 +57,7 @@ export interface DemoRunState {
   executionRoot?: string;
   executionToolNames: string[];
   effectiveApprovalMode?: string;
+  executionSnapshot?: EffectiveExecutionSnapshot;
   browserIdentityId?: string;
   pendingApplicationToolCalls: ProviderToolCall[];
   startedApplicationToolCallIds: string[];
@@ -99,6 +101,7 @@ export interface CreateDemoRunInput {
   executionRoot?: string;
   executionToolNames?: readonly string[];
   effectiveApprovalMode?: string;
+  executionSnapshot?: EffectiveExecutionSnapshot;
   browserIdentityId?: string;
   attachments?: readonly MessageAttachment[];
 }
@@ -136,6 +139,9 @@ export function createDemoRun(
     executionRoot: extras.executionRoot,
     executionToolNames: [...(extras.executionToolNames ?? [])],
     effectiveApprovalMode: extras.effectiveApprovalMode,
+    executionSnapshot: extras.executionSnapshot
+      ? structuredClone(extras.executionSnapshot)
+      : undefined,
     browserIdentityId: extras.browserIdentityId,
     pendingApplicationToolCalls: [],
     startedApplicationToolCallIds: [],
@@ -416,6 +422,7 @@ function parseDemoRun(value: unknown): DemoRunState {
     executionToolNames: parseStringArray(run.executionToolNames),
     effectiveApprovalMode:
       typeof run.effectiveApprovalMode === 'string' ? run.effectiveApprovalMode : undefined,
+    executionSnapshot: parseExecutionSnapshot(run.executionSnapshot),
     browserIdentityId:
       typeof run.browserIdentityId === 'string' ? run.browserIdentityId : undefined,
     pendingApplicationToolCalls: parseProviderToolCalls(run.pendingApplicationToolCalls),
@@ -423,6 +430,30 @@ function parseDemoRun(value: unknown): DemoRunState {
     applicationToolResults: parseApplicationToolResults(run.applicationToolResults),
     useFakeProvider: run.useFakeProvider !== false && !run.providerId,
     attachments: parseMessageAttachments(run.attachments),
+  };
+}
+
+function parseExecutionSnapshot(value: unknown): EffectiveExecutionSnapshot | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const snap = value as Record<string, unknown>;
+  const mode = typeof snap.mode === 'string' ? snap.mode : undefined;
+  if (mode !== 'read-only' && mode !== 'workspace' && mode !== 'full-access') return undefined;
+  if (typeof snap.filesystem !== 'string' || typeof snap.network !== 'string') return undefined;
+  if (typeof snap.approval !== 'string' || typeof snap.approvalRouting !== 'string') return undefined;
+  if (!Array.isArray(snap.toolNames) || typeof snap.capturedAt !== 'string') return undefined;
+  return {
+    mode,
+    ...(typeof snap.workspaceRoot === 'string' ? { workspaceRoot: snap.workspaceRoot } : {}),
+    filesystem: snap.filesystem as EffectiveExecutionSnapshot['filesystem'],
+    network: snap.network as EffectiveExecutionSnapshot['network'],
+    approval: snap.approval as EffectiveExecutionSnapshot['approval'],
+    approvalRouting: snap.approvalRouting as EffectiveExecutionSnapshot['approvalRouting'],
+    toolNames: snap.toolNames.filter((n): n is string => typeof n === 'string'),
+    capturedAt: snap.capturedAt,
+    ...(typeof snap.source === 'string'
+      ? { source: snap.source as EffectiveExecutionSnapshot['source'] }
+      : {}),
   };
 }
 

@@ -25,6 +25,7 @@ import type {
   SearchTasksPayload,
   SetParticipationModePayload,
   SetExecutionModePayload,
+  SetWorkspaceDefaultExecutionModePayload,
   SavePolicyPayload,
   ListPoliciesPayload,
   SubscribeEventsPayload,
@@ -566,10 +567,20 @@ export function parseCreateWorkspacePayload(value: unknown): CreateWorkspacePayl
       return undefined;
     }
   }
+  let defaultExecutionMode: import('@sync-think/shared').ExecutionMode | undefined;
+  if (value.defaultExecutionMode !== undefined) {
+    if (typeof value.defaultExecutionMode !== 'string') return undefined;
+    const raw = value.defaultExecutionMode.trim().toLowerCase().replace(/_/g, '-');
+    if (raw === 'read-only' || raw === 'readonly' || raw === 'read only') defaultExecutionMode = 'read-only';
+    else if (raw === 'full-access' || raw === 'full') defaultExecutionMode = 'full-access';
+    else if (raw === 'workspace') defaultExecutionMode = 'workspace';
+    else return undefined;
+  }
   return {
     name: value.name.trim(),
     folderPath: typeof value.folderPath === 'string' ? value.folderPath.trim() : undefined,
     allowedRoots: value.allowedRoots as string[] | undefined,
+    ...(defaultExecutionMode ? { defaultExecutionMode } : {}),
   };
 }
 
@@ -820,6 +831,31 @@ export function parseDiscardEmptyTaskPayload(
     : undefined;
 }
 
+export function parseSetEmptyTaskWorkspacePayload(
+  value: unknown,
+): import('@sync-think/protocol').SetEmptyTaskWorkspacePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'workspaceId', 'expectedTaskVersion']) ||
+    typeof value.taskId !== 'string' ||
+    value.taskId.length === 0 ||
+    value.taskId.length > 256 ||
+    typeof value.workspaceId !== 'string' ||
+    value.workspaceId.length === 0 ||
+    value.workspaceId.length > 256 ||
+    !Number.isInteger(value.expectedTaskVersion) ||
+    Number(value.expectedTaskVersion) < 0
+  ) {
+    return undefined;
+  }
+  return {
+    taskId: value.taskId as import('@sync-think/protocol').SetEmptyTaskWorkspacePayload['taskId'],
+    workspaceId:
+      value.workspaceId as import('@sync-think/protocol').SetEmptyTaskWorkspacePayload['workspaceId'],
+    expectedTaskVersion: Number(value.expectedTaskVersion),
+  };
+}
+
 export function parseOpenTaskPayload(value: unknown): OpenTaskPayload | undefined {
   if (!isRecord(value)) return undefined;
   if (typeof value.taskId !== 'string' || value.taskId.length === 0) return undefined;
@@ -873,6 +909,31 @@ export function parseSetExecutionModePayload(
     return undefined;
   }
   return value as unknown as SetExecutionModePayload;
+}
+
+export function parseSetWorkspaceDefaultExecutionModePayload(
+  value: unknown,
+): SetWorkspaceDefaultExecutionModePayload | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.workspaceId !== 'string' ||
+    record.workspaceId.trim().length === 0 ||
+    record.workspaceId.length > 256 ||
+    typeof record.mode !== 'string'
+  ) {
+    return undefined;
+  }
+  const raw = record.mode.trim().toLowerCase().replace(/_/g, '-');
+  let mode: import('@sync-think/shared').ExecutionMode;
+  if (raw === 'read-only' || raw === 'readonly' || raw === 'read only') mode = 'read-only';
+  else if (raw === 'full-access' || raw === 'full') mode = 'full-access';
+  else if (raw === 'workspace') mode = 'workspace';
+  else return undefined;
+  return {
+    workspaceId: record.workspaceId.trim() as SetWorkspaceDefaultExecutionModePayload['workspaceId'],
+    mode,
+  };
 }
 
 export function parseSavePolicyPayload(value: unknown): SavePolicyPayload | undefined {

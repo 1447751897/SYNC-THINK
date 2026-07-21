@@ -1,5 +1,6 @@
 ﻿import type {
   CreateTaskPayload,
+  SetEmptyTaskWorkspacePayload,
   BindWorkspaceFolderPayload,
   BindWorkspaceGitRepositoryPayload,
   ResolveWorktreeIntegrationPayload,
@@ -344,5 +345,28 @@ export function parseSearchTasksPayload(value: unknown): SearchTasksPayload {
   return {
     workspaceId: value.workspaceId as SearchTasksPayload['workspaceId'],
     query: value.query,
+  };
+}
+
+export function parseSetEmptyTaskWorkspacePayload(
+  value: unknown,
+): SetEmptyTaskWorkspacePayload {
+  if (!isRecord(value)) throw new Error('Invalid set-empty-task-workspace payload');
+  if (
+    typeof value.taskId !== 'string' ||
+    value.taskId.trim().length === 0 ||
+    value.taskId.length > 256 ||
+    typeof value.workspaceId !== 'string' ||
+    value.workspaceId.trim().length === 0 ||
+    value.workspaceId.length > 256 ||
+    !Number.isInteger(value.expectedTaskVersion) ||
+    Number(value.expectedTaskVersion) < 0
+  ) {
+    throw new Error('Invalid set-empty-task-workspace payload');
+  }
+  return {
+    taskId: value.taskId.trim() as SetEmptyTaskWorkspacePayload['taskId'],
+    workspaceId: value.workspaceId.trim() as SetEmptyTaskWorkspacePayload['workspaceId'],
+    expectedTaskVersion: Number(value.expectedTaskVersion),
   };
 }

@@ -682,6 +682,10 @@ describe('Compose', () => {
     expect(screen.getByRole('tooltip').textContent).toBe('D:\\projects\\SYNC-THINK');
     fireEvent.click(screen.getByTestId('compose-workspace-option-ws-2'));
     expect(onWorkspaceChange).toHaveBeenCalledWith('ws-2');
+    // Notes has no folderPath — unbound chat project is first-class.
+    fireEvent.click(screen.getByTestId('compose-workspace-trigger'));
+    expect(screen.getByTestId('compose-workspace-option-ws-2').textContent).toMatch(/未绑定/);
+
   });
 
   it('offers blank-project and folder-project creation from the project menu', () => {

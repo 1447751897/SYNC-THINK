@@ -1,4 +1,5 @@
-import type { WorkspaceId, PolicyId } from './ids.js';
+﻿import type { WorkspaceId, PolicyId } from './ids.js';
+import type { ExecutionMode } from './enums.js';
 
 export interface Workspace {
   id: WorkspaceId;
@@ -9,6 +10,11 @@ export interface Workspace {
   updatedAt: string;
   /** Policies scoped to this workspace; resolved most-restrictive wins. */
   policyId?: PolicyId;
+  /**
+   * Project default Codex execution mode for new root tasks.
+   * Explicit Task.executionMode always wins after creation.
+   */
+  defaultExecutionMode?: ExecutionMode;
   /** User UI prefs (rail collapsed, theme, etc.) — UI-only, not security-relevant. */
   uiPrefs?: WorkspaceUiPrefs;
 }

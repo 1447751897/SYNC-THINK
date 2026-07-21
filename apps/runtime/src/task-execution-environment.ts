@@ -392,7 +392,11 @@ export class TaskExecutionEnvironmentManager {
     return this.options.store.scheduleCleanup(taskId, profile?.retentionDays ?? 7);
   }
 
-  discardPreparedTask(taskId: TaskId, preparedContext?: TaskExecutionContext): boolean {
+  discardPreparedTask(
+    taskId: TaskId,
+    preparedContext?: TaskExecutionContext,
+    options?: { force?: boolean },
+  ): boolean {
     const context = preparedContext ?? this.options.store.getTaskContext(taskId);
     if (
       context?.mode !== 'managed_worktree' ||
@@ -402,11 +406,39 @@ export class TaskExecutionEnvironmentManager {
       this.preparations.delete(String(taskId));
       return true;
     }
-    if (!context.sourcePath) return false;
+    if (!context.sourcePath) {
+      if (options?.force && context.executionPath && existsSync(context.executionPath)) {
+        try {
+          rmSync(context.executionPath, { recursive: true, force: true });
+          this.preparations.delete(String(taskId));
+          return true;
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    }
     try {
-      const dirty = this.git(context.executionPath, ['status', '--porcelain']).trim();
-      if (dirty) return false;
-      this.git(context.sourcePath, ['worktree', 'remove', context.executionPath]);
+      if (!options?.force) {
+        const dirty = this.git(context.executionPath, ['status', '--porcelain']).trim();
+        if (dirty) return false;
+      }
+      try {
+        this.git(
+          context.sourcePath,
+          options?.force
+            ? ['worktree', 'remove', '--force', context.executionPath]
+            : ['worktree', 'remove', context.executionPath],
+        );
+      } catch {
+        if (!options?.force) return false;
+        rmSync(context.executionPath, { recursive: true, force: true });
+        try {
+          this.git(context.sourcePath, ['worktree', 'prune']);
+        } catch {
+          // best-effort prune after forced path delete
+        }
+      }
       this.preparations.delete(String(taskId));
       return true;
     } catch {

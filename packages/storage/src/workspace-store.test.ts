@@ -242,6 +242,73 @@ describe('SqliteWorkspaceStore', () => {
     }
   });
 
+  it('reassigns only empty placeholder tasks across projects', async () => {
+    const { store, raw, close } = await openStore();
+    try {
+      const source = store.createWorkspace({
+        name: 'Chat Project',
+      });
+      const target = store.createWorkspace({
+        folderPath: 'D:\\projects\\reassign-target',
+        name: 'Code Project',
+      });
+      const blank = store.createTask({
+        workspaceId: source.id,
+        title: '新任务',
+        goal: '新任务',
+      });
+      const moved = store.setEmptyTaskWorkspace(blank.taskId, target.id, 0);
+      expect(moved).toMatchObject({
+        id: blank.taskId,
+        workspaceId: target.id,
+        version: 1,
+      });
+      expect(store.getTask(blank.taskId)?.workspaceId).toBe(target.id);
+      expect(store.listTasks(source.id)).toHaveLength(0);
+      expect(store.listTasks(target.id).map((task) => task.id)).toContain(blank.taskId);
+
+      const started = store.createTask({
+        workspaceId: source.id,
+        title: '新任务',
+        goal: '新任务',
+      });
+      // Real conversation content must block in-place project reassignment.
+      raw
+        .prepare(
+          `INSERT INTO message (id, thread_id, role, sequence, blocks_json, created_at)
+           VALUES (?, ?, 'user', 0, ?, ?)`,
+        )
+        .run(
+          'msg-started-1',
+          started.threadId,
+          JSON.stringify([{ type: 'text', text: 'hello' }]),
+          '2026-07-20T00:00:00.000Z',
+        );
+      store.advanceTaskVersionByThreadId(started.threadId, 0, '2026-07-20T00:00:00.000Z', {
+        generatedTitle: '已开始',
+        generatedGoal: '已发送',
+      });
+      const startedVersion = store.getTask(started.taskId)!.version;
+      expect(store.setEmptyTaskWorkspace(started.taskId, target.id, startedVersion)).toBeUndefined();
+      expect(store.getTask(started.taskId)?.workspaceId).toBe(source.id);
+
+      const parent = store.createTask({
+        workspaceId: source.id,
+        title: '新任务',
+        goal: '新任务',
+      });
+      store.createTask({
+        workspaceId: source.id,
+        parentTaskId: parent.taskId,
+        title: '子任务',
+        goal: '子任务',
+      });
+      expect(store.setEmptyTaskWorkspace(parent.taskId, target.id, 0)).toBeUndefined();
+    } finally {
+      close();
+    }
+  });
+
   it('records last-open memory when a task is opened', async () => {
     const { store, close } = await openStore();
     try {
@@ -722,6 +789,91 @@ describe('SqliteWorkspaceStore task version source of truth', () => {
       raw.prepare('UPDATE task SET version = 20 WHERE id = ?').run(task.taskId);
       expect(store.reconcileTaskVersionsFromMessageEvents('2026-07-13T06:12:00.000Z')).toBe(0);
       expect(store.getTask(task.taskId)?.version).toBe(20);
+    } finally {
+      close();
+    }
+  });
+});
+
+
+describe('SqliteWorkspaceStore project default and child mode sync', () => {
+  it('inherits project default execution mode for new root tasks', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({
+        folderPath: 'D:\\projects\\project-default-mode',
+        name: 'Project Default Mode',
+        defaultExecutionMode: 'full-access',
+      });
+      expect(workspace.defaultExecutionMode).toBe('full-access');
+      const task = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Root inherits project',
+        goal: 'Use project default',
+      });
+      expect(task.executionMode).toBe('full-access');
+      // Explicit task mode is not overwritten by project default
+      const explicit = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Explicit mode',
+        goal: 'Override project',
+        executionMode: 'read-only',
+      });
+      expect(explicit.executionMode).toBe('read-only');
+    } finally {
+      close();
+    }
+  });
+
+  it('updates non-terminal children when parent live mode changes', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({
+        folderPath: 'D:\\projects\\parent-live-mode',
+        name: 'Parent Live Mode',
+      });
+      const parent = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Parent',
+        goal: 'Parent goal',
+        executionMode: 'workspace',
+      });
+      const liveChild = store.createTask({
+        workspaceId: workspace.id,
+        parentTaskId: parent.taskId,
+        title: 'Live child',
+        goal: 'Follow parent',
+      });
+      const completedChild = store.createTask({
+        workspaceId: workspace.id,
+        parentTaskId: parent.taskId,
+        title: 'Completed child',
+        goal: 'Stay put',
+      });
+      store.setTaskStatus(completedChild.taskId, 'completed', 0);
+      const cascade = store.setExecutionModeWithChildInheritance(
+        parent.taskId,
+        'full-access',
+        0,
+      );
+      expect(cascade.task.executionMode).toBe('full-access');
+      expect(cascade.inheritedChildren).toHaveLength(1);
+      expect(cascade.inheritedChildren[0]?.task.id).toBe(liveChild.taskId);
+      expect(cascade.inheritedChildren[0]?.task.executionMode).toBe('full-access');
+      expect(store.getTask(completedChild.taskId)?.executionMode).toBe('workspace');
+    } finally {
+      close();
+    }
+  });
+
+  it('persists workspace default execution mode updates', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Default update' });
+      expect(workspace.defaultExecutionMode).toBe('workspace');
+      const updated = store.setWorkspaceDefaultExecutionMode(workspace.id, 'read-only');
+      expect(updated.defaultExecutionMode).toBe('read-only');
+      expect(store.getWorkspace(workspace.id)?.defaultExecutionMode).toBe('read-only');
     } finally {
       close();
     }

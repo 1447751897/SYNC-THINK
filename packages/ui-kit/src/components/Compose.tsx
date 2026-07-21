@@ -1095,6 +1095,7 @@ export function Compose(props: ComposeProps) {
                 type="button"
                 className="st-compose__workspace-trigger"
                 data-testid="compose-workspace-trigger"
+                data-unbound={selectedWorkspace?.folderPath ? '0' : '1'}
                 aria-haspopup="listbox"
                 aria-expanded={workspaceMenuOpen}
                 aria-label={`切换项目，当前 ${selectedWorkspace?.name ?? '未选择'}`}

@@ -14,6 +14,7 @@ import {
   normalizeExecutionMode,
   resolveExecutionMode,
   type ApprovalMode,
+  type EffectiveExecutionSnapshot,
   type ExecutionApprovalRouting,
   type ExecutionMode,
   type ExecutionModeSource,
@@ -173,4 +174,23 @@ export function executionModeFromApprovalMode(
   mode: ApprovalMode | string | null | undefined,
 ): ExecutionMode {
   return executionModeFromLegacyApprovalMode(mode);
+}
+
+
+/** Freeze the effective execution surface for a Run (audit + resume). */
+export function captureEffectiveExecutionSnapshot(
+  effective: EffectiveExecution,
+  capturedAt: string = new Date().toISOString(),
+): EffectiveExecutionSnapshot {
+  return {
+    mode: effective.mode,
+    ...(effective.workspaceRoot ? { workspaceRoot: effective.workspaceRoot } : {}),
+    filesystem: effective.filesystem,
+    network: effective.network,
+    approval: effective.approval,
+    approvalRouting: effective.approvalRouting,
+    toolNames: [...effective.toolNames],
+    capturedAt,
+    source: effective.source,
+  };
 }
