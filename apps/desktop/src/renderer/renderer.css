@@ -4447,34 +4447,47 @@ textarea {
   overflow: hidden;
 }
 
+/* NewMax-like left rail: quieter brand, denser nav, pill talk tracks */
 .st-demo-nav-stack {
-  padding: 10px 8px 8px;
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0;
+  padding: 12px 10px 10px;
+  background: color-mix(in srgb, var(--st-color-surface) 92%, var(--st-color-background));
 }
 
 .st-product-brand {
   display: flex;
   flex: 0 0 auto;
-  min-height: 40px;
+  min-height: 36px;
   align-items: center;
   gap: 10px;
-  padding: 2px 6px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--st-color-border) 70%, transparent);
+  margin: 0 2px 4px;
+  padding: 4px 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--st-color-border) 55%, transparent);
 }
 
 .st-product-brand__mark {
   display: grid;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   place-items: center;
   border: 0;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--st-color-accent) 16%, var(--st-color-surface-elevated));
+  border-radius: 8px;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--st-color-accent) 22%, var(--st-color-surface-elevated)),
+    color-mix(in srgb, var(--st-color-accent) 8%, var(--st-color-surface))
+  );
   color: var(--st-color-accent);
   font-family: var(--st-typo-font-family-mono);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color-accent) 28%, transparent);
+  letter-spacing: 0.02em;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color-accent) 22%, transparent);
 }
 
 .st-product-brand__copy {
@@ -4492,22 +4505,678 @@ textarea {
 .st-product-brand__copy strong {
   color: var(--st-color-text-primary);
   font-size: 13px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .st-product-brand__copy small {
   margin-top: 1px;
   color: var(--st-color-text-secondary);
   font-size: 11px;
+  opacity: 0.9;
 }
 
 .st-product-nav {
   display: grid;
   flex: 0 0 auto;
+  gap: 2px;
+  margin: 0;
+  padding: 10px 0 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--st-color-border) 55%, transparent);
+}
+
+.st-product-nav__item {
+  border-radius: 10px;
+  min-height: 34px;
+  padding: 0 10px;
+  color: var(--st-color-text-secondary);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.st-product-nav__item:hover {
+  background: color-mix(in srgb, var(--st-color-hover) 88%, transparent);
+  color: var(--st-color-text-primary);
+}
+
+.st-product-nav__item[data-active='1'] {
+  background: color-mix(in srgb, var(--st-color-accent) 12%, var(--st-color-surface-elevated));
+  color: var(--st-color-text-primary);
+  box-shadow: none;
+  font-weight: 650;
+}
+
+.st-product-nav__item[data-active='1'] svg {
+  color: var(--st-color-accent);
+}
+
+/* Talk track sub-nav: 模型 / 智能体 / 小队 (Locked NewMax shell) */
+.st-talk-track-nav {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  flex: 0 0 auto;
+  gap: 4px;
+  margin: 0;
+  padding: 10px 0 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--st-color-border) 55%, transparent);
+}
+
+.st-talk-track-nav__item {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--st-color-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.st-talk-track-nav__hint {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  padding: 0 4px;
+  color: var(--st-color-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.88;
+}
+
+.st-talk-track-nav__item:hover {
+  background: var(--st-color-hover);
+  color: var(--st-color-text-primary);
+}
+
+.st-talk-track-nav__item[data-active='1'] {
+  background: color-mix(in srgb, var(--st-color-accent) 14%, var(--st-color-surface-elevated));
+  color: var(--st-color-text-primary);
+}
+
+/* NewMax-style recent conversations (track + day groups) */
+.st-recent-talk {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 2px;
+}
+
+.st-recent-talk .st-talk-track-nav {
+  border-bottom: 0;
+  padding-bottom: 6px;
+}
+
+.st-recent-talk__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 2px 2px 8px;
+}
+
+.st-recent-talk__title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--st-color-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-recent-talk__new {
+  appearance: none;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--st-color-accent) 14%, var(--st-color-surface));
+  color: var(--st-color-text-primary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color-accent) 20%, transparent);
+}
+
+.st-recent-talk__new:hover {
+  background: color-mix(in srgb, var(--st-color-accent) 20%, var(--st-color-surface-elevated));
+}
+
+.st-recent-talk__search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin: 0 2px 10px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--st-color-border) 70%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--st-color-surface) 88%, var(--st-color-background));
+  color: var(--st-color-text-secondary);
+}
+
+.st-recent-talk__search:focus-within {
+  border-color: color-mix(in srgb, var(--st-color-accent) 40%, var(--st-color-border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-color-accent) 12%, transparent);
+}
+
+.st-recent-talk__search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--st-color-text-primary);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.st-recent-talk__search input::placeholder {
+  color: var(--st-color-text-secondary);
+  opacity: 0.85;
+}
+
+.st-recent-talk__error {
+  margin: 0 2px 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--st-color-error, #c44) 12%, var(--st-color-surface));
+  color: var(--st-color-error, #c44);
+  font-size: 12px;
+}
+
+.st-recent-talk__list {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 0 0 8px;
+}
+
+.st-recent-talk__group {
+  margin: 0 0 10px;
+}
+
+.st-recent-talk__day {
+  margin: 0 8px 6px;
+  color: var(--st-color-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.st-recent-talk__items {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.st-recent-talk__item {
+  appearance: none;
+  display: grid;
+  width: 100%;
+  gap: 2px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--st-color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.st-recent-talk__item:hover {
+  background: var(--st-color-hover);
+}
+
+.st-recent-talk__item[data-active='1'] {
+  background: color-mix(in srgb, var(--st-color-accent) 12%, var(--st-color-surface-elevated));
+}
+
+.st-recent-talk__item-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-recent-talk__item-sub {
+  overflow: hidden;
+  color: var(--st-color-text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-recent-talk__empty {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  margin: 12px 4px;
+  color: var(--st-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.st-recent-talk__empty-cta {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--st-color-accent) 16%, var(--st-color-surface));
+  color: var(--st-color-text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+/* Recent conversations v2 — one calm hierarchy, no date or segmented-tab chrome. */
+.st-recent-talk {
+  margin-top: 10px;
+  padding: 0 2px;
+}
+
+.st-recent-talk__header {
+  display: grid;
+  gap: 1px;
+  padding: 4px 8px 9px;
+}
+
+.st-recent-talk__eyebrow {
+  color: var(--st-color-text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  opacity: 0.72;
+}
+
+.st-recent-talk__heading {
+  margin: 0;
+  color: var(--st-color-text-primary);
+  font-size: 14px;
+  font-weight: 680;
+  letter-spacing: -0.015em;
+}
+
+.st-recent-talk__search {
+  min-height: 31px;
+  margin: 0 4px 8px;
+  padding-inline: 9px;
+  border-color: transparent;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--st-color-text-primary) 4.5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color-border) 34%, transparent);
+}
+
+.st-recent-talk__search:focus-within {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--st-color-surface-elevated) 90%, var(--st-color-accent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color-accent) 42%, var(--st-color-border));
+}
+
+.st-recent-talk__list {
+  padding: 0 2px 12px;
+  scrollbar-gutter: stable;
+}
+
+.st-recent-talk__section {
+  margin: 0 0 3px;
+}
+
+.st-recent-talk__section-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 2px 0 0;
+  border-radius: 8px;
+}
+
+.st-recent-talk__section-head:hover {
+  background: color-mix(in srgb, var(--st-color-hover) 68%, transparent);
+}
+
+.st-recent-talk__section-toggle,
+.st-recent-talk__section-add,
+.st-recent-talk__section-empty,
+.st-recent-talk__pin {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.st-recent-talk__section-toggle {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
   gap: 3px;
-  padding: 10px 0 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--st-color-border) 70%, transparent);
+  padding: 0 5px;
+  color: var(--st-color-text-secondary);
+  text-align: left;
+}
+
+.st-recent-talk__section-toggle > span {
+  overflow: hidden;
+  color: var(--st-color-text-primary);
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: -0.005em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-recent-talk__section-toggle > em {
+  min-width: 18px;
+  color: var(--st-color-text-secondary);
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  opacity: 0.72;
+}
+
+.st-recent-talk__section-chevron {
+  transition: transform 140ms ease;
+}
+
+.st-recent-talk__section[data-expanded='1'] .st-recent-talk__section-chevron {
+  transform: rotate(-90deg);
+}
+
+.st-recent-talk__section-add {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--st-color-text-secondary);
+  opacity: 0.66;
+}
+
+.st-recent-talk__section-add:hover,
+.st-recent-talk__section-add:focus-visible {
+  background: color-mix(in srgb, var(--st-color-accent) 11%, var(--st-color-surface-elevated));
+  color: var(--st-color-accent);
+  opacity: 1;
+}
+
+.st-recent-talk__section-body {
+  padding: 1px 0 4px 12px;
+}
+
+.st-recent-talk__items {
+  gap: 1px;
+}
+
+.st-recent-talk__item-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: center;
+  min-width: 0;
+  border-radius: 8px;
+}
+
+.st-recent-talk__item-row:hover,
+.st-recent-talk__item-row:focus-within {
+  background: color-mix(in srgb, var(--st-color-hover) 76%, transparent);
+}
+
+.st-recent-talk__item {
+  min-height: 37px;
+  gap: 1px;
+  padding: 5px 4px 5px 8px;
+  border-radius: 8px 2px 2px 8px;
+}
+
+.st-recent-talk__item:hover {
+  background: transparent;
+}
+
+.st-recent-talk__item[data-active='1'] {
+  background: color-mix(in srgb, var(--st-color-accent) 10%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--st-color-accent) 72%, transparent);
+}
+
+.st-recent-talk__item-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.st-recent-talk__item-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-recent-talk__item-pin-mark {
+  flex: 0 0 auto;
+  color: var(--st-color-accent);
+  transform: rotate(-22deg);
+}
+
+.st-recent-talk__item-sub {
+  font-size: 10px;
+  opacity: 0.76;
+}
+
+.st-recent-talk__pin {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--st-color-text-secondary);
+  opacity: 0;
+}
+
+.st-recent-talk__item-row:hover .st-recent-talk__pin,
+.st-recent-talk__item-row:focus-within .st-recent-talk__pin,
+.st-recent-talk__pin[data-pinned='1'] {
+  opacity: 0.72;
+}
+
+.st-recent-talk__pin:hover,
+.st-recent-talk__pin:focus-visible {
+  background: color-mix(in srgb, var(--st-color-text-primary) 7%, transparent);
+  color: var(--st-color-accent);
+  opacity: 1;
+}
+
+.st-recent-talk__section-empty {
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  color: var(--st-color-text-secondary);
+  font-size: 11px;
+  text-align: left;
+  opacity: 0.74;
+}
+
+.st-recent-talk__section-empty:hover {
+  background: color-mix(in srgb, var(--st-color-hover) 72%, transparent);
+  color: var(--st-color-text-primary);
+  opacity: 1;
+}
+
+.st-recent-talk__section-toggle:focus-visible,
+.st-recent-talk__section-add:focus-visible,
+.st-recent-talk__item:focus-visible,
+.st-recent-talk__pin:focus-visible,
+.st-recent-talk__section-empty:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--st-color-accent) 64%, transparent);
+  outline-offset: 1px;
+}
+
+/* NewMax-aligned quiet shell: conversations are the daily surface; asset pages stay secondary. */
+.st-demo-nav-stack {
+  padding: 9px 8px 8px;
+  background: var(--st-color-sidebar);
+}
+
+.st-product-brand {
+  min-height: 34px;
+  gap: 8px;
+  margin: 0 3px 6px;
+  padding: 3px 4px 10px;
+  border-bottom-color: color-mix(in srgb, var(--st-color-border) 34%, transparent);
+}
+
+.st-product-brand__mark {
+  width: 26px;
+  height: 26px;
+  flex-basis: 26px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--st-color-accent) 9%, var(--st-color-surface-elevated));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color-accent) 16%, transparent);
+}
+
+.st-product-brand__copy strong {
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.st-product-brand__copy small {
+  font-size: 10px;
+  opacity: 0.72;
+}
+
+.st-product-nav {
+  gap: 1px;
+  padding: 3px 0 6px;
+  border-bottom-color: color-mix(in srgb, var(--st-color-border) 32%, transparent);
+}
+
+.st-product-nav__item {
+  min-height: 31px;
+  padding-inline: 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 540;
+}
+
+.st-product-nav__item[data-active='1'] {
+  background: color-mix(in srgb, var(--st-color-text-primary) 6%, transparent);
+  color: var(--st-color-text-primary);
+  box-shadow: none;
+  font-weight: 620;
+}
+
+.st-product-nav__item[data-active='1'] svg {
+  color: var(--st-color-accent);
+}
+
+:root[data-st-theme='light'] .st-product-nav__item[data-active='1'],
+:root:not([data-st-theme]) .st-product-nav__item[data-active='1'] {
+  background: color-mix(in srgb, var(--st-color-accent) 7%, var(--st-color-sidebar));
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .st-recent-talk__section-chevron {
+    transition: none;
+  }
+}
+
+.st-demo-nav-stack__workspaces {
+  min-height: 0;
+  flex: 1 1 auto;
+  margin-top: 8px;
+  overflow: auto;
+}
+
+.st-shell-stage-panel {
+  display: grid;
+  gap: 10px;
+  margin: 12px 2px 0;
+  padding: 16px 14px;
+  border: 1px solid color-mix(in srgb, var(--st-color-border) 70%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--st-color-surface-elevated) 94%, var(--st-color-background));
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--st-color-border) 40%, transparent);
+}
+
+.st-shell-stage-panel h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--st-color-text-primary);
+}
+
+.st-shell-stage-panel p {
+  margin: 0;
+  color: var(--st-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.st-shell-stage-panel__muted {
+  color: var(--st-color-text-tertiary, var(--st-color-text-secondary));
+  opacity: 0.92;
+}
+
+.st-shell-stage-panel__cta {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  margin-top: 2px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--st-color-accent) 16%, var(--st-color-surface));
+  color: var(--st-color-text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color-accent) 22%, transparent);
+}
+
+.st-shell-stage-panel__cta:hover {
+  background: color-mix(in srgb, var(--st-color-accent) 22%, var(--st-color-surface-elevated));
+}
+
+.st-demo-nav-stack__runtime {
+  margin-top: auto;
+  opacity: 0.78;
 }
 
 .st-product-nav__item {

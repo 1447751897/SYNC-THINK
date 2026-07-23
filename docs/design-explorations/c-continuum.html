@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>设计稿 C · Continuum — SYNC-THINK</title>
+<style>
+  /* ============================================================
+     方向 C：连续体 · Continuum（原创签名方向）
+     依据 docs/product/15-frontend-design.md §0.3「Continuum Bench」
+     关键词：矿物中性底 / 上下文丝带物质化 / 交接可看见 /
+             轨迹显影底片 / 空间会呼吸 / 非对称构图
+     ============================================================ */
+  :root {
+    --basalt: #171a18;        /* 玄武岩底 */
+    --basalt-2: #1e2220;
+    --basalt-3: #262b28;
+    --line: #31383480;
+    --line-hi: #47504a;
+    --ink: #ecefe9;
+    --ink-2: #9aa79e;
+    --ink-3: #5f6b63;
+    --jade: #35c98e;          /* 主信号：玉绿 */
+    --copper: #d98e4a;        /* 审批：铜 */
+    --iris: #7aa2e0;          /* 第二 agent：鸢尾蓝 */
+    --thread: linear-gradient(90deg, var(--jade), var(--iris));
+    --sans: "Inter", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "Cascadia Code", ui-monospace, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--sans); font-size: 14px; line-height: 1.65;
+    color: var(--ink); background: var(--basalt); overflow: hidden;
+  }
+  /* 矿物颗粒 */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50; opacity: .6;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .028 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .app {
+    display: grid;
+    grid-template-columns: 232px 1fr 296px;
+    grid-template-rows: 72px 1fr;
+    grid-template-areas:
+      "nav continuum continuum"
+      "nav main trace";
+    height: 100vh;
+  }
+
+  /* ---------- 左导航：岩层 ---------- */
+  .nav {
+    grid-area: nav; display: flex; flex-direction: column;
+    background: linear-gradient(180deg, var(--basalt-2), var(--basalt) 60%);
+    border-right: 1px solid var(--line);
+  }
+  .nav__brand { display: flex; align-items: center; gap: 12px; padding: 18px 18px 16px; }
+  .nav__orb {
+    width: 30px; height: 30px; border-radius: 50%; flex: none;
+    background: conic-gradient(from 210deg, var(--jade), var(--iris), var(--copper), var(--jade));
+    box-shadow: 0 0 18px #35c98e33;
+    position: relative;
+  }
+  .nav__orb::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--basalt); }
+  .nav__orb::before {
+    content: ""; position: absolute; inset: 9px; border-radius: 50%; z-index: 1;
+    background: var(--thread); animation: orb-spin 6s linear infinite;
+  }
+  @keyframes orb-spin { to { filter: hue-rotate(40deg); } }
+  .nav__brand strong { font-size: 13.5px; letter-spacing: .05em; }
+  .nav__brand small { display: block; font-size: 10px; color: var(--ink-3); letter-spacing: .2em; }
+  .nav__section { padding: 18px 18px 8px; font-size: 10px; letter-spacing: .22em; color: var(--ink-3); text-transform: uppercase; display: flex; justify-content: space-between; }
+  .nav__section button { background: none; border: 0; color: var(--ink-3); cursor: pointer; font-size: 13px; }
+  .nav__section button:hover { color: var(--jade); }
+  .ws { padding: 0 10px; }
+  .ws__folder { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 9px; font-weight: 600; font-size: 13px; cursor: pointer; }
+  .ws__folder:hover { background: #ffffff08; }
+  .task {
+    position: relative; display: flex; align-items: center; gap: 9px;
+    margin-left: 15px; padding: 7px 12px; border-radius: 9px;
+    color: var(--ink-2); font-size: 13px; cursor: pointer;
+  }
+  .task::before { content: ""; position: absolute; left: -1px; top: 8px; bottom: 8px; width: 1px; background: var(--line-hi); }
+  .task:hover { background: #ffffff08; color: var(--ink); }
+  .task--active {
+    color: var(--ink);
+    background: linear-gradient(90deg, #35c98e14, transparent 75%);
+  }
+  .task--active::before { width: 2px; background: var(--thread); border-radius: 2px; box-shadow: 0 0 10px #35c98e55; }
+  .task__dot { width: 5px; height: 5px; border-radius: 50%; flex: none; }
+  .dot--run { background: var(--jade); box-shadow: 0 0 8px var(--jade); animation: breathe 1.8s infinite; }
+  .dot--wait { background: var(--copper); }
+  .dot--idle { background: var(--ink-3); }
+  @keyframes breathe { 50% { opacity: .3; } }
+  .nav__footer { margin-top: auto; padding: 14px 18px; border-top: 1px solid var(--line); font-size: 10.5px; color: var(--ink-3); display: flex; justify-content: space-between; font-family: var(--mono); }
+  .nav__footer .ok { color: var(--jade); }
+
+  /* ---------- 连续轨：签名元素 —— 一条发光的上下文丝带 ---------- */
+  .continuum {
+    grid-area: continuum; position: relative;
+    background: var(--basalt-2);
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: center;
+    padding: 0 26px; overflow: hidden;
+  }
+  /* 丝带本体 */
+  .continuum__ribbon {
+    position: absolute; left: 0; right: 0; top: 50%; height: 2px; transform: translateY(-50%);
+    background: linear-gradient(90deg,
+      var(--jade) 0%, var(--jade) 34%,
+      var(--iris) 46%, var(--iris) 58%,
+      var(--line-hi) 66%, var(--line) 100%);
+  }
+  .continuum__ribbon::after {
+    content: ""; position: absolute; inset: -1px 0;
+    background: linear-gradient(90deg, transparent, #ffffff88, transparent);
+    width: 120px; animation: silk 3.4s ease-in-out infinite;
+  }
+  @keyframes silk { from { transform: translateX(-140px); } to { transform: translateX(110vw); } }
+  .bead {
+    position: relative; z-index: 1; flex: none;
+    display: flex; align-items: center; gap: 8px;
+    margin-right: 56px;
+  }
+  .bead i {
+    width: 10px; height: 10px; border-radius: 50%; flex: none;
+    background: var(--basalt-2); border: 1.5px solid var(--line-hi);
+  }
+  .bead span {
+    font-size: 11.5px; color: var(--ink-2); white-space: nowrap;
+    background: var(--basalt-2); padding: 2px 6px; border-radius: 5px;
+  }
+  .bead--done i { background: var(--jade); border-color: var(--jade); box-shadow: 0 0 10px #35c98e66; }
+  .bead--now i {
+    width: 14px; height: 14px;
+    background: var(--iris); border-color: var(--iris);
+    box-shadow: 0 0 0 4px #7aa2e022, 0 0 16px #7aa2e088;
+    animation: breathe 2s infinite;
+  }
+  .bead--now span { color: var(--ink); font-weight: 600; }
+  .continuum__meta { margin-left: auto; position: relative; z-index: 1; background: var(--basalt-2); padding-left: 18px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+  .continuum__meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- 中对话 ---------- */
+  .main { grid-area: main; display: flex; flex-direction: column; min-width: 0; }
+  .thread { flex: 1; overflow-y: auto; padding: 36px 44px 24px; }
+  .thread__inner { max-width: 740px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
+
+  .msg { animation: emerge .45s cubic-bezier(.16,.8,.24,1) both; }
+  @keyframes emerge { from { opacity: 0; transform: translateY(10px) scale(.99); } }
+
+  .msg--user { align-self: flex-end; max-width: 76%; }
+  .msg--user .bubble {
+    background: linear-gradient(150deg, #f2f4ef, #d8ddd4);
+    color: #191c1a;
+    padding: 11px 18px; border-radius: 18px 18px 6px 18px;
+    box-shadow: 0 2px 14px #00000055;
+  }
+
+  /* agent 消息：左侧身份色柱 = 丝带在线索中的延续 */
+  .msg--agent { display: grid; grid-template-columns: 3px 1fr; gap: 16px; }
+  .msg--agent .spine { border-radius: 3px; }
+  .spine--jade { background: linear-gradient(180deg, var(--jade), transparent 130%); box-shadow: 0 0 12px #35c98e33; }
+  .spine--iris { background: linear-gradient(180deg, var(--iris), transparent 130%); box-shadow: 0 0 12px #7aa2e033; }
+  .msg--agent .who { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .who__name { font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+  .who__name--jade { color: var(--jade); }
+  .who__name--iris { color: var(--iris); }
+  .who time { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  .msg--agent .body { color: #d4dad2; }
+  .msg--agent .body p + p { margin-top: 9px; }
+  .msg--agent code { font-family: var(--mono); font-size: 12px; background: #00000044; border: 1px solid var(--line); padding: 1px 7px; border-radius: 5px; color: var(--jade); }
+
+  /* 交接：丝带从 A 流向 B —— signature moment */
+  .handoff { position: relative; padding: 4px 0 4px 19px; }
+  .handoff__track { display: flex; align-items: center; gap: 14px; }
+  .handoff__pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; font-weight: 700; letter-spacing: .1em;
+    padding: 5px 14px; border-radius: 999px;
+  }
+  .pill--jade { color: var(--jade); border: 1px solid #35c98e55; background: #35c98e10; }
+  .pill--iris { color: var(--iris); border: 1px solid #7aa2e055; background: #7aa2e010; }
+  .handoff__wire {
+    flex: 1; max-width: 220px; height: 2px; border-radius: 2px;
+    background: var(--thread); position: relative; overflow: visible;
+  }
+  .handoff__wire::after {
+    content: ""; position: absolute; top: -3px; width: 8px; height: 8px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 10px var(--jade);
+    animation: pass 2.4s cubic-bezier(.4,0,.4,1) infinite;
+  }
+  @keyframes pass { from { left: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } to { left: calc(100% - 8px); opacity: 0; } }
+  .handoff__ctx { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+
+  /* 审批：铜章 —— 庄重但克制 */
+  .approval {
+    margin-left: 19px;
+    border: 1px solid #d98e4a44;
+    border-radius: 14px;
+    background:
+      radial-gradient(400px 120px at 20% 0%, #d98e4a14, transparent 70%),
+      var(--basalt-2);
+    padding: 16px 20px;
+  }
+  .approval__head { display: flex; align-items: center; gap: 9px; font-size: 10.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--copper); margin-bottom: 8px; }
+  .approval__head i { width: 8px; height: 8px; border-radius: 50%; background: var(--copper); box-shadow: 0 0 12px #d98e4a88; animation: breathe 1.3s infinite; }
+  .approval p { color: var(--ink); margin-bottom: 14px; }
+  .approval code { font-family: var(--mono); font-size: 12px; color: var(--copper); }
+  .approval__actions { display: flex; gap: 10px; }
+  .btn {
+    font-size: 12px; font-weight: 600; letter-spacing: .04em;
+    padding: 8px 18px; border-radius: 9px; cursor: pointer;
+    border: 1px solid var(--line-hi); background: transparent; color: var(--ink-2);
+    transition: all .16s ease;
+  }
+  .btn:hover { color: var(--ink); border-color: var(--ink-3); transform: translateY(-1px); }
+  .btn--copper {
+    background: linear-gradient(160deg, #e3a05c, var(--copper));
+    border-color: transparent; color: #221607;
+    box-shadow: 0 4px 18px #d98e4a33;
+  }
+  .btn--copper:hover { box-shadow: 0 6px 24px #d98e4a55; color: #221607; }
+
+  .typing { display: inline-flex; gap: 5px; }
+  .typing i { width: 5px; height: 5px; border-radius: 50%; background: var(--iris); animation: breathe 1.1s infinite; }
+  .typing i:nth-child(2) { animation-delay: .18s; } .typing i:nth-child(3) { animation-delay: .36s; }
+
+  /* ---------- Compose ---------- */
+  .compose { padding: 14px 44px 20px; }
+  .compose__inner { max-width: 740px; margin: 0 auto; }
+  .compose__box {
+    display: flex; align-items: flex-end; gap: 12px;
+    background: var(--basalt-2);
+    border: 1px solid var(--line-hi);
+    border-radius: 16px;
+    padding: 12px 14px 12px 18px;
+    transition: border-color .2s, box-shadow .2s;
+  }
+  .compose__box:focus-within { border-color: var(--jade); box-shadow: 0 0 0 4px #35c98e18, 0 8px 30px #00000066; }
+  .compose__box textarea { flex: 1; background: none; border: 0; outline: 0; resize: none; font: inherit; color: var(--ink); min-height: 24px; }
+  .compose__box textarea::placeholder { color: var(--ink-3); }
+  .compose__send {
+    height: 36px; padding: 0 18px; border: 0; border-radius: 11px; cursor: pointer;
+    background: var(--thread); color: #0c120e; font-weight: 700; font-size: 13px;
+    box-shadow: 0 4px 16px #35c98e33;
+  }
+  .compose__meta { display: flex; gap: 16px; margin: 9px 4px 0; font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  .compose__meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- 右轨迹：显影底片 ---------- */
+  .trace {
+    grid-area: trace; display: flex; flex-direction: column;
+    background: #121514;
+    border-left: 1px solid var(--line);
+  }
+  .trace__head { padding: 15px 18px 12px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
+  .trace__head h2 { font-size: 10.5px; letter-spacing: .24em; text-transform: uppercase; color: var(--ink-2); font-weight: 600; }
+  .trace__live { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 9.5px; color: var(--jade); }
+  .trace__live i { width: 6px; height: 6px; border-radius: 50%; background: var(--jade); box-shadow: 0 0 8px var(--jade); animation: breathe 1.3s infinite; }
+  .trace__list { flex: 1; overflow-y: auto; padding: 14px 16px; }
+  /* 底片帧 */
+  .frame {
+    position: relative;
+    margin-bottom: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--basalt-2);
+    padding: 10px 12px 10px 30px;
+    font-size: 11.5px; color: var(--ink-2);
+    animation: develop .6s ease both;
+  }
+  /* 显影：从过曝白到正常 */
+  @keyframes develop { from { opacity: 0; filter: brightness(2.2) blur(3px); } }
+  .frame::before {
+    content: ""; position: absolute; left: 11px; top: 14px;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-3);
+  }
+  .frame--ok::before { background: var(--jade); box-shadow: 0 0 8px #35c98e55; }
+  .frame--warn::before { background: var(--copper); box-shadow: 0 0 8px #d98e4a55; }
+  .frame--run::before { background: var(--iris); box-shadow: 0 0 10px var(--iris); animation: breathe 1.2s infinite; }
+  /* 片孔 */
+  .frame::after {
+    content: ""; position: absolute; top: 6px; bottom: 6px; left: 3px; width: 3px;
+    background: repeating-linear-gradient(180deg, var(--line) 0 4px, transparent 4px 9px);
+    border-radius: 2px;
+  }
+  .frame b { color: var(--ink); font-weight: 600; }
+  .frame time { display: block; font-family: var(--mono); font-size: 9px; color: var(--ink-3); margin-top: 3px; }
+  .trace__foot { padding: 11px 18px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); display: flex; justify-content: space-between; }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--line-hi); border-radius: 4px; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="nav">
+    <div class="nav__brand">
+      <span class="nav__orb"></span>
+      <div><strong>SYNC-THINK</strong><small>CONTINUUM</small></div>
+    </div>
+    <div class="nav__section">工作区 <button>+</button></div>
+    <div class="ws">
+      <div class="ws__folder">▾ SYNC-THINK</div>
+      <div class="task task--active"><span class="task__dot dot--run"></span>前端视觉重做</div>
+      <div class="task"><span class="task__dot dot--wait"></span>审批策略 v2</div>
+      <div class="task"><span class="task__dot dot--idle"></span>记忆回滚验证</div>
+    </div>
+    <div class="ws" style="margin-top:6px"><div class="ws__folder">▸ side-notes</div></div>
+    <div class="nav__footer"><span>rt <b class="ok">●</b></span><span>01J…X4</span></div>
+  </aside>
+
+  <!-- 签名：上下文丝带 -->
+  <div class="continuum">
+    <div class="continuum__ribbon"></div>
+    <div class="bead bead--done"><i></i><span>需求澄清</span></div>
+    <div class="bead bead--done"><i></i><span>方案设计</span></div>
+    <div class="bead bead--now"><i></i><span>视觉稿评审</span></div>
+    <div class="bead"><i></i><span>实施</span></div>
+    <span class="continuum__meta">ctx <b>8.2k</b> · 证据 <b>14</b> · 交接 <b>2</b></span>
+  </div>
+
+  <main class="main">
+    <div class="thread"><div class="thread__inner">
+
+      <div class="msg msg--user"><div class="bubble">页面太素了，像通用 AI 壳。给我一版只属于 SYNC-THINK 的方向。</div></div>
+
+      <div class="msg msg--agent">
+        <div class="spine spine--jade"></div>
+        <div>
+          <div class="who"><span class="who__name who__name--jade">Planner</span><time>14:02:11</time></div>
+          <div class="body">
+            <p>那签名元素就是「连续体」本身：顶部不是步骤条，而是一条发光的上下文丝带——玉绿是 Planner 已经走过的段落，鸢尾蓝是 Designer 正在处理的现在，灰色是尚未到达的未来。Agent 的身份色柱在线索里延续同一条丝带。</p>
+            <p>草案写入 <code>c-continuum.html</code>，交接 ↓</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 交接丝带 -->
+      <div class="handoff">
+        <div class="handoff__track">
+          <span class="handoff__pill pill--jade">PLANNER</span>
+          <span class="handoff__wire"></span>
+          <span class="handoff__pill pill--iris">DESIGNER</span>
+          <span class="handoff__ctx">ctx 8.2k · 证据 6 条 · #2</span>
+        </div>
+      </div>
+
+      <div class="msg msg--agent">
+        <div class="spine spine--iris"></div>
+        <div>
+          <div class="who"><span class="who__name who__name--iris">Designer</span><time>14:02:40</time></div>
+          <div class="body">
+            <p>右侧轨迹做成了「显影底片」：每条事件是一帧胶片，出现时从过曝白显影到正常，左侧片孔强化胶片隐喻。审批是铜章——有分量但不吵。</p>
+            <p><span class="typing"><i></i><i></i><i></i></span></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="approval">
+        <div class="approval__head"><i></i>approval · 写入设计 token</div>
+        <p>Designer 请求修改 <code>15-frontend-design-tokens.json</code> 色板与字阶（影响全量组件）。diff：+42 / −18 行。</p>
+        <div class="approval__actions">
+          <button class="btn btn--copper">批准并继续</button>
+          <button class="btn">查看 diff</button>
+          <button class="btn">拒绝</button>
+        </div>
+      </div>
+
+    </div></div>
+
+    <footer class="compose"><div class="compose__inner">
+      <div class="compose__box">
+        <textarea rows="1" placeholder="继续推进，或 @ 某个 Agent…"></textarea>
+        <button class="compose__send">发送 ↵</button>
+      </div>
+      <div class="compose__meta">
+        <span>agent <b>Designer</b></span>
+        <span>model <b>claude-opus-4</b></span>
+        <span>mode <b>计划需审批</b></span>
+        <span style="margin-left:auto">⌘↵</span>
+      </div>
+    </div></footer>
+  </main>
+
+  <aside class="trace">
+    <div class="trace__head"><h2>Run Trace</h2><span class="trace__live"><i></i>REC</span></div>
+    <div class="trace__list">
+      <div class="frame frame--ok"><b>任务创建</b> · 前端视觉重做<time>14:01:02 · orchestrator</time></div>
+      <div class="frame frame--ok"><b>上下文装配</b> · 8.2k tokens · 6 证据<time>14:01:03 · memory</time></div>
+      <div class="frame frame--ok"><b>Planner 完成</b> · 产出方向草案<time>14:02:11 · agent/planner</time></div>
+      <div class="frame frame--ok"><b>交接</b> · Planner → Designer<time>14:02:12 · handoff</time></div>
+      <div class="frame frame--warn"><b>审批请求</b> · tokens.json 写入<time>14:02:52 · policy</time></div>
+      <div class="frame frame--run"><b>Designer 生成中</b> · token v2 草拟<time>now · agent/designer</time></div>
+    </div>
+    <div class="trace__foot"><span>run 01J…X4</span><span>Ctrl+\</span></div>
+  </aside>
+
+</div>
+</body>
+</html>

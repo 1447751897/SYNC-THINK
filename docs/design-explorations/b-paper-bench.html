@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>设计稿 B · Paper Bench — SYNC-THINK</title>
+<style>
+  /* ============================================================
+     方向 B：纸面工作台 · Paper Bench
+     关键词：暖纸底 / 墨色文字 / 衬线标题 / 编辑排版 / 批注式轨迹
+     适合：长时间阅读与写作型任务，气质安静、有编辑室感
+     ============================================================ */
+  :root {
+    --paper: #f5f1e8;
+    --paper-raise: #fbf8f1;
+    --paper-deep: #ece7da;
+    --ink: #201c14;
+    --ink-2: #6b6353;
+    --ink-3: #a29a88;
+    --line: #ddd5c3;
+    --accent: #2f6b4f;       /* 深松绿 */
+    --accent-soft: #2f6b4f1a;
+    --seal: #b3412f;         /* 朱砂：审批/重要 */
+    --gold: #a97e2f;
+    --serif: "Source Han Serif SC", "Noto Serif SC", Georgia, "STSong", serif;
+    --sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "Cascadia Code", ui-monospace, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.75;
+    color: var(--ink);
+    background: var(--paper);
+    overflow: hidden;
+  }
+  /* 纸面纤维噪点 */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50;
+    opacity: .5;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .035 0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .app {
+    display: grid;
+    grid-template-columns: 250px 1fr 290px;
+    grid-template-rows: 64px 1fr;
+    grid-template-areas:
+      "nav continuum continuum"
+      "nav main trace";
+    height: 100vh;
+  }
+
+  /* ---------- 左导航 ---------- */
+  .nav {
+    grid-area: nav;
+    display: flex; flex-direction: column;
+    background: var(--paper-deep);
+    border-right: 1px solid var(--line);
+  }
+  .nav__brand { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+  .nav__brand h1 { font-family: var(--serif); font-size: 19px; font-weight: 700; letter-spacing: .02em; }
+  .nav__brand small { font-size: 11px; color: var(--ink-2); letter-spacing: .14em; }
+  .nav__section {
+    padding: 16px 20px 6px;
+    font-size: 11px; letter-spacing: .18em; color: var(--ink-3);
+    display: flex; justify-content: space-between;
+  }
+  .nav__section button { background: none; border: 0; color: var(--ink-3); cursor: pointer; font-size: 14px; }
+  .ws { padding: 0 10px; }
+  .ws__folder {
+    display: flex; gap: 8px; align-items: center;
+    padding: 8px 10px; border-radius: 8px;
+    font-family: var(--serif); font-weight: 700; font-size: 13.5px; cursor: pointer;
+  }
+  .ws__folder:hover { background: #00000008; }
+  .task {
+    position: relative;
+    display: flex; align-items: baseline; gap: 9px;
+    margin-left: 16px; padding: 6px 10px;
+    border-radius: 8px; cursor: pointer; color: var(--ink-2); font-size: 13px;
+  }
+  .task::before {
+    content: ""; position: absolute; left: 0; top: 6px; bottom: 6px;
+    width: 2px; background: var(--line); border-radius: 2px;
+  }
+  .task:hover { background: #00000008; color: var(--ink); }
+  .task--active { color: var(--ink); background: var(--paper-raise); box-shadow: 0 1px 3px #3a2f1a14, inset 0 0 0 1px var(--line); }
+  .task--active::before { background: var(--accent); }
+  .task__no { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  .task--active .task__no { color: var(--accent); }
+  .task__state { margin-left: auto; font-size: 10px; letter-spacing: .08em; }
+  .st--run { color: var(--accent); }
+  .st--run::after { content: "●"; animation: breathe 2s infinite; }
+  @keyframes breathe { 50% { opacity: .3; } }
+  .st--wait { color: var(--gold); }
+  .nav__footer {
+    margin-top: auto; padding: 14px 20px; border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--ink-2); display: flex; justify-content: space-between;
+  }
+
+  /* ---------- 连续轨：装订线上的进度带 ---------- */
+  .continuum {
+    grid-area: continuum;
+    display: flex; align-items: center; gap: 0;
+    padding: 0 28px;
+    background: var(--paper-raise);
+    border-bottom: 1px solid var(--line);
+    position: relative;
+  }
+  /* 装订孔 */
+  .continuum::before {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px;
+    background: var(--line); z-index: 0;
+  }
+  .seg { position: relative; z-index: 1; display: flex; align-items: center; flex: none; }
+  .seg__node {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 14px;
+    background: var(--paper-raise);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 12px; color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .seg--done .seg__node { color: var(--accent); border-color: #2f6b4f44; background: var(--accent-soft); }
+  .seg--done .seg__node::before { content: "✓"; font-size: 11px; }
+  .seg--now .seg__node {
+    font-family: var(--serif); font-weight: 700; color: var(--ink);
+    border-color: var(--ink); box-shadow: 2px 2px 0 var(--paper-deep), 3px 3px 0 var(--line);
+  }
+  .seg__wire { width: 40px; height: 1px; }
+  .continuum__meta { margin-left: auto; position: relative; z-index: 1; background: var(--paper-raise); padding-left: 16px; font-size: 11.5px; color: var(--ink-2); }
+  .continuum__meta b { color: var(--ink); font-family: var(--serif); }
+
+  /* ---------- 中对话 ---------- */
+  .main { grid-area: main; display: flex; flex-direction: column; min-width: 0; }
+  .thread { flex: 1; overflow-y: auto; padding: 40px 40px 24px; }
+  .thread__inner { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 30px; }
+  .thread__date {
+    text-align: center; font-size: 11px; letter-spacing: .2em; color: var(--ink-3);
+    display: flex; align-items: center; gap: 16px;
+  }
+  .thread__date::before, .thread__date::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+  .msg { animation: ink-in .4s ease both; }
+  @keyframes ink-in { from { opacity: 0; transform: translateY(6px); filter: blur(2px); } }
+
+  .msg--user { align-self: flex-end; max-width: 80%; }
+  .msg--user .bubble {
+    background: var(--ink); color: var(--paper);
+    padding: 12px 20px; border-radius: 3px;
+    box-shadow: 3px 3px 0 #201c1422;
+    font-size: 14px;
+  }
+
+  .msg--agent .who {
+    display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px;
+  }
+  .who__name { font-family: var(--serif); font-weight: 700; font-size: 14px; }
+  .who__name::after { content: ""; display: inline-block; width: 22px; height: 7px; margin-left: 8px; background: var(--accent-soft); border-bottom: 2px solid var(--accent); }
+  .who time { font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
+  .msg--agent .body { padding-left: 2px; }
+  .msg--agent .body p + p { margin-top: 10px; }
+  .msg--agent .body p:first-child::first-letter {
+    font-family: var(--serif); font-size: 26px; font-weight: 700;
+    color: var(--accent); padding-right: 2px;
+  }
+  .msg--agent code { font-family: var(--mono); font-size: 12px; background: var(--paper-deep); padding: 1px 6px; border-radius: 3px; border-bottom: 1px solid var(--line); }
+
+  /* 交接：书签丝带 */
+  .handoff {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 18px;
+    font-size: 12px; color: var(--ink-2);
+    border-top: 1px dashed var(--line);
+    border-bottom: 1px dashed var(--line);
+  }
+  .handoff .ribbon {
+    font-family: var(--serif); font-weight: 700; color: var(--accent);
+  }
+  .handoff .arrow { color: var(--ink-3); letter-spacing: 2px; }
+  .handoff .ctx { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+
+  /* 审批：朱印确认 */
+  .approval {
+    position: relative;
+    border: 1px solid #b3412f55;
+    background: var(--paper-raise);
+    padding: 18px 22px;
+    box-shadow: 0 1px 4px #3a2f1a12;
+  }
+  .approval::before {
+    content: "待批";
+    position: absolute; top: 14px; right: 16px;
+    font-family: var(--serif); font-size: 13px; font-weight: 700;
+    color: var(--seal); border: 1.5px solid var(--seal);
+    padding: 2px 8px; border-radius: 3px;
+    transform: rotate(6deg);
+    opacity: .85;
+  }
+  .approval h3 { font-family: var(--serif); font-size: 15px; margin-bottom: 6px; color: var(--seal); }
+  .approval p { font-size: 13.5px; margin-bottom: 14px; max-width: 85%; }
+  .approval__actions { display: flex; gap: 12px; }
+  .btn {
+    font-size: 13px; padding: 8px 20px; cursor: pointer;
+    border-radius: 3px; border: 1px solid var(--ink);
+    background: var(--paper-raise); color: var(--ink);
+    box-shadow: 2px 2px 0 var(--paper-deep);
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .btn:hover { transform: translate(-1px,-1px); box-shadow: 3px 3px 0 var(--paper-deep); }
+  .btn:active { transform: translate(1px,1px); box-shadow: 0 0 0; }
+  .btn--seal { background: var(--seal); border-color: var(--seal); color: var(--paper-raise); font-weight: 600; }
+
+  /* ---------- Compose ---------- */
+  .compose { border-top: 1px solid var(--line); background: var(--paper-raise); padding: 16px 40px 20px; }
+  .compose__inner { max-width: 720px; margin: 0 auto; }
+  .compose__box {
+    display: flex; align-items: flex-end; gap: 12px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 12px 14px;
+    box-shadow: inset 0 1px 3px #3a2f1a0d;
+  }
+  .compose__box:focus-within { border-color: var(--ink); }
+  .compose__box textarea {
+    flex: 1; background: none; border: 0; outline: 0; resize: none;
+    font: inherit; color: var(--ink); min-height: 24px;
+  }
+  .compose__box textarea::placeholder { color: var(--ink-3); font-style: italic; }
+  .compose__send {
+    width: 36px; height: 36px; border-radius: 3px; border: 0; cursor: pointer;
+    background: var(--ink); color: var(--paper); font-size: 16px;
+  }
+  .compose__meta { display: flex; gap: 18px; margin-top: 9px; font-size: 11px; color: var(--ink-3); }
+  .compose__meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- 右轨迹：页边批注 ---------- */
+  .trace {
+    grid-area: trace;
+    display: flex; flex-direction: column;
+    background: var(--paper-deep);
+    border-left: 1px solid var(--line);
+  }
+  .trace__head {
+    padding: 16px 20px 12px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; justify-content: space-between;
+  }
+  .trace__head h2 { font-family: var(--serif); font-size: 15px; }
+  .trace__head span { font-size: 10.5px; color: var(--accent); letter-spacing: .1em; }
+  .trace__list { flex: 1; overflow-y: auto; padding: 14px 16px; }
+  .ev {
+    position: relative;
+    background: var(--paper-raise);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 9px 12px;
+    margin-bottom: 10px;
+    font-size: 12px; color: var(--ink-2);
+    box-shadow: 1px 1px 0 #3a2f1a10;
+    animation: ink-in .35s both;
+  }
+  .ev b { color: var(--ink); font-weight: 600; }
+  .ev time { display: block; font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); margin-top: 3px; }
+  .ev--ok { border-left: 3px solid var(--accent); }
+  .ev--warn { border-left: 3px solid var(--gold); }
+  .ev--run { border-left: 3px solid var(--seal); }
+  .ev--run { animation: ink-in .35s both, card-breathe 2.4s .4s infinite; }
+  @keyframes card-breathe { 50% { box-shadow: 1px 1px 8px #b3412f2e; } }
+  .trace__foot { padding: 12px 20px; border-top: 1px solid var(--line); font-size: 10.5px; color: var(--ink-3); display: flex; justify-content: space-between; }
+
+  ::-webkit-scrollbar { width: 9px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 2px solid var(--paper); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="nav">
+    <div class="nav__brand"><h1>SYNC-THINK</h1><small>本地多模型工作台</small></div>
+    <div class="nav__section">工作区 <button>＋</button></div>
+    <div class="ws">
+      <div class="ws__folder">▾ SYNC-THINK</div>
+      <div class="task task--active"><span class="task__no">03</span>前端视觉重做<span class="task__state st--run">进行 </span></div>
+      <div class="task"><span class="task__no">02</span>审批策略 v2<span class="task__state st--wait">待批</span></div>
+      <div class="task"><span class="task__no">01</span>记忆回滚验证</div>
+    </div>
+    <div class="ws" style="margin-top:6px"><div class="ws__folder">▸ side-notes</div></div>
+    <div class="nav__footer"><span>runtime 已连接</span><span>甲辰 · 本地</span></div>
+  </aside>
+
+  <div class="continuum">
+    <div class="seg seg--done"><span class="seg__node">需求澄清</span></div>
+    <div class="seg__wire"></div>
+    <div class="seg seg--done"><span class="seg__node">方案设计</span></div>
+    <div class="seg__wire"></div>
+    <div class="seg seg--now"><span class="seg__node">视觉稿评审</span></div>
+    <div class="seg__wire"></div>
+    <div class="seg"><span class="seg__node">实施</span></div>
+    <span class="continuum__meta">上下文 <b>8.2k</b> · 证据 <b>14</b> 条 · 交接 <b>2</b> 次</span>
+  </div>
+
+  <main class="main">
+    <div class="thread"><div class="thread__inner">
+      <div class="thread__date">七月二十日 · 任务 03</div>
+
+      <div class="msg msg--user"><div class="bubble">页面太素了，像通用 AI 壳。给我一版安静的、能长时间读写的方向。</div></div>
+
+      <div class="msg msg--agent">
+        <div class="who"><span class="who__name">Planner</span><time>14:02</time></div>
+        <div class="body">
+          <p>纸面工作台的核心是「编辑室感」：暖纸底、墨色正文、衬线标题建立阅读节奏；状态不靠彩灯，而靠印刷语言——绿勾、朱印、批注卡片。</p>
+          <p>草案已写入 <code>b-paper-bench.html</code>，交接给 Designer 完善组件质感。</p>
+        </div>
+      </div>
+
+      <div class="handoff">
+        <span class="ribbon">Planner</span>
+        <span class="arrow">—— context 8.2k ——→</span>
+        <span class="ribbon">Designer</span>
+        <span class="ctx">交接 #2 · 证据 6 条随附</span>
+      </div>
+
+      <div class="msg msg--agent">
+        <div class="who"><span class="who__name">Designer</span><time>14:02</time></div>
+        <div class="body">
+          <p>右侧轨迹做成了页边批注：每条事件是一张便签卡，左边条颜色区分语义（绿=完成，金=等待，朱=进行中）。审批则是一枚待落的朱印。</p>
+        </div>
+      </div>
+
+      <div class="approval">
+        <h3>写入设计 token</h3>
+        <p>Designer 请求修改 <code>15-frontend-design-tokens.json</code> 的色板与字阶（影响全量组件）。diff：+42 / −18 行。</p>
+        <div class="approval__actions">
+          <button class="btn btn--seal">批准并继续</button>
+          <button class="btn">查看 diff</button>
+          <button class="btn">拒绝</button>
+        </div>
+      </div>
+    </div></div>
+
+    <footer class="compose"><div class="compose__inner">
+      <div class="compose__box">
+        <textarea rows="1" placeholder="写下一笔，或 @ 某个 Agent…"></textarea>
+        <button class="compose__send">↵</button>
+      </div>
+      <div class="compose__meta">
+        <span>执笔者 <b>Designer</b></span>
+        <span>模型 <b>claude-opus-4</b></span>
+        <span>模式 <b>计划需审批</b></span>
+        <span style="margin-left:auto">⌘↵ 发送</span>
+      </div>
+    </div></footer>
+  </main>
+
+  <aside class="trace">
+    <div class="trace__head"><h2>页边注</h2><span>● 记录中</span></div>
+    <div class="trace__list">
+      <div class="ev ev--ok"><b>任务创建</b> · 前端视觉重做<time>14:01:02 · orchestrator</time></div>
+      <div class="ev ev--ok"><b>上下文装配</b> · 8.2k tokens · 6 证据<time>14:01:03 · memory</time></div>
+      <div class="ev ev--ok"><b>Planner 完成</b> · 产出方向草案<time>14:02:11 · agent/planner</time></div>
+      <div class="ev ev--ok"><b>交接</b> · Planner → Designer<time>14:02:12 · handoff</time></div>
+      <div class="ev ev--warn"><b>审批请求</b> · tokens.json 写入<time>14:02:52 · policy</time></div>
+      <div class="ev ev--run"><b>Designer 生成中</b> · token v2 草拟<time>now · agent/designer</time></div>
+    </div>
+    <div class="trace__foot"><span>run 01J…X4</span><span>Ctrl+\ 收起</span></div>
+  </aside>
+
+</div>
+</body>
+</html>

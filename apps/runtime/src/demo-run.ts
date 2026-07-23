@@ -7,6 +7,12 @@ import type {
   RunId,
 } from '@sync-think/shared';
 
+export interface DemoRunImage {
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+}
+
 export interface DemoRunState {
   runId: RunId;
   threadId: string;
@@ -23,10 +29,18 @@ export interface DemoRunState {
   credentialResolutionSource?: string;
   agentVersionId: string;
   resolutionSource: ModelResolutionSource;
+  /** Compose 推理强度（auto/off/low/medium/high…）；透传到 adapter。 */
+  reasoningEffort?: string;
+  /** Compose 联网开关：本轮是否暴露 web_search / web_fetch。 */
+  networkEnabled?: boolean;
+  /** Multimodal images for this turn only (not persisted as durable event blobs). */
+  images?: DemoRunImage[];
   packetId?: string;
   proofHash?: string;
   nextAdapterEventIndex: number;
   assistantText: string;
+  /** Extended thinking / reasoning channel (never mixed into assistantText). */
+  reasoningText: string;
   /** When true, use demoProvider Fake path (no live secret). */
   useFakeProvider: boolean;
 }
@@ -53,6 +67,9 @@ export interface CreateDemoRunInput {
   credentialResolutionSource?: string;
   agentVersionId?: string;
   resolutionSource?: ModelResolutionSource;
+  reasoningEffort?: string;
+  networkEnabled?: boolean;
+  images?: DemoRunImage[];
   packetId?: string;
   proofHash?: string;
   useFakeProvider?: boolean;
@@ -79,10 +96,14 @@ export function createDemoRun(
     credentialResolutionSource: extras.credentialResolutionSource,
     agentVersionId: extras.agentVersionId ?? 'agent-default-conversation',
     resolutionSource: extras.resolutionSource ?? 'agentDefault',
+    reasoningEffort: extras.reasoningEffort,
+    networkEnabled: extras.networkEnabled === true ? true : undefined,
+    images: extras.images && extras.images.length > 0 ? extras.images : undefined,
     packetId: extras.packetId,
     proofHash: extras.proofHash,
     nextAdapterEventIndex: 0,
     assistantText: '',
+    reasoningText: '',
     useFakeProvider: useFake,
   };
 }
@@ -91,7 +112,14 @@ export function createDemoProviderRequest(
   run: DemoRunState,
   apiKey: string = 'fake-provider-no-secret',
   signal: AbortSignal = new AbortController().signal,
+  extras: {
+    messages?: ProviderCallRequest['messages'];
+    tools?: ProviderCallRequest['tools'];
+    systemPrompt?: string;
+    reasoningEffort?: string;
+  } = {},
 ): ProviderCallRequest {
+  const reasoningEffort = extras.reasoningEffort ?? run.reasoningEffort;
   return {
     protocol: run.protocol,
     baseUrl: run.baseUrl,
@@ -99,7 +127,10 @@ export function createDemoProviderRequest(
     apiKey,
     idempotencyKey: run.runId,
     signal,
-    messages: [{ role: 'user', content: run.userText }],
+    ...(extras.systemPrompt ? { systemPrompt: extras.systemPrompt } : {}),
+    messages: extras.messages ?? [{ role: 'user', content: run.userText }],
+    ...(extras.tools && extras.tools.length > 0 ? { tools: [...extras.tools] } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     stream: true,
   };
 }
@@ -117,6 +148,7 @@ export function projectAdapterEvent(
         threadId: run.threadId,
         reason: adapterEvent.reason,
         assistantText: run.assistantText,
+        ...(run.reasoningText ? { reasoningText: run.reasoningText } : {}),
         adapterEventIndex: run.nextAdapterEventIndex,
         idempotencyKey: run.runId,
         modelId: run.modelId,
@@ -152,6 +184,10 @@ export function projectAdapterEvent(
       adapterEvent.type === 'text-delta'
         ? run.assistantText + adapterEvent.text
         : run.assistantText,
+    reasoningText:
+      adapterEvent.type === 'reasoning-delta'
+        ? run.reasoningText + adapterEvent.text
+        : run.reasoningText,
   };
   if (adapterEvent.type === 'usage') {
     return {
@@ -163,6 +199,22 @@ export function projectAdapterEvent(
         adapterEventIndex: run.nextAdapterEventIndex,
         modelId: run.modelId,
         packetId: run.packetId,
+        run: nextRun,
+      },
+      nextRun,
+      terminal: false,
+    };
+  }
+  if (adapterEvent.type === 'reasoning-delta') {
+    return {
+      category: 'message',
+      type: 'message.reasoning_delta',
+      payload: {
+        threadId: run.threadId,
+        textDelta: adapterEvent.text,
+        reasoningText: nextRun.reasoningText,
+        adapterEventIndex: run.nextAdapterEventIndex,
+        modelId: run.modelId,
         run: nextRun,
       },
       nextRun,
@@ -276,10 +328,30 @@ function parseDemoRun(value: unknown): DemoRunState {
     agentVersionId:
       typeof run.agentVersionId === 'string' ? run.agentVersionId : 'agent-default-conversation',
     resolutionSource: (run.resolutionSource as ModelResolutionSource) ?? 'agentDefault',
+    reasoningEffort: typeof run.reasoningEffort === 'string' ? run.reasoningEffort : undefined,
+    networkEnabled: run.networkEnabled === true ? true : undefined,
+    images: Array.isArray(run.images)
+      ? run.images
+          .filter(
+            (img): img is DemoRunImage =>
+              Boolean(
+                img &&
+                  typeof img === 'object' &&
+                  typeof (img as DemoRunImage).dataUrl === 'string' &&
+                  (img as DemoRunImage).dataUrl.startsWith('data:image/'),
+              ),
+          )
+          .map((img) => ({
+            name: typeof img.name === 'string' ? img.name : 'image',
+            mimeType: typeof img.mimeType === 'string' ? img.mimeType : 'image/png',
+            dataUrl: img.dataUrl,
+          }))
+      : undefined,
     packetId: typeof run.packetId === 'string' ? run.packetId : undefined,
     proofHash: typeof run.proofHash === 'string' ? run.proofHash : undefined,
     nextAdapterEventIndex: run.nextAdapterEventIndex,
     assistantText: run.assistantText,
+    reasoningText: typeof run.reasoningText === 'string' ? run.reasoningText : '',
     useFakeProvider: run.useFakeProvider !== false && !run.providerId,
   };
 }

@@ -40,7 +40,10 @@ function buildDiscoveryByProtocol() {
 
 async function main() {
   const installId = process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001';
-  const allowNoToken = process.env.SYNC_THINK_DEV_NO_TOKEN === '1';
+  // Dev desktop sends no HMAC when SYNC_THINK_PIPE_SECRET is unset.
+  // Allow no-token hello unless a pipe secret is configured, or DEV_NO_TOKEN=1.
+  const allowNoToken =
+    process.env.SYNC_THINK_DEV_NO_TOKEN === '1' || !process.env.SYNC_THINK_PIPE_SECRET;
   const session = await openPersistentRuntime({
     dbPath: resolveRuntimeDatabasePath(),
     installId,

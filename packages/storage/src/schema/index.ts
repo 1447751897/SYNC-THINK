@@ -13,4 +13,8 @@ export * from './policy.js';
 // Plan/Run graph and immutable Artifact version tables share orchestration ownership.
 export * from './orchestration.js';
 export * from './production-execution.js';
+// Mutable global agents / teams / conversations (2026-07-22 model).
+export * from './agent.js';
+export * from './team.js';
+export * from './conversation.js';
 

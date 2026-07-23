@@ -5,13 +5,24 @@ const source = readFileSync(new URL('../src/renderer/index.tsx', import.meta.url
 const css = readFileSync(new URL('../src/renderer/renderer.css', import.meta.url), 'utf8');
 
 describe('beginner desktop shell contract', () => {
-  it('uses labelled project navigation and keeps the task tree visible', () => {
+  it('uses NewMax-style primary navigation and keeps the task tree visible', () => {
     expect(source).toContain('data-testid="product-navigation"');
-    expect(source).toContain('data-testid="product-nav-tasks"');
-    expect(source).toContain('>项目<');
+    expect(source).toContain('product-shell-nav');
+    expect(source).toContain('projectProductPrimaryNav');
+    expect(source).not.toContain('projectTalkTrackNav');
+    expect(source).toContain('data-testid={item.testId}');
+    expect(source).not.toContain('data-testid="talk-track-navigation"');
+    expect(source).toContain('data-testid="recent-conversations"');
+    expect(source).toContain('recent-section-${section.track}');
+    expect(source).toContain('data-testid={`recent-conversation-new-${section.track}`}');
+    expect(source).toContain('togglePinnedConversation');
+    expect(source).toContain('resolvePrimaryNav');
+    expect(source).toContain('项目与任务');
     expect(source).toContain('hideBrand');
     expect(source).toContain('<WorkspaceNav');
     expect(css).toContain('.st-product-nav__item');
+    expect(css).toContain('.st-talk-track-nav');
+    expect(css).toContain('.st-recent-talk');
   });
 
   it('keeps the task header quiet and leaves Agent/model controls in Compose', () => {
@@ -63,6 +74,10 @@ describe('beginner desktop shell contract', () => {
     expect(source).toContain('composeWorkspaces');
     expect(source).toContain('onWorkspaceChange');
     expect(source).toContain('onAgentChange');
+    expect(source).toContain('talkTargetKind');
+    // Object kind is fixed by left talk track / recent list, not a Compose pill switcher.
+    expect(source).toContain('recent-conversations');
+    expect(source).toContain('buildRecentConversationsModel');
     expect(source).toContain('product-continuum-strip');
     expect(source).toContain('projectContinuumEvidence');
     expect(source).not.toContain('<ModeSwitch');

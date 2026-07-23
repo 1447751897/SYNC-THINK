@@ -92,13 +92,21 @@ import {
   Files,
   FolderKanban,
   GitBranch,
+  MessageSquareText,
   Monitor,
   Moon,
   PackageCheck,
+  Pin,
+  PinOff,
+  Plus,
   RefreshCw,
+  Search,
   ServerCog,
+  Settings2,
   ShieldCheck,
+  Sparkles,
   Sun,
+  Users,
   X,
 } from 'lucide-react';
 import { projectBeginnerWorkspace } from './beginner-workspace.js';
@@ -227,10 +235,27 @@ import {
 import {
   closeLeftInstrumentDrawer,
   projectLeftInstrumentSwitch,
-  resolveLeftInstrumentDrawer,
   leftInstrumentFromJump,
   type LeftInstrumentId,
 } from './left-instrument-switch.js';
+import {
+  composeKindFromTalkTrack,
+  defaultProductShellNavState,
+  projectMainStage,
+  projectProductPrimaryNav,
+  resolvePrimaryNav,
+  resolveTalkTrack,
+  primaryNavFromLegacyInstrument,
+  type ProductPrimaryNavId,
+  type ProductShellNavState,
+  type TalkTrackId,
+} from './product-shell-nav.js';
+import {
+  buildRecentConversationsModel,
+  inferTalkTrack,
+  trackCreateLabel,
+  type RecentConversationItem,
+} from './recent-conversations.js';
 import {
   countM1HandtestFilter,
   filterM1HandtestItems,
@@ -243,12 +268,19 @@ import {
 } from './conversation-stream-readiness.js';
 import {
   readConversationLayoutPreference,
+  readConversationTrackPreferences,
+  readPinnedConversationIds,
+  readRecentConversationSectionPreference,
   readThemePreference,
   readTraceCollapsedPreference,
   writeConversationLayoutPreference,
+  writeConversationTrackPreferences,
+  writePinnedConversationIds,
+  writeRecentConversationSectionPreference,
   writeThemePreference,
   writeTraceCollapsedPreference,
   type ConversationLayoutPreference,
+  type RecentConversationSectionState,
   type ThemePreference,
 } from './ui-preferences.js';
 import './renderer.css';
@@ -264,8 +296,6 @@ interface ConversationAgentIdentity {
 }
 
 type RightRailTab = 'overview' | 'trace' | 'graph' | 'approvals' | 'artifacts';
-
-const leftPrimaryToolOrder: readonly LeftInstrumentId[] = ['agent', 'providers', 'approvals'];
 
 function taskStatusLabel(status: string): string {
   if (status === 'active') return '进行中';
@@ -570,7 +600,13 @@ function DesktopShell() {
   const [m1ObsSecondaryOpen, setM1ObsSecondaryOpen] = useState(false);
   const [leftInstrument, setLeftInstrument] = useState<LeftInstrumentId>('providers');
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
+  const [productShellNav, setProductShellNav] = useState<ProductShellNavState>(() =>
+    defaultProductShellNavState(),
+  );
   const leftToolButtonRefs = useRef<Partial<Record<LeftInstrumentId, HTMLButtonElement | null>>>(
+    {},
+  );
+  const primaryNavButtonRefs = useRef<Partial<Record<ProductPrimaryNavId, HTMLButtonElement | null>>>(
     {},
   );
   const m1ObsLayout = useMemo(() => projectM1ObsLayout({ softCraftRound: 65 }), []);
@@ -646,6 +682,15 @@ function DesktopShell() {
   const [bindingWorkspaceId, setBindingWorkspaceId] = useState<string | null>(null);
   const [active, setActive] = useState<ActiveTaskSelection | null>(null);
   const [navQuery, setNavQuery] = useState('');
+  const [conversationTracks, setConversationTracks] = useState<
+    Readonly<Record<string, TalkTrackId>>
+  >(() => readConversationTrackPreferences());
+  const pendingConversationTrackRef = useRef<TalkTrackId | null>(null);
+  const [recentConversationSections, setRecentConversationSections] =
+    useState<RecentConversationSectionState>(() => readRecentConversationSectionPreference());
+  const [pinnedConversationIds, setPinnedConversationIds] = useState<readonly string[]>(() =>
+    readPinnedConversationIds(),
+  );
   const [providers, setProviders] = useState<readonly ProviderPanelItem[]>([]);
   const [providerLoading, setProviderLoading] = useState(false);
   const [providerBusy, setProviderBusy] = useState(false);
@@ -1473,6 +1518,22 @@ function DesktopShell() {
       m1ExitEvidence.level,
       m1ExternalFocus.externalPending,
     ],
+  );
+
+  const productPrimaryNav = useMemo(
+    () =>
+      projectProductPrimaryNav({
+        active: productShellNav.primary,
+        agentCount: agents.length,
+        teamCount: 0,
+        skillCount: skills.length,
+        pendingCount: approvalPendingCount,
+      }),
+    [productShellNav.primary, agents.length, skills.length, approvalPendingCount],
+  );
+  const productMainStage = useMemo(
+    () => projectMainStage(productShellNav),
+    [productShellNav],
   );
 
   const leftInstrumentSwitch = useMemo(
@@ -3867,12 +3928,26 @@ function DesktopShell() {
   };
 
   /** Instant create under a project — no modal (product path). */
-  const createTask = async (workspaceId: string, options?: { parentTaskId?: string }) => {
+  const createTask = async (
+    workspaceId: string,
+    options?: { parentTaskId?: string; talkTrack?: TalkTrackId },
+  ) => {
     const runtime = window.syncThink?.runtime;
     const parentTaskId = options?.parentTaskId;
+    const talkTrack = options?.talkTrack ?? pendingConversationTrackRef.current;
+    pendingConversationTrackRef.current = null;
     const title = parentTaskId ? '子任务' : '新任务';
     const goal = title;
     setWorkspaceError(null);
+
+    const rememberConversationTrack = (taskId: string) => {
+      if (!talkTrack || parentTaskId) return;
+      setConversationTracks((current) => {
+        const next = { ...current, [taskId]: talkTrack };
+        writeConversationTrackPreferences(next);
+        return next;
+      });
+    };
 
     if (!runtime?.createTask) {
       const now = new Date().toISOString();
@@ -3889,6 +3964,7 @@ function DesktopShell() {
         createdAt: now,
         updatedAt: now,
       };
+      rememberConversationTrack(previewTask.taskId);
       setTasksByWorkspace((prev) => upsertTaskInMap(prev, previewTask));
       const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
       if (workspace) {
@@ -3915,6 +3991,7 @@ function DesktopShell() {
         goal,
         parentTaskId: parentTaskId as TaskSummary['parentTaskId'],
       });
+      rememberConversationTrack(String(created.taskId));
       if (runtime.openTask) {
         await runtime.openTask({ taskId: created.taskId });
       }
@@ -4111,6 +4188,79 @@ function DesktopShell() {
     return map;
   }, [tasksByWorkspace, showArchivedTasks]);
 
+  const recentConversationItems = useMemo((): RecentConversationItem[] => {
+    const items: RecentConversationItem[] = [];
+    for (const [workspaceId, tasks] of tasksByWorkspace) {
+      const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
+      for (const task of tasks) {
+        if (!showArchivedTasks && task.status === 'archived') continue;
+        items.push({
+          id: task.taskId,
+          workspaceId,
+          title: task.title,
+          subtitle: workspace?.name,
+          track: inferTalkTrack({
+            participationMode: task.participationMode,
+            explicitTrack: conversationTracks[task.taskId] ?? null,
+          }),
+          pinned: pinnedConversationIds.includes(task.taskId),
+          status: task.status,
+          updatedAt: task.updatedAt,
+          createdAt: task.createdAt,
+          lastOpenedAt: task.lastOpenedAt,
+          parentTaskId: task.parentTaskId,
+        });
+      }
+    }
+    return items;
+  }, [
+    tasksByWorkspace,
+    workspaces,
+    showArchivedTasks,
+    pinnedConversationIds,
+    conversationTracks,
+  ]);
+
+  const recentConversations = useMemo(
+    () =>
+      buildRecentConversationsModel({
+        items: recentConversationItems,
+        query: navQuery,
+      }),
+    [recentConversationItems, navQuery],
+  );
+
+  const createConversationInTrack = useCallback(async (track: TalkTrackId) => {
+    setProductShellNav((prev) => resolveTalkTrack(prev, track));
+    setLeftDrawerOpen(false);
+    const targetWorkspace =
+      workspaces.find((item) => item.workspaceId === active?.workspaceId) ?? workspaces[0];
+    if (!targetWorkspace) {
+      pendingConversationTrackRef.current = track;
+      openProjectCreateDialog();
+      return;
+    }
+    await createTask(targetWorkspace.workspaceId, { talkTrack: track });
+  }, [workspaces, active?.workspaceId]);
+
+  const toggleRecentConversationSection = useCallback((track: TalkTrackId) => {
+    setRecentConversationSections((current) => {
+      const next = { ...current, [track]: !current[track] };
+      writeRecentConversationSectionPreference(next);
+      return next;
+    });
+  }, []);
+
+  const togglePinnedConversation = useCallback((taskId: string) => {
+    setPinnedConversationIds((current) => {
+      const next = current.includes(taskId)
+        ? current.filter((id) => id !== taskId)
+        : [...current, taskId];
+      writePinnedConversationIds(next);
+      return next;
+    });
+  }, []);
+
   const lastOpenedId = useMemo(() => {
     const all = [...tasksByWorkspace.values()]
       .flat()
@@ -4220,6 +4370,13 @@ function DesktopShell() {
       if (inst) {
         setLeftInstrument(inst);
         setLeftDrawerOpen(true);
+        setProductShellNav((prev) => ({
+          ...prev,
+          primary: primaryNavFromLegacyInstrument(inst),
+        }));
+      } else if (normalized === 'workspaces') {
+        setProductShellNav((prev) => resolvePrimaryNav(prev, 'project'));
+        setLeftDrawerOpen(false);
       }
       const sel = map[normalized];
       if (sel) {
@@ -6013,64 +6170,72 @@ function DesktopShell() {
             </span>
             <span className="st-product-brand__copy">
               <strong>SYNC-THINK</strong>
-              <small>智能体工作台</small>
+              <small>AI 工作助手</small>
             </span>
           </header>
           <nav
             className="st-product-nav"
             data-testid="product-navigation"
+            data-stage={productMainStage.kind}
+            data-talk-track={
+              productMainStage.kind === 'talk' ? productMainStage.track : productShellNav.talkTrack
+            }
             role="tablist"
             aria-label="主导航"
           >
-            <button
-              type="button"
-              role="tab"
-              className="st-product-nav__item"
-              data-testid="product-nav-tasks"
-              data-active={leftDrawerOpen ? '0' : '1'}
-              aria-selected={!leftDrawerOpen}
-              onClick={() => dismissLeftDrawer(false)}
-            >
-              <FolderKanban aria-hidden="true" size={16} strokeWidth={1.8} />
-              <span>项目</span>
-            </button>
-            {leftPrimaryToolOrder.map((instrumentId) => {
-              const item = leftInstrumentSwitch.items.find(
-                (candidate) => candidate.id === instrumentId,
-              );
-              if (!item) return null;
-              const ToolIcon = leftToolMeta[instrumentId].icon;
-              const toolLabel = leftToolMeta[instrumentId].label;
-              const pressed = leftDrawerOpen && leftInstrument === instrumentId;
+            {productPrimaryNav.items.map((item) => {
+              const pressed = item.active;
               return (
                 <button
-                  key={instrumentId}
+                  key={item.id}
                   ref={(node) => {
-                    leftToolButtonRefs.current[instrumentId] = node;
+                    primaryNavButtonRefs.current[item.id] = node;
                   }}
                   type="button"
                   role="tab"
                   className="st-product-nav__item"
                   data-testid={item.testId}
-                  data-id={instrumentId}
+                  data-id={item.id}
                   data-active={pressed ? '1' : '0'}
                   aria-selected={pressed}
+                  aria-label={item.ariaLabel}
                   onClick={() => {
-                    const next = resolveLeftInstrumentDrawer(
-                      { active: leftInstrument, open: leftDrawerOpen },
-                      instrumentId,
-                    );
-                    setLeftInstrument(next.active);
-                    setLeftDrawerOpen(next.open);
+                    setProductShellNav((prev) => resolvePrimaryNav(prev, item.id));
+                    if (item.id === 'agents') {
+                      setLeftInstrument('agent');
+                      setLeftDrawerOpen(true);
+                      return;
+                    }
+                    if (item.id === 'settings') {
+                      setLeftInstrument('providers');
+                      setLeftDrawerOpen(true);
+                      return;
+                    }
+                    if (item.id === 'capabilities') {
+                      setLeftInstrument('agent');
+                      setLeftDrawerOpen(true);
+                      return;
+                    }
+                    // talk / project / teams → show list stage, close legacy tool drawer
+                    setLeftDrawerOpen(false);
                   }}
                 >
-                  <ToolIcon aria-hidden="true" size={16} strokeWidth={1.8} />
-                  <span>{toolLabel}</span>
+                  {item.id === 'talk' ? (
+                    <MessageSquareText aria-hidden="true" size={16} strokeWidth={1.8} />
+                  ) : item.id === 'project' ? (
+                    <FolderKanban aria-hidden="true" size={16} strokeWidth={1.8} />
+                  ) : item.id === 'agents' ? (
+                    <Bot aria-hidden="true" size={16} strokeWidth={1.8} />
+                  ) : item.id === 'teams' ? (
+                    <Users aria-hidden="true" size={16} strokeWidth={1.8} />
+                  ) : item.id === 'capabilities' ? (
+                    <Sparkles aria-hidden="true" size={16} strokeWidth={1.8} />
+                  ) : (
+                    <Settings2 aria-hidden="true" size={16} strokeWidth={1.8} />
+                  )}
+                  <span>{item.label}</span>
                   {item.badge ? (
-                    <em
-                      className="st-product-nav__badge"
-                      data-testid={`left-inst-badge-${instrumentId}`}
-                    >
+                    <em className="st-product-nav__badge" data-testid={`product-nav-badge-${item.id}`}>
                       {item.badge}
                     </em>
                   ) : null}
@@ -6078,16 +6243,174 @@ function DesktopShell() {
               );
             })}
           </nav>
-          <div className="st-demo-nav-stack__workspaces" data-instrument="workspaces">
+          {productShellNav.primary === 'talk' ? (
+            <div className="st-recent-talk" data-testid="recent-conversations">
+              <header className="st-recent-talk__header">
+                <span className="st-recent-talk__eyebrow">会话</span>
+                <h2 className="st-recent-talk__heading">最近对话</h2>
+              </header>
+              <label className="st-recent-talk__search">
+                <Search aria-hidden="true" size={14} strokeWidth={1.8} />
+                <input
+                  type="search"
+                  value={navQuery}
+                  onChange={(event) => setNavQuery(event.target.value)}
+                  placeholder="搜索最近对话"
+                  aria-label="搜索最近对话"
+                  data-testid="recent-conversation-search"
+                />
+              </label>
+              {workspaceError ? (
+                <div className="st-recent-talk__error" role="alert">
+                  {workspaceError}
+                </div>
+              ) : null}
+              <div className="st-recent-talk__list" data-testid="recent-conversation-list">
+                {workspaceLoading ? (
+                  <p className="st-recent-talk__empty">加载中…</p>
+                ) : (
+                  recentConversations.sections.map((section) => {
+                    const expanded = recentConversationSections[section.track];
+                    return (
+                      <section
+                        key={section.track}
+                        className="st-recent-talk__section"
+                        data-track={section.track}
+                        data-expanded={expanded ? '1' : '0'}
+                        data-testid={`recent-section-${section.track}`}
+                      >
+                        <div className="st-recent-talk__section-head">
+                          <button
+                            type="button"
+                            className="st-recent-talk__section-toggle"
+                            aria-expanded={expanded}
+                            aria-controls={`recent-section-list-${section.track}`}
+                            onClick={() => toggleRecentConversationSection(section.track)}
+                          >
+                            <ChevronLeft
+                              aria-hidden="true"
+                              className="st-recent-talk__section-chevron"
+                              size={14}
+                              strokeWidth={1.8}
+                            />
+                            <span>{section.label}</span>
+                            {section.totalCount > 0 ? (
+                              <em>{section.totalCount}</em>
+                            ) : null}
+                          </button>
+                          <button
+                            type="button"
+                            className="st-recent-talk__section-add"
+                            data-testid={`recent-conversation-new-${section.track}`}
+                            aria-label={trackCreateLabel(section.track)}
+                            title={trackCreateLabel(section.track)}
+                            onClick={() => void createConversationInTrack(section.track)}
+                          >
+                            <Plus aria-hidden="true" size={15} strokeWidth={2} />
+                          </button>
+                        </div>
+                        {expanded ? (
+                          <div
+                            id={`recent-section-list-${section.track}`}
+                            className="st-recent-talk__section-body"
+                          >
+                            {section.items.length === 0 ? (
+                              <button
+                                type="button"
+                                className="st-recent-talk__section-empty"
+                                onClick={() => void createConversationInTrack(section.track)}
+                              >
+                                {navQuery ? '没有匹配的对话' : `开始第一条${section.label}`}
+                              </button>
+                            ) : (
+                              <ul className="st-recent-talk__items">
+                                {section.items.map((item) => {
+                                  const selected = active?.taskId === item.id;
+                                  return (
+                                    <li
+                                      key={item.id}
+                                      className="st-recent-talk__item-row"
+                                      data-pinned={item.pinned ? '1' : '0'}
+                                    >
+                                      <button
+                                        type="button"
+                                        className="st-recent-talk__item"
+                                        data-active={selected ? '1' : '0'}
+                                        data-testid={`recent-conversation-${item.id}`}
+                                        onClick={() => {
+                                          setProductShellNav((prev) =>
+                                            resolveTalkTrack(prev, section.track),
+                                          );
+                                          const full = (
+                                            tasksByWorkspace.get(item.workspaceId) ?? []
+                                          ).find((task) => task.taskId === item.id);
+                                          if (full) void openTask(toNavTask(full));
+                                        }}
+                                      >
+                                        <span className="st-recent-talk__item-title">
+                                          {item.pinned ? (
+                                            <Pin
+                                              aria-hidden="true"
+                                              className="st-recent-talk__item-pin-mark"
+                                              size={11}
+                                              strokeWidth={2}
+                                            />
+                                          ) : null}
+                                          <span>{item.title}</span>
+                                        </span>
+                                        {item.subtitle ? (
+                                          <span className="st-recent-talk__item-sub">
+                                            {item.subtitle}
+                                          </span>
+                                        ) : null}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="st-recent-talk__pin"
+                                        data-pinned={item.pinned ? '1' : '0'}
+                                        aria-label={
+                                          item.pinned
+                                            ? `取消置顶「${item.title}」`
+                                            : `置顶「${item.title}」`
+                                        }
+                                        title={item.pinned ? '取消置顶' : '置顶'}
+                                        onClick={() => togglePinnedConversation(item.id)}
+                                      >
+                                        {item.pinned ? (
+                                          <PinOff aria-hidden="true" size={13} strokeWidth={1.9} />
+                                        ) : (
+                                          <Pin aria-hidden="true" size={13} strokeWidth={1.9} />
+                                        )}
+                                      </button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                          </div>
+                        ) : null}
+                      </section>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          ) : null}
+          <div
+            className="st-demo-nav-stack__workspaces"
+            data-instrument="workspaces"
+            data-shell-primary={productShellNav.primary}
+            hidden={productShellNav.primary !== 'project' ? true : undefined}
+          >
             <WorkspaceNav
               hideReadiness
               hideFooter
               hideBrand
-              sectionLabel="我的项目"
-              searchPlaceholder="搜索任务…"
+              sectionLabel="项目与任务"
+              searchPlaceholder="搜索项目或任务…"
               createWorkspaceLabel="新建项目"
               emptyTitle="还没有项目"
-              emptyHint="先建项目再开任务；文件夹可稍后绑定。"
+              emptyHint="先建项目再开对话；文件夹可稍后绑定。"
               workspaces={navWorkspaces}
               tasksByWorkspace={navTasks}
               activeTaskId={active?.taskId ?? null}
@@ -6111,6 +6434,40 @@ function DesktopShell() {
               errorMessage={workspaceError}
             />
           </div>
+          {productShellNav.primary === 'teams' ? (
+            <div
+              className="st-shell-stage-panel"
+              data-testid="teams-library-panel"
+              data-stage="teams"
+            >
+              <h2>小队</h2>
+              <p>
+                全局小队模板将在这里管理。小队由多个智能体组成，可分配到项目中分工执行。
+              </p>
+              <p className="st-shell-stage-panel__muted">当前尚无小队模板 · 可在对话中让 AI 帮你创建</p>
+            </div>
+          ) : null}
+          {productShellNav.primary === 'agents' && !leftDrawerOpen ? (
+            <div
+              className="st-shell-stage-panel"
+              data-testid="agents-library-panel"
+              data-stage="agents"
+            >
+              <h2>智能体</h2>
+              <p>全局智能体库：人设、默认模型、Skill 与工具装备。</p>
+              <button
+                type="button"
+                className="st-shell-stage-panel__cta"
+                data-testid="open-agents-workspace"
+                onClick={() => {
+                  setLeftInstrument('agent');
+                  setLeftDrawerOpen(true);
+                }}
+              >
+                打开智能体工作台
+              </button>
+            </div>
+          ) : null}
           <div
             className="st-demo-nav-stack__switch"
             data-testid="left-instrument-switch"
@@ -6118,40 +6475,11 @@ function DesktopShell() {
             data-open={leftDrawerOpen ? '1' : '0'}
             data-soft-craft={leftInstrumentSwitch.softCraftRound}
             data-claims-closed="0"
+            data-legacy="1"
+            hidden
             role="navigation"
-            aria-label="辅助导航"
-          >
-            {(() => {
-              const item = leftInstrumentSwitch.items.find(
-                (candidate) => candidate.id === 'memory',
-              );
-              const pressed = leftDrawerOpen && leftInstrument === 'memory';
-              return (
-                <button
-                  ref={(node) => {
-                    leftToolButtonRefs.current.memory = node;
-                  }}
-                  type="button"
-                  className="st-product-nav__item st-product-nav__item--secondary"
-                  data-testid={item?.testId ?? 'left-inst-memory'}
-                  data-active={pressed ? '1' : '0'}
-                  aria-pressed={pressed}
-                  onClick={() => {
-                    const next = resolveLeftInstrumentDrawer(
-                      { active: leftInstrument, open: leftDrawerOpen },
-                      'memory',
-                    );
-                    setLeftInstrument(next.active);
-                    setLeftDrawerOpen(next.open);
-                  }}
-                >
-                  <BrainCircuit aria-hidden="true" size={16} strokeWidth={1.8} />
-                  <span>记忆</span>
-                  {item?.badge ? <em className="st-product-nav__badge">{item.badge}</em> : null}
-                </button>
-              );
-            })()}
-          </div>
+            aria-label="辅助导航（兼容）"
+          />
           <div
             className="st-demo-nav-stack__runtime"
             data-testid="left-runtime-status"
@@ -8604,6 +8932,7 @@ function DesktopShell() {
             agents={composeAgents}
             selectedAgentId={selectedAgentId ?? fallbackConversationAgentIdentity.agentId ?? null}
             onAgentChange={(agentId) => selectAgent(agentId)}
+            talkTargetKind={composeKindFromTalkTrack(productShellNav.talkTrack)}
             onOpenAgentCenter={() => navigateToInstrument('agent')}
             onReconnect={reconnectRuntime}
             onConfigureModel={() => navigateToInstrument('agent')}

@@ -8,6 +8,8 @@ export interface ConversationMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   text: string;
+  /** Extended thinking / reasoning channel (never mixed into text). */
+  reasoningText?: string;
   streaming?: boolean;
   runId?: string;
   modelId?: string;
@@ -101,6 +103,7 @@ export function projectConversation(
 
   // Per-run assistant accumulation for the current thread.
   const runText = new Map<string, string>();
+  const runReasoning = new Map<string, string>();
   const runModel = new Map<string, string>();
   const runAgentVersion = new Map<string, string>();
   const runTerminal = new Map<string, 'completed' | 'failed' | 'cancelled' | 'paused'>();
@@ -154,6 +157,7 @@ export function projectConversation(
     if (event.type === 'run.started' && event.runId) {
       latestRunId = event.runId;
       runText.set(event.runId, '');
+      runReasoning.set(event.runId, '');
       runTerminal.delete(event.runId);
       if (!runOrder.includes(event.runId)) runOrder.push(event.runId);
       if (typeof event.payload.modelId === 'string') {
@@ -168,6 +172,7 @@ export function projectConversation(
         id: `assistant-${event.runId}`,
         role: 'assistant',
         text: '',
+        reasoningText: '',
         streaming: true,
         runId: event.runId,
         modelId: runModel.get(event.runId),
@@ -186,6 +191,41 @@ export function projectConversation(
       // Orphan run events without start: still track for completed text recovery.
       runOrder.push(event.runId);
       runText.set(event.runId, '');
+      runReasoning.set(event.runId, '');
+    }
+
+    if (event.type === 'message.reasoning_delta' && typeof event.payload.textDelta === 'string') {
+      const next =
+        typeof event.payload.reasoningText === 'string'
+          ? event.payload.reasoningText
+          : (runReasoning.get(event.runId) ?? '') + event.payload.textDelta;
+      runReasoning.set(event.runId, next);
+      const idx = assistantIndexByRun.get(event.runId);
+      if (idx !== undefined) {
+        messages[idx] = {
+          ...messages[idx]!,
+          reasoningText: next,
+          streaming: !runTerminal.has(event.runId),
+        };
+      } else {
+        const index = messages.length;
+        messages.push({
+          id: `assistant-${event.runId}`,
+          role: 'assistant',
+          text: runText.get(event.runId) ?? '',
+          reasoningText: next,
+          streaming: true,
+          runId: event.runId,
+          modelId: runModel.get(event.runId),
+          agentVersionId: runAgentVersion.get(event.runId),
+          occurredAt: event.occurredAt,
+        });
+        assistantIndexByRun.set(event.runId, index);
+      }
+      if (event.runId === latestRunId && !runTerminal.has(event.runId)) {
+        latestTerminal = 'streaming';
+      }
+      continue;
     }
 
     if (event.type === 'message.delta' && typeof event.payload.textDelta === 'string') {
@@ -194,8 +234,9 @@ export function projectConversation(
       const idx = assistantIndexByRun.get(event.runId);
       if (idx !== undefined) {
         messages[idx] = {
-          ...messages[idx],
+          ...messages[idx]!,
           text: next,
+          reasoningText: runReasoning.get(event.runId) ?? messages[idx]!.reasoningText,
           streaming: !runTerminal.has(event.runId),
         };
       } else {
@@ -204,6 +245,7 @@ export function projectConversation(
           id: `assistant-${event.runId}`,
           role: 'assistant',
           text: next,
+          reasoningText: runReasoning.get(event.runId) ?? '',
           streaming: true,
           runId: event.runId,
           modelId: runModel.get(event.runId),
@@ -223,21 +265,28 @@ export function projectConversation(
         typeof event.payload.assistantText === 'string'
           ? event.payload.assistantText
           : (runText.get(event.runId) ?? '');
+      const finalReasoning =
+        typeof event.payload.reasoningText === 'string'
+          ? event.payload.reasoningText
+          : (runReasoning.get(event.runId) ?? '');
       runText.set(event.runId, finalText);
+      if (finalReasoning) runReasoning.set(event.runId, finalReasoning);
       runTerminal.set(event.runId, 'completed');
       const idx = assistantIndexByRun.get(event.runId);
       if (idx !== undefined) {
         messages[idx] = {
-          ...messages[idx],
+          ...messages[idx]!,
           text: finalText,
+          reasoningText: finalReasoning || messages[idx]!.reasoningText,
           streaming: false,
-          modelId: runModel.get(event.runId) ?? messages[idx].modelId,
+          modelId: runModel.get(event.runId) ?? messages[idx]!.modelId,
         };
       } else if (finalText) {
         messages.push({
           id: `assistant-${event.runId}`,
           role: 'assistant',
           text: finalText,
+          reasoningText: finalReasoning || undefined,
           streaming: false,
           runId: event.runId,
           modelId: runModel.get(event.runId),

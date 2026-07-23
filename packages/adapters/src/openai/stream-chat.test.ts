@@ -94,6 +94,73 @@ describe('streamOpenAIChatCompletions', () => {
     expect(bodyJson.stream).toBe(true);
   });
 
+  it('serializes multimodal user images as image_url parts', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(
+        req({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'describe' },
+                { type: 'image', imageUrl: 'data:image/png;base64,xx' },
+              ],
+            },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+    const bodyJson = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(bodyJson.messages[0].content).toEqual([
+      { type: 'text', text: 'describe' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,xx' } },
+    ]);
+  });
+
+  it('forwards reasoning_effort and streams reasoning-delta separately', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"reasoning_content":"先想一步"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"答案"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req({ reasoningEffort: 'high' }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { type: 'reasoning-delta', text: '先想一步' },
+        { type: 'text-delta', text: '答案' },
+      ]),
+    );
+    expect(textFromEvents(events)).toBe('答案');
+    const bodyJson = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(bodyJson.reasoning_effort).toBe('high');
+    expect(bodyJson.enable_thinking).toBe(true);
+  });
+
   it('serializes tool schemas/history and assembles streamed tool calls', async () => {
     const body = sseStream([
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":"}}]}}]}\n\n',

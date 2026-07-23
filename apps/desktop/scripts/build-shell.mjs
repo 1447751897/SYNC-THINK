@@ -1,0 +1,45 @@
+// Builds the NEW shell renderer (2026-07-22 rewrite): esbuild bundle + Tailwind v4 CSS.
+// Output lands in dist/renderer-shell; the legacy renderer keeps dist/renderer
+// until the shell reaches feature parity and the switchover removes it.
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, copyFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as esbuild from 'esbuild';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const desktopRoot = join(__dirname, '..');
+const shellSrc = join(desktopRoot, 'src', 'renderer', 'shell');
+const outdir = join(desktopRoot, 'dist', 'renderer-shell');
+
+mkdirSync(outdir, { recursive: true });
+
+await esbuild.build({
+  entryPoints: [join(shellSrc, 'shell-entry.tsx')],
+  outfile: join(outdir, 'shell.js'),
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  sourcemap: true,
+  jsx: 'automatic',
+  loader: { '.tsx': 'tsx', '.ts': 'ts' },
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'development'),
+  },
+});
+
+// Tailwind v4 CLI scans the shell sources referenced from shell.css.
+const require = createRequire(import.meta.url);
+const cliPkgJson = require.resolve('@tailwindcss/cli/package.json');
+const cliPkg = require(cliPkgJson);
+const tailwindCli = join(dirname(cliPkgJson), cliPkg.bin?.tailwindcss ?? cliPkg.bin);
+execFileSync(process.execPath, [
+  tailwindCli,
+  '-i', join(shellSrc, 'shell.css'),
+  '-o', join(outdir, 'shell.css'),
+  '--cwd', shellSrc,
+], { stdio: 'inherit' });
+
+copyFileSync(join(shellSrc, 'index.html'), join(outdir, 'index.html'));
+console.log(`[desktop] shell renderer built at ${outdir}`);

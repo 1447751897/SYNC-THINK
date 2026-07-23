@@ -8,6 +8,7 @@ export * from './types/message.js';
 export * from './types/event.js';
 export * from './types/provider.js';
 export * from './types/agent.js';
+export * from './types/team.js';
 export * from './types/context.js';
 export * from './types/artifact.js';
 export * from './types/review.js';

@@ -49,6 +49,25 @@ export type Feature =
   | 'agent.create'
   | 'agent.listVersions'
   | 'agent.createVersion'
+  | 'globalAgent.list'
+  | 'globalAgent.create'
+  | 'globalAgent.update'
+  | 'globalAgent.delete'
+  | 'team.list'
+  | 'team.create'
+  | 'team.update'
+  | 'team.delete'
+  | 'team.startRun'
+  | 'team.setRunStatus'
+  | 'conversation.list'
+  | 'conversation.create'
+  | 'conversation.rename'
+  | 'conversation.setPinned'
+  | 'conversation.setArchived'
+  | 'conversation.setExecutionMode'
+  | 'conversation.upgradeTrack'
+  | 'conversation.delete'
+  | 'conversation.decideToolApproval'
   | 'skill.import'
   | 'skill.list'
   | 'mcp.register'
@@ -108,6 +127,24 @@ export const DEFAULT_FEATURES: Feature[] = [
   'agent.create',
   'agent.listVersions',
   'agent.createVersion',
+  'globalAgent.list',
+  'globalAgent.create',
+  'globalAgent.update',
+  'globalAgent.delete',
+  'team.list',
+  'team.create',
+  'team.update',
+  'team.delete',
+  'team.startRun',
+  'team.setRunStatus',
+  'conversation.list',
+  'conversation.create',
+  'conversation.rename',
+  'conversation.setPinned',
+  'conversation.setArchived',
+  'conversation.setExecutionMode',
+  'conversation.upgradeTrack',
+  'conversation.delete',
   'skill.import',
   'skill.list',
   'mcp.register',

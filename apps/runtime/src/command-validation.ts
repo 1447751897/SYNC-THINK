@@ -65,6 +65,25 @@ import type {
   MergeArtifactVersionsPayload,
   ListArtifactMergeConflictsPayload,
   ResolveArtifactMergeConflictPayload,
+  ListGlobalAgentsPayload,
+  CreateGlobalAgentPayload,
+  UpdateGlobalAgentPayload,
+  DeleteGlobalAgentPayload,
+  CreateTeamPayload,
+  UpdateTeamPayload,
+  DeleteTeamPayload,
+  StartTeamRunPayload,
+  SetTeamRunStatusPayload,
+  TeamMemberDraft,
+  ListConversationsPayload,
+  CreateConversationPayload,
+  RenameConversationPayload,
+  SetConversationPinnedPayload,
+  SetConversationArchivedPayload,
+  SetConversationExecutionModePayload,
+  UpgradeConversationTrackPayload,
+  DeleteConversationPayload,
+  ConversationDecideToolApprovalPayload,
 } from '@sync-think/protocol';
 import {
   MAX_INLINE_ARTIFACT_CONTENT_BYTES,
@@ -390,6 +409,7 @@ export function parseListPoliciesPayload(value: unknown): ListPoliciesPayload | 
 
 export function parseAppendMessagePayload(value: unknown): AppendMessagePayload | undefined {
   if (!isRecord(value)) return undefined;
+  const hasImages = Array.isArray(value.images) && value.images.length > 0;
   if (
     typeof value.threadId !== 'string' ||
     value.threadId.length === 0 ||
@@ -399,13 +419,62 @@ export function parseAppendMessagePayload(value: unknown): AppendMessagePayload 
     typeof value.role !== 'string' ||
     !MESSAGE_ROLES.has(value.role) ||
     typeof value.text !== 'string' ||
-    value.text.trim().length === 0 ||
-    value.text.length > 100_000
+    value.text.length > 100_000 ||
+    // Text may be empty when images are attached (vision-only turn).
+    (!hasImages && value.text.trim().length === 0)
   ) {
     return undefined;
   }
-  for (const field of ['agentVersionId', 'modelId', 'credentialRefId', 'runId', 'stepId']) {
+  for (const field of [
+    'agentVersionId',
+    'modelId',
+    'credentialRefId',
+    'runId',
+    'stepId',
+    'reasoningEffort',
+  ]) {
     if (value[field] !== undefined && typeof value[field] !== 'string') return undefined;
+  }
+  if (
+    value.reasoningEffort !== undefined &&
+    (typeof value.reasoningEffort !== 'string' ||
+      value.reasoningEffort.length === 0 ||
+      value.reasoningEffort.length > 64)
+  ) {
+    return undefined;
+  }
+  if (value.networkEnabled !== undefined && typeof value.networkEnabled !== 'boolean') {
+    return undefined;
+  }
+  if (value.images !== undefined) {
+    if (!Array.isArray(value.images) || value.images.length > 8) return undefined;
+    for (const image of value.images) {
+      if (!isRecord(image)) return undefined;
+      if (typeof image.name !== 'string' || image.name.length === 0 || image.name.length > 512) {
+        return undefined;
+      }
+      if (
+        typeof image.mimeType !== 'string' ||
+        image.mimeType.length === 0 ||
+        image.mimeType.length > 128 ||
+        !image.mimeType.startsWith('image/')
+      ) {
+        return undefined;
+      }
+      const hasDataUrl =
+        typeof image.dataUrl === 'string' &&
+        image.dataUrl.startsWith('data:image/') &&
+        // Keep inline dataUrl small so pipe frames stay under 1 MiB.
+        image.dataUrl.length <= 700_000;
+      const hasStagingPath =
+        typeof image.stagingPath === 'string' &&
+        image.stagingPath.length > 0 &&
+        image.stagingPath.length <= 1024;
+      // Prefer stagingPath for large images; dataUrl is small-image fallback only.
+      if (!hasDataUrl && !hasStagingPath) return undefined;
+      if (image.dataUrl !== undefined && !hasDataUrl && !hasStagingPath) return undefined;
+      if (image.stagingPath !== undefined && typeof image.stagingPath !== 'string') return undefined;
+    }
   }
   return value as unknown as AppendMessagePayload;
 }
@@ -1295,6 +1364,358 @@ export function parseCreateAgentVersionPayload(
   )
     return undefined;
   return value as unknown as CreateAgentVersionPayload;
+}
+
+// --- mutable global Agent / Team / Conversation payloads (2026-07-22 model) ---
+
+const CONVERSATION_TRACKS = new Set(['model', 'agent', 'team']);
+const CONVERSATION_UPGRADE_TRACKS = new Set(['agent', 'team']);
+const TEAM_STRATEGIES = new Set(['serial', 'parallel']);
+const TEAM_RUN_STATUSES = new Set(['running', 'completed', 'failed', 'cancelled']);
+
+const GLOBAL_AGENT_KEYS = [
+  'name',
+  'defaultModelId',
+  'avatar',
+  'persona',
+  'description',
+  'fallbackModelIds',
+  'skillIds',
+  'mcpServerIds',
+  'reasoningEffort',
+] as const;
+
+function validGlobalAgentFields(
+  value: Record<string, unknown>,
+  options: { full: boolean },
+): boolean {
+  if (
+    (options.full && !boundedAgentText(value.name, 256)) ||
+    (!options.full && value.name !== undefined && !boundedAgentText(value.name, 256))
+  )
+    return false;
+  if (
+    (options.full && !boundedAgentText(value.defaultModelId, 256)) ||
+    (!options.full &&
+      value.defaultModelId !== undefined &&
+      !boundedAgentText(value.defaultModelId, 256))
+  )
+    return false;
+  if (value.avatar !== undefined && (typeof value.avatar !== 'string' || value.avatar.length > 512))
+    return false;
+  if (
+    value.persona !== undefined &&
+    (typeof value.persona !== 'string' || value.persona.length > 50_000)
+  )
+    return false;
+  if (
+    value.description !== undefined &&
+    (typeof value.description !== 'string' || value.description.length > 4_000)
+  )
+    return false;
+  if (value.fallbackModelIds !== undefined && !validAgentIdList(value.fallbackModelIds, 32))
+    return false;
+  if (value.skillIds !== undefined && !validAgentIdList(value.skillIds)) return false;
+  if (value.mcpServerIds !== undefined && !validAgentIdList(value.mcpServerIds)) return false;
+  if (value.reasoningEffort !== undefined && !boundedAgentText(value.reasoningEffort, 64))
+    return false;
+  return true;
+}
+
+export function parseListGlobalAgentsPayload(
+  value: unknown,
+): ListGlobalAgentsPayload | undefined {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value) || !hasOnlyKeys(value, ['includeArchived'])) return undefined;
+  if (value.includeArchived !== undefined && typeof value.includeArchived !== 'boolean')
+    return undefined;
+  return { includeArchived: value.includeArchived };
+}
+
+export function parseCreateGlobalAgentPayload(
+  value: unknown,
+): CreateGlobalAgentPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, GLOBAL_AGENT_KEYS) ||
+    !validGlobalAgentFields(value, { full: true })
+  )
+    return undefined;
+  return value as unknown as CreateGlobalAgentPayload;
+}
+
+export function parseUpdateGlobalAgentPayload(
+  value: unknown,
+): UpdateGlobalAgentPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [...GLOBAL_AGENT_KEYS, 'agentId', 'archived']) ||
+    !boundedAgentText(value.agentId, 128) ||
+    !validGlobalAgentFields(value, { full: false })
+  )
+    return undefined;
+  if (value.archived !== undefined && typeof value.archived !== 'boolean') return undefined;
+  return value as unknown as UpdateGlobalAgentPayload;
+}
+
+export function parseDeleteGlobalAgentPayload(
+  value: unknown,
+): DeleteGlobalAgentPayload | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['agentId']) || !boundedAgentText(value.agentId, 128))
+    return undefined;
+  return { agentId: value.agentId as DeleteGlobalAgentPayload['agentId'] };
+}
+
+const TEAM_KEYS = ['name', 'avatar', 'mission', 'strategy', 'coordinatorAgentId', 'members'] as const;
+
+function validTeamMembers(value: unknown): value is TeamMemberDraft[] {
+  if (!Array.isArray(value) || value.length > 64) return false;
+  return value.every((member) => {
+    if (!isRecord(member) || !hasOnlyKeys(member, ['agentId', 'role', 'title', 'dependsOn'])) {
+      return false;
+    }
+    if (!boundedAgentText(member.agentId, 128)) return false;
+    if (member.role !== undefined && !boundedAgentText(member.role, 128)) return false;
+    if (
+      member.title !== undefined &&
+      (typeof member.title !== 'string' || member.title.length > 256)
+    )
+      return false;
+    if (member.dependsOn !== undefined && !validAgentIdList(member.dependsOn, 64, 128)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function validTeamFields(value: Record<string, unknown>, options: { full: boolean }): boolean {
+  if (
+    (options.full && !boundedAgentText(value.name, 256)) ||
+    (!options.full && value.name !== undefined && !boundedAgentText(value.name, 256))
+  )
+    return false;
+  if (value.avatar !== undefined && (typeof value.avatar !== 'string' || value.avatar.length > 512))
+    return false;
+  if (
+    value.mission !== undefined &&
+    (typeof value.mission !== 'string' || value.mission.length > 20_000)
+  )
+    return false;
+  if (value.strategy !== undefined && !TEAM_STRATEGIES.has(String(value.strategy))) return false;
+  if (value.coordinatorAgentId !== undefined && !boundedAgentText(value.coordinatorAgentId, 128))
+    return false;
+  if (value.members !== undefined && !validTeamMembers(value.members)) return false;
+  return true;
+}
+
+export function parseListTeamsPayload(value: unknown): Record<string, never> | undefined {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value) || Object.keys(value).length !== 0) return undefined;
+  return {};
+}
+
+export function parseCreateTeamPayload(value: unknown): CreateTeamPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, TEAM_KEYS) ||
+    !validTeamFields(value, { full: true })
+  )
+    return undefined;
+  return value as unknown as CreateTeamPayload;
+}
+
+export function parseUpdateTeamPayload(value: unknown): UpdateTeamPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [...TEAM_KEYS, 'teamId']) ||
+    !boundedAgentText(value.teamId, 128) ||
+    !validTeamFields(value, { full: false })
+  )
+    return undefined;
+  return value as unknown as UpdateTeamPayload;
+}
+
+export function parseDeleteTeamPayload(value: unknown): DeleteTeamPayload | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['teamId']) || !boundedAgentText(value.teamId, 128))
+    return undefined;
+  return { teamId: value.teamId as DeleteTeamPayload['teamId'] };
+}
+
+export function parseStartTeamRunPayload(value: unknown): StartTeamRunPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['teamId', 'conversationId']) ||
+    !boundedAgentText(value.teamId, 128) ||
+    !boundedAgentText(value.conversationId, 128)
+  )
+    return undefined;
+  return {
+    teamId: value.teamId as StartTeamRunPayload['teamId'],
+    conversationId: value.conversationId as StartTeamRunPayload['conversationId'],
+  };
+}
+
+export function parseSetTeamRunStatusPayload(
+  value: unknown,
+): SetTeamRunStatusPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['runId', 'status']) ||
+    !boundedAgentText(value.runId, 128) ||
+    !TEAM_RUN_STATUSES.has(String(value.status))
+  )
+    return undefined;
+  return {
+    runId: value.runId as string,
+    status: value.status as SetTeamRunStatusPayload['status'],
+  };
+}
+
+export function parseListConversationsPayload(
+  value: unknown,
+): ListConversationsPayload | undefined {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value) || !hasOnlyKeys(value, ['track', 'workspaceId', 'includeArchived'])) {
+    return undefined;
+  }
+  if (value.track !== undefined && !CONVERSATION_TRACKS.has(String(value.track))) return undefined;
+  if (value.workspaceId !== undefined && !boundedAgentText(value.workspaceId, 128))
+    return undefined;
+  if (value.includeArchived !== undefined && typeof value.includeArchived !== 'boolean')
+    return undefined;
+  return value as unknown as ListConversationsPayload;
+}
+
+export function parseCreateConversationPayload(
+  value: unknown,
+): CreateConversationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['track', 'targetRef', 'workspaceId', 'title', 'executionMode']) ||
+    !CONVERSATION_TRACKS.has(String(value.track)) ||
+    !boundedAgentText(value.targetRef, 256)
+  )
+    return undefined;
+  if (value.workspaceId !== undefined && !boundedAgentText(value.workspaceId, 128))
+    return undefined;
+  if (value.title !== undefined && (typeof value.title !== 'string' || value.title.length > 512))
+    return undefined;
+  if (value.executionMode !== undefined && !boundedAgentText(value.executionMode, 64))
+    return undefined;
+  return value as unknown as CreateConversationPayload;
+}
+
+export function parseRenameConversationPayload(
+  value: unknown,
+): RenameConversationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'title']) ||
+    !boundedAgentText(value.conversationId, 128) ||
+    !boundedAgentText(value.title, 512)
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as RenameConversationPayload['conversationId'],
+    title: value.title,
+  };
+}
+
+export function parseSetConversationPinnedPayload(
+  value: unknown,
+): SetConversationPinnedPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'pinned']) ||
+    !boundedAgentText(value.conversationId, 128) ||
+    typeof value.pinned !== 'boolean'
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as SetConversationPinnedPayload['conversationId'],
+    pinned: value.pinned,
+  };
+}
+
+export function parseSetConversationArchivedPayload(
+  value: unknown,
+): SetConversationArchivedPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'archived']) ||
+    !boundedAgentText(value.conversationId, 128) ||
+    typeof value.archived !== 'boolean'
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as SetConversationArchivedPayload['conversationId'],
+    archived: value.archived,
+  };
+}
+
+export function parseSetConversationExecutionModePayload(
+  value: unknown,
+): SetConversationExecutionModePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'executionMode']) ||
+    !boundedAgentText(value.conversationId, 128) ||
+    !boundedAgentText(value.executionMode, 64)
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as SetConversationExecutionModePayload['conversationId'],
+    executionMode: value.executionMode,
+  };
+}
+
+export function parseConversationDecideToolApprovalPayload(
+  value: unknown,
+): ConversationDecideToolApprovalPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['approvalId', 'decision']) ||
+    !boundedAgentText(value.approvalId, 128) ||
+    (value.decision !== 'approve' && value.decision !== 'deny')
+  ) {
+    return undefined;
+  }
+  return {
+    approvalId: value.approvalId,
+    decision: value.decision,
+  };
+}
+
+export function parseUpgradeConversationTrackPayload(
+  value: unknown,
+): UpgradeConversationTrackPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'track', 'targetRef']) ||
+    !boundedAgentText(value.conversationId, 128) ||
+    !CONVERSATION_UPGRADE_TRACKS.has(String(value.track)) ||
+    !boundedAgentText(value.targetRef, 256)
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as UpgradeConversationTrackPayload['conversationId'],
+    track: value.track as UpgradeConversationTrackPayload['track'],
+    targetRef: value.targetRef,
+  };
+}
+
+export function parseDeleteConversationPayload(
+  value: unknown,
+): DeleteConversationPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId']) ||
+    !boundedAgentText(value.conversationId, 128)
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as DeleteConversationPayload['conversationId'],
+  };
 }
 
 const MEMORY_SCOPES = new Set(['task', 'project', 'global']);

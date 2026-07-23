@@ -25,6 +25,12 @@ export interface ProviderCallRequest {
   /** Stopping criteria for cost control & determinism. */
   maxOutputTokens?: number;
   temperature?: number;
+  /**
+   * Optional reasoning / extended-thinking intensity.
+   * Values: auto | off | low | medium | high | xhigh | max (provider-specific).
+   * Adapters omit the field when auto/off/undefined.
+   */
+  reasoningEffort?: string;
   stream: boolean;
 }
 
@@ -60,6 +66,8 @@ export interface ProviderToolCall {
 // into events emitted on the AsyncIterable<AdapterEvent>.
 export type AdapterEvent =
   | { type: 'text-delta'; text: string }
+  /** Extended thinking / reasoning channel — never mixed into assistant text. */
+  | { type: 'reasoning-delta'; text: string }
   | { type: 'tool-call'; toolCall: ProviderToolCall }
   | { type: 'tool-result'; toolCallId: string; result: string }
   | { type: 'image-ready'; imageRef: string; mimeType: string }

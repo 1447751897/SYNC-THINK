@@ -1,5 +1,6 @@
 ﻿import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
 import { scrubSecrets, normalizeOpenAICompatibleBaseUrl } from './discover-models.js';
+import { openAiReasoningBodyFields } from '../reasoning.js';
 import type { FailureClass } from '@sync-think/shared';
 import {
   closeResponseReader,
@@ -54,6 +55,24 @@ function toOpenAIMessages(request: ProviderCallRequest): Array<Record<string, un
         }));
       if (toolCalls.length > 0) {
         out.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
+        continue;
+      }
+    }
+    // Multimodal user content (text + images).
+    if (Array.isArray(message.content) && message.role === 'user') {
+      const parts: Array<Record<string, unknown>> = [];
+      for (const part of message.content) {
+        if (part.type === 'text' && part.text) {
+          parts.push({ type: 'text', text: part.text });
+        } else if (part.type === 'image') {
+          const url = part.imageUrl || part.imageRef;
+          if (url) {
+            parts.push({ type: 'image_url', image_url: { url } });
+          }
+        }
+      }
+      if (parts.length > 0) {
+        out.push({ role: 'user', content: parts });
         continue;
       }
     }
@@ -147,6 +166,7 @@ export async function* streamOpenAIChatCompletions(
     stream: true,
     ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
     ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+    ...openAiReasoningBodyFields(request.reasoningEffort),
     ...(request.tools?.length
       ? {
           tools: request.tools.map((tool) => ({
@@ -304,6 +324,9 @@ function parseCompletionChunk(
     choices?: Array<{
       delta?: {
         content?: string | null;
+        /** OpenAI o-series / many gateways: reasoning stream channel. */
+        reasoning_content?: string | null;
+        reasoning?: string | null;
         role?: string;
         tool_calls?: Array<{
           index?: number;
@@ -313,6 +336,8 @@ function parseCompletionChunk(
       };
       message?: {
         content?: string | null;
+        reasoning_content?: string | null;
+        reasoning?: string | null;
         tool_calls?: Array<{
           id?: string;
           function?: { name?: string; arguments?: string };
@@ -362,15 +387,36 @@ function parseCompletionChunk(
     });
   }
 
+  const events: AdapterEvent[] = [];
+
+  const reasoningDelta =
+    (typeof choice.delta?.reasoning_content === 'string' && choice.delta.reasoning_content) ||
+    (typeof choice.delta?.reasoning === 'string' && choice.delta.reasoning) ||
+    '';
+  if (reasoningDelta.length > 0) {
+    events.push({ type: 'reasoning-delta', text: reasoningDelta });
+  }
+
   const deltaText = choice.delta?.content;
   if (typeof deltaText === 'string' && deltaText.length > 0) {
-    return [{ type: 'text-delta', text: deltaText }];
+    events.push({ type: 'text-delta', text: deltaText });
   }
 
   // Non-delta message content (some proxies).
+  const messageReasoning =
+    (typeof choice.message?.reasoning_content === 'string' && choice.message.reasoning_content) ||
+    (typeof choice.message?.reasoning === 'string' && choice.message.reasoning) ||
+    '';
+  if (messageReasoning.length > 0) {
+    events.push({ type: 'reasoning-delta', text: messageReasoning });
+  }
   const messageText = choice.message?.content;
   if (typeof messageText === 'string' && messageText.length > 0) {
-    return [{ type: 'text-delta', text: messageText }];
+    events.push({ type: 'text-delta', text: messageText });
+  }
+
+  if (events.length > 0 && !choice.finish_reason) {
+    return events;
   }
 
   if (choice.finish_reason) {
@@ -380,10 +426,12 @@ function parseCompletionChunk(
         : choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call'
           ? 'tool-requests'
           : 'stop';
-    return finishChatStream(state, reason);
+    return events.length > 0
+      ? [...events, ...finishChatStream(state, reason)]
+      : finishChatStream(state, reason);
   }
 
-  return [];
+  return events;
 }
 
 function finishChatStream(

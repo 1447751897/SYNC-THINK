@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>设计稿 D · 长卷 The Scroll — SYNC-THINK</title>
+<style>
+  /* ============================================================
+     方向 D：长卷 · The Scroll（零参照原创）
+     主张：工作台 = 一段正在展开的工作叙事
+     - 无永久三栏；对话即全部
+     - 历程线：连续体的纵向物质化，随 Run 生长
+     - 心电边条：轨迹的极限收缩，右缘 24px，点击拉出
+     - ⌘K 任务浮层取代常驻导航树
+     - 审批 = 横跨长卷的闸门
+     ============================================================ */
+  :root {
+    --ink-bg: #0f1210;
+    --ink-raise: #151917;
+    --ink-card: #1a1f1c;
+    --paper: #efe9dc;          /* 暖白纸字 */
+    --paper-2: #b3ac9d;
+    --paper-3: #6d685c;
+    --jade: #3ecf9a;
+    --iris: #7c9fe8;
+    --brass: #d4a75a;
+    --line: #ffffff14;
+    --thread-w: 2px;
+    --serif: "Source Han Serif SC", "Noto Serif SC", Georgia, "STSong", serif;
+    --sans: "Inter", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "Cascadia Code", ui-monospace, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--sans); font-size: 15px; line-height: 1.8;
+    color: var(--paper); background: var(--ink-bg); overflow: hidden;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: 60; pointer-events: none; opacity: .55;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .03 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* ---------- 顶栏：一句话 ---------- */
+  .topbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+    display: flex; align-items: center; gap: 14px;
+    height: 58px; padding: 0 22px;
+    background: linear-gradient(180deg, #0f1210f2 65%, transparent);
+  }
+  .orb {
+    width: 26px; height: 26px; border-radius: 50%; flex: none; position: relative;
+    background: conic-gradient(from 200deg, var(--jade), var(--iris), var(--brass), var(--jade));
+  }
+  .orb::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--ink-bg); }
+  .wordmark { font-size: 12px; letter-spacing: .3em; color: var(--paper-2); }
+  .topbar__right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+  .rt { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10px; color: var(--paper-3); }
+  .rt i { width: 6px; height: 6px; border-radius: 50%; background: var(--jade); box-shadow: 0 0 8px var(--jade); animation: breathe 1.8s infinite; }
+  .shelf-btn {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--paper-2);
+    background: none; border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 14px; cursor: pointer; transition: all .15s;
+  }
+  .shelf-btn:hover { color: var(--paper); border-color: #ffffff33; }
+  .shelf-btn kbd { font-family: var(--mono); font-size: 9.5px; color: var(--paper-3); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+
+  /* ---------- 卷轴区 ---------- */
+  .scroll { height: 100vh; overflow-y: auto; scroll-behavior: smooth; }
+  .page { max-width: 800px; margin: 0 auto; padding: 120px 48px 220px 96px; position: relative; }
+
+  /* 历程线：连续体的纵向签名 */
+  .lifeline {
+    position: absolute; left: 44px; top: 0; bottom: 0; width: var(--thread-w);
+    background: var(--line);
+  }
+  .lifeline__fill {
+    position: absolute; top: 0; left: 0; right: 0; height: 62%;
+    background: linear-gradient(180deg, var(--jade) 0%, var(--jade) 55%, var(--iris) 100%);
+    box-shadow: 0 0 12px #3ecf9a44;
+    transition: height 1s cubic-bezier(.2,.8,.2,1);
+  }
+  .lifeline__tip {
+    position: absolute; left: 50%; top: 62%; transform: translate(-50%,-50%);
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--iris); box-shadow: 0 0 0 5px #7c9fe822, 0 0 18px var(--iris);
+    animation: breathe 2s infinite;
+    transition: top 1s cubic-bezier(.2,.8,.2,1);
+  }
+  .knot {
+    position: absolute; left: 44px; transform: translateX(-50%); margin-left: 1px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--ink-bg); border: 2px solid var(--jade);
+  }
+  .knot--iris { border-color: var(--iris); }
+  .knot--phase { width: 9px; height: 9px; background: var(--jade); border: 0; box-shadow: 0 0 8px #3ecf9a66; }
+
+  /* 卷首 */
+  .hero { margin-bottom: 72px; animation: emerge .7s cubic-bezier(.16,.8,.24,1) both; }
+  .hero__eyebrow { font-family: var(--mono); font-size: 10.5px; letter-spacing: .28em; color: var(--jade); margin-bottom: 14px; }
+  .hero__title {
+    font-family: var(--serif); font-weight: 700;
+    font-size: clamp(34px, 4.6vw, 52px); line-height: 1.25; letter-spacing: .01em;
+  }
+  .hero__meta { display: flex; gap: 20px; margin-top: 18px; font-family: var(--mono); font-size: 10.5px; color: var(--paper-3); }
+  .hero__meta b { color: var(--paper-2); font-weight: 500; }
+
+  /* 章节眉 */
+  .chapter {
+    display: flex; align-items: baseline; gap: 12px;
+    margin: 64px 0 28px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .3em; color: var(--paper-3);
+    text-transform: uppercase;
+  }
+  .chapter::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .chapter b { color: var(--jade); font-weight: 500; }
+
+  /* 消息即叙事 */
+  .beat { margin-bottom: 36px; animation: emerge .55s cubic-bezier(.16,.8,.24,1) both; }
+  @keyframes emerge { from { opacity: 0; transform: translateY(14px); } }
+
+  .beat--user { display: flex; justify-content: flex-end; }
+  .beat--user .said {
+    max-width: 72%;
+    background: var(--paper); color: #191c19;
+    padding: 13px 22px; border-radius: 20px 20px 6px 20px;
+    font-size: 15px; line-height: 1.7;
+    box-shadow: 0 6px 28px #00000066;
+  }
+
+  .beat--agent .who { display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px; }
+  .who__name { font-family: var(--serif); font-size: 22px; font-weight: 700; letter-spacing: .02em; }
+  .who__name--jade { color: var(--jade); }
+  .who__name--iris { color: var(--iris); }
+  .who time { font-family: var(--mono); font-size: 10px; color: var(--paper-3); }
+  .beat--agent .said { max-width: 92%; color: #d9d4c7; }
+  .beat--agent .said p + p { margin-top: 10px; }
+  .beat--agent code { font-family: var(--mono); font-size: 12.5px; background: #00000055; border: 1px solid var(--line); border-radius: 5px; padding: 1px 7px; color: var(--jade); }
+
+  /* 交接：历程线上的换色绳结 */
+  .handoff {
+    position: relative;
+    margin: 44px 0 44px -52px;
+    padding-left: 52px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .handoff__thread { flex: 1; max-width: 260px; height: 2px; background: linear-gradient(90deg, var(--jade), var(--iris)); position: relative; }
+  .handoff__thread::after {
+    content: ""; position: absolute; top: -3.5px; width: 9px; height: 9px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 12px var(--iris);
+    animation: pass 2.6s cubic-bezier(.45,0,.55,1) infinite;
+  }
+  @keyframes pass { from { left: 0; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } to { left: calc(100% - 9px); opacity: 0; } }
+  .handoff__label { font-family: var(--mono); font-size: 10px; color: var(--paper-3); letter-spacing: .12em; white-space: nowrap; }
+  .handoff__label b { color: var(--paper-2); font-weight: 500; }
+
+  /* 审批闸门：横跨长卷 */
+  .gate {
+    position: relative;
+    margin: 56px -48px 56px -52px;
+    padding: 30px 48px 30px 52px;
+    background:
+      radial-gradient(600px 140px at 18% 0%, #d4a75a14, transparent 70%),
+      var(--ink-raise);
+    border-top: 1px solid #d4a75a33;
+    border-bottom: 1px solid #d4a75a33;
+    animation: emerge .6s both;
+  }
+  .gate__eyebrow { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 10px; letter-spacing: .3em; color: var(--brass); margin-bottom: 12px; }
+  .gate__eyebrow i { width: 7px; height: 7px; border-radius: 50%; background: var(--brass); box-shadow: 0 0 12px #d4a75a99; animation: breathe 1.2s infinite; }
+  .gate__title { font-family: var(--serif); font-size: 21px; font-weight: 700; margin-bottom: 8px; }
+  .gate__desc { color: var(--paper-2); font-size: 14px; max-width: 560px; margin-bottom: 22px; }
+  .gate__desc code { font-family: var(--mono); font-size: 12px; color: var(--brass); }
+  .gate__actions { display: flex; gap: 14px; align-items: center; }
+  .lever {
+    font-family: var(--serif); font-size: 15px; font-weight: 700; letter-spacing: .06em;
+    padding: 13px 34px; border-radius: 4px; cursor: pointer;
+    border: 0; color: #231a08;
+    background: linear-gradient(165deg, #e2ba72, var(--brass) 60%, #b8894a);
+    box-shadow: 0 6px 24px #d4a75a33, inset 0 1px 0 #ffffff55;
+    transition: all .15s ease;
+  }
+  .lever:hover { transform: translateY(-2px); box-shadow: 0 10px 32px #d4a75a55, inset 0 1px 0 #ffffff66; }
+  .ghost {
+    font-size: 13px; color: var(--paper-2); background: none;
+    border: 1px solid var(--line); border-radius: 4px; padding: 12px 20px; cursor: pointer;
+  }
+  .ghost:hover { color: var(--paper); border-color: #ffffff30; }
+  .gate__hint { font-family: var(--mono); font-size: 9.5px; color: var(--paper-3); margin-left: auto; }
+
+  .typing { display: inline-flex; gap: 6px; padding: 6px 0; }
+  .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--iris); animation: breathe 1.1s infinite; }
+  .typing i:nth-child(2) { animation-delay: .18s; } .typing i:nth-child(3) { animation-delay: .36s; }
+  @keyframes breathe { 50% { opacity: .25; } }
+
+  /* ---------- 心电边条（右缘 24px） ---------- */
+  .ekg {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 24px; z-index: 45;
+    background: #0b0e0c;
+    border-left: 1px solid var(--line);
+    cursor: pointer;
+    transition: width .25s cubic-bezier(.2,.8,.2,1);
+  }
+  .ekg:hover { width: 30px; }
+  .ekg__ticks { position: absolute; inset: 80px 0 120px; }
+  .tick {
+    position: absolute; right: 6px; width: 12px; height: 2px; border-radius: 2px;
+    background: var(--paper-3); opacity: .5;
+    animation: tick-in .4s ease both;
+  }
+  @keyframes tick-in { from { transform: translateX(8px); opacity: 0; } }
+  .tick--jade { background: var(--jade); opacity: .9; box-shadow: 0 0 6px #3ecf9a66; }
+  .tick--brass { background: var(--brass); opacity: .9; }
+  .tick--iris { background: var(--iris); opacity: .95; box-shadow: 0 0 8px #7c9fe888; animation: tick-in .4s both, breathe 1.4s .5s infinite; }
+  .ekg__label {
+    position: absolute; bottom: 24px; right: 0; left: 0;
+    writing-mode: vertical-rl; margin: 0 auto;
+    font-family: var(--mono); font-size: 9px; letter-spacing: .3em; color: var(--paper-3);
+  }
+  .ekg__live { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); width: 6px; height: 6px; border-radius: 50%; background: var(--jade); box-shadow: 0 0 8px var(--jade); animation: breathe 1.3s infinite; }
+
+  /* 轨迹抽屉（默认收起，点击边条展开） */
+  .drawer {
+    position: fixed; top: 0; right: 24px; bottom: 0; width: 340px; z-index: 44;
+    background: #0d100ee8; backdrop-filter: blur(14px);
+    border-left: 1px solid var(--line);
+    transform: translateX(105%); transition: transform .35s cubic-bezier(.2,.8,.2,1);
+    display: flex; flex-direction: column;
+  }
+  .drawer--open { transform: translateX(0); }
+  .drawer__head { padding: 20px 22px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; justify-content: space-between; }
+  .drawer__head h2 { font-family: var(--serif); font-size: 17px; }
+  .drawer__head span { font-family: var(--mono); font-size: 9.5px; color: var(--jade); letter-spacing: .2em; }
+  .drawer__list { flex: 1; overflow-y: auto; padding: 16px 20px; }
+  .ev { padding: 10px 0 10px 18px; border-left: 1px solid var(--line); position: relative; font-size: 12.5px; color: var(--paper-2); animation: emerge .4s both; }
+  .ev::before { content: ""; position: absolute; left: -4px; top: 16px; width: 7px; height: 7px; border-radius: 50%; background: var(--paper-3); }
+  .ev--jade::before { background: var(--jade); box-shadow: 0 0 8px #3ecf9a66; }
+  .ev--brass::before { background: var(--brass); }
+  .ev--iris::before { background: var(--iris); box-shadow: 0 0 10px var(--iris); animation: breathe 1.3s infinite; }
+  .ev b { color: var(--paper); font-weight: 600; }
+  .ev time { display: block; font-family: var(--mono); font-size: 9.5px; color: var(--paper-3); margin-top: 3px; }
+
+  /* ---------- ⌘K 任务浮层 ---------- */
+  .palette {
+    position: fixed; inset: 0; z-index: 55;
+    background: #0a0c0bb8; backdrop-filter: blur(8px);
+    display: none; align-items: flex-start; justify-content: center; padding-top: 16vh;
+  }
+  .palette--open { display: flex; animation: fade .18s ease both; }
+  @keyframes fade { from { opacity: 0; } }
+  .palette__box {
+    width: min(560px, 90vw);
+    background: var(--ink-card); border: 1px solid #ffffff1f; border-radius: 18px;
+    box-shadow: 0 30px 90px #000000cc;
+    overflow: hidden;
+    animation: pop .22s cubic-bezier(.2,.8,.2,1) both;
+  }
+  @keyframes pop { from { opacity: 0; transform: translateY(-10px) scale(.98); } }
+  .palette__input { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+  .palette__input input { flex: 1; background: none; border: 0; outline: 0; color: var(--paper); font-size: 15px; font-family: inherit; }
+  .palette__input input::placeholder { color: var(--paper-3); }
+  .palette__group { padding: 10px 10px 14px; }
+  .palette__heading { padding: 8px 12px 6px; font-family: var(--mono); font-size: 9px; letter-spacing: .26em; color: var(--paper-3); }
+  .prow { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; cursor: pointer; font-size: 14px; }
+  .prow:hover, .prow--sel { background: #ffffff0c; }
+  .prow__dot { width: 6px; height: 6px; border-radius: 50%; }
+  .prow small { margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--paper-3); }
+  .prow--sel small { color: var(--jade); }
+
+  /* ---------- 悬浮 Compose ---------- */
+  .compose {
+    position: fixed; bottom: 26px; left: 50%; transform: translateX(-42%); z-index: 40;
+    width: min(680px, 60vw);
+  }
+  .compose__pill {
+    display: flex; align-items: center; gap: 12px;
+    background: #1b211dee; backdrop-filter: blur(16px);
+    border: 1px solid #ffffff1f;
+    border-radius: 999px;
+    padding: 8px 8px 8px 22px;
+    box-shadow: 0 16px 50px #000000aa;
+    transition: border-color .2s, box-shadow .2s;
+  }
+  .compose__pill:focus-within { border-color: #3ecf9a66; box-shadow: 0 16px 50px #000000aa, 0 0 0 4px #3ecf9a14; }
+  .compose__pill input { flex: 1; background: none; border: 0; outline: 0; color: var(--paper); font: inherit; font-size: 14px; }
+  .compose__pill input::placeholder { color: var(--paper-3); }
+  .compose__chip {
+    display: flex; align-items: center; gap: 6px; flex: none;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; color: var(--iris);
+    border: 1px solid #7c9fe844; border-radius: 999px; padding: 4px 11px;
+  }
+  .compose__send {
+    width: 38px; height: 38px; border-radius: 50%; border: 0; cursor: pointer; flex: none;
+    background: linear-gradient(140deg, var(--jade), #2bb386); color: #08130e;
+    font-size: 16px; font-weight: 700;
+    box-shadow: 0 4px 16px #3ecf9a44;
+    transition: transform .15s;
+  }
+  .compose__send:hover { transform: scale(1.06); }
+
+  ::-webkit-scrollbar { width: 9px; }
+  ::-webkit-scrollbar-thumb { background: #ffffff1c; border-radius: 5px; border: 2px solid var(--ink-bg); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="orb"></span>
+  <span class="wordmark">SYNC-THINK</span>
+  <div class="topbar__right">
+    <span class="rt"><i></i>RUNTIME</span>
+    <button class="shelf-btn" onclick="togglePalette(true)">任务架 <kbd>⌘K</kbd></button>
+  </div>
+</div>
+
+<div class="scroll" id="scroll">
+  <div class="page">
+    <!-- 历程线 -->
+    <div class="lifeline"><div class="lifeline__fill"></div><div class="lifeline__tip"></div></div>
+    <div class="knot knot--phase" style="top:118px"></div>
+    <div class="knot knot--phase" style="top:46%"></div>
+    <div class="knot knot--iris" style="top:57%"></div>
+
+    <!-- 卷首 -->
+    <header class="hero">
+      <div class="hero__eyebrow">RUN 01J…X4 · 进行中</div>
+      <h1 class="hero__title">前端视觉重做</h1>
+      <div class="hero__meta">
+        <span>阶段 <b>视觉稿评审</b></span>
+        <span>上下文 <b>8.2k tokens</b></span>
+        <span>证据 <b>14 条</b></span>
+        <span>交接 <b>2 次</b></span>
+      </div>
+    </header>
+
+    <div class="chapter"><b>第一章</b> 澄清</div>
+
+    <div class="beat beat--user">
+      <div class="said">页面太素了，像通用 AI 壳。给我一版只属于 SYNC-THINK 的方向。</div>
+    </div>
+
+    <div class="chapter"><b>第二章</b> 设计</div>
+
+    <div class="beat beat--agent">
+      <div class="who"><span class="who__name who__name--jade">Planner</span><time>14:02:11</time></div>
+      <div class="said">
+        <p>那签名元素不该是某个面板，而是「工作本身在推进」这件事。这条左侧的历程线就是连续体：玉绿是已经写完的章节，鸢尾蓝是正在书写的现在，灰线是未到的空白。你滚动历史时，线不动——它是这卷工作的脊柱。</p>
+        <p>轨迹不再是常驻栏，收成右缘一条心电边条，事件是跳动的刻度，要看细节再拉开。草案写入 <code>d-the-scroll.html</code>。</p>
+      </div>
+    </div>
+
+    <div class="handoff">
+      <span class="handoff__label"><b>PLANNER</b> 交接 <b>DESIGNER</b></span>
+      <span class="handoff__thread"></span>
+      <span class="handoff__label">ctx 8.2k · 证据 6</span>
+    </div>
+
+    <div class="beat beat--agent">
+      <div class="who"><span class="who__name who__name--iris">Designer</span><time>14:02:40</time></div>
+      <div class="said">
+        <p>审批我做成了一道「闸门」：它横跨整个长卷，不断行行高、不用弹窗。批准是一枚有物理感的铜杆——拉下它，Run 才继续流动。</p>
+        <p><span class="typing"><i></i><i></i><i></i></span></p>
+      </div>
+    </div>
+
+    <!-- 审批闸门 -->
+    <div class="gate">
+      <div class="gate__eyebrow"><i></i>GATE · 需要批准</div>
+      <div class="gate__title">写入设计 token v2</div>
+      <p class="gate__desc">Designer 请求修改 <code>15-frontend-design-tokens.json</code> 的色板与字阶，影响全量组件。diff：+42 / −18 行。</p>
+      <div class="gate__actions">
+        <button class="lever">批准并继续</button>
+        <button class="ghost">查看 diff</button>
+        <button class="ghost">拒绝</button>
+        <span class="gate__hint">⏎ 批准 · esc 稍后</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- 心电边条 -->
+<div class="ekg" onclick="toggleDrawer()" title="点击展开 Run 轨迹">
+  <span class="ekg__live"></span>
+  <div class="ekg__ticks">
+    <span class="tick tick--jade" style="top:4%"></span>
+    <span class="tick tick--jade" style="top:12%"></span>
+    <span class="tick tick--jade" style="top:23%"></span>
+    <span class="tick tick--jade" style="top:31%"></span>
+    <span class="tick" style="top:40%"></span>
+    <span class="tick tick--brass" style="top:52%"></span>
+    <span class="tick tick--iris" style="top:61%"></span>
+  </div>
+  <span class="ekg__label">RUN TRACE</span>
+</div>
+
+<!-- 轨迹抽屉 -->
+<aside class="drawer" id="drawer">
+  <div class="drawer__head"><h2>Run 轨迹</h2><span>● LIVE</span></div>
+  <div class="drawer__list">
+    <div class="ev ev--jade"><b>任务创建</b> · 前端视觉重做<time>14:01:02 · orchestrator</time></div>
+    <div class="ev ev--jade"><b>上下文装配</b> · 8.2k tokens · 6 证据<time>14:01:03 · memory</time></div>
+    <div class="ev ev--jade"><b>Planner 完成</b> · 产出方向草案<time>14:02:11 · agent/planner</time></div>
+    <div class="ev ev--jade"><b>交接</b> · Planner → Designer<time>14:02:12 · handoff</time></div>
+    <div class="ev ev--brass"><b>审批请求</b> · tokens.json 写入<time>14:02:52 · policy</time></div>
+    <div class="ev ev--iris"><b>Designer 生成中</b> · token v2 草拟<time>now · agent/designer</time></div>
+  </div>
+</aside>
+
+<!-- ⌘K 浮层 -->
+<div class="palette" id="palette" onclick="if(event.target===this)togglePalette(false)">
+  <div class="palette__box">
+    <div class="palette__input">
+      <span style="color:var(--paper-3)">⌕</span>
+      <input placeholder="切换任务、工作区，或输入命令…" autofocus />
+      <kbd style="font-family:var(--mono);font-size:9.5px;color:var(--paper-3);border:1px solid var(--line);border-radius:4px;padding:2px 6px">esc</kbd>
+    </div>
+    <div class="palette__group">
+      <div class="palette__heading">SYNC-THINK · 进行中的任务</div>
+      <div class="prow prow--sel"><span class="prow__dot" style="background:var(--jade);box-shadow:0 0 6px var(--jade)"></span>前端视觉重做<small>● 运行中 · 当前</small></div>
+      <div class="prow"><span class="prow__dot" style="background:var(--brass)"></span>审批策略 v2<small>待批 1</small></div>
+      <div class="prow"><span class="prow__dot" style="background:var(--paper-3)"></span>记忆回滚验证<small>昨天</small></div>
+    </div>
+    <div class="palette__group">
+      <div class="palette__heading">工作区</div>
+      <div class="prow"><span class="prow__dot" style="background:var(--paper-3)"></span>side-notes<small>4 个任务</small></div>
+    </div>
+  </div>
+</div>
+
+<!-- 悬浮 Compose -->
+<div class="compose">
+  <div class="compose__pill">
+    <input placeholder="继续推进，或 @ 某个 Agent…" />
+    <span class="compose__chip">DESIGNER · OPUS</span>
+    <button class="compose__send">↑</button>
+  </div>
+</div>
+
+<script>
+  const drawer = document.getElementById('drawer');
+  const palette = document.getElementById('palette');
+  function toggleDrawer() { drawer.classList.toggle('drawer--open'); }
+  function togglePalette(open) { palette.classList.toggle('palette--open', open); }
+  window.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); togglePalette(true); }
+    if (e.key === 'Escape') { togglePalette(false); drawer.classList.remove('drawer--open'); }
+  });
+</script>
+
+</body>
+</html>

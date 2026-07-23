@@ -1,3 +1,276 @@
+## 2026-07-23 · 联网开关真正生效（web_search / web_fetch）
+
+- **原状**：Compose 地球图标只改本地 `netEnabled` 状态，不进 Runtime
+- **修复**：
+  - `appendMessage.networkEnabled` → `DemoRunState` → 本轮暴露 `web_search` / `web_fetch`
+  - 无项目文件夹也可仅用联网工具；system prompt 说明开关状态
+  - `web_fetch` 禁私网/本地主机；`web_search` 用 DuckDuckGo Instant Answer（免 Key MVP）
+- 验证：chat-tools 单测；protocol/runtime/desktop rebuild
+
+## 2026-07-23 · Vision 静默丢图诊断
+
+- **现象**：图片已落 staging，但模型仍称「看不到图」时难以判断是解析失败还是 provider 未吃到 image parts
+- **修复**：
+  - Desktop 落盘 staging 时 log `staged chat image`（path/bytes）
+  - Runtime resolve 失败逐项 warn；全部失败明确「model will only see text」
+  - 发往 provider 前核对 `run.images` vs 末条 user 的 image parts 数量
+- 验证：staging 可读 + pipe ready；runtime/desktop rebuild
+
+## 2026-07-23 · C 盘满导致 Runtime SQLITE_FULL + 数据目录迁 D
+
+- **现象**：发图后 `database or disk is full` / append 失败；C: 仅剩约 14MB
+- **处理**：清理 `SYNC-THINK/backups`（约 3GB）与部分 Temp；DB 复制到 `D:/projects/MYSELF/SYNC-THINK/.data/SYNC-THINK/`
+- **代码**：managed Runtime 默认把 `SYNC_THINK_DB_PATH` / `SYNC_THINK_CHAT_IMAGE_STAGING` 指到 monorepo `.data`，避免再被 C: 塞满拖死
+
+## 2026-07-23 · 图片 pipe 1MB 上限：磁盘 staging + 发送前压缩
+
+- **根因**：named pipe 帧 `MAX_FRAME_BYTES = 1 MiB`；截图 data URL base64 常 2–3MB+，`task.appendMessage` 无法把图送到 Runtime，模型只看到文本
+- **修复**：
+  - Desktop 主进程把图片写入 `%LOCALAPPDATA%/SYNC-THINK/chat-image-staging/`，pipe 只传 `stagingPath`
+  - Runtime 读 staging 文件再组多模态 content
+  - 渲染层发送前 canvas 压缩（长边≤1600，JPEG）降低 provider 体积
+- 验证：runtime chat-image-staging 单测；desktop/runtime rebuild + 热重启
+
+## 2026-07-23 · 修复图片仍被模型当「路径」：Runtime 热重启 + 消息拼装
+
+- **根因 A**：Desktop 重建后旧 Runtime 仍占 named pipe，supervisor 见 pipe 通就复用 → 新多模态代码未加载
+- **根因 B**：用户正文里夹了「附件图片：- xxx.png」文本，模型按文件路径理解
+- **修复**：
+  - supervisor 每次 Desktop 会话首次连接强制回收 orphan Runtime（PID 文件 + taskkill），再拉起最新 `runtime/dist/main.js`
+  - `buildMessageWithAttachments` 不再写「附件图片」文本 footer；图片只走 `images[]`
+  - `buildChatMessagesFromEvents` 有图时强制把末条 user 升级为多模态 content
+- 验证：rebuild runtime/desktop；冷启动后发图应不再出现「路径不存在」
+
+## 2026-07-23 · 图片多模态真正下发 + 拖拽上传
+
+- **下发**：`appendMessage.images[]`（data URL）→ `DemoRunState.images` → `buildChatMessagesFromEvents` 多模态 content → OpenAI `image_url` / Anthropic `image.source`
+- **持久化策略**：图片不写进 durable event 大 blob（只当前 run 使用）；历史轮次仍以文本「附件图片」说明
+- **Compose**：支持拖入图片到输入区（拖拽高亮）；原有选图/粘贴保留
+- 验证：chat-tools + stream-chat 单测；protocol/runtime/desktop build
+
+## 2026-07-23 · 启动卡住修复 + 推理菜单纯文字
+
+- **根因**：Desktop 只连 named pipe，不会自动拉起 Runtime；重建/冷启动若未先跑 `pnpm dev:runtime`，侧栏长期「加载中…」，点击像没反应
+- **修复**：
+  - 主进程 `runtime-supervisor`：pipe 不通时自动 spawn `apps/runtime/dist/main.js` 并等待就绪
+  - Shell 启动用 `startRuntimeConnection` 可重试（给 Runtime 起服时间）
+  - 退出时 stop 托管 Runtime
+- **推理菜单**：去掉图标与说明，仅文字档位（自动/关闭/低/中/高/超高/极限）
+- **Release 说明**：正式版同样必须内置/随启 Runtime；仅打包 Electron 壳仍会连不上。supervisor 是正确方向
+- 验证：desktop typecheck + shell build
+
+## 2026-07-23 · Compose 图片上传 + 自适应高度 + 固定推理全档
+
+- **推理强度**：固定全阶梯 自动/关闭/低/中/高/超高/极限（不再按模型筛选）；权限/推理菜单项加左侧图标，减少「空列表感」
+- **输入框自适应**：textarea 随内容增高（约 56–220px），对齐 NewMax
+- **图片上传**：底栏 ImagePlus；支持选择多图、剪贴板粘贴；chip 缩略图；消息气泡内可点开 lightbox 大图
+- 说明：图片目前为本地预览 + 文本侧车说明，尚未走多模态 provider 上传
+- 验证：compose-toolbar / compose-mention 单测；shell build
+
+## 2026-07-23 · 推理强度按模型动态档位（已回退为固定全档）
+
+- 曾短暂按 modelId 启发式裁剪档位；用户要求先固定全档 + 超高/极限，故取消筛选
+
+## 2026-07-23 · 桌面默认启动新壳（renderer-shell）
+
+- **根因**：`electron .` 未设 `SYNC_THINK_SHELL=1` 时加载旧任务板 `dist/renderer`，看起来像「一夜回到解放前」
+- **修复**：主进程默认加载 `renderer-shell`；`SYNC_THINK_SHELL=0|false|legacy` 才回旧壳
+- 验证：rebuild main + 重启
+
+## 2026-07-23 · 推理强度真正下发 + 深度思考块
+
+- **Compose 推理强度**：`appendMessage.reasoningEffort` 经 runtime `prepareRunBinding` → `DemoRunState` → `ProviderCallRequest` 下发到 OpenAI/Anthropic/Responses adapter
+- **Adapter**：`reasoning_effort` / Anthropic `thinking.budget_tokens`；解析 `reasoning_content` / thinking_delta / responses reasoning 为 `reasoning-delta` 事件
+- **投影**：`message.reasoning_delta` 与 `run.completed.reasoningText`；不与正文混写
+- **UI**：助手消息上方可折叠「深度思考」块（有数据才显示；思考中默认展开）
+- 验证：adapters reasoning + stream-chat；runtime demo-run.reasoning；desktop event-history；typecheck/build
+
+## 2026-07-23 · 修复 Compose 菜单/@ 被 overflow 裁切
+
+- **根因**：聊天列 / 页面 flex 容器 `overflow-hidden`，菜单与 @ 列表向上弹出时只露出一截，看起来像「只有一项」
+- **修复**：权限/推理/模型菜单、@ 文件列表改为 `createPortal` + `position: fixed` 锚定触发器；点击外部关闭时忽略触发按钮自身
+- 验证：desktop typecheck + shell build
+
+## 2026-07-23 · Compose 菜单/模型选择对齐 NewMax
+
+- **权限 / 推理**：点击弹出菜单（标题+说明+勾选），不再点击循环
+- **模型**：厂商 → 模型 两级选择（搜索、返回、当前模型），去掉原生 select 平铺
+- **@**：仅输入 `@` 触发引用，底栏不再放 @ 按钮
+- **上下文环**：按当前模型估算窗口上限 + 已用 tokens（usage 事件或本地字符粗估）
+- 验证：desktop typecheck + shell build
+
+## 2026-07-23 · Compose 输入栏对齐 NewMax（附件 chip + 底栏工具）
+
+- **@ 选中**：不再插入 `@path` 文本，改为上方附件 chip（文件名 + 移除）
+- **发送**：正文 +「引用文件」列表一并交给模型
+- **底栏工具**（对照 NewMax 图标语义）：
+  - 盾牌 = 权限三档
+  - 地球 = 联网开关
+  - 大脑 = 推理强度（自动/低/中/高）
+  - 拼图 = Skill 占位
+  - @ = 打开文件引用
+  - 右侧模型选择 + 上下文环占位 + 圆形发送
+- 验证：compose-mention 测试；desktop typecheck + build
+
+## 2026-07-23 · 执行步骤 UI 对齐 NewMax 工具卡
+
+- **去掉外层「执行过程 · N 步」大框**，每步独立卡片
+- 标题中文：`读取文件` / `执行命令` / `列出文件` + 状态勾选
+- 展开体字段：`Path` / `Command` / `Output`（像 NewMax 详情）
+- 运行中与最近两步默认展开，其余可点开
+- 验证：desktop typecheck + shell build
+
+## 2026-07-23 · P2 Compose @ 文件引用
+
+- **主进程** `desktop:list-project-files`：在绑定项目根目录下遍历文件（跳过 node_modules/dist/.git 等），支持模糊过滤 + 数量/深度上限
+- **Compose**：输入 `@` 弹出文件选择器；↑↓ 选择 / Enter·Tab 插入 / Esc 关闭；插入为 `@相对路径 `
+- **未绑定项目**：弹出层提示需先绑定文件夹
+- 验证：compose-mention + project-files 单测；desktop typecheck + build
+
+## 2026-07-23 · P2 对话管理：侧栏搜索 + 归档区
+
+- **搜索**：最近对话顶部搜索框，本地过滤标题 / 目标显示名 / targetRef
+- **归档区**：`listConversations({ includeArchived: true })`；侧栏底部可折叠「归档」；菜单支持取消归档
+- 验证：shell-state 测试；desktop typecheck + shell build
+
+## 2026-07-23 · 「询问批准」改为确认卡（非直接禁写）
+
+- **语义修正**：`ask` 不再隐藏/硬拒 `write_file`/`run_command`；模型仍可请求，runtime 挂起并 emit `tool.approval_requested`
+- **用户确认**：消息流出现批准卡（路径/命令 + 批准/拒绝）；`conversation.decideToolApproval` 继续或拒绝工具循环
+- **workspace / full-access**：仍自动执行项目内写/命令
+- 验证：chat-tools 测试更新；protocol/runtime/desktop 构建
+
+## 2026-07-23 · P1 收尾：权限三档生效 + 停止生成
+
+- **权限持久化**：Compose 权限 pill 切换时调用 `setConversationExecutionMode` 落库，失败回滚本地态
+- **权限生效**：runtime 按 `conversation.executionMode` 裁剪内置工具；`ask/read-only` 仅只读工具，`write_file/run_command` 本地拒绝并返回中文提示；system prompt 同步声明权限档
+- **停止生成**：流式中 Compose 发送钮变停止，调用 `run.cancel`；demo run 持有 `AbortController`，取消时中止 provider 流与工具循环
+- 验证：chat-tools 4/4；storage/runtime/desktop 构建通过
+
+## 2026-07-23 · 文件变更 UI 精修（对齐 NewMax 编辑器感）
+
+- **消息内卡片**：去掉嵌套边框，扁平行 + chevron 展开；单文件默认展开，多文件列表优先
+- **代码预览**：highlight.js 按扩展名高亮；软 gutter（无竖线）；行高/字号贴近编辑器
+- **右栏 Changes**：加宽 360px；文件列表 + 编辑器顶栏（文件名/路径/A|M|D）+ 全高预览
+- 验证：desktop typecheck + shell build；execution-process 6/6
+
+## 2026-07-23 · 文件变更内联内容预览（对齐 NewMax）
+
+- **根因**：`write_file` 的 tool result 只有 `{created, bytes}`，投影层把 preview 写成「已写入」；真正正文在 `arguments.content`，且常只出现在 `tool.requested`
+- **修复**：
+  - `projectExecutionProcess` 从 write 参数提取正文，跨 requested→completed 缓存 content
+  - `fileChanges.preview` / 步骤 preview 改为文件正文（带行数截断）
+  - `FileChangesCard` 默认在路径下内联带行号的代码预览
+  - 右栏 Changes 同步用 `CodePreview` 展示正文
+- 验证：execution-process 6/6
+
+## 2026-07-23 · 冷启动不再等全量事件回放
+
+- **根因**：`RuntimeSession.connect()` 会 `await subscribeEvents(0)` 把历史事件全部 catch-up 完才返回；Shell 又在 `connect().then(refresh)` 之后才 `listConversations`，所以打开应用要等很久侧栏才有对话
+- **修复**：
+  - `connect()` 只等 pipe/hello + healthcheck，事件回放改后台追赶
+  - 事件去重改为 `Set` O(1)，顺序追加避免每条事件全量 merge
+  - Shell 显示「加载中…」状态，连接成功后立刻刷对话列表
+- 验证：`runtime-session` 2/2、desktop typecheck + full desktop build
+
+## 2026-07-23 · 执行过程默认直出路径 + 右栏去掉过程
+
+- **过程步骤默认可见**：`Read/List/Edit/Bash` 后直接显示路径或命令，无需点开；附一行结果摘要
+- **输出预览改为可选**：「查看输出」才展开全文，避免默认刷屏
+- **文件变更卡片**默认列出全部改动文件
+- **右栏去掉「过程」Tab**，避免与对话内执行过程重复；右栏只保留 Changes / 任务
+- 验证：desktop typecheck、shell 构建、execution-process 5/5
+
+## 2026-07-23 · 执行过程明细 / 消息底栏 / 文件变更 Changes（对齐 NewMax）
+
+- **执行过程明细卡**：步骤标题中英混合（`Read · path` / `Bash · cmd`）；可点开看路径、命令、输出预览、exit code；相邻同操作合并 `×N`
+- **消息底栏**：助手消息底部固定「复制 / 重新生成 / 分享」；分享先复制 Markdown；有 `provider.usage` 时显示 token
+- **文件变更卡片**：聚合本轮 `write_file` 为「已更改 N 个文件」；支持展开全部 / 侧栏查看
+- **右栏 Changes Tab**：文件列表 + 预览；从消息卡片或过程路径点入自动打开
+- 验证：desktop typecheck；shell 构建；聚焦测试 **15/15**
+
+## 2026-07-23 · 聊天多轮上下文 + 工作区文件工具
+
+- **根因 A（看不到上下文）**：聊天 run 只发「当前这一句」`userText`，没有把同 thread 的历史 user/assistant 轮次喂给模型
+- **根因 B（读不到目录）**：聊天路径既没注册 `list_files/read_file` 等内置工具，也没在模型请求 tool-call 后本地执行；且仅当对话所属 workspace 绑定了真实 `folderPath` 才可启用文件工具
+- **修复**：
+  - `buildChatMessagesFromEvents` 从 durable events 组装多轮上下文
+  - 绑定项目文件夹时注入 `CHAT_BUILT_IN_TOOL_SCHEMAS`，并在 `tool-requests` 后本地执行工具再回灌模型
+  - 未绑定文件夹时 system prompt 明确告知不可读本地目录；ChatView 顶部显示「未绑定项目文件夹」警告
+- 验证：runtime/desktop typecheck；chat-tools + demo-run **8/8**；shell 重建
+
+## 2026-07-23 · 新壳消息悬停操作条 + 对话内执行过程块
+
+- **悬停操作条**：用户/助手消息悬停显示「复制」按钮（NewMax 式轻量浮层），复制成功显示「已复制」
+- **对话内执行过程**：助手消息上方可折叠「执行过程 · N 步」；从 eventHistory 投影 tool requested/completed/failed；相邻同标签合并 `×N`；流式时默认展开
+- 新增 `execution-process.ts` / `ExecutionProcessBlock.tsx`；单测 3/3；shell 构建通过
+
+## 2026-07-23 · 新壳消息 Markdown + 代码高亮（对齐 NewMax）
+
+- **助手消息**改为 GFM Markdown 渲染（标题/列表/引用/表格/任务列表/链接），不再纯文本 `pre-wrap`
+- **代码块**：语言标签 + 一键复制 + highlight.js 语法着色；行内 code 单独样式
+- **流式**：输出中显示光标；用户消息保持纯文本密气泡（更接近 NewMax）
+- 新增 `shell/MarkdownContent.tsx` + 样式 token 化（深浅色）；单测 3/3 通过
+- 依赖：desktop 增加 `react-markdown` / `remark-gfm` / `rehype-highlight` / `highlight.js`
+
+## 2026-07-23 · 新壳重进对话恢复历史消息
+
+- **根因**：ChatView 打开时清空本地消息，只监听实时 `message.delta` / `run.completed`，从不加载 connect snapshot / 事件历史；`Conversation` 摘要也未暴露 `taskId`，无法解析 thread。
+- **修复**：
+  - `Conversation` / `toConversationSummary` 带出 `taskId`
+  - ShellApp 维护 shell 级 `eventHistory`（connect snapshot + live `onEvent`）
+  - ChatView 用 `openTask` 解析 `threadId`，再以 `projectConversation(eventHistory, threadId)` 投影用户/助手消息
+  - 发送仍走乐观本地气泡，等 durable history 落地后自动去重
+- 验证：desktop typecheck + 新壳构建；实窗重开已有对话应看到历史消息。
+
+## 2026-07-23 · P1.1 对话↔任务绑定（数据层）
+
+- **迁移 0025 `conversation_task_binding`**：`conversation` 表新增可空 `task_id` 列 + `conversation_task_idx` 索引；对话首条消息惰性创建的 task 将绑定于此（一对话一 task）。
+- **`SqliteConversationStore.bindTask()`**：幂等绑定——已绑同 task 直接返回，绑不同 task 抛错，守住「一对话一 task」不变量；`ConversationRecord`/`get`/`SELECT` 均带出 `taskId`。
+- **测试**：team-model 新增 bindTask 幂等/拒绝用例；migrate / artifact-store / reviewer-rework 的迁移序断言同步到 0025。storage 全量 **232/232**、`tsc` + 构建通过（Node 20 运行 vitest）。
+- **说明（下一片 P1.2 前需定）**：runtime 侧「首条消息惰性建 task」尚未接——现有 `createTask` 必须绑定 workspace 且硬编码 `participation_mode='conversation'`，而对话可为「未归类」（无 workspace）。需先定：未归类对话的 task 落在哪个 workspace（收件箱/默认），以及 track→participation_mode 映射（当前二者正交、无映射）。
+
+## 2026-07-23 · 新壳侧栏微调：⋯ 悬停菜单 + 可收起面板
+
+- **行操作改悬停 ⋯ 菜单**：会话行去掉右键 ContextMenu，改为悬停/置顶时浮现的 `⋯`（MoreHorizontal）按钮，点击打开 Radix DropdownMenu（重命名 / 置顶 / 归档 / 删除），对齐 NewMax 交互；菜单打开时按钮保持可见，点击不误触打开对话。置顶态单独常显图钉。
+- **侧栏可收起**：`ShellNavState.sidebarCollapsed` + `toggleSidebar` reducer；展开态标题栏有收起按钮，收起后为 52px 图标轨（一级导航图标 + 展开按钮）。
+- 验证：shell-state 测试 **7/7**、desktop `tsc --noEmit`、新壳构建通过；bundle 含 `conversation-menu-trigger` / `sidebar-toggle`。
+
+## 2026-07-22 · 新壳 P0 完成：选择弹窗 / 标题 / 顶栏项目 Tab / 右键菜单
+
+- **P0.1 标题**：侧栏与会话头不再显示裸 targetRef；模型对话经 Provider 目录解析显示名，未命中兜底「模型对话」。
+- **P0.2 新建选择弹窗**：三个 ＋ 打开 Radix Dialog；模型按厂商两级分组 + 搜索；智能体/小队列表带空态「去库创建」跳转；选中即建并打开。
+- **P0.3 顶栏项目 Tab**：「全部」+ 项目 Tab（悬停显示路径）+「＋打开文件夹」（pickFolder→createWorkspace）；对话按项目过滤，新对话归属当前项目；无项目时「未归类」正常可用。
+- **P0.4 右键菜单**：会话行 Radix ContextMenu：重命名（prompt）/ 置顶 / 归档 / 删除（二次确认）；删除/归档当前会话时清除选中态。
+- 验证：shell-state 测试 **6/6**、desktop `tsc --noEmit`、新壳构建通过；实窗验收通过（P0.1–P0.3 用户已确认，P0.4 本条随附）。
+- 规格状态更新：`2026-07-22-full-roadmap-newmax-parity.md` P0 标记完成，下一阶段 P1（聊天核心）。
+
+## 2026-07-22 · 可变 Agent/小队真表 + 一等对话 + NewMax 壳重写启动
+
+- **数据模型（迁移 0024）**：新增可变 `agent` / `team` / `team_member` / `team_run` / `conversation` 五表；`agent` 由旧 `agent_version` 链每个 agentId 的最新版本一次性种子；未发布的 `team_template*` 三表 DROP。编辑即 UPDATE，无版本链；唯一历史是小队开跑时冻结进 `team_run.roster_snapshot_json` 的成员快照（进行中 Run 不受后续编辑影响）。
+- **权限唯一旋钮**：`conversation.execution_mode` 是产品里唯一权限面；agent / team_member 表不含任何权限列。置顶（pinnedAt）为 DB 真源，替代本机 UI 偏好置顶。
+- **协议与 Runtime**：新增 18 条命令（globalAgent 4 + team 6 + conversation 8），含 payload 严格校验、事件发布、错误映射；`upgradeTrack` 仅允许 model→agent/team。Desktop main IPC / preload 桥 / global.d.ts 全链接通。
+- **新渲染层骨架**（`src/renderer/shell/`，Tailwind v4 + Radix + lucide）：NewMax 风格 design tokens（深浅色跟随系统）、最近对话三分组侧栏（各组独立 +、置顶、树状层级）、舞台切换；`SYNC_THINK_SHELL=1` 加载新壳，旧 renderer 并行保留至功能对齐。
+- 规格：`docs/superpowers/specs/2026-07-22-mutable-team-model-and-shell-rewrite.md`（Locked）。
+- 验证：storage **231/231**（含新模型 11 项与迁移断言更新）、runtime 聚焦 **11/11**、protocol **16/16**、desktop shell **5/5** + `tsc --noEmit`、全仓 `pnpm build` **11/11**。
+
+## 2026-07-23 · 最近对话层级与置顶
+
+- 左栏取消 `模型 / 智能体 / 小队` 平铺切换与 `今天 / 昨天 / 近 7 天 / 更早` 日期分组，改为 `最近对话 → 模型对话 / 智能体对话 / 小队对话 → 会话` 的可折叠层级。
+- 每个对话类型标题右侧提供独立 `+`；新建后固定归入对应类型，Compose 不再承担对象类型切换。
+- 会话行新增置顶/取消置顶，置顶项只在所属类型内提到前面，不跨类型重排；折叠状态、置顶和兼容期 track 元数据保存在本机 UI 偏好。
+- 左栏视觉收敛为 NewMax 式安静密度：弱化品牌、分隔与大按钮，统一深浅色 token、hover/focus/选中态，并保留键盘可达与减少动画支持。
+- 本轮不更换 Electron + React 技术栈：现有栈足以实现目标视觉，换栈不能替代信息架构、组件层级和 token 设计。
+- 验证：Desktop 聚焦测试 **28/28**、typecheck、Desktop build 通过。
+
+
+- 规格锁定：`docs/superpowers/specs/2026-07-22-newmax-shell-nav-agent-model.md`（权限只跟对话、Agent 默认 Skill 进项目可用、子任务默认嵌本对话、分屏 P0/P1、统筹代审等）。
+- Desktop 主导航改为 NewMax 式一级：`对话 / 项目 / 智能体 / 小队 / 能力 / 设置`；对话下增加三轨 `模型对话 / 智能体对话 / 小队对话`。
+- 新增 `product-shell-nav.ts` 投影主舞台、右栏产品 Tab、Compose talk target 与升级规则；遗留 left-instrument 仅作抽屉兼容映射。
+- Compose 增加对象选择器骨架：`模型 | 智能体 | 小队`，与左侧 talk track 双向同步；权限仍为对话级三档，不给 Agent 再配权限。
+- 分屏能力写入规格：P0 右栏弱分屏，P1 双对话分屏与项目「对话|文件」分屏。
+- 验证：Desktop 导航相关 **26/26**；UI Kit Compose **33/33**；`@sync-think/ui-kit` build；`@sync-think/desktop` `tsc --noEmit` + build 通过。
+
 ## 2026-07-16 · 对话优先工作区与自动协作升级
 
 - 左侧项目树不再常驻显示绑定目录或“未绑定文件夹”副标题；完整目录只在项目 hover / focus tooltip 中出现。

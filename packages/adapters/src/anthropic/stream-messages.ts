@@ -1,5 +1,6 @@
 import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
 import { scrubSecrets, normalizeOpenAICompatibleBaseUrl } from '../openai/discover-models.js';
+import { anthropicReasoningBodyFields } from '../reasoning.js';
 import type { FailureClass } from '@sync-think/shared';
 import {
   closeResponseReader,
@@ -39,6 +40,12 @@ function messageContentToString(message: ProviderMessage): string {
     .join('');
 }
 
+function parseDataUrl(dataUrl: string): { mediaType: string; data: string } | null {
+  const match = /^data:([^;]+);base64,(.+)$/s.exec(dataUrl.trim());
+  if (!match) return null;
+  return { mediaType: match[1]!, data: match[2]! };
+}
+
 function toAnthropicMessages(
   request: ProviderCallRequest,
 ): Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }> {
@@ -76,6 +83,37 @@ function toAnthropicMessages(
       }
       if (blocks.length > 0) {
         out.push({ role: 'assistant', content: blocks });
+        continue;
+      }
+    }
+    // Multimodal user content (text + images as base64 source).
+    if (Array.isArray(message.content) && message.role === 'user') {
+      const blocks: Array<Record<string, unknown>> = [];
+      for (const part of message.content) {
+        if (part.type === 'text' && part.text) {
+          blocks.push({ type: 'text', text: part.text });
+        } else if (part.type === 'image') {
+          const url = part.imageUrl || part.imageRef || '';
+          const parsed = parseDataUrl(url);
+          if (parsed) {
+            blocks.push({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: parsed.mediaType,
+                data: parsed.data,
+              },
+            });
+          } else if (url.startsWith('http://') || url.startsWith('https://')) {
+            blocks.push({
+              type: 'image',
+              source: { type: 'url', url },
+            });
+          }
+        }
+      }
+      if (blocks.length > 0) {
+        out.push({ role: 'user', content: blocks });
         continue;
       }
     }
@@ -181,6 +219,7 @@ export async function* streamAnthropicMessages(
     if (systemParts.length > 0) body.system = systemParts.join('\n\n');
   }
   if (request.temperature !== undefined) body.temperature = request.temperature;
+  Object.assign(body, anthropicReasoningBodyFields(request.reasoningEffort));
   if (request.tools?.length) {
     body.tools = request.tools.map((tool) => ({
       name: tool.name,
@@ -364,6 +403,27 @@ function parseAnthropicStreamEvent(
 
   if (root.type === 'content_block_delta' && root.delta?.type === 'text_delta' && root.delta.text) {
     return [{ type: 'text-delta', text: root.delta.text }];
+  }
+
+  // Extended thinking / reasoning blocks (native Anthropic + compatible proxies).
+  if (
+    root.type === 'content_block_delta' &&
+    (root.delta?.type === 'thinking_delta' || root.delta?.type === 'reasoning_delta') &&
+    (typeof root.delta.text === 'string' || typeof (root.delta as { thinking?: string }).thinking === 'string')
+  ) {
+    const text =
+      typeof root.delta.text === 'string'
+        ? root.delta.text
+        : String((root.delta as { thinking?: string }).thinking ?? '');
+    if (text.length > 0) return [{ type: 'reasoning-delta', text }];
+  }
+  if (
+    root.type === 'content_block_start' &&
+    (root.content_block?.type === 'thinking' || root.content_block?.type === 'reasoning') &&
+    typeof root.content_block.text === 'string' &&
+    root.content_block.text.length > 0
+  ) {
+    return [{ type: 'reasoning-delta', text: root.content_block.text }];
   }
 
   if (root.type === 'content_block_start' && root.content_block?.type === 'tool_use') {

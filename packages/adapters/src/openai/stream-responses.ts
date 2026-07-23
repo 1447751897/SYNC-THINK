@@ -5,6 +5,7 @@ import type {
   ProviderToolCall,
 } from '../types.js';
 import { normalizeOpenAICompatibleBaseUrl, scrubSecrets } from './discover-models.js';
+import { openAiReasoningBodyFields } from '../reasoning.js';
 import {
   closeResponseReader,
   createProviderCallControl,
@@ -236,6 +237,15 @@ function parseResponseEvent(
     return [responseErrorEvent(root.response ?? root, apiKey)];
   }
 
+  if (
+    root.type === 'response.reasoning_summary_text.delta' ||
+    root.type === 'response.reasoning.delta' ||
+    root.type === 'response.reasoning_text.delta'
+  ) {
+    if (typeof root.delta !== 'string' || root.delta.length === 0) return [];
+    return [{ type: 'reasoning-delta', text: root.delta }];
+  }
+
   if (root.type === 'response.output_text.delta' || root.type === 'response.refusal.delta') {
     if (typeof root.delta !== 'string' || root.delta.length === 0) return [];
     state.sawTextDelta = true;
@@ -387,6 +397,7 @@ export async function* streamOpenAIResponses(
   if (instructions) body.instructions = instructions;
   if (request.maxOutputTokens !== undefined) body.max_output_tokens = request.maxOutputTokens;
   if (request.temperature !== undefined) body.temperature = request.temperature;
+  Object.assign(body, openAiReasoningBodyFields(request.reasoningEffort));
   if (request.tools?.length) {
     body.tools = request.tools.map((tool) => ({
       type: 'function',

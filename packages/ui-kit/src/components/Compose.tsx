@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Settings2,
   Square,
+  Users,
 } from 'lucide-react';
 import { ModelPathPicker } from './ModelPathPicker.js';
 
@@ -114,6 +115,22 @@ export interface ComposeProps {
   workspaces?: readonly ComposeWorkspaceOption[];
   selectedWorkspaceId?: string | null;
   onWorkspaceChange?: (workspaceId: string) => void;
+  /**
+   * Talk target kind (Locked NewMax shell): model | agent | team.
+   * Permission stays conversation-scoped; this only switches who you talk to.
+   */
+  talkTargetKind?: 'model' | 'agent' | 'team';
+  onTalkTargetKindChange?: (kind: 'model' | 'agent' | 'team') => void;
+  /** Optional team templates when talkTargetKind === 'team'. */
+  teams?: readonly ComposeTeamOption[];
+  selectedTeamId?: string | null;
+  onTeamChange?: (teamId: string) => void;
+}
+
+export interface ComposeTeamOption {
+  teamId: string;
+  name: string;
+  memberSummary?: string;
 }
 
 
@@ -255,9 +272,17 @@ export function Compose(props: ComposeProps) {
     : internalModelId;
 
   const agents = props.agents ?? [];
-  const showAgentPicker = agents.length > 0 && Boolean(props.onAgentChange);
+  const teams = props.teams ?? [];
+  const talkTargetKind = props.talkTargetKind ?? 'agent';
+  const showTalkTargetSwitch = Boolean(props.onTalkTargetKindChange);
+  const showAgentPicker =
+    talkTargetKind === 'agent' && agents.length > 0 && Boolean(props.onAgentChange);
+  const showTeamPicker =
+    talkTargetKind === 'team' && teams.length > 0 && Boolean(props.onTeamChange);
   const selectedAgent =
     agents.find((agent) => agent.agentId === props.selectedAgentId) ?? agents[0] ?? null;
+  const selectedTeam =
+    teams.find((team) => team.teamId === props.selectedTeamId) ?? teams[0] ?? null;
   const selectedAgentColor = safeAgentColor(selectedAgent?.color);
   const workspaces = props.workspaces ?? [];
   const showWorkspacePicker = workspaces.length > 0 && Boolean(props.onWorkspaceChange);
@@ -268,7 +293,9 @@ export function Compose(props: ComposeProps) {
 
   const showModelRow = modelsProvided;
   const hasModels = models.length > 0;
-  const defaultLabel = props.defaultModelLabel ?? '智能体默认（自动）';
+  const defaultLabel =
+    props.defaultModelLabel ??
+    (talkTargetKind === 'model' ? '当前模型' : '智能体默认（自动）');
 
   const mentionMatches = useMemo(() => {
     if (mentionQuery == null) return [];
@@ -468,8 +495,10 @@ export function Compose(props: ComposeProps) {
       aria-label="Message compose"
       data-mode={props.mode}
       data-streaming={props.streaming ? '1' : '0'}
+      data-talk-target={talkTargetKind}
       data-has-models={showModelRow ? (hasModels ? '1' : '0') : undefined}
       data-has-agents={showAgentPicker ? '1' : '0'}
+      data-has-teams={showTeamPicker ? '1' : '0'}
       data-has-workspaces={showWorkspacePicker ? '1' : '0'}
     >
       {blocker ? (
@@ -504,9 +533,13 @@ export function Compose(props: ComposeProps) {
           className="st-compose__input"
           placeholder={
             props.placeholder ??
-            (selectedAgent
-              ? `@${selectedAgent.name} · 描述你希望完成的工作…`
-              : '输入指令、粘贴上下文，或继续当前任务…')
+            (talkTargetKind === 'team' && selectedTeam
+              ? `小队 ${selectedTeam.name} · 描述要分工完成的工作…`
+              : talkTargetKind === 'model'
+                ? '直接与模型对话…'
+                : selectedAgent
+                  ? `@${selectedAgent.name} · 描述你希望完成的工作…`
+                  : '输入指令、粘贴上下文，或继续当前任务…')
           }
           value={val}
           onChange={(e) => onTextareaChange(e.target.value, e.target.selectionStart ?? 0)}
@@ -554,6 +587,36 @@ export function Compose(props: ComposeProps) {
       </div>
       <div className="st-compose__toolbar">
         <div className="st-compose__model-control">
+          {showTalkTargetSwitch ? (
+            <div
+              className="st-compose__talk-target"
+              data-testid="compose-talk-target"
+              role="tablist"
+              aria-label="对话对象"
+            >
+              {(
+                [
+                  { id: 'model' as const, label: '模型' },
+                  { id: 'agent' as const, label: '智能体' },
+                  { id: 'team' as const, label: '小队' },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  role="tab"
+                  className="st-compose__talk-target-item"
+                  data-testid={`compose-talk-target-${opt.id}`}
+                  data-active={talkTargetKind === opt.id ? '1' : '0'}
+                  aria-selected={talkTargetKind === opt.id}
+                  disabled={props.streaming}
+                  onClick={() => props.onTalkTargetKindChange?.(opt.id)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {showWorkspacePicker && selectedWorkspace ? (
             <div
               className="st-compose__workspace-picker"
@@ -621,6 +684,15 @@ export function Compose(props: ComposeProps) {
                     );
                   })}
                 </div>
+              ) : null}
+            </div>
+          ) : null}
+          {showTeamPicker && selectedTeam ? (
+            <div className="st-compose__team-chip" data-testid="compose-team-chip">
+              <Users size={14} strokeWidth={1.8} aria-hidden="true" />
+              <span>{selectedTeam.name}</span>
+              {selectedTeam.memberSummary ? (
+                <small>{selectedTeam.memberSummary}</small>
               ) : null}
             </div>
           ) : null}

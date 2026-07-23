@@ -102,7 +102,132 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0023_provider_execution_checkpoint',
     sql: providerExecutionCheckpointDdlSql(),
   },
+  {
+    name: '0024_mutable_agent_team_conversation',
+    sql: mutableAgentTeamConversationDdlSql(),
+  },
+  {
+    name: '0025_conversation_task_binding',
+    sql: conversationTaskBindingDdlSql(),
+  },
 ];
+
+function conversationTaskBindingDdlSql(): string {
+  return `
+-- P1.1 (2026-07-23): bind a lazily-created task to each conversation so the
+-- message thread has a backing task. Null until the first message.
+ALTER TABLE conversation ADD COLUMN task_id TEXT;
+CREATE INDEX conversation_task_idx ON conversation(task_id);
+`;
+}
+
+function mutableAgentTeamConversationDdlSql(): string {
+  return `
+-- 2026-07-22 model: mutable global agents/teams + first-class conversations.
+-- The legacy agent_version chain stays for historical step FKs; the new
+-- 'agent' table is seeded from each agentId's LATEST version and becomes the
+-- single source of truth going forward.
+
+CREATE TABLE agent (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  avatar TEXT NOT NULL DEFAULT '',
+  persona TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  default_model_id TEXT NOT NULL,
+  default_credential_group_id TEXT,
+  fallback_model_ids_json TEXT NOT NULL DEFAULT '[]',
+  skill_ids_json TEXT NOT NULL DEFAULT '[]',
+  mcp_server_ids_json TEXT NOT NULL DEFAULT '[]',
+  reasoning_effort TEXT NOT NULL DEFAULT 'auto',
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Seed from the latest agent_version per agentId (persona <- developer_instructions).
+INSERT INTO agent (
+  id, name, avatar, persona, description, default_model_id,
+  default_credential_group_id, fallback_model_ids_json, skill_ids_json,
+  mcp_server_ids_json, reasoning_effort, archived, created_at, updated_at
+)
+SELECT
+  av.agent_id, av.name, '', av.developer_instructions, av.description,
+  av.default_model_id, av.default_credential_group_id,
+  av.fallback_model_ids_json, av.skill_version_ids_json,
+  av.mcp_server_ids_json, 'auto', 0, av.created_at, av.created_at
+FROM agent_version av
+WHERE av.version = (
+  SELECT MAX(v2.version) FROM agent_version v2 WHERE v2.agent_id = av.agent_id
+);
+
+CREATE TABLE team (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  avatar TEXT NOT NULL DEFAULT '',
+  mission TEXT NOT NULL DEFAULT '',
+  strategy TEXT NOT NULL DEFAULT 'serial',
+  coordinator_agent_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT team_strategy_check CHECK (strategy IN ('serial','parallel'))
+);
+
+CREATE TABLE team_member (
+  team_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  member_order INTEGER NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member',
+  title TEXT NOT NULL DEFAULT '',
+  depends_on_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (team_id, agent_id),
+  CONSTRAINT team_member_order_check CHECK (member_order >= 0),
+  FOREIGN KEY (team_id) REFERENCES team(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX team_member_team_order_uidx ON team_member(team_id, member_order);
+CREATE INDEX team_member_agent_idx ON team_member(agent_id);
+
+CREATE TABLE team_run (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  roster_snapshot_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT team_run_status_check CHECK (status IN ('running','completed','failed','cancelled')),
+  CONSTRAINT team_run_snapshot_json_check CHECK (json_valid(roster_snapshot_json)),
+  FOREIGN KEY (team_id) REFERENCES team(id) ON DELETE RESTRICT
+);
+CREATE INDEX team_run_team_idx ON team_run(team_id);
+CREATE INDEX team_run_conversation_idx ON team_run(conversation_id);
+
+CREATE TABLE conversation (
+  id TEXT PRIMARY KEY,
+  track TEXT NOT NULL,
+  target_ref TEXT NOT NULL,
+  workspace_id TEXT,
+  title TEXT NOT NULL DEFAULT '',
+  pinned_at TEXT,
+  archived_at TEXT,
+  execution_mode TEXT NOT NULL DEFAULT 'workspace',
+  last_message_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT conversation_track_check CHECK (track IN ('model','agent','team'))
+);
+CREATE INDEX conversation_workspace_idx ON conversation(workspace_id);
+CREATE INDEX conversation_track_recency_idx ON conversation(track, last_message_at);
+CREATE INDEX conversation_target_idx ON conversation(target_ref);
+
+-- Retire the never-shipped immutable team template chain (created only in
+-- code, never released; drop guards are IF EXISTS for fresh DBs).
+DROP TABLE IF EXISTS team_template_member;
+DROP TABLE IF EXISTS team_template_version;
+DROP TABLE IF EXISTS team_template;
+`;
+}
 
 function providerExecutionCheckpointDdlSql(): string {
   return `

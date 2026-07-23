@@ -87,6 +87,13 @@ import {
   type MergeArtifactVersionsResponse,
   type ListArtifactMergeConflictsResponse,
   type ResolveArtifactMergeConflictResponse,
+  type ListGlobalAgentsResponse,
+  type GlobalAgentResponse,
+  type ListTeamsResponse,
+  type TeamResponse,
+  type TeamRunResponse,
+  type ListConversationsResponse,
+  type ConversationResponse,
 } from '@sync-think/protocol';
 import {
   ErrorCode,
@@ -116,6 +123,11 @@ import {
   type ArtifactVersion,
   type ArtifactVersionSummary,
   type AcceptanceGateId,
+  type TeamId,
+  type GlobalAgent,
+  type Team,
+  type TeamRun,
+  type Conversation,
 } from '@sync-think/shared';
 import { defaultSurfaceForProtocol, inferProviderSurface } from '@sync-think/shared';
 import {
@@ -141,6 +153,13 @@ import {
   type SqliteArtifactStore,
   type SqliteProductionExecutionStore,
   type SqliteUnitOfWork,
+  type SqliteGlobalAgentStore,
+  type SqliteTeamStore,
+  type SqliteConversationStore,
+  type GlobalAgentRecord,
+  type TeamRecord,
+  type TeamRunRecord,
+  type ConversationRecord,
   type PolicyVersionRecord,
   type SkillVersionRecord,
   type MemoryChangeRecord,
@@ -196,6 +215,17 @@ import {
   type DemoProvider,
   type DemoRunState,
 } from './demo-run.js';
+import {
+  buildChatMessagesFromEvents,
+  chatToolDeniedMessage,
+  chatToolRequiresApproval,
+  executeChatBuiltInTool,
+  isChatToolAllowed,
+  normalizeChatExecutionMode,
+  summarizeToolCallForApproval,
+  toolsForExecutionMode,
+} from './chat-tools.js';
+import { resolveAppendMessageImageDataUrl } from './chat-image-staging.js';
 import {
   parseAppendMessagePayload,
   parseBindWorkspaceFolderPayload,
@@ -263,6 +293,25 @@ import {
   parseMergeArtifactVersionsPayload,
   parseListArtifactMergeConflictsPayload,
   parseResolveArtifactMergeConflictPayload,
+  parseListGlobalAgentsPayload,
+  parseCreateGlobalAgentPayload,
+  parseUpdateGlobalAgentPayload,
+  parseDeleteGlobalAgentPayload,
+  parseListTeamsPayload,
+  parseCreateTeamPayload,
+  parseUpdateTeamPayload,
+  parseDeleteTeamPayload,
+  parseStartTeamRunPayload,
+  parseSetTeamRunStatusPayload,
+  parseListConversationsPayload,
+  parseCreateConversationPayload,
+  parseRenameConversationPayload,
+  parseSetConversationPinnedPayload,
+  parseSetConversationArchivedPayload,
+  parseSetConversationExecutionModePayload,
+  parseUpgradeConversationTrackPayload,
+  parseDeleteConversationPayload,
+  parseConversationDecideToolApprovalPayload,
 } from './command-validation.js';
 import { createPipeServer, type PipeServerHandlers } from './pipe/server.js';
 import { healthcheck, type HealthcheckResult, type HealthcheckError } from './healthcheck.js';
@@ -288,6 +337,9 @@ export interface RuntimeOptions {
   demoProvider?: DemoProvider;
   providerStore?: SqliteProviderStore;
   agentStore?: SqliteAgentStore;
+  globalAgentStore?: SqliteGlobalAgentStore;
+  teamStore?: SqliteTeamStore;
+  conversationStore?: SqliteConversationStore;
   memoryStore?: SqliteMemoryStore;
   approvalStore?: SqliteApprovalStore;
   policyStore?: SqlitePolicyStore;
@@ -430,6 +482,9 @@ export class Runtime {
   private readonly demoProvider?: DemoProvider;
   private readonly providerStore?: SqliteProviderStore;
   private readonly agentStore?: SqliteAgentStore;
+  private readonly globalAgentStore?: SqliteGlobalAgentStore;
+  private readonly teamStore?: SqliteTeamStore;
+  private readonly conversationStore?: SqliteConversationStore;
   private readonly memoryStore?: SqliteMemoryStore;
   private readonly approvalStore?: SqliteApprovalStore;
   private readonly policyStore?: SqlitePolicyStore;
@@ -446,6 +501,31 @@ export class Runtime {
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
   private readonly discoveryAdapter?: DemoProvider;
   private readonly demoRuns = new Map<string, DemoRunState>();
+  /** Abort controllers for in-flight demo chat streams (Stop button). */
+  private readonly demoRunAborts = new Map<string, AbortController>();
+  /**
+   * Chat tool approvals under「询问批准」:
+   * mutating tools pause here until conversation.decideToolApproval.
+   */
+  private readonly pendingToolApprovals = new Map<
+    string,
+    {
+      approvalId: string;
+      runId: RunId;
+      threadId: string;
+      workspaceRoot: string;
+      executionMode: string;
+      chatMessages: import('@sync-think/adapters').ProviderMessage[];
+      pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[];
+      /** Index of the tool currently waiting for approval. */
+      currentIndex: number;
+      /** Results for tools already executed in this round. */
+      completedResults: Array<{ toolCallId: string; content: string }>;
+      toolLoopRound: number;
+      resolve: (decision: 'approve' | 'deny') => void;
+      createdAt: string;
+    }
+  >();
   private readonly backgroundTasks = new Set<Promise<void>>();
   /** Thread-scoped Manifest amendments (force-exclude source ids). In-memory for M1. */
   private readonly threadContextAmendments = new Map<string, { excludeSourceIds: string[] }>();
@@ -460,6 +540,9 @@ export class Runtime {
     this.demoProvider = opts.demoProvider;
     this.providerStore = opts.providerStore;
     this.agentStore = opts.agentStore;
+    this.globalAgentStore = opts.globalAgentStore;
+    this.teamStore = opts.teamStore;
+    this.conversationStore = opts.conversationStore;
     this.memoryStore = opts.memoryStore;
     this.approvalStore = opts.approvalStore;
     this.policyStore = opts.policyStore;
@@ -736,6 +819,86 @@ export class Runtime {
         }
         if (frame.type === 'agent.createVersion') {
           this.handleCreateAgentVersion(socket, frame);
+          return;
+        }
+        if (frame.type === 'globalAgent.list') {
+          this.handleListGlobalAgents(socket, frame);
+          return;
+        }
+        if (frame.type === 'globalAgent.create') {
+          this.handleCreateGlobalAgent(socket, frame);
+          return;
+        }
+        if (frame.type === 'globalAgent.update') {
+          this.handleUpdateGlobalAgent(socket, frame);
+          return;
+        }
+        if (frame.type === 'globalAgent.delete') {
+          this.handleDeleteGlobalAgent(socket, frame);
+          return;
+        }
+        if (frame.type === 'team.list') {
+          this.handleListTeams(socket, frame);
+          return;
+        }
+        if (frame.type === 'team.create') {
+          this.handleCreateTeam(socket, frame);
+          return;
+        }
+        if (frame.type === 'team.update') {
+          this.handleUpdateTeam(socket, frame);
+          return;
+        }
+        if (frame.type === 'team.delete') {
+          this.handleDeleteTeam(socket, frame);
+          return;
+        }
+        if (frame.type === 'team.startRun') {
+          this.handleStartTeamRun(socket, frame);
+          return;
+        }
+        if (frame.type === 'team.setRunStatus') {
+          this.handleSetTeamRunStatus(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.list') {
+          this.handleListConversations(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.create') {
+          this.handleCreateConversation(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.rename') {
+          this.handleRenameConversation(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.setPinned') {
+          this.handleSetConversationPinned(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.setArchived') {
+          this.handleSetConversationArchived(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.setExecutionMode') {
+          this.handleSetConversationExecutionMode(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.upgradeTrack') {
+          this.handleUpgradeConversationTrack(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.delete') {
+          this.handleDeleteConversation(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.sendMessage') {
+          void this.handleConversationSendMessage(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.decideToolApproval') {
+          this.handleConversationDecideToolApproval(socket, frame);
           return;
         }
         if (frame.type === 'skill.import') {
@@ -4220,6 +4383,854 @@ export class Runtime {
     } catch (error) {
       this.writeProviderCommandError(socket, frame, error);
     }
+  }
+
+  // --- mutable global Agent / Team / Conversation handlers (2026-07-22 model) ---
+
+  private handleListGlobalAgents(socket: Socket, frame: Frame): void {
+    const payload = parseListGlobalAgentsPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.globalAgentStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ListGlobalAgentsResponse = {
+        agents: this.globalAgentStore
+          .list({ includeArchived: payload.includeArchived })
+          .map((record) => this.toGlobalAgentSummary(record)),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'globalAgent.list',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleCreateGlobalAgent(socket: Socket, frame: Frame): void {
+    const payload = parseCreateGlobalAgentPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.globalAgentStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const created = this.globalAgentStore.create({
+        name: payload.name,
+        defaultModelId: payload.defaultModelId,
+        avatar: payload.avatar,
+        persona: payload.persona,
+        description: payload.description,
+        fallbackModelIds: payload.fallbackModelIds,
+        skillIds: payload.skillIds,
+        mcpServerIds: payload.mcpServerIds,
+        reasoningEffort: payload.reasoningEffort,
+      });
+      const agent = this.toGlobalAgentSummary(created);
+      const event = this.appendEvent('system', 'globalAgent.created', {
+        agentId: agent.id,
+        name: agent.name,
+      });
+      this.publishEvent(event);
+      const response: GlobalAgentResponse = { agent };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'globalAgent.create',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleUpdateGlobalAgent(socket: Socket, frame: Frame): void {
+    const payload = parseUpdateGlobalAgentPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.globalAgentStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.globalAgentStore.update({
+        agentId: payload.agentId,
+        name: payload.name,
+        avatar: payload.avatar,
+        persona: payload.persona,
+        description: payload.description,
+        defaultModelId: payload.defaultModelId,
+        fallbackModelIds: payload.fallbackModelIds,
+        skillIds: payload.skillIds,
+        mcpServerIds: payload.mcpServerIds,
+        reasoningEffort: payload.reasoningEffort,
+        archived: payload.archived,
+      });
+      const agent = this.toGlobalAgentSummary(updated);
+      const event = this.appendEvent('system', 'globalAgent.updated', {
+        agentId: agent.id,
+        name: agent.name,
+        archived: agent.archived,
+      });
+      this.publishEvent(event);
+      const response: GlobalAgentResponse = { agent };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'globalAgent.update',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleDeleteGlobalAgent(socket: Socket, frame: Frame): void {
+    const payload = parseDeleteGlobalAgentPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.globalAgentStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      this.globalAgentStore.delete(payload.agentId);
+      const event = this.appendEvent('system', 'globalAgent.deleted', {
+        agentId: payload.agentId,
+      });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'globalAgent.delete',
+          payload: {},
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleListTeams(socket: Socket, frame: Frame): void {
+    const payload = parseListTeamsPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.teamStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ListTeamsResponse = {
+        teams: this.teamStore.list().map((record) => this.toTeamSummary(record)),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'team.list',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleCreateTeam(socket: Socket, frame: Frame): void {
+    const payload = parseCreateTeamPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.teamStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const created = this.teamStore.create({
+        name: payload.name,
+        avatar: payload.avatar,
+        mission: payload.mission,
+        strategy: payload.strategy,
+        coordinatorAgentId: payload.coordinatorAgentId,
+        members: payload.members,
+      });
+      const team = this.toTeamSummary(created);
+      const event = this.appendEvent('system', 'team.created', {
+        teamId: team.id,
+        name: team.name,
+        memberCount: team.members.length,
+      });
+      this.publishEvent(event);
+      const response: TeamResponse = { team };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'team.create',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleUpdateTeam(socket: Socket, frame: Frame): void {
+    const payload = parseUpdateTeamPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.teamStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.teamStore.update({
+        teamId: payload.teamId,
+        name: payload.name,
+        avatar: payload.avatar,
+        mission: payload.mission,
+        strategy: payload.strategy,
+        coordinatorAgentId: payload.coordinatorAgentId,
+        members: payload.members,
+      });
+      const team = this.toTeamSummary(updated);
+      const event = this.appendEvent('system', 'team.updated', {
+        teamId: team.id,
+        name: team.name,
+        memberCount: team.members.length,
+      });
+      this.publishEvent(event);
+      const response: TeamResponse = { team };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'team.update',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleDeleteTeam(socket: Socket, frame: Frame): void {
+    const payload = parseDeleteTeamPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.teamStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      this.teamStore.delete(payload.teamId);
+      const event = this.appendEvent('system', 'team.deleted', { teamId: payload.teamId });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'team.delete',
+          payload: {},
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleStartTeamRun(socket: Socket, frame: Frame): void {
+    const payload = parseStartTeamRunPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.teamStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const started = this.teamStore.startRun({
+        teamId: payload.teamId,
+        conversationId: payload.conversationId,
+      });
+      const run = this.toTeamRunSummary(started);
+      const event = this.appendEvent('run', 'team.run_started', {
+        teamRunId: run.id,
+        teamId: run.teamId,
+        conversationId: run.conversationId,
+      });
+      this.publishEvent(event);
+      const response: TeamRunResponse = { run };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'team.startRun',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetTeamRunStatus(socket: Socket, frame: Frame): void {
+    const payload = parseSetTeamRunStatusPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.teamStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.teamStore.setRunStatus(payload.runId, payload.status);
+      const run = this.toTeamRunSummary(updated);
+      const event = this.appendEvent('run', 'team.run_status_changed', {
+        teamRunId: run.id,
+        teamId: run.teamId,
+        status: run.status,
+      });
+      this.publishEvent(event);
+      const response: TeamRunResponse = { run };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'team.setRunStatus',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleListConversations(socket: Socket, frame: Frame): void {
+    const payload = parseListConversationsPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ListConversationsResponse = {
+        conversations: this.conversationStore
+          .list({
+            track: payload.track,
+            workspaceId: payload.workspaceId as WorkspaceId | undefined,
+            includeArchived: payload.includeArchived,
+          })
+          .map((record) => this.toConversationSummary(record)),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.list',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleCreateConversation(socket: Socket, frame: Frame): void {
+    const payload = parseCreateConversationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const created = this.conversationStore.create({
+        target: this.toConversationTarget(payload.track, payload.targetRef),
+        workspaceId: payload.workspaceId as WorkspaceId | undefined,
+        title: payload.title,
+        executionMode: payload.executionMode,
+      });
+      const conversation = this.toConversationSummary(created);
+      const event = this.appendEvent('system', 'conversation.created', {
+        conversationId: conversation.id,
+        track: conversation.track,
+        targetRef: conversation.targetRef,
+      });
+      this.publishEvent(event);
+      const response: ConversationResponse = { conversation };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.create',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleRenameConversation(socket: Socket, frame: Frame): void {
+    const payload = parseRenameConversationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.conversationStore.rename(payload.conversationId, payload.title);
+      const response: ConversationResponse = { conversation: this.toConversationSummary(updated) };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.rename',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetConversationPinned(socket: Socket, frame: Frame): void {
+    const payload = parseSetConversationPinnedPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.conversationStore.setPinned(payload.conversationId, payload.pinned);
+      const response: ConversationResponse = { conversation: this.toConversationSummary(updated) };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.setPinned',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetConversationArchived(socket: Socket, frame: Frame): void {
+    const payload = parseSetConversationArchivedPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.conversationStore.setArchived(payload.conversationId, payload.archived);
+      const response: ConversationResponse = { conversation: this.toConversationSummary(updated) };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.setArchived',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetConversationExecutionMode(socket: Socket, frame: Frame): void {
+    const payload = parseSetConversationExecutionModePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.conversationStore.setExecutionMode(
+        payload.conversationId,
+        payload.executionMode,
+      );
+      const conversation = this.toConversationSummary(updated);
+      const event = this.appendEvent('system', 'conversation.execution_mode_changed', {
+        conversationId: conversation.id,
+        executionMode: conversation.executionMode,
+      });
+      this.publishEvent(event);
+      const response: ConversationResponse = { conversation };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.setExecutionMode',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleUpgradeConversationTrack(socket: Socket, frame: Frame): void {
+    const payload = parseUpgradeConversationTrackPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const target =
+        payload.track === 'agent'
+          ? { track: 'agent' as const, agentId: payload.targetRef as AgentId }
+          : { track: 'team' as const, teamId: payload.targetRef as TeamId };
+      const updated = this.conversationStore.upgradeTrack(payload.conversationId, target);
+      const conversation = this.toConversationSummary(updated);
+      const event = this.appendEvent('system', 'conversation.track_upgraded', {
+        conversationId: conversation.id,
+        track: conversation.track,
+        targetRef: conversation.targetRef,
+      });
+      this.publishEvent(event);
+      const response: ConversationResponse = { conversation };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.upgradeTrack',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleDeleteConversation(socket: Socket, frame: Frame): void {
+    const payload = parseDeleteConversationPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      this.conversationStore.delete(payload.conversationId);
+      const event = this.appendEvent('system', 'conversation.deleted', {
+        conversationId: payload.conversationId,
+      });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.delete',
+          payload: {},
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleConversationSendMessage(socket: Socket, frame: Frame): Promise<void> {
+    const payload = frame.payload as { conversationId?: string; text?: string; modelId?: string } | undefined;
+    if (!payload || typeof payload.conversationId !== 'string' || typeof payload.text !== 'string') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const conversationId = payload.conversationId;
+    const text = payload.text;
+    if (!this.conversationStore || !this.workspaceStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+
+    try {
+      // 1. Get conversation
+      const conversation = this.conversationStore.get(conversationId);
+      if (!conversation) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'conversation.sendMessage',
+            payload: {},
+            error: { code: ErrorCode.PROTOCOL_UNEXPECTED_REQUEST, message: 'Conversation not found' },
+          }),
+        );
+        return;
+      }
+
+      // 2. Ensure task exists (lazy creation on first message)
+      let threadId: ThreadId;
+      let taskVersion: number;
+      let persistedTask: TaskRecord | undefined;
+
+      if (conversation.taskId) {
+        persistedTask = this.workspaceStore.getTask(conversation.taskId);
+        if (!persistedTask) {
+          socket.write(
+            encodeFrame({
+              id: frame.id,
+              kind: 'response',
+              type: 'conversation.sendMessage',
+              payload: {},
+              error: { code: ErrorCode.TASK_NOT_FOUND, message: 'Bound task not found' },
+            }),
+          );
+          return;
+        }
+        threadId = persistedTask.threadId;
+        taskVersion = persistedTask.version;
+      } else {
+        // Lazy-create: get or create inbox workspace, then create task
+        const workspaceId = conversation.workspaceId || this.getOrCreateInboxWorkspace();
+        const created = this.workspaceStore.createTask({
+          workspaceId,
+          title: '新对话',
+          goal: text.slice(0, 200),
+        });
+        this.threadVersions.set(created.threadId, created.taskVersion);
+        // Bind task to conversation
+        this.conversationStore.bindTask(conversation.id, created.taskId);
+        threadId = created.threadId;
+        taskVersion = created.taskVersion;
+        persistedTask = this.workspaceStore.getTaskByThreadId(threadId);
+      }
+
+      // 3. Update conversation title from first message + touch lastMessageAt
+      if (taskVersion === 0) {
+        const generatedTitle = deriveTaskTitleFromPrompt(text);
+        this.conversationStore.rename(conversation.id, generatedTitle);
+        this.conversationStore.touchLastMessage(conversation.id);
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'conversation.sendMessage',
+            payload: {
+              threadId,
+              taskVersion,
+              conversationTitle: generatedTitle,
+            },
+          }),
+        );
+      } else {
+        this.conversationStore.touchLastMessage(conversation.id);
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'conversation.sendMessage',
+            payload: {
+              threadId,
+              taskVersion,
+            },
+          }),
+        );
+      }
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private getOrCreateInboxWorkspace(): WorkspaceId {
+    if (!this.workspaceStore) throw new Error('workspace store unavailable');
+    const workspaces = this.workspaceStore.listWorkspaces();
+    const inbox = workspaces.find((w) => w.name === '__inbox__');
+    if (inbox) return inbox.id;
+    const created = this.workspaceStore.createWorkspace({ name: '__inbox__' });
+    return created.id;
+  }
+
+  private toConversationTarget(
+    track: 'model' | 'agent' | 'team',
+    targetRef: string,
+  ): import('@sync-think/storage').ConversationTarget {
+    if (track === 'model') return { track, modelId: targetRef as ModelId };
+    if (track === 'agent') return { track, agentId: targetRef as AgentId };
+    return { track, teamId: targetRef as TeamId };
+  }
+
+  private toGlobalAgentSummary(record: GlobalAgentRecord): GlobalAgent {
+    return {
+      id: record.id,
+      name: record.name,
+      avatar: record.avatar,
+      persona: record.persona,
+      description: record.description,
+      defaultModelId: record.defaultModelId,
+      fallbackModelIds: [...record.fallbackModelIds],
+      skillIds: [...record.skillIds],
+      mcpServerIds: [...record.mcpServerIds],
+      reasoningEffort: record.reasoningEffort,
+      archived: record.archived,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+  }
+
+  private toTeamSummary(record: TeamRecord): Team {
+    return {
+      id: record.id,
+      name: record.name,
+      avatar: record.avatar,
+      mission: record.mission,
+      strategy: record.strategy,
+      coordinatorAgentId: record.coordinatorAgentId,
+      members: record.members.map((member) => ({
+        agentId: member.agentId,
+        memberOrder: member.memberOrder,
+        role: member.role,
+        title: member.title,
+        dependsOn: [...member.dependsOn],
+      })),
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+  }
+
+  private toTeamRunSummary(record: TeamRunRecord): TeamRun {
+    return {
+      id: record.id,
+      teamId: record.teamId,
+      conversationId: record.conversationId,
+      status: record.status,
+      rosterSnapshot: {
+        name: record.rosterSnapshot.name,
+        mission: record.rosterSnapshot.mission,
+        strategy: record.rosterSnapshot.strategy,
+        coordinatorAgentId: record.rosterSnapshot.coordinatorAgentId,
+        members: record.rosterSnapshot.members.map((member) => ({
+          agentId: member.agentId,
+          memberOrder: member.memberOrder,
+          role: member.role,
+          title: member.title,
+          dependsOn: [...member.dependsOn],
+        })),
+      },
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+  }
+
+  private toConversationSummary(record: ConversationRecord): Conversation {
+    return {
+      id: record.id,
+      track: record.track,
+      targetRef: record.targetRef,
+      workspaceId: record.workspaceId,
+      title: record.title,
+      pinnedAt: record.pinnedAt,
+      archivedAt: record.archivedAt,
+      executionMode: record.executionMode,
+      lastMessageAt: record.lastMessageAt,
+      taskId: record.taskId,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+  }
+
+  private writeTeamModelStoreUnavailable(socket: Socket, frame: Frame): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code: ErrorCode.STORAGE_WRITE_FAILED,
+          message: 'Agent/Team/Conversation store is not configured on this Runtime',
+        },
+      }),
+    );
+  }
+
+  private writeTeamModelCommandError(socket: Socket, frame: Frame, error: unknown): void {
+    const message = error instanceof Error ? error.message : 'Agent/Team/Conversation command failed';
+    let code: (typeof ErrorCode)[keyof typeof ErrorCode] = ErrorCode.STORAGE_WRITE_FAILED;
+    if (/not found/i.test(message)) {
+      code = ErrorCode.PROTOCOL_UNEXPECTED_REQUEST;
+    } else if (
+      /is a member of team/i.test(message) ||
+      /running run/i.test(message) ||
+      /historical runs/i.test(message) ||
+      /only model-direct conversations/i.test(message)
+    ) {
+      code = ErrorCode.PROTOCOL_UNEXPECTED_REQUEST;
+    } else if (
+      /must not be empty/i.test(message) ||
+      /duplicate team member/i.test(message) ||
+      /depends on/i.test(message) ||
+      /must be a team member/i.test(message) ||
+      /empty team/i.test(message) ||
+      /archived/i.test(message)
+    ) {
+      code = ErrorCode.PROTOCOL_FRAME_MALFORMED;
+    }
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: { code, message },
+      }),
+    );
   }
 
   private handleListMemory(socket: Socket, frame: Frame): void {
@@ -7824,6 +8835,58 @@ export class Runtime {
           typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
         agentVersionId:
           typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
+        reasoningEffort:
+          typeof payload.reasoningEffort === 'string' ? payload.reasoningEffort : undefined,
+        networkEnabled: payload.networkEnabled === true ? true : undefined,
+        images: Array.isArray(payload.images)
+          ? (() => {
+              const resolved = payload.images
+                .map((img, index) => {
+                  if (!img || typeof img !== 'object') return null;
+                  const raw = img as {
+                    name?: string;
+                    mimeType?: string;
+                    dataUrl?: string;
+                    stagingPath?: string;
+                  };
+                  const dataUrl = resolveAppendMessageImageDataUrl(raw);
+                  if (!dataUrl) {
+                    console.warn('[runtime] vision image unresolved', {
+                      index,
+                      name: raw.name,
+                      hasDataUrl: Boolean(raw.dataUrl),
+                      stagingPath: raw.stagingPath,
+                    });
+                    return null;
+                  }
+                  return {
+                    name: typeof raw.name === 'string' ? raw.name : 'image',
+                    mimeType: typeof raw.mimeType === 'string' ? raw.mimeType : 'image/png',
+                    dataUrl,
+                  };
+                })
+                .filter(
+                  (img): img is { name: string; mimeType: string; dataUrl: string } =>
+                    Boolean(img),
+                );
+              if (payload.images.length > 0 && resolved.length === 0) {
+                console.warn(
+                  '[runtime] vision: all images failed to resolve; model will only see text',
+                  { requested: payload.images.length },
+                );
+              } else if (resolved.length > 0) {
+                console.log('[runtime] vision: attached images for run', {
+                  count: resolved.length,
+                  bytes: resolved.reduce(
+                    (sum, img) => sum + Math.floor((img.dataUrl.length * 3) / 4),
+                    0,
+                  ),
+                  names: resolved.map((img) => img.name),
+                });
+              }
+              return resolved.length > 0 ? resolved : undefined;
+            })()
+          : undefined,
       });
       demoRun = prepared.run;
       projectedRuns.set(demoRunId, demoRun);
@@ -8011,6 +9074,17 @@ export class Runtime {
       return;
     }
 
+    // Abort the live provider stream / tool loop first so executeDemoRun exits.
+    this.demoRunAborts.get(payload.runId)?.abort();
+    this.demoRunAborts.delete(payload.runId);
+    // Drop any in-flight tool approvals for this run (deny silently via abort listener).
+    for (const [approvalId, pending] of this.pendingToolApprovals) {
+      if (pending.runId === payload.runId) {
+        this.pendingToolApprovals.delete(approvalId);
+        pending.resolve('deny');
+      }
+    }
+
     const projectedRuns = new Map(this.demoRuns);
     projectedRuns.delete(payload.runId);
     try {
@@ -8018,7 +9092,7 @@ export class Runtime {
         const event = this.persistProjectedEvent(
           {
             id: ulid() as Event['id'],
-            workspaceId: this.workspaceId,
+            workspaceId: this.resolveEventWorkspaceId(run.threadId),
             runId: payload.runId as RunId,
             category: 'run',
             type: 'run.cancelled',
@@ -8319,17 +9393,40 @@ export class Runtime {
     const initialRun = this.demoRuns.get(runId);
     if (!initialRun || this.inFlight.has(runId)) return;
     this.recordInFlight(runId);
+    const abort = new AbortController();
+    this.demoRunAborts.set(runId, abort);
     try {
-      // Outer loop: re-enter after section 5.3 fallback walk selects the next model.
+      // Multi-turn chat history + optional bound workspace for file tools.
+      // Network tools can run without a project folder when Compose 联网 is on.
+      let chatMessages = this.buildChatProviderMessages(initialRun);
+      const workspaceRoot = this.resolveChatWorkspaceRoot(initialRun.threadId);
+      const executionMode = this.resolveChatExecutionMode(initialRun.threadId);
+      const networkEnabled = initialRun.networkEnabled === true;
+      const toolsEnabled = Boolean(workspaceRoot) || networkEnabled;
+      const pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[] = [];
+      let toolLoopRound = 0;
+      const MAX_TOOL_ROUNDS = 8;
+
+      // Outer loop: re-enter after section 5.3 fallback walk selects the next model,
+      // and after local tool execution feeds results back to the provider.
       while (this.demoRuns.has(runId)) {
+        if (abort.signal.aborted) return;
         const attemptRun = this.demoRuns.get(runId);
         if (!attemptRun) return;
 
         try {
           let stream: AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined;
           try {
-            stream = await this.openProviderStream(attemptRun);
+            stream = await this.openProviderStream(attemptRun, {
+              messages: chatMessages,
+              toolsEnabled,
+              workspaceRoot,
+              executionMode,
+              networkEnabled,
+              signal: abort.signal,
+            });
           } catch (error) {
+            if (abort.signal.aborted || this.isAbortError(error)) return;
             const message = error instanceof Error ? error.message : 'provider stream failed';
             const failureClass = this.classifyThrownFailure(error);
             const outcome = this.tryContinueWithFallback(runId, attemptRun, failureClass, message);
@@ -8350,8 +9447,12 @@ export class Runtime {
 
           let providerEventIndex = 0;
           let resumeAfterFallback = false;
+          let finishedWithToolRequests = false;
+          pendingToolCalls.length = 0;
+          let roundAssistantText = '';
 
           for await (const adapterEvent of stream) {
+            if (abort.signal.aborted || !this.demoRuns.has(runId)) break;
             const currentRun = this.demoRuns.get(runId);
             if (!currentRun) break;
 
@@ -8381,7 +9482,52 @@ export class Runtime {
               // Non-fallbackable: project terminal failure as before.
             }
 
+            if (adapterEvent.type === 'tool-call') {
+              pendingToolCalls.push(adapterEvent.toolCall);
+            }
+            if (adapterEvent.type === 'text-delta') {
+              roundAssistantText += adapterEvent.text;
+            }
+            if (adapterEvent.type === 'finished' && adapterEvent.reason === 'tool-requests') {
+              finishedWithToolRequests = true;
+            }
+
+            // When tools are requested, do not treat finished as terminal yet —
+            // we still need a local tool loop + follow-up model turn.
+            const suppressTerminal =
+              finishedWithToolRequests &&
+              toolsEnabled &&
+              pendingToolCalls.length > 0 &&
+              adapterEvent.type === 'finished';
+
             const projection = projectAdapterEvent(currentRun, adapterEvent);
+            if (suppressTerminal) {
+              // Keep run alive for the tool follow-up turn.
+              projection.terminal = false;
+              if (projection.type === 'run.completed') {
+                // Convert synthetic completion into a non-terminal marker.
+                projection.type = 'tool.turn_pending';
+                projection.category = 'tool';
+              }
+            }
+
+            // Enrich tool.requested payloads with NewMax-friendly fields.
+            if (projection.type === 'tool.requested' && adapterEvent.type === 'tool-call') {
+              projection.payload = {
+                ...projection.payload,
+                threadId: currentRun.threadId,
+                toolCallId: adapterEvent.toolCall.id,
+                toolName: adapterEvent.toolCall.name,
+                arguments: (() => {
+                  try {
+                    return JSON.parse(adapterEvent.toolCall.argumentsJson || '{}');
+                  } catch {
+                    return {};
+                  }
+                })(),
+              };
+            }
+
             const projectedRuns = new Map(this.demoRuns);
             if (projection.terminal) projectedRuns.delete(runId);
             else if (projection.nextRun) projectedRuns.set(runId, projection.nextRun);
@@ -8391,36 +9537,168 @@ export class Runtime {
               if (scrubbed) payload.errorMessage = scrubbed;
               else delete payload.errorMessage;
             }
-            const event = this.persistProjectedEvent(
-              {
-                id: ulid() as Event['id'],
-                workspaceId: this.workspaceId,
-                runId,
-                category: projection.category,
-                type: projection.type,
-                occurredAt: new Date().toISOString(),
-                payload,
-              },
-              projectedRuns,
-            );
+            // Skip publishing the intermediate tool-turn marker to keep user UI clean.
+            if (projection.type !== 'tool.turn_pending') {
+              const event = this.persistProjectedEvent(
+                {
+                  id: ulid() as Event['id'],
+                  workspaceId: this.resolveEventWorkspaceId(currentRun.threadId),
+                  runId,
+                  category: projection.category,
+                  type: projection.type,
+                  occurredAt: new Date().toISOString(),
+                  payload,
+                },
+                projectedRuns,
+              );
 
-            if (projection.terminal) this.demoRuns.delete(runId);
-            else if (projection.nextRun) this.demoRuns.set(runId, projection.nextRun);
-            this.publishEvent(event);
-            if (projection.terminal) {
-              if (projection.type === 'run.failed') {
-                this.recordRunDiagnostic(runId, currentRun, projection.payload);
-              } else if (projection.type === 'run.completed') {
-                this.maybeProposeRunMemory(runId, currentRun, projection.payload);
+              if (projection.terminal) this.demoRuns.delete(runId);
+              else if (projection.nextRun) this.demoRuns.set(runId, projection.nextRun);
+              this.publishEvent(event);
+              if (projection.terminal) {
+                if (projection.type === 'run.failed') {
+                  this.recordRunDiagnostic(runId, currentRun, projection.payload);
+                } else if (projection.type === 'run.completed') {
+                  this.maybeProposeRunMemory(runId, currentRun, projection.payload);
+                }
               }
+            } else if (projection.nextRun) {
+              this.demoRuns.set(runId, projection.nextRun);
             }
             providerEventIndex++;
             if (projection.terminal) break;
           }
 
           if (resumeAfterFallback) continue;
+
+          // Local tool loop: execute requested tools and continue the model turn.
+          // Project tools need workspaceRoot; network tools only need networkEnabled.
+          if (
+            finishedWithToolRequests &&
+            toolsEnabled &&
+            pendingToolCalls.length > 0 &&
+            this.demoRuns.has(runId) &&
+            toolLoopRound < MAX_TOOL_ROUNDS
+          ) {
+            toolLoopRound += 1;
+            const currentRun = this.demoRuns.get(runId)!;
+            const assistantParts: import('@sync-think/adapters').ProviderContentPart[] = [];
+            if (roundAssistantText.trim()) {
+              assistantParts.push({ type: 'text', text: roundAssistantText });
+            }
+            for (const toolCall of pendingToolCalls) {
+              assistantParts.push({ type: 'tool-call', toolCall });
+            }
+            chatMessages = [
+              ...chatMessages,
+              {
+                role: 'assistant',
+                content:
+                  assistantParts.length > 0
+                    ? assistantParts
+                    : roundAssistantText || '（调用工具）',
+              },
+            ];
+
+            const completedResults: Array<{ toolCallId: string; content: string }> = [];
+            for (let toolIndex = 0; toolIndex < pendingToolCalls.length; toolIndex++) {
+              const toolCall = pendingToolCalls[toolIndex]!;
+              if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+
+              // 「询问批准」：写/命令工具先挂起，等用户点批准/拒绝。
+              if (chatToolRequiresApproval(executionMode, toolCall.name)) {
+                if (!workspaceRoot) {
+                  const deniedText = JSON.stringify({
+                    ok: false,
+                    error: 'No project folder is bound; mutating tools are unavailable.',
+                  });
+                  this.publishToolCompleted(runId, currentRun.threadId, toolCall, deniedText);
+                  completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                  chatMessages = [
+                    ...chatMessages,
+                    { role: 'tool', toolCallId: toolCall.id, content: deniedText },
+                  ];
+                  continue;
+                }
+                const decision = await this.requestChatToolApproval({
+                  runId,
+                  threadId: currentRun.threadId,
+                  workspaceRoot,
+                  executionMode,
+                  chatMessages,
+                  pendingToolCalls: [...pendingToolCalls],
+                  currentIndex: toolIndex,
+                  completedResults: [...completedResults],
+                  toolLoopRound,
+                  toolCall,
+                  signal: abort.signal,
+                });
+                if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+                if (decision === 'deny') {
+                  const deniedText = JSON.stringify({
+                    ok: false,
+                    error: chatToolDeniedMessage(executionMode, toolCall.name, 'denied'),
+                    deniedBy: 'user',
+                    executionMode: normalizeChatExecutionMode(executionMode),
+                  });
+                  this.publishToolCompleted(
+                    runId,
+                    currentRun.threadId,
+                    toolCall,
+                    deniedText,
+                  );
+                  completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                  chatMessages = [
+                    ...chatMessages,
+                    { role: 'tool', toolCallId: toolCall.id, content: deniedText },
+                  ];
+                  continue;
+                }
+                // approved → fall through to execute
+              } else if (
+                !isChatToolAllowed(executionMode, toolCall.name, { networkEnabled })
+              ) {
+                const deniedText = JSON.stringify({
+                  ok: false,
+                  error: chatToolDeniedMessage(executionMode, toolCall.name),
+                  deniedBy: 'execution_mode',
+                  executionMode: normalizeChatExecutionMode(executionMode),
+                });
+                this.publishToolCompleted(runId, currentRun.threadId, toolCall, deniedText);
+                completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                chatMessages = [
+                  ...chatMessages,
+                  { role: 'tool', toolCallId: toolCall.id, content: deniedText },
+                ];
+                continue;
+              }
+
+              const resultText = await executeChatBuiltInTool({
+                workspaceRoot,
+                toolCall,
+                signal: abort.signal,
+                networkEnabled,
+              });
+              if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+              this.publishToolCompleted(runId, currentRun.threadId, toolCall, resultText);
+              completedResults.push({ toolCallId: toolCall.id, content: resultText });
+              chatMessages = [
+                ...chatMessages,
+                { role: 'tool', toolCallId: toolCall.id, content: resultText },
+              ];
+            }
+
+            // Reset adapter index so the follow-up stream is fully consumed.
+            const live = this.demoRuns.get(runId);
+            if (live) {
+              this.demoRuns.set(runId, { ...live, nextAdapterEventIndex: 0 });
+            }
+            continue;
+          }
+
           return;
         } catch (error) {
+          if (abort.signal.aborted || this.isAbortError(error)) return;
           const message = error instanceof Error ? error.message : 'provider stream failed';
           const current = this.demoRuns.get(runId);
           if (current) {
@@ -8434,6 +9712,7 @@ export class Runtime {
         }
       }
     } finally {
+      this.demoRunAborts.delete(runId);
       this.forgetInFlight(runId);
     }
   }
@@ -8783,6 +10062,9 @@ export class Runtime {
     modelId?: string;
     credentialRefId?: string;
     agentVersionId?: string;
+    reasoningEffort?: string;
+    networkEnabled?: boolean;
+    images?: Array<{ name: string; mimeType: string; dataUrl: string }>;
   }): {
     run: DemoRunState;
     packetId: string;
@@ -8905,6 +10187,9 @@ export class Runtime {
       credentialResolutionSource: credentialResolution.source,
       agentVersionId,
       resolutionSource: source,
+      reasoningEffort: input.reasoningEffort,
+      networkEnabled: input.networkEnabled === true ? true : undefined,
+      images: input.images,
       packetId: built.packet.id,
       proofHash: built.packet.proofHash,
       useFakeProvider: useFake,
@@ -9169,10 +10454,15 @@ export class Runtime {
       credentialRefId: credential?.id as string | undefined,
       credentialResolutionSource: credentialResolution.source,
       resolutionSource: source,
+      reasoningEffort: run.reasoningEffort,
+      // Keep network + images on rebind so vision/web turns survive fallback walks.
+      networkEnabled: run.networkEnabled === true ? true : undefined,
+      images: run.images,
       packetId: built.packet.id,
       proofHash: built.packet.proofHash,
       nextAdapterEventIndex: 0,
       assistantText: '',
+      reasoningText: '',
       useFakeProvider: useFake,
     };
   }
@@ -9254,16 +10544,304 @@ export class Runtime {
     return 'unknown';
   }
 
+  private buildChatProviderMessages(
+    run: DemoRunState,
+  ): import('@sync-think/adapters').ProviderMessage[] {
+    const events = this.stateStore
+      ? this.stateStore.listAllEvents
+        ? this.stateStore.listAllEvents(0)
+        : this.stateStore.listEvents(this.workspaceId, 0)
+      : [];
+    return buildChatMessagesFromEvents(events, run.threadId, run.userText, run.images);
+  }
+
+  private resolveChatWorkspaceRoot(threadId: string): string | undefined {
+    const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+    if (!task || !this.workspaceStore) return undefined;
+    const workspace = this.workspaceStore.getWorkspace(task.workspaceId);
+    const folder = workspace?.folderPath?.trim();
+    return folder && folder.length > 0 ? folder : undefined;
+  }
+
+  /** Resolve conversation.executionMode for the task/thread (default workspace). */
+  private resolveChatExecutionMode(threadId: string): string {
+    const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+    if (!task || !this.conversationStore) return 'workspace';
+    const conversation = this.conversationStore.getByTaskId(task.id);
+    return normalizeChatExecutionMode(conversation?.executionMode);
+  }
+
+  private resolveEventWorkspaceId(threadId: string): WorkspaceId {
+    const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+    return task?.workspaceId ?? this.workspaceId;
+  }
+
+  private isAbortError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const name = 'name' in error ? String((error as { name?: unknown }).name ?? '') : '';
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      name === 'AbortError' ||
+      /aborted|abort(ed)?|cancell?ed/i.test(message)
+    );
+  }
+
+  private publishToolCompleted(
+    runId: RunId,
+    threadId: string,
+    toolCall: import('@sync-think/adapters').ProviderToolCall,
+    resultText: string,
+  ): void {
+    const completedEvent = this.persistProjectedEvent(
+      {
+        id: ulid() as Event['id'],
+        workspaceId: this.resolveEventWorkspaceId(threadId),
+        runId,
+        category: 'tool',
+        type: 'tool.completed',
+        occurredAt: new Date().toISOString(),
+        payload: {
+          threadId,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          result: resultText,
+        },
+      },
+      new Map(this.demoRuns),
+    );
+    this.publishEvent(completedEvent);
+  }
+
+  /**
+   * Pause the tool loop under「询问批准」until the user approves/denies.
+   * Emits tool.approval_requested for the shell confirmation card.
+   */
+  private requestChatToolApproval(input: {
+    runId: RunId;
+    threadId: string;
+    workspaceRoot: string;
+    executionMode: string;
+    chatMessages: import('@sync-think/adapters').ProviderMessage[];
+    pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[];
+    currentIndex: number;
+    completedResults: Array<{ toolCallId: string; content: string }>;
+    toolLoopRound: number;
+    toolCall: import('@sync-think/adapters').ProviderToolCall;
+    signal: AbortSignal;
+  }): Promise<'approve' | 'deny'> {
+    const approvalId = `tappr-${ulid()}`;
+    const summary = summarizeToolCallForApproval(
+      input.toolCall.name,
+      input.toolCall.argumentsJson || '{}',
+    );
+
+    const event = this.persistProjectedEvent(
+      {
+        id: ulid() as Event['id'],
+        workspaceId: this.resolveEventWorkspaceId(input.threadId),
+        runId: input.runId,
+        category: 'approval',
+        type: 'tool.approval_requested',
+        occurredAt: new Date().toISOString(),
+        payload: {
+          approvalId,
+          threadId: input.threadId,
+          runId: input.runId,
+          toolCallId: input.toolCall.id,
+          toolName: input.toolCall.name,
+          arguments: (() => {
+            try {
+              return JSON.parse(input.toolCall.argumentsJson || '{}');
+            } catch {
+              return {};
+            }
+          })(),
+          title: summary.title,
+          detail: summary.detail,
+          path: summary.path,
+          command: summary.command,
+          executionMode: normalizeChatExecutionMode(input.executionMode),
+        },
+      },
+      new Map(this.demoRuns),
+    );
+    this.publishEvent(event);
+
+    return new Promise<'approve' | 'deny'>((resolve) => {
+      const onAbort = () => {
+        this.pendingToolApprovals.delete(approvalId);
+        resolve('deny');
+      };
+      if (input.signal.aborted) {
+        onAbort();
+        return;
+      }
+      input.signal.addEventListener('abort', onAbort, { once: true });
+      this.pendingToolApprovals.set(approvalId, {
+        approvalId,
+        runId: input.runId,
+        threadId: input.threadId,
+        workspaceRoot: input.workspaceRoot,
+        executionMode: input.executionMode,
+        chatMessages: input.chatMessages,
+        pendingToolCalls: input.pendingToolCalls,
+        currentIndex: input.currentIndex,
+        completedResults: input.completedResults,
+        toolLoopRound: input.toolLoopRound,
+        resolve: (decision) => {
+          input.signal.removeEventListener('abort', onAbort);
+          resolve(decision);
+        },
+        createdAt: new Date().toISOString(),
+      });
+    });
+  }
+
+  private handleConversationDecideToolApproval(socket: Socket, frame: Frame): void {
+    const payload = parseConversationDecideToolApprovalPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const pending = this.pendingToolApprovals.get(payload.approvalId);
+    if (!pending) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.decideToolApproval',
+          payload: {},
+          error: {
+            code: ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
+            message: '没有待处理的工具批准请求（可能已过期或已处理）',
+          },
+        }),
+      );
+      return;
+    }
+
+    this.pendingToolApprovals.delete(payload.approvalId);
+    const decidedEvent = this.persistProjectedEvent(
+      {
+        id: ulid() as Event['id'],
+        workspaceId: this.resolveEventWorkspaceId(pending.threadId),
+        runId: pending.runId,
+        category: 'approval',
+        type: 'tool.approval_decided',
+        occurredAt: new Date().toISOString(),
+        payload: {
+          approvalId: payload.approvalId,
+          threadId: pending.threadId,
+          runId: pending.runId,
+          decision: payload.decision,
+          toolCallId: pending.pendingToolCalls[pending.currentIndex]?.id,
+          toolName: pending.pendingToolCalls[pending.currentIndex]?.name,
+        },
+      },
+      new Map(this.demoRuns),
+    );
+    this.publishEvent(decidedEvent);
+
+    pending.resolve(payload.decision);
+
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'conversation.decideToolApproval',
+        payload: {
+          approvalId: payload.approvalId,
+          decision: payload.decision,
+          runId: pending.runId,
+        },
+      }),
+    );
+  }
+
   private async openProviderStream(
     run: DemoRunState,
+    options: {
+      messages?: import('@sync-think/adapters').ProviderMessage[];
+      toolsEnabled?: boolean;
+      workspaceRoot?: string;
+      executionMode?: string;
+      networkEnabled?: boolean;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined> {
+    const signal = options.signal ?? new AbortController().signal;
+    const executionMode = normalizeChatExecutionMode(options.executionMode);
+    const networkEnabled =
+      options.networkEnabled === true || run.networkEnabled === true;
+    const hasProjectTools = Boolean(options.toolsEnabled && options.workspaceRoot);
+    const tools =
+      options.toolsEnabled && (hasProjectTools || networkEnabled)
+        ? [
+            ...toolsForExecutionMode(executionMode, {
+              networkEnabled,
+              includeProjectTools: hasProjectTools,
+            }),
+          ]
+        : undefined;
+    const networkPrompt = networkEnabled
+      ? 'Web tools are ENABLED for this turn (web_search, web_fetch). Use them for current facts, news, or pages the user wants you to open. Prefer web_search first, then web_fetch on promising URLs. Cite URLs you used.'
+      : 'Web tools are DISABLED. Do not claim you browsed the live web; answer from knowledge or ask the user to enable 联网.';
+    const systemPrompt = options.workspaceRoot
+      ? [
+          'You are a coding assistant with filesystem tools for the bound project folder.',
+          `Project folder: ${options.workspaceRoot}`,
+          `Permission mode: ${executionMode}` +
+            (executionMode === 'ask'
+              ? ' (「询问批准」: you MAY call write_file / run_command; the user will be prompted to approve each mutating action before it runs. Prefer read-only tools when enough.)'
+              : ' (write_file / run_command auto-allowed inside the project folder).'),
+          'Use tools when needed. Paths are relative to the project folder. Prefer tools over guessing file contents.',
+          networkPrompt,
+        ].join('\n')
+      : [
+          'You are a helpful assistant.',
+          'No project folder is bound for this conversation, so filesystem tools are unavailable.',
+          'If the user asks about local project files, tell them to open/select a project folder first.',
+          networkPrompt,
+        ].join('\n');
+    const requestExtras = {
+      messages: options.messages,
+      tools,
+      systemPrompt,
+    };
+
+    // Diagnostic: confirm multimodal parts actually reached the provider request.
+    if (run.images && run.images.length > 0) {
+      const msgs = options.messages ?? [];
+      const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+      const imageParts =
+        lastUser && Array.isArray(lastUser.content)
+          ? lastUser.content.filter((p) => p.type === 'image').length
+          : 0;
+      console.log('[runtime] vision: provider request', {
+        modelId: run.providerModelId,
+        protocol: run.protocol,
+        runImages: run.images.length,
+        lastUserImageParts: imageParts,
+        useFakeProvider: run.useFakeProvider,
+      });
+      if (imageParts === 0) {
+        console.warn(
+          '[runtime] vision: run has images but last user message has no image parts',
+        );
+      }
+    }
+
     if (run.useFakeProvider || !run.providerId) {
       if (!this.demoProvider) return undefined;
-      return this.demoProvider.call(createDemoProviderRequest(run));
+      return this.demoProvider.call(
+        createDemoProviderRequest(run, 'fake-provider-no-secret', signal, requestExtras),
+      );
     }
     if (!this.providerStore || !this.secureStore || !run.credentialRefId) {
       if (this.demoProvider) {
-        return this.demoProvider.call(createDemoProviderRequest(run));
+        return this.demoProvider.call(
+          createDemoProviderRequest(run, 'fake-provider-no-secret', signal, requestExtras),
+        );
       }
       return undefined;
     }
@@ -9278,7 +10856,7 @@ export class Runtime {
     if (!apiKey || apiKey.trim().length === 0) {
       throw new Error('Credential secret empty for live provider call');
     }
-    return adapter.call(createDemoProviderRequest(run, apiKey));
+    return adapter.call(createDemoProviderRequest(run, apiKey, signal, requestExtras));
   }
 
   private persistDemoRunFailure(

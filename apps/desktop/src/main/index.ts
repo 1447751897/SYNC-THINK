@@ -18,6 +18,7 @@ import {
   resolveM1OpenDocPath,
   type M1OpenDocId,
 } from './m1-open-doc.js';
+import { listProjectFiles } from './project-files.js';
 import { listDogfoodDayReports } from './m1-exit-evidence-load.js';
 import { parseHandtestDocMarkdown } from '../m1-handtest-doc-parse.js';
 import { fileURLToPath } from 'node:url';
@@ -99,6 +100,26 @@ import {
   parseAgentListPayload,
   parseAgentVersionsPayload,
 } from '../orchestration-payloads.js';
+import {
+  parseCreateConversationPayload,
+  parseCreateGlobalAgentPayload,
+  parseCreateTeamPayload,
+  parseDeleteConversationPayload,
+  parseDeleteGlobalAgentPayload,
+  parseDeleteTeamPayload,
+  parseListConversationsPayload,
+  parseListGlobalAgentsPayload,
+  parseRenameConversationPayload,
+  parseSetConversationArchivedPayload,
+  parseSetConversationExecutionModePayload,
+  parseSetConversationPinnedPayload,
+  parseSetTeamRunStatusPayload,
+  parseStartTeamRunPayload,
+  parseUpdateGlobalAgentPayload,
+  parseUpdateTeamPayload,
+  parseUpgradeConversationTrackPayload,
+  parseConversationDecideToolApprovalPayload,
+} from '../team-payloads.js';
 import type { Event } from '@sync-think/shared';
 import {
   assertTrustedRendererIpcSource,
@@ -110,6 +131,8 @@ import {
 import type { TrustedRendererLocation } from './renderer-security.js';
 import { classifyRuntimeConnectError, RuntimePipeClient } from './runtime-client.js';
 import { RuntimeSession } from './runtime-session.js';
+import { ensureRuntimeProcess, stopManagedRuntime } from './runtime-supervisor.js';
+import { stageChatImageDataUrl } from './image-staging.js';
 import type { RuntimeConnectOutcome, RuntimeConnectResult } from '../runtime-bridge-contract.js';
 
 const INSTALL_ID = process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001';
@@ -124,7 +147,14 @@ function createWindow(): void {
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   const parsedDevServerUrl =
     !app.isPackaged && devServerUrl ? parseLoopbackDevServerUrl(devServerUrl) : null;
-  const rendererPath = path.join(__dirname, '../renderer/index.html');
+  // NewMax-style shell is the default product UI (dist/renderer-shell).
+  // Set SYNC_THINK_SHELL=0 (or legacy) to force the old task-board renderer.
+  const shellFlag = (process.env.SYNC_THINK_SHELL ?? '1').trim().toLowerCase();
+  const useShell = !(shellFlag === '0' || shellFlag === 'false' || shellFlag === 'legacy');
+  const rendererPath = path.join(
+    __dirname,
+    useShell ? '../renderer-shell/index.html' : '../renderer/index.html',
+  );
   const nextTrustedRendererLocation: TrustedRendererLocation = parsedDevServerUrl
     ? { kind: 'origin', value: parsedDevServerUrl.origin }
     : trustedFileLocation(rendererPath);
@@ -204,16 +234,84 @@ function getRuntimeSession(): RuntimeSession {
   return runtimeSession;
 }
 
-function ensureRuntimeConnection(): Promise<RuntimeConnectResult> {
+async function ensureRuntimeConnection(): Promise<RuntimeConnectResult> {
+  // Every IPC path that needs Runtime must tolerate cold start without a
+  // pre-launched `pnpm dev:runtime`.
+  await ensureRuntimeProcess(INSTALL_ID);
   return getRuntimeSession().connect();
 }
 
 async function connectRendererToRuntime(): Promise<RuntimeConnectOutcome> {
   try {
+    // Auto-start the local Runtime pipe process when missing (dev + future release).
+    // Without this, cold start shows「加载中…」forever if `pnpm dev:runtime` wasn't launched.
+    const supervised = await ensureRuntimeProcess(INSTALL_ID);
+    if (!supervised.ready) {
+      return {
+        ok: false,
+        error: {
+          code: 'runtime.unavailable',
+          retryable: true,
+        },
+      };
+    }
     return { ok: true, result: await ensureRuntimeConnection() };
   } catch (error) {
-    return { ok: false, error: classifyRuntimeConnectError(error) };
+    // One more ensure+retry: race where pipe appears mid-handshake.
+    try {
+      await ensureRuntimeProcess(INSTALL_ID);
+      return { ok: true, result: await ensureRuntimeConnection() };
+    } catch {
+      return { ok: false, error: classifyRuntimeConnectError(error) };
+    }
   }
+}
+
+/**
+ * Convert renderer data-URL images into staging paths so task.appendMessage
+ * stays under the protocol 1 MiB frame limit.
+ */
+function stageAppendMessageImages(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const payload = value as { images?: unknown };
+  if (!Array.isArray(payload.images) || payload.images.length === 0) return value;
+  const images = payload.images.map((raw) => {
+    if (!raw || typeof raw !== 'object') return raw;
+    const image = raw as {
+      name?: string;
+      mimeType?: string;
+      dataUrl?: string;
+      stagingPath?: string;
+    };
+    if (typeof image.stagingPath === 'string' && image.stagingPath.length > 0) {
+      return {
+        name: image.name || 'image',
+        mimeType: image.mimeType || 'image/png',
+        stagingPath: image.stagingPath,
+      };
+    }
+    if (typeof image.dataUrl === 'string' && image.dataUrl.startsWith('data:image/')) {
+      // Always stage: even "small" screenshots often exceed the 1 MiB frame after JSON.
+      const staged = stageChatImageDataUrl({
+        name: image.name || 'image',
+        mimeType: image.mimeType,
+        dataUrl: image.dataUrl,
+      });
+      console.log('[desktop] staged chat image', {
+        name: staged.name,
+        mimeType: staged.mimeType,
+        bytes: staged.bytes,
+        stagingPath: staged.stagingPath,
+      });
+      return {
+        name: staged.name,
+        mimeType: staged.mimeType,
+        stagingPath: staged.stagingPath,
+      };
+    }
+    return raw;
+  });
+  return { ...(value as object), images };
 }
 
 function parseAppendMessagePayload(value: unknown): AppendMessagePayload {
@@ -222,6 +320,7 @@ function parseAppendMessagePayload(value: unknown): AppendMessagePayload {
   }
   const payload = value as Partial<AppendMessagePayload>;
   const validRoles = new Set(['user', 'assistant', 'system', 'tool']);
+  const hasImages = Array.isArray(payload.images) && payload.images.length > 0;
   if (
     typeof payload.threadId !== 'string' ||
     payload.threadId.length === 0 ||
@@ -230,10 +329,38 @@ function parseAppendMessagePayload(value: unknown): AppendMessagePayload {
     typeof payload.role !== 'string' ||
     !validRoles.has(payload.role) ||
     typeof payload.text !== 'string' ||
-    payload.text.trim().length === 0 ||
-    payload.text.length > 100_000
+    payload.text.length > 100_000 ||
+    (!hasImages && payload.text.trim().length === 0)
   ) {
     throw new Error('Invalid append-message payload');
+  }
+  if (payload.images !== undefined) {
+    if (!Array.isArray(payload.images) || payload.images.length > 8) {
+      throw new Error('Invalid append-message images');
+    }
+    for (const image of payload.images) {
+      if (
+        !image ||
+        typeof image !== 'object' ||
+        typeof image.name !== 'string' ||
+        typeof image.mimeType !== 'string' ||
+        !image.mimeType.startsWith('image/')
+      ) {
+        throw new Error('Invalid append-message image item');
+      }
+      const hasDataUrl =
+        typeof image.dataUrl === 'string' &&
+        image.dataUrl.startsWith('data:image/') &&
+        image.dataUrl.length <= 700_000;
+      const hasStagingPath =
+        typeof image.stagingPath === 'string' && image.stagingPath.length > 0;
+      if (!hasDataUrl && !hasStagingPath) {
+        throw new Error('Invalid append-message image item');
+      }
+    }
+  }
+  if (payload.networkEnabled !== undefined && typeof payload.networkEnabled !== 'boolean') {
+    throw new Error('Invalid append-message networkEnabled');
   }
   return payload as AppendMessagePayload;
 }
@@ -269,7 +396,9 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('runtime:append-message', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request('task.appendMessage', parseAppendMessagePayload(value));
+    // Stage large images on disk first — named pipe frames are capped at 1 MiB.
+    const staged = stageAppendMessageImages(value);
+    return getRuntimeClient().request('task.appendMessage', parseAppendMessagePayload(staged));
   });
   ipcMain.handle('runtime:workspace-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -503,6 +632,126 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('agent.createVersion', parseAgentCreateVersionPayload(value));
+  });
+
+  // Mutable global Agent / Team / Conversation commands (2026-07-22 model).
+  ipcMain.handle('runtime:global-agent-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('globalAgent.list', parseListGlobalAgentsPayload(value));
+  });
+  ipcMain.handle('runtime:global-agent-create', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('globalAgent.create', parseCreateGlobalAgentPayload(value));
+  });
+  ipcMain.handle('runtime:global-agent-update', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('globalAgent.update', parseUpdateGlobalAgentPayload(value));
+  });
+  ipcMain.handle('runtime:global-agent-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('globalAgent.delete', parseDeleteGlobalAgentPayload(value));
+  });
+  ipcMain.handle('runtime:team-list', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('team.list', {});
+  });
+  ipcMain.handle('runtime:team-create', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('team.create', parseCreateTeamPayload(value));
+  });
+  ipcMain.handle('runtime:team-update', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('team.update', parseUpdateTeamPayload(value));
+  });
+  ipcMain.handle('runtime:team-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('team.delete', parseDeleteTeamPayload(value));
+  });
+  ipcMain.handle('runtime:team-start-run', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('team.startRun', parseStartTeamRunPayload(value));
+  });
+  ipcMain.handle('runtime:team-set-run-status', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('team.setRunStatus', parseSetTeamRunStatusPayload(value));
+  });
+  ipcMain.handle('runtime:conversation-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('conversation.list', parseListConversationsPayload(value));
+  });
+  ipcMain.handle('runtime:conversation-create', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('conversation.create', parseCreateConversationPayload(value));
+  });
+  ipcMain.handle('runtime:conversation-rename', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('conversation.rename', parseRenameConversationPayload(value));
+  });
+  ipcMain.handle('runtime:conversation-set-pinned', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.setPinned',
+      parseSetConversationPinnedPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-set-archived', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.setArchived',
+      parseSetConversationArchivedPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-set-execution-mode', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.setExecutionMode',
+      parseSetConversationExecutionModePayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-decide-tool-approval', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.decideToolApproval',
+      parseConversationDecideToolApprovalPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-upgrade-track', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.upgradeTrack',
+      parseUpgradeConversationTrackPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.delete',
+      parseDeleteConversationPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-send-message', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('conversation.sendMessage', value);
   });
 
   ipcMain.handle('runtime:skill-import', async (event, value: unknown) => {
@@ -782,6 +1031,33 @@ function setupRuntimeBridge(): void {
     }
     return { canceled: false as const, path: result.filePaths[0]! };
   });
+
+  // Compose @-mention: list files under a bound project folder (local FS only).
+  ipcMain.handle('desktop:list-project-files', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid list-project-files payload');
+    }
+    const payload = value as { root?: unknown; query?: unknown; maxEntries?: unknown };
+    if (typeof payload.root !== 'string' || payload.root.trim().length === 0) {
+      throw new Error('Invalid list-project-files payload: root required');
+    }
+    const root = path.resolve(payload.root);
+    // Soft root existence check — listProjectFiles also handles missing roots.
+    if (!fs.existsSync(root)) {
+      return { root, files: [] as Array<{ path: string; name: string; kind: 'file' | 'dir' }> };
+    }
+    const files = listProjectFiles({
+      root,
+      query: typeof payload.query === 'string' ? payload.query : '',
+      maxEntries:
+        typeof payload.maxEntries === 'number' && payload.maxEntries > 0
+          ? Math.min(payload.maxEntries, 500)
+          : 200,
+    });
+    return { root, files };
+  });
+
   ipcMain.handle('runtime:run-cancel', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -802,6 +1078,7 @@ void app
 
 app.on('before-quit', () => {
   runtimeClient?.disconnect();
+  stopManagedRuntime();
 });
 
 app.on('window-all-closed', () => {

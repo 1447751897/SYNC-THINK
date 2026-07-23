@@ -93,6 +93,8 @@ export interface RuntimeSessionClient {
 
 export class RuntimeSession {
   private eventHistory: Event[] = [];
+  /** O(1) dedupe for event sequences — avoids O(n) scans on every replay event. */
+  private seenSequences = new Set<number>();
   private runtimeSubscription: Promise<() => Promise<void>> | null = null;
 
   constructor(
@@ -100,9 +102,23 @@ export class RuntimeSession {
     private readonly forwardEvent: (event: Event) => void,
   ) {}
 
+  /**
+   * Fast connect for UI startup:
+   * 1) pipe + hello
+   * 2) healthcheck
+   * 3) return immediately with whatever snapshot is already buffered
+   *
+   * Full event replay continues in the background. Waiting for complete
+   * catch-up here made cold start feel empty for a long time when the DB
+   * already had a large event log.
+   */
   async connect(): Promise<RuntimeConnectResult> {
     await this.client.connect();
-    await this.ensureSubscription();
+    // Kick off catch-up without blocking the first UI paint / listConversations.
+    void this.ensureSubscription().catch((error) => {
+      console.warn('[desktop] runtime event subscription failed', error);
+      if (this.runtimeSubscription) this.runtimeSubscription = null;
+    });
     const health = sanitizeRuntimeHealth(
       await this.client.request<RuntimeHealth>('runtime.healthcheck', {}),
     );
@@ -124,9 +140,16 @@ export class RuntimeSession {
   }
 
   private recordEvent(event: Event): void {
-    if (this.eventHistory.some((existing) => existing.sequence === event.sequence)) return;
+    if (this.seenSequences.has(event.sequence)) return;
+    this.seenSequences.add(event.sequence);
     const sanitizedEvent = sanitizeRuntimeEventForRenderer(event);
-    this.eventHistory = mergeEventHistory(this.eventHistory, [sanitizedEvent]);
+    // Sequential append is the common path during replay; avoid full re-merge.
+    const last = this.eventHistory[this.eventHistory.length - 1];
+    if (!last || sanitizedEvent.sequence > last.sequence) {
+      this.eventHistory = [...this.eventHistory, sanitizedEvent];
+    } else {
+      this.eventHistory = mergeEventHistory(this.eventHistory, [sanitizedEvent]);
+    }
     try {
       this.forwardEvent(sanitizedEvent);
     } catch {

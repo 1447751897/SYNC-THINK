@@ -344,6 +344,35 @@ describe('Compose', () => {
     expect(screen.queryByTestId('compose-blocker')).toBeNull();
   });
 
+  it('switches talk target among model / agent / team without changing permission semantics', () => {
+    const onTalkTargetKindChange = vi.fn();
+    const agents: ComposeAgentOption[] = [
+      { agentId: 'a1', name: '前端小张', role: 'builder' },
+    ];
+    render(
+      <Compose
+        mode="conversation"
+        onSend={() => undefined}
+        models={sampleModels}
+        agents={agents}
+        selectedAgentId="a1"
+        onAgentChange={() => undefined}
+        talkTargetKind="model"
+        onTalkTargetKindChange={onTalkTargetKindChange}
+        teams={[{ teamId: 't1', name: '交付小队', memberSummary: '3 人' }]}
+        selectedTeamId="t1"
+      />,
+    );
+    const form = screen.getByLabelText('Message compose');
+    expect(form.getAttribute('data-talk-target')).toBe('model');
+    expect(screen.getByTestId('compose-talk-target')).toBeTruthy();
+    expect(screen.queryByTestId('compose-agent-trigger')).toBeNull();
+    fireEvent.click(screen.getByTestId('compose-talk-target-agent'));
+    expect(onTalkTargetKindChange).toHaveBeenCalledWith('agent');
+    fireEvent.click(screen.getByTestId('compose-talk-target-team'));
+    expect(onTalkTargetKindChange).toHaveBeenCalledWith('team');
+  });
+
   it('replaces send with a compact stop control while streaming', () => {
     render(
       <Compose

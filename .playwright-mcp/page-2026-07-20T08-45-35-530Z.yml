@@ -1,0 +1,84 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e4]: SYNC-THINK
+    - generic [ref=e5]:
+      - generic [ref=e6]: RUNTIME
+      - button "任务架 ⌘K" [ref=e8] [cursor=pointer]:
+        - text: 任务架
+        - generic [ref=e9]: ⌘K
+  - generic [ref=e11]:
+    - banner [ref=e18]:
+      - generic [ref=e19]: RUN 01J…X4 · 进行中
+      - heading "前端视觉重做" [level=1] [ref=e20]
+      - generic [ref=e21]:
+        - generic [ref=e22]: 阶段 视觉稿评审
+        - generic [ref=e23]: 上下文 8.2k tokens
+        - generic [ref=e24]: 证据 14 条
+        - generic [ref=e25]: 交接 2 次
+    - generic [ref=e26]:
+      - generic [ref=e27]: 第一章
+      - text: 澄清
+    - generic [ref=e28]: 页面太素了，像通用 AI 壳。给我一版只属于 SYNC-THINK 的方向。
+    - generic [ref=e30]:
+      - generic [ref=e31]: 第二章
+      - text: 设计
+    - generic [ref=e32]:
+      - generic [ref=e33]:
+        - generic [ref=e34]: Planner
+        - time [ref=e35]: 14:02:11
+      - generic [ref=e36]:
+        - paragraph [ref=e37]: 那签名元素不该是某个面板，而是「工作本身在推进」这件事。这条左侧的历程线就是连续体：玉绿是已经写完的章节，鸢尾蓝是正在书写的现在，灰线是未到的空白。你滚动历史时，线不动——它是这卷工作的脊柱。
+        - paragraph [ref=e38]:
+          - text: 轨迹不再是常驻栏，收成右缘一条心电边条，事件是跳动的刻度，要看细节再拉开。草案写入
+          - code [ref=e39]: d-the-scroll.html
+          - text: 。
+    - generic [ref=e40]:
+      - generic [ref=e41]: PLANNER 交接 DESIGNER
+      - generic [ref=e43]: ctx 8.2k · 证据 6
+    - generic [ref=e44]:
+      - generic [ref=e45]:
+        - generic [ref=e46]: Designer
+        - time [ref=e47]: 14:02:40
+      - generic [ref=e48]:
+        - paragraph [ref=e49]: 审批我做成了一道「闸门」：它横跨整个长卷，不断行行高、不用弹窗。批准是一枚有物理感的铜杆——拉下它，Run 才继续流动。
+        - paragraph [ref=e50]
+    - generic [ref=e55]:
+      - generic [ref=e56]: GATE · 需要批准
+      - generic [ref=e58]: 写入设计 token v2
+      - paragraph [ref=e59]:
+        - text: Designer 请求修改
+        - code [ref=e60]: 15-frontend-design-tokens.json
+        - text: 的色板与字阶，影响全量组件。diff：+42 / −18 行。
+      - generic [ref=e61]:
+        - button "批准并继续" [ref=e62] [cursor=pointer]
+        - button "查看 diff" [ref=e63] [cursor=pointer]
+        - button "拒绝" [ref=e64] [cursor=pointer]
+        - generic [ref=e65]: ⏎ 批准 · esc 稍后
+  - generic "点击展开 Run 轨迹" [ref=e66] [cursor=pointer]: RUN TRACE
+  - complementary [ref=e77]:
+    - generic [ref=e78]:
+      - heading "Run 轨迹" [level=2] [ref=e79]
+      - generic [ref=e80]: ● LIVE
+    - generic [ref=e81]:
+      - generic [ref=e82]:
+        - text: 任务创建 · 前端视觉重做
+        - time [ref=e83]: 14:01:02 · orchestrator
+      - generic [ref=e84]:
+        - text: 上下文装配 · 8.2k tokens · 6 证据
+        - time [ref=e85]: 14:01:03 · memory
+      - generic [ref=e86]:
+        - text: Planner 完成 · 产出方向草案
+        - time [ref=e87]: 14:02:11 · agent/planner
+      - generic [ref=e88]:
+        - text: 交接 · Planner → Designer
+        - time [ref=e89]: 14:02:12 · handoff
+      - generic [ref=e90]:
+        - text: 审批请求 · tokens.json 写入
+        - time [ref=e91]: 14:02:52 · policy
+      - generic [ref=e92]:
+        - text: Designer 生成中 · token v2 草拟
+        - time [ref=e93]: now · agent/designer
+  - generic [ref=e95]:
+    - textbox "继续推进，或 @ 某个 Agent…" [ref=e96]
+    - generic [ref=e97]: DESIGNER · OPUS
+    - button "↑" [ref=e98] [cursor=pointer]

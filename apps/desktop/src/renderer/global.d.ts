@@ -197,6 +197,61 @@ declare global {
         createAgent(payload: CreateAgentPayload): Promise<CreateAgentResponse>;
         listAgentVersions(payload: ListAgentVersionsPayload): Promise<ListAgentVersionsResponse>;
         createAgentVersion(payload: CreateAgentVersionPayload): Promise<CreateAgentVersionResponse>;
+        listGlobalAgents(
+          payload?: import('@sync-think/protocol').ListGlobalAgentsPayload,
+        ): Promise<import('@sync-think/protocol').ListGlobalAgentsResponse>;
+        createGlobalAgent(
+          payload: import('@sync-think/protocol').CreateGlobalAgentPayload,
+        ): Promise<import('@sync-think/protocol').GlobalAgentResponse>;
+        updateGlobalAgent(
+          payload: import('@sync-think/protocol').UpdateGlobalAgentPayload,
+        ): Promise<import('@sync-think/protocol').GlobalAgentResponse>;
+        deleteGlobalAgent(
+          payload: import('@sync-think/protocol').DeleteGlobalAgentPayload,
+        ): Promise<Record<string, never>>;
+        listTeams(): Promise<import('@sync-think/protocol').ListTeamsResponse>;
+        createTeam(
+          payload: import('@sync-think/protocol').CreateTeamPayload,
+        ): Promise<import('@sync-think/protocol').TeamResponse>;
+        updateTeam(
+          payload: import('@sync-think/protocol').UpdateTeamPayload,
+        ): Promise<import('@sync-think/protocol').TeamResponse>;
+        deleteTeam(
+          payload: import('@sync-think/protocol').DeleteTeamPayload,
+        ): Promise<Record<string, never>>;
+        startTeamRun(
+          payload: import('@sync-think/protocol').StartTeamRunPayload,
+        ): Promise<import('@sync-think/protocol').TeamRunResponse>;
+        setTeamRunStatus(
+          payload: import('@sync-think/protocol').SetTeamRunStatusPayload,
+        ): Promise<import('@sync-think/protocol').TeamRunResponse>;
+        listConversations(
+          payload?: import('@sync-think/protocol').ListConversationsPayload,
+        ): Promise<import('@sync-think/protocol').ListConversationsResponse>;
+        createConversation(
+          payload: import('@sync-think/protocol').CreateConversationPayload,
+        ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        renameConversation(
+          payload: import('@sync-think/protocol').RenameConversationPayload,
+        ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        setConversationPinned(
+          payload: import('@sync-think/protocol').SetConversationPinnedPayload,
+        ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        setConversationArchived(
+          payload: import('@sync-think/protocol').SetConversationArchivedPayload,
+        ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        setConversationExecutionMode(
+          payload: import('@sync-think/protocol').SetConversationExecutionModePayload,
+        ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        decideToolApproval(
+          payload: import('@sync-think/protocol').ConversationDecideToolApprovalPayload,
+        ): Promise<import('@sync-think/protocol').ConversationDecideToolApprovalResponse>;
+        upgradeConversationTrack(
+          payload: import('@sync-think/protocol').UpgradeConversationTrackPayload,
+        ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        deleteConversation(
+          payload: import('@sync-think/protocol').DeleteConversationPayload,
+        ): Promise<Record<string, never>>;
         importSkill(payload: ImportSkillPayload): Promise<ImportSkillResponse>;
         listSkills(payload?: ListSkillsPayload): Promise<ListSkillsResponse>;
         registerMcpServer(payload: RegisterMcpServerPayload): Promise<RegisterMcpServerResponse>;
@@ -217,6 +272,14 @@ declare global {
         amendContextPacket(payload: AmendContextPacketPayload): Promise<AmendContextPacketResponse>;
         listDiagnostics(payload?: ListDiagnosticsPayload): Promise<ListDiagnosticsResponse>;
         pickFolder(): Promise<{ canceled: boolean; path: string | null }>;
+        listProjectFiles(payload: {
+          root: string;
+          query?: string;
+          maxEntries?: number;
+        }): Promise<{
+          root: string;
+          files: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;
+        }>;
         getM1ExitEvidence(): Promise<{
           ok: boolean;
           handtestChecked: number;

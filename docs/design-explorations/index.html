@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SYNC-THINK 视觉方向对比</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: #101211; color: #e8ece9; min-height: 100vh; padding: 56px 48px;
+  }
+  h1 { font-size: 26px; letter-spacing: .02em; }
+  .sub { color: #98a29b; margin: 10px 0 40px; max-width: 720px; line-height: 1.7; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px; max-width: 1200px; }
+  a.card {
+    display: block; text-decoration: none; color: inherit;
+    border: 1px solid #2c332f; border-radius: 16px; overflow: hidden;
+    background: #161917; transition: transform .18s ease, border-color .18s ease;
+  }
+  a.card:hover { transform: translateY(-4px); border-color: #4a534d; }
+  .shot { width: 100%; aspect-ratio: 16/10; object-fit: cover; object-position: top; display: block; background: #000; }
+  .card__body { padding: 18px 20px 20px; }
+  .card__body h2 { font-size: 17px; margin-bottom: 6px; }
+  .card__body p { font-size: 13px; color: #98a29b; line-height: 1.65; }
+  .tags { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .tags span { font-size: 11px; padding: 3px 10px; border-radius: 999px; border: 1px solid #333b36; color: #aeb7b0; }
+  .note { margin-top: 40px; font-size: 12.5px; color: #6a746d; max-width: 720px; line-height: 1.7; }
+</style>
+</head>
+<body>
+  <h1>SYNC-THINK 视觉方向 · 三版对比</h1>
+  <p class="sub">A / B / C 三版保留 Locked IA（左任务树 / 中对话 / 右可折叠轨迹），仅视觉语言不同。<strong>D 是零参照原创，直接推翻三栏 IA</strong>。点击进入全屏稿（内含动效与可交互元素，建议用浏览器实际打开感受）。</p>
+  <div class="grid">
+    <a class="card" href="./a-obsidian-console.html">
+      <img class="shot" src="./shot-a.png" alt="Obsidian Console 预览" />
+      <div class="card__body">
+        <h2>A · Obsidian Console 黑曜仪器</h2>
+        <p>深石墨底 + 发丝线 + 磷光绿信号，等宽字体仪表感。状态靠「发光信号」传达，信息密度最高，最像专业开发者工具。</p>
+        <div class="tags"><span>深色</span><span>高密度</span><span>Linear / Raycast 气质</span></div>
+      </div>
+    </a>
+    <a class="card" href="./b-paper-bench.html">
+      <img class="shot" src="./shot-b.png" alt="Paper Bench 预览" />
+      <div class="card__body">
+        <h2>B · Paper Bench 纸面工作台</h2>
+        <p>暖纸底 + 墨色 + 衬线标题的编辑室语言。审批是朱印、轨迹是页边批注。气质安静独特，适合长时间读写，但工具感最弱。</p>
+        <div class="tags"><span>浅色</span><span>编辑排版</span><span>差异化最强</span></div>
+      </div>
+    </a>
+    <a class="card" href="./c-continuum.html">
+      <img class="shot" src="./shot-c.png" alt="Continuum 预览" />
+      <div class="card__body">
+        <h2>C · Continuum 连续体（签名方向）</h2>
+        <p>按设计文档 §0.3 推进：顶部一条发光的「上下文丝带」，Agent 交接是丝带上的光点传递，轨迹是显影底片。最贴合产品概念、记忆点最强。</p>
+        <div class="tags"><span>深色矿物底</span><span>原创签名元素</span><span>设计文档原方向</span></div>
+      </div>
+    </a>
+    <a class="card" href="./d-the-scroll.html" style="border-color:#4a534d">
+      <img class="shot" src="./shot-d.png" alt="长卷 The Scroll 预览" />
+      <div class="card__body">
+        <h2>D · 长卷 The Scroll（零参照原创 · 推翻 IA）</h2>
+        <p>不参考现有前端：砍掉永久三栏，整个应用是一轴居中的工作叙事长卷。连续体化作左侧「历程线」，Run 轨迹收成右缘 24px「心电边条」（点击拉出抽屉），任务导航收进 ⌘K 浮层，审批是横跨长卷的闸门。可交互：点右缘边条、按 Ctrl/⌘+K。</p>
+        <div class="tags"><span>推翻三栏 IA</span><span>叙事化</span><span>签名：历程线 + 心电边条</span></div>
+      </div>
+    </a>
+  </div>
+  <p class="note">三版也可以混搭：例如 C 的丝带签名 + A 的高密度轨迹。选定方向后，实施路径为：tokens.json v2 → ui-kit 组件逐个重设计（可引入 Tailwind）→ 调试面板收进开发者模式。</p>
+</body>
+</html>

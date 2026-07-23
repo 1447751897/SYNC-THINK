@@ -8,7 +8,18 @@ export const UI_PREF_KEYS = {
   conversationLayout: 'sync-think.conversationLayout',
   theme: 'sync-think.theme',
   traceCollapsed: 'sync-think.traceCollapsed',
+  recentConversationSections: 'sync-think.recentConversationSections',
+  pinnedConversations: 'sync-think.pinnedConversations',
+  conversationTracks: 'sync-think.conversationTracks',
 } as const;
+
+export type RecentConversationSectionState = Record<'model' | 'agent' | 'team', boolean>;
+
+const DEFAULT_RECENT_CONVERSATION_SECTIONS: RecentConversationSectionState = {
+  model: true,
+  agent: true,
+  team: true,
+};
 
 function safeGet(key: string): string | null {
   try {
@@ -119,4 +130,99 @@ export function writeTraceCollapsedPreference(
     return;
   }
   safeSet(UI_PREF_KEYS.traceCollapsed, value);
+}
+
+function readJsonPreference(
+  key: string,
+  storage?: Pick<Storage, 'getItem'>,
+): unknown {
+  const raw = storage
+    ? (() => {
+        try {
+          return storage.getItem(key);
+        } catch {
+          return null;
+        }
+      })()
+    : safeGet(key);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function writeJsonPreference(
+  key: string,
+  value: unknown,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  const serialized = JSON.stringify(value);
+  if (storage) {
+    try {
+      storage.setItem(key, serialized);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(key, serialized);
+}
+
+export function readRecentConversationSectionPreference(
+  storage?: Pick<Storage, 'getItem'>,
+): RecentConversationSectionState {
+  const raw = readJsonPreference(UI_PREF_KEYS.recentConversationSections, storage);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ...DEFAULT_RECENT_CONVERSATION_SECTIONS };
+  }
+  const record = raw as Record<string, unknown>;
+  return {
+    model: typeof record.model === 'boolean' ? record.model : true,
+    agent: typeof record.agent === 'boolean' ? record.agent : true,
+    team: typeof record.team === 'boolean' ? record.team : true,
+  };
+}
+
+export function writeRecentConversationSectionPreference(
+  state: RecentConversationSectionState,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(UI_PREF_KEYS.recentConversationSections, state, storage);
+}
+
+export function readPinnedConversationIds(
+  storage?: Pick<Storage, 'getItem'>,
+): readonly string[] {
+  const raw = readJsonPreference(UI_PREF_KEYS.pinnedConversations, storage);
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.filter((item): item is string => typeof item === 'string' && item.length > 0))];
+}
+
+export function writePinnedConversationIds(
+  ids: readonly string[],
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(UI_PREF_KEYS.pinnedConversations, [...new Set(ids)], storage);
+}
+
+export function readConversationTrackPreferences(
+  storage?: Pick<Storage, 'getItem'>,
+): Readonly<Record<string, 'model' | 'agent' | 'team'>> {
+  const raw = readJsonPreference(UI_PREF_KEYS.conversationTracks, storage);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const result: Record<string, 'model' | 'agent' | 'team'> = {};
+  for (const [taskId, track] of Object.entries(raw as Record<string, unknown>)) {
+    if (!taskId || (track !== 'model' && track !== 'agent' && track !== 'team')) continue;
+    result[taskId] = track;
+  }
+  return result;
+}
+
+export function writeConversationTrackPreferences(
+  tracks: Readonly<Record<string, 'model' | 'agent' | 'team'>>,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(UI_PREF_KEYS.conversationTracks, tracks, storage);
 }

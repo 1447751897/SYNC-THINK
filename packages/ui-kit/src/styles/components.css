@@ -40,9 +40,10 @@
 
 .st-app-shell {
   display: grid;
-  grid-template-columns: var(--st-layout-left-nav-width, 236px) 1fr var(
+  /* Slightly wider left rail for NewMax-like primary nav labels */
+  grid-template-columns: var(--st-layout-left-nav-width, 248px) 1fr var(
       --st-layout-right-trace-width,
-      274px
+      280px
     );
   grid-template-rows: 100vh;
   background: var(--st-color-background);
@@ -56,7 +57,7 @@
     color var(--st-trans-normal);
 }
 .st-app-shell[data-trace-collapsed='true'] {
-  grid-template-columns: var(--st-layout-left-nav-width, 236px) 1fr 44px;
+  grid-template-columns: var(--st-layout-left-nav-width, 248px) 1fr 44px;
 }
 
 /* AppShell layout readiness —§15.2 / §15.3 */
@@ -216,9 +217,12 @@
 .st-app-shell__nav {
   position: relative;
   z-index: 2;
-  background: var(--st-color-sidebar);
-  border-right: 1px solid color-mix(in srgb, var(--st-color-border) 72%, transparent);
-  padding: var(--st-space-3) var(--st-space-3) var(--st-space-3);
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--st-color-sidebar) 96%, var(--st-color-background));
+  border-right: 1px solid color-mix(in srgb, var(--st-color-border) 64%, transparent);
+  padding: 0;
   overflow: hidden;
 }
 
@@ -6763,6 +6767,67 @@ button.st-agent__mcp-tool-chip {
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+
+.st-compose__talk-target {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--st-color-border) 80%, transparent);
+  border-radius: var(--st-radius-full);
+  background: color-mix(in srgb, var(--st-color-surface) 88%, var(--st-color-background));
+}
+
+.st-compose__talk-target-item {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--st-radius-full);
+  background: transparent;
+  color: var(--st-color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.st-compose__talk-target-item[data-active='1'] {
+  background: color-mix(in srgb, var(--st-color-surface-elevated) 80%, var(--st-color-accent));
+  color: var(--st-color-text-primary);
+}
+
+.st-compose__talk-target-item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.st-compose__team-chip {
+  display: inline-flex;
+  max-width: 180px;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: var(--st-radius-full);
+  background: color-mix(in srgb, var(--st-color-surface-elevated) 90%, var(--st-color-accent));
+  color: var(--st-color-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.st-compose__team-chip small {
+  overflow: hidden;
+  color: var(--st-color-text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .st-compose__agent-picker {

@@ -116,6 +116,32 @@ import type {
   ListAgentVersionsResponse,
   CreateAgentVersionPayload,
   CreateAgentVersionResponse,
+  ListGlobalAgentsPayload,
+  ListGlobalAgentsResponse,
+  CreateGlobalAgentPayload,
+  UpdateGlobalAgentPayload,
+  DeleteGlobalAgentPayload,
+  GlobalAgentResponse,
+  ListTeamsResponse,
+  CreateTeamPayload,
+  UpdateTeamPayload,
+  DeleteTeamPayload,
+  StartTeamRunPayload,
+  SetTeamRunStatusPayload,
+  TeamRunResponse,
+  TeamResponse,
+  ListConversationsPayload,
+  ListConversationsResponse,
+  CreateConversationPayload,
+  ConversationResponse,
+  RenameConversationPayload,
+  SetConversationPinnedPayload,
+  SetConversationArchivedPayload,
+  SetConversationExecutionModePayload,
+  UpgradeConversationTrackPayload,
+  DeleteConversationPayload,
+  ConversationDecideToolApprovalPayload,
+  ConversationDecideToolApprovalResponse,
 } from '@sync-think/protocol';
 import type {
   RendererCreateProviderPayload,
@@ -274,6 +300,73 @@ const api = {
         'runtime:agent-create-version',
         payload,
       ) as Promise<CreateAgentVersionResponse>,
+    // Mutable global Agent / Team / Conversation bridge (2026-07-22 model).
+    listGlobalAgents: (payload: ListGlobalAgentsPayload = {}) =>
+      ipcRenderer.invoke('runtime:global-agent-list', payload) as Promise<ListGlobalAgentsResponse>,
+    createGlobalAgent: (payload: CreateGlobalAgentPayload) =>
+      ipcRenderer.invoke('runtime:global-agent-create', payload) as Promise<GlobalAgentResponse>,
+    updateGlobalAgent: (payload: UpdateGlobalAgentPayload) =>
+      ipcRenderer.invoke('runtime:global-agent-update', payload) as Promise<GlobalAgentResponse>,
+    deleteGlobalAgent: (payload: DeleteGlobalAgentPayload) =>
+      ipcRenderer.invoke('runtime:global-agent-delete', payload) as Promise<Record<string, never>>,
+    listTeams: () => ipcRenderer.invoke('runtime:team-list') as Promise<ListTeamsResponse>,
+    createTeam: (payload: CreateTeamPayload) =>
+      ipcRenderer.invoke('runtime:team-create', payload) as Promise<TeamResponse>,
+    updateTeam: (payload: UpdateTeamPayload) =>
+      ipcRenderer.invoke('runtime:team-update', payload) as Promise<TeamResponse>,
+    deleteTeam: (payload: DeleteTeamPayload) =>
+      ipcRenderer.invoke('runtime:team-delete', payload) as Promise<Record<string, never>>,
+    startTeamRun: (payload: StartTeamRunPayload) =>
+      ipcRenderer.invoke('runtime:team-start-run', payload) as Promise<TeamRunResponse>,
+    setTeamRunStatus: (payload: SetTeamRunStatusPayload) =>
+      ipcRenderer.invoke('runtime:team-set-run-status', payload) as Promise<TeamRunResponse>,
+    listConversations: (payload: ListConversationsPayload = {}) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-list',
+        payload,
+      ) as Promise<ListConversationsResponse>,
+    createConversation: (payload: CreateConversationPayload) =>
+      ipcRenderer.invoke('runtime:conversation-create', payload) as Promise<ConversationResponse>,
+    renameConversation: (payload: RenameConversationPayload) =>
+      ipcRenderer.invoke('runtime:conversation-rename', payload) as Promise<ConversationResponse>,
+    setConversationPinned: (payload: SetConversationPinnedPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-set-pinned',
+        payload,
+      ) as Promise<ConversationResponse>,
+    setConversationArchived: (payload: SetConversationArchivedPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-set-archived',
+        payload,
+      ) as Promise<ConversationResponse>,
+    setConversationExecutionMode: (payload: SetConversationExecutionModePayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-set-execution-mode',
+        payload,
+      ) as Promise<ConversationResponse>,
+    decideToolApproval: (payload: ConversationDecideToolApprovalPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-decide-tool-approval',
+        payload,
+      ) as Promise<ConversationDecideToolApprovalResponse>,
+    upgradeConversationTrack: (payload: UpgradeConversationTrackPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-upgrade-track',
+        payload,
+      ) as Promise<ConversationResponse>,
+    deleteConversation: (payload: DeleteConversationPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-delete',
+        payload,
+      ) as Promise<Record<string, never>>,
+    sendConversationMessage: (payload: { conversationId: string; text: string; modelId?: string }) =>
+      ipcRenderer.invoke('runtime:conversation-send-message', payload) as Promise<{
+        messageId: string;
+        threadId: string;
+        taskVersion: number;
+        streamId?: string;
+        conversationTitle?: string;
+      }>,
     importSkill: (payload: ImportSkillPayload) =>
       ipcRenderer.invoke('runtime:skill-import', payload) as Promise<ImportSkillResponse>,
     listSkills: (payload: ListSkillsPayload = {}) =>
@@ -322,6 +415,11 @@ const api = {
       ipcRenderer.invoke('desktop:pick-folder') as Promise<{
         canceled: boolean;
         path: string | null;
+      }>,
+    listProjectFiles: (payload: { root: string; query?: string; maxEntries?: number }) =>
+      ipcRenderer.invoke('desktop:list-project-files', payload) as Promise<{
+        root: string;
+        files: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;
       }>,
     getM1ExitEvidence: () =>
       ipcRenderer.invoke('desktop:m1-exit-evidence') as Promise<{

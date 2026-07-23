@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>设计稿 A · Obsidian Console — SYNC-THINK</title>
+<style>
+  /* ============================================================
+     方向 A：黑曜仪器 · Obsidian Console
+     关键词：深石墨底 / 发丝线 / 磷光绿信号 / 等宽字体仪表感
+     适合：开发者长会话、高密度信息、状态可感知优先
+     ============================================================ */
+  :root {
+    --bg: #0b0d0c;
+    --bg-raise: #101312;
+    --bg-panel: #141816;
+    --bg-inset: #080a09;
+    --line: #222825;
+    --line-strong: #303834;
+    --ink: #e6ebe7;
+    --ink-2: #97a29b;
+    --ink-3: #5b655f;
+    --signal: #34d399;        /* 磷光绿：运行/成功信号 */
+    --signal-dim: #34d39933;
+    --amber: #e8a33d;         /* 审批/警示 */
+    --red: #e5604f;
+    --blue: #58a6d6;
+    --mono: "Cascadia Code", "JetBrains Mono", ui-monospace, Consolas, monospace;
+    --sans: "Inter", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--sans);
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--ink);
+    background: var(--bg);
+    overflow: hidden;
+  }
+
+  .app {
+    display: grid;
+    grid-template-columns: 248px 1fr 300px;
+    grid-template-rows: 44px 1fr;
+    grid-template-areas:
+      "nav continuum continuum"
+      "nav main trace";
+    height: 100vh;
+  }
+
+  /* ---------- 左侧导航 ---------- */
+  .nav {
+    grid-area: nav;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-inset);
+    border-right: 1px solid var(--line);
+  }
+  .nav__brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .nav__mark {
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    color: var(--signal);
+    background: var(--bg-panel);
+    box-shadow: inset 0 1px 0 #ffffff10, 0 0 12px var(--signal-dim);
+    text-shadow: 0 0 8px var(--signal-dim);
+  }
+  .nav__brand strong { font-size: 13px; letter-spacing: .04em; }
+  .nav__brand small { display: block; font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); letter-spacing: .12em; text-transform: uppercase; }
+  .nav__section {
+    padding: 14px 16px 6px;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--ink-3);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .nav__section button { background: none; border: 0; color: var(--ink-3); font-family: var(--mono); cursor: pointer; font-size: 12px; }
+  .nav__section button:hover { color: var(--signal); }
+  .ws { padding: 2px 8px; }
+  .ws__folder {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 6px;
+    font-weight: 600; font-size: 12.5px; cursor: pointer;
+    color: var(--ink);
+  }
+  .ws__folder:hover { background: var(--bg-raise); }
+  .ws__folder svg { color: var(--ink-3); }
+  .task {
+    position: relative;
+    display: flex; align-items: center; gap: 8px;
+    margin-left: 14px; padding: 6px 10px 6px 14px;
+    border-radius: 6px; cursor: pointer;
+    color: var(--ink-2); font-size: 12.5px;
+  }
+  .task::before {
+    content: ""; position: absolute; left: 0; top: 4px; bottom: 4px;
+    width: 1px; background: var(--line-strong);
+  }
+  .task:hover { background: var(--bg-raise); color: var(--ink); }
+  .task--active {
+    color: var(--ink);
+    background: linear-gradient(90deg, var(--signal-dim), transparent 70%);
+  }
+  .task--active::before { background: var(--signal); box-shadow: 0 0 8px var(--signal); }
+  .task__dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .dot--run { background: var(--signal); box-shadow: 0 0 6px var(--signal); animation: pulse 1.6s infinite; }
+  .dot--wait { background: var(--amber); }
+  .dot--idle { background: var(--ink-3); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .nav__footer {
+    margin-top: auto; padding: 12px 16px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 10px; color: var(--ink-3);
+    display: flex; justify-content: space-between;
+  }
+  .nav__footer .ok { color: var(--signal); }
+
+  /* ---------- 顶部连续轨（signature） ---------- */
+  .continuum {
+    grid-area: continuum;
+    display: flex; align-items: center; gap: 0;
+    background: var(--bg-inset);
+    border-bottom: 1px solid var(--line);
+    padding: 0 20px;
+    overflow: hidden;
+    font-family: var(--mono);
+  }
+  .continuum__label {
+    font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--ink-3); margin-right: 18px; flex: none;
+  }
+  .seg { display: flex; align-items: center; flex: none; }
+  .seg__node {
+    display: flex; align-items: center; gap: 7px;
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 10.5px; color: var(--ink-2);
+    background: var(--bg-panel);
+    white-space: nowrap;
+  }
+  .seg__node i {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); flex: none;
+  }
+  .seg--done .seg__node i { background: var(--signal); }
+  .seg--now .seg__node {
+    border-color: var(--signal);
+    color: var(--ink);
+    box-shadow: 0 0 0 3px var(--signal-dim), 0 0 16px var(--signal-dim);
+  }
+  .seg--now .seg__node i { background: var(--signal); box-shadow: 0 0 8px var(--signal); animation: pulse 1.4s infinite; }
+  .seg__wire { width: 34px; height: 1px; background: var(--line-strong); position: relative; overflow: hidden; }
+  .seg--done + .seg__wire, .seg__wire--live { background: linear-gradient(90deg, var(--signal) 0%, var(--line-strong) 100%); }
+  .seg__wire--live::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, var(--signal), transparent);
+    animation: flow 2.2s linear infinite;
+  }
+  @keyframes flow { from { transform: translateX(-100%);} to { transform: translateX(100%);} }
+  .continuum__meta { margin-left: auto; font-size: 10px; color: var(--ink-3); flex: none; }
+  .continuum__meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- 中部对话 ---------- */
+  .main {
+    grid-area: main;
+    display: flex; flex-direction: column;
+    min-width: 0;
+    background:
+      linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 100% 56px no-repeat,
+      var(--bg);
+    background: var(--bg);
+  }
+  .thread { flex: 1; overflow-y: auto; padding: 28px 36px 20px; }
+  .thread__inner { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+
+  .msg { animation: rise .35s cubic-bezier(.2,.8,.2,1) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+
+  .msg--user { align-self: flex-end; max-width: 78%; }
+  .msg--user .bubble {
+    background: var(--ink); color: #101312;
+    padding: 10px 16px; border-radius: 14px 14px 4px 14px;
+    font-size: 13.5px;
+  }
+  .msg--agent { align-self: stretch; }
+  .agent-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  }
+  .agent-chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+    padding: 3px 10px 3px 6px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    color: var(--ink-2);
+    background: linear-gradient(180deg, #ffffff08, transparent), var(--bg-panel);
+    box-shadow: inset 0 1px 0 #ffffff0d;
+  }
+  .agent-chip i { width: 14px; height: 14px; border-radius: 50%; display: grid; place-items: center; font-size: 8px; font-style: normal; }
+  .chip--green i { background: var(--signal-dim); color: var(--signal); box-shadow: inset 0 0 0 1px var(--signal); }
+  .chip--blue i { background: #58a6d622; color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+  .agent-head time { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  .agent-body {
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--line-strong);
+    border-radius: 4px 12px 12px 4px;
+    background: var(--bg-raise);
+    padding: 14px 18px;
+  }
+  .agent-body p + p { margin-top: 8px; }
+  .agent-body code { font-family: var(--mono); font-size: 12px; background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; color: var(--signal); }
+
+  /* 交接横幅：上下文丝带的仪器式表达 */
+  .handoff {
+    display: flex; align-items: center; gap: 12px;
+    padding: 9px 14px;
+    border: 1px dashed var(--line-strong);
+    border-radius: 8px;
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-2);
+    background: repeating-linear-gradient(-45deg, transparent 0 10px, #ffffff04 10px 20px);
+  }
+  .handoff .arrow { color: var(--signal); animation: nudge 1.8s ease-in-out infinite; }
+  @keyframes nudge { 50% { transform: translateX(4px); } }
+  .handoff .ctx { margin-left: auto; color: var(--ink-3); }
+
+  /* 审批卡：有重量但克制 */
+  .approval {
+    border: 1px solid #e8a33d55;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #e8a33d10, transparent 60%), var(--bg-raise);
+    padding: 14px 18px;
+  }
+  .approval__head { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--amber); margin-bottom: 8px; }
+  .approval__head::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 10px #e8a33d88; animation: pulse 1.2s infinite; }
+  .approval p { color: var(--ink); margin-bottom: 12px; }
+  .approval__actions { display: flex; gap: 10px; }
+  .btn {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+    padding: 7px 16px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line-strong);
+    background: var(--bg-panel); color: var(--ink-2);
+    transition: all .15s ease;
+  }
+  .btn:hover { border-color: var(--ink-3); color: var(--ink); }
+  .btn--approve { background: var(--amber); border-color: var(--amber); color: #14100a; font-weight: 700; box-shadow: 0 0 18px #e8a33d33; }
+  .btn--approve:hover { background: #f2b354; color: #14100a; }
+
+  /* 打字中 */
+  .typing { display: inline-flex; gap: 4px; padding: 4px 0; }
+  .typing i { width: 5px; height: 5px; border-radius: 50%; background: var(--ink-3); animation: blink 1.2s infinite; }
+  .typing i:nth-child(2) { animation-delay: .2s; }
+  .typing i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 30% { background: var(--signal); } }
+
+  /* ---------- Compose ---------- */
+  .compose { border-top: 1px solid var(--line); padding: 14px 36px 18px; background: var(--bg-inset); }
+  .compose__inner { max-width: 760px; margin: 0 auto; }
+  .compose__box {
+    display: flex; align-items: flex-end; gap: 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    background: var(--bg-panel);
+    padding: 10px 12px;
+    box-shadow: 0 0 0 3px transparent, inset 0 1px 0 #ffffff0a;
+    transition: box-shadow .2s ease, border-color .2s ease;
+  }
+  .compose__box:focus-within { border-color: var(--signal); box-shadow: 0 0 0 3px var(--signal-dim); }
+  .compose__box textarea {
+    flex: 1; background: none; border: 0; outline: 0; resize: none;
+    color: var(--ink); font: inherit; min-height: 22px;
+  }
+  .compose__box textarea::placeholder { color: var(--ink-3); }
+  .compose__send {
+    width: 34px; height: 34px; border-radius: 8px; border: 0; cursor: pointer;
+    background: var(--signal); color: #08130e; font-size: 15px; font-weight: 700;
+    box-shadow: 0 0 14px var(--signal-dim);
+  }
+  .compose__meta { display: flex; gap: 14px; margin-top: 8px; font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); letter-spacing: .06em; }
+  .compose__meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- 右侧轨迹 ---------- */
+  .trace {
+    grid-area: trace;
+    display: flex; flex-direction: column;
+    background: var(--bg-inset);
+    border-left: 1px solid var(--line);
+    font-family: var(--mono);
+  }
+  .trace__head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+  }
+  .trace__head h2 { font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-2); font-weight: 600; }
+  .trace__live { display: flex; align-items: center; gap: 6px; font-size: 9.5px; color: var(--signal); letter-spacing: .1em; }
+  .trace__live i { width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 8px var(--signal); animation: pulse 1.2s infinite; }
+  .trace__list { flex: 1; overflow-y: auto; padding: 12px 14px; }
+  .ev {
+    position: relative;
+    padding: 8px 10px 8px 22px;
+    border-radius: 6px;
+    font-size: 10.5px; color: var(--ink-2);
+    animation: rise .3s both;
+  }
+  .ev:hover { background: var(--bg-raise); }
+  .ev::before {
+    content: ""; position: absolute; left: 8px; top: 14px;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--ink-3);
+  }
+  .ev::after {
+    content: ""; position: absolute; left: 11px; top: 24px; bottom: -4px;
+    width: 1px; background: var(--line);
+  }
+  .ev:last-child::after { display: none; }
+  .ev--ok::before { background: var(--signal); box-shadow: 0 0 6px var(--signal-dim); }
+  .ev--run::before { background: var(--signal); box-shadow: 0 0 8px var(--signal); animation: pulse 1.2s infinite; }
+  .ev--warn::before { background: var(--amber); }
+  .ev time { display: block; font-size: 9px; color: var(--ink-3); margin-top: 2px; }
+  .ev b { color: var(--ink); font-weight: 500; }
+  .trace__foot { padding: 10px 16px; border-top: 1px solid var(--line); font-size: 9.5px; color: var(--ink-3); display: flex; justify-content: space-between; }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- 左导航 -->
+  <aside class="nav">
+    <div class="nav__brand">
+      <span class="nav__mark">ST</span>
+      <div><strong>SYNC-THINK</strong><small>local-first bench</small></div>
+    </div>
+    <div class="nav__section">工作区 <button title="新建">+</button></div>
+    <div class="ws">
+      <div class="ws__folder">▾ SYNC-THINK</div>
+      <div class="task task--active"><span class="task__dot dot--run"></span>前端视觉重做</div>
+      <div class="task"><span class="task__dot dot--wait"></span>审批策略 v2</div>
+      <div class="task"><span class="task__dot dot--idle"></span>记忆回滚验证</div>
+    </div>
+    <div class="ws" style="margin-top:6px">
+      <div class="ws__folder">▸  side-notes</div>
+    </div>
+    <div class="nav__footer"><span>runtime <b class="ok">● connected</b></span><span>v0.0.1</span></div>
+  </aside>
+
+  <!-- 连续轨 -->
+  <div class="continuum">
+    <span class="continuum__label">continuum</span>
+    <div class="seg seg--done"><span class="seg__node"><i></i>需求澄清</span></div>
+    <div class="seg__wire"></div>
+    <div class="seg seg--done"><span class="seg__node"><i></i>方案设计</span></div>
+    <div class="seg__wire seg__wire--live"></div>
+    <div class="seg seg--now"><span class="seg__node"><i></i>视觉稿评审 · Planner→Designer</span></div>
+    <div class="seg__wire"></div>
+    <div class="seg"><span class="seg__node"><i></i>实施</span></div>
+    <span class="continuum__meta">ctx <b>8.2k</b> tokens · 证据 <b>14</b> 条 · 交接 <b>2</b> 次</span>
+  </div>
+
+  <!-- 中对话 -->
+  <main class="main">
+    <div class="thread"><div class="thread__inner">
+
+      <div class="msg msg--user"><div class="bubble">现在的页面太素了，像通用 AI 壳。给我一版有仪器感的方向，状态要一眼能看出来。</div></div>
+
+      <div class="msg msg--agent">
+        <div class="agent-head">
+          <span class="agent-chip chip--green"><i>P</i>PLANNER</span>
+          <time>14:02:11</time>
+        </div>
+        <div class="agent-body">
+          <p>收到。我把「状态可感知」拆成三个层级：信号色（运行/等待/ idle）、连续轨位置、轨迹流实时性。视觉基底用深石墨 + 发丝线，强调色只保留磷光绿一个主信号，琥珀色专给审批。</p>
+          <p>草案已写入 <code>docs/design-explorations/a-obsidian.html</code>，下一步交接给 Designer 出组件质感。</p>
+        </div>
+      </div>
+
+      <div class="handoff">
+        <span class="agent-chip chip--green"><i>P</i>PLANNER</span>
+        <span class="arrow">─── ctx 8.2k ───▶</span>
+        <span class="agent-chip chip--blue"><i>D</i>DESIGNER</span>
+        <span class="ctx">交接 #2 · 证据 6 条随附</span>
+      </div>
+
+      <div class="msg msg--agent">
+        <div class="agent-head">
+          <span class="agent-chip chip--blue"><i>D</i>DESIGNER</span>
+          <time>14:02:40</time>
+        </div>
+        <div class="agent-body">
+          <p>连续轨我改成了「示波器」语言：完成的段落实心绿，当前段落带光晕 + 流动扫描线，未到的段落灰色空心。轨迹流每条事件用发光节点 + 连接线，像显影一样逐条出现。</p>
+          <p>有一个权限点需要你确认 ↓</p>
+        </div>
+      </div>
+
+      <div class="approval">
+        <div class="approval__head">approval · 写入设计 token</div>
+        <p>Designer 请求修改 <code>15-frontend-design-tokens.json</code> 的色板与字阶（影响全量组件）。diff：+42 / −18 行。</p>
+        <div class="approval__actions">
+          <button class="btn btn--approve">批准并继续</button>
+          <button class="btn">查看 diff</button>
+          <button class="btn">拒绝</button>
+        </div>
+      </div>
+
+      <div class="msg msg--agent">
+        <div class="agent-head"><span class="agent-chip chip--blue"><i>D</i>DESIGNER</span><time>now</time></div>
+        <div class="agent-body"><span class="typing"><i></i><i></i><i></i></span></div>
+      </div>
+
+    </div></div>
+
+    <footer class="compose"><div class="compose__inner">
+      <div class="compose__box">
+        <textarea rows="1" placeholder="继续推进，或 @ 某个 Agent…"></textarea>
+        <button class="compose__send">↑</button>
+      </div>
+      <div class="compose__meta">
+        <span>agent <b>Designer</b></span>
+        <span>model <b>claude-opus-4</b></span>
+        <span>mode <b>计划需审批</b></span>
+        <span style="margin-left:auto">⌘↵ 发送</span>
+      </div>
+    </div></footer>
+  </main>
+
+  <!-- 右轨迹 -->
+  <aside class="trace">
+    <div class="trace__head"><h2>Run Trace</h2><span class="trace__live"><i></i>LIVE</span></div>
+    <div class="trace__list">
+      <div class="ev ev--ok"><b>任务创建</b> · 前端视觉重做<time>14:01:02 · orchestrator</time></div>
+      <div class="ev ev--ok"><b>上下文装配</b> · 8.2k tokens · 6 证据<time>14:01:03 · memory</time></div>
+      <div class="ev ev--ok"><b>Planner 完成</b> · 产出方向草案<time>14:02:11 · agent/planner</time></div>
+      <div class="ev ev--ok"><b>交接</b> · Planner → Designer · ctx 随附<time>14:02:12 · handoff</time></div>
+      <div class="ev ev--warn"><b>审批请求</b> · tokens.json 写入<time>14:02:52 · policy</time></div>
+      <div class="ev ev--run"><b>Designer 生成中</b> · token v2 草拟<time>now · agent/designer</time></div>
+    </div>
+    <div class="trace__foot"><span>run 01J…X4</span><span>Ctrl+\ 折叠</span></div>
+  </aside>
+
+</div>
+</body>
+</html>

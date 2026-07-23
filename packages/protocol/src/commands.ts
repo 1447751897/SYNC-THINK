@@ -80,6 +80,26 @@ export type CommandType =
   | 'agent.create'
   | 'agent.listVersions'
   | 'agent.createVersion'
+  | 'globalAgent.list'
+  | 'globalAgent.create'
+  | 'globalAgent.update'
+  | 'globalAgent.delete'
+  | 'team.list'
+  | 'team.create'
+  | 'team.update'
+  | 'team.delete'
+  | 'team.startRun'
+  | 'team.setRunStatus'
+  | 'conversation.list'
+  | 'conversation.create'
+  | 'conversation.rename'
+  | 'conversation.setPinned'
+  | 'conversation.setArchived'
+  | 'conversation.setExecutionMode'
+  | 'conversation.upgradeTrack'
+  | 'conversation.delete'
+  | 'conversation.sendMessage'
+  | 'conversation.decideToolApproval'
   | 'skill.import'
   | 'skill.list'
   | 'mcp.register'
@@ -270,16 +290,43 @@ export interface SetParticipationModeResponse {
   task: TaskSummary;
 }
 
+/**
+ * Local image attachment for multimodal chat (live run only).
+ * Prefer `stagingPath` so large images do not exceed the 1 MiB pipe frame.
+ * `dataUrl` remains as a small-image fallback.
+ */
+export interface AppendMessageImage {
+  name: string;
+  mimeType: string;
+  /** Absolute path written by Desktop under the shared staging directory. */
+  stagingPath?: string;
+  /** data:image/...;base64,... — only for small images that fit the pipe frame. */
+  dataUrl?: string;
+}
+
 export interface AppendMessagePayload {
   threadId: ThreadId;
   /** Optimistic concurrency: must match last seen task version. */
   expectedTaskVersion: number;
   role: 'user' | 'assistant' | 'system' | 'tool';
+  /** May be empty when images are provided. */
   text: string;
   /** Resolve model via priority 搂5.3. If absent, use Agent default. */
   agentVersionId?: AgentVersionId;
   modelId?: ModelId;
   credentialRefId?: CredentialRefId;
+  /**
+   * Compose 推理强度（auto/off/low/medium/high…）。
+   * Runtime 透传到 ProviderCallRequest.reasoningEffort；auto 时 adapter 不带参。
+   */
+  reasoningEffort?: string;
+  /**
+   * Compose 联网开关。为 true 时本轮 run 暴露 web_search / web_fetch 工具。
+   * 不落库；仅影响当前 live run。
+   */
+  networkEnabled?: boolean;
+  /** Optional vision inputs for this user turn (live run only). */
+  images?: AppendMessageImage[];
   /** Set when assistant message originates from a Run step. */
   runId?: RunId;
   stepId?: string;
@@ -1621,6 +1668,157 @@ export interface ListDiagnosticsResponse {
 }
 
 export type PauseResumeCancelResponse = { runId: RunId; state: import('@sync-think/shared').RunState };
+
+// --- mutable global Agent / Team / Conversation commands (2026-07-22 model) ---
+// Permission is NEVER configured on agents/teams; it lives on the conversation
+// (executionMode) only.
+
+export interface ListGlobalAgentsPayload {
+  includeArchived?: boolean;
+}
+export interface ListGlobalAgentsResponse {
+  agents: import('@sync-think/shared').GlobalAgent[];
+}
+
+export interface CreateGlobalAgentPayload {
+  name: string;
+  defaultModelId: ModelId;
+  avatar?: string;
+  persona?: string;
+  description?: string;
+  fallbackModelIds?: ModelId[];
+  skillIds?: string[];
+  mcpServerIds?: string[];
+  reasoningEffort?: string;
+}
+export interface UpdateGlobalAgentPayload extends Partial<CreateGlobalAgentPayload> {
+  agentId: import('@sync-think/shared').AgentId;
+  archived?: boolean;
+}
+export interface GlobalAgentResponse {
+  agent: import('@sync-think/shared').GlobalAgent;
+}
+export interface DeleteGlobalAgentPayload {
+  agentId: import('@sync-think/shared').AgentId;
+}
+
+export interface TeamMemberDraft {
+  agentId: import('@sync-think/shared').AgentId;
+  role?: string;
+  title?: string;
+  dependsOn?: import('@sync-think/shared').AgentId[];
+}
+export interface CreateTeamPayload {
+  name: string;
+  avatar?: string;
+  mission?: string;
+  strategy?: import('@sync-think/shared').TeamStrategy;
+  coordinatorAgentId?: import('@sync-think/shared').AgentId;
+  members?: TeamMemberDraft[];
+}
+export interface UpdateTeamPayload extends Partial<CreateTeamPayload> {
+  teamId: import('@sync-think/shared').TeamId;
+}
+export interface TeamResponse {
+  team: import('@sync-think/shared').Team;
+}
+export interface ListTeamsResponse {
+  teams: import('@sync-think/shared').Team[];
+}
+export interface DeleteTeamPayload {
+  teamId: import('@sync-think/shared').TeamId;
+}
+export interface StartTeamRunPayload {
+  teamId: import('@sync-think/shared').TeamId;
+  conversationId: import('@sync-think/shared').ConversationId;
+}
+export interface SetTeamRunStatusPayload {
+  runId: string;
+  status: import('@sync-think/shared').TeamRunStatus;
+}
+export interface TeamRunResponse {
+  run: import('@sync-think/shared').TeamRun;
+}
+
+export interface ListConversationsPayload {
+  track?: import('@sync-think/shared').ConversationTrack;
+  workspaceId?: WorkspaceId;
+  includeArchived?: boolean;
+}
+export interface ListConversationsResponse {
+  conversations: import('@sync-think/shared').Conversation[];
+}
+export interface CreateConversationPayload {
+  track: import('@sync-think/shared').ConversationTrack;
+  /** modelId / agentId / teamId matching the track. */
+  targetRef: string;
+  workspaceId?: WorkspaceId;
+  title?: string;
+  executionMode?: string;
+}
+export interface ConversationResponse {
+  conversation: import('@sync-think/shared').Conversation;
+}
+export interface RenameConversationPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  title: string;
+}
+export interface SetConversationPinnedPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  pinned: boolean;
+}
+export interface SetConversationArchivedPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  archived: boolean;
+}
+export interface SetConversationExecutionModePayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  executionMode: string;
+}
+/** Requires an explicit user confirmation upstream — never a silent upgrade. */
+export interface UpgradeConversationTrackPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  track: 'agent' | 'team';
+  targetRef: string;
+}
+export interface DeleteConversationPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+}
+
+/**
+ * High-level "send a message in a conversation" — handles lazy task creation
+ * and inbox workspace provisioning internally so the desktop only makes one call.
+ */
+export interface ConversationSendMessagePayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  text: string;
+  /** Override the conversation's bound model for this message. */
+  modelId?: import('@sync-think/shared').ModelId;
+}
+
+export interface ConversationSendMessageResponse {
+  /** Thread backing this conversation's task. Use for subsequent appendMessage. */
+  threadId: import('@sync-think/shared').ThreadId;
+  /** Current task version — pass as expectedTaskVersion to appendMessage. */
+  taskVersion: number;
+  /** Present on first message — the auto-derived conversation title. */
+  conversationTitle?: string;
+}
+
+/**
+ * Resolve a chat tool approval that was paused under「询问批准」.
+ * approvalId comes from the tool.approval_requested event payload.
+ */
+export interface ConversationDecideToolApprovalPayload {
+  approvalId: string;
+  decision: 'approve' | 'deny';
+}
+
+export interface ConversationDecideToolApprovalResponse {
+  approvalId: string;
+  decision: 'approve' | 'deny';
+  runId?: RunId;
+}
 
 // Helper: build a typed request envelope.
 export function req<T>(type: CommandType, payload: T, requestId: string = ulid()): CommandRequest<T> {

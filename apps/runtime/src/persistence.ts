@@ -9,6 +9,9 @@ import {
   SqliteWorkspaceStore,
   SqliteProviderStore,
   SqliteAgentStore,
+  SqliteGlobalAgentStore,
+  SqliteTeamStore,
+  SqliteConversationStore,
   SqliteMemoryStore,
   SqliteSkillStore,
   SqliteMcpStore,
@@ -31,7 +34,7 @@ import { Runtime, type RuntimeOptions } from './runtime.js';
 import { createProductionStepExecutor } from './orchestration/production-step-executor.js';
 
 export interface OpenPersistentRuntimeOptions
-  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'unitOfWork' | 'secureStore'> {
+  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'globalAgentStore' | 'teamStore' | 'conversationStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'unitOfWork' | 'secureStore'> {
   dbPath: string;
   secureStoreBackend?: SecureStoreBackend;
   secureStoreKeyPath?: string;
@@ -112,6 +115,9 @@ export async function openPersistentRuntime(
     const workspaceStore = new SqliteWorkspaceStore(connection.raw);
     const providerStore = new SqliteProviderStore(connection.raw);
     const agentStore = new SqliteAgentStore(connection.raw);
+    const globalAgentStore = new SqliteGlobalAgentStore(connection.raw);
+    const teamStore = new SqliteTeamStore(connection.raw);
+    const conversationStore = new SqliteConversationStore(connection.raw);
     const orchestrationStore = new SqliteOrchestrationStore(connection.raw);
     const artifactStore = new SqliteArtifactStore(connection.raw);
     const productionExecutionStore = new SqliteProductionExecutionStore(connection.raw);
@@ -134,6 +140,9 @@ export async function openPersistentRuntime(
       workspaceStore,
       providerStore,
       agentStore,
+      globalAgentStore,
+      teamStore,
+      conversationStore,
       memoryStore: new SqliteMemoryStore(connection.raw),
       skillStore: new SqliteSkillStore(connection.raw),
       mcpStore: new SqliteMcpStore(connection.raw),
