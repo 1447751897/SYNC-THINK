@@ -36,6 +36,22 @@ import type {
   ProbeCapabilitiesResponse,
   ConfirmCapabilitiesPayload,
   ConfirmCapabilitiesResponse,
+  ReorderProvidersPayload,
+  ReorderProvidersResponse,
+  AddProviderCredentialPayload,
+  AddProviderCredentialResponse,
+  RemoveProviderCredentialPayload,
+  RemoveProviderCredentialResponse,
+  SetModelPrioritiesPayload,
+  SetModelPrioritiesResponse,
+  RemoveModelPayload,
+  RemoveModelResponse,
+  GetSettingsPayload,
+  GetSettingsResponse,
+  SetSettingPayload,
+  SetSettingResponse,
+  UsageSummaryPayload,
+  UsageSummaryResponse,
   GetAgentPayload,
   GetAgentResponse,
   UpdateAgentBindingPayload,
@@ -279,6 +295,37 @@ const api = {
         'runtime:provider-confirm-capabilities',
         payload,
       ) as Promise<ConfirmCapabilitiesResponse>,
+    reorderProviders: (payload: ReorderProvidersPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-reorder',
+        payload,
+      ) as Promise<ReorderProvidersResponse>,
+    addProviderCredential: (payload: AddProviderCredentialPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-add-credential',
+        payload,
+      ) as Promise<AddProviderCredentialResponse>,
+    removeProviderCredential: (payload: RemoveProviderCredentialPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-remove-credential',
+        payload,
+      ) as Promise<RemoveProviderCredentialResponse>,
+    setModelPriorities: (payload: SetModelPrioritiesPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-set-model-priorities',
+        payload,
+      ) as Promise<SetModelPrioritiesResponse>,
+    removeProviderModel: (payload: RemoveModelPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-remove-model',
+        payload,
+      ) as Promise<RemoveModelResponse>,
+    getSettings: (payload: GetSettingsPayload = {}) =>
+      ipcRenderer.invoke('runtime:settings-get', payload) as Promise<GetSettingsResponse>,
+    setSetting: (payload: SetSettingPayload) =>
+      ipcRenderer.invoke('runtime:settings-set', payload) as Promise<SetSettingResponse>,
+    getUsageSummary: (payload: UsageSummaryPayload = {}) =>
+      ipcRenderer.invoke('runtime:usage-summary', payload) as Promise<UsageSummaryResponse>,
     getAgent: (payload: GetAgentPayload = {}) =>
       ipcRenderer.invoke('runtime:agent-get', payload) as Promise<GetAgentResponse>,
     updateAgentBinding: (payload: UpdateAgentBindingPayload) =>

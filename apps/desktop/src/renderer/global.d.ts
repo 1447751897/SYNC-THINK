@@ -33,6 +33,22 @@
   ProbeCapabilitiesResponse,
   ConfirmCapabilitiesPayload,
   ConfirmCapabilitiesResponse,
+  ReorderProvidersPayload,
+  ReorderProvidersResponse,
+  AddProviderCredentialPayload,
+  AddProviderCredentialResponse,
+  RemoveProviderCredentialPayload,
+  RemoveProviderCredentialResponse,
+  SetModelPrioritiesPayload,
+  SetModelPrioritiesResponse,
+  RemoveModelPayload,
+  RemoveModelResponse,
+  GetSettingsPayload,
+  GetSettingsResponse,
+  SetSettingPayload,
+  SetSettingResponse,
+  UsageSummaryPayload,
+  UsageSummaryResponse,
   GetAgentPayload,
   GetAgentResponse,
   UpdateAgentBindingPayload,
@@ -191,6 +207,20 @@ declare global {
         confirmCapabilities(
           payload: ConfirmCapabilitiesPayload,
         ): Promise<ConfirmCapabilitiesResponse>;
+        reorderProviders(payload: ReorderProvidersPayload): Promise<ReorderProvidersResponse>;
+        addProviderCredential(
+          payload: AddProviderCredentialPayload,
+        ): Promise<AddProviderCredentialResponse>;
+        removeProviderCredential(
+          payload: RemoveProviderCredentialPayload,
+        ): Promise<RemoveProviderCredentialResponse>;
+        setModelPriorities(
+          payload: SetModelPrioritiesPayload,
+        ): Promise<SetModelPrioritiesResponse>;
+        removeProviderModel(payload: RemoveModelPayload): Promise<RemoveModelResponse>;
+        getSettings(payload?: GetSettingsPayload): Promise<GetSettingsResponse>;
+        setSetting(payload: SetSettingPayload): Promise<SetSettingResponse>;
+        getUsageSummary(payload?: UsageSummaryPayload): Promise<UsageSummaryResponse>;
         getAgent(payload?: GetAgentPayload): Promise<GetAgentResponse>;
         updateAgentBinding(payload: UpdateAgentBindingPayload): Promise<UpdateAgentBindingResponse>;
         listAgents(payload?: ListAgentsPayload): Promise<ListAgentsResponse>;

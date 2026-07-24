@@ -82,7 +82,9 @@ export function ShellApp() {
     ]);
     const modelNames = new Map<string, string>();
     const models: ModelOption[] = [];
+    // Disabled providers stay configured but hide from pickers (0026 / NewMax parity).
     for (const provider of providers.providers) {
+      if (provider.enabled === false) continue;
       for (const model of provider.models) {
         modelNames.set(model.modelId, model.displayName);
         models.push({

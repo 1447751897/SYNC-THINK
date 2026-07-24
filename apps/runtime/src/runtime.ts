@@ -36,6 +36,15 @@ import {
   type AddModelsResponse,
   type ProbeCapabilitiesResponse,
   type ConfirmCapabilitiesResponse,
+  type ReorderProvidersResponse,
+  type AddProviderCredentialResponse,
+  type RemoveProviderCredentialResponse,
+  type SetModelPrioritiesResponse,
+  type RemoveModelResponse,
+  type GetSettingsResponse,
+  type SetSettingResponse,
+  type UsageSummaryResponse,
+  type UsageSummaryRow,
   type CapabilityProbeSuggestion,
   type ProviderSummary,
   type ProviderModelSummary,
@@ -142,6 +151,7 @@ import {
   type SqliteProviderStore,
   type ProviderCatalogEntry,
   type ModelRecord,
+  type SqliteAppSettingStore,
   type SqliteAgentStore,
   type SqliteMemoryStore,
   type SqliteSkillStore,
@@ -253,6 +263,14 @@ import {
   parseAddModelsPayload,
   parseProbeCapabilitiesPayload,
   parseConfirmCapabilitiesPayload,
+  parseReorderProvidersPayload,
+  parseAddProviderCredentialPayload,
+  parseRemoveProviderCredentialPayload,
+  parseSetModelPrioritiesPayload,
+  parseRemoveModelPayload,
+  parseGetSettingsPayload,
+  parseSetSettingPayload,
+  parseUsageSummaryPayload,
   parseGetAgentPayload,
   parseUpdateAgentBindingPayload,
   parseListAgentsPayload,
@@ -361,6 +379,17 @@ export interface RuntimeOptions {
   discoveryByProtocol?: Partial<Record<ProtocolFamily, DemoProvider>>;
   /** Fallback discovery adapter; defaults to demoProvider when present (tests / Fake). */
   discoveryAdapter?: DemoProvider;
+  /** 0026: app-level KV settings (vision fallback, plan & act). */
+  appSettingStore?: SqliteAppSettingStore;
+  /** 0026: aggregated usage rows from provider.usage events (injected by persistence). */
+  queryUsageSummary?: (sinceIso?: string) => Array<{
+    modelId: string;
+    providerId?: string;
+    requests: number;
+    tokensIn: number;
+    tokensOut: number;
+    lastUsedAt?: string;
+  }>;
 }
 
 export interface RuntimeStateStore {
@@ -481,6 +510,8 @@ export class Runtime {
   private readonly checkpointRunId: RunId;
   private readonly demoProvider?: DemoProvider;
   private readonly providerStore?: SqliteProviderStore;
+  private readonly appSettingStore?: SqliteAppSettingStore;
+  private readonly queryUsageSummary?: RuntimeOptions['queryUsageSummary'];
   private readonly agentStore?: SqliteAgentStore;
   private readonly globalAgentStore?: SqliteGlobalAgentStore;
   private readonly teamStore?: SqliteTeamStore;
@@ -539,6 +570,8 @@ export class Runtime {
     this.checkpointRunId = opts.checkpointRunId ?? (`runtime-${opts.installId}` as RunId);
     this.demoProvider = opts.demoProvider;
     this.providerStore = opts.providerStore;
+    this.appSettingStore = opts.appSettingStore;
+    this.queryUsageSummary = opts.queryUsageSummary;
     this.agentStore = opts.agentStore;
     this.globalAgentStore = opts.globalAgentStore;
     this.teamStore = opts.teamStore;
@@ -795,6 +828,38 @@ export class Runtime {
         }
         if (frame.type === 'provider.confirmCapabilities') {
           this.handleConfirmCapabilities(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.reorder') {
+          this.handleReorderProviders(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.addCredential') {
+          void this.handleAddProviderCredential(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.removeCredential') {
+          void this.handleRemoveProviderCredential(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.setModelPriorities') {
+          this.handleSetModelPriorities(socket, frame);
+          return;
+        }
+        if (frame.type === 'provider.removeModel') {
+          this.handleRemoveModel(socket, frame);
+          return;
+        }
+        if (frame.type === 'settings.get') {
+          this.handleGetSettings(socket, frame);
+          return;
+        }
+        if (frame.type === 'settings.set') {
+          this.handleSetSetting(socket, frame);
+          return;
+        }
+        if (frame.type === 'usage.summary') {
+          this.handleUsageSummary(socket, frame);
           return;
         }
         if (frame.type === 'agent.get') {
@@ -3392,6 +3457,7 @@ export class Runtime {
         protocol: payload.protocol,
         surface: payload.surface,
         supportsDiscovery: payload.supportsDiscovery,
+        enabled: payload.enabled,
         credentialLabel: payload.credentialLabel,
         storeHandle: newStoreHandle,
       });
@@ -3876,6 +3942,10 @@ export class Runtime {
           providerModelId: m.providerModelId,
           displayName: m.displayName,
           capabilities: m.capabilities as CapabilityTag[] | undefined,
+          limitsJson:
+            typeof m.contextWindow === 'number' && m.contextWindow > 0
+              ? JSON.stringify({ contextWindow: m.contextWindow })
+              : undefined,
         })),
         capabilitiesConfirmed: false,
       });
@@ -4079,6 +4149,272 @@ export class Runtime {
     }
   }
 
+  // --- 0026: model-source config handlers ---
+
+  private providerSummaryById(providerId: string): ProviderSummary | undefined {
+    const entry = this.providerStore
+      ?.listProviders()
+      .find((item) => item.provider.id === providerId);
+    return entry ? this.toProviderSummary(entry) : undefined;
+  }
+
+  private handleReorderProviders(socket: Socket, frame: Frame): void {
+    const payload = parseReorderProvidersPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.providerStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      this.providerStore.reorderProviders(payload.orderedProviderIds);
+      const response: ReorderProvidersResponse = {
+        providers: this.providerStore.listProviders().map((entry) => this.toProviderSummary(entry)),
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'provider.reorder', payload: response }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleAddProviderCredential(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseAddProviderCredentialPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.providerStore || !this.secureStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    let storeHandle: string | undefined;
+    let committed = false;
+    try {
+      const entry = this.providerStore
+        .listProviders()
+        .find((item) => item.provider.id === payload.providerId);
+      if (!entry) {
+        throw new Error(`Provider not found: ${payload.providerId}`);
+      }
+      const group = entry.credentialGroups[0];
+      if (!group) {
+        throw new Error('Provider has no credential group');
+      }
+      storeHandle = await this.secureStore.storeSecret(payload.apiKey);
+      const created = this.providerStore.addCredentialRef({
+        credentialGroupId: group.id,
+        label: payload.label,
+        storeHandle,
+      });
+      committed = true;
+      const summary = this.providerSummaryById(payload.providerId);
+      if (!summary) throw new Error(`Provider not found after credential add: ${payload.providerId}`);
+      const response: AddProviderCredentialResponse = {
+        provider: summary,
+        credentialRefId: created.id,
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'provider.addCredential', payload: response }),
+      );
+    } catch (error) {
+      if (storeHandle && !committed) {
+        try {
+          await this.secureStore.removeSecret(storeHandle);
+        } catch {
+          /* best-effort rollback */
+        }
+      }
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleRemoveProviderCredential(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseRemoveProviderCredentialPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.providerStore || !this.secureStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const { storeHandle } = this.providerStore.removeCredentialRef(payload.credentialRefId);
+      try {
+        await this.secureStore.removeSecret(storeHandle);
+      } catch {
+        /* best-effort secret purge */
+      }
+      const summary = this.providerSummaryById(payload.providerId);
+      if (!summary) throw new Error(`Provider not found: ${payload.providerId}`);
+      const response: RemoveProviderCredentialResponse = { provider: summary, removed: true };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'provider.removeCredential', payload: response }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetModelPriorities(socket: Socket, frame: Frame): void {
+    const payload = parseSetModelPrioritiesPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.providerStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const models = this.providerStore.setModelPriorities({
+        providerId: payload.providerId,
+        entries: payload.entries,
+      });
+      const response: SetModelPrioritiesResponse = {
+        providerId: payload.providerId,
+        models: models.map((m) => this.toModelSummary(m)),
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'provider.setModelPriorities', payload: response }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleRemoveModel(socket: Socket, frame: Frame): void {
+    const payload = parseRemoveModelPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.providerStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const model = this.providerStore.getModel(payload.modelId);
+      if (model && model.providerId !== payload.providerId) {
+        throw new Error('Model does not belong to the given provider');
+      }
+      const removed = this.providerStore.removeModel(payload.modelId);
+      const response: RemoveModelResponse = { providerId: payload.providerId, removed };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'provider.removeModel', payload: response }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleGetSettings(socket: Socket, frame: Frame): void {
+    const payload = parseGetSettingsPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.appSettingStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const settings: Record<string, unknown> = {};
+      if (payload.keys && payload.keys.length > 0) {
+        for (const key of payload.keys) {
+          const record = this.appSettingStore.get(key);
+          if (record) settings[record.key] = record.value;
+        }
+      } else {
+        for (const record of this.appSettingStore.list()) {
+          settings[record.key] = record.value;
+        }
+      }
+      const response: GetSettingsResponse = { settings };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'settings.get', payload: response }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetSetting(socket: Socket, frame: Frame): void {
+    const payload = parseSetSettingPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.appSettingStore) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const record = this.appSettingStore.set(payload.key, payload.value);
+      const response: SetSettingResponse = {
+        key: record.key,
+        value: record.value,
+        updatedAt: record.updatedAt,
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'settings.set', payload: response }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleUsageSummary(socket: Socket, frame: Frame): void {
+    const payload = parseUsageSummaryPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.queryUsageSummary) {
+      this.writeProviderStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const sinceIso =
+        typeof payload.sinceDays === 'number' && payload.sinceDays > 0
+          ? new Date(Date.now() - payload.sinceDays * 24 * 60 * 60 * 1000).toISOString()
+          : undefined;
+      const raw = this.queryUsageSummary(sinceIso);
+      // Enrich rows with provider/model display names when the catalog knows them.
+      const catalog = this.providerStore?.listProviders() ?? [];
+      const providerNameById = new Map(catalog.map((e) => [String(e.provider.id), e.provider.name]));
+      const modelById = new Map(
+        catalog.flatMap((e) => e.models.map((m) => [String(m.id), m] as const)),
+      );
+      const modelByProviderModelId = new Map(
+        catalog.flatMap((e) => e.models.map((m) => [m.providerModelId, m] as const)),
+      );
+      const rows: UsageSummaryRow[] = raw.map((row) => {
+        const model = modelById.get(row.modelId) ?? modelByProviderModelId.get(row.modelId);
+        return {
+          ...row,
+          displayName: model?.displayName ?? row.modelId,
+          providerName: row.providerId ? providerNameById.get(row.providerId) : undefined,
+        };
+      });
+      const response: UsageSummaryResponse = {
+        rows,
+        totalRequests: rows.reduce((sum, r) => sum + r.requests, 0),
+        totalTokensIn: rows.reduce((sum, r) => sum + r.tokensIn, 0),
+        totalTokensOut: rows.reduce((sum, r) => sum + r.tokensOut, 0),
+      };
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: 'usage.summary', payload: response }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
   private toProviderSummary(entry: ProviderCatalogEntry): ProviderSummary {
     const credentials: ProviderCredentialSummary[] = [];
     for (const group of entry.credentialGroups) {
@@ -4105,6 +4441,8 @@ export class Runtime {
         name: entry.provider.name,
       }),
       importedFrom: entry.provider.importedFrom,
+      enabled: entry.provider.enabled,
+      sortOrder: entry.provider.sortOrder,
       credentials,
       models: entry.models.map((m) => this.toModelSummary(m)),
       createdAt: entry.provider.createdAt,
@@ -4113,6 +4451,17 @@ export class Runtime {
   }
 
   private toModelSummary(model: ModelRecord): ProviderModelSummary {
+    let contextWindow: number | undefined;
+    if (model.limitsJson) {
+      try {
+        const limits = JSON.parse(model.limitsJson) as { contextWindow?: unknown };
+        if (typeof limits?.contextWindow === 'number' && limits.contextWindow > 0) {
+          contextWindow = limits.contextWindow;
+        }
+      } catch {
+        contextWindow = undefined;
+      }
+    }
     return {
       modelId: model.id,
       providerModelId: model.providerModelId,
@@ -4120,6 +4469,9 @@ export class Runtime {
       protocol: model.protocol,
       capabilities: model.capabilities,
       capabilitiesConfirmed: model.capabilitiesConfirmed,
+      priority: model.priority,
+      credentialRefId: model.credentialRefId,
+      contextWindow,
     };
   }
 

@@ -110,7 +110,48 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0025_conversation_task_binding',
     sql: conversationTaskBindingDdlSql(),
   },
+  {
+    name: '0026_provider_source_config',
+    sql: providerSourceConfigDdlSql(),
+  },
 ];
+
+function providerSourceConfigDdlSql(): string {
+  return `
+-- 2026-07-23 model-source config (NewMax-parity settings > models page):
+-- providers become orderable/toggleable entries; models get an explicit
+-- priority chain (0 = primary) and an optional pinned credential (relay-station
+-- style: different key groups expose different models); plus a generic
+-- app_setting KV table for global knobs (vision fallback, plan & act).
+ALTER TABLE provider ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE provider ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model ADD COLUMN credential_ref_id TEXT;
+
+-- Backfill sort_order from insertion order so existing providers keep a
+-- stable, deterministic ordering.
+UPDATE provider SET sort_order = (
+  SELECT COUNT(*) FROM provider p2 WHERE p2.created_at < provider.created_at
+     OR (p2.created_at = provider.created_at AND p2.id < provider.id)
+);
+-- Backfill model priority within each provider the same way.
+UPDATE model SET priority = (
+  SELECT COUNT(*) FROM model m2 WHERE m2.provider_id = model.provider_id
+    AND (m2.created_at < model.created_at
+     OR (m2.created_at = model.created_at AND m2.id < model.id))
+);
+
+CREATE INDEX provider_sort_idx ON provider(enabled, sort_order);
+CREATE INDEX model_provider_priority_idx ON model(provider_id, priority);
+
+CREATE TABLE app_setting (
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT app_setting_value_json_check CHECK (json_valid(value_json))
+);
+`;
+}
 
 function conversationTaskBindingDdlSql(): string {
   return `

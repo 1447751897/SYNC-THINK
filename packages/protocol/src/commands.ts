@@ -74,6 +74,14 @@ export type CommandType =
   | 'provider.confirmCapabilities'
   | 'provider.previewCcSwitchImport'
   | 'provider.importCcSwitch'
+  | 'provider.reorder'
+  | 'provider.addCredential'
+  | 'provider.removeCredential'
+  | 'provider.setModelPriorities'
+  | 'provider.removeModel'
+  | 'settings.get'
+  | 'settings.set'
+  | 'usage.summary'
   | 'agent.get'
   | 'agent.updateBinding'
   | 'agent.list'
@@ -595,6 +603,12 @@ export interface ProviderModelSummary {
   protocol: import('@sync-think/shared').ProtocolFamily;
   capabilities: import('@sync-think/shared').CapabilityTag[];
   capabilitiesConfirmed: boolean;
+  /** 0026: priority chain position inside the provider — 0 is the primary model. */
+  priority: number;
+  /** 0026: optional pinned credential for this model (relay-station key groups). */
+  credentialRefId?: import('@sync-think/shared').CredentialRefId;
+  /** Parsed from limitsJson when present (e.g. 372000 → “372k 上下文”). */
+  contextWindow?: number;
 }
 
 export interface ProviderSummary {
@@ -606,6 +620,10 @@ export interface ProviderSummary {
   supportsDiscovery: boolean;
   /** CC Switch-style surface for hierarchical model picking. */
   surface: import('@sync-think/shared').ProviderSurface;
+  /** 0026: entry toggle — disabled entries hide from pickers but keep config. */
+  enabled: boolean;
+  /** 0026: manual ordering; first enabled provider is the default entry. */
+  sortOrder: number;
   importedFrom?: string;
   credentials: ProviderCredentialSummary[];
   models: ProviderModelSummary[];
@@ -630,6 +648,8 @@ export interface UpdateProviderPayload {
   supportsDiscovery?: boolean;
   credentialLabel?: string;
   surface?: import('@sync-think/shared').ProviderSurface;
+  /** 0026: toggle the entry on/off (disabled hides from pickers). */
+  enabled?: boolean;
 }
 
 export interface UpdateProviderResponse {
@@ -720,6 +740,8 @@ export interface AddModelsPayload {
     providerModelId: string;
     displayName?: string;
     capabilities?: import('@sync-think/shared').CapabilityTag[];
+    /** Optional context window size in tokens (persisted into limitsJson). */
+    contextWindow?: number;
   }>;
 }
 
@@ -767,6 +789,111 @@ export interface ConfirmCapabilitiesPayload {
 
 export interface ConfirmCapabilitiesResponse {
   model: ProviderModelSummary;
+}
+
+// --- 0026: model-source config (NewMax-parity settings > models) ---
+
+export interface ReorderProvidersPayload {
+  /** Full desired order; providers not listed keep relative order after these. */
+  orderedProviderIds: string[];
+}
+
+export interface ReorderProvidersResponse {
+  providers: ProviderSummary[];
+}
+
+export interface AddProviderCredentialPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+  /** Plaintext only for this hop; Runtime stores into secure-store and never echoes it. */
+  apiKey: string;
+  label?: string;
+}
+
+export interface AddProviderCredentialResponse {
+  provider: ProviderSummary;
+  credentialRefId: import('@sync-think/shared').CredentialRefId;
+}
+
+export interface RemoveProviderCredentialPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+  credentialRefId: import('@sync-think/shared').CredentialRefId;
+}
+
+export interface RemoveProviderCredentialResponse {
+  provider: ProviderSummary;
+  removed: boolean;
+}
+
+export interface SetModelPrioritiesPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+  /** Desired chain order; index 0 is the primary model. */
+  entries: Array<{
+    modelId: import('@sync-think/shared').ModelId;
+    /** Pin a credential for this model; null clears the pin; omit keeps current. */
+    credentialRefId?: import('@sync-think/shared').CredentialRefId | null;
+  }>;
+}
+
+export interface SetModelPrioritiesResponse {
+  providerId: import('@sync-think/shared').ProviderId;
+  models: ProviderModelSummary[];
+}
+
+export interface RemoveModelPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+  modelId: import('@sync-think/shared').ModelId;
+}
+
+export interface RemoveModelResponse {
+  providerId: import('@sync-think/shared').ProviderId;
+  removed: boolean;
+}
+
+// --- 0026: app-level settings (vision fallback, plan & act) ---
+
+export interface GetSettingsPayload {
+  /** Omit for all settings. */
+  keys?: string[];
+}
+
+export interface GetSettingsResponse {
+  settings: Record<string, unknown>;
+}
+
+export interface SetSettingPayload {
+  key: string;
+  value: unknown;
+}
+
+export interface SetSettingResponse {
+  key: string;
+  value: unknown;
+  updatedAt: string;
+}
+
+// --- 0026: usage statistics (aggregated from provider.usage events) ---
+
+export interface UsageSummaryPayload {
+  /** Restrict to the trailing N days; omit for all time. */
+  sinceDays?: number;
+}
+
+export interface UsageSummaryRow {
+  modelId: string;
+  providerId?: string;
+  displayName?: string;
+  providerName?: string;
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
+  lastUsedAt?: string;
+}
+
+export interface UsageSummaryResponse {
+  rows: UsageSummaryRow[];
+  totalRequests: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
 }
 
 // --- Agent binding (persistent default / fallback 搂5.3) ---

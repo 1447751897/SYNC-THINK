@@ -1,28 +1,19 @@
 // P7/P8 · Settings Page
 // NewMax-style settings: left nav + right content.
-// Sections: 主题 / 通用 / 模型 / 关于
-import { useCallback, useEffect, useState } from 'react';
+// Sections: 主题 / 通用 / 模型 / 使用统计 / 关于
+import { useState } from 'react';
 import {
-  Bot, Check, ChevronRight, Download, Info,
-  Loader2, Monitor, Moon, Palette, Settings, Shield, Sun, Zap,
+  BarChart3, Bot, Check, Info,
+  Monitor, Moon, Palette, Settings, Shield, Sun, Zap,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { ModelSettings, UsageSettings } from './ModelSettings.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 type ThemeMode = 'system' | 'light' | 'dark';
-type SettingsSection = 'theme' | 'general' | 'models' | 'about';
+type SettingsSection = 'theme' | 'general' | 'models' | 'usage' | 'about';
 type PermissionDefault = 'read-only' | 'workspace' | 'full-access';
-
-interface ProviderInfo {
-  providerId: string;
-  name: string;
-  models: Array<{ modelId: string; displayName: string }>;
-}
-
-function bridge() {
-  return (window as any).syncThink?.runtime;
-}
 
 // ─── Theme helpers ──────────────────────────────────────────────────────────
 
@@ -44,16 +35,20 @@ export function applyShellTheme(mode: ThemeMode): void {
 // ─── Section nav ────────────────────────────────────────────────────────────
 
 const SECTIONS: Array<{ id: SettingsSection; label: string; icon: typeof Palette }> = [
-  { id: 'theme',   label: '主题',  icon: Palette },
-  { id: 'general', label: '通用',  icon: Settings },
-  { id: 'models',  label: '模型',  icon: Bot },
-  { id: 'about',   label: '关于',  icon: Info },
+  { id: 'theme',   label: '主题',     icon: Palette },
+  { id: 'general', label: '通用',     icon: Settings },
+  { id: 'models',  label: '模型',     icon: Bot },
+  { id: 'usage',   label: '使用统计', icon: BarChart3 },
+  { id: 'about',   label: '关于',     icon: Info },
 ];
 
 // ─── Root ────────────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
   const [section, setSection] = useState<SettingsSection>('theme');
+
+  // Models / usage need the full pane (dual-column); others keep the narrow shell.
+  const fullBleed = section === 'models' || section === 'usage';
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -84,10 +79,11 @@ export function SettingsPage() {
       </nav>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className={clsx('flex-1', fullBleed ? 'overflow-hidden' : 'overflow-y-auto')}>
         {section === 'theme'   && <ThemeSection />}
         {section === 'general' && <GeneralSection />}
-        {section === 'models'  && <ModelsSection />}
+        {section === 'models'  && <ModelSettings />}
+        {section === 'usage'   && <UsageSettings />}
         {section === 'about'   && <AboutSection />}
       </div>
     </div>
@@ -232,171 +228,6 @@ function GeneralSection() {
         </div>
       </SettingGroup>
     </ContentShell>
-  );
-}
-
-// ─── Models section ──────────────────────────────────────────────────────────
-
-function ModelsSection() {
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [ccImporting, setCcImporting] = useState(false);
-  const [ccPreview, setCcPreview] = useState<{ providers: Array<{ name: string; modelCount: number }> } | null>(null);
-  const [ccStatus, setCcStatus] = useState<'idle' | 'preview' | 'imported'>('idle');
-
-  const loadProviders = useCallback(async () => {
-    const api = bridge();
-    if (!api) return;
-    setLoading(true);
-    try {
-      const res = await api.listProviders({});
-      setProviders(res.providers ?? []);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { void loadProviders(); }, [loadProviders]);
-
-  const handleCcPreview = useCallback(async () => {
-    const api = bridge();
-    if (!api) return;
-    setCcImporting(true);
-    try {
-      const res = await api.previewCcSwitchImport({});
-      if (res.providers?.length > 0) {
-        setCcPreview({ providers: res.providers.map((p: any) => ({
-          name: p.name ?? p.providerId,
-          modelCount: p.models?.length ?? 0,
-        })) });
-        setCcStatus('preview');
-      } else {
-        alert('未检测到可导入的 CC Switch 配置。\n请确认已安装并配置了 CC Switch。');
-      }
-    } finally {
-      setCcImporting(false);
-    }
-  }, []);
-
-  const handleCcImport = useCallback(async () => {
-    const api = bridge();
-    if (!api) return;
-    setCcImporting(true);
-    try {
-      await api.importCcSwitch({ merge: true });
-      setCcStatus('imported');
-      await loadProviders();
-    } finally {
-      setCcImporting(false);
-    }
-  }, [loadProviders]);
-
-  const totalModels = providers.reduce((s, p) => s + p.models.length, 0);
-
-  return (
-    <ContentShell title="模型">
-      {/* CC Switch CTA */}
-      <SettingGroup
-        label="CC Switch 导入"
-        hint="一键将已配置的 CC Switch 模型提供商导入到 Sync-Think，无需重复填写 API Key。"
-      >
-        {ccStatus === 'preview' && ccPreview ? (
-          <div className="rounded-xl border border-accent/30 bg-accent-soft p-4 space-y-3">
-            <p className="text-[13px] font-medium text-accent-text">检测到以下提供商，确认导入？</p>
-            <ul className="space-y-1">
-              {ccPreview.providers.map((p, i) => (
-                <li key={i} className="flex items-center gap-2 text-[12.5px] text-text-secondary">
-                  <Check size={13} className="text-accent" />
-                  {p.name} · {p.modelCount} 个模型
-                </li>
-              ))}
-            </ul>
-            <div className="flex gap-2">
-              <button
-                className="flex-1 rounded-lg bg-accent py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-                onClick={() => void handleCcImport()}
-                disabled={ccImporting}
-              >
-                {ccImporting ? <Loader2 size={14} className="animate-spin mx-auto" /> : '确认导入'}
-              </button>
-              <button
-                className="rounded-lg border border-border px-4 py-2 text-[13px] text-text-secondary hover:bg-hover"
-                onClick={() => { setCcStatus('idle'); setCcPreview(null); }}
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        ) : ccStatus === 'imported' ? (
-          <div className="flex items-center gap-2 rounded-xl border border-accent/30 bg-accent-soft p-4 text-[13px] text-accent-text">
-            <Check size={16} /> 导入成功！共 {totalModels} 个模型已就绪。
-          </div>
-        ) : (
-          <button
-            className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-accent/40 bg-accent-soft/40 py-4 text-[13.5px] font-medium text-accent-text transition-colors hover:border-accent hover:bg-accent-soft disabled:opacity-60"
-            onClick={() => void handleCcPreview()}
-            disabled={ccImporting}
-          >
-            {ccImporting
-              ? <><Loader2 size={16} className="animate-spin" /> 检测中…</>
-              : <><Download size={16} /> 从 CC Switch 一键导入</>}
-          </button>
-        )}
-      </SettingGroup>
-
-      {/* Provider list */}
-      <SettingGroup label={`已配置的提供商（${providers.length}）`} className="mt-6">
-        {loading ? (
-          <div className="flex items-center gap-2 py-4 text-[13px] text-text-faint">
-            <Loader2 size={15} className="animate-spin" /> 加载中…
-          </div>
-        ) : providers.length === 0 ? (
-          <p className="py-4 text-center text-[13px] text-text-faint">
-            尚未配置任何模型提供商。<br />通过上方的 CC Switch 导入，或手动添加。
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {providers.map((p) => (
-              <ProviderCard key={p.providerId} provider={p} />
-            ))}
-          </div>
-        )}
-      </SettingGroup>
-    </ContentShell>
-  );
-}
-
-function ProviderCard({ provider }: { provider: ProviderInfo }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div className="rounded-xl border border-border bg-surface">
-      <button
-        className="flex w-full items-center gap-3 px-4 py-3 text-left"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-soft text-[14px] font-bold text-accent-text">
-          {provider.name[0]?.toUpperCase() ?? '?'}
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="truncate text-[13px] font-medium text-text">{provider.name}</p>
-          <p className="text-[11.5px] text-text-faint">{provider.models.length} 个模型</p>
-        </div>
-        <ChevronRight
-          size={14}
-          className={clsx('text-text-faint transition-transform', expanded && 'rotate-90')}
-        />
-      </button>
-      {expanded && provider.models.length > 0 && (
-        <div className="border-t border-border px-4 py-2 space-y-1">
-          {provider.models.map((m) => (
-            <div key={m.modelId} className="flex items-center gap-2 py-1 text-[12px] text-text-secondary">
-              <div className="h-1.5 w-1.5 rounded-full bg-accent" />
-              {m.displayName}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 

@@ -45,6 +45,14 @@ import {
   parseAddModelsPayload,
   parseProbeCapabilitiesPayload,
   parseConfirmCapabilitiesPayload,
+  parseReorderProvidersPayload,
+  parseAddProviderCredentialPayload,
+  parseRemoveProviderCredentialPayload,
+  parseSetModelPrioritiesPayload,
+  parseRemoveModelPayload,
+  parseGetSettingsPayload,
+  parseSetSettingPayload,
+  parseUsageSummaryPayload,
 } from '../provider-payloads.js';
 import {
   createProviderPayloadFromClipboard,
@@ -602,6 +610,55 @@ function setupRuntimeBridge(): void {
       'provider.confirmCapabilities',
       parseConfirmCapabilitiesPayload(value),
     );
+  });
+  ipcMain.handle('runtime:provider-reorder', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('provider.reorder', parseReorderProvidersPayload(value));
+  });
+  ipcMain.handle('runtime:provider-add-credential', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'provider.addCredential',
+      parseAddProviderCredentialPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:provider-remove-credential', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'provider.removeCredential',
+      parseRemoveProviderCredentialPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:provider-set-model-priorities', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'provider.setModelPriorities',
+      parseSetModelPrioritiesPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:provider-remove-model', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('provider.removeModel', parseRemoveModelPayload(value));
+  });
+  ipcMain.handle('runtime:settings-get', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('settings.get', parseGetSettingsPayload(value));
+  });
+  ipcMain.handle('runtime:settings-set', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('settings.set', parseSetSettingPayload(value));
+  });
+  ipcMain.handle('runtime:usage-summary', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('usage.summary', parseUsageSummaryPayload(value));
   });
   ipcMain.handle('runtime:agent-get', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

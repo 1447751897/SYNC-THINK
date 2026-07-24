@@ -6,6 +6,14 @@
   ListProvidersPayload,
   ProbeCapabilitiesPayload,
   ConfirmCapabilitiesPayload,
+  ReorderProvidersPayload,
+  AddProviderCredentialPayload,
+  RemoveProviderCredentialPayload,
+  SetModelPrioritiesPayload,
+  RemoveModelPayload,
+  GetSettingsPayload,
+  SetSettingPayload,
+  UsageSummaryPayload,
 } from '@sync-think/protocol';
 
 export interface RendererCreateProviderPayload {
@@ -16,6 +24,8 @@ export interface RendererCreateProviderPayload {
   credentialGroupName?: string;
   credentialLabel?: string;
   importedFrom?: string;
+  /** Direct form entry (NewMax-style key field); falls back to clipboard when omitted. */
+  apiKey?: string;
 }
 
 export interface RendererUpdateProviderPayload {
@@ -26,6 +36,10 @@ export interface RendererUpdateProviderPayload {
   supportsDiscovery?: boolean;
   credentialLabel?: string;
   rotateCredentialFromClipboard?: boolean;
+  /** Direct form entry for key rotation; takes precedence over clipboard flag. */
+  apiKey?: string;
+  /** 0026: toggle the entry on/off. */
+  enabled?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -62,12 +76,18 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
       'credentialGroupName',
       'credentialLabel',
       'importedFrom',
+      'apiKey',
     ])
   ) {
     throw new Error('Invalid create-provider payload');
   }
   if (value.supportsDiscovery !== undefined && typeof value.supportsDiscovery !== 'boolean') {
     throw new Error('Invalid create-provider payload');
+  }
+  if (value.apiKey !== undefined) {
+    if (typeof value.apiKey !== 'string' || value.apiKey.trim().length === 0 || value.apiKey.length > 8192) {
+      throw new Error('Invalid create-provider payload');
+    }
   }
   for (const field of ['credentialGroupName', 'credentialLabel', 'importedFrom'] as const) {
     if (value[field] !== undefined && typeof value[field] !== 'string') {
@@ -82,6 +102,7 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
     credentialGroupName: value.credentialGroupName as string | undefined,
     credentialLabel: value.credentialLabel as string | undefined,
     importedFrom: value.importedFrom as string | undefined,
+    apiKey: value.apiKey as string | undefined,
   };
 }
 
@@ -171,6 +192,179 @@ export function parseConfirmCapabilitiesPayload(value: unknown): ConfirmCapabili
   };
 }
 
+function isBoundedId(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 256;
+}
+
+export function parseReorderProvidersPayload(value: unknown): ReorderProvidersPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['orderedProviderIds']) ||
+    !Array.isArray(value.orderedProviderIds) ||
+    value.orderedProviderIds.length === 0 ||
+    value.orderedProviderIds.length > 256 ||
+    !value.orderedProviderIds.every(isBoundedId) ||
+    new Set(value.orderedProviderIds).size !== value.orderedProviderIds.length
+  ) {
+    throw new Error('Invalid reorder-providers payload');
+  }
+  return { orderedProviderIds: value.orderedProviderIds.map((id) => id.trim()) };
+}
+
+export function parseAddProviderCredentialPayload(value: unknown): AddProviderCredentialPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['providerId', 'apiKey', 'label']) ||
+    !isBoundedId(value.providerId) ||
+    typeof value.apiKey !== 'string' ||
+    value.apiKey.trim().length === 0 ||
+    value.apiKey.length > 8192 ||
+    (value.label !== undefined &&
+      (typeof value.label !== 'string' || value.label.length > 256))
+  ) {
+    throw new Error('Invalid add-provider-credential payload');
+  }
+  return {
+    providerId: value.providerId.trim() as AddProviderCredentialPayload['providerId'],
+    apiKey: value.apiKey,
+    label: typeof value.label === 'string' ? value.label.trim() : undefined,
+  };
+}
+
+export function parseRemoveProviderCredentialPayload(
+  value: unknown,
+): RemoveProviderCredentialPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['providerId', 'credentialRefId']) ||
+    !isBoundedId(value.providerId) ||
+    !isBoundedId(value.credentialRefId)
+  ) {
+    throw new Error('Invalid remove-provider-credential payload');
+  }
+  return {
+    providerId: value.providerId.trim() as RemoveProviderCredentialPayload['providerId'],
+    credentialRefId:
+      value.credentialRefId.trim() as RemoveProviderCredentialPayload['credentialRefId'],
+  };
+}
+
+export function parseSetModelPrioritiesPayload(value: unknown): SetModelPrioritiesPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['providerId', 'entries']) ||
+    !isBoundedId(value.providerId) ||
+    !Array.isArray(value.entries) ||
+    value.entries.length === 0 ||
+    value.entries.length > 256
+  ) {
+    throw new Error('Invalid set-model-priorities payload');
+  }
+  const modelIds = new Set<string>();
+  const entries: SetModelPrioritiesPayload['entries'] = [];
+  for (const entry of value.entries) {
+    if (
+      !isRecord(entry) ||
+      !hasOnlyKeys(entry, ['modelId', 'credentialRefId']) ||
+      !isBoundedId(entry.modelId) ||
+      (entry.credentialRefId !== undefined &&
+        entry.credentialRefId !== null &&
+        !isBoundedId(entry.credentialRefId))
+    ) {
+      throw new Error('Invalid set-model-priorities payload');
+    }
+    const modelId = entry.modelId.trim();
+    if (modelIds.has(modelId)) throw new Error('Invalid set-model-priorities payload');
+    modelIds.add(modelId);
+    entries.push({
+      modelId: modelId as SetModelPrioritiesPayload['entries'][number]['modelId'],
+      credentialRefId:
+        entry.credentialRefId === null
+          ? null
+          : typeof entry.credentialRefId === 'string'
+            ? (entry.credentialRefId.trim() as NonNullable<
+                SetModelPrioritiesPayload['entries'][number]['credentialRefId']
+              >)
+            : undefined,
+    });
+  }
+  return {
+    providerId: value.providerId.trim() as SetModelPrioritiesPayload['providerId'],
+    entries,
+  };
+}
+
+export function parseRemoveModelPayload(value: unknown): RemoveModelPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['providerId', 'modelId']) ||
+    !isBoundedId(value.providerId) ||
+    !isBoundedId(value.modelId)
+  ) {
+    throw new Error('Invalid remove-model payload');
+  }
+  return {
+    providerId: value.providerId.trim() as RemoveModelPayload['providerId'],
+    modelId: value.modelId.trim() as RemoveModelPayload['modelId'],
+  };
+}
+
+export function parseGetSettingsPayload(value: unknown): GetSettingsPayload {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value) || !hasOnlyKeys(value, ['keys'])) {
+    throw new Error('Invalid get-settings payload');
+  }
+  if (
+    value.keys !== undefined &&
+    (!Array.isArray(value.keys) ||
+      value.keys.length > 64 ||
+      !value.keys.every(
+        (key) => typeof key === 'string' && key.trim().length > 0 && key.length <= 128,
+      ))
+  ) {
+    throw new Error('Invalid get-settings payload');
+  }
+  return {
+    keys: Array.isArray(value.keys) ? value.keys.map((key) => String(key).trim()) : undefined,
+  };
+}
+
+export function parseSetSettingPayload(value: unknown): SetSettingPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['key', 'value']) ||
+    typeof value.key !== 'string' ||
+    value.key.trim().length === 0 ||
+    value.key.length > 128 ||
+    !Object.prototype.hasOwnProperty.call(value, 'value')
+  ) {
+    throw new Error('Invalid set-setting payload');
+  }
+  try {
+    const encoded = JSON.stringify(value.value ?? null);
+    if (encoded.length > 16_384) throw new Error('too large');
+  } catch {
+    throw new Error('Invalid set-setting payload');
+  }
+  return { key: value.key.trim(), value: value.value };
+}
+
+export function parseUsageSummaryPayload(value: unknown): UsageSummaryPayload {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value) || !hasOnlyKeys(value, ['sinceDays'])) {
+    throw new Error('Invalid usage-summary payload');
+  }
+  if (
+    value.sinceDays !== undefined &&
+    (typeof value.sinceDays !== 'number' ||
+      !Number.isFinite(value.sinceDays) ||
+      value.sinceDays <= 0 ||
+      value.sinceDays > 3650)
+  ) {
+    throw new Error('Invalid usage-summary payload');
+  }
+  return { sinceDays: value.sinceDays as number | undefined };
+}
 
 export function parseUpdateProviderPayload(value: unknown): RendererUpdateProviderPayload {
   if (!isRecord(value)) throw new Error('Invalid update-provider payload');
@@ -183,7 +377,9 @@ export function parseUpdateProviderPayload(value: unknown): RendererUpdateProvid
     value.protocol !== undefined ||
     value.supportsDiscovery !== undefined ||
     value.credentialLabel !== undefined ||
-    value.rotateCredentialFromClipboard !== undefined;
+    value.rotateCredentialFromClipboard !== undefined ||
+    value.apiKey !== undefined ||
+    value.enabled !== undefined;
   if (!hasField) throw new Error('Invalid update-provider payload');
   if (
     !hasOnlyKeys(value, [
@@ -194,8 +390,18 @@ export function parseUpdateProviderPayload(value: unknown): RendererUpdateProvid
       'supportsDiscovery',
       'credentialLabel',
       'rotateCredentialFromClipboard',
+      'apiKey',
+      'enabled',
     ])
   ) {
+    throw new Error('Invalid update-provider payload');
+  }
+  if (value.apiKey !== undefined) {
+    if (typeof value.apiKey !== 'string' || value.apiKey.trim().length === 0 || value.apiKey.length > 8192) {
+      throw new Error('Invalid update-provider payload');
+    }
+  }
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
     throw new Error('Invalid update-provider payload');
   }
   if (value.name !== undefined) {
@@ -233,6 +439,8 @@ export function parseUpdateProviderPayload(value: unknown): RendererUpdateProvid
     supportsDiscovery: value.supportsDiscovery as boolean | undefined,
     credentialLabel: value.credentialLabel as string | undefined,
     rotateCredentialFromClipboard: value.rotateCredentialFromClipboard as boolean | undefined,
+    apiKey: value.apiKey as string | undefined,
+    enabled: value.enabled as boolean | undefined,
   };
 }
 

@@ -27,6 +27,14 @@ import type {
   AddModelsPayload,
   ProbeCapabilitiesPayload,
   ConfirmCapabilitiesPayload,
+  ReorderProvidersPayload,
+  AddProviderCredentialPayload,
+  RemoveProviderCredentialPayload,
+  SetModelPrioritiesPayload,
+  RemoveModelPayload,
+  GetSettingsPayload,
+  SetSettingPayload,
+  UsageSummaryPayload,
   GetAgentPayload,
   UpdateAgentBindingPayload,
   ListAgentsPayload,
@@ -921,8 +929,10 @@ export function parseUpdateProviderPayload(value: unknown): UpdateProviderPayloa
     value.apiKey !== undefined ||
     value.supportsDiscovery !== undefined ||
     value.credentialLabel !== undefined ||
-    value.surface !== undefined;
+    value.surface !== undefined ||
+    value.enabled !== undefined;
   if (!hasField) return undefined;
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') return undefined;
   if (value.name !== undefined) {
     if (typeof value.name !== 'string' || value.name.trim().length === 0 || value.name.length > 256)
       return undefined;
@@ -998,6 +1008,16 @@ export function parseAddModelsPayload(value: unknown): AddModelsPayload | undefi
       return undefined;
     }
     if (model.displayName !== undefined && typeof model.displayName !== 'string') return undefined;
+    if (model.contextWindow !== undefined) {
+      if (
+        typeof model.contextWindow !== 'number' ||
+        !Number.isFinite(model.contextWindow) ||
+        model.contextWindow <= 0 ||
+        model.contextWindow > 100_000_000
+      ) {
+        return undefined;
+      }
+    }
     if (model.capabilities !== undefined) {
       if (
         !Array.isArray(model.capabilities) ||
@@ -1052,6 +1072,158 @@ export function parseConfirmCapabilitiesPayload(
   }
   if (value.confirmed !== undefined && typeof value.confirmed !== 'boolean') return undefined;
   return value as unknown as ConfirmCapabilitiesPayload;
+}
+
+// --- 0026: model-source config parsers ---
+
+export function parseReorderProvidersPayload(value: unknown): ReorderProvidersPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    !Array.isArray(value.orderedProviderIds) ||
+    value.orderedProviderIds.length === 0 ||
+    value.orderedProviderIds.length > 256 ||
+    !value.orderedProviderIds.every(
+      (id) => typeof id === 'string' && id.length > 0 && id.length <= 256,
+    )
+  ) {
+    return undefined;
+  }
+  return value as unknown as ReorderProvidersPayload;
+}
+
+export function parseAddProviderCredentialPayload(
+  value: unknown,
+): AddProviderCredentialPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256 ||
+    typeof value.apiKey !== 'string' ||
+    value.apiKey.trim().length === 0 ||
+    value.apiKey.length > 8192
+  ) {
+    return undefined;
+  }
+  if (value.label !== undefined) {
+    if (typeof value.label !== 'string' || value.label.length > 256) return undefined;
+  }
+  return value as unknown as AddProviderCredentialPayload;
+}
+
+export function parseRemoveProviderCredentialPayload(
+  value: unknown,
+): RemoveProviderCredentialPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256 ||
+    typeof value.credentialRefId !== 'string' ||
+    value.credentialRefId.length === 0 ||
+    value.credentialRefId.length > 256
+  ) {
+    return undefined;
+  }
+  return value as unknown as RemoveProviderCredentialPayload;
+}
+
+export function parseSetModelPrioritiesPayload(
+  value: unknown,
+): SetModelPrioritiesPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256 ||
+    !Array.isArray(value.entries) ||
+    value.entries.length === 0 ||
+    value.entries.length > 256
+  ) {
+    return undefined;
+  }
+  for (const entry of value.entries) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.modelId !== 'string' ||
+      entry.modelId.length === 0 ||
+      entry.modelId.length > 256
+    ) {
+      return undefined;
+    }
+    if (entry.credentialRefId !== undefined && entry.credentialRefId !== null) {
+      if (
+        typeof entry.credentialRefId !== 'string' ||
+        entry.credentialRefId.length === 0 ||
+        entry.credentialRefId.length > 256
+      ) {
+        return undefined;
+      }
+    }
+  }
+  return value as unknown as SetModelPrioritiesPayload;
+}
+
+export function parseRemoveModelPayload(value: unknown): RemoveModelPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256 ||
+    typeof value.modelId !== 'string' ||
+    value.modelId.length === 0 ||
+    value.modelId.length > 256
+  ) {
+    return undefined;
+  }
+  return value as unknown as RemoveModelPayload;
+}
+
+export function parseGetSettingsPayload(value: unknown): GetSettingsPayload | undefined {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value)) return undefined;
+  if (value.keys !== undefined) {
+    if (
+      !Array.isArray(value.keys) ||
+      value.keys.length > 64 ||
+      !value.keys.every((k) => typeof k === 'string' && k.length > 0 && k.length <= 128)
+    ) {
+      return undefined;
+    }
+  }
+  return value as unknown as GetSettingsPayload;
+}
+
+export function parseSetSettingPayload(value: unknown): SetSettingPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.key !== 'string' || value.key.trim().length === 0 || value.key.length > 128) {
+    return undefined;
+  }
+  if (!('value' in value)) return undefined;
+  // Guard against oversized payloads (settings are small JSON blobs).
+  try {
+    const encoded = JSON.stringify(value.value ?? null);
+    if (encoded.length > 16_384) return undefined;
+  } catch {
+    return undefined;
+  }
+  return value as unknown as SetSettingPayload;
+}
+
+export function parseUsageSummaryPayload(value: unknown): UsageSummaryPayload | undefined {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value)) return undefined;
+  if (value.sinceDays !== undefined) {
+    if (
+      typeof value.sinceDays !== 'number' ||
+      !Number.isFinite(value.sinceDays) ||
+      value.sinceDays <= 0 ||
+      value.sinceDays > 3650
+    ) {
+      return undefined;
+    }
+  }
+  return value as unknown as UsageSummaryPayload;
 }
 
 export function parseGetAgentPayload(value: unknown): GetAgentPayload | undefined {

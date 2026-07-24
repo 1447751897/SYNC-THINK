@@ -1,3 +1,24 @@
+## 2026-07-24 · 模型源导入 / 设置页（NewMax 对齐）
+
+- **目标**：设置 → 模型 可完整导入与管理模型源；使用统计可查请求/token
+- **数据层（0026）**：
+  - `provider.enabled` / `provider.sort_order`
+  - `model.priority` / `model.credential_ref_id`
+  - `app_setting` KV（`vision-fallback` / `plan-act`）
+  - store：`reorderProviders` / `addCredentialRef` / `removeCredentialRef` / `setModelPriorities` / `removeModel`
+- **协议 + Runtime**：
+  - `provider.reorder` / `addCredential` / `removeCredential` / `setModelPriorities` / `removeModel`
+  - `settings.get` / `settings.set`
+  - `usage.summary`（从 provider.usage 事件聚合，补 displayName）
+  - create/update 支持表单直传 `apiKey`（clipboard 兜底仍保留）
+- **Desktop bridge**：main/preload/global.d 全量透传上述命令
+- **设置 UI（新壳）**：
+  - 双栏模型源：左列表（启停 + 排序）/ 右详情（端点、API 格式、多密钥、模型优先级、发现/手填）
+  - 全局 Vision Fallback + Plan & Act
+  - 使用统计页：近 7/30/90 天与全部时间
+  - 停用供应商从对话模型选择器隐藏
+- 验证：storage 232/232；protocol/storage/runtime/desktop typecheck；shell+runtime rebuild；Desktop 热重启 hello accepted
+
 ## 2026-07-23 · 联网开关真正生效（web_search / web_fetch）
 
 - **原状**：Compose 地球图标只改本地 `netEnabled` 状态，不进 Runtime

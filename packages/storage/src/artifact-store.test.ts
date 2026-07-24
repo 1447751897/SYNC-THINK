@@ -238,6 +238,7 @@ async function openLegacyConflictStore() {
       '0023_provider_execution_checkpoint',
       '0024_mutable_agent_team_conversation',
       '0025_conversation_task_binding',
+      '0026_provider_source_config',
     ]);
     await runMigrations(dbPath);
   } finally {

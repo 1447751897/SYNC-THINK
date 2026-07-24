@@ -10,6 +10,7 @@ export * from './path-allowlist.js';
 export * from './workspace-store.js';
 
 export * from './provider-store.js';
+export * from './app-setting-store.js';
 export * from './agent-store.js';
 export * from './global-agent-store.js';
 export * from './team-store.js';

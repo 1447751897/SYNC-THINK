@@ -12,6 +12,10 @@ export const provider = sqliteTable('provider', {
   importedFrom: text('imported_from'),
   /** CC Switch-style surface: claude | codex | gemini | generic. */
   surface: text('surface').notNull().default('generic'),
+  /** 0026: entry toggle — disabled providers hide from pickers but keep config. */
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  /** 0026: manual ordering; first enabled provider is the default entry. */
+  sortOrder: integer('sort_order').notNull().default(0),
   ...tsColumns(),
 });
 export type ProviderRow = typeof provider.$inferSelect;
@@ -33,6 +37,10 @@ export const model = sqliteTable('model', {
   capabilitiesJson: text('capabilities_json').notNull().default('[]'),
   limitsJson: text('limits_json'),
   capabilitiesConfirmed: integer('capabilities_confirmed', { mode: 'boolean' }).notNull().default(false),
+  /** 0026: priority chain inside a provider — 0 is the primary model. */
+  priority: integer('priority').notNull().default(0),
+  /** 0026: optional pinned credential (relay-station key groups expose different models). */
+  credentialRefId: text('credential_ref_id'),
   createdAt: text('created_at').notNull(),
 });
 export type ModelRow = typeof model.$inferSelect;

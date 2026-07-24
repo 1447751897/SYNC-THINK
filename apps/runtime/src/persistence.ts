@@ -22,6 +22,7 @@ import {
   SqliteArtifactStore,
   SqliteProductionExecutionStore,
   SqliteUnitOfWork,
+  SqliteAppSettingStore,
 } from '@sync-think/storage';
 import {
   SecureStore,
@@ -34,7 +35,7 @@ import { Runtime, type RuntimeOptions } from './runtime.js';
 import { createProductionStepExecutor } from './orchestration/production-step-executor.js';
 
 export interface OpenPersistentRuntimeOptions
-  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'globalAgentStore' | 'teamStore' | 'conversationStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'unitOfWork' | 'secureStore'> {
+  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'globalAgentStore' | 'teamStore' | 'conversationStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'unitOfWork' | 'secureStore' | 'appSettingStore' | 'queryUsageSummary'> {
   dbPath: string;
   secureStoreBackend?: SecureStoreBackend;
   secureStoreKeyPath?: string;
@@ -121,6 +122,47 @@ export async function openPersistentRuntime(
     const orchestrationStore = new SqliteOrchestrationStore(connection.raw);
     const artifactStore = new SqliteArtifactStore(connection.raw);
     const productionExecutionStore = new SqliteProductionExecutionStore(connection.raw);
+    const appSettingStore = new SqliteAppSettingStore(connection.raw);
+    // 0026: aggregate provider.usage events (max tokens per packet, summed per model).
+    const queryUsageSummary = (sinceIso?: string) => {
+      const rows = connection.raw
+        .prepare(
+          `WITH per_packet AS (
+             SELECT COALESCE(json_extract(payload_json, '$.packetId'), id) AS packet_id,
+                    json_extract(payload_json, '$.modelId') AS model_id,
+                    json_extract(payload_json, '$.run.providerId') AS provider_id,
+                    MAX(COALESCE(json_extract(payload_json, '$.tokensIn'), 0)) AS tokens_in,
+                    MAX(COALESCE(json_extract(payload_json, '$.tokensOut'), 0)) AS tokens_out,
+                    MAX(occurred_at) AS last_used_at
+             FROM event
+             WHERE type = 'provider.usage' AND occurred_at >= COALESCE(?, '')
+             GROUP BY packet_id, model_id, provider_id
+           )
+           SELECT model_id, provider_id, COUNT(*) AS requests,
+                  SUM(tokens_in) AS tokens_in, SUM(tokens_out) AS tokens_out,
+                  MAX(last_used_at) AS last_used_at
+           FROM per_packet
+           WHERE model_id IS NOT NULL
+           GROUP BY model_id, provider_id
+           ORDER BY tokens_out DESC`,
+        )
+        .all(sinceIso ?? null) as Array<{
+        model_id: string;
+        provider_id: string | null;
+        requests: number;
+        tokens_in: number;
+        tokens_out: number;
+        last_used_at: string | null;
+      }>;
+      return rows.map((row) => ({
+        modelId: row.model_id,
+        providerId: row.provider_id ?? undefined,
+        requests: row.requests,
+        tokensIn: row.tokens_in,
+        tokensOut: row.tokens_out,
+        lastUsedAt: row.last_used_at ?? undefined,
+      }));
+    };
     unitOfWork.run(() => workspaceStore.reconcileTaskVersionsFromMessageEvents());
     const stepExecutor =
       runtimeOptions.stepExecutor ??
@@ -155,6 +197,8 @@ export async function openPersistentRuntime(
       unitOfWork,
       secureStore,
       stepExecutor,
+      appSettingStore,
+      queryUsageSummary,
     });
   } catch (error) {
     connection.raw.close();

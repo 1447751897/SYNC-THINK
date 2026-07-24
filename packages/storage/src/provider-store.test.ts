@@ -339,6 +339,12 @@ describe('SqliteProviderStore', () => {
         storeHandle: 'HANDLE-OLD-OPAQUE-001',
       });
 
+      const [existingModel] = store.upsertModels({
+        providerId: created.provider.id,
+        protocol: 'openai-chat',
+        models: [{ providerModelId: 'editable-model', displayName: 'Editable Model' }],
+      });
+
       const updated = store.updateProvider({
         providerId: created.provider.id,
         name: 'Editable Gateway v2',
@@ -352,6 +358,7 @@ describe('SqliteProviderStore', () => {
       expect(updated.provider.name).toBe('Editable Gateway v2');
       expect(updated.provider.baseUrl).toBe('https://edit.example/v2');
       expect(updated.provider.protocol).toBe('openai-responses');
+      expect(store.getModel(existingModel.id)?.protocol).toBe('openai-responses');
       expect(updated.provider.supportsDiscovery).toBe(false);
       expect(updated.previousStoreHandle).toBe('HANDLE-OLD-OPAQUE-001');
       expect(updated.credentialRef?.label).toBe('rotated');

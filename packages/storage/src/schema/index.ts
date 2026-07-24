@@ -17,4 +17,6 @@ export * from './production-execution.js';
 export * from './agent.js';
 export * from './team.js';
 export * from './conversation.js';
+// 0026: app-level KV settings (vision fallback, plan & act, …).
+export * from './app-setting.js';
 

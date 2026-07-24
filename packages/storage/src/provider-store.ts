@@ -40,6 +40,10 @@ export interface ProviderRecord {
   protocol: ProtocolFamily;
   /** CC Switch-style surface for hierarchical model picking. */
   surface: ProviderSurface;
+  /** 0026: entry toggle — disabled entries hide from pickers but keep config. */
+  enabled: boolean;
+  /** 0026: manual ordering; first enabled provider is the default entry. */
+  sortOrder: number;
   importedFrom?: string;
   createdAt: string;
   updatedAt: string;
@@ -71,6 +75,10 @@ export interface ModelRecord {
   capabilities: CapabilityTag[];
   limitsJson?: string;
   capabilitiesConfirmed: boolean;
+  /** 0026: priority chain inside a provider — 0 is the primary model. */
+  priority: number;
+  /** 0026: optional pinned credential ref for this model (relay-station groups). */
+  credentialRefId?: CredentialRefId;
   createdAt: string;
 }
 
@@ -111,6 +119,8 @@ export interface UpdateProviderInput {
   protocol?: ProtocolFamily;
   surface?: ProviderSurface;
   supportsDiscovery?: boolean;
+  /** 0026: toggle the entry on/off (disabled hides from pickers). */
+  enabled?: boolean;
   credentialLabel?: string;
   /** Optional new secure-store handle when rotating the secret. */
   storeHandle?: string;
@@ -131,6 +141,8 @@ interface ProviderRow {
   supports_discovery: number;
   protocol: string;
   surface: string | null;
+  enabled: number;
+  sort_order: number;
   imported_from: string | null;
   created_at: string;
   updated_at: string;
@@ -162,6 +174,8 @@ interface ModelRow {
   capabilities_json: string;
   limits_json: string | null;
   capabilities_confirmed: number;
+  priority: number;
+  credential_ref_id: string | null;
   created_at: string;
 }
 
@@ -200,10 +214,13 @@ export class SqliteProviderStore {
     const surface = normalizeProviderSurface(input.surface, 'generic');
 
     const tx = this.raw.transaction(() => {
+      const maxOrder = (this.raw
+        .prepare(`SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM provider`)
+        .get() as { max_order: number }).max_order;
       this.raw
         .prepare(
-          `INSERT INTO provider (id, name, base_url, supports_discovery, protocol, surface, imported_from, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO provider (id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, imported_from, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
         )
         .run(
           providerId,
@@ -212,6 +229,7 @@ export class SqliteProviderStore {
           supportsDiscovery ? 1 : 0,
           input.protocol,
           surface,
+          maxOrder + 1,
           input.importedFrom ?? null,
           now,
           now,
@@ -241,6 +259,8 @@ export class SqliteProviderStore {
         supportsDiscovery,
         protocol: input.protocol,
         surface,
+        enabled: true,
+        sortOrder: this.getProvider(providerId)?.sortOrder ?? 0,
         importedFrom: input.importedFrom,
         createdAt: now,
         updatedAt: now,
@@ -267,9 +287,9 @@ export class SqliteProviderStore {
   listProviders(): ProviderCatalogEntry[] {
     const providers = this.raw
       .prepare(
-        `SELECT id, name, base_url, supports_discovery, protocol, surface, imported_from, created_at, updated_at
+        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, imported_from, created_at, updated_at
          FROM provider
-         ORDER BY created_at ASC, id ASC`,
+         ORDER BY sort_order ASC, created_at ASC, id ASC`,
       )
       .all() as ProviderRow[];
 
@@ -318,7 +338,7 @@ export class SqliteProviderStore {
   getProvider(providerId: ProviderId): ProviderRecord | undefined {
     const row = this.raw
       .prepare(
-        `SELECT id, name, base_url, supports_discovery, protocol, surface, imported_from, created_at, updated_at
+        `SELECT id, name, base_url, supports_discovery, protocol, surface, enabled, sort_order, imported_from, created_at, updated_at
          FROM provider WHERE id = ?`,
       )
       .get(providerId) as ProviderRow | undefined;
@@ -356,7 +376,7 @@ export class SqliteProviderStore {
     const row = this.raw
       .prepare(
         `SELECT id, provider_id, provider_model_id, display_name, protocol, capabilities_json,
-                limits_json, capabilities_confirmed, created_at
+                limits_json, capabilities_confirmed, priority, credential_ref_id, created_at
          FROM model WHERE id = ?`,
       )
       .get(modelId) as ModelRow | undefined;
@@ -370,7 +390,7 @@ export class SqliteProviderStore {
     const row = this.raw
       .prepare(
         `SELECT id, provider_id, provider_model_id, display_name, protocol, capabilities_json,
-                limits_json, capabilities_confirmed, created_at
+                limits_json, capabilities_confirmed, priority, credential_ref_id, created_at
          FROM model WHERE provider_id = ? AND provider_model_id = ?`,
       )
       .get(providerId, providerModelId) as ModelRow | undefined;
@@ -486,7 +506,7 @@ export class SqliteProviderStore {
     const rows = this.raw
       .prepare(
         `SELECT id, provider_id, provider_model_id, display_name, protocol, capabilities_json,
-                limits_json, capabilities_confirmed, created_at
+                limits_json, capabilities_confirmed, priority, credential_ref_id, created_at
          FROM model
          ORDER BY created_at ASC, provider_model_id ASC`,
       )
@@ -498,10 +518,10 @@ export class SqliteProviderStore {
     const rows = this.raw
       .prepare(
         `SELECT id, provider_id, provider_model_id, display_name, protocol, capabilities_json,
-                limits_json, capabilities_confirmed, created_at
+                limits_json, capabilities_confirmed, priority, credential_ref_id, created_at
          FROM model
          WHERE provider_id = ?
-         ORDER BY created_at ASC, provider_model_id ASC`,
+         ORDER BY priority ASC, created_at ASC, provider_model_id ASC`,
       )
       .all(providerId) as ModelRow[];
     return rows.map(mapModel);
@@ -519,6 +539,10 @@ export class SqliteProviderStore {
     const results: ModelRecord[] = [];
 
     const tx = this.raw.transaction(() => {
+      let nextPriority =
+        ((this.raw
+          .prepare(`SELECT COALESCE(MAX(priority), -1) AS max_priority FROM model WHERE provider_id = ?`)
+          .get(input.providerId) as { max_priority: number }).max_priority) + 1;
       for (const model of input.models) {
         const providerModelId = model.providerModelId.trim();
         if (!providerModelId) continue;
@@ -549,19 +573,21 @@ export class SqliteProviderStore {
           const row = this.raw
             .prepare(
               `SELECT id, provider_id, provider_model_id, display_name, protocol, capabilities_json,
-                      limits_json, capabilities_confirmed, created_at
+                      limits_json, capabilities_confirmed, priority, credential_ref_id, created_at
                FROM model WHERE id = ?`,
             )
             .get(existing.id) as ModelRow;
           results.push(mapModel(row));
         } else {
           const id = ulid() as ModelId;
+          const priority = nextPriority;
+          nextPriority += 1;
           this.raw
             .prepare(
               `INSERT INTO model (
                  id, provider_id, provider_model_id, display_name, protocol,
-                 capabilities_json, limits_json, capabilities_confirmed, created_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                 capabilities_json, limits_json, capabilities_confirmed, priority, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             )
             .run(
               id,
@@ -572,6 +598,7 @@ export class SqliteProviderStore {
               JSON.stringify(capabilities),
               model.limitsJson ?? null,
               confirmed ? 1 : 0,
+              priority,
               now,
             );
           results.push({
@@ -583,6 +610,8 @@ export class SqliteProviderStore {
             capabilities,
             limitsJson: model.limitsJson,
             capabilitiesConfirmed: confirmed,
+            priority,
+            credentialRefId: undefined,
             createdAt: now,
           });
         }
@@ -640,7 +669,7 @@ export class SqliteProviderStore {
     const row = this.raw
       .prepare(
         `SELECT id, provider_id, provider_model_id, display_name, protocol, capabilities_json,
-                limits_json, capabilities_confirmed, created_at
+                limits_json, capabilities_confirmed, priority, credential_ref_id, created_at
          FROM model WHERE id = ?`,
       )
       .get(modelId) as ModelRow;
@@ -682,6 +711,10 @@ export class SqliteProviderStore {
     if (input.surface !== undefined) {
       surface = normalizeProviderSurface(input.surface, existing.surface);
     }
+    let enabled = existing.enabled;
+    if (input.enabled !== undefined) {
+      enabled = input.enabled;
+    }
 
     const primary = this.getPrimaryCredentialRef(providerId);
     let previousStoreHandle: string | undefined;
@@ -691,7 +724,7 @@ export class SqliteProviderStore {
       this.raw
         .prepare(
           `UPDATE provider
-           SET name = ?, base_url = ?, supports_discovery = ?, protocol = ?, surface = ?, updated_at = ?
+           SET name = ?, base_url = ?, supports_discovery = ?, protocol = ?, surface = ?, enabled = ?, updated_at = ?
            WHERE id = ?`,
         )
         .run(
@@ -700,9 +733,17 @@ export class SqliteProviderStore {
           supportsDiscovery ? 1 : 0,
           protocol,
           surface,
+          enabled ? 1 : 0,
           now,
           providerId,
         );
+
+      // A provider's API format applies to its whole model source. Runtime routes
+      // live calls by model.protocol, so keep existing catalog rows in sync when
+      // the user switches Chat Completions / Responses / Anthropic formats.
+      if (input.protocol !== undefined && protocol !== existing.protocol) {
+        this.raw.prepare(`UPDATE model SET protocol = ? WHERE provider_id = ?`).run(protocol, providerId);
+      }
 
       if (primary && (input.storeHandle !== undefined || input.credentialLabel !== undefined)) {
         const nextHandle =
@@ -753,6 +794,108 @@ export class SqliteProviderStore {
         : undefined,
     };
   }
+
+  /**
+   * 0026: persist a manual provider ordering (drag & drop; first enabled entry
+   * is the default). Ids not present keep their relative order after the given ones.
+   */
+  reorderProviders(orderedProviderIds: Array<ProviderId | string>, now?: string): void {
+    const ids = orderedProviderIds.map((id) => String(id ?? '').trim()).filter(Boolean);
+    if (ids.length === 0) return;
+    const ts = now ?? new Date().toISOString();
+    const tx = this.raw.transaction(() => {
+      const stmt = this.raw.prepare(
+        `UPDATE provider SET sort_order = ?, updated_at = ? WHERE id = ?`,
+      );
+      ids.forEach((id, index) => {
+        stmt.run(index, ts, id);
+      });
+      // Push providers missing from the list after the explicit ones, keeping order.
+      const rest = this.raw
+        .prepare(
+          `SELECT id FROM provider WHERE id NOT IN (${ids.map(() => '?').join(',')})
+           ORDER BY sort_order ASC, created_at ASC, id ASC`,
+        )
+        .all(...ids) as Array<{ id: string }>;
+      rest.forEach((row, index) => {
+        stmt.run(ids.length + index, ts, row.id);
+      });
+    });
+    tx();
+  }
+
+  /**
+   * 0026: persist the model priority chain of one provider (0 = primary), with
+   * an optional pinned credential per model (relay-station key groups).
+   */
+  setModelPriorities(input: {
+    providerId: ProviderId | string;
+    entries: Array<{ modelId: ModelId | string; credentialRefId?: CredentialRefId | string | null }>;
+  }): ModelRecord[] {
+    const providerId = String(input.providerId ?? '').trim();
+    if (!providerId) throw new Error('Provider id must not be empty');
+    if (!this.getProvider(providerId as ProviderId)) {
+      throw new Error(`Provider not found: ${providerId}`);
+    }
+    const tx = this.raw.transaction(() => {
+      const stmt = this.raw.prepare(
+        `UPDATE model SET priority = ?, credential_ref_id = ? WHERE id = ? AND provider_id = ?`,
+      );
+      input.entries.forEach((entry, index) => {
+        const modelId = String(entry.modelId ?? '').trim();
+        if (!modelId) return;
+        const credentialRefId =
+          entry.credentialRefId === undefined
+            ? (this.getModel(modelId)?.credentialRefId ?? null)
+            : entry.credentialRefId
+              ? String(entry.credentialRefId).trim() || null
+              : null;
+        stmt.run(index, credentialRefId, modelId, providerId);
+      });
+    });
+    tx();
+    return this.listModels(providerId as ProviderId);
+  }
+
+  /** 0026: remove a model from a provider's priority chain. */
+  removeModel(modelId: ModelId | string): boolean {
+    const id = String(modelId ?? '').trim();
+    if (!id) return false;
+    const result = this.raw.prepare(`DELETE FROM model WHERE id = ?`).run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * 0026: remove a credential ref (multi-key management). Refuses to delete the
+   * last remaining credential of a provider. Returns the removed storeHandle so
+   * the caller can purge the secret from the secure store.
+   */
+  removeCredentialRef(credentialRefId: CredentialRefId | string): { storeHandle: string } {
+    const id = String(credentialRefId ?? '').trim();
+    if (!id) throw new Error('Credential ref id must not be empty');
+    const ref = this.getCredentialRef(id);
+    if (!ref) throw new Error(`Credential ref not found: ${id}`);
+    const providerId = this.getProviderIdForCredentialGroup(ref.credentialGroupId);
+    if (providerId) {
+      const count = (this.raw
+        .prepare(
+          `SELECT COUNT(*) AS n FROM credential_ref cr
+           INNER JOIN credential_group cg ON cg.id = cr.credential_group_id
+           WHERE cg.provider_id = ?`,
+        )
+        .get(providerId) as { n: number }).n;
+      if (count <= 1) {
+        throw new Error('Cannot remove the last credential of a provider');
+      }
+    }
+    const tx = this.raw.transaction(() => {
+      // Unpin models that referenced this credential.
+      this.raw.prepare(`UPDATE model SET credential_ref_id = NULL WHERE credential_ref_id = ?`).run(id);
+      this.raw.prepare(`DELETE FROM credential_ref WHERE id = ?`).run(id);
+    });
+    tx();
+    return { storeHandle: ref.storeHandle };
+  }
 }
 
 function canonicalizeBaseUrl(raw: string): string {
@@ -786,6 +929,8 @@ function mapProvider(row: ProviderRow): ProviderRecord {
     supportsDiscovery: row.supports_discovery === 1,
     protocol,
     surface: normalizeProviderSurface(row.surface, 'generic'),
+    enabled: row.enabled !== 0,
+    sortOrder: typeof row.sort_order === 'number' ? row.sort_order : 0,
     importedFrom: row.imported_from ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -820,6 +965,8 @@ function mapModel(row: ModelRow): ModelRecord {
     capabilities,
     limitsJson: row.limits_json ?? undefined,
     capabilitiesConfirmed: row.capabilities_confirmed === 1,
+    priority: typeof row.priority === 'number' ? row.priority : 0,
+    credentialRefId: (row.credential_ref_id ?? undefined) as CredentialRefId | undefined,
     createdAt: row.created_at,
   };
 }
