@@ -4,10 +4,19 @@ import { mergeEventHistory } from '../event-history.js';
 
 export type StreamState = 'idle' | 'streaming' | 'completed' | 'failed' | 'cancelled' | 'paused';
 
+export interface ConversationImage {
+  id: string;
+  name: string;
+  mimeType?: string;
+  storageRef: string;
+}
+
 export interface ConversationMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   text: string;
+  /** Durable image attachments resolved by the Desktop custom protocol. */
+  images?: ConversationImage[];
   /** Extended thinking / reasoning channel (never mixed into text). */
   reasoningText?: string;
   streaming?: boolean;
@@ -130,14 +139,20 @@ export function projectConversation(
       }
       if (event.payload.role === 'user' && typeof event.payload.text === 'string') {
         messages.push({
-          id: event.id,
+          id:
+            typeof event.payload.messageId === 'string'
+              ? event.payload.messageId
+              : (event.messageId ?? event.id),
           role: 'user',
           text: event.payload.text,
           occurredAt: event.occurredAt,
         });
       } else if (event.payload.role === 'assistant' && typeof event.payload.text === 'string') {
         messages.push({
-          id: event.id,
+          id:
+            typeof event.payload.messageId === 'string'
+              ? event.payload.messageId
+              : (event.messageId ?? event.id),
           role: 'assistant',
           text: event.payload.text,
           runId: event.runId,
@@ -145,11 +160,37 @@ export function projectConversation(
         });
       } else if (event.payload.role === 'system' && typeof event.payload.text === 'string') {
         messages.push({
-          id: event.id,
+          id:
+            typeof event.payload.messageId === 'string'
+              ? event.payload.messageId
+              : (event.messageId ?? event.id),
           role: 'system',
           text: event.payload.text,
           occurredAt: event.occurredAt,
         });
+      }
+      continue;
+    }
+
+    if (event.type === 'message.images-attached') {
+      const messageId =
+        typeof event.payload.messageId === 'string' ? event.payload.messageId : event.messageId;
+      const images = Array.isArray(event.payload.images)
+        ? event.payload.images.filter((image): image is ConversationImage =>
+            Boolean(
+              image &&
+              typeof image === 'object' &&
+              typeof image.id === 'string' &&
+              typeof image.name === 'string' &&
+              typeof image.storageRef === 'string',
+            ),
+          )
+        : [];
+      if (messageId && images.length > 0) {
+        const targetIndex = messages.findIndex((message) => message.id === messageId);
+        if (targetIndex >= 0) {
+          messages[targetIndex] = { ...messages[targetIndex]!, images };
+        }
       }
       continue;
     }

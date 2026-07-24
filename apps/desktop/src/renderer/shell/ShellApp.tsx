@@ -3,6 +3,8 @@
 // against the runtime bridge. Chat stage renders the conversation head; the
 // message stream is wired in the next slice.
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
+import { X } from 'lucide-react';
 import type {
   Conversation,
   ConversationTrack,
@@ -63,6 +65,8 @@ export function ShellApp() {
   const [eventHistory, setEventHistory] = useState<readonly Event[]>([]);
   /** Which track's new-conversation picker is open; null = closed. */
   const [pickerTrack, setPickerTrack] = useState<ConversationTrack | null>(null);
+  /** Settings modal open state (overlay, not page replacement). */
+  const [settingsOpen, setSettingsOpen] = useState(false);
   /** Active project tab; undefined = 全部. */
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | undefined>(undefined);
   /** Cold-start status for the sidebar (connect + first listConversations). */
@@ -186,7 +190,11 @@ export function ShellApp() {
     if (!api) return;
     const picked = await api.pickFolder();
     if (picked.canceled || !picked.path) return;
-    const name = picked.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? picked.path;
+    const name =
+      picked.path
+        .replace(/[\\/]+$/, '')
+        .split(/[\\/]/)
+        .pop() ?? picked.path;
     const created = await api.createWorkspace({ name, folderPath: picked.path });
     await refresh();
     setActiveWorkspaceId(created.workspaceId);
@@ -197,9 +205,7 @@ export function ShellApp() {
       const api = bridge();
       if (!api) return;
       await api.setConversationPinned({
-        conversationId: id as Parameters<
-          typeof api.setConversationPinned
-        >[0]['conversationId'],
+        conversationId: id as Parameters<typeof api.setConversationPinned>[0]['conversationId'],
         pinned,
       });
       await refresh();
@@ -230,12 +236,12 @@ export function ShellApp() {
       const api = bridge();
       if (!api) return;
       await api.setConversationArchived({
-        conversationId: id as Parameters<
-          typeof api.setConversationArchived
-        >[0]['conversationId'],
+        conversationId: id as Parameters<typeof api.setConversationArchived>[0]['conversationId'],
         archived: true,
       });
-      setNav((n) => (n.selectedConversationId === id ? { ...n, selectedConversationId: undefined } : n));
+      setNav((n) =>
+        n.selectedConversationId === id ? { ...n, selectedConversationId: undefined } : n,
+      );
       await refresh();
     },
     [refresh],
@@ -246,9 +252,7 @@ export function ShellApp() {
       const api = bridge();
       if (!api) return;
       await api.setConversationArchived({
-        conversationId: id as Parameters<
-          typeof api.setConversationArchived
-        >[0]['conversationId'],
+        conversationId: id as Parameters<typeof api.setConversationArchived>[0]['conversationId'],
         archived: false,
       });
       await refresh();
@@ -264,7 +268,9 @@ export function ShellApp() {
       await api.deleteConversation({
         conversationId: id as Parameters<typeof api.deleteConversation>[0]['conversationId'],
       });
-      setNav((n) => (n.selectedConversationId === id ? { ...n, selectedConversationId: undefined } : n));
+      setNav((n) =>
+        n.selectedConversationId === id ? { ...n, selectedConversationId: undefined } : n,
+      );
       await refresh();
     },
     [refresh],
@@ -288,13 +294,20 @@ export function ShellApp() {
       <div className="flex min-h-0 flex-1">
         <Sidebar
           nav={nav}
+          settingsOpen={settingsOpen}
           conversations={visibleConversations}
           agents={data.agents}
           teams={data.teams}
           modelNames={data.modelNames}
           bootState={bootState}
           bootError={bootError}
-          onSelectStage={(stage) => setNav((n) => selectStage(n, stage))}
+          onSelectStage={(stage) => {
+            if (stage === 'settings') {
+              setSettingsOpen(true);
+            } else {
+              setNav((n) => selectStage(n, stage));
+            }
+          }}
           onToggleTrack={(track) => setNav((n) => toggleTrack(n, track))}
           onToggleSidebar={() => setNav((n) => toggleSidebar(n))}
           onOpenConversation={(id) => setNav((n) => openConversation(n, id))}
@@ -355,12 +368,19 @@ export function ShellApp() {
               }}
             />
           ) : nav.stage === 'settings' ? (
-            <SettingsPage />
+            <StagePlaceholder stage={nav.stage} />
           ) : (
             <StagePlaceholder stage={nav.stage} />
           )}
         </main>
       </div>
+
+      <Dialog.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          onCatalogChanged={() => void refresh()}
+        />
+      </Dialog.Root>
     </div>
   );
 }
@@ -408,8 +428,16 @@ function EmptyTalk() {
         ))}
       </div>
 
-      <p className="m-0 text-[11.5px] text-text-faint" style={{ animation: 'shell-fade-up 0.6s 0.7s ease both', opacity: 0, animationFillMode: 'both' }}>
-        在左侧点击 <span className="font-medium text-text-secondary">+</span> 新建对话，或直接选择一个意图开始
+      <p
+        className="m-0 text-[11.5px] text-text-faint"
+        style={{
+          animation: 'shell-fade-up 0.6s 0.7s ease both',
+          opacity: 0,
+          animationFillMode: 'both',
+        }}
+      >
+        在左侧点击 <span className="font-medium text-text-secondary">+</span>{' '}
+        新建对话，或直接选择一个意图开始
       </p>
     </div>
   );
@@ -420,5 +448,28 @@ function StagePlaceholder({ stage }: { stage: ShellNavState['stage'] }) {
     <div className="flex flex-1 items-center justify-center text-text-faint">
       <div className="text-[13px]">{STAGE_LABELS[stage]} · 建设中</div>
     </div>
+  );
+}
+
+// ─── Settings Modal ──────────────────────────────────────────────────────────
+
+function SettingsModal({
+  onClose,
+  onCatalogChanged,
+}: {
+  onClose(): void;
+  onCatalogChanged(): void;
+}) {
+  return (
+    <Dialog.Portal>
+      <Dialog.Overlay className="settings-modal-backdrop" />
+      <Dialog.Content className="settings-modal-content" aria-describedby={undefined}>
+        <Dialog.Title className="sr-only">设置</Dialog.Title>
+        <Dialog.Close className="settings-modal-close" aria-label="关闭设置">
+          <X size={17} aria-hidden="true" />
+        </Dialog.Close>
+        <SettingsPage onDone={onClose} onCatalogChanged={onCatalogChanged} />
+      </Dialog.Content>
+    </Dialog.Portal>
   );
 }

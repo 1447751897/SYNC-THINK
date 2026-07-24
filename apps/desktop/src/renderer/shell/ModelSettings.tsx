@@ -5,18 +5,25 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  BarChart3,
   Bot,
+  GripVertical,
+  Image,
   KeyRound,
   Loader2,
+  Mic2,
+  Pencil,
   Plus,
   RefreshCw,
   Server,
   Settings2,
   Trash2,
+  Video,
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
 import type {
+  ModelPricingEntry,
   ProviderModelSummary,
   ProviderSummary,
   UsageSummaryResponse,
@@ -24,11 +31,7 @@ import type {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type ProtocolFamily =
-  | 'openai-chat'
-  | 'openai-responses'
-  | 'openai-images'
-  | 'anthropic-messages';
+type ProtocolFamily = 'openai-chat' | 'openai-responses' | 'openai-images' | 'anthropic-messages';
 
 interface VisionFallbackSetting {
   enabled: boolean;
@@ -40,6 +43,20 @@ interface PlanActSetting {
   planModelId: string | null;
   actModelId: string | null;
 }
+
+type PricingDraft = ModelPricingEntry;
+
+const EMPTY_PRICING_DRAFT: PricingDraft = {
+  modelId: '',
+  displayName: '',
+  currency: 'USD',
+  inputPerMillion: 0,
+  outputPerMillion: 0,
+  cacheReadPerMillion: 0,
+  cacheWritePerMillion: 0,
+};
+
+const MODEL_PRICING_SETTING_KEY = 'model-pricing';
 
 interface CreateDraft {
   name: string;
@@ -82,8 +99,9 @@ function protocolLabel(protocol: string): string {
 
 function formatContext(tokens?: number): string | null {
   if (!tokens || tokens <= 0) return null;
-  if (tokens >= 1000) return `${Math.round(tokens / 1000)}k 上下文`;
-  return `${tokens} 上下文`;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}m`;
+  if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`;
+  return String(tokens);
 }
 
 function maskKeyLabel(label: string, hasSecret: boolean): string {
@@ -100,7 +118,8 @@ function parseVisionFallback(raw: unknown): VisionFallbackSetting {
 }
 
 function parsePlanAct(raw: unknown): PlanActSetting {
-  if (!raw || typeof raw !== 'object') return { enabled: false, planModelId: null, actModelId: null };
+  if (!raw || typeof raw !== 'object')
+    return { enabled: false, planModelId: null, actModelId: null };
   const o = raw as Record<string, unknown>;
   return {
     enabled: o.enabled === true,
@@ -111,7 +130,11 @@ function parsePlanAct(raw: unknown): PlanActSetting {
 
 // ─── Root ────────────────────────────────────────────────────────────────────
 
-export function ModelSettings() {
+export function ModelSettings({
+  onCatalogChanged,
+}: {
+  onCatalogChanged?: () => void;
+} = {}) {
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -183,19 +206,23 @@ export function ModelSettings() {
     void load();
   }, [load]);
 
-  const withBusy = useCallback(async (label: string, fn: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
-    setStatus(label);
-    try {
-      await fn();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '操作失败');
-      setStatus(null);
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  const withBusy = useCallback(
+    async (label: string, fn: () => Promise<void>) => {
+      setBusy(true);
+      setError(null);
+      setStatus(label);
+      try {
+        await fn();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : '操作失败');
+        setStatus(null);
+      } finally {
+        setBusy(false);
+        onCatalogChanged?.();
+      }
+    },
+    [onCatalogChanged],
+  );
 
   const handleCreate = () =>
     void withBusy('正在创建供应商…', async () => {
@@ -206,20 +233,39 @@ export function ModelSettings() {
       const apiKey = createDraft.apiKey.trim();
       if (!name) throw new Error('请填写供应商名称');
       if (!baseUrl || baseUrl === 'https://') throw new Error('请填写 Base URL');
-      if (!apiKey) throw new Error('请填写 API Key');
+      if (!apiKey) throw new Error('请填写 API Key，并先复制到剪贴板');
+      await navigator.clipboard.writeText(apiKey);
       const result = await api.createProvider({
         name,
         baseUrl,
         protocol: createDraft.protocol,
         supportsDiscovery: createDraft.supportsDiscovery,
-        apiKey,
       });
-      setStatus(
-        `已创建 ${result.provider.name} · 发现 ${result.discoveredModelCount} 个模型`,
-      );
+      setStatus(`已创建 ${result.provider.name} · 发现 ${result.discoveredModelCount} 个模型`);
       setCreateDraft(EMPTY_CREATE);
       setShowCreate(false);
       setSelectedId(result.provider.providerId);
+      await load();
+    });
+
+  const handleMoveProvider = (providerId: string, direction: -1 | 1) =>
+    void withBusy('正在调整默认模型顺序…', async () => {
+      const api = bridge();
+      if (!api?.reorderProviders) throw new Error('Runtime 未连接');
+      const ordered = providers.filter((provider) => provider.enabled);
+      const index = ordered.findIndex((provider) => provider.providerId === providerId);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= ordered.length) return;
+      const nextEnabled = [...ordered];
+      const [moved] = nextEnabled.splice(index, 1);
+      nextEnabled.splice(target, 0, moved);
+      const disabled = providers.filter((provider) => !provider.enabled);
+      await api.reorderProviders({
+        orderedProviderIds: [...nextEnabled, ...disabled].map(
+          (provider) => provider.providerId as never,
+        ),
+      });
+      setStatus('启用模型顺序已更新');
       await load();
     });
 
@@ -229,22 +275,6 @@ export function ModelSettings() {
       if (!api?.updateProvider) throw new Error('Runtime 未连接');
       await api.updateProvider({ providerId: provider.providerId, enabled });
       setStatus(`${provider.name} 已${enabled ? '启用' : '停用'}`);
-      await load();
-    });
-
-  const handleMove = (providerId: string, direction: -1 | 1) =>
-    void withBusy('正在调整顺序…', async () => {
-      const api = bridge();
-      if (!api?.reorderProviders) throw new Error('Runtime 未连接');
-      const ids = providers.map((p) => String(p.providerId));
-      const idx = ids.indexOf(providerId);
-      const target = idx + direction;
-      if (idx < 0 || target < 0 || target >= ids.length) return;
-      const next = [...ids];
-      const [item] = next.splice(idx, 1);
-      next.splice(target, 0, item);
-      await api.reorderProviders({ orderedProviderIds: next });
-      setStatus('供应商顺序已更新');
       await load();
     });
 
@@ -258,7 +288,7 @@ export function ModelSettings() {
         baseUrl: string;
         protocol: ProtocolFamily;
         supportsDiscovery: boolean;
-        apiKey?: string;
+        rotateCredentialFromClipboard?: boolean;
       } = {
         providerId,
         name: draft.name.trim(),
@@ -266,7 +296,10 @@ export function ModelSettings() {
         protocol: draft.protocol,
         supportsDiscovery: draft.supportsDiscovery,
       };
-      if (draft.apiKey.trim()) payload.apiKey = draft.apiKey.trim();
+      if (draft.apiKey.trim()) {
+        await navigator.clipboard.writeText(draft.apiKey.trim());
+        payload.rotateCredentialFromClipboard = true;
+      }
       const result = await api.updateProvider(payload);
       setStatus(
         result.secretRotated
@@ -280,9 +313,9 @@ export function ModelSettings() {
     void withBusy('正在添加密钥…', async () => {
       const api = bridge();
       if (!api?.addProviderCredential) throw new Error('Runtime 未连接');
+      await navigator.clipboard.writeText(apiKey);
       await api.addProviderCredential({
-        providerId: providerId as never,
-        apiKey,
+        providerId,
         label: label?.trim() || undefined,
       });
       setStatus('密钥已写入安全存储');
@@ -385,9 +418,9 @@ export function ModelSettings() {
         providerId: provider.providerId as never,
         entries: ordered.map((m) => ({
           modelId: m.modelId as never,
-          credentialRefId: (
-            m.modelId === modelId ? credentialRefId : (m.credentialRefId ?? undefined)
-          ) as never,
+          credentialRefId: (m.modelId === modelId
+            ? credentialRefId
+            : (m.credentialRefId ?? undefined)) as never,
         })),
       });
       setStatus(credentialRefId ? '模型已绑定密钥' : '已清除模型密钥绑定');
@@ -412,6 +445,8 @@ export function ModelSettings() {
       setStatus('Plan & Act 已保存');
     });
 
+  const [modelTab, setModelTab] = useState<'text' | 'image' | 'video' | 'voice' | 'usage'>('text');
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center gap-2 text-[13px] text-text-faint">
@@ -420,195 +455,262 @@ export function ModelSettings() {
     );
   }
 
+  const enabledProviders = providers.filter((provider) => provider.enabled);
+  const disabledProviders = providers.filter((provider) => !provider.enabled);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {(error || status) && (
-        <div className="shrink-0 border-b border-border px-5 py-2">
-          {error ? (
-            <p className="text-[12.5px] text-error" role="alert">
-              {error}
-            </p>
-          ) : (
-            <p className="text-[12.5px] text-accent-text" role="status">
-              {status}
-            </p>
-          )}
+      <div className="model-settings-tabs" role="tablist" aria-label="模型类型">
+        {[
+          { id: 'text', label: '文本生成', icon: Bot },
+          { id: 'image', label: '图像生成', icon: Image },
+          { id: 'video', label: '视频生成', icon: Video },
+          { id: 'voice', label: '语音生成', icon: Mic2 },
+          { id: 'usage', label: '使用统计', icon: BarChart3 },
+        ].map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={modelTab === id}
+            className={modelTab === id ? 'is-active' : undefined}
+            onClick={() => setModelTab(id as typeof modelTab)}
+          >
+            <Icon size={13} aria-hidden="true" />
+            {label}
+          </button>
+        ))}
+        <span className="model-settings-guide">配置遇到问题？查看配置指南</span>
+      </div>
+
+      {modelTab === 'usage' ? (
+        <UsageSettings />
+      ) : modelTab !== 'text' ? (
+        <div className="model-settings-unavailable">
+          <p>
+            {modelTab === 'image' ? '图像生成' : modelTab === 'video' ? '视频生成' : '语音生成'}
+            模型配置尚未接入。
+          </p>
+          <span>入口按 NewMax 的模型设置结构保留。</span>
         </div>
-      )}
-
-      <div className="flex min-h-0 flex-1">
-        {/* Left: provider list */}
-        <aside className="flex w-[240px] shrink-0 flex-col border-r border-border bg-surface">
-          <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
-            <div>
-              <p className="text-[12px] font-medium text-text">模型源</p>
-              <p className="text-[11px] text-text-faint">
-                {providers.length} 个供应商 · {allModels.length} 个模型
-              </p>
+      ) : (
+        <>
+          {(error || status) && (
+            <div className="shrink-0 border-b border-border px-5 py-2">
+              {error ? (
+                <p className="text-[12.5px] text-error" role="alert">
+                  {error}
+                </p>
+              ) : (
+                <p className="text-[12.5px] text-accent-text" role="status">
+                  {status}
+                </p>
+              )}
             </div>
-            <button
-              type="button"
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-accent-text hover:bg-accent-soft disabled:opacity-50"
-              title="添加供应商"
-              disabled={busy}
-              onClick={() => {
-                setShowCreate(true);
-                setSelectedId(null);
-              }}
-            >
-              <Plus size={15} />
-            </button>
-          </div>
+          )}
 
-          <div className="flex-1 overflow-y-auto p-2">
-            {providers.length === 0 ? (
-              <p className="px-2 py-6 text-center text-[12px] text-text-faint">
-                尚未配置供应商
-                <br />
-                点击右上角 + 添加
-              </p>
-            ) : (
-              <ul className="space-y-1">
-                {providers.map((p, index) => {
-                  const active = p.providerId === selectedId && !showCreate;
-                  return (
-                    <li key={p.providerId}>
-                      <div
-                        className={clsx(
-                          'group flex items-center gap-1 rounded-lg px-1.5 py-1.5 transition-colors',
-                          active ? 'bg-accent-soft' : 'hover:bg-hover',
-                        )}
-                      >
-                        <button
-                          type="button"
-                          className="min-w-0 flex-1 text-left"
-                          onClick={() => {
-                            setShowCreate(false);
-                            setSelectedId(p.providerId);
-                          }}
+          <div className="flex min-h-0 flex-1">
+            <aside className="model-enabled-list">
+              <div className="model-enabled-list__header">
+                <div>
+                  <p>启用的模型</p>
+                  <span>拖拽排序，首位为默认</span>
+                </div>
+                <button
+                  type="button"
+                  title="添加模型"
+                  disabled={busy}
+                  onClick={() => {
+                    setShowCreate(true);
+                    setSelectedId(null);
+                  }}
+                >
+                  <Plus size={15} />
+                </button>
+              </div>
+
+              <div className="model-enabled-list__body">
+                {providers.length === 0 ? (
+                  <div className="model-settings-empty-list">
+                    <Server size={22} />
+                    <p>尚未配置模型</p>
+                    <span>点击右上角 + 添加</span>
+                  </div>
+                ) : (
+                  <ul>
+                    {enabledProviders.map((p, index) => {
+                      const active = p.providerId === selectedId && !showCreate;
+                      const primaryModel = [...p.models].sort((a, b) => a.priority - b.priority)[0];
+                      return (
+                        <li
+                          key={p.providerId}
+                          className={clsx('model-enabled-row', active && 'is-active')}
                         >
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={clsx(
-                                'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[12px] font-semibold',
-                                p.enabled
-                                  ? 'bg-accent-soft text-accent-text'
-                                  : 'bg-hover text-text-faint',
-                              )}
-                            >
+                          <GripVertical size={13} className="model-enabled-row__grip" />
+                          <button
+                            type="button"
+                            className="model-enabled-row__main"
+                            onClick={() => {
+                              setShowCreate(false);
+                              setSelectedId(p.providerId);
+                            }}
+                          >
+                            <span className="model-enabled-row__avatar">
                               {p.name[0]?.toUpperCase() ?? '?'}
                             </span>
-                            <div className="min-w-0">
-                              <p
-                                className={clsx(
-                                  'truncate text-[12.5px] font-medium',
-                                  active ? 'text-accent-text' : 'text-text',
-                                  !p.enabled && 'opacity-60',
-                                )}
-                              >
+                            <span className="model-enabled-row__copy">
+                              <span>
                                 {p.name}
-                              </p>
-                              <p className="truncate text-[11px] text-text-faint">
-                                {p.models.length} 模型 · {protocolLabel(p.protocol)}
-                                {!p.enabled ? ' · 已停用' : ''}
-                              </p>
-                            </div>
+                                {index === 0 ? <em>默认</em> : null}
+                              </span>
+                              <small>{primaryModel?.displayName ?? '未添加模型'}</small>
+                            </span>
+                          </button>
+                          <div className="model-enabled-row__order">
+                            <button
+                              type="button"
+                              title="上移"
+                              disabled={busy || index === 0}
+                              onClick={() => handleMoveProvider(p.providerId, -1)}
+                            >
+                              <ArrowUp size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              title="下移"
+                              disabled={busy || index === enabledProviders.length - 1}
+                              onClick={() => handleMoveProvider(p.providerId, 1)}
+                            >
+                              <ArrowDown size={10} />
+                            </button>
                           </div>
-                        </button>
-                        <div className="flex shrink-0 flex-col opacity-0 transition-opacity group-hover:opacity-100">
                           <button
                             type="button"
-                            className="rounded p-0.5 text-text-faint hover:bg-active hover:text-text disabled:opacity-30"
-                            title="上移"
-                            disabled={busy || index === 0}
-                            onClick={() => handleMove(p.providerId, -1)}
+                            role="switch"
+                            aria-checked
+                            title="停用"
+                            disabled={busy}
+                            className="model-enabled-row__toggle is-checked"
+                            onClick={() => handleToggleEnabled(p, false)}
                           >
-                            <ArrowUp size={11} />
+                            <span />
                           </button>
-                          <button
-                            type="button"
-                            className="rounded p-0.5 text-text-faint hover:bg-active hover:text-text disabled:opacity-30"
-                            title="下移"
-                            disabled={busy || index === providers.length - 1}
-                            onClick={() => handleMove(p.providerId, 1)}
-                          >
-                            <ArrowDown size={11} />
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={p.enabled}
-                          title={p.enabled ? '停用' : '启用'}
-                          disabled={busy}
-                          onClick={() => handleToggleEnabled(p, !p.enabled)}
-                          className={clsx(
-                            'relative ml-0.5 h-4 w-7 shrink-0 rounded-full transition-colors',
-                            p.enabled ? 'bg-accent' : 'bg-border-strong',
-                          )}
-                        >
-                          <span
-                            className={clsx(
-                              'absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform',
-                              p.enabled ? 'left-3.5' : 'left-0.5',
-                            )}
-                          />
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                <button
+                  type="button"
+                  className="model-enabled-list__add"
+                  disabled={busy}
+                  onClick={() => {
+                    setShowCreate(true);
+                    setSelectedId(null);
+                  }}
+                >
+                  <Plus size={13} /> 添加模型
+                </button>
+                {disabledProviders.length > 0 ? (
+                  <details className="model-disabled-list">
+                    <summary>已停用模型 {disabledProviders.length}</summary>
+                    <ul>
+                      {disabledProviders.map((provider) => {
+                        const primaryModel = [...provider.models].sort(
+                          (a, b) => a.priority - b.priority,
+                        )[0];
+                        return (
+                          <li key={provider.providerId} className="model-enabled-row is-disabled">
+                            <span className="model-enabled-row__avatar">
+                              {provider.name[0]?.toUpperCase() ?? '?'}
+                            </span>
+                            <button
+                              type="button"
+                              className="model-enabled-row__main"
+                              onClick={() => {
+                                setShowCreate(false);
+                                setSelectedId(provider.providerId);
+                              }}
+                            >
+                              <span className="model-enabled-row__copy">
+                                <span>{provider.name}</span>
+                                <small>{primaryModel?.displayName ?? '未添加模型'}</small>
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="model-disabled-list__enable"
+                              onClick={() => handleToggleEnabled(provider, true)}
+                            >
+                              启用
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </details>
+                ) : null}
+              </div>
+
+              <div className="model-enabled-list__secondary">
+                <button type="button" onClick={() => setModelTab('usage')}>
+                  使用统计
+                </button>
+                <button type="button" disabled>
+                  图片识别 Fallback
+                </button>
+                <button type="button" disabled>
+                  规划 & 执行模型
+                </button>
+              </div>
+            </aside>
+
+            {/* Right: detail / create / global */}
+            <div className="model-settings-detail">
+              {showCreate ? (
+                <CreateProviderForm
+                  draft={createDraft}
+                  busy={busy}
+                  onChange={setCreateDraft}
+                  onSubmit={handleCreate}
+                  onCancel={() => {
+                    setShowCreate(false);
+                    setCreateDraft(EMPTY_CREATE);
+                    if (providers[0]) setSelectedId(providers[0].providerId);
+                  }}
+                />
+              ) : selected ? (
+                <ProviderDetail
+                  provider={selected}
+                  busy={busy}
+                  onSaveEdit={handleSaveEdit}
+                  onAddCredential={handleAddCredential}
+                  onRemoveCredential={handleRemoveCredential}
+                  onDiscover={handleDiscover}
+                  onAddModel={handleAddModel}
+                  onRemoveModel={handleRemoveModel}
+                  onMoveModel={handleMoveModel}
+                  onPinCredential={handlePinCredential}
+                />
+              ) : (
+                <EmptyDetail onAdd={() => setShowCreate(true)} />
+              )}
+
+              <GlobalModelPrefs
+                allModels={allModels}
+                visionFallback={visionFallback}
+                planAct={planAct}
+                busy={busy}
+                onSaveVision={handleSaveVision}
+                onSavePlanAct={handleSavePlanAct}
+              />
+            </div>
           </div>
-        </aside>
-
-        {/* Right: detail / create / global */}
-        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-          {showCreate ? (
-            <CreateProviderForm
-              draft={createDraft}
-              busy={busy}
-              onChange={setCreateDraft}
-              onSubmit={handleCreate}
-              onCancel={() => {
-                setShowCreate(false);
-                setCreateDraft(EMPTY_CREATE);
-                if (providers[0]) setSelectedId(providers[0].providerId);
-              }}
-            />
-          ) : selected ? (
-            <ProviderDetail
-              provider={selected}
-              busy={busy}
-              onSaveEdit={handleSaveEdit}
-              onAddCredential={handleAddCredential}
-              onRemoveCredential={handleRemoveCredential}
-              onDiscover={handleDiscover}
-              onAddModel={handleAddModel}
-              onRemoveModel={handleRemoveModel}
-              onMoveModel={handleMoveModel}
-              onPinCredential={handlePinCredential}
-            />
-          ) : (
-            <EmptyDetail onAdd={() => setShowCreate(true)} />
-          )}
-
-          <GlobalModelPrefs
-            allModels={allModels}
-            visionFallback={visionFallback}
-            planAct={planAct}
-            busy={busy}
-            onSaveVision={handleSaveVision}
-            onSavePlanAct={handleSavePlanAct}
-          />
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }
-
-// ─── Create form ──────────────────────────────────────────────────────────────
 
 function CreateProviderForm({
   draft,
@@ -662,9 +764,7 @@ function CreateProviderForm({
             className="st-field-input"
             value={draft.protocol}
             disabled={busy}
-            onChange={(e) =>
-              onChange({ ...draft, protocol: e.target.value as ProtocolFamily })
-            }
+            onChange={(e) => onChange({ ...draft, protocol: e.target.value as ProtocolFamily })}
           >
             {PROTOCOL_OPTIONS.map((p) => (
               <option key={p.value} value={p.value}>
@@ -751,7 +851,7 @@ function ProviderDetail({
     credentialRefId: string | null,
   ) => void;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(true);
   const [draft, setDraft] = useState<EditDraft>(() => toEditDraft(provider));
   const [newKey, setNewKey] = useState('');
   const [newKeyLabel, setNewKeyLabel] = useState('');
@@ -759,7 +859,7 @@ function ProviderDetail({
   const [manualName, setManualName] = useState('');
 
   useEffect(() => {
-    setEditing(false);
+    setEditing(true);
     setDraft(toEditDraft(provider));
     setNewKey('');
     setNewKeyLabel('');
@@ -820,7 +920,7 @@ function ProviderDetail({
 
       {editing && (
         <div className="mb-5 grid max-w-[520px] gap-3 rounded-xl border border-border bg-elevated p-4">
-          <Field label="名称">
+          <Field label="供应商名称">
             <input
               className="st-field-input"
               value={draft.name}
@@ -828,7 +928,7 @@ function ProviderDetail({
               onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             />
           </Field>
-          <Field label="Base URL">
+          <Field label="API Base URL">
             <input
               className="st-field-input font-mono text-[12.5px]"
               value={draft.baseUrl}
@@ -841,9 +941,7 @@ function ProviderDetail({
               className="st-field-input"
               value={draft.protocol}
               disabled={busy}
-              onChange={(e) =>
-                setDraft({ ...draft, protocol: e.target.value as ProtocolFamily })
-              }
+              onChange={(e) => setDraft({ ...draft, protocol: e.target.value as ProtocolFamily })}
             >
               {PROTOCOL_OPTIONS.map((p) => (
                 <option key={p.value} value={p.value}>
@@ -968,8 +1066,8 @@ function ProviderDetail({
       {/* Models */}
       <SectionTitle
         icon={Bot}
-        title={`模型（${models.length}）`}
-        hint="列表顺序即优先级；第 1 个为该供应商主模型"
+        title={`模型优先级（${models.length || '至少添加一个'}）`}
+        hint="主模型失败后按顺序尝试备用模型；拖拽排序能力后续接入，当前可用箭头调整"
         className="mt-5"
       >
         <div className="space-y-1.5">
@@ -1089,9 +1187,7 @@ function ModelRow({
         <p className="truncate font-mono text-[11px] text-text-faint">
           {model.providerModelId}
           {ctx ? ` · ${ctx}` : ''}
-          {model.capabilities.length > 0
-            ? ` · ${model.capabilities.join(', ')}`
-            : ''}
+          {model.capabilities.length > 0 ? ` · ${model.capabilities.join(', ')}` : ''}
         </p>
       </div>
       {credentials.length > 1 && (
@@ -1200,9 +1296,7 @@ function GlobalModelPrefs({
             className="st-field-input"
             value={vision.modelId ?? ''}
             disabled={busy || !vision.enabled}
-            onChange={(e) =>
-              setVision((v) => ({ ...v, modelId: e.target.value || null }))
-            }
+            onChange={(e) => setVision((v) => ({ ...v, modelId: e.target.value || null }))}
           >
             <option value="">选择视觉模型…</option>
             {modelOptions.map((m) => (
@@ -1225,9 +1319,7 @@ function GlobalModelPrefs({
           <div className="mb-3 flex items-center justify-between">
             <div>
               <p className="text-[13px] font-medium text-text">Plan & Act</p>
-              <p className="text-[11.5px] text-text-faint">
-                规划与执行拆分到不同模型（可选）
-              </p>
+              <p className="text-[11.5px] text-text-faint">规划与执行拆分到不同模型（可选）</p>
             </div>
             <Toggle
               checked={plan.enabled}
@@ -1242,9 +1334,7 @@ function GlobalModelPrefs({
                 className="st-field-input"
                 value={plan.planModelId ?? ''}
                 disabled={busy || !plan.enabled}
-                onChange={(e) =>
-                  setPlan((v) => ({ ...v, planModelId: e.target.value || null }))
-                }
+                onChange={(e) => setPlan((v) => ({ ...v, planModelId: e.target.value || null }))}
               >
                 <option value="">选择…</option>
                 {modelOptions.map((m) => (
@@ -1260,9 +1350,7 @@ function GlobalModelPrefs({
                 className="st-field-input"
                 value={plan.actModelId ?? ''}
                 disabled={busy || !plan.enabled}
-                onChange={(e) =>
-                  setPlan((v) => ({ ...v, actModelId: e.target.value || null }))
-                }
+                onChange={(e) => setPlan((v) => ({ ...v, actModelId: e.target.value || null }))}
               >
                 <option value="">选择…</option>
                 {modelOptions.map((m) => (
@@ -1293,7 +1381,16 @@ export function UsageSettings() {
   const [data, setData] = useState<UsageSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sinceDays, setSinceDays] = useState<number | undefined>(30);
+  const [sinceDays, setSinceDays] = useState<number | undefined>(7);
+  const [usageTab, setUsageTab] = useState<
+    'requests' | 'providers' | 'models' | 'tools' | 'pricing'
+  >('requests');
+  const [modelQuery, setModelQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
+  const [showDetails, setShowDetails] = useState(false);
+  const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null);
+  const [editingPricingId, setEditingPricingId] = useState<string | null>(null);
+  const [savingPricing, setSavingPricing] = useState(false);
 
   const load = useCallback(async () => {
     const api = bridge();
@@ -1305,9 +1402,7 @@ export function UsageSettings() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.getUsageSummary(
-        sinceDays ? { sinceDays } : {},
-      );
+      const res = await api.getUsageSummary(sinceDays ? { sinceDays } : {});
       setData(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载用量失败');
@@ -1320,23 +1415,38 @@ export function UsageSettings() {
     void load();
   }, [load]);
 
+  const savePricing = useCallback(
+    async (nextPricing: ModelPricingEntry[]) => {
+      const api = bridge();
+      if (!api?.setSetting) throw new Error('Runtime 未连接，无法保存定价');
+      setSavingPricing(true);
+      try {
+        await api.setSetting({ key: MODEL_PRICING_SETTING_KEY, value: nextPricing });
+        setPricingDraft(null);
+        setEditingPricingId(null);
+        await load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : '保存定价失败');
+      } finally {
+        setSavingPricing(false);
+      }
+    },
+    [load],
+  );
+
   if (loading) {
     return (
-      <div className="flex items-center gap-2 px-8 py-10 text-[13px] text-text-faint">
-        <Loader2 size={15} className="animate-spin" /> 加载使用统计…
+      <div className="flex items-center gap-2 px-6 py-8 text-[12px] text-text-faint">
+        <Loader2 size={14} className="animate-spin" /> 加载使用统计…
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="px-8 py-8">
-        <p className="text-[13px] text-error">{error}</p>
-        <button
-          type="button"
-          className="mt-3 rounded-lg border border-border px-3 py-1.5 text-[12px] hover:bg-hover"
-          onClick={() => void load()}
-        >
+      <div className="px-6 py-8">
+        <p className="text-[12px] text-error">{error}</p>
+        <button type="button" className="usage-retry" onClick={() => void load()}>
           重试
         </button>
       </div>
@@ -1344,104 +1454,633 @@ export function UsageSettings() {
   }
 
   const rows = data?.rows ?? [];
+  const requests = data?.requests ?? [];
+  const tools = data?.tools ?? [];
+  const pricing = data?.pricing ?? [];
+  const normalizedQuery = modelQuery.trim().toLocaleLowerCase('zh-CN');
+  const visibleRequests = requests.filter((request) => {
+    const matchesModel = !normalizedQuery
+      ? true
+      : `${request.displayName ?? ''} ${request.modelId} ${request.providerName ?? ''}`
+          .toLocaleLowerCase('zh-CN')
+          .includes(normalizedQuery);
+    const matchesStatus = statusFilter === 'all' || request.status === statusFilter;
+    return matchesModel && matchesStatus;
+  });
+  const providerRows = aggregateUsageByProvider(rows, data?.toolModels ?? []);
+  const totalTokens = (data?.totalTokensIn ?? 0) + (data?.totalTokensOut ?? 0);
+  const hasCacheUsage =
+    typeof data?.totalCachedTokensHit === 'number' ||
+    typeof data?.totalCachedTokensCreated === 'number';
+  const totalCostLabel = formatCurrencyTotals(data?.totalCostByCurrency ?? {});
+  const totalToolCalls = tools.reduce((sum, row) => sum + row.calls, 0);
+  const totalToolSuccesses = tools.reduce((sum, row) => sum + row.successes, 0);
+  const totalToolFailures = tools.reduce((sum, row) => sum + row.failures, 0);
+  const totalToolSuccessRate =
+    totalToolCalls > 0 ? (totalToolSuccesses / totalToolCalls) * 100 : 0;
+
+  const openNewPricing = () => {
+    setEditingPricingId(null);
+    setPricingDraft({ ...EMPTY_PRICING_DRAFT });
+  };
+  const openEditPricing = (entry: ModelPricingEntry) => {
+    setEditingPricingId(entry.modelId);
+    setPricingDraft({ ...entry });
+  };
+  const commitPricingDraft = () => {
+    if (!pricingDraft) return;
+    const normalized: ModelPricingEntry = {
+      ...pricingDraft,
+      modelId: pricingDraft.modelId.trim(),
+      displayName: pricingDraft.displayName.trim(),
+    };
+    if (!normalized.modelId || !normalized.displayName) {
+      setError('模型 ID 和显示名不能为空');
+      return;
+    }
+    const duplicate = pricing.some(
+      (entry) => entry.modelId === normalized.modelId && entry.modelId !== editingPricingId,
+    );
+    if (duplicate) {
+      setError('该模型 ID 已存在');
+      return;
+    }
+    const next = editingPricingId
+      ? pricing.map((entry) => (entry.modelId === editingPricingId ? normalized : entry))
+      : [...pricing, normalized];
+    void savePricing(next);
+  };
 
   return (
-    <div className="mx-auto max-w-[780px] px-8 py-8">
-      <div className="mb-5 flex items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[18px] font-semibold text-text">使用统计</h1>
-          <p className="mt-1 text-[12.5px] text-text-secondary">
-            按模型汇总请求次数与 token 用量
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            className="st-field-input w-auto min-w-[120px]"
-            value={sinceDays ?? 'all'}
-            onChange={(e) => {
-              const v = e.target.value;
-              setSinceDays(v === 'all' ? undefined : Number(v));
-            }}
-          >
-            <option value={7}>近 7 天</option>
-            <option value={30}>近 30 天</option>
-            <option value={90}>近 90 天</option>
-            <option value="all">全部时间</option>
-          </select>
-          <button
-            type="button"
-            className="rounded-lg border border-border p-2 text-text-secondary hover:bg-hover"
-            title="刷新"
-            onClick={() => void load()}
-          >
-            <RefreshCw size={14} />
+    <div className="usage-settings">
+      <div className="usage-toolbar">
+        <span>使用统计</span>
+        <div className="usage-toolbar-actions">
+          <div className="usage-range" role="group" aria-label="统计时间范围">
+            {[
+              [1, '24h'],
+              [7, '近 7 天'],
+              [30, '近 30 天'],
+              [undefined, '全部'],
+            ].map(([value, label]) => (
+              <button
+                key={String(value)}
+                type="button"
+                className={sinceDays === value ? 'is-active' : undefined}
+                onClick={() => setSinceDays(value as number | undefined)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <button type="button" className="usage-refresh" title="刷新" onClick={() => void load()}>
+            <RefreshCw size={13} />
           </button>
         </div>
       </div>
 
-      <div className="mb-5 grid grid-cols-3 gap-3">
-        <MetricCard label="请求次数" value={String(data?.totalRequests ?? 0)} />
-        <MetricCard
-          label="输入 Tokens"
-          value={formatTokenCount(data?.totalTokensIn ?? 0)}
+      <div className="usage-metrics">
+        <UsageMetric label="总请求" value={formatCount(data?.totalRequests ?? 0)} />
+        <UsageMetric label="总费用" value={totalCostLabel} hint="以模型供应商最终结算为准" />
+        <UsageMetric
+          label="总 Token"
+          value={formatTokenCount(totalTokens)}
+          hint={`输入 ${formatTokenCount(data?.totalTokensIn ?? 0)}  /  输出 ${formatTokenCount(data?.totalTokensOut ?? 0)}`}
         />
-        <MetricCard
-          label="输出 Tokens"
-          value={formatTokenCount(data?.totalTokensOut ?? 0)}
+        <UsageMetric
+          label="缓存 Token"
+          value={
+            hasCacheUsage
+              ? formatTokenCount(
+                  (data?.totalCachedTokensHit ?? 0) +
+                    (data?.totalCachedTokensCreated ?? 0),
+                )
+              : '—'
+          }
+          hint={
+            hasCacheUsage
+              ? `命中 ${formatTokenCount(data?.totalCachedTokensHit ?? 0)}  /  创建 ${formatTokenCount(data?.totalCachedTokensCreated ?? 0)}`
+              : '当前供应商未返回缓存用量'
+          }
         />
       </div>
 
-      {rows.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border py-12 text-center text-[13px] text-text-faint">
-          暂无用量数据
-          <br />
-          <span className="text-[12px]">发起对话后会在此汇总</span>
-        </div>
-      ) : (
-        <div className="overflow-hidden rounded-xl border border-border">
-          <table className="w-full text-left text-[12.5px]">
-            <thead className="bg-elevated text-[11px] uppercase tracking-wide text-text-faint">
-              <tr>
-                <th className="px-3 py-2.5 font-medium">模型</th>
-                <th className="px-3 py-2.5 font-medium">供应商</th>
-                <th className="px-3 py-2.5 font-medium text-right">请求</th>
-                <th className="px-3 py-2.5 font-medium text-right">输入</th>
-                <th className="px-3 py-2.5 font-medium text-right">输出</th>
-                <th className="px-3 py-2.5 font-medium text-right">最近使用</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.modelId} className="border-t border-border hover:bg-hover/50">
-                  <td className="px-3 py-2.5">
-                    <p className="font-medium text-text">
-                      {row.displayName ?? row.modelId}
-                    </p>
-                    <p className="font-mono text-[11px] text-text-faint">{row.modelId}</p>
-                  </td>
-                  <td className="px-3 py-2.5 text-text-secondary">
-                    {row.providerName ?? row.providerId ?? '—'}
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-text">
-                    {row.requests}
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
-                    {formatTokenCount(row.tokensIn)}
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
-                    {formatTokenCount(row.tokensOut)}
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-[11.5px] text-text-faint">
-                    {row.lastUsedAt ? formatRelative(row.lastUsedAt) : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <div className="usage-tabs" role="tablist" aria-label="统计视图">
+        {[
+          ['requests', '请求日志'],
+          ['providers', '供应商统计'],
+          ['models', '模型统计'],
+          ['tools', '工具统计'],
+          ['pricing', '定价配置'],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={usageTab === id}
+            className={usageTab === id ? 'is-active' : undefined}
+            onClick={() => setUsageTab(id as typeof usageTab)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {usageTab === 'requests' ? (
+        <section className="usage-panel">
+          <div className="usage-filters">
+            <input
+              value={modelQuery}
+              onChange={(event) => setModelQuery(event.target.value)}
+              placeholder="按模型筛选…"
+              aria-label="按模型筛选"
+            />
+            <select
+              value={statusFilter}
+              aria-label="请求状态"
+              onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
+            >
+              <option value="all">全部状态</option>
+              <option value="success">成功</option>
+              <option value="failed">失败</option>
+            </select>
+            <label className="usage-detail-switch">
+              <input
+                type="checkbox"
+                checked={showDetails}
+                onChange={(event) => setShowDetails(event.target.checked)}
+              />
+              <span>详情记录</span>
+            </label>
+            <span className="usage-record-count">共 {visibleRequests.length} 条记录</span>
+          </div>
+          <UsageRequestTable rows={visibleRequests} showDetails={showDetails} />
+        </section>
+      ) : null}
+
+      {usageTab === 'providers' ? <UsageProviderTable rows={providerRows} /> : null}
+      {usageTab === 'models' ? (
+        <UsageModelTable
+          rows={rows.map((row) => ({
+            key: `${row.providerId ?? ''}:${row.modelId}`,
+            label: row.displayName ?? row.modelId,
+            secondary: row.providerName ?? row.providerId,
+            requests: row.requests,
+            succeededRequests: row.succeededRequests,
+            failedRequests: row.failedRequests,
+            tokensIn: row.tokensIn,
+            tokensOut: row.tokensOut,
+            totalCost: row.totalCost,
+            currency: row.currency,
+            averageLatencyMs: row.averageLatencyMs,
+            lastUsedAt: row.lastUsedAt,
+          }))}
+        />
+      ) : null}
+      {usageTab === 'tools' ? (
+        <UsageToolPanel
+          rows={tools}
+          modelRows={data?.toolModels ?? []}
+          failures={data?.toolFailures ?? []}
+          totals={{
+            calls: totalToolCalls,
+            successes: totalToolSuccesses,
+            failures: totalToolFailures,
+            successRate: totalToolSuccessRate,
+          }}
+        />
+      ) : null}
+      {usageTab === 'pricing' ? (
+        <PricingTable
+          entries={pricing}
+          draft={pricingDraft}
+          editingId={editingPricingId}
+          saving={savingPricing}
+          onAdd={openNewPricing}
+          onEdit={openEditPricing}
+          onCancel={() => {
+            setPricingDraft(null);
+            setEditingPricingId(null);
+          }}
+          onDraftChange={setPricingDraft}
+          onSave={commitPricingDraft}
+          onDelete={(entry) => void savePricing(pricing.filter((row) => row.modelId !== entry.modelId))}
+        />
+      ) : null}
     </div>
   );
+}
+
+function UsageMetric({
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: 'positive' | 'negative';
+}) {
+  return (
+    <div className={clsx('usage-metric', tone && `is-${tone}`)}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {hint ? <small>{hint}</small> : null}
+    </div>
+  );
+}
+
+type AggregateUsageRow = {
+  key: string;
+  label: string;
+  secondary?: string;
+  requests: number;
+  succeededRequests: number;
+  failedRequests: number;
+  tokensIn: number;
+  tokensOut: number;
+  totalCost?: number;
+  currency?: 'USD' | 'CNY';
+  averageLatencyMs?: number;
+  toolSuccessRate?: number;
+  lastUsedAt?: string;
+};
+
+function aggregateUsageByProvider(
+  rows: UsageSummaryResponse['rows'],
+  toolModels: UsageSummaryResponse['toolModels'],
+): AggregateUsageRow[] {
+  const aggregated = new Map<string, AggregateUsageRow & { latencyWeightedTotal: number }>();
+  for (const row of rows) {
+    const key = row.providerId ?? row.providerName ?? 'unknown';
+    const current = aggregated.get(key) ?? {
+      key,
+      label: row.providerName ?? row.providerId ?? '未知供应商',
+      requests: 0,
+      succeededRequests: 0,
+      failedRequests: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      latencyWeightedTotal: 0,
+      lastUsedAt: row.lastUsedAt,
+    };
+    current.requests += row.requests;
+    current.succeededRequests += row.succeededRequests;
+    current.failedRequests += row.failedRequests;
+    current.tokensIn += row.tokensIn;
+    current.tokensOut += row.tokensOut;
+    if (typeof row.averageLatencyMs === 'number') {
+      current.latencyWeightedTotal += row.averageLatencyMs * row.requests;
+      current.averageLatencyMs = current.latencyWeightedTotal / Math.max(1, current.requests);
+    }
+    if (typeof row.totalCost === 'number' && row.currency) {
+      if (!current.currency || current.currency === row.currency) {
+        current.currency = row.currency;
+        current.totalCost = (current.totalCost ?? 0) + row.totalCost;
+      } else {
+        current.currency = undefined;
+        current.totalCost = undefined;
+      }
+    }
+    if (!current.lastUsedAt || (row.lastUsedAt && row.lastUsedAt > current.lastUsedAt)) {
+      current.lastUsedAt = row.lastUsedAt;
+    }
+    aggregated.set(key, current);
+  }
+  return Array.from(aggregated.values())
+    .map(({ latencyWeightedTotal: _latencyTotal, ...row }) => {
+      const providerTools = toolModels.filter((tool) => tool.providerId === row.key);
+      const toolCalls = providerTools.reduce((sum, tool) => sum + tool.calls, 0);
+      const toolSuccesses = providerTools.reduce((sum, tool) => sum + tool.successes, 0);
+      return {
+        ...row,
+        toolSuccessRate: toolCalls > 0 ? (toolSuccesses / toolCalls) * 100 : undefined,
+      };
+    })
+    .sort((left, right) => right.tokensIn + right.tokensOut - (left.tokensIn + left.tokensOut));
+}
+
+function UsageRequestTable({
+  rows,
+  showDetails,
+}: {
+  rows: UsageSummaryResponse['requests'];
+  showDetails: boolean;
+}) {
+  if (rows.length === 0) {
+    return <div className="usage-table-empty">暂无符合条件的请求记录</div>;
+  }
+  return (
+    <div className="usage-table-wrap">
+      <table className="usage-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>供应商</th>
+            <th>模型</th>
+            <th>Token</th>
+            <th>费用</th>
+            <th>延迟</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.requestId}>
+              <td>{formatTimestamp(row.occurredAt)}</td>
+              <td>{row.providerName ?? row.providerId ?? '—'}</td>
+              <td title={row.modelId}>
+                {row.displayName ?? row.modelId}
+                {showDetails ? (
+                  <small>
+                    输入 {formatTokenCount(row.tokensIn)} · 输出{' '}
+                    {formatTokenCount(row.tokensOut)}
+                    {row.errorMessage ? ` · ${row.errorMessage}` : ''}
+                  </small>
+                ) : null}
+              </td>
+              <td>{formatTokenCount(row.tokensIn + row.tokensOut)}</td>
+              <td>{formatCurrency(row.estimatedCost, row.currency)}</td>
+              <td>{typeof row.latencyMs === 'number' ? formatLatency(row.latencyMs) : '—'}</td>
+              <td>
+                <span className={`usage-status is-${row.status}`}>
+                  {row.status === 'success' ? '200' : row.status === 'failed' ? '失败' : '—'}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function UsageProviderTable({ rows }: { rows: AggregateUsageRow[] }) {
+  if (rows.length === 0) return <div className="usage-table-empty">暂无供应商统计数据</div>;
+  return (
+    <div className="usage-table-wrap usage-aggregate-table">
+      <table className="usage-table">
+        <thead>
+          <tr>
+            <th>供应商</th>
+            <th>请求数</th>
+            <th>总 Token</th>
+            <th>总费用</th>
+            <th>请求成功率</th>
+            <th>工具成功率</th>
+            <th>平均延迟</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key}>
+              <td>{row.label}</td>
+              <td>{formatCount(row.requests)}</td>
+              <td>{formatTokenCount(row.tokensIn + row.tokensOut)}</td>
+              <td>{formatCurrency(row.totalCost, row.currency)}</td>
+              <td className="usage-positive">{formatRate(row.succeededRequests, row.requests)}</td>
+              <td className="usage-positive">
+                {typeof row.toolSuccessRate === 'number' ? `${row.toolSuccessRate.toFixed(1)}%` : '—'}
+              </td>
+              <td>{typeof row.averageLatencyMs === 'number' ? formatLatency(row.averageLatencyMs) : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function UsageModelTable({ rows }: { rows: AggregateUsageRow[] }) {
+  if (rows.length === 0) return <div className="usage-table-empty">暂无模型统计数据</div>;
+  return (
+    <div className="usage-table-wrap usage-aggregate-table">
+      <table className="usage-table">
+        <thead>
+          <tr>
+            <th>模型</th>
+            <th>请求数</th>
+            <th>总 Token</th>
+            <th>总费用</th>
+            <th>单次均费</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key}>
+              <td>
+                {row.label}
+                {row.secondary ? <small>{row.secondary}</small> : null}
+              </td>
+              <td>{formatCount(row.requests)}</td>
+              <td>{formatTokenCount(row.tokensIn + row.tokensOut)}</td>
+              <td>{formatCurrency(row.totalCost, row.currency)}</td>
+              <td>
+                {formatCurrency(
+                  typeof row.totalCost === 'number' && row.requests > 0
+                    ? row.totalCost / row.requests
+                    : undefined,
+                  row.currency,
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function UsageToolPanel({
+  rows,
+  modelRows,
+  failures,
+  totals,
+}: {
+  rows: UsageSummaryResponse['tools'];
+  modelRows: UsageSummaryResponse['toolModels'];
+  failures: UsageSummaryResponse['toolFailures'];
+  totals: { calls: number; successes: number; failures: number; successRate: number };
+}) {
+  return (
+    <section className="usage-tool-panel">
+      <div className="usage-tool-metrics">
+        <UsageMetric label="总调用" value={formatCount(totals.calls)} />
+        <UsageMetric label="成功" value={formatCount(totals.successes)} tone="positive" />
+        <UsageMetric label="失败" value={formatCount(totals.failures)} tone="negative" />
+        <UsageMetric label="成功率" value={`${totals.successRate.toFixed(1)}%`} tone="positive" />
+      </div>
+
+      <div className="usage-tool-section">
+        <h4>模型级工具统计</h4>
+        {modelRows.length === 0 ? (
+          <div className="usage-table-empty is-compact">暂无模型工具统计</div>
+        ) : (
+          <div className="usage-table-wrap is-compact">
+            <table className="usage-table">
+              <thead><tr><th>模型</th><th>调用数</th><th>成功</th><th>失败</th><th>成功率</th></tr></thead>
+              <tbody>
+                {modelRows.map((row) => (
+                  <tr key={row.modelId}>
+                    <td>{row.displayName ?? row.modelId}<small>{row.modelId}</small></td>
+                    <td>{formatCount(row.calls)}</td>
+                    <td>{formatCount(row.successes)}</td>
+                    <td>{formatCount(row.failures)}</td>
+                    <td className="usage-positive">{row.successRate.toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="usage-tool-section">
+        <h4>工具调用明细</h4>
+        {rows.length === 0 ? (
+          <div className="usage-table-empty is-compact">暂无工具调用数据</div>
+        ) : (
+          <div className="usage-table-wrap is-compact">
+            <table className="usage-table">
+              <thead><tr><th>工具</th><th>调用数</th><th>成功</th><th>失败</th><th>成功率</th></tr></thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.toolName}>
+                    <td>{row.toolName}</td>
+                    <td>{formatCount(row.calls)}</td>
+                    <td>{formatCount(row.successes)}</td>
+                    <td>{formatCount(row.failures)}</td>
+                    <td className="usage-positive">{row.successRate.toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="usage-tool-section usage-tool-failures">
+        <div className="usage-section-heading">
+          <h4>最近失败记录</h4>
+          <span>共 {failures.length} 条失败记录</span>
+        </div>
+        {failures.length === 0 ? (
+          <div className="usage-table-empty is-compact">暂无失败记录</div>
+        ) : (
+          <div className="usage-table-wrap is-compact">
+            <table className="usage-table">
+              <thead><tr><th>时间</th><th>工具</th><th>对话</th><th>模型</th><th>错误摘要</th></tr></thead>
+              <tbody>
+                {failures.map((row, index) => (
+                  <tr key={`${row.occurredAt}:${row.toolName}:${index}`}>
+                    <td>{formatTimestamp(row.occurredAt)}</td>
+                    <td>{row.toolName}</td>
+                    <td>{row.conversationTitle ?? '—'}</td>
+                    <td>{row.displayName ?? row.modelId ?? '—'}</td>
+                    <td className="usage-error" title={row.errorSummary}>{row.errorSummary}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function PricingTable({
+  entries,
+  draft,
+  editingId,
+  saving,
+  onAdd,
+  onEdit,
+  onCancel,
+  onDraftChange,
+  onSave,
+  onDelete,
+}: {
+  entries: ModelPricingEntry[];
+  draft: PricingDraft | null;
+  editingId: string | null;
+  saving: boolean;
+  onAdd: () => void;
+  onEdit: (entry: ModelPricingEntry) => void;
+  onCancel: () => void;
+  onDraftChange: (draft: PricingDraft) => void;
+  onSave: () => void;
+  onDelete: (entry: ModelPricingEntry) => void;
+}) {
+  const setNumber = (key: keyof Pick<PricingDraft, 'inputPerMillion' | 'outputPerMillion' | 'cacheReadPerMillion' | 'cacheWritePerMillion'>, value: string) => {
+    if (!draft) return;
+    onDraftChange({ ...draft, [key]: Math.max(0, Number(value) || 0) });
+  };
+  return (
+    <section className="usage-pricing-panel">
+      <div className="usage-pricing-toolbar">
+        <span>共 {entries.length} 个模型定价</span>
+        <button type="button" onClick={onAdd}><Plus size={13} /> 添加</button>
+      </div>
+      {draft ? (
+        <div className="usage-pricing-form">
+          <input value={draft.modelId} disabled={saving} placeholder="模型 ID" onChange={(event) => onDraftChange({ ...draft, modelId: event.target.value })} />
+          <input value={draft.displayName} disabled={saving} placeholder="显示名" onChange={(event) => onDraftChange({ ...draft, displayName: event.target.value })} />
+          <select value={draft.currency} disabled={saving} onChange={(event) => onDraftChange({ ...draft, currency: event.target.value as 'USD' | 'CNY' })}>
+            <option value="USD">USD</option><option value="CNY">CNY</option>
+          </select>
+          <input type="number" min="0" step="0.01" value={draft.inputPerMillion} disabled={saving} aria-label="输入每百万 Token 单价" onChange={(event) => setNumber('inputPerMillion', event.target.value)} />
+          <input type="number" min="0" step="0.01" value={draft.outputPerMillion} disabled={saving} aria-label="输出每百万 Token 单价" onChange={(event) => setNumber('outputPerMillion', event.target.value)} />
+          <input type="number" min="0" step="0.01" value={draft.cacheReadPerMillion} disabled={saving} aria-label="缓存读每百万 Token 单价" onChange={(event) => setNumber('cacheReadPerMillion', event.target.value)} />
+          <input type="number" min="0" step="0.01" value={draft.cacheWritePerMillion} disabled={saving} aria-label="缓存建每百万 Token 单价" onChange={(event) => setNumber('cacheWritePerMillion', event.target.value)} />
+          <div className="usage-pricing-form-actions">
+            <button type="button" onClick={onSave} disabled={saving}>{saving ? '保存中…' : editingId ? '保存' : '添加'}</button>
+            <button type="button" className="is-secondary" onClick={onCancel} disabled={saving}>取消</button>
+          </div>
+        </div>
+      ) : null}
+      <div className="usage-table-wrap usage-pricing-table">
+        <table className="usage-table">
+          <thead><tr><th>模型 ID</th><th>显示名</th><th>币种</th><th>输入/M</th><th>输出/M</th><th>缓存读/M</th><th>缓存建/M</th><th>操作</th></tr></thead>
+          <tbody>
+            {entries.map((entry) => (
+              <tr key={entry.modelId}>
+                <td className="usage-model-id" title={entry.modelId}>{entry.modelId}</td>
+                <td>{entry.displayName}</td>
+                <td>{entry.currency}</td>
+                <td>{formatCurrency(entry.inputPerMillion, entry.currency)}</td>
+                <td>{formatCurrency(entry.outputPerMillion, entry.currency)}</td>
+                <td>{formatCurrency(entry.cacheReadPerMillion, entry.currency)}</td>
+                <td>{formatCurrency(entry.cacheWritePerMillion, entry.currency)}</td>
+                <td><div className="usage-row-actions"><button type="button" title="编辑" onClick={() => onEdit(entry)}><Pencil size={12} /></button><button type="button" title="删除" onClick={() => onDelete(entry)}><Trash2 size={12} /></button></div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function formatCount(value: number): string {
+  return new Intl.NumberFormat('zh-CN').format(value);
+}
+
+function formatTimestamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+}
+
+function formatLatency(value: number): string {
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`;
 }
 
 // ─── Shared bits ─────────────────────────────────────────────────────────────
@@ -1488,9 +2127,7 @@ function SectionTitle({
     <div className={className}>
       <div className="mb-2 flex items-center gap-1.5">
         <Icon size={13} className="text-text-faint" />
-        <p className="text-[12px] font-medium uppercase tracking-wide text-text-faint">
-          {title}
-        </p>
+        <p className="text-[12px] font-medium uppercase tracking-wide text-text-faint">{title}</p>
       </div>
       {hint && <p className="mb-2 text-[11.5px] text-text-faint">{hint}</p>}
       {children}
@@ -1529,32 +2166,37 @@ function Toggle({
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-border bg-surface px-4 py-3">
-      <p className="text-[11px] text-text-faint">{label}</p>
-      <p className="mt-1 text-[18px] font-semibold tabular-nums text-text">{value}</p>
-    </div>
+function formatCurrency(
+  value: number | undefined,
+  currency: 'USD' | 'CNY' | undefined,
+): string {
+  if (typeof value !== 'number' || !currency) return '—';
+  const symbol = currency === 'CNY' ? '¥' : '$';
+  const digits = value >= 1 ? 2 : value > 0 ? 4 : 2;
+  return `${symbol}${value.toLocaleString('zh-CN', {
+    minimumFractionDigits: value === 0 ? 2 : 0,
+    maximumFractionDigits: digits,
+  })}`;
+}
+
+function formatCurrencyTotals(
+  totals: Partial<Record<'USD' | 'CNY', number>>,
+): string {
+  const values = (['CNY', 'USD'] as const).flatMap((currency) =>
+    typeof totals[currency] === 'number'
+      ? [formatCurrency(totals[currency], currency)]
+      : [],
   );
+  return values.length > 0 ? values.join(' / ') : '—';
+}
+
+function formatRate(successes: number, total: number): string {
+  return total > 0 ? `${((successes / total) * 100).toFixed(1)}%` : '—';
 }
 
 function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
-}
-
-function formatRelative(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return iso.slice(0, 10);
-  const diff = Date.now() - t;
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return '刚刚';
-  if (mins < 60) return `${mins} 分钟前`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} 天前`;
-  return iso.slice(0, 10);
 }
 

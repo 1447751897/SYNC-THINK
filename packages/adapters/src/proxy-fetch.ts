@@ -74,8 +74,7 @@ function readEnvProxy(): ResolvedProxy | null {
 export function readWindowsSystemProxy(): ResolvedProxy | null {
   if (process.platform !== 'win32') return null;
   try {
-    const key =
-      'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+    const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
     const out = execSync(`reg query "${key}"`, {
       encoding: 'utf8',
       windowsHide: true,
@@ -294,10 +293,7 @@ function makeResponse(
   } as unknown as Response;
 }
 
-async function directFetch(
-  input: string | URL | Request,
-  init?: RequestInit,
-): Promise<Response> {
+async function directFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
   const fetchImpl = globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
     throw new Error('proxy-fetch: global fetch is not available');
@@ -374,7 +370,9 @@ function proxyHttpsFetch(
     const cleanup = () => {
       if (signal) signal.removeEventListener('abort', onAbort);
       socket.removeAllListeners();
+      socket.on('error', () => undefined);
       tlsSocket?.removeAllListeners();
+      tlsSocket?.on('error', () => undefined);
       try {
         tlsSocket?.destroy();
       } catch {
@@ -424,8 +422,7 @@ function proxyHttpsFetch(
         },
         () => {
           phase = 'http';
-          let req =
-            `${method} ${path} HTTP/1.1\r\n`;
+          let req = `${method} ${path} HTTP/1.1\r\n`;
           for (const [k, v] of Object.entries(headers)) {
             req += `${k}: ${v}\r\n`;
           }
@@ -578,5 +575,3 @@ export function proxyLogLabel(proxy: ResolvedProxy = resolveOutboundProxy()): st
   if (proxy.source === 'none') return 'direct (no proxy)';
   return `${proxy.url} (${proxy.source})`;
 }
-
-

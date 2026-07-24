@@ -7,7 +7,6 @@
   ProbeCapabilitiesPayload,
   ConfirmCapabilitiesPayload,
   ReorderProvidersPayload,
-  AddProviderCredentialPayload,
   RemoveProviderCredentialPayload,
   SetModelPrioritiesPayload,
   RemoveModelPayload,
@@ -24,8 +23,6 @@ export interface RendererCreateProviderPayload {
   credentialGroupName?: string;
   credentialLabel?: string;
   importedFrom?: string;
-  /** Direct form entry (NewMax-style key field); falls back to clipboard when omitted. */
-  apiKey?: string;
 }
 
 export interface RendererUpdateProviderPayload {
@@ -36,10 +33,13 @@ export interface RendererUpdateProviderPayload {
   supportsDiscovery?: boolean;
   credentialLabel?: string;
   rotateCredentialFromClipboard?: boolean;
-  /** Direct form entry for key rotation; takes precedence over clipboard flag. */
-  apiKey?: string;
   /** 0026: toggle the entry on/off. */
   enabled?: boolean;
+}
+
+export interface RendererAddProviderCredentialPayload {
+  providerId: string;
+  label?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -76,18 +76,12 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
       'credentialGroupName',
       'credentialLabel',
       'importedFrom',
-      'apiKey',
     ])
   ) {
     throw new Error('Invalid create-provider payload');
   }
   if (value.supportsDiscovery !== undefined && typeof value.supportsDiscovery !== 'boolean') {
     throw new Error('Invalid create-provider payload');
-  }
-  if (value.apiKey !== undefined) {
-    if (typeof value.apiKey !== 'string' || value.apiKey.trim().length === 0 || value.apiKey.length > 8192) {
-      throw new Error('Invalid create-provider payload');
-    }
   }
   for (const field of ['credentialGroupName', 'credentialLabel', 'importedFrom'] as const) {
     if (value[field] !== undefined && typeof value[field] !== 'string') {
@@ -102,7 +96,6 @@ export function parseCreateProviderPayload(value: unknown): RendererCreateProvid
     credentialGroupName: value.credentialGroupName as string | undefined,
     credentialLabel: value.credentialLabel as string | undefined,
     importedFrom: value.importedFrom as string | undefined,
-    apiKey: value.apiKey as string | undefined,
   };
 }
 
@@ -211,22 +204,20 @@ export function parseReorderProvidersPayload(value: unknown): ReorderProvidersPa
   return { orderedProviderIds: value.orderedProviderIds.map((id) => id.trim()) };
 }
 
-export function parseAddProviderCredentialPayload(value: unknown): AddProviderCredentialPayload {
+export function parseAddProviderCredentialMetadata(
+  value: unknown,
+): RendererAddProviderCredentialPayload {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['providerId', 'apiKey', 'label']) ||
+    !hasOnlyKeys(value, ['providerId', 'label']) ||
     !isBoundedId(value.providerId) ||
-    typeof value.apiKey !== 'string' ||
-    value.apiKey.trim().length === 0 ||
-    value.apiKey.length > 8192 ||
     (value.label !== undefined &&
       (typeof value.label !== 'string' || value.label.length > 256))
   ) {
     throw new Error('Invalid add-provider-credential payload');
   }
   return {
-    providerId: value.providerId.trim() as AddProviderCredentialPayload['providerId'],
-    apiKey: value.apiKey,
+    providerId: value.providerId.trim(),
     label: typeof value.label === 'string' ? value.label.trim() : undefined,
   };
 }
@@ -378,7 +369,6 @@ export function parseUpdateProviderPayload(value: unknown): RendererUpdateProvid
     value.supportsDiscovery !== undefined ||
     value.credentialLabel !== undefined ||
     value.rotateCredentialFromClipboard !== undefined ||
-    value.apiKey !== undefined ||
     value.enabled !== undefined;
   if (!hasField) throw new Error('Invalid update-provider payload');
   if (
@@ -390,16 +380,10 @@ export function parseUpdateProviderPayload(value: unknown): RendererUpdateProvid
       'supportsDiscovery',
       'credentialLabel',
       'rotateCredentialFromClipboard',
-      'apiKey',
       'enabled',
     ])
   ) {
     throw new Error('Invalid update-provider payload');
-  }
-  if (value.apiKey !== undefined) {
-    if (typeof value.apiKey !== 'string' || value.apiKey.trim().length === 0 || value.apiKey.length > 8192) {
-      throw new Error('Invalid update-provider payload');
-    }
   }
   if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
     throw new Error('Invalid update-provider payload');
@@ -439,7 +423,6 @@ export function parseUpdateProviderPayload(value: unknown): RendererUpdateProvid
     supportsDiscovery: value.supportsDiscovery as boolean | undefined,
     credentialLabel: value.credentialLabel as string | undefined,
     rotateCredentialFromClipboard: value.rotateCredentialFromClipboard as boolean | undefined,
-    apiKey: value.apiKey as string | undefined,
     enabled: value.enabled as boolean | undefined,
   };
 }

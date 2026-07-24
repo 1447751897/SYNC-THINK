@@ -114,6 +114,7 @@ interface ExecutionProcessBlockProps {
   threadId?: string;
   runId?: string;
   forceExpanded?: boolean;
+  nested?: boolean;
   onOpenChange?: (path: string) => void;
 }
 
@@ -139,10 +140,17 @@ function KindIcon({ kind }: { kind: ProcessToolKind }) {
   return <Wrench size={13} />;
 }
 
-function stepTitle(step: ExecutionProcessStep): string {
+export function formatExecutionStepTitle(step: ExecutionProcessStep): string {
   const base = step.zh || step.verb || step.toolName;
-  if (step.count && step.count > 1) return `${base} ×${step.count}`;
-  return base;
+  const focus = step.path || step.command || step.url;
+  const conciseFocus = focus
+    ? focus.length > 72
+      ? `${focus.slice(0, 30)}…${focus.slice(-38)}`
+      : focus
+    : undefined;
+  const title = conciseFocus ? `${base} · ${conciseFocus}` : base;
+  if (step.count && step.count > 1) return `${title} ×${step.count}`;
+  return title;
 }
 
 function hasRichOutput(step: ExecutionProcessStep): boolean {
@@ -167,7 +175,7 @@ function StepCard({
   onOpenChange?: (path: string) => void;
 }) {
   const [open, setOpen] = useState(Boolean(defaultOpen));
-  const title = stepTitle(step);
+  const title = formatExecutionStepTitle(step);
   const output = step.error || step.preview;
   const showOutput = hasRichOutput(step);
   const hasBody = Boolean(step.path || step.command || step.url || showOutput || step.exitCode !== undefined);
@@ -252,6 +260,7 @@ export function ExecutionProcessBlock({
   threadId,
   runId,
   forceExpanded = false,
+  nested = false,
   onOpenChange,
 }: ExecutionProcessBlockProps) {
   const view = useMemo(
@@ -262,17 +271,16 @@ export function ExecutionProcessBlock({
   if (view.steps.length === 0) return null;
 
   return (
-    <div className="shell-tool-stack" data-testid="execution-process">
-      {view.steps.map((step, index) => (
+    <div
+      className={`shell-tool-stack ${nested ? 'is-nested' : ''}`}
+      data-testid="execution-process"
+    >
+      {view.steps.map((step) => (
         <StepCard
           key={step.id}
           step={step}
-          // Running step + last few steps open by default for glanceability.
-          defaultOpen={
-            forceExpanded ||
-            step.status === 'running' ||
-            index >= view.steps.length - 2
-          }
+          // The outer process group owns density; only the live step opens automatically.
+          defaultOpen={forceExpanded && step.status === 'running'}
           onOpenChange={onOpenChange}
         />
       ))}
@@ -382,12 +390,14 @@ export function FileChangesCard({
   events,
   threadId,
   runId,
+  nested = false,
   onOpenChange,
   onExpandRail,
 }: {
   events: readonly Event[];
   threadId?: string;
   runId?: string;
+  nested?: boolean;
   onOpenChange?: (path: string) => void;
   onExpandRail?: () => void;
 }) {
@@ -403,7 +413,7 @@ export function FileChangesCard({
   if (view.fileChanges.length === 0) return null;
 
   return (
-    <div className="shell-changes-card">
+    <div className={`shell-changes-card ${nested ? 'is-nested' : ''}`}>
       <div className="shell-changes-card__header">
         <span className="shell-changes-card__title">
           已更改 {view.fileChanges.length} 个文件

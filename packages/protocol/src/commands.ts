@@ -45,6 +45,7 @@ export type CommandType =
   | 'task.unarchive'
   | 'task.setParticipationMode'
   | 'task.appendMessage'
+  | 'message.attachImages'
   | 'runtime.subscribeEvents'
   | 'runtime.continueEventReplay'
   | 'runtime.unsubscribeEvents'
@@ -312,6 +313,15 @@ export interface AppendMessageImage {
   dataUrl?: string;
 }
 
+/** Durable lightweight image reference embedded in `message.appended`. */
+export interface MessageImageReference {
+  id: string;
+  name: string;
+  mimeType: string;
+  /** Opaque basename under the application-managed chat image directory. */
+  storageRef: string;
+}
+
 export interface AppendMessagePayload {
   threadId: ThreadId;
   /** Optimistic concurrency: must match last seen task version. */
@@ -348,6 +358,18 @@ export interface AppendMessageResponse {
   taskGoal?: string;
   /** Optional: streaming id assigned if this user message triggers a model call. */
   streamId?: string;
+  /** Desktop-resolved durable image URLs returned after staging. */
+  images?: Array<MessageImageReference & { url?: string }>;
+}
+
+export interface AttachMessageImagesPayload {
+  threadId: ThreadId;
+  messageId: MessageId;
+  images: MessageImageReference[];
+}
+
+export interface AttachMessageImagesResponse {
+  attached: number;
 }
 
 export interface SubscribeEventsPayload {
@@ -378,9 +400,7 @@ export interface OrchestrationRunMutationPayload {
   expectedTaskVersion: number;
 }
 
-export type CancelRunPayload =
-  | ConversationCancelRunPayload
-  | OrchestrationRunMutationPayload;
+export type CancelRunPayload = ConversationCancelRunPayload | OrchestrationRunMutationPayload;
 
 export type PauseRunPayload = OrchestrationRunMutationPayload;
 export type ResumeRunPayload = OrchestrationRunMutationPayload;
@@ -571,7 +591,6 @@ export interface ResolveArtifactMergeConflictResponse {
   taskVersion: number;
 }
 
-
 export interface CreateProviderPayload {
   name: string;
   baseUrl: string;
@@ -704,8 +723,6 @@ export interface ImportCcSwitchResponse {
   failedCount: number;
 }
 
-
-
 export interface ListProvidersPayload {
   /** Reserved for filters. */
 }
@@ -749,9 +766,6 @@ export interface AddModelsResponse {
   providerId: import('@sync-think/shared').ProviderId;
   models: ProviderModelSummary[];
 }
-
-
-
 
 export interface ProbeCapabilitiesPayload {
   /** Probe one model, or omit modelId to probe all models for the provider. */
@@ -871,7 +885,7 @@ export interface SetSettingResponse {
   updatedAt: string;
 }
 
-// --- 0026: usage statistics (aggregated from provider.usage events) ---
+// --- 0026: usage statistics (aggregated from durable runtime events) ---
 
 export interface UsageSummaryPayload {
   /** Restrict to the trailing N days; omit for all time. */
@@ -884,16 +898,157 @@ export interface UsageSummaryRow {
   displayName?: string;
   providerName?: string;
   requests: number;
+  succeededRequests: number;
+  failedRequests: number;
   tokensIn: number;
   tokensOut: number;
+  totalCost?: number;
+  currency?: 'USD' | 'CNY';
+  averageLatencyMs?: number;
   lastUsedAt?: string;
 }
 
+/** One real provider request reconstructed from provider.usage + terminal run events. */
+export interface UsageRequestRow {
+  requestId: string;
+  runId?: string;
+  occurredAt: string;
+  modelId: string;
+  providerId?: string;
+  displayName?: string;
+  providerName?: string;
+  tokensIn: number;
+  tokensOut: number;
+  /** Present only when the provider reports cache usage. */
+  cachedTokensHit?: number;
+  cachedTokensCreated?: number;
+  /** Runtime event-level outcome; this is not fabricated from HTTP status codes. */
+  status: 'success' | 'failed' | 'unknown';
+  latencyMs?: number;
+  errorMessage?: string;
+  estimatedCost?: number;
+  currency?: 'USD' | 'CNY';
+}
+
+export interface UsageToolFailureRow {
+  occurredAt: string;
+  toolName: string;
+  modelId?: string;
+  displayName?: string;
+  conversationTitle?: string;
+  errorSummary: string;
+}
+
+export interface UsageToolRow {
+  toolName: string;
+  calls: number;
+  successes: number;
+  failures: number;
+  successRate: number;
+  lastUsedAt?: string;
+}
+
+export interface UsageToolModelRow {
+  modelId: string;
+  providerId?: string;
+  displayName?: string;
+  calls: number;
+  successes: number;
+  failures: number;
+  successRate: number;
+}
+
+export interface ModelPricingEntry {
+  modelId: string;
+  displayName: string;
+  currency: 'USD' | 'CNY';
+  inputPerMillion: number;
+  outputPerMillion: number;
+  cacheReadPerMillion: number;
+  cacheWritePerMillion: number;
+}
+
+/** Initial NewMax-compatible prices shown when the user has not customized pricing yet. */
+export const DEFAULT_MODEL_PRICING: readonly ModelPricingEntry[] = [
+  {
+    modelId: 'claude-3-5-haiku-20241022',
+    displayName: 'Claude 3.5 Haiku',
+    currency: 'USD',
+    inputPerMillion: 0.8,
+    outputPerMillion: 4,
+    cacheReadPerMillion: 0.08,
+    cacheWritePerMillion: 1,
+  },
+  {
+    modelId: 'claude-3-5-sonnet-20241022',
+    displayName: 'Claude 3.5 Sonnet',
+    currency: 'USD',
+    inputPerMillion: 3,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.3,
+    cacheWritePerMillion: 3.75,
+  },
+  {
+    modelId: 'claude-fable-5',
+    displayName: 'Claude Fable 5',
+    currency: 'USD',
+    inputPerMillion: 10,
+    outputPerMillion: 50,
+    cacheReadPerMillion: 1,
+    cacheWritePerMillion: 12.5,
+  },
+  {
+    modelId: 'claude-haiku-4-5',
+    displayName: 'Claude Haiku 4.5',
+    currency: 'USD',
+    inputPerMillion: 1,
+    outputPerMillion: 5,
+    cacheReadPerMillion: 0.1,
+    cacheWritePerMillion: 1.25,
+  },
+  {
+    modelId: 'claude-haiku-4-5-20251001',
+    displayName: 'Claude Haiku 4.5',
+    currency: 'USD',
+    inputPerMillion: 1,
+    outputPerMillion: 5,
+    cacheReadPerMillion: 0.1,
+    cacheWritePerMillion: 1.25,
+  },
+  {
+    modelId: 'claude-opus-4-20250514',
+    displayName: 'Claude Opus 4',
+    currency: 'USD',
+    inputPerMillion: 15,
+    outputPerMillion: 75,
+    cacheReadPerMillion: 1.5,
+    cacheWritePerMillion: 18.75,
+  },
+  {
+    modelId: 'claude-opus-4-6',
+    displayName: 'Claude Opus 4.6',
+    currency: 'USD',
+    inputPerMillion: 5,
+    outputPerMillion: 25,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 6.25,
+  },
+];
+
 export interface UsageSummaryResponse {
   rows: UsageSummaryRow[];
+  requests: UsageRequestRow[];
+  tools: UsageToolRow[];
+  toolModels: UsageToolModelRow[];
+  toolFailures: UsageToolFailureRow[];
+  pricing: ModelPricingEntry[];
   totalRequests: number;
   totalTokensIn: number;
   totalTokensOut: number;
+  totalCostByCurrency: Partial<Record<'USD' | 'CNY', number>>;
+  /** Absent until the active providers report cache accounting. */
+  totalCachedTokensHit?: number;
+  totalCachedTokensCreated?: number;
 }
 
 // --- Agent binding (persistent default / fallback 搂5.3) ---
@@ -937,7 +1092,6 @@ export interface UpdateAgentBindingPayload {
   /** When provided, replaces Agent MCP server allowlist on new version (section 9.3). */
   mcpServerIds?: string[];
 }
-
 
 export interface UpdateAgentBindingResponse {
   agent: AgentBindingSummary;
@@ -1032,7 +1186,6 @@ export interface CreateAgentVersionPayload {
 export interface CreateAgentVersionResponse {
   agent: AgentDefinitionSummary;
 }
-
 
 // --- Skill library (SKILL.md import subset 搂9.2) ---
 
@@ -1169,15 +1322,6 @@ export interface ProbeMcpPolicyResponse {
   toolName: string;
 }
 
-
-
-
-
-
-
-
-
-
 // --- MCP tool request 鈫?Approval Center (搂9.3 / 搂13; no real spawn) ---
 
 export interface RequestMcpToolPayload {
@@ -1226,8 +1370,6 @@ export interface RequestMcpToolResponse {
   trusted: boolean;
 }
 
-
-
 // --- MCP real local-stdio spawn probe (搂9.3 / 搂14; process host only, no JSON-RPC tools) ---
 
 export interface ProbeMcpSpawnPayload {
@@ -1269,8 +1411,6 @@ export interface ProbeMcpSpawnResponse {
   endpoint?: string;
   transport: string;
 }
-
-
 
 // --- MCP real tool call via JSON-RPC (搂9.3 / 搂13 / 搂14) ---
 // Gates: Agent allowlist 鈫?sensitivity 鈫?approval (or priorApprovalId) 鈫?LocalStdio spawn + tools/call
@@ -1460,7 +1600,6 @@ export interface PeekContextPacketResponse {
   peekedAt: string;
 }
 
-
 // --- Context Packet amend (thread-scoped user overrides; 搂10.3) ---
 
 export interface AmendContextPacketPayload {
@@ -1576,17 +1715,10 @@ export interface RollbackMemoryResponse {
   change: MemoryChangeSummary;
 }
 
-
 // --- Scoped approval policies ---
 
 export type PolicyScopeType =
-  | 'user'
-  | 'workspace'
-  | 'project'
-  | 'task'
-  | 'agent'
-  | 'workflow'
-  | 'run';
+  'user' | 'workspace' | 'project' | 'task' | 'agent' | 'workflow' | 'run';
 
 export interface PolicyScopeRef {
   scopeType: PolicyScopeType;
@@ -1636,7 +1768,6 @@ export interface ListPoliciesResponse {
   policies: PolicyVersionSummary[];
   resolved: ResolvedPolicySummary;
 }
-
 
 // --- Approval Center (搂13 / 搂15.1 item 8) ---
 
@@ -1794,7 +1925,10 @@ export interface ListDiagnosticsResponse {
   diagnostics: DiagnosticSummary[];
 }
 
-export type PauseResumeCancelResponse = { runId: RunId; state: import('@sync-think/shared').RunState };
+export type PauseResumeCancelResponse = {
+  runId: RunId;
+  state: import('@sync-think/shared').RunState;
+};
 
 // --- mutable global Agent / Team / Conversation commands (2026-07-22 model) ---
 // Permission is NEVER configured on agents/teams; it lives on the conversation
@@ -1948,6 +2082,10 @@ export interface ConversationDecideToolApprovalResponse {
 }
 
 // Helper: build a typed request envelope.
-export function req<T>(type: CommandType, payload: T, requestId: string = ulid()): CommandRequest<T> {
+export function req<T>(
+  type: CommandType,
+  payload: T,
+  requestId: string = ulid(),
+): CommandRequest<T> {
   return { type, payload, requestId };
 }

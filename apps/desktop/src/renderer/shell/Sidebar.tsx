@@ -66,6 +66,8 @@ export interface SidebarProps {
   /** Cold-start state for conversation catalog. */
   bootState?: 'loading' | 'ready' | 'error';
   bootError?: string;
+  /** Settings is modal-backed and needs its own active state. */
+  settingsOpen?: boolean;
   onSelectStage(stage: ShellStage): void;
   onToggleTrack(track: ConversationTrack): void;
   onToggleSidebar(): void;
@@ -122,7 +124,8 @@ export function Sidebar(props: SidebarProps) {
         <div className="mt-2 flex flex-col items-center gap-1 border-t border-border pt-2">
           {PRIMARY_STAGES.map((stage) => {
             const Icon = STAGE_ICONS[stage];
-            const active = props.nav.stage === stage;
+            const active =
+              stage === 'settings' ? props.settingsOpen === true : props.nav.stage === stage;
             return (
               <button
                 key={stage}
@@ -244,9 +247,7 @@ export function Sidebar(props: SidebarProps) {
                           active={props.nav.selectedConversationId === c.id}
                           onOpen={() => props.onOpenConversation(c.id)}
                           onTogglePin={() => props.onTogglePin(c.id, !c.pinnedAt)}
-                          onRename={() =>
-                            props.onRename(c.id, c.title || resolveName(c))
-                          }
+                          onRename={() => props.onRename(c.id, c.title || resolveName(c))}
                           onArchive={() => props.onArchive(c.id)}
                           onDelete={() => props.onDelete(c.id)}
                         />
@@ -371,14 +372,15 @@ function ConversationRow(props: {
       )}
       onClick={props.onOpen}
     >
-      {props.active && (
-        <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded bg-accent" />
-      )}
+      {props.active && <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded bg-accent" />}
       {/* Title + menu row */}
       <div className="flex items-center gap-1">
         <span className="flex-1 truncate text-[12.5px] font-medium">{title}</span>
         {c.pinnedAt && !props.archived && (
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-accent" title="已置顶">
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center text-accent"
+            title="已置顶"
+          >
             <Pin size={11} className="fill-current" />
           </span>
         )}

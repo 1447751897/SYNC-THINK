@@ -22,6 +22,58 @@ function eventAt(sequence: number, overrides: Partial<Event> = {}): Event {
 }
 
 describe('desktop runtime event history', () => {
+  it('projects durable message image references onto the matching user message', () => {
+    const threadId = 'thread-image-message';
+    const messageId = 'message-image-1';
+    const projection = projectConversation(
+      [
+        eventAt(1, {
+          category: 'message',
+          type: 'message.appended',
+          messageId: messageId as Event['messageId'],
+          payload: {
+            threadId,
+            messageId,
+            role: 'user',
+            text: '描述这张图',
+            taskVersion: 1,
+          },
+        }),
+        eventAt(2, {
+          category: 'message',
+          type: 'message.images-attached',
+          messageId: messageId as Event['messageId'],
+          payload: {
+            threadId,
+            messageId,
+            images: [
+              {
+                id: `${messageId}-1`,
+                name: 'screen.png',
+                mimeType: 'image/png',
+                storageRef: `${messageId}-1.png`,
+              },
+            ],
+          },
+        }),
+      ],
+      threadId,
+    );
+
+    expect(projection.messages[0]).toMatchObject({
+      id: messageId,
+      role: 'user',
+      images: [
+        {
+          id: `${messageId}-1`,
+          name: 'screen.png',
+          mimeType: 'image/png',
+          storageRef: `${messageId}-1.png`,
+        },
+      ],
+    });
+  });
+
   it('keeps Run completion separate from review and summarizes M2 orchestration events', () => {
     const threadId = 'thread-m2-trace';
     const events = [

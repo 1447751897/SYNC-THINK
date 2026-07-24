@@ -38,7 +38,6 @@ import type {
   ConfirmCapabilitiesResponse,
   ReorderProvidersPayload,
   ReorderProvidersResponse,
-  AddProviderCredentialPayload,
   AddProviderCredentialResponse,
   RemoveProviderCredentialPayload,
   RemoveProviderCredentialResponse,
@@ -300,7 +299,7 @@ const api = {
         'runtime:provider-reorder',
         payload,
       ) as Promise<ReorderProvidersResponse>,
-    addProviderCredential: (payload: AddProviderCredentialPayload) =>
+    addProviderCredential: (payload: { providerId: string; label?: string }) =>
       ipcRenderer.invoke(
         'runtime:provider-add-credential',
         payload,

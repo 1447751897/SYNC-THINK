@@ -34,6 +34,27 @@ describe('MarkdownContent', () => {
     expect(html).toMatch(/n\s*=\s*.*1/);
   });
 
+  it('shows expand and fullscreen controls for long fenced code', () => {
+    const lines = Array.from({ length: 14 }, (_, index) => `const line${index} = ${index};`).join('\n');
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: `\`\`\`ts\n${lines}\n\`\`\``,
+      }),
+    );
+    expect(html).toContain('放大查看代码');
+    expect(html).toContain('展开全部 14 行');
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  it('keeps short fenced code compact while still allowing fullscreen viewing', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```json\n{"ok":true}\n```',
+      }),
+    );
+    expect(html).toContain('放大查看代码');
+    expect(html).not.toContain('展开全部');
+  });
   it('shows streaming caret when streaming is true', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {

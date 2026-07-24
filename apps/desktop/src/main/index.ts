@@ -6,7 +6,16 @@
 // Visual Studio Build Tools. Once installed and `pnpm rebuild electron` runs,
 // `pnpm dev:desktop` launches this module.
 
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  protocol,
+  shell,
+} from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -23,7 +32,12 @@ import { listDogfoodDayReports } from './m1-exit-evidence-load.js';
 import { parseHandtestDocMarkdown } from '../m1-handtest-doc-parse.js';
 import { fileURLToPath } from 'node:url';
 import { encodeFrame, decodeFrames } from '@sync-think/protocol';
-import type { AppendMessagePayload, CancelRunPayload, Frame } from '@sync-think/protocol';
+import type {
+  AppendMessagePayload,
+  AppendMessageResponse,
+  CancelRunPayload,
+  Frame,
+} from '@sync-think/protocol';
 import {
   parseArchiveTaskPayload,
   parseBindWorkspaceFolderPayload,
@@ -46,7 +60,7 @@ import {
   parseProbeCapabilitiesPayload,
   parseConfirmCapabilitiesPayload,
   parseReorderProvidersPayload,
-  parseAddProviderCredentialPayload,
+  parseAddProviderCredentialMetadata,
   parseRemoveProviderCredentialPayload,
   parseSetModelPrioritiesPayload,
   parseRemoveModelPayload,
@@ -141,7 +155,15 @@ import { classifyRuntimeConnectError, RuntimePipeClient } from './runtime-client
 import { RuntimeSession } from './runtime-session.js';
 import { ensureRuntimeProcess, stopManagedRuntime } from './runtime-supervisor.js';
 import { stageChatImageDataUrl } from './image-staging.js';
+import { messageImageUrl, persistMessageImages, readMessageImage } from './message-images.js';
 import type { RuntimeConnectOutcome, RuntimeConnectResult } from '../runtime-bridge-contract.js';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'sync-think-image',
+    privileges: { standard: true, secure: true, supportFetchAPI: true },
+  },
+]);
 
 const INSTALL_ID = process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -279,10 +301,20 @@ async function connectRendererToRuntime(): Promise<RuntimeConnectOutcome> {
  * Convert renderer data-URL images into staging paths so task.appendMessage
  * stays under the protocol 1 MiB frame limit.
  */
-function stageAppendMessageImages(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+interface StagedAppendMessagePayload {
+  payload: unknown;
+  images: Array<{ name: string; mimeType: string; stagingPath: string }>;
+}
+
+function stageAppendMessageImages(value: unknown): StagedAppendMessagePayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { payload: value, images: [] };
+  }
   const payload = value as { images?: unknown };
-  if (!Array.isArray(payload.images) || payload.images.length === 0) return value;
+  if (!Array.isArray(payload.images) || payload.images.length === 0) {
+    return { payload: value, images: [] };
+  }
+  const durableImages: Array<{ name: string; mimeType: string; stagingPath: string }> = [];
   const images = payload.images.map((raw) => {
     if (!raw || typeof raw !== 'object') return raw;
     const image = raw as {
@@ -292,11 +324,13 @@ function stageAppendMessageImages(value: unknown): unknown {
       stagingPath?: string;
     };
     if (typeof image.stagingPath === 'string' && image.stagingPath.length > 0) {
-      return {
+      const next = {
         name: image.name || 'image',
         mimeType: image.mimeType || 'image/png',
         stagingPath: image.stagingPath,
       };
+      durableImages.push(next);
+      return next;
     }
     if (typeof image.dataUrl === 'string' && image.dataUrl.startsWith('data:image/')) {
       // Always stage: even "small" screenshots often exceed the 1 MiB frame after JSON.
@@ -311,15 +345,17 @@ function stageAppendMessageImages(value: unknown): unknown {
         bytes: staged.bytes,
         stagingPath: staged.stagingPath,
       });
-      return {
+      const next = {
         name: staged.name,
         mimeType: staged.mimeType,
         stagingPath: staged.stagingPath,
       };
+      durableImages.push(next);
+      return next;
     }
     return raw;
   });
-  return { ...(value as object), images };
+  return { payload: { ...(value as object), images }, images: durableImages };
 }
 
 function parseAppendMessagePayload(value: unknown): AppendMessagePayload {
@@ -360,8 +396,7 @@ function parseAppendMessagePayload(value: unknown): AppendMessagePayload {
         typeof image.dataUrl === 'string' &&
         image.dataUrl.startsWith('data:image/') &&
         image.dataUrl.length <= 700_000;
-      const hasStagingPath =
-        typeof image.stagingPath === 'string' && image.stagingPath.length > 0;
+      const hasStagingPath = typeof image.stagingPath === 'string' && image.stagingPath.length > 0;
       if (!hasDataUrl && !hasStagingPath) {
         throw new Error('Invalid append-message image item');
       }
@@ -406,7 +441,30 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     // Stage large images on disk first — named pipe frames are capped at 1 MiB.
     const staged = stageAppendMessageImages(value);
-    return getRuntimeClient().request('task.appendMessage', parseAppendMessagePayload(staged));
+    const response = await getRuntimeClient().request<AppendMessageResponse>(
+      'task.appendMessage',
+      parseAppendMessagePayload(staged.payload),
+    );
+    if (staged.images.length === 0) return response;
+
+    const images = persistMessageImages(String(response.messageId), staged.images).map((image) => ({
+      id: image.id,
+      name: image.name,
+      mimeType: image.mimeType,
+      storageRef: image.storageRef,
+      url: messageImageUrl(image.storageRef),
+    }));
+    if (images.length > 0) {
+      const eventDraft = {
+        type: 'message.images-attached',
+        threadId: (staged.payload as AppendMessagePayload).threadId,
+        messageId: response.messageId,
+        images: images.map(({ url: _url, ...image }) => image),
+      };
+      // The Runtime persists the lightweight attachment refs as a separate event.
+      await getRuntimeClient().request('message.attachImages', eventDraft);
+    }
+    return { ...response, images };
   });
   ipcMain.handle('runtime:workspace-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -621,7 +679,18 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request(
       'provider.addCredential',
-      parseAddProviderCredentialPayload(value),
+      (() => {
+        const metadata = parseAddProviderCredentialMetadata(value);
+        const apiKey = clipboard.readText();
+        if (!apiKey.trim() || apiKey.length > 8192) {
+          throw new Error('Provider credential unavailable');
+        }
+        return {
+          providerId: metadata.providerId,
+          label: metadata.label,
+          apiKey,
+        };
+      })(),
     );
   });
   ipcMain.handle('runtime:provider-remove-credential', async (event, value: unknown) => {
@@ -800,10 +869,7 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('runtime:conversation-delete', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'conversation.delete',
-      parseDeleteConversationPayload(value),
-    );
+    return getRuntimeClient().request('conversation.delete', parseDeleteConversationPayload(value));
   });
   ipcMain.handle('runtime:conversation-send-message', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -1125,6 +1191,22 @@ function setupRuntimeBridge(): void {
 void app
   .whenReady()
   .then(() => {
+    protocol.handle('sync-think-image', (request) => {
+      try {
+        const url = new URL(request.url);
+        const storageRef = decodeURIComponent(url.pathname.replace(/^\//, ''));
+        const image = readMessageImage(storageRef);
+        if (!image) return new Response('Not found', { status: 404 });
+        return new Response(new Uint8Array(image.data), {
+          headers: {
+            'Content-Type': image.mimeType,
+            'Cache-Control': 'private, max-age=31536000, immutable',
+          },
+        });
+      } catch {
+        return new Response('Bad request', { status: 400 });
+      }
+    });
     setupRuntimeBridge();
     createWindow();
     app.on('activate', () => {

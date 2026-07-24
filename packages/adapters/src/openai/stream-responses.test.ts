@@ -132,6 +132,42 @@ describe('streamOpenAIResponses', () => {
     });
   });
 
+  it('serializes multimodal user images as Responses input_image parts', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ status: 'completed', output: [] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIResponses(
+        req({
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'describe this' },
+                { type: 'image', imageUrl: 'data:image/png;base64,xx' },
+              ],
+            },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const requestBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(requestBody.input[0]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'describe this' },
+        { type: 'input_image', image_url: 'data:image/png;base64,xx' },
+      ],
+    });
+  });
+
   it('parses a non-stream Responses JSON fallback', async () => {
     fetchMock.mockResolvedValue({
       ok: true,

@@ -56,6 +56,7 @@ const TOOL_META: Record<
 > = {
   read_file: { verb: 'Read', kind: 'read', zh: '读取文件' },
   write_file: { verb: 'Edit', kind: 'write', zh: '写入文件' },
+  edit_file: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
   list_files: { verb: 'List', kind: 'list', zh: '列出文件' },
   run_command: { verb: 'Bash', kind: 'bash', zh: '执行命令' },
   git_status: { verb: 'Git', kind: 'git', zh: 'Git 状态' },
@@ -94,6 +95,13 @@ function parseMaybeJson(value: unknown): unknown {
 
 function eventThreadId(event: Event): string | undefined {
   return typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
+}
+
+function eventRunId(event: Event): string | undefined {
+  if (event.runId) return String(event.runId);
+  if (typeof event.payload.runId === 'string') return event.payload.runId;
+  const run = asRecord(event.payload.run);
+  return typeof run?.runId === 'string' ? run.runId : undefined;
 }
 
 function isToolEvent(type: string): boolean {
@@ -173,6 +181,8 @@ function extractWriteContent(args?: Record<string, unknown>): string | undefined
   if (typeof args.content === 'string') return args.content;
   if (typeof args.text === 'string') return args.text;
   if (typeof args.body === 'string') return args.body;
+  if (typeof args.new_string === 'string') return args.new_string;
+  if (typeof args.newString === 'string') return args.newString;
   return undefined;
 }
 
@@ -238,7 +248,7 @@ function summarizeResult(
     }
   }
 
-  if (toolName === 'write_file') {
+  if (toolName === 'write_file' || toolName === 'edit_file') {
     const created = obj?.created === true || obj?.isNew === true;
     const bytes =
       typeof obj?.bytes === 'number'
@@ -328,7 +338,7 @@ export function projectExecutionProcess(
   let tokensOut: number | undefined;
 
   for (const event of ordered) {
-    if (runId && event.runId && event.runId !== runId) continue;
+    if (runId && eventRunId(event) !== runId) continue;
 
     if (event.type === 'provider.usage') {
       const eventThread = eventThreadId(event);
@@ -412,7 +422,11 @@ export function projectExecutionProcess(
               : undefined,
         occurredAt: event.occurredAt,
       });
-      if (completed && toolName === 'write_file' && built.path) {
+      if (
+        completed &&
+        (toolName === 'write_file' || toolName === 'edit_file') &&
+        built.path
+      ) {
         fileChanges.push({
           path: built.path,
           action: resultSummary.created ? 'created' : 'edited',
@@ -440,7 +454,10 @@ export function projectExecutionProcess(
       );
       existing.preview = summary.preview ?? existing.preview;
       existing.exitCode = summary.exitCode ?? existing.exitCode;
-      if (toolName === 'write_file' && (existing.path || built.path)) {
+      if (
+        (toolName === 'write_file' || toolName === 'edit_file') &&
+        (existing.path || built.path)
+      ) {
         const path = existing.path || built.path!;
         const contentPreview = summary.content ?? summary.preview;
         const already = fileChanges.find(

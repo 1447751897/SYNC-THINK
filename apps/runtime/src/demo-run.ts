@@ -10,7 +10,10 @@ import type {
 export interface DemoRunImage {
   name: string;
   mimeType: string;
-  dataUrl: string;
+  /** Temporary Desktop-staged file used by Runtime immediately before provider I/O. */
+  stagingPath?: string;
+  /** Small-image fallback for non-Desktop callers; Desktop always stages. */
+  dataUrl?: string;
 }
 
 export interface DemoRunState {
@@ -291,7 +294,12 @@ export function parseDemoRuns(value: unknown): DemoRunState[] {
 
 export function applyDemoRunEvent(runs: Map<string, DemoRunState>, event: Event): void {
   if (!event.runId) return;
-  if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled' || event.type === 'run.paused') {
+  if (
+    event.type === 'run.completed' ||
+    event.type === 'run.failed' ||
+    event.type === 'run.cancelled' ||
+    event.type === 'run.paused'
+  ) {
     runs.delete(event.runId);
     return;
   }
@@ -332,19 +340,21 @@ function parseDemoRun(value: unknown): DemoRunState {
     networkEnabled: run.networkEnabled === true ? true : undefined,
     images: Array.isArray(run.images)
       ? run.images
-          .filter(
-            (img): img is DemoRunImage =>
-              Boolean(
-                img &&
-                  typeof img === 'object' &&
-                  typeof (img as DemoRunImage).dataUrl === 'string' &&
-                  (img as DemoRunImage).dataUrl.startsWith('data:image/'),
-              ),
+          .filter((img): img is DemoRunImage =>
+            Boolean(
+              img &&
+              typeof img === 'object' &&
+              ((typeof (img as DemoRunImage).stagingPath === 'string' &&
+                Boolean((img as DemoRunImage).stagingPath)) ||
+                (typeof (img as DemoRunImage).dataUrl === 'string' &&
+                  (img as DemoRunImage).dataUrl!.startsWith('data:image/'))),
+            ),
           )
           .map((img) => ({
             name: typeof img.name === 'string' ? img.name : 'image',
             mimeType: typeof img.mimeType === 'string' ? img.mimeType : 'image/png',
-            dataUrl: img.dataUrl,
+            ...(typeof img.stagingPath === 'string' ? { stagingPath: img.stagingPath } : {}),
+            ...(typeof img.dataUrl === 'string' ? { dataUrl: img.dataUrl } : {}),
           }))
       : undefined,
     packetId: typeof run.packetId === 'string' ? run.packetId : undefined,

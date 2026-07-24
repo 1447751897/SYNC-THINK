@@ -35,7 +35,6 @@
   ConfirmCapabilitiesResponse,
   ReorderProvidersPayload,
   ReorderProvidersResponse,
-  AddProviderCredentialPayload,
   AddProviderCredentialResponse,
   RemoveProviderCredentialPayload,
   RemoveProviderCredentialResponse,
@@ -209,7 +208,7 @@ declare global {
         ): Promise<ConfirmCapabilitiesResponse>;
         reorderProviders(payload: ReorderProvidersPayload): Promise<ReorderProvidersResponse>;
         addProviderCredential(
-          payload: AddProviderCredentialPayload,
+          payload: { providerId: string; label?: string },
         ): Promise<AddProviderCredentialResponse>;
         removeProviderCredential(
           payload: RemoveProviderCredentialPayload,

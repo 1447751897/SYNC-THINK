@@ -24,7 +24,7 @@ export function createProviderPayloadFromClipboard(
 ): CreateProviderPayload {
   return {
     ...metadata,
-    apiKey: metadata.apiKey ?? readCredential(readClipboard),
+    apiKey: readCredential(readClipboard),
   } as CreateProviderPayload;
 }
 
@@ -37,7 +37,6 @@ export function updateProviderPayloadFromClipboard(
     ...update,
     providerId: update.providerId as UpdateProviderPayload['providerId'],
   };
-  if (typeof update.apiKey === 'string') return internalUpdate;
   return rotateCredentialFromClipboard === true
     ? { ...internalUpdate, apiKey: readCredential(readClipboard) }
     : internalUpdate;

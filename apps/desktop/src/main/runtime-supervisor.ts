@@ -4,9 +4,9 @@
 //
 // Also force-restarts an orphan runtime when Desktop starts, so rebuilds do not
 // keep serving a stale process that already holds the named pipe.
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 // mkdirSync already imported above
@@ -20,10 +20,17 @@ let starting: Promise<void> | null = null;
 /** Only force-restart once per Desktop process lifetime. */
 let didForceRestartThisSession = false;
 
+function electronResourcesPath(): string | undefined {
+  return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+}
+
 function resolveRuntimeEntry(): string | null {
-  // From apps/desktop/dist/main → monorepo apps/runtime/dist/main.js
+  // From apps/desktop/dist/main → monorepo apps/runtime/dist/main.js.
+  // Packaged builds place Runtime under resources/runtime.
+  const resourcesPath = electronResourcesPath();
   const candidates = [
     process.env.SYNC_THINK_RUNTIME_ENTRY,
+    resourcesPath ? join(resourcesPath, 'runtime', 'main.js') : undefined,
     join(__dirname, '..', '..', '..', 'runtime', 'dist', 'main.js'),
     join(__dirname, '..', '..', '..', '..', 'apps', 'runtime', 'dist', 'main.js'),
     join(process.cwd(), 'apps', 'runtime', 'dist', 'main.js'),
@@ -137,22 +144,61 @@ async function waitForPipeDown(installId: string, totalMs = 5_000): Promise<void
   }
 }
 
-function resolveNodeBinary(): string {
-  // Prefer a real Node binary. Electron's execPath + ELECTRON_RUN_AS_NODE uses a
-  // different NODE_MODULE_VERSION than better-sqlite3 built for system Node,
-  // which crashes the managed runtime on startup.
-  if (process.env.SYNC_THINK_NODE_BIN && existsSync(process.env.SYNC_THINK_NODE_BIN)) {
-    return process.env.SYNC_THINK_NODE_BIN;
+function nodeMajor(binary: string): number | null {
+  try {
+    const result = spawnSync(binary, ['-p', 'process.versions.node'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3_000,
+    });
+    if (result.status !== 0) return null;
+    const major = Number.parseInt(result.stdout.trim().split('.')[0] ?? '', 10);
+    return Number.isInteger(major) ? major : null;
+  } catch {
+    return null;
   }
-  // On Windows, `node` from PATH is the usual system install.
-  return process.platform === 'win32' ? 'node.exe' : 'node';
+}
+
+function resolveNodeBinary(): string | null {
+  // Runtime native dependencies are built for the workspace's required Node 20.
+  // `node.exe` on PATH is frequently a different major (Node 24 on the current
+  // development machine), which exits before opening the pipe with an ABI error.
+  const resourcesPath = electronResourcesPath();
+  const candidates = [
+    process.env.SYNC_THINK_NODE_BIN,
+    resourcesPath
+      ? join(resourcesPath, 'node', process.platform === 'win32' ? 'node.exe' : 'node')
+      : undefined,
+    process.env.LOCALAPPDATA
+      ? join(process.env.LOCALAPPDATA, 'pnpm', 'nodejs', '20.20.2', 'node.exe')
+      : undefined,
+    process.platform === 'win32' ? 'node.exe' : 'node',
+  ].filter((value): value is string => Boolean(value));
+
+  const pathEntries = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  for (const entry of pathEntries) {
+    candidates.push(join(entry, process.platform === 'win32' ? 'node.exe' : 'node'));
+  }
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    if ((candidate.includes('/') || candidate.includes('\\')) && !existsSync(candidate)) continue;
+    if (nodeMajor(candidate) === 20) return candidate;
+  }
+
+  return null;
 }
 
 function defaultDataRoot(): string {
   // Prefer monorepo .data (usually on D:) so a full C: drive does not kill Runtime.
   // __dirname = apps/desktop/dist/main → repo root is ../../../..
   const monorepoData = join(__dirname, '..', '..', '..', '..', '.data', 'SYNC-THINK');
-  if (existsSync(dirname(monorepoData)) || existsSync(join(__dirname, '..', '..', '..', '..', 'apps'))) {
+  if (
+    existsSync(dirname(monorepoData)) ||
+    existsSync(join(__dirname, '..', '..', '..', '..', 'apps'))
+  ) {
     return monorepoData;
   }
   const cwdData = join(process.cwd(), '.data', 'SYNC-THINK');
@@ -161,11 +207,12 @@ function defaultDataRoot(): string {
   return join(dataRoot, 'SYNC-THINK');
 }
 
-function spawnRuntime(entry: string, installId: string): ChildProcess {
+function spawnRuntime(entry: string, installId: string, nodeBin: string): ChildProcess {
   const dataRoot = defaultDataRoot();
   try {
     mkdirSync(dataRoot, { recursive: true });
     mkdirSync(join(dataRoot, 'chat-image-staging'), { recursive: true });
+    mkdirSync(join(dataRoot, 'message-images'), { recursive: true });
   } catch {
     /* ignore */
   }
@@ -174,25 +221,24 @@ function spawnRuntime(entry: string, installId: string): ChildProcess {
     SYNC_THINK_INSTALL_ID: installId,
     // Match desktop dev default: no HMAC unless a secret is configured.
     SYNC_THINK_DEV_NO_TOKEN:
-      process.env.SYNC_THINK_DEV_NO_TOKEN ??
-      (process.env.SYNC_THINK_PIPE_SECRET ? '0' : '1'),
+      process.env.SYNC_THINK_DEV_NO_TOKEN ?? (process.env.SYNC_THINK_PIPE_SECRET ? '0' : '1'),
     // Keep DB + image staging on a drive with free space (dev machines often fill C:).
-    SYNC_THINK_DB_PATH:
-      process.env.SYNC_THINK_DB_PATH ?? join(dataRoot, 'sync-think.db'),
+    SYNC_THINK_DB_PATH: process.env.SYNC_THINK_DB_PATH ?? join(dataRoot, 'sync-think.db'),
     SYNC_THINK_CHAT_IMAGE_STAGING:
       process.env.SYNC_THINK_CHAT_IMAGE_STAGING ?? join(dataRoot, 'chat-image-staging'),
+    SYNC_THINK_CHAT_MESSAGE_IMAGES:
+      process.env.SYNC_THINK_CHAT_MESSAGE_IMAGES ?? join(dataRoot, 'message-images'),
   };
   // Never pass ELECTRON_RUN_AS_NODE when spawning system Node — it can confuse
   // some environments if inherited from the parent Electron process.
   delete (env as { ELECTRON_RUN_AS_NODE?: string }).ELECTRON_RUN_AS_NODE;
 
-  const nodeBin = resolveNodeBinary();
   const childProcess = spawn(nodeBin, [entry], {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
     detached: false,
-    shell: process.platform === 'win32',
+    shell: false,
   });
 
   if (typeof childProcess.pid === 'number') {
@@ -256,9 +302,9 @@ async function killOrphanRuntimeProcesses(installId: string): Promise<void> {
     // Match managed dist entry AND lingering `pnpm dev:runtime` / tsx watch trees.
     const ps = [
       "$ErrorActionPreference='SilentlyContinue'",
-      "Get-CimInstance Win32_Process |",
-      "  Where-Object {",
-      "    $_.CommandLine -and (",
+      'Get-CimInstance Win32_Process |',
+      '  Where-Object {',
+      '    $_.CommandLine -and (',
       "      ($_.Name -match 'node' -and (",
       "        $_.CommandLine -match 'runtime[\\\\/]+dist[\\\\/]+main\\.js' -or",
       "        $_.CommandLine -match 'apps[\\\\/]+runtime[\\\\/]+dist' -or",
@@ -266,14 +312,14 @@ async function killOrphanRuntimeProcesses(installId: string): Promise<void> {
       "        ($_.CommandLine -match 'SYNC-THINK' -and $_.CommandLine -match 'src/main\\.ts' -and $_.CommandLine -match 'tsx') -or",
       "        $_.CommandLine -match 'filter @sync-think/runtime' -or",
       "        $_.CommandLine -match 'dev:runtime'",
-      "      )) -or",
+      '      )) -or',
       `      ($_.Name -match 'node|cmd|powershell' -and $_.CommandLine -match 'sync-think-${installId}')`,
-      "    )",
-      "  } |",
-      "  ForEach-Object {",
+      '    )',
+      '  } |',
+      '  ForEach-Object {',
       "    Write-Output ('kill-runtime-pid=' + $_.ProcessId + ' name=' + $_.Name);",
-      "    Stop-Process -Id $_.ProcessId -Force",
-      "  }",
+      '    Stop-Process -Id $_.ProcessId -Force',
+      '  }',
     ].join(' ');
     try {
       const result = await runCommand('powershell.exe', ['-NoProfile', '-Command', ps]);
@@ -319,15 +365,16 @@ async function stopExistingRuntime(installId: string): Promise<void> {
  * If the Runtime named pipe is not accepting connections, spawn the local
  * runtime process and wait until the pipe is ready (or timeout).
  *
- * On the first call of each Desktop session we also recycle any orphan runtime
- * that already holds the pipe, so a rebuild cannot keep serving stale code.
+ * If a healthy Runtime already owns the pipe, reuse it. Developers can opt in
+ * to recycling the process after a rebuild with SYNC_THINK_RUNTIME_FORCE_RESTART=1.
+ * Blindly recycling on every Desktop launch races with orphan/dev runtimes and
+ * causes EADDRINUSE followed by renderer-visible runtime.unavailable errors.
  */
 export async function ensureRuntimeProcess(
   installId: string = process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001',
 ): Promise<{ ready: boolean; spawned: boolean; error?: string }> {
-  const allowReuse = process.env.SYNC_THINK_RUNTIME_REUSE === '1';
   const forceRestart =
-    !allowReuse && !didForceRestartThisSession && process.env.SYNC_THINK_RUNTIME_NO_RESTART !== '1';
+    process.env.SYNC_THINK_RUNTIME_FORCE_RESTART === '1' && !didForceRestartThisSession;
 
   if (!forceRestart && (await probePipe(installId))) {
     return { ready: true, spawned: false };
@@ -347,6 +394,14 @@ export async function ensureRuntimeProcess(
       return;
     }
 
+    const nodeBin = resolveNodeBinary();
+    if (!nodeBin) {
+      console.error(
+        '[desktop] Node 20 runtime was not found; set SYNC_THINK_NODE_BIN or install the workspace-managed Node 20 runtime',
+      );
+      return;
+    }
+
     if (forceRestart) {
       didForceRestartThisSession = true;
       console.log('[desktop] recycling runtime so Desktop uses the latest build');
@@ -356,8 +411,8 @@ export async function ensureRuntimeProcess(
     }
 
     if (!child || child.killed || child.exitCode !== null) {
-      console.log('[desktop] starting managed runtime', entry);
-      child = spawnRuntime(entry, installId);
+      console.log('[desktop] starting managed runtime', { entry, nodeBin });
+      child = spawnRuntime(entry, installId, nodeBin);
     }
     const ok = await waitForPipe(installId);
     if (!ok) {

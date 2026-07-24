@@ -1,4 +1,74 @@
-## 2026-07-24 · 模型源导入 / 设置页（NewMax 对齐）
+## 2026-07-24 · 对话过程总折叠与代码放大
+
+- Assistant 每轮新增高于“深度思考/工具步骤/文件变更”的总过程层：执行中自动展开，完成后自动折叠；摘要直接显示深度思考、工具步骤数与文件变更数，避免大量过程卡平铺占满消息流。
+- 总过程展开后仍保留二级细节：深度思考、各工具步骤及 Changes 均可独立查看；工具步骤在总层中改为更紧凑的嵌套行。
+- 代码块增加：长代码展开/收起、全屏放大查看、`80%–160%` 字号缩放、复制、ESC/遮罩关闭；短代码仍保持紧凑。
+- 文件工具标题直接显示路径，例如 `读取文件 · src/config.ts`、`写入文件 · docs/roadmap.md`，无需先展开才能知道目标；读取结果仍可在步骤内直接看到，写入/编辑内容继续进入文件变更预览。
+- 过程投影补齐 `edit_file` 映射、`new_string` 预览和严格 run 隔离，避免无 run 事件串到其他回答的过程组。
+- 验证：Desktop typecheck；Markdown/过程投影聚焦测试 15/15；Desktop build；`git diff --check`。
+
+
+
+- 继续以用户最新八张 NewMax 截图为唯一结构基准，完成使用统计全过程：
+  - 时间范围改为 `24h / 近 7 天 / 近 30 天 / 全部` 分段选择器
+  - 四项 KPI 改为四张独立卡片，卡间 `12px`；顶部、二级 Tab 与表格节奏按截图收紧
+  - 供应商表补齐请求数、总 Token、总费用、请求成功率、工具成功率、平均延迟
+  - 模型表补齐请求数、总 Token、总费用与单次均费
+  - 工具页补齐总调用/成功/失败/成功率、模型级统计、工具明细与最近失败记录
+- 定价配置按 NewMax 的八列表格实现：模型 ID、显示名、币种、输入/M、输出/M、缓存读/M、缓存建/M、操作；支持添加、编辑、删除并持久化到 `app_setting['model-pricing']`。
+- 初次使用展示截图中的 Claude 定价基线；用户保存后完全以本机配置为准。费用按输入、输出、缓存读、缓存建分别估算，并按 USD/CNY 分币种展示，不伪造汇率。
+- Runtime 从 durable tool requested/completed 事件重建成功/失败；新工具结果额外标记失败和错误摘要，但继续保持既有 `tool.completed` 事件契约，避免破坏历史投影。
+- 验证：protocol/runtime/desktop typecheck；Runtime 246/246；Desktop 399/399；全仓 build 11/11；`git diff --check`。测试需将 TEMP 指向 D 盘（本机 C 盘临时目录仅余约 36MB）。
+
+## 2026-07-24 · NewMax 模型设置与使用统计对齐
+
+- 以用户提供的 NewMax 截图为唯一页面结构基准，不再自行发明模型管理后台布局：
+  - 设置分类栏 + 启用模型栏 + Provider 详情栏
+  - 文本/图像/视频/语音/使用统计媒体 Tabs
+  - 启用模型首项标记“默认”，支持启停与真实顺序调整；停用项进入独立折叠区
+  - Provider 详情保留名称、Base URL、API 格式、多密钥、模型优先级、模型发现/手填与 Vision Fallback / Plan & Act
+- 使用统计改为 NewMax 结构：
+  - 顶部 4 项：总请求、总费用、总 Token、缓存 Token
+  - 二级 Tabs：请求日志、供应商统计、模型统计、工具统计、定价配置
+  - 请求日志支持时间范围、模型筛选、状态筛选、详情开关；表字段为时间/供应商/模型/Token/费用/延迟/状态
+  - `usage.summary` 从 durable `provider.usage`、run 终态与 `tool.requested` 重建真实请求日志、延迟、供应商/模型/工具聚合；没有真实价格或缓存用量时显示 `—`，不伪造数据
+- 供应商密钥继续遵守 Renderer 安全边界：表单值先写系统剪贴板，由主进程读取后送 Runtime；Renderer/preload 元数据类型不携带 `apiKey`
+- 验证：protocol/runtime/desktop typecheck；Provider 安全边界 15/15；Provider Runtime 命令 5/5；Desktop build
+
+
+- **根因 A（消息发送后图片消失）**：图片只存在 renderer optimistic state；durable `message.appended` 只有文本，投影按文本清理 pending 后图片立即消失，重开对话也无法恢复
+- **根因 B（当前模型看不到图片）**：实际协议为 `openai-responses`，Responses adapter 把多模态 `content[]` 压成纯文本，静默丢弃 image part
+- **修复**：
+  - Desktop staging 后把图片复制到应用管理的 `message-images` 目录，事件只保存轻量 `storageRef`，不保存任意路径或 base64
+  - 新增 `message.images-attached` durable event；投影按真实 `messageId` 关联图片，不再按文本去重
+  - 自定义安全协议 `sync-think-image://media/<ref>` 为消息气泡和 lightbox 提供重开后图片
+  - OpenAI Responses 序列化 `input_text + input_image`；OpenAI Chat/Anthropic 原多模态路径保持
+  - Demo run 改存 staging ref，provider 调用前才解析 data URL，避免图片 base64 在每个 delta/event/checkpoint 中重复膨胀
+  - 图片总数限制为 8；读取失败给可见错误；发送失败恢复附件
+- 验证：adapters 多模态 18/18；runtime staging 1/1；desktop event history / compose 29/29；protocol/adapters/runtime/desktop typecheck；`git diff --check`
+
+- 设置视觉不再以“NewMax-style”自行设计，改为以用户提供的 NewMax 截图为结构基准：
+  - 居中 `1064×720` 上限设置窗口、约 `188px` 左栏、克制遮罩/圆角/阴影
+  - 左栏含“设置 / Ctrl ,”、搜索框与 NewMax 同层级分类入口；未接能力只保留入口并明确未接，不伪造功能
+  - 右侧固定页标题、内容区与右下角“完成”；ESC、遮罩和右上角 × 均可关闭
+  - 通用页改为“通用 / 个性化”分段、标题+说明+右侧开关的设置行、底部三档权限模式；移除自创的大卡片墙
+  - 主题页压缩为 NewMax 式紧凑外观选项
+  - 模型页增加文本/图像/视频/语音/使用统计 Tabs；文本页改为“启用模型列表 + Provider 详情”三栏关系，首个启用项显示默认；使用统计移入模型页 Tab
+- 设置 Modal 打开时，主侧栏“设置”入口同步保持选中；Provider 修改后触发 Shell catalog 刷新，关闭设置后模型选择器不再停留旧目录
+- 动画开关继续控制全局动画，同时完整尊重 `prefers-reduced-motion`
+- 验证：Desktop typecheck；shell build；产品壳聚焦测试 27/27；`git diff --check`
+
+- **`runtime.unavailable` 根因与修复**：
+  - Desktop 过去直接使用 PATH 中的 `node.exe`；当前系统为 Node 24，而 Runtime 的 `better-sqlite3` 按 Node 20 构建，子进程会在打开 named pipe 前退出
+  - supervisor 现在搜索并校验 Node 20（支持 `SYNC_THINK_NODE_BIN`、release `resources/node`、pnpm managed Node 与 PATH），找不到时返回明确失败，不再启动错误 ABI 的 Runtime
+  - 健康 Runtime 默认复用；仅 `SYNC_THINK_RUNTIME_FORCE_RESTART=1` 时回收重启，避免重复 Runtime 抢占 pipe 导致 `EADDRINUSE`
+  - release 入口预留 `resources/runtime/main.js` 与 `resources/node/node(.exe)`，打包时必须随应用分发
+- **设置弹窗（NewMax 对齐）**：
+  - 使用 Radix Dialog，原生支持 ESC、遮罩关闭、焦点管理和无障碍语义
+  - 改为大尺寸居中 application sheet：独立标题栏、左侧分类导航、右侧内容区，聊天保持在模糊遮罩后
+  - 尺寸约束 `min(1080×760, viewport-72px)`；窄窗口自动贴近全屏；模型双栏页保留独立滚动
+  - 动画开关继续控制全局 transition/animation；关闭后 Modal 瞬开瞬关
+- 验证：desktop typecheck/build；runtime-session/runtime-connection/shell-state 聚焦测试 16/16；冷启动确认 Desktop 自动选择 Node 20 且 Runtime pipe 可用
 
 - **目标**：设置 → 模型 可完整导入与管理模型源；使用统计可查请求/token
 - **数据层（0026）**：
@@ -10,12 +80,12 @@
   - `provider.reorder` / `addCredential` / `removeCredential` / `setModelPriorities` / `removeModel`
   - `settings.get` / `settings.set`
   - `usage.summary`（从 provider.usage 事件聚合，补 displayName）
-  - create/update 支持表单直传 `apiKey`（clipboard 兜底仍保留）
+  - create/update 的 `apiKey` 经主进程 clipboard 中转写入安全存储；Renderer/preload 元数据不携带密钥
 - **Desktop bridge**：main/preload/global.d 全量透传上述命令
 - **设置 UI（新壳）**：
   - 双栏模型源：左列表（启停 + 排序）/ 右详情（端点、API 格式、多密钥、模型优先级、发现/手填）
   - 全局 Vision Fallback + Plan & Act
-  - 使用统计页：近 7/30/90 天与全部时间
+  - 使用统计页：24h / 近 7 天 / 近 30 天 / 全部时间
   - 停用供应商从对话模型选择器隐藏
 - 验证：storage 232/232；protocol/storage/runtime/desktop typecheck；shell+runtime rebuild；Desktop 热重启 hello accepted
 

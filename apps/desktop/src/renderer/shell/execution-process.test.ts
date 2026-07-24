@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
 import { formatTokenUsage, projectExecutionProcess } from './execution-process.js';
+import { formatExecutionStepTitle } from './ExecutionProcessBlock.js';
 
 function event(
   partial: Partial<Event> & Pick<Event, 'id' | 'type' | 'sequence' | 'payload'>,
@@ -162,6 +163,134 @@ describe('projectExecutionProcess', () => {
     expect(view.steps[0]?.label).toMatch(/^Bash ·/);
     expect(view.steps[0]?.error).toContain('exit 1');
     expect(view.errorCount).toBe(1);
+  });
+
+  it('includes read/write file paths directly in visible step titles', () => {
+    expect(
+      formatExecutionStepTitle({
+        id: 'read-title',
+        label: 'Read · src/config.ts',
+        verb: 'Read',
+        zh: '读取文件',
+        toolName: 'read_file',
+        kind: 'read',
+        status: 'done',
+        path: 'src/config.ts',
+      }),
+    ).toBe('读取文件 · src/config.ts');
+    expect(
+      formatExecutionStepTitle({
+        id: 'write-title',
+        label: 'Edit · docs/roadmap.md',
+        verb: 'Edit',
+        zh: '写入文件',
+        toolName: 'write_file',
+        kind: 'write',
+        status: 'done',
+        path: 'docs/roadmap.md',
+        count: 2,
+      }),
+    ).toBe('写入文件 · docs/roadmap.md ×2');
+  });
+
+  it('projects read_file path and content directly into the step', () => {
+    const events = [
+      event({
+        id: 'e_read_1' as Event['id'],
+        sequence: 1,
+        type: 'tool.requested',
+        runId: 'run_read' as Event['runId'],
+        payload: {
+          threadId: 'th_1',
+          toolCallId: 'call_read',
+          toolName: 'read_file',
+          toolCall: {
+            id: 'call_read',
+            name: 'read_file',
+            argumentsJson: JSON.stringify({ path: 'src/reader.ts' }),
+          },
+        },
+      }),
+      event({
+        id: 'e_read_2' as Event['id'],
+        sequence: 2,
+        type: 'tool.completed',
+        runId: 'run_read' as Event['runId'],
+        payload: {
+          threadId: 'th_1',
+          toolCallId: 'call_read',
+          toolName: 'read_file',
+          result: JSON.stringify({ content: 'export const ready = true;\n' }),
+        },
+      }),
+    ];
+    const view = projectExecutionProcess(events, { runId: 'run_read' });
+    expect(view.steps[0]).toEqual(
+      expect.objectContaining({
+        path: 'src/reader.ts',
+        kind: 'read',
+        status: 'done',
+        preview: 'export const ready = true;\n',
+      }),
+    );
+  });
+
+  it('projects edit_file as a file change using new_string preview', () => {
+    const events = [
+      event({
+        id: 'e_edit' as Event['id'],
+        sequence: 1,
+        type: 'tool.completed',
+        runId: 'run_edit' as Event['runId'],
+        payload: {
+          threadId: 'th_1',
+          toolCallId: 'call_edit',
+          toolName: 'edit_file',
+          arguments: { path: 'src/a.ts', old_string: 'old', new_string: 'new value' },
+          result: JSON.stringify({ ok: true }),
+        },
+      }),
+    ];
+    const view = projectExecutionProcess(events, { runId: 'run_edit' });
+    expect(view.steps[0]).toEqual(
+      expect.objectContaining({ path: 'src/a.ts', kind: 'write', zh: '编辑文件' }),
+    );
+    expect(view.fileChanges[0]).toEqual(
+      expect.objectContaining({ path: 'src/a.ts', action: 'edited', preview: 'new value' }),
+    );
+  });
+
+  it('strictly isolates events without the requested run id', () => {
+    const events = [
+      event({
+        id: 'e_unscoped' as Event['id'],
+        sequence: 1,
+        type: 'tool.completed',
+        payload: {
+          threadId: 'th_1',
+          toolCallId: 'call_unscoped',
+          toolName: 'read_file',
+          arguments: { path: 'wrong.ts' },
+          result: JSON.stringify({ content: 'wrong' }),
+        },
+      }),
+      event({
+        id: 'e_scoped' as Event['id'],
+        sequence: 2,
+        type: 'tool.completed',
+        payload: {
+          run: { runId: 'run_target' },
+          threadId: 'th_1',
+          toolCallId: 'call_scoped',
+          toolName: 'read_file',
+          arguments: { path: 'right.ts' },
+          result: JSON.stringify({ content: 'right' }),
+        },
+      }),
+    ];
+    const view = projectExecutionProcess(events, { runId: 'run_target' });
+    expect(view.steps).toHaveLength(1);
+    expect(view.steps[0]?.path).toBe('right.ts');
   });
 
   it('captures provider.usage tokens for the run/thread', () => {

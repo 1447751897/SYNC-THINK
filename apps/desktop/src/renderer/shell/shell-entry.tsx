@@ -6,6 +6,12 @@ import { applyShellTheme } from './SettingsPage.js';
 const storedTheme = (localStorage.getItem('sync-think-shell-theme') as 'light' | 'dark' | 'system') || 'system';
 applyShellTheme(storedTheme);
 
+// Restore animation preference.
+const animPref = localStorage.getItem('sync-think-animation');
+if (animPref === '0') {
+  document.documentElement.setAttribute('data-reduced-motion', '');
+}
+
 // Keep OS-follow responsive while theme is 'system'.
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   const current = (localStorage.getItem('sync-think-shell-theme') as 'light' | 'dark' | 'system') || 'system';

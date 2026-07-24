@@ -62,6 +62,21 @@ function toResponsesInput(request: ProviderCallRequest): Array<Record<string, un
       }
       if (!content) continue;
     }
+    if (message.role === 'user' && Array.isArray(message.content)) {
+      const parts: Array<Record<string, unknown>> = [];
+      for (const part of message.content) {
+        if (part.type === 'text' && part.text) {
+          parts.push({ type: 'input_text', text: part.text });
+        } else if (part.type === 'image') {
+          const imageUrl = part.imageUrl || part.imageRef;
+          if (imageUrl) parts.push({ type: 'input_image', image_url: imageUrl });
+        }
+      }
+      if (parts.length > 0) {
+        input.push({ role: 'user', content: parts });
+        continue;
+      }
+    }
     if (!content && message.role !== 'assistant') continue;
     input.push({
       role: message.role === 'assistant' ? 'assistant' : 'user',

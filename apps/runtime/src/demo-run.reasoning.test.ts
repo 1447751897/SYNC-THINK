@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  createDemoProviderRequest,
-  createDemoRun,
-  projectAdapterEvent,
-} from './demo-run.js';
+import { createDemoProviderRequest, createDemoRun, projectAdapterEvent } from './demo-run.js';
 
 describe('demo-run reasoning', () => {
   it('forwards reasoningEffort into provider request', () => {
@@ -37,5 +33,26 @@ describe('demo-run reasoning', () => {
     expect(done.type).toBe('run.completed');
     expect(done.payload.assistantText).toBe('结论如下。');
     expect(done.payload.reasoningText).toBe('先分析问题。');
+  });
+
+  it('keeps staged image refs instead of durable base64 blobs', () => {
+    const run = createDemoRun('run-image' as never, 'thread-image', 'describe', {
+      images: [
+        {
+          name: 'screen.png',
+          mimeType: 'image/png',
+          stagingPath: 'D:/staging/screen.png',
+        },
+      ],
+    });
+    const projected = projectAdapterEvent(run, { type: 'text-delta', text: 'ok' });
+    expect(projected.nextRun?.images).toEqual([
+      {
+        name: 'screen.png',
+        mimeType: 'image/png',
+        stagingPath: 'D:/staging/screen.png',
+      },
+    ]);
+    expect(JSON.stringify(projected.payload)).not.toContain('data:image/');
   });
 });

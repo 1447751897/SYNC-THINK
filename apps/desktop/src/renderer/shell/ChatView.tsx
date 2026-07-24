@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import {
   Bot,
   Brain,
   Check,
+  ChevronDown,
   Copy,
   FileCode2,
   FileWarning,
@@ -11,6 +20,7 @@ import {
   Globe,
   ImagePlus,
   Lock,
+  LoaderCircle,
   PanelRight,
   Puzzle,
   RefreshCw,
@@ -216,6 +226,7 @@ export function ChatView({
       .filter(
         (message) =>
           message.text.trim().length > 0 ||
+          Boolean(message.images?.length) ||
           Boolean(message.reasoningText?.trim()) ||
           message.streaming,
       )
@@ -223,6 +234,12 @@ export function ChatView({
         id: message.id,
         role: message.role,
         text: message.text,
+        images: message.images?.map((image) => ({
+          id: image.id,
+          name: image.name,
+          mimeType: image.mimeType,
+          url: `sync-think-image://media/${encodeURIComponent(image.storageRef)}`,
+        })),
         reasoningText: message.reasoningText,
         timestamp: message.occurredAt ?? '',
         streaming: message.streaming,
@@ -256,8 +273,7 @@ export function ChatView({
           runId: typeof event.payload.runId === 'string' ? event.payload.runId : event.runId,
           toolCallId:
             typeof event.payload.toolCallId === 'string' ? event.payload.toolCallId : undefined,
-          toolName:
-            typeof event.payload.toolName === 'string' ? event.payload.toolName : 'tool',
+          toolName: typeof event.payload.toolName === 'string' ? event.payload.toolName : 'tool',
           title:
             typeof event.payload.title === 'string'
               ? event.payload.title
@@ -309,13 +325,14 @@ export function ChatView({
     [decidingApprovalId],
   );
 
-  // Drop optimistic bubbles once the same user text lands in durable history.
+  // Remove optimistic bubbles only after their durable message id arrives.
+  // Text matching is unsafe for repeated prompts and used to drop image previews.
   useEffect(() => {
     if (pendingUserMessages.length === 0) return;
-    const durableUserTexts = new Set(
-      projected.messages.filter((message) => message.role === 'user').map((message) => message.text),
+    const durableUserIds = new Set(
+      projected.messages.filter((message) => message.role === 'user').map((message) => message.id),
     );
-    setPendingUserMessages((prev) => prev.filter((message) => !durableUserTexts.has(message.text)));
+    setPendingUserMessages((prev) => prev.filter((message) => !durableUserIds.has(message.id)));
   }, [pendingUserMessages.length, projected.messages]);
 
   // Clear "sending" once the run leaves the streaming state (or fails via local error).
@@ -387,14 +404,36 @@ export function ChatView({
                 }))
               : undefined,
         });
+        const durableImages = Array.isArray(response.images)
+          ? (
+              response.images as Array<{
+                id: string;
+                name: string;
+                mimeType?: string;
+                url?: string;
+              }>
+            )
+              .filter((image) => typeof image.url === 'string' && image.url.length > 0)
+              .map((image) => ({
+                id: image.id,
+                name: image.name,
+                mimeType: image.mimeType,
+                url: image.url!,
+              }))
+          : images;
         setPendingUserMessages((prev) =>
           prev.map((message) =>
             message.id === tempId
-              ? { ...message, id: response.messageId, images: images.length > 0 ? images : message.images }
+              ? {
+                  ...message,
+                  id: response.messageId,
+                  images: durableImages.length > 0 ? durableImages : message.images,
+                }
               : message,
           ),
         );
         onTitleUpdated(prep.conversationTitle || response.taskTitle || conversation.title || '');
+        return true;
       } catch (err) {
         setSending(false);
         setPendingUserMessages((prev) => prev.filter((message) => message.id !== tempId));
@@ -407,6 +446,7 @@ export function ChatView({
             timestamp: new Date().toISOString(),
           },
         ]);
+        throw err;
       } finally {
         inputRef.current?.focus();
       }
@@ -545,13 +585,18 @@ export function ChatView({
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || sending) return;
-    const outbound = buildMessageWithAttachments(input, attachments);
-    const images = messageImagesFromAttachments(attachments);
+    const snapshot = attachments;
+    const outbound = buildMessageWithAttachments(input, snapshot);
+    const images = messageImagesFromAttachments(snapshot);
     setInput('');
-    setAttachments([]);
     closeMention();
     window.requestAnimationFrame(() => resizeComposeInput());
-    await sendUserText(outbound, images);
+    try {
+      await sendUserText(outbound, images);
+      setAttachments([]);
+    } catch {
+      setAttachments(snapshot);
+    }
   }, [attachments, closeMention, input, resizeComposeInput, sendUserText, sending]);
 
   /** NewMax: selecting a file becomes an attachment chip, not inline @path text. */
@@ -581,38 +626,53 @@ export function ChatView({
     [closeMention, input, mention],
   );
 
-  const addImageFiles = useCallback(async (files: FileList | File[]) => {
-    const list = Array.from(files).filter(isImageFile);
-    if (list.length === 0) return;
-    const nextItems: ComposeAttachment[] = [];
-    for (const file of list.slice(0, 8)) {
-      try {
-        const rawUrl = await readFileAsDataUrl(file);
-        // Compress before staging so provider requests stay reasonable.
-        const compressed = await compressImageDataUrl(rawUrl, {
-          mimeType: file.type || 'image/png',
-        });
-        nextItems.push({
-          path: `image:${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name}`,
-          name: file.name || 'image',
-          kind: 'image',
-          previewUrl: compressed.dataUrl,
-          mimeType: compressed.mimeType,
-          sizeBytes: Math.floor(
-            (compressed.dataUrl.length - compressed.dataUrl.indexOf(',') - 1) * 0.75,
-          ),
-        });
-      } catch {
-        /* skip unreadable file */
+  const addImageFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const remainingSlots = Math.max(
+        0,
+        8 - attachments.filter((item) => item.kind === 'image').length,
+      );
+      const list = Array.from(files).filter(isImageFile).slice(0, remainingSlots);
+      if (list.length === 0) return;
+      const nextItems: ComposeAttachment[] = [];
+      for (const file of list) {
+        try {
+          const rawUrl = await readFileAsDataUrl(file);
+          // Compress before staging so provider requests stay reasonable.
+          const compressed = await compressImageDataUrl(rawUrl, {
+            mimeType: file.type || 'image/png',
+          });
+          nextItems.push({
+            path: `image:${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name}`,
+            name: file.name || 'image',
+            kind: 'image',
+            previewUrl: compressed.dataUrl,
+            mimeType: compressed.mimeType,
+            sizeBytes: Math.floor(
+              (compressed.dataUrl.length - compressed.dataUrl.indexOf(',') - 1) * 0.75,
+            ),
+          });
+        } catch {
+          setLocalErrors((prev) => [
+            ...prev,
+            {
+              id: `image-error-${Date.now()}`,
+              role: 'system',
+              text: `无法读取图片：${file.name || '未命名图片'}`,
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+        }
       }
-    }
-    if (nextItems.length === 0) return;
-    setAttachments((prev) => {
-      let next = [...prev];
-      for (const item of nextItems) next = addAttachment(next, item);
-      return next;
-    });
-  }, []);
+      if (nextItems.length === 0) return;
+      setAttachments((prev) => {
+        let next = [...prev];
+        for (const item of nextItems) next = addAttachment(next, item);
+        return next.slice(0, 8);
+      });
+    },
+    [attachments],
+  );
 
   const handleImageInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -703,17 +763,13 @@ export function ChatView({
         }
         if (e.key === 'ArrowDown') {
           e.preventDefault();
-          setMentionIndex((i) =>
-            mentionFiles.length === 0 ? 0 : (i + 1) % mentionFiles.length,
-          );
+          setMentionIndex((i) => (mentionFiles.length === 0 ? 0 : (i + 1) % mentionFiles.length));
           return;
         }
         if (e.key === 'ArrowUp') {
           e.preventDefault();
           setMentionIndex((i) =>
-            mentionFiles.length === 0
-              ? 0
-              : (i - 1 + mentionFiles.length) % mentionFiles.length,
+            mentionFiles.length === 0 ? 0 : (i - 1 + mentionFiles.length) % mentionFiles.length,
           );
           return;
         }
@@ -732,14 +788,7 @@ export function ChatView({
         void handleSend();
       }
     },
-    [
-      closeMention,
-      handleSend,
-      mention,
-      mentionFiles,
-      mentionIndex,
-      selectMentionFile,
-    ],
+    [closeMention, handleSend, mention, mentionFiles, mentionIndex, selectMentionFile],
   );
 
   const setPermission = useCallback(
@@ -798,7 +847,7 @@ export function ChatView({
 
   const activeModelId = modelOverride || conversation.targetRef || '';
   const activeModel = modelOverride
-    ? models.find((m) => m.modelId === modelOverride)?.displayName ?? modelOverride
+    ? (models.find((m) => m.modelId === modelOverride)?.displayName ?? modelOverride)
     : modelName;
 
   // Context usage: sum tokens from latest provider.usage in this thread (approx).
@@ -890,9 +939,7 @@ export function ChatView({
           {messages.length === 0 && !showTyping && (
             <div className="flex h-full items-center justify-center">
               <span className="text-[13px] text-text-faint">
-                {conversation.taskId
-                  ? '历史消息加载中，或发送消息开始对话'
-                  : '发送消息开始对话'}
+                {conversation.taskId ? '历史消息加载中，或发送消息开始对话' : '发送消息开始对话'}
               </span>
             </div>
           )}
@@ -1026,11 +1073,7 @@ export function ChatView({
                         </button>
                       ) : (
                         <span className="shell-attach-chip__icon">
-                          {file.kind === 'dir' ? (
-                            <FolderOpen size={14} />
-                          ) : (
-                            <FileCode2 size={14} />
-                          )}
+                          {file.kind === 'dir' ? <FolderOpen size={14} /> : <FileCode2 size={14} />}
                         </span>
                       )}
                       <span className="shell-attach-chip__name">{file.name}</span>
@@ -1038,9 +1081,7 @@ export function ChatView({
                         type="button"
                         className="shell-attach-chip__remove"
                         title="移除"
-                        onClick={() =>
-                          setAttachments((prev) => removeAttachment(prev, file.path))
-                        }
+                        onClick={() => setAttachments((prev) => removeAttachment(prev, file.path))}
                       >
                         <X size={12} />
                       </button>
@@ -1062,16 +1103,10 @@ export function ChatView({
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 onClick={(e) =>
-                  updateMentionFromCaret(
-                    e.currentTarget.value,
-                    e.currentTarget.selectionStart ?? 0,
-                  )
+                  updateMentionFromCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
                 }
                 onSelect={(e) =>
-                  updateMentionFromCaret(
-                    e.currentTarget.value,
-                    e.currentTarget.selectionStart ?? 0,
-                  )
+                  updateMentionFromCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
                 }
                 rows={1}
                 disabled={sending}
@@ -1096,10 +1131,10 @@ export function ChatView({
                       ref={permissionBtnRef}
                       type="button"
                       className="shell-compose__tool"
-                      data-active={menu === 'permission' || permissionMode !== 'workspace' ? '1' : '0'}
-                      onClick={() =>
-                        setMenu((m) => (m === 'permission' ? null : 'permission'))
+                      data-active={
+                        menu === 'permission' || permissionMode !== 'workspace' ? '1' : '0'
                       }
+                      onClick={() => setMenu((m) => (m === 'permission' ? null : 'permission'))}
                       title={`权限：${PERMISSION_LABELS[permissionMode]}`}
                     >
                       <PermIcon size={15} />
@@ -1134,9 +1169,7 @@ export function ChatView({
                       type="button"
                       className="shell-compose__tool"
                       data-active={menu === 'reasoning' || reasoningEffort !== 'auto' ? '1' : '0'}
-                      onClick={() =>
-                        setMenu((m) => (m === 'reasoning' ? null : 'reasoning'))
-                      }
+                      onClick={() => setMenu((m) => (m === 'reasoning' ? null : 'reasoning'))}
                       title={`推理强度：${REASONING_LABELS[reasoningEffort]}`}
                     >
                       <Brain size={15} />
@@ -1304,14 +1337,18 @@ function MessageBubble({
   const [copied, setCopied] = useState(false);
   const [shared, setShared] = useState(false);
 
-  const usage = useMemo(() => {
+  const processView = useMemo(() => {
     if (message.role !== 'assistant') return undefined;
-    const view = projectExecutionProcess(eventHistory, {
+    return projectExecutionProcess(eventHistory, {
       threadId,
       runId: message.runId,
     });
-    return formatTokenUsage(view.tokensIn, view.tokensOut);
   }, [eventHistory, message.role, message.runId, threadId]);
+
+  const usage = useMemo(() => {
+    if (!processView) return undefined;
+    return formatTokenUsage(processView.tokensIn, processView.tokensOut);
+  }, [processView]);
 
   const handleCopy = useCallback(async () => {
     if (!message.text.trim()) return;
@@ -1380,24 +1417,32 @@ function MessageBubble({
         <Bot size={13} />
       </div>
       <div className="min-w-0 flex-1 pt-0.5">
-        <ReasoningBlock
-          text={message.reasoningText}
-          streaming={Boolean(message.streaming && !message.text.trim())}
-        />
-        <ExecutionProcessBlock
-          events={eventHistory}
-          threadId={threadId}
-          runId={message.runId}
-          forceExpanded={Boolean(message.streaming)}
-          onOpenChange={onOpenChange}
-        />
-        <FileChangesCard
-          events={eventHistory}
-          threadId={threadId}
-          runId={message.runId}
-          onOpenChange={onOpenChange}
-          onExpandRail={onExpandRail}
-        />
+        <AssistantProcessGroup
+          reasoningText={message.reasoningText}
+          processView={processView}
+          streaming={Boolean(message.streaming)}
+        >
+          <ReasoningBlock
+            text={message.reasoningText}
+            streaming={Boolean(message.streaming && !message.text.trim())}
+          />
+          <ExecutionProcessBlock
+            events={eventHistory}
+            threadId={threadId}
+            runId={message.runId}
+            forceExpanded={Boolean(message.streaming)}
+            nested
+            onOpenChange={onOpenChange}
+          />
+          <FileChangesCard
+            events={eventHistory}
+            threadId={threadId}
+            runId={message.runId}
+            nested
+            onOpenChange={onOpenChange}
+            onExpandRail={onExpandRail}
+          />
+        </AssistantProcessGroup>
         {message.text ? (
           <MarkdownContent text={message.text} streaming={Boolean(message.streaming)} />
         ) : message.streaming && !message.reasoningText?.trim() ? (
@@ -1444,15 +1489,72 @@ function MessageBubble({
   );
 }
 
+// ─── Thinking + tool process group (higher-level fold) ─────────────────────────
+
+function AssistantProcessGroup({
+  reasoningText,
+  processView,
+  streaming,
+  children,
+}: {
+  reasoningText?: string;
+  processView?: ReturnType<typeof projectExecutionProcess>;
+  streaming?: boolean;
+  children: ReactNode;
+}) {
+  const hasReasoning = Boolean(reasoningText?.trim());
+  const stepCount = processView?.steps.length ?? 0;
+  const changeCount = processView?.fileChanges.length ?? 0;
+  const hasContent = hasReasoning || stepCount > 0 || changeCount > 0 || Boolean(streaming);
+  const [open, setOpen] = useState(Boolean(streaming));
+
+  useEffect(() => {
+    if (streaming) setOpen(true);
+    else setOpen(false);
+  }, [streaming]);
+
+  if (!hasContent) return null;
+
+  const summaryParts = [
+    hasReasoning ? '深度思考' : undefined,
+    stepCount > 0 ? `${stepCount} 个工具步骤` : undefined,
+    changeCount > 0 ? `${changeCount} 个文件变更` : undefined,
+  ].filter(Boolean);
+
+  return (
+    <section
+      className={`shell-process-group ${open ? 'is-open' : ''}`}
+      data-streaming={streaming ? '1' : '0'}
+    >
+      <button
+        type="button"
+        className="shell-process-group__toggle"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <span className="shell-process-group__icon">
+          {streaming || processView?.running ? (
+            <LoaderCircle size={14} className="shell-process-spin" />
+          ) : processView?.errorCount ? (
+            <FileWarning size={14} />
+          ) : (
+            <Brain size={14} />
+          )}
+        </span>
+        <span className="shell-process-group__heading">
+          <strong>{streaming ? '正在思考与执行…' : '思考与执行过程'}</strong>
+          <small>{summaryParts.length > 0 ? summaryParts.join(' · ') : '准备中'}</small>
+        </span>
+        <ChevronDown size={15} className="shell-process-group__chevron" />
+      </button>
+      {open ? <div className="shell-process-group__body">{children}</div> : null}
+    </section>
+  );
+}
+
 // ─── Depth thinking / reasoning block (NewMax-style) ─────────────────────────
 
-function ReasoningBlock({
-  text,
-  streaming,
-}: {
-  text?: string;
-  streaming?: boolean;
-}) {
+function ReasoningBlock({ text, streaming }: { text?: string; streaming?: boolean }) {
   const content = (text ?? '').trim();
   const [open, setOpen] = useState(Boolean(streaming));
 
@@ -1464,7 +1566,10 @@ function ReasoningBlock({
   if (!content && !streaming) return null;
 
   return (
-    <div className={`shell-reasoning ${open ? 'is-open' : ''}`} data-streaming={streaming ? '1' : '0'}>
+    <div
+      className={`shell-reasoning ${open ? 'is-open' : ''}`}
+      data-streaming={streaming ? '1' : '0'}
+    >
       <button
         type="button"
         className="shell-reasoning__toggle"
@@ -1472,9 +1577,7 @@ function ReasoningBlock({
         aria-expanded={open}
       >
         <Brain size={13} className="shell-reasoning__icon" />
-        <span className="shell-reasoning__title">
-          {streaming ? '深度思考中…' : '深度思考'}
-        </span>
+        <span className="shell-reasoning__title">{streaming ? '深度思考中…' : '深度思考'}</span>
         <span className="shell-reasoning__chev" aria-hidden>
           {open ? '▾' : '▸'}
         </span>
@@ -1519,9 +1622,7 @@ function ToolApprovalCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="shell-approval-card__title">{approval.title}</div>
-          <div className="shell-approval-card__subtitle">
-            询问批准 · 需要你确认后才会执行
-          </div>
+          <div className="shell-approval-card__subtitle">询问批准 · 需要你确认后才会执行</div>
         </div>
       </div>
       {(approval.path || approval.command || approval.detail) && (
