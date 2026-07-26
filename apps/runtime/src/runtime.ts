@@ -27,8 +27,6 @@ import {
   type ListPoliciesResponse,
   type ListPoliciesPayload,
   type PolicyScopeRef,
-  type PolicyVersionSummary,
-  type TaskSummary,
   type CreateProviderResponse,
   type UpdateProviderResponse,
   type PreviewCcSwitchImportResponse,
@@ -50,7 +48,6 @@ import {
   type SetSettingResponse,
   type UsageSummaryResponse,
   type UsageSummaryRow,
-  type ModelPricingEntry,
   DEFAULT_MODEL_PRICING,
   type CapabilityProbeSuggestion,
   type ProviderSummary,
@@ -112,7 +109,6 @@ import {
   type TeamRunResponse,
   type ListConversationsResponse,
   type ConversationResponse,
-  type RebindConversationTargetPayload,
 } from '@sync-think/protocol';
 import {
   ErrorCode,
@@ -140,7 +136,6 @@ import {
   type ThreadId,
   type ParticipationMode,
   type ArtifactVersion,
-  type ArtifactVersionSummary,
   type AcceptanceGateId,
   type TeamId,
   type GlobalAgent,
@@ -180,7 +175,6 @@ import {
   type TeamRecord,
   type TeamRunRecord,
   type ConversationRecord,
-  type PolicyVersionRecord,
   type SkillVersionRecord,
   type MemoryChangeRecord,
   type DurableMemoryEntry,
@@ -390,6 +384,17 @@ import {
   previewMcpOutput,
 } from '@sync-think/workers';
 
+import { estimateUsageCost, MODEL_PRICING_SETTING_KEY, parseModelPricingEntries } from './pricing.js';
+import { parseRebindConversationTargetPayload } from './payload-parsers.js';
+import {
+  canonicalApprovalDetails,
+  PlanModeBoundaryError,
+  PlanReviewerDependencyError,
+  PlanReviewerLineageError,
+  PolicyScopeBoundaryError,
+} from './errors.js';
+import { toArtifactVersionSummary, toPolicyVersionSummary, toTaskSummary } from './summaries.js';
+
 export interface RuntimeOptions {
   installId: string;
   helloSecret?: string;
@@ -481,91 +486,6 @@ export interface RuntimeOptions {
   };
 }
 
-const MODEL_PRICING_SETTING_KEY = 'model-pricing';
-
-// conversation.rebindTarget payload — validated inline (same strict style as
-// command-validation.ts parsers): exact keys, bounded non-empty strings,
-// track limited to the three conversation tracks.
-const CONVERSATION_REBIND_TRACKS = new Set(['model', 'agent', 'team']);
-
-function parseRebindConversationTargetPayload(
-  value: unknown,
-): RebindConversationTargetPayload | undefined {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  const allowed = new Set(['conversationId', 'track', 'targetRef']);
-  if (!Object.keys(record).every((key) => allowed.has(key))) return undefined;
-  const bounded = (input: unknown, max: number): input is string =>
-    typeof input === 'string' && input.trim().length > 0 && input.length <= max;
-  if (
-    !bounded(record.conversationId, 128) ||
-    !CONVERSATION_REBIND_TRACKS.has(String(record.track)) ||
-    !bounded(record.targetRef, 256)
-  ) {
-    return undefined;
-  }
-  return {
-    conversationId: record.conversationId as RebindConversationTargetPayload['conversationId'],
-    track: record.track as RebindConversationTargetPayload['track'],
-    targetRef: record.targetRef,
-  };
-}
-
-function parseModelPricingEntries(value: unknown): ModelPricingEntry[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!entry || typeof entry !== 'object') return [];
-    const row = entry as Record<string, unknown>;
-    const numbers = [
-      row.inputPerMillion,
-      row.outputPerMillion,
-      row.cacheReadPerMillion,
-      row.cacheWritePerMillion,
-    ];
-    if (
-      typeof row.modelId !== 'string' ||
-      !row.modelId.trim() ||
-      typeof row.displayName !== 'string' ||
-      !row.displayName.trim() ||
-      (row.currency !== 'USD' && row.currency !== 'CNY') ||
-      numbers.some((number) => typeof number !== 'number' || !Number.isFinite(number) || number < 0)
-    ) {
-      return [];
-    }
-    return [
-      {
-        modelId: row.modelId.trim(),
-        displayName: row.displayName.trim(),
-        currency: row.currency,
-        inputPerMillion: row.inputPerMillion as number,
-        outputPerMillion: row.outputPerMillion as number,
-        cacheReadPerMillion: row.cacheReadPerMillion as number,
-        cacheWritePerMillion: row.cacheWritePerMillion as number,
-      },
-    ];
-  });
-}
-
-function estimateUsageCost(
-  usage: {
-    tokensIn: number;
-    tokensOut: number;
-    cachedTokensHit?: number;
-    cachedTokensCreated?: number;
-  },
-  pricing: ModelPricingEntry,
-): number {
-  const cacheRead = Math.max(0, usage.cachedTokensHit ?? 0);
-  const cacheWrite = Math.max(0, usage.cachedTokensCreated ?? 0);
-  const uncachedInput = Math.max(0, usage.tokensIn - cacheRead - cacheWrite);
-  return (
-    (uncachedInput * pricing.inputPerMillion +
-      usage.tokensOut * pricing.outputPerMillion +
-      cacheRead * pricing.cacheReadPerMillion +
-      cacheWrite * pricing.cacheWritePerMillion) /
-    1_000_000
-  );
-}
 
 export interface RuntimeStateStore {
   commitTransition(input: CommitTransitionInput): CommittedTransition;
@@ -612,63 +532,6 @@ const MAX_REPLAY_EVENTS_PER_PAGE = 64;
 const MAX_REPLAY_SCANNED_EVENTS_PER_PAGE = 256;
 const REPLAY_FRAME_RESERVE_BYTES = 1_024;
 
-function canonicalApprovalDetails(
-  value: unknown,
-  seen: WeakSet<object> = new WeakSet(),
-  depth = 0,
-): unknown {
-  if (depth > 16) throw new Error('approval.action_details_too_deep');
-  if (value === undefined) return null;
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (Array.isArray(value)) {
-    return value.map((entry) => canonicalApprovalDetails(entry, seen, depth + 1));
-  }
-  if (typeof value !== 'object') throw new Error('approval.action_details_invalid');
-  if (seen.has(value)) throw new Error('approval.action_details_cycle');
-  seen.add(value);
-  const result: Record<string, unknown> = {};
-  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-    result[key] = canonicalApprovalDetails(
-      (value as Record<string, unknown>)[key],
-      seen,
-      depth + 1,
-    );
-  }
-  seen.delete(value);
-  return result;
-}
-
-class PolicyScopeBoundaryError extends Error {
-  constructor(
-    readonly code: ErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'PolicyScopeBoundaryError';
-  }
-}
-
-class PlanModeBoundaryError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PlanModeBoundaryError';
-  }
-}
-
-class PlanReviewerDependencyError extends Error {
-  constructor(stepId: StepId, dependencyCount: number) {
-    super(`review.reviewer_dependency_invalid: ${stepId} has ${dependencyCount} dependencies`);
-    this.name = 'PlanReviewerDependencyError';
-  }
-}
-
-class PlanReviewerLineageError extends Error {
-  constructor(stepId: StepId, targetStepId: StepId) {
-    super(`review.reviewer_lineage_invalid: ${stepId} targets planned reviewer ${targetStepId}`);
-    this.name = 'PlanReviewerLineageError';
-  }
-}
 
 export class Runtime {
   readonly startedAt = Date.now();
@@ -14754,50 +14617,4 @@ export class Runtime {
     await this.scheduler?.shutdown();
     await Promise.allSettled([...this.backgroundTasks]);
   }
-}
-
-function toTaskSummary(task: TaskRecord): TaskSummary {
-  return {
-    taskId: task.id,
-    workspaceId: task.workspaceId,
-    parentTaskId: task.parentTaskId,
-    title: task.title,
-    goal: task.goal,
-    status: task.status,
-    participationMode: task.participationMode,
-    taskVersion: task.version,
-    threadId: task.threadId,
-    lastOpenedAt: task.lastOpenedAt,
-    createdAt: task.createdAt,
-    updatedAt: task.updatedAt,
-  };
-}
-
-function toArtifactVersionSummary(version: ArtifactVersion): ArtifactVersionSummary {
-  return {
-    id: version.id,
-    artifactId: version.artifactId,
-    contentHash: version.contentHash,
-    mimeType: version.mimeType,
-    sourceStepId: version.sourceStepId,
-    status: version.status,
-    version: version.version,
-    parentVersionIds: [...version.parentVersionIds],
-    createdAt: version.createdAt,
-    hasInlineContent: version.content !== undefined,
-    hasContentRef: version.contentRef !== undefined,
-  };
-}
-
-function toPolicyVersionSummary(policy: PolicyVersionRecord): PolicyVersionSummary {
-  return {
-    id: policy.id,
-    policyId: policy.policyId,
-    version: policy.version,
-    scopeType: policy.scopeType,
-    scopeId: policy.scopeId,
-    approvalMode: policy.approvalMode,
-    rules: policy.rules.map((rule) => ({ ...rule })),
-    createdAt: policy.createdAt,
-  };
 }
