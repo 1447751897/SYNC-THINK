@@ -25,3 +25,8 @@ apps/desktop/release
 *~
 *.tsbuildinfo
 /scripts/_*
+# tool / desktop-shell artifacts
+.claude/worktrees/
+/conversations/
+/_*.mjs
+.sync-think/
