@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
-import { formatTokenUsage, projectExecutionProcess } from './execution-process.js';
+import {
+  formatCompactRunMetrics,
+  formatTokenUsage,
+  projectExecutionProcess,
+} from './execution-process.js';
 import { formatExecutionStepTitle } from './ExecutionProcessBlock.js';
 
 function event(
@@ -307,6 +311,64 @@ describe('projectExecutionProcess', () => {
     const view = projectExecutionProcess(events, { runId: 'run_1' });
     expect(view.tokensIn).toBe(120);
     expect(view.tokensOut).toBe(80);
-    expect(formatTokenUsage(view.tokensIn, view.tokensOut)).toContain('200 tokens');
+    expect(formatTokenUsage(view.tokensIn, view.tokensOut)).toContain('200');
+    expect(formatTokenUsage(view.tokensIn, view.tokensOut)).toContain('in 120');
+  });
+
+  it('captures duration and model from run lifecycle + usage', () => {
+    const events = [
+      event({
+        id: 'e_start' as Event['id'],
+        sequence: 1,
+        type: 'run.started',
+        runId: 'run_meta' as Event['runId'],
+        category: 'run',
+        occurredAt: '2026-07-25T10:00:00.000Z',
+        payload: {
+          threadId: 'th_1',
+          modelId: 'model_internal',
+          providerModelId: 'gpt-5.5',
+        },
+      }),
+      event({
+        id: 'e_usage' as Event['id'],
+        sequence: 2,
+        type: 'provider.usage',
+        runId: 'run_meta' as Event['runId'],
+        category: 'provider',
+        occurredAt: '2026-07-25T10:00:51.000Z',
+        payload: {
+          tokensIn: 600_000,
+          tokensOut: 47_900,
+          modelId: 'model_internal',
+          run: { threadId: 'th_1', providerModelId: 'gpt-5.5' },
+        },
+      }),
+      event({
+        id: 'e_done' as Event['id'],
+        sequence: 3,
+        type: 'run.completed',
+        runId: 'run_meta' as Event['runId'],
+        category: 'run',
+        occurredAt: '2026-07-25T10:00:51.000Z',
+        payload: {
+          threadId: 'th_1',
+          providerModelId: 'gpt-5.5',
+          modelId: 'model_internal',
+        },
+      }),
+    ];
+    const view = projectExecutionProcess(events, { runId: 'run_meta', threadId: 'th_1' });
+    expect(view.durationMs).toBe(51_000);
+    expect(view.providerModelId).toBe('gpt-5.5');
+    expect(view.tokensIn).toBe(600_000);
+    expect(view.tokensOut).toBe(47_900);
+    expect(
+      formatCompactRunMetrics({
+        durationMs: view.durationMs,
+        tokensIn: view.tokensIn,
+        tokensOut: view.tokensOut,
+      }),
+    ).toBe('51s · 647.9k');
   });
 });

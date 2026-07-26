@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   resolveModelBinding,
+  resolveProviderPriorityFallback,
   shouldAttemptFallback,
   type AgentModelBinding,
 } from './model-binding.js';
@@ -132,5 +133,49 @@ describe('shouldAttemptFallback', () => {
   it('blocks acceptance and permission', () => {
     expect(shouldAttemptFallback('acceptance')).toBe(false);
     expect(shouldAttemptFallback('permission')).toBe(false);
+  });
+});
+
+describe('resolveProviderPriorityFallback', () => {
+  const chain = [
+    'model-5.6' as ModelId,
+    'model-5.5' as ModelId,
+    'model-5.4' as ModelId,
+  ];
+
+  it('walks forward from primary to spare-1', () => {
+    expect(
+      resolveProviderPriorityFallback({
+        orderedModelIds: chain,
+        failedModelId: 'model-5.6' as ModelId,
+      }),
+    ).toEqual({ modelId: 'model-5.5', fallbackIndex: 1 });
+  });
+
+  it('walks from spare-1 to spare-2 without returning to primary', () => {
+    expect(
+      resolveProviderPriorityFallback({
+        orderedModelIds: chain,
+        failedModelId: 'model-5.5' as ModelId,
+      }),
+    ).toEqual({ modelId: 'model-5.4', fallbackIndex: 2 });
+  });
+
+  it('returns null when the last spare fails', () => {
+    expect(
+      resolveProviderPriorityFallback({
+        orderedModelIds: chain,
+        failedModelId: 'model-5.4' as ModelId,
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null for models not in the chain', () => {
+    expect(
+      resolveProviderPriorityFallback({
+        orderedModelIds: chain,
+        failedModelId: 'model-other' as ModelId,
+      }),
+    ).toBeNull();
   });
 });

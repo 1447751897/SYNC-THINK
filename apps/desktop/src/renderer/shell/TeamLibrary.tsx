@@ -1,9 +1,11 @@
 // P2 · Global Team Library
-// NewMax-style card grid + slide-in edit drawer with member management.
-import { Plus, Trash2, Users, X, ChevronRight, ArrowRight } from 'lucide-react';
-import { useCallback, useRef, useState } from 'react';
+// NewMax-style card grid + centered two-column edit dialog with member management.
+import { Plus, Trash2, Users, X, ChevronRight, ArrowRight, Pencil } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import type { GlobalAgent, Team, AgentId, TeamStrategy } from '@sync-think/shared';
+import { useDialog } from './Dialog.js';
+import { AgentAvatarView } from './AgentAvatarView.js';
 
 interface Props {
   teams: readonly Team[];
@@ -16,6 +18,7 @@ type DraftMember = {
   agentId: string;
   role: string;
   title: string;
+  dependsOn: string[];
 };
 
 type DraftTeam = {
@@ -36,36 +39,50 @@ const EMPTY_DRAFT: DraftTeam = {
   members: [],
 };
 
-const ROLES = ['architect', 'builder', 'reviewer', 'pm', 'researcher', 'writer'];
+/**
+ * Meaningful role presets. Member roles are free-form strings in the data
+ * model (chat-created teams may use "member" or Chinese labels), so any value
+ * outside this list is treated as a custom role and displayed verbatim —
+ * previously a controlled <select> with an off-list value silently rendered
+ * the first option, making every member look like "architect".
+ */
+const ROLE_PRESETS: readonly { value: string; label: string }[] = [
+  { value: 'coordinator', label: '协调' },
+  { value: 'architect', label: '架构' },
+  { value: 'builder', label: '开发' },
+  { value: 'reviewer', label: '评审' },
+  { value: 'researcher', label: '调研' },
+  { value: 'writer', label: '写作' },
+  { value: 'pm', label: '产品' },
+];
+
+const CUSTOM_ROLE = '__custom__';
+
+function roleLabel(role: string): string {
+  const preset = ROLE_PRESETS.find((r) => r.value === role);
+  return preset ? preset.label : role;
+}
 
 function bridge() {
   return (window as any).syncThink?.runtime;
 }
 
 function AgentAvatar({ agent, size = 28 }: { agent: GlobalAgent; size?: number }) {
-  const colors = [
-    '#2f7d4f', '#3568a8', '#7c5ab8', '#b07d2a',
-    '#c4453d', '#2b8a8a', '#8a5a2b', '#5a2b8a',
-  ];
-  const color = colors[(agent.name.charCodeAt(0) || 0) % colors.length];
-  const label = agent.avatar?.trim().slice(0, 2) || (agent.name[0] ?? '?').toUpperCase();
-  return (
-    <div
-      style={{ width: size, height: size, background: color, borderRadius: '50%', fontSize: size * 0.4 }}
-      className="flex shrink-0 items-center justify-center text-white select-none"
-      title={agent.name}
-    >
-      {label}
-    </div>
-  );
+  return <AgentAvatarView name={agent.name} avatar={agent.avatar} size={size} />;
 }
 
 export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: Props) {
+  const dialog = useDialog();
   const [selected, setSelected] = useState<Team | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [draft, setDraft] = useState<DraftTeam>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [memberModal, setMemberModal] = useState<
+    | { mode: 'add' }
+    | { mode: 'edit'; agentId: string }
+    | null
+  >(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
   const openNew = useCallback(() => {
@@ -88,15 +105,23 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
         agentId: m.agentId,
         role: m.role,
         title: m.title,
+        dependsOn: [...m.dependsOn],
       })),
     });
     setTimeout(() => nameRef.current?.focus(), 50);
   }, []);
 
-  const closeDrawer = () => { setSelected(null); setIsNew(false); };
+  const closeDrawer = () => { setSelected(null); setIsNew(false); setMemberModal(null); };
 
   const handleSave = useCallback(async () => {
     if (!draft.name.trim()) return;
+    if (draft.members.length === 0) {
+      await dialog.alert({
+        title: '请添加成员',
+        message: '小队至少需要一名智能体成员。',
+      });
+      return;
+    }
     const api = bridge();
     if (!api) return;
     setSaving(true);
@@ -109,8 +134,9 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
         coordinatorAgentId: draft.coordinatorAgentId as AgentId || undefined,
         members: draft.members.map((m, i) => ({
           agentId: m.agentId as AgentId,
-          role: m.role || 'builder',
-          title: m.title || m.role,
+          role: m.role.trim() || 'builder',
+          title: m.title.trim() || m.role.trim() || 'builder',
+          dependsOn: m.dependsOn as AgentId[],
           memberOrder: i,
         })),
       };
@@ -121,14 +147,27 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
       }
       onRefresh();
       closeDrawer();
+    } catch (error) {
+      await dialog.alert({
+        title: '保存失败',
+        message: error instanceof Error ? error.message : '保存小队失败',
+      });
     } finally {
       setSaving(false);
     }
-  }, [draft, isNew, selected, onRefresh]);
+  }, [dialog, draft, isNew, selected, onRefresh]);
 
   const handleDelete = useCallback(async () => {
     if (!selected) return;
-    if (!window.confirm(`确定删除小队「${selected.name}」吗？`)) return;
+    if (
+      !(await dialog.confirm({
+        title: '删除小队',
+        message: `确定删除小队「${selected.name}」吗？若仍有对话引用或历史运行，将无法删除。`,
+        confirmText: '删除',
+        danger: true,
+      }))
+    )
+      return;
     const api = bridge();
     if (!api) return;
     setDeleting(true);
@@ -136,24 +175,29 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
       await api.deleteTeam({ teamId: selected.id });
       onRefresh();
       closeDrawer();
+    } catch (error) {
+      await dialog.alert({
+        title: '删除失败',
+        message: error instanceof Error ? error.message : '删除小队失败',
+      });
     } finally {
       setDeleting(false);
     }
-  }, [selected, onRefresh]);
+  }, [dialog, selected, onRefresh]);
 
-  const addMember = useCallback((agentId: string) => {
-    if (draft.members.some((m) => m.agentId === agentId)) return;
-    const agent = agents.find((a) => a.id === agentId);
-    setDraft((d) => ({
-      ...d,
-      members: [...d.members, { agentId, role: 'builder', title: agent?.name ?? '' }],
-    }));
-  }, [draft.members, agents]);
+  const addMember = useCallback((member: DraftMember) => {
+    setDraft((d) => {
+      if (d.members.some((m) => m.agentId === member.agentId)) return d;
+      return { ...d, members: [...d.members, member] };
+    });
+  }, []);
 
   const removeMember = useCallback((agentId: string) => {
     setDraft((d) => ({
       ...d,
-      members: d.members.filter((m) => m.agentId !== agentId),
+      members: d.members
+        .filter((m) => m.agentId !== agentId)
+        .map((m) => ({ ...m, dependsOn: m.dependsOn.filter((dep) => dep !== agentId) })),
       coordinatorAgentId: d.coordinatorAgentId === agentId ? '' : d.coordinatorAgentId,
     }));
   }, []);
@@ -166,6 +210,25 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
   }, []);
 
   const drawerOpen = isNew || selected !== null;
+
+  // Esc closes the topmost layer only: the member modal first (it has its own
+  // listener too — both just close the member modal, which is idempotent), and
+  // the team dialog only when no member modal is stacked on top.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (memberModal) {
+        setMemberModal(null);
+        return;
+      }
+      setSelected(null);
+      setIsNew(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawerOpen, memberModal]);
+
   const availableAgents = agents.filter((a) => !a.archived);
   const unusedAgents = availableAgents.filter(
     (a) => !draft.members.some((m) => m.agentId === a.id),
@@ -178,7 +241,7 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-5">
           <span className="text-[14px] font-semibold text-text">小队库</span>
           <button
-            className="flex h-7 items-center gap-1.5 rounded-lg bg-accent px-3 text-[12.5px] font-medium text-white hover:opacity-90"
+            className="flex h-7 items-center gap-1.5 rounded-lg bg-accent px-3 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90"
             onClick={openNew}
           >
             <Plus size={13} /> 新建小队
@@ -205,172 +268,458 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
         </div>
       </div>
 
-      {/* ── Edit drawer ───────────────────────────────────────────── */}
+      {/* ── Edit dialog — centered two-column layout, roomy (was a cramped
+            400px drawer). Left: identity & coordinator. Right: members.
+            The stacked MemberModal (st-member-modal-backdrop, z-220) renders
+            above this backdrop (z-50). ── */}
       {drawerOpen && (
-        <div className="flex w-[400px] shrink-0 flex-col border-l border-border bg-surface">
-          <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-            <span className="text-[13px] font-semibold text-text">
-              {isNew ? '新建小队' : '编辑小队'}
-            </span>
-            <button
-              className="flex h-6 w-6 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text"
-              onClick={closeDrawer}
-            >
-              <X size={14} />
-            </button>
-          </div>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeDrawer();
+          }}
+        >
+          <div
+            className="flex max-h-[88vh] w-full max-w-[760px] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl"
+            data-testid="team-edit-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={isNew ? '新建小队' : '编辑小队'}
+          >
+            {/* Dialog header */}
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-3">
+              <span className="text-[14px] font-semibold text-text">
+                {isNew ? '新建小队' : `编辑小队${draft.name ? ` · ${draft.name}` : ''}`}
+              </span>
+              <button
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-text-faint hover:bg-hover hover:text-text"
+                onClick={closeDrawer}
+              >
+                <X size={15} />
+              </button>
+            </div>
 
-          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-            {/* Avatar + Name */}
-            <div className="flex gap-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-text-faint">图标</label>
-                <input
-                  className="h-9 w-14 rounded-lg border border-border bg-page text-center text-[18px] focus:border-accent focus:outline-none"
-                  value={draft.avatar}
-                  onChange={(e) => setDraft((d) => ({ ...d, avatar: e.target.value }))}
-                  maxLength={2}
-                />
+            {/* Two-column form */}
+            <div className="grid flex-1 gap-x-8 gap-y-5 overflow-y-auto px-6 py-5 md:grid-cols-2">
+              {/* ── Left column: identity & coordinator ── */}
+              <div className="space-y-5">
+                {/* Avatar + Name */}
+                <div className="flex gap-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-faint">图标</label>
+                    <input
+                      className="h-9 w-14 rounded-lg border border-border bg-page text-center text-[18px] focus:border-accent focus:outline-none"
+                      value={draft.avatar}
+                      onChange={(e) => setDraft((d) => ({ ...d, avatar: e.target.value }))}
+                      maxLength={2}
+                    />
+                  </div>
+                  <div className="flex flex-1 flex-col gap-1">
+                    <label className="text-[11px] text-text-faint">名称 *</label>
+                    <input
+                      ref={nameRef}
+                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                      placeholder="交付小队"
+                      value={draft.name}
+                      onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+                    />
+                  </div>
+                </div>
+
+                {/* Mission */}
+                <Field label="使命 / 总目标">
+                  <textarea
+                    className="w-full resize-none rounded-lg border border-border bg-page px-3 py-2 text-[12.5px] text-text focus:border-accent focus:outline-none"
+                    rows={4}
+                    placeholder="负责完整交付功能：从设计到实现到测试"
+                    value={draft.mission}
+                    onChange={(e) => setDraft((d) => ({ ...d, mission: e.target.value }))}
+                  />
+                </Field>
+
+                {/* Strategy */}
+                <Field label="协作策略">
+                  <div className="flex gap-2">
+                    {(['serial', 'parallel'] as TeamStrategy[]).map((s) => (
+                      <button
+                        key={s}
+                        className={clsx(
+                          'flex-1 rounded-lg border py-2 text-[12.5px] transition-colors',
+                          draft.strategy === s
+                            ? 'border-accent/40 bg-accent-soft text-accent-text'
+                            : 'border-border text-text-secondary hover:bg-hover',
+                        )}
+                        onClick={() => setDraft((d) => ({ ...d, strategy: s }))}
+                      >
+                        {s === 'serial' ? '串行' : '并行'}
+                        <span className="ml-1 text-[10px] text-text-faint">
+                          {s === 'serial' ? '（依次执行）' : '（同时执行）'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+
+                {/* Coordinator */}
+                {draft.members.length > 0 && (
+                  <Field label="统筹智能体（可代审分工卡）">
+                    <select
+                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                      value={draft.coordinatorAgentId}
+                      onChange={(e) => setDraft((d) => ({ ...d, coordinatorAgentId: e.target.value }))}
+                    >
+                      <option value="">无（由用户确认）</option>
+                      {draft.members.map((m) => {
+                        const a = agents.find((ag) => ag.id === m.agentId);
+                        return a ? <option key={m.agentId} value={m.agentId}>{a.name}</option> : null;
+                      })}
+                    </select>
+                  </Field>
+                )}
               </div>
-              <div className="flex flex-1 flex-col gap-1">
-                <label className="text-[11px] text-text-faint">名称 *</label>
-                <input
-                  ref={nameRef}
-                  className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                  placeholder="交付小队"
-                  value={draft.name}
-                  onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-                />
+
+              {/* ── Right column: members ── */}
+              <div className="space-y-5">
+                <Field label={`成员（${draft.members.length}）`}>
+                  <div className="space-y-1.5">
+                    {draft.members.map((m) => {
+                      const agent = agents.find((a) => a.id === m.agentId);
+                      if (!agent) return null;
+                      return (
+                        <div
+                          key={m.agentId}
+                          className="st-member-row group/member flex cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-page px-3 py-2 transition-colors hover:border-border-strong"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setMemberModal({ mode: 'edit', agentId: m.agentId })}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setMemberModal({ mode: 'edit', agentId: m.agentId });
+                            }
+                          }}
+                        >
+                          <AgentAvatar agent={agent} size={26} />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[12.5px] text-text">
+                              {m.title.trim() || agent.name}
+                            </div>
+                            {m.title.trim() && m.title.trim() !== agent.name && (
+                              <div className="truncate text-[10.5px] text-text-faint">{agent.name}</div>
+                            )}
+                          </div>
+                          <span className="st-member-role-chip shrink-0">{roleLabel(m.role)}</span>
+                          <Pencil
+                            size={12}
+                            className="shrink-0 text-text-faint opacity-0 transition-opacity group-hover/member:opacity-100"
+                          />
+                          <button
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint hover:bg-error/10 hover:text-error"
+                            title="移除成员"
+                            onClick={(e) => { e.stopPropagation(); removeMember(m.agentId); }}
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                    {/* Add member */}
+                    <button
+                      className="flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border bg-page text-[12px] text-text-faint transition-colors hover:border-border-strong hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={unusedAgents.length === 0}
+                      onClick={() => setMemberModal({ mode: 'add' })}
+                    >
+                      <Plus size={12} />
+                      {unusedAgents.length === 0 ? '所有智能体均已加入' : '添加成员…'}
+                    </button>
+                  </div>
+                </Field>
               </div>
             </div>
 
-            {/* Mission */}
-            <Field label="使命 / 总目标">
-              <textarea
-                className="w-full resize-none rounded-lg border border-border bg-page px-3 py-2 text-[12.5px] text-text focus:border-accent focus:outline-none"
-                rows={3}
-                placeholder="负责完整交付功能：从设计到实现到测试"
-                value={draft.mission}
-                onChange={(e) => setDraft((d) => ({ ...d, mission: e.target.value }))}
-              />
-            </Field>
-
-            {/* Strategy */}
-            <Field label="协作策略">
-              <div className="flex gap-2">
-                {(['serial', 'parallel'] as TeamStrategy[]).map((s) => (
-                  <button
-                    key={s}
-                    className={clsx(
-                      'flex-1 rounded-lg border py-2 text-[12.5px] transition-colors',
-                      draft.strategy === s
-                        ? 'border-accent/40 bg-accent-soft text-accent-text'
-                        : 'border-border text-text-secondary hover:bg-hover',
-                    )}
-                    onClick={() => setDraft((d) => ({ ...d, strategy: s }))}
-                  >
-                    {s === 'serial' ? '串行' : '并行'}
-                    <span className="ml-1 text-[10px] text-text-faint">
-                      {s === 'serial' ? '（依次执行）' : '（同时执行）'}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </Field>
-
-            {/* Members */}
-            <Field label={`成员（${draft.members.length}）`}>
-              <div className="space-y-1.5">
-                {draft.members.map((m) => {
-                  const agent = agents.find((a) => a.id === m.agentId);
-                  if (!agent) return null;
-                  return (
-                    <div
-                      key={m.agentId}
-                      className="flex items-center gap-2 rounded-lg border border-border bg-page px-3 py-2"
-                    >
-                      <AgentAvatar agent={agent} size={26} />
-                      <span className="flex-1 truncate text-[12.5px] text-text">{agent.name}</span>
-                      <select
-                        className="h-6 rounded border border-border bg-surface px-1.5 text-[11px] text-text-secondary focus:outline-none"
-                        value={m.role}
-                        onChange={(e) => updateMember(m.agentId, { role: e.target.value })}
-                      >
-                        {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                      </select>
-                      <button
-                        className="flex h-5 w-5 items-center justify-center rounded text-text-faint hover:bg-error/10 hover:text-error"
-                        onClick={() => removeMember(m.agentId)}
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  );
-                })}
-
-                {/* Add member */}
-                {unusedAgents.length > 0 && (
-                  <select
-                    className="h-8 w-full rounded-lg border border-dashed border-border bg-page px-3 text-[12px] text-text-faint focus:outline-none"
-                    value=""
-                    onChange={(e) => { if (e.target.value) addMember(e.target.value); }}
-                  >
-                    <option value="">＋ 添加成员…</option>
-                    {unusedAgents.map((a) => (
-                      <option key={a.id} value={a.id}>{a.name}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
-            </Field>
-
-            {/* Coordinator */}
-            {draft.members.length > 0 && (
-              <Field label="统筹智能体（可代审分工卡）">
-                <select
-                  className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                  value={draft.coordinatorAgentId}
-                  onChange={(e) => setDraft((d) => ({ ...d, coordinatorAgentId: e.target.value }))}
+            {/* Footer actions */}
+            <div className="flex shrink-0 items-center justify-between border-t border-border px-6 py-3">
+              {!isNew ? (
+                <button
+                  className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-error hover:bg-error/10 disabled:opacity-40"
+                  onClick={() => void handleDelete()}
+                  disabled={deleting}
                 >
-                  <option value="">无（由用户确认）</option>
-                  {draft.members.map((m) => {
-                    const a = agents.find((ag) => ag.id === m.agentId);
-                    return a ? <option key={m.agentId} value={m.agentId}>{a.name}</option> : null;
-                  })}
-                </select>
-              </Field>
-            )}
-          </div>
-
-          {/* Footer */}
-          <div className="flex shrink-0 items-center justify-between border-t border-border px-4 py-3">
-            {!isNew ? (
-              <button
-                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-error hover:bg-error/10 disabled:opacity-40"
-                onClick={() => void handleDelete()}
-                disabled={deleting}
-              >
-                <Trash2 size={13} /> 删除
-              </button>
-            ) : <span />}
-            <div className="flex gap-2">
-              <button
-                className="rounded-lg border border-border px-3 py-1.5 text-[12.5px] text-text-secondary hover:bg-hover"
-                onClick={closeDrawer}
-              >
-                取消
-              </button>
-              <button
-                className="rounded-lg bg-accent px-4 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-40"
-                onClick={() => void handleSave()}
-                disabled={saving || !draft.name.trim()}
-              >
-                {saving ? '保存中…' : '保存'}
-              </button>
+                  <Trash2 size={13} /> 删除
+                </button>
+              ) : <span />}
+              <div className="flex gap-2">
+                <button
+                  className="rounded-lg border border-border px-3 py-1.5 text-[12.5px] text-text-secondary hover:bg-hover"
+                  onClick={closeDrawer}
+                >
+                  取消
+                </button>
+                <button
+                  className="rounded-lg bg-accent px-4 py-1.5 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-40"
+                  onClick={() => void handleSave()}
+                  disabled={saving || !draft.name.trim()}
+                >
+                  {saving ? '保存中…' : '保存'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* ── Member add / edit modal ───────────────────────────────── */}
+      {memberModal && (
+        <MemberModal
+          mode={memberModal.mode}
+          agents={availableAgents}
+          unusedAgents={unusedAgents}
+          members={draft.members}
+          member={
+            memberModal.mode === 'edit'
+              ? draft.members.find((m) => m.agentId === memberModal.agentId) ?? null
+              : null
+          }
+          onClose={() => setMemberModal(null)}
+          onSubmit={(member) => {
+            if (memberModal.mode === 'add') {
+              addMember(member);
+            } else {
+              updateMember(memberModal.agentId, member);
+            }
+            setMemberModal(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Member modal ────────────────────────────────────────────────────────────
+
+function MemberModal({
+  mode, agents, unusedAgents, members, member, onClose, onSubmit,
+}: {
+  mode: 'add' | 'edit';
+  agents: readonly GlobalAgent[];
+  unusedAgents: readonly GlobalAgent[];
+  members: readonly DraftMember[];
+  member: DraftMember | null;
+  onClose(): void;
+  onSubmit(member: DraftMember): void;
+}) {
+  const isPreset = (role: string) => ROLE_PRESETS.some((r) => r.value === role);
+  const [agentId, setAgentId] = useState(member?.agentId ?? unusedAgents[0]?.id ?? '');
+  const [roleChoice, setRoleChoice] = useState(() => {
+    const role = member?.role ?? 'builder';
+    return isPreset(role) ? role : CUSTOM_ROLE;
+  });
+  const [customRole, setCustomRole] = useState(() => {
+    const role = member?.role ?? '';
+    return isPreset(role) ? '' : role;
+  });
+  const [title, setTitle] = useState(member?.title ?? '');
+  const [dependsOn, setDependsOn] = useState<string[]>(member?.dependsOn ?? []);
+  const firstFieldRef = useRef<HTMLSelectElement>(null);
+
+  useEffect(() => {
+    firstFieldRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const agent = agents.find((a) => a.id === agentId);
+  const resolvedRole = roleChoice === CUSTOM_ROLE ? customRole.trim() : roleChoice;
+  const canSubmit = agentId !== '' && resolvedRole !== '';
+  // Other members are valid dependency targets (self excluded).
+  const dependencyCandidates = members.filter((m) => m.agentId !== agentId);
+
+  const submit = () => {
+    if (!canSubmit) return;
+    onSubmit({
+      agentId,
+      role: resolvedRole,
+      title: title.trim(),
+      dependsOn: dependsOn.filter((dep) => dep !== agentId),
+    });
+  };
+
+  return (
+    <div
+      className="st-member-modal-backdrop"
+      data-testid="team-member-modal"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="st-member-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={mode === 'add' ? '添加成员' : '编辑成员'}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
+          <span className="text-[14px] font-semibold text-text">
+            {mode === 'add' ? '添加成员' : '编辑成员'}
+          </span>
+          <button
+            className="flex h-6 w-6 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text"
+            title="关闭"
+            onClick={onClose}
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="max-h-[min(60vh,480px)] space-y-4 overflow-y-auto px-5 py-4">
+          {/* Agent picker (add) / identity (edit) */}
+          {mode === 'add' ? (
+            <Field label="智能体 *">
+              <select
+                ref={firstFieldRef}
+                className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
+              >
+                {unusedAgents.length === 0 && <option value="">（没有可添加的智能体）</option>}
+                {unusedAgents.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+              {agent?.description && (
+                <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-text-faint">
+                  {agent.description}
+                </p>
+              )}
+            </Field>
+          ) : (
+            agent && (
+              <div className="flex items-center gap-3 rounded-lg border border-border bg-page px-3 py-2.5">
+                <AgentAvatar agent={agent} size={32} />
+                <div className="min-w-0">
+                  <div className="truncate text-[13px] font-medium text-text">{agent.name}</div>
+                  {agent.description && (
+                    <div className="truncate text-[11px] text-text-faint">{agent.description}</div>
+                  )}
+                </div>
+              </div>
+            )
+          )}
+
+          {/* Title */}
+          <Field label="头衔 / 显示名称">
+            <input
+              className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+              placeholder={agent?.name ?? '如：前端负责人'}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </Field>
+
+          {/* Role */}
+          <Field label="角色 *">
+            <div className="grid grid-cols-4 gap-1.5">
+              {ROLE_PRESETS.map((r) => (
+                <button
+                  key={r.value}
+                  type="button"
+                  className={clsx(
+                    'st-role-option',
+                    roleChoice === r.value && 'st-role-option--active',
+                  )}
+                  onClick={() => setRoleChoice(r.value)}
+                >
+                  {r.label}
+                  <span className="block text-[9.5px] opacity-70">{r.value}</span>
+                </button>
+              ))}
+              <button
+                type="button"
+                className={clsx(
+                  'st-role-option',
+                  roleChoice === CUSTOM_ROLE && 'st-role-option--active',
+                )}
+                onClick={() => setRoleChoice(CUSTOM_ROLE)}
+              >
+                自定义
+                <span className="block text-[9.5px] opacity-70">custom</span>
+              </button>
+            </div>
+            {roleChoice === CUSTOM_ROLE && (
+              <input
+                className="mt-1.5 h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                placeholder="输入自定义角色，如 tester / 数据分析"
+                autoFocus
+                value={customRole}
+                onChange={(e) => setCustomRole(e.target.value)}
+              />
+            )}
+          </Field>
+
+          {/* Dependencies */}
+          {dependencyCandidates.length > 0 && (
+            <Field label="依赖成员（需等待其完成）">
+              <div className="space-y-1">
+                {dependencyCandidates.map((m) => {
+                  const depAgent = agents.find((a) => a.id === m.agentId);
+                  if (!depAgent) return null;
+                  const checked = dependsOn.includes(m.agentId);
+                  return (
+                    <label
+                      key={m.agentId}
+                      className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-page px-3 py-1.5 transition-colors hover:border-border-strong"
+                    >
+                      <input
+                        type="checkbox"
+                        className="accent-[var(--color-accent)]"
+                        checked={checked}
+                        onChange={(e) =>
+                          setDependsOn((prev) =>
+                            e.target.checked
+                              ? [...prev, m.agentId]
+                              : prev.filter((id) => id !== m.agentId),
+                          )
+                        }
+                      />
+                      <AgentAvatar agent={depAgent} size={20} />
+                      <span className="flex-1 truncate text-[12px] text-text">
+                        {m.title.trim() || depAgent.name}
+                      </span>
+                      <span className="st-member-role-chip">{roleLabel(m.role)}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
+          <button
+            className="rounded-lg border border-border px-3 py-1.5 text-[12.5px] text-text-secondary hover:bg-hover"
+            onClick={onClose}
+          >
+            取消
+          </button>
+          <button
+            className="rounded-lg bg-accent px-4 py-1.5 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-40"
+            disabled={!canSubmit}
+            onClick={submit}
+          >
+            {mode === 'add' ? '添加' : '保存'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -459,7 +808,7 @@ function EmptyTeams({ onNew }: { onNew(): void }) {
         <p className="mt-1 text-[12px] text-text-faint">将多个智能体组合成小队，分工协作完成复杂任务</p>
       </div>
       <button
-        className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-white hover:opacity-90"
+        className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90"
         onClick={onNew}
       >
         <Plus size={13} /> 新建第一支小队

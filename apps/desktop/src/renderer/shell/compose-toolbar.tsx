@@ -2,15 +2,17 @@
 // Menus render via portal + fixed position so parent overflow cannot clip them.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
+  Bot,
   Check,
   ChevronDown,
   ChevronLeft,
-  ChevronRight,
   Lock,
-  Search,
+  MessageSquare,
   Shield,
   Sparkles,
+  Users,
   Zap,
 } from 'lucide-react';
 import type { ModelOption } from './NewConversationDialog.js';
@@ -41,7 +43,7 @@ export const PERMISSION_OPTIONS: Array<{
   {
     value: 'workspace',
     title: '为我批准',
-    desc: '项目目录内自动允许读写与命令（默认）',
+    desc: '项目目录内自动允许读写与命令',
     Icon: Shield,
   },
   {
@@ -91,13 +93,32 @@ export function coerceReasoningEffort(
   return allowed.includes(value) ? value : 'auto';
 }
 
-/** Rough context window by model id family — used for the usage ring until catalog fields exist. */
+/**
+ * Rough context window by model id / display name family.
+ * Used only when 设置 → 模型 has not configured contextWindow yet.
+ */
 export function estimateContextWindow(modelId: string | undefined): number {
   const id = (modelId || '').toLowerCase();
   if (!id) return 128_000;
-  if (id.includes('opus') || id.includes('sonnet-4') || id.includes('gpt-4.1')) return 200_000;
+  if (id.includes('gpt-5.6') || id.includes('gpt-5.5') || id.includes('gpt-5.4')) {
+    return 400_000;
+  }
+  if (id.includes('grok-4.5') || id.includes('grok 4.5')) return 500_000;
+  if (id.includes('grok-4') || id.includes('grok 4')) return 256_000;
+  if (id.includes('glm-5') || id.includes('glm 5')) return 200_000;
+  if (
+    id.includes('opus') ||
+    id.includes('sonnet-4') ||
+    id.includes('sonnet 4') ||
+    id.includes('gpt-4.1') ||
+    id.includes('fable')
+  ) {
+    return 200_000;
+  }
   if (id.includes('gpt-4o') || id.includes('claude') || id.includes('gemini')) return 128_000;
-  if (id.includes('mini') || id.includes('haiku') || id.includes('flash')) return 64_000;
+  if (id.includes('mini') || id.includes('haiku') || id.includes('flash') || id.includes('luna')) {
+    return 128_000;
+  }
   return 128_000;
 }
 
@@ -139,6 +160,8 @@ function MenuShell(props: {
   anchorEl: HTMLElement | null;
   align?: 'left' | 'right';
   width?: number;
+  /** Extra portal roots (e.g. model flyout) that should not count as outside clicks. */
+  satelliteEls?: Array<HTMLElement | null>;
   children: React.ReactNode;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -166,6 +189,9 @@ function MenuShell(props: {
       const t = e.target as Node;
       if (menuRef.current?.contains(t)) return;
       if (props.anchorEl?.contains(t)) return;
+      // Model flyout (and any other satellite portal) lives outside menuRef;
+      // treating it as outside would close the picker before the click lands.
+      if (props.satelliteEls?.some((el) => el?.contains(t))) return;
       props.onClose();
     };
     const onKey = (e: KeyboardEvent) => {
@@ -180,7 +206,7 @@ function MenuShell(props: {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [props.open, props.onClose, props.anchorEl]);
+  }, [props.open, props.onClose, props.anchorEl, props.satelliteEls]);
 
   if (!props.open || !anchor || typeof document === 'undefined') return null;
 
@@ -256,6 +282,110 @@ export function PermissionMenu(props: {
   );
 }
 
+/** 输入框「对话对象」选择菜单里的一个可选身份（模型/智能体/小队）。 */
+export interface IdentityOption {
+  track: 'model' | 'agent' | 'team';
+  targetRef: string;
+  name: string;
+  desc?: string;
+}
+
+/**
+ * 对话对象选择菜单：切换当前对话由谁来回答——纯模型 / 某个智能体 / 某个小队。
+ * 选择后调用 conversation.rebindTarget 换绑，下一条消息即生效。
+ */
+export function IdentityPickerMenu(props: {
+  open: boolean;
+  agents: readonly { id: string; name: string; description?: string }[];
+  teams: readonly { id: string; name: string; description?: string }[];
+  currentTrack: 'model' | 'agent' | 'team';
+  currentTargetRef: string;
+  anchorEl: HTMLElement | null;
+  onClose(): void;
+  onPick(option: IdentityOption): void;
+}) {
+  const TRACK_ICONS = { model: MessageSquare, agent: Bot, team: Users } as const;
+  const sections: Array<{
+    key: 'agent' | 'team';
+    heading: string;
+    items: readonly { id: string; name: string; description?: string }[];
+  }> = [
+    { key: 'agent', heading: '智能体', items: props.agents },
+    { key: 'team', heading: '小队', items: props.teams },
+  ];
+  return (
+    <MenuShell open={props.open} onClose={props.onClose} anchorEl={props.anchorEl} width={300}>
+      <div className="shell-menu__heading">对话对象</div>
+      <div className="shell-menu__scroll">
+        <button
+          type="button"
+          role="menuitemradio"
+          aria-checked={props.currentTrack === 'model'}
+          className={`shell-menu__item ${props.currentTrack === 'model' ? 'is-active' : ''}`}
+          onClick={() => {
+            props.onPick({ track: 'model', targetRef: '', name: '直接跟模型聊' });
+            props.onClose();
+          }}
+        >
+          <span
+            className="shell-menu__item-icon-wrap"
+            data-active={props.currentTrack === 'model' ? '1' : '0'}
+          >
+            <MessageSquare size={15} />
+          </span>
+          <div className="shell-menu__item-text">
+            <div className="shell-menu__item-title">直接跟模型聊</div>
+            <div className="shell-menu__item-desc">不经过智能体人设，右侧模型选择器决定用哪个模型</div>
+          </div>
+          {props.currentTrack === 'model' ? <Check size={14} className="shell-menu__check" /> : null}
+        </button>
+        {sections.map((section) =>
+          section.items.length === 0 ? null : (
+            <div key={section.key}>
+              <div className="shell-menu__heading shell-menu__heading--sub">{section.heading}</div>
+              {section.items.map((item) => {
+                const active =
+                  props.currentTrack === section.key && props.currentTargetRef === String(item.id);
+                const Icon = TRACK_ICONS[section.key];
+                return (
+                  <button
+                    key={`${section.key}-${item.id}`}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={active}
+                    data-testid={`identity-option-${section.key}-${item.id}`}
+                    className={`shell-menu__item ${active ? 'is-active' : ''}`}
+                    onClick={() => {
+                      props.onPick({
+                        track: section.key,
+                        targetRef: String(item.id),
+                        name: item.name,
+                        desc: item.description,
+                      });
+                      props.onClose();
+                    }}
+                  >
+                    <span className="shell-menu__item-icon-wrap" data-active={active ? '1' : '0'}>
+                      <Icon size={15} />
+                    </span>
+                    <div className="shell-menu__item-text">
+                      <div className="shell-menu__item-title">{item.name}</div>
+                      {item.description ? (
+                        <div className="shell-menu__item-desc">{item.description}</div>
+                      ) : null}
+                    </div>
+                    {active ? <Check size={14} className="shell-menu__check" /> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ),
+        )}
+      </div>
+    </MenuShell>
+  );
+}
+
 export function ReasoningMenu(props: {
   open: boolean;
   value: ReasoningEffort;
@@ -294,8 +424,13 @@ export function ReasoningMenu(props: {
 }
 
 /**
- * NewMax two-level model picker:
- * 1) provider list  2) models under that provider
+ * NewMax model picker:
+ * - The trigger opens a compact provider menu.
+ * - Hover/focus a provider opens a Radix submenu containing its models.
+ *
+ * Radix/Popper owns collision detection, flipping and resize/scroll updates. Keeping
+ * the provider row and model panel in one menu tree avoids the stale DOMRect and
+ * hover-gap races that made the old hand-positioned portal drift across viewports.
  */
 export function ModelPickerMenu(props: {
   open: boolean;
@@ -306,188 +441,308 @@ export function ModelPickerMenu(props: {
   onClose(): void;
   onPick(modelId: string): void;
 }) {
-  const [query, setQuery] = useState('');
-  const [provider, setProvider] = useState<string | null>(null);
-  const q = query.trim().toLowerCase();
-
   const providers = useMemo(() => {
     const map = new Map<string, ModelOption[]>();
     for (const model of props.models) {
-      if (
-        q &&
-        !model.displayName.toLowerCase().includes(q) &&
-        !model.modelId.toLowerCase().includes(q) &&
-        !model.providerName.toLowerCase().includes(q)
-      ) {
-        continue;
-      }
       const list = map.get(model.providerName) ?? [];
       list.push(model);
       map.set(model.providerName, list);
     }
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [props.models, q]);
+  }, [props.models]);
 
-  useEffect(() => {
-    if (!props.open) {
-      setProvider(null);
-      setQuery('');
+  const [triggerRect, setTriggerRect] = useState<AnchorRect | null>(null);
+  useLayoutEffect(() => {
+    if (!props.open || !props.anchorEl) {
+      setTriggerRect(null);
+      return;
     }
-  }, [props.open]);
+    const update = () => setTriggerRect(rectFromEl(props.anchorEl));
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [props.open, props.anchorEl]);
 
-  const selected = props.models.find((m) => m.modelId === props.selectedModelId);
+  const selectedProviderOfModel = props.models.find(
+    (model) => model.modelId === props.selectedModelId,
+  )?.providerName;
 
   return (
-    <MenuShell
+    <DropdownMenu.Root
+      dir="rtl"
       open={props.open}
-      onClose={props.onClose}
-      anchorEl={props.anchorEl}
-      align="right"
-      width={300}
+      onOpenChange={(open) => {
+        if (!open) props.onClose();
+      }}
+      modal={false}
     >
-      <div className="shell-menu__heading">
-        {provider ? (
-          <button
-            type="button"
-            className="shell-menu__back"
-            onClick={() => setProvider(null)}
-            title="返回厂商列表"
-          >
-            <ChevronLeft size={14} />
-          </button>
-        ) : null}
-        <span>{provider ? provider : '选择模型'}</span>
-      </div>
-
-      <div className="shell-menu__search">
-        <Search size={12} />
-        <input
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setProvider(null);
+      <DropdownMenu.Trigger asChild>
+        <span
+          aria-hidden="true"
+          style={{
+            position: 'fixed',
+            left: triggerRect?.left ?? 0,
+            top: triggerRect?.top ?? 0,
+            width: triggerRect?.width ?? 0,
+            height: triggerRect?.height ?? 0,
+            pointerEvents: 'none',
           }}
-          placeholder={provider ? '搜索模型…' : '搜索厂商或模型…'}
-          autoFocus
         />
-      </div>
-
-      <div className="shell-menu__scroll">
-        {!provider ? (
-          <>
-            <button
-              type="button"
-              className={`shell-menu__item ${!props.selectedModelId ? 'is-active' : ''}`}
-              onClick={() => {
-                props.onPick('');
-                props.onClose();
-              }}
-            >
-              <div className="shell-menu__item-text">
-                <div className="shell-menu__item-title">{props.defaultLabel || '默认模型'}</div>
-                <div className="shell-menu__item-desc">使用对话绑定的模型</div>
-              </div>
-              {!props.selectedModelId ? <Check size={14} className="shell-menu__check" /> : null}
-            </button>
-
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          className="shell-menu shell-menu--portal shell-menu--model-providers"
+          side="top"
+          align="end"
+          sideOffset={8}
+          collisionPadding={8}
+          avoidCollisions
+          onCloseAutoFocus={(event) => event.preventDefault()}
+          onEscapeKeyDown={props.onClose}
+        >
+          <div className="shell-menu__scroll">
             {providers.length === 0 ? (
-              <div className="shell-menu__empty">没有匹配的模型</div>
+              <div className="shell-menu__empty">没有可用模型</div>
             ) : (
-              providers.map(([name, models]) => (
-                <button
-                  key={name}
-                  type="button"
-                  className="shell-menu__item"
-                  onClick={() => {
-                    if (q && models.length === 1) {
-                      props.onPick(models[0]!.modelId);
-                      props.onClose();
-                      return;
-                    }
-                    setProvider(name);
-                  }}
-                >
-                  <div className="shell-menu__item-text">
-                    <div className="shell-menu__item-title">{name}</div>
-                    <div className="shell-menu__item-desc">{models.length} 个模型</div>
-                  </div>
-                  <ChevronRight size={14} className="shell-menu__chevron" />
-                </button>
-              ))
+              providers.map(([providerName, models]) => {
+                const ownsSelected = selectedProviderOfModel === providerName;
+                return (
+                  <DropdownMenu.Sub key={providerName}>
+                    <DropdownMenu.SubTrigger
+                      data-testid={`model-provider-${providerName}`}
+                      className={`shell-menu__item shell-menu__item--provider ${
+                        ownsSelected ? 'is-active' : ''
+                      }`}
+                    >
+                      <div className="shell-menu__item-text" dir="ltr">
+                        <div className="shell-menu__item-title">{providerName}</div>
+                      </div>
+                      {ownsSelected ? <Check size={14} className="shell-menu__check" /> : null}
+                      <ChevronLeft size={14} className="shell-menu__chevron" />
+                    </DropdownMenu.SubTrigger>
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.SubContent
+                        data-testid="model-flyout"
+                        className="shell-menu shell-menu--portal shell-menu--model-flyout"
+                        sideOffset={6}
+                        alignOffset={-6}
+                        collisionPadding={8}
+                        avoidCollisions
+                      >
+                        <div className="shell-menu__scroll">
+                          {models.length === 0 ? (
+                            <div className="shell-menu__empty">该供应商暂无模型</div>
+                          ) : (
+                            models.map((model) => {
+                              const active = model.modelId === props.selectedModelId;
+                              return (
+                                <DropdownMenu.Item
+                                  key={model.modelId}
+                                  className={`shell-menu__item shell-menu__item--model ${
+                                    active ? 'is-active' : ''
+                                  }`}
+                                  onSelect={() => {
+                                    props.onPick(model.modelId);
+                                    props.onClose();
+                                  }}
+                                >
+                                  <Sparkles size={13} className="shell-menu__item-icon" />
+                                  <div className="shell-menu__item-text" dir="ltr">
+                                    <div className="shell-menu__item-title">{model.displayName}</div>
+                                  </div>
+                                  {active ? (
+                                    <Check size={14} className="shell-menu__check" />
+                                  ) : null}
+                                </DropdownMenu.Item>
+                              );
+                            })
+                          )}
+                        </div>
+                      </DropdownMenu.SubContent>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Sub>
+                );
+              })
             )}
-          </>
-        ) : (
-          <>
-            {(providers.find(([n]) => n === provider)?.[1] ?? []).map((model) => {
-              const active = model.modelId === props.selectedModelId;
-              return (
-                <button
-                  key={model.modelId}
-                  type="button"
-                  className={`shell-menu__item ${active ? 'is-active' : ''}`}
-                  onClick={() => {
-                    props.onPick(model.modelId);
-                    props.onClose();
-                  }}
-                >
-                  <Sparkles size={13} className="shell-menu__item-icon" />
-                  <div className="shell-menu__item-text">
-                    <div className="shell-menu__item-title">{model.displayName}</div>
-                    <div className="shell-menu__item-desc">{model.modelId}</div>
-                  </div>
-                  {active ? <Check size={14} className="shell-menu__check" /> : null}
-                </button>
-              );
-            })}
-          </>
-        )}
-      </div>
-
-      {selected ? <div className="shell-menu__footer">当前：{selected.displayName}</div> : null}
-    </MenuShell>
+          </div>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
+/**
+ * Context occupancy ring. Hover shows a NewMax-style "上下文窗口" card.
+ * Session cost/duration hover lives on the message footer metrics instead.
+ */
 export function ContextRing(props: {
+  /** Context occupancy used by the ring (input-side tokens). */
   used: number;
+  /** Context window limit for the ring. */
   limit: number;
+  /** 本会话累计时长（ms），tooltip 里展示。 */
+  sessionDurationMs?: number;
+  /** 本会话累计消耗 tokens（输入+输出跨全部轮次），tooltip 里展示。 */
+  sessionTokens?: number;
   title?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<AnchorRect | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const closeTimer = useRef<number | null>(null);
+
   const ratio = props.limit > 0 ? Math.min(1, Math.max(0, props.used / props.limit)) : 0;
   const r = 8;
   const c = 2 * Math.PI * r;
   const dash = `${(ratio * c).toFixed(2)} ${c.toFixed(2)}`;
   const pct = Math.round(ratio * 100);
+  const usedLabel = formatTokenCount(props.used);
+  const limitLabel = formatTokenCount(props.limit);
+  const remaining = Math.max(0, props.limit - props.used);
+  const remainingLabel = formatTokenCount(remaining);
+  // 会话累计（跨全部轮次的总消耗），与「当前上下文占用」是两个口径：
+  // 占用 = 最近一次请求的 input tokens（提示词+全部历史，即模型此刻真实
+  // 看到的内容量）；累计 = 本会话所有轮次 in+out 之和，只增不减。
+  const sessionTokens = props.sessionTokens ?? 0;
+  const sessionTokensLabel = sessionTokens > 0 ? formatTokenCount(sessionTokens) : null;
+  const sessionDurationLabel = (() => {
+    const ms = props.sessionDurationMs ?? 0;
+    if (ms <= 0) return null;
+    const totalMin = Math.round(ms / 60000);
+    if (totalMin < 1) return '<1 分钟';
+    if (totalMin < 60) return `${totalMin} 分钟`;
+    return `${Math.floor(totalMin / 60)} 小时 ${totalMin % 60} 分钟`;
+  })();
+
+  const cancelClose = () => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+  const show = () => {
+    cancelClose();
+    setAnchor(rectFromEl(btnRef.current));
+    setOpen(true);
+  };
+  const hide = () => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(() => setOpen(false), 120);
+  };
+  useEffect(() => () => cancelClose(), []);
+
+  let tipStyle: React.CSSProperties | undefined;
+  if (open && anchor && typeof window !== 'undefined') {
+    const tipW = 220;
+    const left = Math.max(8, Math.min(anchor.right - tipW, window.innerWidth - tipW - 8));
+    tipStyle = {
+      position: 'fixed',
+      left,
+      bottom: window.innerHeight - anchor.top + 8,
+      width: tipW,
+      zIndex: 10000,
+    };
+  }
+
   return (
-    <span
-      className="shell-compose__ctx"
-      title={
-        props.title ||
-        `上下文 ${formatTokenCount(props.used)} / ${formatTokenCount(props.limit)}（约 ${pct}%）`
-      }
-    >
-      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
-        <circle
-          cx="11"
-          cy="11"
-          r={r}
-          fill="none"
-          stroke="var(--color-border)"
-          strokeWidth="2.2"
-        />
-        <circle
-          cx="11"
-          cy="11"
-          r={r}
-          fill="none"
-          stroke={ratio > 0.9 ? 'var(--color-error)' : 'var(--color-accent)'}
-          strokeWidth="2.2"
-          strokeDasharray={dash}
-          strokeLinecap="round"
-          transform="rotate(-90 11 11)"
-        />
-      </svg>
-    </span>
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        className="shell-compose__ctx"
+        data-testid="context-ring"
+        aria-label={`上下文 ${usedLabel} / ${limitLabel}（约 ${pct}%）`}
+        title={props.title}
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+      >
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+          <circle
+            cx="11"
+            cy="11"
+            r={r}
+            fill="none"
+            stroke="var(--color-border)"
+            strokeWidth="2.2"
+          />
+          <circle
+            cx="11"
+            cy="11"
+            r={r}
+            fill="none"
+            stroke={ratio > 0.9 ? 'var(--color-error)' : 'var(--color-accent)'}
+            strokeWidth="2.2"
+            strokeDasharray={dash}
+            strokeLinecap="round"
+            transform="rotate(-90 11 11)"
+          />
+        </svg>
+      </button>
+      {open && tipStyle && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              className="shell-ctx-tooltip"
+              style={tipStyle}
+              role="tooltip"
+              data-testid="context-ring-tooltip"
+              onMouseEnter={cancelClose}
+              onMouseLeave={hide}
+            >
+              <div className="shell-ctx-tooltip__title">上下文窗口</div>
+              <div className="shell-ctx-tooltip__row">
+                <span>当前占用</span>
+                <strong>
+                  {usedLabel}
+                  <span className="shell-ctx-tooltip__pct"> · {pct}%</span>
+                </strong>
+              </div>
+              <div className="shell-ctx-tooltip__row">
+                <span>上限</span>
+                <strong>{limitLabel}</strong>
+              </div>
+              <div className="shell-ctx-tooltip__row">
+                <span>剩余</span>
+                <strong>{remainingLabel}</strong>
+              </div>
+              <div className="shell-ctx-tooltip__hint">
+                占用 = 最近一次请求送入模型的内容量（含全部历史），随对话增长
+              </div>
+              {sessionTokensLabel || sessionDurationLabel ? (
+                <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
+              ) : null}
+              {sessionTokensLabel ? (
+                <div className="shell-ctx-tooltip__row">
+                  <span>会话累计消耗</span>
+                  <strong>{sessionTokensLabel}</strong>
+                </div>
+              ) : null}
+              {sessionDurationLabel ? (
+                <div className="shell-ctx-tooltip__row">
+                  <span>会话时长</span>
+                  <strong>{sessionDurationLabel}</strong>
+                </div>
+              ) : null}
+              <div className="shell-ctx-tooltip__bar" aria-hidden="true">
+                <div
+                  className="shell-ctx-tooltip__bar-fill"
+                  style={{
+                    width: `${pct}%`,
+                    background:
+                      ratio > 0.9 ? 'var(--color-error)' : 'var(--color-accent)',
+                  }}
+                />
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 

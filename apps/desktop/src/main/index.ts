@@ -28,6 +28,7 @@ import {
   type M1OpenDocId,
 } from './m1-open-doc.js';
 import { listProjectFiles } from './project-files.js';
+import { findDeepLinkInArgv, parseDeepLinkUrl } from './deep-link.js';
 import { listDogfoodDayReports } from './m1-exit-evidence-load.js';
 import { parseHandtestDocMarkdown } from '../m1-handtest-doc-parse.js';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +44,8 @@ import {
   parseBindWorkspaceFolderPayload,
   parseCreateTaskPayload,
   parseCreateWorkspacePayload,
+  parseUpdateWorkspacePayload,
+  parseDeleteWorkspacePayload,
   parseListTasksPayload,
   parseListWorkspacesPayload,
   parseOpenTaskPayload,
@@ -62,7 +65,10 @@ import {
   parseReorderProvidersPayload,
   parseAddProviderCredentialMetadata,
   parseRemoveProviderCredentialPayload,
+  parseRevealProviderCredentialPayload,
+  parseUpdateProviderCredentialMetadata,
   parseSetModelPrioritiesPayload,
+  parseUpdateModelPayload,
   parseRemoveModelPayload,
   parseGetSettingsPayload,
   parseSetSettingPayload,
@@ -77,6 +83,8 @@ import {
   parseUpdateAgentBindingPayload,
   parseImportSkillPayload,
   parseListSkillsPayload,
+  parseDeleteSkillPayload,
+  parseGetSkillPayload,
   parseRegisterMcpServerPayload,
   parseListMcpServersPayload,
   parseProbeMcpPolicyPayload,
@@ -127,6 +135,7 @@ import {
   parseCreateGlobalAgentPayload,
   parseCreateTeamPayload,
   parseDeleteConversationPayload,
+  parseConversationCompactPayload,
   parseDeleteGlobalAgentPayload,
   parseDeleteTeamPayload,
   parseListConversationsPayload,
@@ -140,7 +149,9 @@ import {
   parseUpdateGlobalAgentPayload,
   parseUpdateTeamPayload,
   parseUpgradeConversationTrackPayload,
+  parseRebindConversationTargetPayload,
   parseConversationDecideToolApprovalPayload,
+  parseConversationSubmitBrowserResultPayload,
 } from '../team-payloads.js';
 import type { Event } from '@sync-think/shared';
 import {
@@ -196,18 +207,33 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     // Match resolved OS theme so light mode does not flash a dark frame.
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#151815' : '#f1f4f0',
+    // Values track --color-page in shell.css.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d0d0c' : '#f2eee6',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
       spellcheck: false,
+      // 内置浏览器面板（右栏）使用 <webview> 承载公网页面；guest 权限在
+      // will-attach-webview 中强制收紧（无 node、无 preload、强制沙箱）。
+      webviewTag: true,
     },
   });
   mainWindow = window;
   trustedRendererLocation = nextTrustedRendererLocation;
   installNavigationGuards(window.webContents, nextTrustedRendererLocation);
+  // 内置浏览器 guest 安全闸门：剥离任何提权配置，只允许 http(s) 页面。
+  window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete (webPreferences as { preload?: string }).preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    const src = String(params.src ?? '');
+    if (src && !/^https?:\/\//i.test(src) && src !== 'about:blank') {
+      event.preventDefault();
+    }
+  });
   window.webContents.on('preload-error', (_event, _preloadPath, error) => {
     console.error('[desktop] preload failed', error.message);
   });
@@ -257,6 +283,36 @@ function sendRuntimeEventToRenderer(event: Event): void {
     return;
   }
   webContents.send('runtime:event', event);
+}
+
+// ─── Deep links (syncthink://conversation/{id}) ───────────────────────────
+// A conversation id that arrives before the renderer is ready (cold start) or
+// before the trusted renderer URL is registered is queued here and flushed
+// once the window reports it is ready.
+let pendingDeepLinkConversationId: string | null = null;
+
+function sendOpenConversationToRenderer(conversationId: string): boolean {
+  const window = mainWindow;
+  const location = trustedRendererLocation;
+  if (!window || !location || window.isDestroyed()) return false;
+  const webContents = window.webContents;
+  if (webContents.isDestroyed() || !isTrustedRendererUrl(webContents.getURL(), location)) {
+    return false;
+  }
+  webContents.send('desktop:open-conversation', { conversationId });
+  return true;
+}
+
+function handleDeepLink(raw: string): void {
+  const parsed = parseDeepLinkUrl(raw);
+  if (!parsed) return;
+  if (!sendOpenConversationToRenderer(parsed.conversationId)) {
+    // Renderer not ready yet — hold the id; it will be flushed on first
+    // 'desktop:renderer-ready'. Only the latest id is kept so a rapid burst
+    // of links doesn't open a queue of stale conversations.
+    pendingDeepLinkConversationId = parsed.conversationId;
+    if (!mainWindow) createWindow();
+  }
 }
 
 function getRuntimeSession(): RuntimeSession {
@@ -484,6 +540,16 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('workspace.list', parseListWorkspacesPayload(value));
   });
+  ipcMain.handle('runtime:workspace-update', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('workspace.update', parseUpdateWorkspacePayload(value));
+  });
+  ipcMain.handle('runtime:workspace-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('workspace.delete', parseDeleteWorkspacePayload(value));
+  });
   ipcMain.handle('runtime:task-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -701,6 +767,33 @@ function setupRuntimeBridge(): void {
       parseRemoveProviderCredentialPayload(value),
     );
   });
+  ipcMain.handle('runtime:provider-reveal-credential', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'provider.revealCredential',
+      parseRevealProviderCredentialPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:provider-update-credential', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    const metadata = parseUpdateProviderCredentialMetadata(value);
+    let apiKey: string | undefined;
+    if (metadata.rotateCredentialFromClipboard) {
+      const clipboardValue = clipboard.readText();
+      if (!clipboardValue.trim() || clipboardValue.length > 8192) {
+        throw new Error('Provider credential unavailable');
+      }
+      apiKey = clipboardValue;
+    }
+    return getRuntimeClient().request('provider.updateCredential', {
+      providerId: metadata.providerId,
+      credentialRefId: metadata.credentialRefId,
+      label: metadata.label,
+      apiKey,
+    });
+  });
   ipcMain.handle('runtime:provider-set-model-priorities', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -708,6 +801,11 @@ function setupRuntimeBridge(): void {
       'provider.setModelPriorities',
       parseSetModelPrioritiesPayload(value),
     );
+  });
+  ipcMain.handle('runtime:provider-update-model', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('provider.updateModel', parseUpdateModelPayload(value));
   });
   ipcMain.handle('runtime:provider-remove-model', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -858,12 +956,92 @@ function setupRuntimeBridge(): void {
       parseConversationDecideToolApprovalPayload(value),
     );
   });
+  // AI 浏览器命令（browser_click/type/read/screenshot）的渲染层结果回传通道。
+  ipcMain.handle('runtime:conversation-submit-browser-result', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.submitBrowserResult',
+      parseConversationSubmitBrowserResultPayload(value),
+    );
+  });
+  // AI browser_screenshot：主进程对 webview guest capturePage 并把 PNG 写入
+  // 项目文件夹 .sync-think/screenshots/（仅项目内、带时间戳文件名）。
+  ipcMain.handle('desktop:save-browser-screenshot', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid save-browser-screenshot payload');
+    }
+    const payload = value as { root?: unknown; webContentsId?: unknown };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid save-browser-screenshot payload: root required');
+    }
+    if (typeof payload.webContentsId !== 'number' || !Number.isInteger(payload.webContentsId)) {
+      throw new Error('Invalid save-browser-screenshot payload: webContentsId required');
+    }
+    const root = path.resolve(payload.root);
+    if (!fs.existsSync(root)) {
+      return { ok: false, error: '项目文件夹不存在。' };
+    }
+    const { webContents: webContentsModule } = await import('electron');
+    const guest = webContentsModule.fromId(payload.webContentsId);
+    if (!guest || guest.isDestroyed()) {
+      return { ok: false, error: '浏览器页面不可用（webview 已销毁或未加载）。' };
+    }
+    // 只允许截取本窗口挂载的 <webview> guest（http/https 页面），拒绝任意 id。
+    const guestUrl = guest.getURL();
+    if (guest.getType() !== 'webview' || !/^https?:\/\//i.test(guestUrl)) {
+      return { ok: false, error: '目标不是内置浏览器页面，已拒绝截图。' };
+    }
+    try {
+      const image = await guest.capturePage();
+      if (image.isEmpty()) {
+        return { ok: false, error: '截图为空：页面尚未渲染完成。' };
+      }
+      const dir = path.join(root, '.sync-think', 'screenshots');
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+      const fileName = `browser-${stamp}-${Math.random().toString(36).slice(2, 6)}.png`;
+      const absolute = path.join(dir, fileName);
+      // Escape guard（防御性——dir 由本进程拼接，仍然校验一次）。
+      if (!absolute.startsWith(root + path.sep)) {
+        return { ok: false, error: '截图路径越界，已拒绝。' };
+      }
+      fs.writeFileSync(absolute, image.toPNG());
+      const relativePath = path
+        .relative(root, absolute)
+        .split(path.sep)
+        .join('/');
+      return {
+        ok: true,
+        path: absolute,
+        relativePath,
+        // Served by the sync-think-image protocol (screenshot host) — allowed
+        // by the renderer CSP and the MarkdownContent urlTransform.
+        embedUrl: `sync-think-image://screenshot/${encodeURIComponent(absolute)}`,
+        pageUrl: guestUrl,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `截图失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  });
   ipcMain.handle('runtime:conversation-upgrade-track', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request(
       'conversation.upgradeTrack',
       parseUpgradeConversationTrackPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-rebind-target', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.rebindTarget',
+      parseRebindConversationTargetPayload(value),
     );
   });
   ipcMain.handle('runtime:conversation-delete', async (event, value: unknown) => {
@@ -876,6 +1054,16 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('conversation.sendMessage', value);
   });
+  ipcMain.handle('runtime:conversation-compact', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    // Model-backed compact can take tens of seconds; client defaults to 120s for this type.
+    return getRuntimeClient().request(
+      'conversation.compact',
+      parseConversationCompactPayload(value),
+      { timeoutMs: 120_000 },
+    );
+  });
 
   ipcMain.handle('runtime:skill-import', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -886,6 +1074,16 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('skill.list', parseListSkillsPayload(value));
+  });
+  ipcMain.handle('runtime:skill-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('skill.delete', parseDeleteSkillPayload(value));
+  });
+  ipcMain.handle('runtime:skill-get', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('skill.get', parseGetSkillPayload(value));
   });
 
   ipcMain.handle('runtime:mcp-register', async (event, value: unknown) => {
@@ -1137,6 +1335,21 @@ function setupRuntimeBridge(): void {
     };
   });
 
+  // The renderer owns the theme preference; the native frame can only follow it
+  // via nativeTheme.themeSource. Without this the OS chrome stays on whatever
+  // the system resolved while the renderer switched, so light mode kept a dark
+  // title bar.
+  ipcMain.handle('desktop:set-theme', (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const source = value === 'light' || value === 'dark' ? value : 'system';
+    nativeTheme.themeSource = source;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) {
+      win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#0d0d0c' : '#f2eee6');
+    }
+    return { dark: nativeTheme.shouldUseDarkColors };
+  });
+
   ipcMain.handle('desktop:pick-folder', async (event) => {
     assertRuntimeIpcSource(event);
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -1153,6 +1366,57 @@ function setupRuntimeBridge(): void {
       return { canceled: true as const, path: null };
     }
     return { canceled: false as const, path: result.filePaths[0]! };
+  });
+
+  // 能力中心：从公网 URL 下载 SKILL.md 文本（renderer CSP 禁止直连外网）。
+  // 只取文本、限制大小；导入校验仍在 Runtime（skill.import 只解析不执行）。
+  ipcMain.handle('desktop:fetch-skill-md', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid fetch-skill-md payload');
+    }
+    const rawUrl = (value as { url?: unknown }).url;
+    if (typeof rawUrl !== 'string' || rawUrl.trim().length === 0) {
+      throw new Error('Invalid fetch-skill-md payload: url required');
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl.trim());
+    } catch {
+      throw new Error('URL 无效，请检查后重试');
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error('仅支持 http(s) 链接');
+    }
+    // GitHub blob 页面自动换成 raw 内容地址，方便直接粘贴网页链接。
+    if (parsed.hostname === 'github.com') {
+      const m = /^\/([^/]+)\/([^/]+)\/blob\/(.+)$/.exec(parsed.pathname);
+      if (m) {
+        parsed = new URL(`https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[3]}`);
+      }
+    }
+    const MAX_BYTES = 2 * 1024 * 1024;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    try {
+      const response = await fetch(parsed.toString(), {
+        signal: controller.signal,
+        redirect: 'follow',
+        headers: { Accept: 'text/markdown, text/plain, */*' },
+      });
+      if (!response.ok) {
+        throw new Error(`下载失败：HTTP ${response.status}`);
+      }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.byteLength > MAX_BYTES) {
+        throw new Error('文件超过 2 MB 限制');
+      }
+      const text = buffer.toString('utf8').replace(/^﻿/, '');
+      if (!text.trim()) throw new Error('下载内容为空');
+      return { url: parsed.toString(), skillMd: text };
+    } finally {
+      clearTimeout(timer);
+    }
   });
 
   // Compose @-mention: list files under a bound project folder (local FS only).
@@ -1186,6 +1450,216 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('run.cancel', parseCancelRunPayload(value));
   });
+
+  // 右栏「文件」面板：读取项目内单个文本文件（只读，防目录穿越）。
+  ipcMain.handle('desktop:read-project-file', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid read-project-file payload');
+    }
+    const payload = value as { root?: unknown; path?: unknown };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid read-project-file payload: root required');
+    }
+    if (typeof payload.path !== 'string' || !payload.path.trim()) {
+      throw new Error('Invalid read-project-file payload: path required');
+    }
+    const root = path.resolve(payload.root);
+    const target = path.resolve(root, payload.path);
+    // Escape guard: the resolved target must stay inside the bound root.
+    if (target !== root && !target.startsWith(root + path.sep)) {
+      throw new Error('read-project-file: path escapes the project root');
+    }
+    const MAX_BYTES = 512 * 1024;
+    try {
+      const stat = fs.statSync(target);
+      if (!stat.isFile()) return { path: payload.path, content: null, error: '不是文件' };
+      if (stat.size > MAX_BYTES) {
+        return { path: payload.path, content: null, error: '文件超过 512KB，暂不支持预览' };
+      }
+      const content = fs.readFileSync(target, 'utf8');
+      return { path: payload.path, content, error: null };
+    } catch {
+      return { path: payload.path, content: null, error: '读取失败或文件不存在' };
+    }
+  });
+
+  // 右栏「文件」面板树形视图：列出项目内单层目录（懒加载展开，防目录穿越）。
+  ipcMain.handle('desktop:list-project-dir', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid list-project-dir payload');
+    }
+    const payload = value as { root?: unknown; dir?: unknown };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid list-project-dir payload: root required');
+    }
+    const root = path.resolve(payload.root);
+    const relDir = typeof payload.dir === 'string' ? payload.dir : '';
+    const target = path.resolve(root, relDir);
+    if (target !== root && !target.startsWith(root + path.sep)) {
+      throw new Error('list-project-dir: path escapes the project root');
+    }
+    const HEAVY_DIRS = new Set([
+      '.git',
+      'node_modules',
+      'dist',
+      'build',
+      'out',
+      '.next',
+      '.turbo',
+      '.cache',
+      'coverage',
+      '.venv',
+      'venv',
+      '__pycache__',
+    ]);
+    try {
+      const names = fs.readdirSync(target);
+      const entries: Array<{ name: string; path: string; kind: 'file' | 'dir' }> = [];
+      for (const name of names) {
+        if (HEAVY_DIRS.has(name)) continue;
+        const abs = path.join(target, name);
+        let stat: fs.Stats;
+        try {
+          stat = fs.lstatSync(abs);
+        } catch {
+          continue;
+        }
+        if (stat.isSymbolicLink()) continue;
+        const rel = (relDir ? `${relDir}/${name}` : name).replace(/\\/g, '/');
+        if (stat.isDirectory()) entries.push({ name, path: rel, kind: 'dir' });
+        else if (stat.isFile()) entries.push({ name, path: rel, kind: 'file' });
+        if (entries.length >= 500) break;
+      }
+      // Dirs first, then files; each group alphabetical (case-insensitive).
+      entries.sort((a, b) =>
+        a.kind !== b.kind
+          ? a.kind === 'dir'
+            ? -1
+            : 1
+          : a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+      );
+      return { dir: relDir, entries };
+    } catch {
+      return { dir: relDir, entries: [] };
+    }
+  });
+
+  // 右栏「工作区」面板：切换分支。未提交更改必须显式选择处理方式——
+  // strategy: 'check'（仅探测，脏则拒绝）| 'stash'（git stash -u 后切换）| 'force'（仍带走更改直接切换）。
+  ipcMain.handle('desktop:git-checkout', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid git-checkout payload');
+    }
+    const payload = value as { root?: unknown; branch?: unknown; strategy?: unknown };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid git-checkout payload: root required');
+    }
+    if (typeof payload.branch !== 'string' || !payload.branch.trim()) {
+      throw new Error('Invalid git-checkout payload: branch required');
+    }
+    const branch = payload.branch.trim();
+    // Branch-name guard: no flag injection / path tricks.
+    if (branch.startsWith('-') || /[\s~^:?*[\\\x00-\x1f]/.test(branch)) {
+      throw new Error('git-checkout: invalid branch name');
+    }
+    const strategy =
+      payload.strategy === 'stash' || payload.strategy === 'force' ? payload.strategy : 'check';
+    const root = path.resolve(payload.root);
+    if (!fs.existsSync(root)) {
+      return { ok: false, error: '项目目录不存在', dirty: false, changes: [] };
+    }
+    const { execFile } = await import('node:child_process');
+    const run = (args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> =>
+      new Promise((resolve) => {
+        execFile(
+          'git',
+          args,
+          { cwd: root, timeout: 20_000, windowsHide: true, maxBuffer: 1024 * 1024 },
+          (error, stdout, stderr) =>
+            resolve({ ok: !error, stdout: String(stdout), stderr: String(stderr) }),
+        );
+      });
+    const status = await run(['status', '--short']);
+    const changes = status.stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(0, 100)
+      .map((line) => ({ status: line.slice(0, 2).trim(), path: line.slice(3).trim() }));
+    if (changes.length > 0 && strategy === 'check') {
+      // Dirty worktree → UI must ask the user first (stash or carry over).
+      return { ok: false, dirty: true, changes, error: null };
+    }
+    if (changes.length > 0 && strategy === 'stash') {
+      const stash = await run(['stash', 'push', '-u', '-m', `sync-think: switch to ${branch}`]);
+      if (!stash.ok) {
+        return { ok: false, dirty: true, changes, error: `暂存失败：${stash.stderr.trim() || '未知错误'}` };
+      }
+    }
+    const checkout = await run(['checkout', branch]);
+    if (!checkout.ok) {
+      // Stash already happened (if requested) — surface the stash so the user can recover.
+      const detail = checkout.stderr.trim() || checkout.stdout.trim() || '未知错误';
+      return {
+        ok: false,
+        dirty: false,
+        changes: [],
+        error: `切换失败：${detail}${strategy === 'stash' && changes.length > 0 ? '（你的更改已存入 git stash，可用 git stash pop 恢复）' : ''}`,
+      };
+    }
+    return { ok: true, dirty: false, changes: [], error: null, stashed: strategy === 'stash' && changes.length > 0 };
+  });
+
+  // 右栏「工作区」面板：git 分支 / 状态摘要（只读命令，无 shell）。
+  ipcMain.handle('desktop:git-info', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid git-info payload');
+    }
+    const payload = value as { root?: unknown };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid git-info payload: root required');
+    }
+    const root = path.resolve(payload.root);
+    if (!fs.existsSync(root)) {
+      return { branch: null, changes: [], recentCommits: [], isRepo: false };
+    }
+    const { execFile } = await import('node:child_process');
+    const run = (args: string[]): Promise<string> =>
+      new Promise((resolve) => {
+        execFile(
+          'git',
+          args,
+          { cwd: root, timeout: 8_000, windowsHide: true, maxBuffer: 1024 * 1024 },
+          (error, stdout) => resolve(error ? '' : String(stdout)),
+        );
+      });
+    const branch = (await run(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    if (!branch) return { branch: null, branches: [], changes: [], recentCommits: [], isRepo: false };
+    const branchesRaw = await run(['branch', '--format=%(refname:short)']);
+    const branches = branchesRaw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 100);
+    const statusRaw = await run(['status', '--short']);
+    const changes = statusRaw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(0, 100)
+      .map((line) => ({ status: line.slice(0, 2).trim(), path: line.slice(3).trim() }));
+    const logRaw = await run(['log', '--oneline', '-8']);
+    const recentCommits = logRaw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const sep = line.indexOf(' ');
+        return { hash: line.slice(0, sep), subject: line.slice(sep + 1) };
+      });
+    return { branch, branches, changes, recentCommits, isRepo: true };
+  });
 }
 
 void app
@@ -1194,6 +1668,26 @@ void app
     protocol.handle('sync-think-image', (request) => {
       try {
         const url = new URL(request.url);
+        // AI browser_screenshot 产物：只允许读取任意项目下
+        // .sync-think/screenshots/ 目录内的 PNG（路径在 URL 中带全路径）。
+        if (url.hostname === 'screenshot') {
+          const raw = decodeURIComponent(url.pathname.replace(/^\//, ''));
+          const absolute = path.resolve(raw);
+          const normalized = absolute.split(path.sep).join('/');
+          if (
+            !normalized.includes('/.sync-think/screenshots/') ||
+            !absolute.toLowerCase().endsWith('.png') ||
+            !fs.existsSync(absolute)
+          ) {
+            return new Response('Not found', { status: 404 });
+          }
+          return new Response(new Uint8Array(fs.readFileSync(absolute)), {
+            headers: {
+              'Content-Type': 'image/png',
+              'Cache-Control': 'private, max-age=31536000, immutable',
+            },
+          });
+        }
         const storageRef = decodeURIComponent(url.pathname.replace(/^\//, ''));
         const image = readMessageImage(storageRef);
         if (!image) return new Response('Not found', { status: 404 });
@@ -1207,13 +1701,59 @@ void app
         return new Response('Bad request', { status: 400 });
       }
     });
+    // Register syncthink:// as a system handler so OS-launched links route
+    // back to this running app instance.
+    app.setAsDefaultProtocolClient('syncthink');
     setupRuntimeBridge();
     createWindow();
+
+    // macOS: the OS passes a clicked syncthink:// URL here, including from a
+    // second process launch while the first is running.
+    app.on('open-url', (_event, url) => {
+      _event.preventDefault();
+      handleDeepLink(url);
+    });
+
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+
+    // Flush any deep link that arrived before the window showed its content.
+    ipcMain.on('desktop:renderer-ready', (event) => {
+      if (event.sender === mainWindow?.webContents && pendingDeepLinkConversationId) {
+        const id = pendingDeepLinkConversationId;
+        pendingDeepLinkConversationId = null;
+        sendOpenConversationToRenderer(id);
+      }
+    });
   })
   .catch(handleDesktopStartupFailure);
+
+// Single instance: a second launch (e.g. clicking a syncthink:// link in
+// Windows/Linux) routes the argv to the already-running first instance.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    // Focus the existing window first, then deliver the link.
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+    const link = findDeepLinkInArgv(argv);
+    if (link) handleDeepLink(link);
+  });
+}
+
+// Cold start with a link in argv (Windows/Linux): resolve it after ready.
+{
+  const initialLink = findDeepLinkInArgv(process.argv);
+  if (initialLink) {
+    app.whenReady().then(() => handleDeepLink(initialLink));
+  }
+}
 
 app.on('before-quit', () => {
   runtimeClient?.disconnect();

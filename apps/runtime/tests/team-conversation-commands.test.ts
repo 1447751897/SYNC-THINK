@@ -275,9 +275,12 @@ describe('team & conversation commands', () => {
     expect(run.rosterSnapshot.members.map((m) => m.agentId)).toEqual([researcherId, writerId]);
   });
 
-  it('refuses hard-deleting a team with historical runs', async () => {
+  it('refuses hard-deleting a team with historical runs or referencing conversations', async () => {
     const deleteRefused = await request('team.delete', { teamId });
-    expect(deleteRefused.error?.message).toMatch(/historical runs/i);
+    // Two guards can fire: the conversation-reference guard (Chinese copy,
+    // checked first) or the store's historical-runs guard. This fixture has
+    // both a team conversation and a completed run — either refusal is correct.
+    expect(deleteRefused.error?.message).toMatch(/historical runs|对话引用/i);
   });
 
   it('orders pinned conversations first in the list', async () => {
@@ -368,6 +371,64 @@ describe('team & conversation commands', () => {
       conversationId: modelConvAId,
       track: 'model',
       targetRef: 'fake-mini',
+    });
+    expect(badTrack.error).toMatchObject({ code: 'protocol.frame_malformed' });
+  });
+
+  it('rebinds a conversation target same-track and across tracks', async () => {
+    // modelConvA is agent-track (bound to writer) after the upgrade test above.
+    // Same-track: agent → another agent.
+    const sameTrack = await request('conversation.rebindTarget', {
+      conversationId: modelConvAId,
+      track: 'agent',
+      targetRef: researcherId,
+    });
+    expect(sameTrack.error).toBeUndefined();
+    expect(
+      (sameTrack.payload as { conversation: { track: string; targetRef: string } }).conversation,
+    ).toMatchObject({ track: 'agent', targetRef: researcherId });
+
+    // Cross-track: agent → team.
+    const crossTrack = await request('conversation.rebindTarget', {
+      conversationId: modelConvAId,
+      track: 'team',
+      targetRef: teamId,
+    });
+    expect(crossTrack.error).toBeUndefined();
+    expect(
+      (crossTrack.payload as { conversation: { track: string; targetRef: string } }).conversation,
+    ).toMatchObject({ track: 'team', targetRef: teamId });
+
+    // Downgrade back to model-direct is allowed too (no direction limits).
+    const backToModel = await request('conversation.rebindTarget', {
+      conversationId: modelConvAId,
+      track: 'model',
+      targetRef: 'fake-mini',
+    });
+    expect(backToModel.error).toBeUndefined();
+    expect(
+      (backToModel.payload as { conversation: { track: string; targetRef: string } }).conversation,
+    ).toMatchObject({ track: 'model', targetRef: 'fake-mini' });
+
+    // Unknown conversation → command error; malformed payloads → frame_malformed.
+    const missing = await request('conversation.rebindTarget', {
+      conversationId: 'conv-does-not-exist',
+      track: 'agent',
+      targetRef: researcherId,
+    });
+    expect(missing.error?.message).toMatch(/not found/i);
+
+    const emptyRef = await request('conversation.rebindTarget', {
+      conversationId: modelConvAId,
+      track: 'agent',
+      targetRef: '   ',
+    });
+    expect(emptyRef.error).toMatchObject({ code: 'protocol.frame_malformed' });
+
+    const badTrack = await request('conversation.rebindTarget', {
+      conversationId: modelConvAId,
+      track: 'squad',
+      targetRef: researcherId,
     });
     expect(badTrack.error).toMatchObject({ code: 'protocol.frame_malformed' });
   });

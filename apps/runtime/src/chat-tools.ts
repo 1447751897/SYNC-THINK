@@ -77,6 +77,609 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   },
 ];
 
+/**
+ * Agent-management tools — let the chat model create Agent Library entries.
+ * create_agent is gated: full-access executes immediately; any other mode
+ * suspends on a user approval card first (see agentToolRequiresApproval).
+ */
+export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'list_agent_resources',
+    description:
+      'List resources needed to create a SYNC-THINK agent: available model ids, approved skill versions (id/name/version), and existing agent names. ALWAYS call this before create_agent so you fill in valid ids.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'create_agent',
+    description:
+      'Create a new agent in the SYNC-THINK Agent Library. In full-access mode it is created immediately; in other permission modes the user must approve first (an approval card is shown). Call list_agent_resources first to get valid model ids and approved skill version ids.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name'],
+      properties: {
+        name: { type: 'string', description: 'Agent display name (non-empty)' },
+        description: { type: 'string', description: 'Short description shown in the Agent Library' },
+        persona: {
+          type: 'string',
+          description: 'System instructions / persona the agent will follow',
+        },
+        defaultModelId: {
+          type: 'string',
+          description:
+            'Model id from list_agent_resources. Defaults to the current conversation model when omitted.',
+        },
+        skillIds: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 8,
+          description:
+            'Approved skill version ids (preferred) or skill names (resolved to the latest approved version). Max 8.',
+        },
+        reasoningEffort: {
+          type: 'string',
+          enum: ['auto', 'low', 'medium', 'high'],
+        },
+      },
+    },
+  },
+  {
+    name: 'update_agent',
+    description:
+      'Update an existing agent in the SYNC-THINK Agent Library (name / persona / description / default model / skill bindings / reasoning effort). In full-access mode it executes immediately; in other permission modes the user must approve first (an approval card is shown). Resolve the target by exact agent id (preferred) or unique agent name. Call list_agent_resources first to see existing agents, valid model ids and approved skill versions. Only pass fields you want to change; skillIds is FULL-REPLACE semantics.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['agent'],
+      properties: {
+        agent: {
+          type: 'string',
+          description: 'Target agent: exact agent id (preferred) or unique agent name.',
+        },
+        name: { type: 'string', description: 'New display name (must not collide with another agent)' },
+        description: { type: 'string', description: 'New short description' },
+        persona: { type: 'string', description: 'New system instructions / persona' },
+        defaultModelId: {
+          type: 'string',
+          description: 'New model id from list_agent_resources.',
+        },
+        skillIds: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 8,
+          description:
+            'FULL replacement of skill bindings: approved skill version ids (preferred) or skill names. Pass [] to remove all. Omit to keep current bindings. Max 8.',
+        },
+        reasoningEffort: {
+          type: 'string',
+          enum: ['auto', 'low', 'medium', 'high'],
+        },
+      },
+    },
+  },
+  {
+    name: 'archive_agent',
+    description:
+      'Archive (soft-delete) an agent in the SYNC-THINK Agent Library. The agent is hidden from the active list but can be restored from the Agent Library UI — nothing is hard-deleted. In full-access mode it executes immediately; in other permission modes the user must approve first. The agent bound to the CURRENT conversation cannot be archived. Resolve the target by exact agent id (preferred) or unique agent name.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['agent'],
+      properties: {
+        agent: {
+          type: 'string',
+          description: 'Target agent: exact agent id (preferred) or unique agent name.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional short reason shown on the approval card and audit event.',
+        },
+      },
+    },
+  },
+];
+
+/**
+ * Skill-management tools — let the chat model manage the Skill capability
+ * center. Mutations share the create_agent permission gate: full-access
+ * executes immediately; other modes suspend on a user approval card.
+ */
+export const CHAT_SKILL_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'list_skills',
+    description:
+      'List installed SYNC-THINK skills (name, version, skillVersionId, allowed-tools, approval state). ALWAYS call this before create_skill / update_skill / delete_skill so you reference real skillVersionId values.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'read_skill',
+    description:
+      'Read the full SKILL.md source of one installed skill version. Use before update_skill so your new version is based on the current content.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['skillVersionId'],
+      properties: {
+        skillVersionId: {
+          type: 'string',
+          description: 'Exact skill version id (or unique skill name — latest version).',
+        },
+      },
+    },
+  },
+  {
+    name: 'create_skill',
+    description:
+      'Create a new skill in the SYNC-THINK capability center by importing a complete SKILL.md (frontmatter with name/description/version + body). In full-access mode it imports immediately; in other permission modes the user must approve first. Importing only parses text — scripts are never executed. If allowed-tools expands vs a previous version, a separate permission approval is enqueued automatically.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['skillMd'],
+      properties: {
+        skillMd: {
+          type: 'string',
+          description:
+            'Full SKILL.md source: YAML frontmatter (name, description, version, optional allowed-tools) followed by the markdown body with the skill instructions.',
+        },
+      },
+    },
+  },
+  {
+    name: 'update_skill',
+    description:
+      'Update an existing skill by importing a NEW version of its SKILL.md (same frontmatter name, bumped version). Old versions are kept — agents stay pinned to their equipped version until rebound. Call read_skill first and base your edit on the current source. Approval-gated outside full-access.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['skillMd'],
+      properties: {
+        skillMd: {
+          type: 'string',
+          description:
+            'Full new SKILL.md source. Keep the same frontmatter name as the skill being updated and bump the version.',
+        },
+      },
+    },
+  },
+  {
+    name: 'delete_skill',
+    description:
+      'Uninstall one skill version from the capability center. Fails when the version is still equipped by an agent or referenced by pending approvals — report that to the user instead of retrying. Approval-gated outside full-access.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['skillVersionId'],
+      properties: {
+        skillVersionId: {
+          type: 'string',
+          description: 'Exact skill version id from list_skills.',
+        },
+        reason: { type: 'string', description: 'Optional short reason for the approval card.' },
+      },
+    },
+  },
+];
+
+/**
+ * Team-management tools — let the chat model manage the Team Library.
+ * Mutations share the create_agent permission gate: full-access executes
+ * immediately; other modes suspend on a user approval card.
+ */
+export const CHAT_TEAM_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'list_teams',
+    description:
+      'List teams in the SYNC-THINK Team Library: team id, name, mission, strategy, coordinator, and the member roster (agent id/name, title, role, dependencies). ALWAYS call this (plus list_agent_resources for agent ids) before create_team / update_team / delete_team so you reference real ids.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'create_team',
+    description:
+      'Create a new team in the SYNC-THINK Team Library. Members must reference EXISTING agents (exact agent id preferred, or unique agent name) — call list_agent_resources first. In full-access mode it is created immediately; in other permission modes the user must approve first (an approval card is shown).',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name'],
+      properties: {
+        name: { type: 'string', description: 'Team display name (non-empty)' },
+        mission: { type: 'string', description: 'Team mission shown in the Team Library' },
+        strategy: {
+          type: 'string',
+          enum: ['serial', 'parallel'],
+          description: 'Execution strategy: serial (default) or parallel.',
+        },
+        coordinatorAgent: {
+          type: 'string',
+          description:
+            'Optional coordinator: exact agent id or unique agent name. Must also be a member.',
+        },
+        members: {
+          type: 'array',
+          maxItems: 8,
+          description: 'Team roster. Each member references an existing agent. Max 8.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['agent'],
+            properties: {
+              agent: {
+                type: 'string',
+                description: 'Member agent: exact agent id (preferred) or unique agent name.',
+              },
+              title: { type: 'string', description: 'Member title shown in the roster (e.g. 前端负责人)' },
+              role: { type: 'string', description: 'Member role keyword (defaults to "member")' },
+              dependsOn: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Agents this member waits for (ids or names; each must also be a member).',
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'update_team',
+    description:
+      'Update an existing team in the SYNC-THINK Team Library (name / mission / strategy / coordinator / member roster). Resolve the target by exact team id (preferred) or unique team name — call list_teams first. members is FULL-REPLACE semantics: pass the complete final roster. In full-access mode it executes immediately; in other permission modes the user must approve first.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['team'],
+      properties: {
+        team: {
+          type: 'string',
+          description: 'Target team: exact team id (preferred) or unique team name.',
+        },
+        name: { type: 'string', description: 'New display name' },
+        mission: { type: 'string', description: 'New mission' },
+        strategy: { type: 'string', enum: ['serial', 'parallel'] },
+        coordinatorAgent: {
+          type: 'string',
+          description: 'New coordinator (agent id or unique name; must be a member).',
+        },
+        members: {
+          type: 'array',
+          maxItems: 8,
+          description:
+            'FULL replacement roster. Pass [] to remove all members. Omit to keep the current roster. Max 8.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['agent'],
+            properties: {
+              agent: { type: 'string' },
+              title: { type: 'string' },
+              role: { type: 'string' },
+              dependsOn: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'delete_team',
+    description:
+      'Delete a team from the SYNC-THINK Team Library. Fails when the team still has a running/historical run or is referenced by conversations — report that to the user instead of retrying. The team of the CURRENT conversation cannot be deleted. Resolve the target by exact team id (preferred) or unique team name. Approval-gated outside full-access.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['team'],
+      properties: {
+        team: {
+          type: 'string',
+          description: 'Target team: exact team id (preferred) or unique team name.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional short reason shown on the approval card and audit event.',
+        },
+      },
+    },
+  },
+];
+
+export const CHAT_TEAM_TOOL_NAMES = new Set(CHAT_TEAM_TOOL_SCHEMAS.map((tool) => tool.name));
+
+/**
+ * Task-plan tool — the model maintains an explicit NewMax-style todo list for
+ * the current run. Pure UI signal: executing it never touches the workspace,
+ * so it is always allowed and never approval-gated. The composer capsule
+ * renders the latest plan instead of dumping every tool invocation.
+ */
+export const CHAT_PLAN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'update_task_plan',
+    description:
+      'Maintain the user-visible task checklist for THIS run. Call it when a request needs 2+ distinct steps: once at the start with all steps (first step in_progress), then again whenever a step completes or plans change (send the FULL list each time, not a diff). Keep titles short (imperative, ≤40 chars). Do NOT use it for single-step answers.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['items'],
+      properties: {
+        items: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['title', 'status'],
+            properties: {
+              title: { type: 'string', description: 'Short imperative step title' },
+              status: {
+                type: 'string',
+                enum: ['pending', 'in_progress', 'completed'],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+];
+
+export const CHAT_PLAN_TOOL_NAMES = new Set(CHAT_PLAN_TOOL_SCHEMAS.map((tool) => tool.name));
+
+/**
+ * Browser tools — drive the desktop's built-in browser panel.
+ * browser_open is a pure UI signal (validate URL, renderer navigates).
+ * browser_click / browser_type / browser_read / browser_screenshot are
+ * request-response commands: the runtime emits a browser.command_requested
+ * event with a requestId and waits for the renderer to execute against the
+ * <webview> and reply via conversation.submitBrowserResult (15s timeout).
+ * All of them ride on the Compose 联网 switch and are never approval-gated:
+ * the page is operated in front of the user, visible and stoppable.
+ */
+export const CHAT_BROWSER_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'browser_open',
+    description:
+      'Open a URL in the built-in browser panel beside the chat so the user can SEE the page. Use when the user asks to open/show a website, or to present a page you found. This only displays the page; to READ page content use web_fetch or browser_read. http(s) URLs only.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['url'],
+      properties: {
+        url: { type: 'string', description: 'Absolute http(s) URL to display' },
+      },
+    },
+  },
+  {
+    name: 'browser_click',
+    description:
+      'Click an element on the page currently shown in the built-in browser panel. Provide a CSS selector (preferred) OR x/y viewport coordinates. The page must already be open via browser_open. Runs in front of the user (visible, stoppable), so it is not approval-gated. After clicking, use browser_read to verify the result.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        selector: {
+          type: 'string',
+          description: 'CSS selector of the element to click (preferred over coordinates)',
+        },
+        x: { type: 'integer', minimum: 0, description: 'Viewport X coordinate (with y, when no selector)' },
+        y: { type: 'integer', minimum: 0, description: 'Viewport Y coordinate (with x, when no selector)' },
+      },
+    },
+  },
+  {
+    name: 'browser_type',
+    description:
+      'Focus an input / textarea / contentEditable element in the built-in browser panel and type text into it. React-controlled inputs are handled via the native value setter + input event. The page must already be open via browser_open. Not approval-gated (visible to the user).',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['selector', 'text'],
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of the editable element' },
+        text: { type: 'string', description: 'Text to type (replaces current value)' },
+      },
+    },
+  },
+  {
+    name: 'browser_read',
+    description:
+      'Read the page currently shown in the built-in browser panel so YOU can understand it: returns title, URL, visible text (truncated to ~8KB) and a summary of links/buttons. Optional CSS selector narrows the text to one element. Use after browser_open / browser_click to inspect the live page state (web_fetch cannot see logged-in or JS-rendered state).',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        selector: {
+          type: 'string',
+          description: 'Optional CSS selector; omit to read the whole page',
+        },
+      },
+    },
+  },
+  {
+    name: 'browser_screenshot',
+    description:
+      'Capture a PNG screenshot of the page in the built-in browser panel. The file is saved under the bound project folder (.sync-think/screenshots/) and the result includes an embedUrl — embed it in your markdown reply as ![截图](embedUrl), e.g. when writing a review report with screenshots. Requires a bound project folder and an open page.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+];
+
+export const CHAT_BROWSER_TOOL_NAMES = new Set(
+  CHAT_BROWSER_TOOL_SCHEMAS.map((tool) => tool.name),
+);
+
+/** Interactive browser tools that need the renderer round-trip (not browser_open). */
+export const CHAT_BROWSER_COMMAND_TOOL_NAMES = new Set([
+  'browser_click',
+  'browser_type',
+  'browser_read',
+  'browser_screenshot',
+]);
+
+/** Renderer reply for a browser command is capped to this many chars (~64KB). */
+export const BROWSER_COMMAND_RESULT_MAX_CHARS = 64_000;
+
+/** How long the runtime waits for the renderer to execute a browser command. */
+export const BROWSER_COMMAND_TIMEOUT_MS = 15_000;
+
+export interface ChatBrowserCommand {
+  action: 'browser_click' | 'browser_type' | 'browser_read' | 'browser_screenshot';
+  args: Record<string, unknown>;
+}
+
+/**
+ * Validate arguments for the interactive browser tools BEFORE emitting the
+ * renderer command event. Pure function so tests can cover every branch.
+ */
+export function validateChatBrowserCommand(
+  toolName: string,
+  argumentsJson: string,
+): { ok: true; command: ChatBrowserCommand } | { ok: false; error: string } {
+  if (!CHAT_BROWSER_COMMAND_TOOL_NAMES.has(toolName)) {
+    return { ok: false, error: `${toolName}: not a browser command tool.` };
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    const raw = JSON.parse(argumentsJson || '{}') as unknown;
+    parsed = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  } catch {
+    return { ok: false, error: `${toolName}: invalid JSON arguments.` };
+  }
+
+  if (toolName === 'browser_click') {
+    const selector = typeof parsed.selector === 'string' ? parsed.selector.trim() : '';
+    const x = typeof parsed.x === 'number' && Number.isFinite(parsed.x) ? Math.round(parsed.x) : undefined;
+    const y = typeof parsed.y === 'number' && Number.isFinite(parsed.y) ? Math.round(parsed.y) : undefined;
+    if (!selector && (x === undefined || y === undefined)) {
+      return {
+        ok: false,
+        error: 'browser_click: provide a CSS selector, or both x and y viewport coordinates.',
+      };
+    }
+    if (selector.length > 500) {
+      return { ok: false, error: 'browser_click: selector too long (max 500 chars).' };
+    }
+    if (x !== undefined && (x < 0 || x > 20_000)) {
+      return { ok: false, error: 'browser_click: x out of range.' };
+    }
+    if (y !== undefined && (y < 0 || y > 20_000)) {
+      return { ok: false, error: 'browser_click: y out of range.' };
+    }
+    return {
+      ok: true,
+      command: {
+        action: 'browser_click',
+        args: selector ? { selector } : { x, y },
+      },
+    };
+  }
+
+  if (toolName === 'browser_type') {
+    const selector = typeof parsed.selector === 'string' ? parsed.selector.trim() : '';
+    const text = typeof parsed.text === 'string' ? parsed.text : undefined;
+    if (!selector) return { ok: false, error: 'browser_type: selector is required.' };
+    if (selector.length > 500) {
+      return { ok: false, error: 'browser_type: selector too long (max 500 chars).' };
+    }
+    if (text === undefined) return { ok: false, error: 'browser_type: text is required.' };
+    if (text.length > 4_000) {
+      return { ok: false, error: 'browser_type: text too long (max 4000 chars).' };
+    }
+    return { ok: true, command: { action: 'browser_type', args: { selector, text } } };
+  }
+
+  if (toolName === 'browser_read') {
+    const selector = typeof parsed.selector === 'string' ? parsed.selector.trim() : '';
+    if (selector.length > 500) {
+      return { ok: false, error: 'browser_read: selector too long (max 500 chars).' };
+    }
+    return {
+      ok: true,
+      command: { action: 'browser_read', args: selector ? { selector } : {} },
+    };
+  }
+
+  // browser_screenshot: no arguments.
+  return { ok: true, command: { action: 'browser_screenshot', args: {} } };
+}
+
+/** Execute browser_open: validate the URL; the renderer reacts via events. */
+export function executeChatBrowserTool(argumentsJson: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argumentsJson || '{}');
+  } catch {
+    return JSON.stringify({ ok: false, error: 'browser_open: invalid JSON arguments.' });
+  }
+  const url = String((parsed as { url?: unknown })?.url ?? '').trim();
+  if (!/^https?:\/\//i.test(url)) {
+    return JSON.stringify({
+      ok: false,
+      error: 'browser_open: only absolute http(s) URLs are allowed.',
+    });
+  }
+  if (url.length > 2048) {
+    return JSON.stringify({ ok: false, error: 'browser_open: URL too long (max 2048 chars).' });
+  }
+  return JSON.stringify({
+    ok: true,
+    url,
+    note: 'Opened in the built-in browser panel. Use browser_read to inspect the live page, browser_click / browser_type to operate it, or web_fetch for static text.',
+  });
+}
+
+export interface ChatPlanItem {
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+/**
+ * Execute update_task_plan: validate + normalize the checklist. The result is
+ * echoed back through tool.completed so the renderer can project the latest
+ * plan into the composer capsule. No side effects beyond the event stream.
+ */
+export function executeChatPlanTool(argumentsJson: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argumentsJson || '{}');
+  } catch {
+    return JSON.stringify({ ok: false, error: 'update_task_plan: invalid JSON arguments.' });
+  }
+  const rawItems = (parsed as { items?: unknown })?.items;
+  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+    return JSON.stringify({ ok: false, error: 'update_task_plan: items must be a non-empty array.' });
+  }
+  const items: ChatPlanItem[] = [];
+  for (const raw of rawItems.slice(0, 20)) {
+    const rec = raw as { title?: unknown; status?: unknown };
+    const title = typeof rec?.title === 'string' ? rec.title.trim().slice(0, 80) : '';
+    if (!title) continue;
+    const status =
+      rec.status === 'in_progress' || rec.status === 'completed' ? rec.status : 'pending';
+    items.push({ title, status });
+  }
+  if (items.length === 0) {
+    return JSON.stringify({ ok: false, error: 'update_task_plan: no valid items.' });
+  }
+  const completed = items.filter((item) => item.status === 'completed').length;
+  return JSON.stringify({ ok: true, plan: { items, completed, total: items.length } });
+}
+
+export const CHAT_SKILL_TOOL_NAMES = new Set(CHAT_SKILL_TOOL_SCHEMAS.map((tool) => tool.name));
+
+export const CHAT_AGENT_TOOL_NAMES = new Set(CHAT_AGENT_TOOL_SCHEMAS.map((tool) => tool.name));
+
+/** Agent tools that mutate the Agent Library (approval-gated outside full-access). */
+export const CHAT_AGENT_MUTATING_TOOL_NAMES = new Set([
+  'create_agent',
+  'update_agent',
+  'archive_agent',
+  'create_skill',
+  'update_skill',
+  'delete_skill',
+  'create_team',
+  'update_team',
+  'delete_team',
+]);
+
 /** Network tools — only exposed when Compose 联网 is on for this turn. */
 export const CHAT_NETWORK_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
@@ -121,6 +724,18 @@ export const CHAT_READ_ONLY_TOOL_NAMES = new Set([
   'git_diff',
   'web_search',
   'web_fetch',
+  'list_agent_resources',
+  'list_skills',
+  'read_skill',
+  'list_teams',
+  'update_task_plan',
+  // Browser panel tools: the page is operated in front of the user (visible,
+  // stoppable), so click/type/read/screenshot are display-class, not gated.
+  'browser_open',
+  'browser_click',
+  'browser_type',
+  'browser_read',
+  'browser_screenshot',
 ]);
 
 /** Tools that mutate the workspace or execute commands. */
@@ -147,14 +762,119 @@ export function normalizeChatExecutionMode(mode: string | undefined | null): Cha
  */
 export function toolsForExecutionMode(
   _mode: string | undefined | null,
-  options: { networkEnabled?: boolean; includeProjectTools?: boolean } = {},
+  options: {
+    networkEnabled?: boolean;
+    includeProjectTools?: boolean;
+    /** Agent-management tools (create_agent / list_agent_resources). */
+    includeAgentTools?: boolean;
+    /** Extra provider tools (e.g. MCP schemas) appended after built-ins. */
+    extraTools?: readonly ProviderToolSchema[];
+  } = {},
 ): readonly ProviderToolSchema[] {
   const includeProject = options.includeProjectTools !== false;
   const tools: ProviderToolSchema[] = includeProject ? [...CHAT_BUILT_IN_TOOL_SCHEMAS] : [];
+  // Task-plan tool is always available — pure UI signal, no workspace access.
+  tools.push(...CHAT_PLAN_TOOL_SCHEMAS);
   if (options.networkEnabled) {
     tools.push(...CHAT_NETWORK_TOOL_SCHEMAS);
+    // Browser panel tool rides on the same 联网 switch — it displays public
+    // pages, so it should not exist when the user has networking off.
+    tools.push(...CHAT_BROWSER_TOOL_SCHEMAS);
+  }
+  if (options.includeAgentTools) {
+    tools.push(...CHAT_AGENT_TOOL_SCHEMAS);
+    tools.push(...CHAT_SKILL_TOOL_SCHEMAS);
+    tools.push(...CHAT_TEAM_TOOL_SCHEMAS);
+  }
+  if (options.extraTools && options.extraTools.length > 0) {
+    const seen = new Set(tools.map((t) => t.name));
+    for (const tool of options.extraTools) {
+      const name = String(tool.name ?? '').trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      tools.push(tool);
+    }
   }
   return tools;
+}
+
+/** Build provider tool schemas from MCP server registry rows. */
+export function mcpToolsToProviderSchemas(
+  servers: readonly {
+    id: string;
+    name: string;
+    tools: readonly {
+      name: string;
+      description?: string;
+      inputSchemaJson?: string;
+    }[];
+  }[],
+  options: { maxTools?: number } = {},
+): {
+  tools: ProviderToolSchema[];
+  /** Map provider tool name → { mcpServerId, toolName } for dispatch. */
+  dispatch: Map<string, { mcpServerId: string; toolName: string }>;
+} {
+  const maxTools = Math.min(Math.max(options.maxTools ?? 16, 0), 32);
+  const tools: ProviderToolSchema[] = [];
+  const dispatch = new Map<string, { mcpServerId: string; toolName: string }>();
+  const usedNames = new Set<string>();
+
+  for (const server of servers) {
+    if (tools.length >= maxTools) break;
+    for (const tool of server.tools) {
+      if (tools.length >= maxTools) break;
+      const toolName = String(tool.name ?? '').trim();
+      if (!toolName) continue;
+      // Prefer mcp__{serverId}__{tool} to avoid colliding with built-ins.
+      let providerName = `mcp__${server.id}__${toolName}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+      if (usedNames.has(providerName) || providerName.length > 64) {
+        providerName = `mcp_${tools.length}_${toolName}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      }
+      if (usedNames.has(providerName)) continue;
+      usedNames.add(providerName);
+
+      let inputSchema: Record<string, unknown> = {
+        type: 'object',
+        additionalProperties: true,
+        properties: {},
+      };
+      if (tool.inputSchemaJson) {
+        try {
+          const parsed = JSON.parse(tool.inputSchemaJson) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            inputSchema = parsed as Record<string, unknown>;
+          }
+        } catch {
+          // keep default schema
+        }
+      }
+      tools.push({
+        name: providerName,
+        description:
+          tool.description?.trim() ||
+          `MCP tool ${toolName} from server ${server.name || server.id}`,
+        inputSchema,
+      });
+      dispatch.set(providerName, { mcpServerId: server.id, toolName });
+    }
+  }
+  return { tools, dispatch };
+}
+
+/** Parse mcp__serverId__toolName style names (also accepts plain names via dispatch map). */
+export function parseMcpProviderToolName(
+  name: string,
+): { mcpServerId: string; toolName: string } | undefined {
+  const raw = String(name ?? '').trim();
+  if (!raw.startsWith('mcp__')) return undefined;
+  const rest = raw.slice('mcp__'.length);
+  const sep = rest.indexOf('__');
+  if (sep <= 0) return undefined;
+  const mcpServerId = rest.slice(0, sep);
+  const toolName = rest.slice(sep + 2);
+  if (!mcpServerId || !toolName) return undefined;
+  return { mcpServerId, toolName };
 }
 
 /** Mutating tools under「询问批准」需要用户点批准后才执行。 */
@@ -162,9 +882,13 @@ export function chatToolRequiresApproval(
   mode: string | undefined | null,
   toolName: string,
 ): boolean {
-  return (
-    normalizeChatExecutionMode(mode) === 'ask' && CHAT_MUTATING_TOOL_NAMES.has(toolName)
-  );
+  const normalized = normalizeChatExecutionMode(mode);
+  if (CHAT_AGENT_MUTATING_TOOL_NAMES.has(toolName)) {
+    // create_agent / update_agent / archive_agent:
+    // only full-access executes without a human approval card.
+    return normalized !== 'full-access';
+  }
+  return normalized === 'ask' && CHAT_MUTATING_TOOL_NAMES.has(toolName);
 }
 
 /** Hard block (not used for ask anymore — ask waits for approval). */
@@ -178,6 +902,19 @@ export function isChatToolAllowed(
   void mode;
   if (CHAT_BUILT_IN_TOOL_SCHEMAS.some((tool) => tool.name === toolName)) return true;
   if (options.networkEnabled && CHAT_NETWORK_TOOL_NAMES.has(toolName)) return true;
+  // Agent tools: create_agent is gated by chatToolRequiresApproval (approval card
+  // outside full-access); once approved — or in full-access — it is allowed.
+  if (CHAT_AGENT_TOOL_NAMES.has(toolName)) return true;
+  // Skill tools share the same gate (mutations approval-gated outside full-access).
+  if (CHAT_SKILL_TOOL_NAMES.has(toolName)) return true;
+  // Team tools share the same gate (mutations approval-gated outside full-access).
+  if (CHAT_TEAM_TOOL_NAMES.has(toolName)) return true;
+  // Task-plan tool: pure UI signal, always allowed.
+  if (CHAT_PLAN_TOOL_NAMES.has(toolName)) return true;
+  // Browser panel tool: gated by the same 联网 switch as web tools.
+  if (options.networkEnabled && CHAT_BROWSER_TOOL_NAMES.has(toolName)) return true;
+  // MCP tools exposed as mcp__server__tool are allowed when bound on the run.
+  if (parseMcpProviderToolName(toolName)) return true;
   return false;
 }
 
@@ -187,6 +924,51 @@ export function chatToolDeniedMessage(
   reason: 'denied' | 'blocked' = 'denied',
 ): string {
   const normalized = normalizeChatExecutionMode(mode);
+  if (CHAT_AGENT_MUTATING_TOOL_NAMES.has(toolName)) {
+    const action =
+      toolName === 'update_agent'
+        ? '修改智能体'
+        : toolName === 'archive_agent'
+          ? '归档智能体'
+          : toolName === 'create_skill'
+            ? '创建 Skill'
+            : toolName === 'update_skill'
+              ? '更新 Skill'
+              : toolName === 'delete_skill'
+                ? '卸载 Skill'
+                : toolName === 'create_team'
+                  ? '创建小队'
+                  : toolName === 'update_team'
+                    ? '修改小队'
+                    : toolName === 'delete_team'
+                      ? '删除小队'
+                      : '创建智能体';
+    if (reason === 'denied') {
+      if (toolName === 'update_agent') {
+        return '用户拒绝了修改智能体。不要重试；把变更草案（改了哪些字段、Skill 绑定前后对比）整理给用户，让其手动到「智能体库」修改。';
+      }
+      if (toolName === 'archive_agent') {
+        return '用户拒绝了归档智能体。不要重试；说明你原本想归档的对象和理由，由用户自行到「智能体库」处理。';
+      }
+      if (toolName === 'create_skill' || toolName === 'update_skill') {
+        return '用户拒绝了写入 Skill。不要重试；把完整 SKILL.md 草案贴给用户，让其手动到「能力中心」导入。';
+      }
+      if (toolName === 'delete_skill') {
+        return '用户拒绝了卸载 Skill。不要重试；说明你原本想卸载的版本和理由，由用户自行到「能力中心」处理。';
+      }
+      if (toolName === 'create_team') {
+        return '用户拒绝了创建小队。不要重试；把小队草案（名称/使命/策略/成员分工）整理给用户，让其手动到「小队库」创建。';
+      }
+      if (toolName === 'update_team') {
+        return '用户拒绝了修改小队。不要重试；把变更草案（改了哪些字段、成员前后对比）整理给用户，让其手动到「小队库」修改。';
+      }
+      if (toolName === 'delete_team') {
+        return '用户拒绝了删除小队。不要重试；说明你原本想删除的小队和理由，由用户自行到「小队库」处理。';
+      }
+      return '用户拒绝了创建智能体。不要重试；可以把智能体草案（名称/人设/模型/Skill）整理给用户，让其手动到「智能体库」创建。';
+    }
+    return `当前权限模式下，${action}需要用户先批准。`;
+  }
   if (normalized === 'ask' && CHAT_MUTATING_TOOL_NAMES.has(toolName)) {
     return reason === 'denied'
       ? `用户拒绝了 ${toolName}。请改用只读方式，或请用户切换到「为我批准」。`
@@ -232,6 +1014,142 @@ export function summarizeToolCallForApproval(
       command: full || command,
     };
   }
+  if (toolName === 'create_agent') {
+    const agentName = typeof args.name === 'string' ? args.name.trim() : '';
+    const model =
+      typeof args.defaultModelId === 'string' && args.defaultModelId.trim()
+        ? args.defaultModelId.trim()
+        : '当前对话模型';
+    const skillCount = Array.isArray(args.skillIds) ? args.skillIds.length : 0;
+    const personaText = typeof args.persona === 'string' ? args.persona.trim() : '';
+    const personaBrief = personaText
+      ? `人设：${personaText.length > 120 ? `${personaText.slice(0, 119)}…` : personaText}`
+      : '';
+    return {
+      title: agentName ? `创建智能体「${agentName}」` : '创建智能体',
+      detail: [
+        `模型：${model}`,
+        skillCount > 0 ? `Skill：${skillCount} 个` : 'Skill：无',
+        personaBrief,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
+  if (toolName === 'update_agent') {
+    const target = typeof args.agent === 'string' ? args.agent.trim() : '';
+    const changed: string[] = [];
+    if (typeof args.name === 'string') changed.push(`名称 → ${args.name.trim() || '（空）'}`);
+    if (typeof args.persona === 'string') {
+      const p = args.persona.trim();
+      changed.push(`人设 → ${p.length > 60 ? `${p.slice(0, 59)}…` : p || '（清空）'}`);
+    }
+    if (typeof args.description === 'string') changed.push('简介');
+    if (typeof args.defaultModelId === 'string' && args.defaultModelId.trim()) {
+      changed.push(`模型 → ${args.defaultModelId.trim()}`);
+    }
+    if (Array.isArray(args.skillIds)) changed.push(`Skill 绑定 → ${args.skillIds.length} 个`);
+    if (typeof args.reasoningEffort === 'string') changed.push(`推理力度 → ${args.reasoningEffort}`);
+    return {
+      title: target ? `修改智能体「${target}」` : '修改智能体',
+      detail: changed.length > 0 ? `变更：${changed.join(' · ')}` : '未指定任何变更字段',
+    };
+  }
+  if (toolName === 'archive_agent') {
+    const target = typeof args.agent === 'string' ? args.agent.trim() : '';
+    const reasonText = typeof args.reason === 'string' ? args.reason.trim() : '';
+    return {
+      title: target ? `归档智能体「${target}」` : '归档智能体',
+      detail: [
+        '软删除，可在智能体库恢复',
+        reasonText ? `理由：${reasonText.length > 80 ? `${reasonText.slice(0, 79)}…` : reasonText}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
+  if (toolName === 'create_skill' || toolName === 'update_skill') {
+    const source = typeof args.skillMd === 'string' ? args.skillMd : '';
+    const nameMatch = /^name:\s*(.+)$/m.exec(source);
+    const versionMatch = /^version:\s*(.+)$/m.exec(source);
+    const toolsMatch = /^allowed-tools:\s*(.+)$/m.exec(source);
+    const skillName = nameMatch?.[1]?.trim().replace(/^["']|["']$/g, '') ?? '';
+    const version = versionMatch?.[1]?.trim().replace(/^["']|["']$/g, '') ?? '';
+    const lines = source.split(/\r?\n/).length;
+    const verb = toolName === 'create_skill' ? '创建' : '更新';
+    return {
+      title: skillName ? `${verb} Skill「${skillName}」` : `${verb} Skill`,
+      detail: [
+        version ? `版本 ${version}` : '',
+        `${lines} 行 · ${source.length} 字符`,
+        toolsMatch ? `工具声明：${toolsMatch[1]!.trim().slice(0, 60)}` : '未声明工具权限',
+        '仅解析文本，不执行脚本',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
+  if (toolName === 'create_team') {
+    const teamName = typeof args.name === 'string' ? args.name.trim() : '';
+    const memberCount = Array.isArray(args.members) ? args.members.length : 0;
+    const strategy = args.strategy === 'parallel' ? '并行' : '串行';
+    const missionText = typeof args.mission === 'string' ? args.mission.trim() : '';
+    const missionBrief = missionText
+      ? `使命：${missionText.length > 120 ? `${missionText.slice(0, 119)}…` : missionText}`
+      : '';
+    return {
+      title: teamName ? `创建小队「${teamName}」` : '创建小队',
+      detail: [`策略：${strategy}`, `成员：${memberCount} 个`, missionBrief]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
+  if (toolName === 'update_team') {
+    const target = typeof args.team === 'string' ? args.team.trim() : '';
+    const changed: string[] = [];
+    if (typeof args.name === 'string') changed.push(`名称 → ${args.name.trim() || '（空）'}`);
+    if (typeof args.mission === 'string') {
+      const m = args.mission.trim();
+      changed.push(`使命 → ${m.length > 60 ? `${m.slice(0, 59)}…` : m || '（清空）'}`);
+    }
+    if (typeof args.strategy === 'string') {
+      changed.push(`策略 → ${args.strategy === 'parallel' ? '并行' : '串行'}`);
+    }
+    if (typeof args.coordinatorAgent === 'string') changed.push('协调人');
+    if (Array.isArray(args.members)) changed.push(`成员 → ${args.members.length} 个`);
+    return {
+      title: target ? `修改小队「${target}」` : '修改小队',
+      detail: changed.length > 0 ? `变更：${changed.join(' · ')}` : '未指定任何变更字段',
+    };
+  }
+  if (toolName === 'delete_team') {
+    const target = typeof args.team === 'string' ? args.team.trim() : '';
+    const reasonText = typeof args.reason === 'string' ? args.reason.trim() : '';
+    return {
+      title: target ? `删除小队「${target}」` : '删除小队',
+      detail: [
+        '仍被对话引用或已有运行记录时会被拒绝',
+        reasonText ? `理由：${reasonText.length > 80 ? `${reasonText.slice(0, 79)}…` : reasonText}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
+  if (toolName === 'delete_skill') {
+    const versionId =
+      typeof args.skillVersionId === 'string' ? args.skillVersionId.trim() : '';
+    const reasonText = typeof args.reason === 'string' ? args.reason.trim() : '';
+    return {
+      title: '卸载 Skill 版本',
+      detail: [
+        versionId ? `版本 ID：${versionId.slice(0, 40)}` : '',
+        '被智能体装备或待审批引用时会被拒绝',
+        reasonText ? `理由：${reasonText.length > 80 ? `${reasonText.slice(0, 79)}…` : reasonText}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
   return {
     title: toolName,
     detail: path || command || '需要你的批准',
@@ -243,6 +1161,63 @@ export function summarizeToolCallForApproval(
 const MAX_HISTORY_MESSAGES = 40;
 const TOOL_OUTPUT_LIMIT_BYTES = 200_000;
 
+/** Keep the newest N chat turns after a compact boundary. */
+export const COMPACT_KEEP_RECENT_MESSAGES = 8;
+/**
+ * NewMax preventive compact ratio.
+ * Source: NewMax app.asar `PREVENTIVE_COMPACT_WINDOW_RATIO=0.7`
+ * and help docs ("约七成").
+ */
+export const COMPACT_AUTO_THRESHOLD = 0.7;
+/** Soft estimate: ~4 chars per token for local occupancy checks. */
+export const COMPACT_CHARS_PER_TOKEN = 4;
+/**
+ * NewMax preventive compact: collapse old tool outputs when they exceed this size.
+ * Keeps a short head+tail so the model still sees structure without the full dump.
+ */
+export const COMPACT_TOOL_OUTPUT_FOLD_CHARS = 2_000;
+/** Always keep the newest N tool results verbatim when folding. */
+export const COMPACT_TOOL_OUTPUT_KEEP_RECENT = 2;
+
+/**
+ * Claude Code / NewMax compact summary prompt.
+ * NewMax submits `/compact` to the long-lived CLI session; Claude Code then asks
+ * the model for a structured summary (not a local truncation). We mirror that
+ * prompt so SYNC-THINK can do the same via the bound provider.
+ */
+export const COMPACT_SUMMARY_SYSTEM_PROMPT = [
+  'You are a helpful AI assistant tasked with summarizing conversations for context compaction.',
+  'Respond with TEXT ONLY. Do NOT call any tools.',
+  'Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.',
+  'You already have all the context you need in the conversation below.',
+].join('\n');
+
+export const COMPACT_SUMMARY_USER_PROMPT_PREFIX = `Your task is to create a detailed summary of this conversation. This summary will be placed at the start of a continuing session; newer messages that build on this context will follow after your summary (you do not see them here). Summarize thoroughly so that someone reading only your summary and then the newer messages can fully understand what happened and continue the work.
+
+Your summary should include the following sections:
+
+1. Primary Request and Intent: Capture the user's explicit requests and intents in detail
+2. Key Technical Concepts: List important technical concepts, technologies, and frameworks discussed.
+3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include important code snippets where applicable and include a summary of why this file read or edit is important.
+4. Errors and fixes: List errors encountered and how they were fixed.
+5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
+6. All user messages: List ALL user messages that are not tool results. Preserve any security-relevant instructions or constraints verbatim so they remain in effect after compaction.
+7. Pending Tasks: Outline any pending tasks.
+8. Work Completed: Describe what was accomplished by the end of this portion.
+9. Context for Continuing Work: Summarize any context, decisions, or state that would be needed to understand and continue the work in subsequent messages.
+
+CRITICAL:
+- Respond with TEXT ONLY. Do NOT call any tools.
+- Be precise and thorough.
+- Preserve security-relevant instructions and constraints verbatim.
+
+Conversation to summarize:
+`;
+
+/** Instruction attached after the model summary so the next turn can resume cleanly. */
+export const COMPACT_RESUME_INSTRUCTION =
+  'Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I\'ll continue" or similar. Pick up the last task as if the break never happened.';
+
 /**
  * Build multi-turn chat messages for the current thread from durable events.
  * Includes prior user/assistant turns so the model can "see" conversation context.
@@ -253,42 +1228,116 @@ export interface ChatImageInput {
   dataUrl: string;
 }
 
-function userContentWithImages(
-  text: string,
-  images: readonly ChatImageInput[] | undefined,
-): ProviderMessage['content'] {
-  if (!images || images.length === 0) return text;
-  const parts: Array<{ type: 'text'; text: string } | { type: 'image'; imageUrl: string }> = [];
-  if (text.trim()) parts.push({ type: 'text', text });
-  for (const image of images) {
-    if (!image?.dataUrl || !image.dataUrl.startsWith('data:image/')) continue;
-    parts.push({ type: 'image', imageUrl: image.dataUrl });
-  }
-  if (parts.length === 0) return text || '';
-  if (parts.length === 1 && parts[0]!.type === 'text') return parts[0]!.text;
-  return parts;
+export interface CompactHistoryMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  sequence: number;
+  messageId?: string;
 }
 
-export function buildChatMessagesFromEvents(
+export interface CompactThreadHistoryResult {
+  /** Messages after the latest compact boundary (or all, if never compacted). */
+  messages: CompactHistoryMessage[];
+  /** Sequence of the latest context.compacted event, if any. */
+  lastCompactSequence?: number;
+  /** Estimated tokens currently represented by the retained transcript. */
+  estimatedTokens: number;
+  /** True when occupancy is at/above the auto-compact threshold. */
+  shouldAutoCompact: boolean;
+}
+
+export interface BuildCompactSummaryInput {
+  messages: readonly CompactHistoryMessage[];
+  /** Keep this many newest turns verbatim after the summary. */
+  keepRecent?: number;
+  contextWindow?: number;
+}
+
+export interface BuildCompactSummaryResult {
+  /** System/assistant summary text that replaces earlier history. */
+  summaryText: string;
+  /** Newest turns kept verbatim after the summary. */
+  keptMessages: CompactHistoryMessage[];
+  /** How many earlier messages were folded into the summary. */
+  foldedCount: number;
+  beforeTokens: number;
+  afterTokens: number;
+}
+
+function estimateTokensFromText(text: string): number {
+  if (!text) return 0;
+  return Math.max(1, Math.ceil(text.length / COMPACT_CHARS_PER_TOKEN));
+}
+
+function estimateMessagesTokens(messages: readonly CompactHistoryMessage[]): number {
+  return messages.reduce((sum, message) => sum + estimateTokensFromText(message.content), 0);
+}
+
+function truncateForSummary(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+/**
+ * Collect durable chat turns for a thread, honoring the latest compact boundary.
+ * Tool outputs are not currently embedded as full chat turns here; they live in
+ * tool events and are already truncated when re-fed during a live tool loop.
+ */
+/**
+ * Minimum real reduction required before writing a compact boundary.
+ * Prevents "success" that only clamps the display while occupancy grows.
+ */
+export const COMPACT_MIN_REDUCTION_RATIO = 0.9;
+
+export function collectThreadChatHistory(
   events: readonly Event[],
   threadId: string,
-  latestUserText: string,
-  latestImages?: readonly ChatImageInput[],
-): ProviderMessage[] {
+  options: { contextWindow?: number; usedTokens?: number } = {},
+): CompactThreadHistoryResult {
   const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
-  const messages: ProviderMessage[] = [];
+  let lastCompactSequence: number | undefined;
+  let lastCompactSummary: string | undefined;
 
   for (const event of ordered) {
     const eventThreadId =
       typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
     if (eventThreadId !== threadId) continue;
+    if (event.type !== 'context.compacted') continue;
+    lastCompactSequence = event.sequence;
+    if (typeof event.payload.summaryText === 'string' && event.payload.summaryText.trim()) {
+      lastCompactSummary = event.payload.summaryText.trim();
+    }
+  }
+
+  const messages: CompactHistoryMessage[] = [];
+  if (lastCompactSummary) {
+    messages.push({
+      role: 'system',
+      content: lastCompactSummary,
+      sequence: lastCompactSequence ?? 0,
+    });
+  }
+
+  for (const event of ordered) {
+    const eventThreadId =
+      typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
+    if (eventThreadId !== threadId) continue;
+    if (lastCompactSequence !== undefined && event.sequence <= lastCompactSequence) continue;
 
     if (event.type === 'message.appended') {
       const role = event.payload.role;
       const text = typeof event.payload.text === 'string' ? event.payload.text : '';
       if (!text.trim()) continue;
+      // Compact markers are UI notices — never re-feed them into the transcript.
+      if (event.payload.compact === true) continue;
       if (role === 'user' || role === 'assistant' || role === 'system') {
-        messages.push({ role, content: text });
+        messages.push({
+          role,
+          content: text,
+          sequence: event.sequence,
+          messageId: typeof event.payload.messageId === 'string' ? event.payload.messageId : undefined,
+        });
       }
       continue;
     }
@@ -296,15 +1345,296 @@ export function buildChatMessagesFromEvents(
     if (event.type === 'run.completed') {
       const text =
         typeof event.payload.assistantText === 'string' ? event.payload.assistantText : '';
-      if (text.trim()) {
-        const last = messages[messages.length - 1];
-        // Prefer explicit assistant message.appended when both exist.
-        if (!(last?.role === 'assistant' && last.content === text)) {
-          messages.push({ role: 'assistant', content: text });
-        }
+      if (!text.trim()) continue;
+      const last = messages[messages.length - 1];
+      if (!(last?.role === 'assistant' && last.content === text)) {
+        messages.push({
+          role: 'assistant',
+          content: text,
+          sequence: event.sequence,
+        });
       }
     }
   }
+
+  const estimatedTokens = estimateMessagesTokens(messages);
+  const contextWindow =
+    typeof options.contextWindow === 'number' && options.contextWindow > 0
+      ? options.contextWindow
+      : undefined;
+  // Prefer the client ring's real usage when provided; fall back to transcript estimate.
+  const occupancyTokens =
+    typeof options.usedTokens === 'number' &&
+    Number.isFinite(options.usedTokens) &&
+    options.usedTokens >= 0
+      ? Math.round(options.usedTokens)
+      : estimatedTokens;
+  const shouldAutoCompact =
+    contextWindow !== undefined
+      ? occupancyTokens / contextWindow >= COMPACT_AUTO_THRESHOLD
+      : messages.length > MAX_HISTORY_MESSAGES;
+
+  return {
+    messages,
+    lastCompactSequence,
+    estimatedTokens,
+    shouldAutoCompact,
+  };
+}
+
+/** True when afterTokens is a real reduction (not just display clamp). */
+export function isMeaningfulCompactReduction(
+  beforeTokens: number,
+  afterTokens: number,
+  minRatio: number = COMPACT_MIN_REDUCTION_RATIO,
+): boolean {
+  if (beforeTokens <= 0) return false;
+  if (afterTokens <= 0) return false;
+  return afterTokens <= beforeTokens * minRatio;
+}
+
+/**
+ * Split history into (older → summarize) and (recent → keep verbatim).
+ * Matches Claude Code / NewMax compact: summarize earlier turns, keep recent.
+ */
+export function splitHistoryForCompact(
+  messages: readonly CompactHistoryMessage[],
+  keepRecent: number = COMPACT_KEEP_RECENT_MESSAGES,
+): {
+  older: CompactHistoryMessage[];
+  keptMessages: CompactHistoryMessage[];
+  foldedCount: number;
+  beforeTokens: number;
+} {
+  const keep = Math.max(1, keepRecent);
+  const beforeTokens = estimateMessagesTokens(messages);
+  if (messages.length <= keep) {
+    return {
+      older: [],
+      keptMessages: [...messages],
+      foldedCount: 0,
+      beforeTokens,
+    };
+  }
+  const cut = messages.length - keep;
+  return {
+    older: messages.slice(0, cut),
+    keptMessages: messages.slice(cut),
+    foldedCount: cut,
+    beforeTokens,
+  };
+}
+
+/** Format older turns as plain transcript text for the model summarizer. */
+export function formatTranscriptForCompactSummary(
+  messages: readonly CompactHistoryMessage[],
+): string {
+  const lines: string[] = [];
+  for (const message of messages) {
+    if (message.role === 'system' && message.content.includes('[context compact]')) {
+      // Nested compact boundaries: keep a short note only.
+      lines.push('System: [previous compact summary omitted]');
+      continue;
+    }
+    const role =
+      message.role === 'user' ? 'User' : message.role === 'assistant' ? 'Assistant' : 'System';
+    // Cap very long tool dumps so the summarizer request itself fits.
+    const body = truncateForSummary(message.content, message.role === 'assistant' ? 4000 : 3000);
+    if (!body) continue;
+    lines.push(`${role}: ${body}`);
+  }
+  return lines.join('\n\n');
+}
+
+/**
+ * Build the user message sent to the model for NewMax/Claude-style compact.
+ */
+export function buildCompactSummaryUserPrompt(
+  olderMessages: readonly CompactHistoryMessage[],
+): string {
+  const transcript = formatTranscriptForCompactSummary(olderMessages);
+  return `${COMPACT_SUMMARY_USER_PROMPT_PREFIX}\n${transcript}`;
+}
+
+/**
+ * Wrap a model-generated summary into the durable compact boundary text that
+ * subsequent provider history will inject as a system message.
+ */
+/** Soft cap so a verbose 9-section model summary cannot bloat short threads. */
+export const COMPACT_MODEL_SUMMARY_MAX_CHARS = 12_000;
+
+export function wrapModelCompactSummary(modelSummary: string): string {
+  let body = modelSummary.replace(/\s+$/g, '').trim();
+  if (!body) return '';
+  if (body.length > COMPACT_MODEL_SUMMARY_MAX_CHARS) {
+    body = `${body.slice(0, COMPACT_MODEL_SUMMARY_MAX_CHARS - 1)}…`;
+  }
+  return [
+    '[context compact]',
+    'Earlier conversation was compacted by the model to free context window space.',
+    'Preserve goals, decisions, constraints, and unfinished work from the summary below.',
+    '',
+    body,
+    '',
+    COMPACT_RESUME_INSTRUCTION,
+  ].join('\n');
+}
+
+/**
+ * Local fallback compact (used only when the model summarizer is unavailable).
+ * NewMax/Claude primary path is model-generated summary; this is a degraded path.
+ */
+export function buildLocalCompactSummary(
+  input: BuildCompactSummaryInput,
+): BuildCompactSummaryResult {
+  const keepRecent = Math.max(1, input.keepRecent ?? COMPACT_KEEP_RECENT_MESSAGES);
+  const split = splitHistoryForCompact(input.messages, keepRecent);
+  if (split.foldedCount <= 0) {
+    return {
+      summaryText: '',
+      keptMessages: split.keptMessages,
+      foldedCount: 0,
+      beforeTokens: split.beforeTokens,
+      afterTokens: split.beforeTokens,
+    };
+  }
+
+  const lines: string[] = [
+    '[context compact]',
+    'Earlier conversation was compacted to free context window space.',
+    'Preserve goals, decisions, constraints, and unfinished work from the summary below.',
+    '',
+    '## Compacted history',
+  ];
+
+  for (const message of split.older) {
+    const role =
+      message.role === 'user' ? 'User' : message.role === 'assistant' ? 'Assistant' : 'System';
+    // Fold long tool dumps / logs aggressively in the summary section.
+    const maxChars = message.role === 'assistant' ? 280 : 220;
+    const body = truncateForSummary(message.content, maxChars);
+    if (!body) continue;
+    lines.push(`- ${role}: ${body}`);
+  }
+
+  const summaryText = lines.join('\n').trim();
+  const afterTokens =
+    estimateTokensFromText(summaryText) + estimateMessagesTokens(split.keptMessages);
+
+  // Reject local summaries that do not actually free context. Callers must treat
+  // empty summaryText as "do not write a compact boundary".
+  if (!isMeaningfulCompactReduction(split.beforeTokens, afterTokens)) {
+    return {
+      summaryText: '',
+      keptMessages: split.keptMessages,
+      foldedCount: 0,
+      beforeTokens: split.beforeTokens,
+      afterTokens: split.beforeTokens,
+    };
+  }
+
+  return {
+    summaryText,
+    keptMessages: split.keptMessages,
+    foldedCount: split.foldedCount,
+    beforeTokens: split.beforeTokens,
+    afterTokens,
+  };
+}
+
+/** Estimate tokens after applying a summary + kept recent turns. */
+export function estimateCompactAfterTokens(
+  summaryText: string,
+  keptMessages: readonly CompactHistoryMessage[],
+): number {
+  return estimateTokensFromText(summaryText) + estimateMessagesTokens(keptMessages);
+}
+
+/**
+ * NewMax preventive compact: fold a single long tool output to head…tail.
+ * Returns original text when already short enough.
+ */
+export function foldToolOutputText(
+  text: string,
+  maxChars: number = COMPACT_TOOL_OUTPUT_FOLD_CHARS,
+): { text: string; folded: boolean; originalChars: number } {
+  const original = typeof text === 'string' ? text : '';
+  const originalChars = original.length;
+  if (originalChars <= maxChars) {
+    return { text: original, folded: false, originalChars };
+  }
+  const headBudget = Math.max(200, Math.floor(maxChars * 0.55));
+  const tailBudget = Math.max(120, maxChars - headBudget - 80);
+  const head = original.slice(0, headBudget).trimEnd();
+  const tail = original.slice(-tailBudget).trimStart();
+  const omitted = originalChars - head.length - tail.length;
+  const foldedText = [
+    head,
+    '',
+    `[… tool output folded: omitted ${omitted} chars; full output was ${originalChars} chars …]`,
+    '',
+    tail,
+  ].join('\n');
+  return { text: foldedText, folded: true, originalChars };
+}
+
+export interface FoldToolMessagesResult {
+  messages: ProviderMessage[];
+  foldedCount: number;
+  charsSaved: number;
+}
+
+/**
+ * Fold long tool-role messages in a multi-turn chat transcript.
+ * Keeps the newest `keepRecent` tool results verbatim (NewMax-style).
+ */
+export function foldLongToolOutputsInMessages(
+  messages: readonly ProviderMessage[],
+  options: {
+    maxChars?: number;
+    keepRecent?: number;
+  } = {},
+): FoldToolMessagesResult {
+  const maxChars = options.maxChars ?? COMPACT_TOOL_OUTPUT_FOLD_CHARS;
+  const keepRecent = Math.max(0, options.keepRecent ?? COMPACT_TOOL_OUTPUT_KEEP_RECENT);
+
+  const toolIndexes: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role === 'tool') toolIndexes.push(i);
+  }
+  const protect = new Set(toolIndexes.slice(-keepRecent));
+
+  let foldedCount = 0;
+  let charsSaved = 0;
+  const next: ProviderMessage[] = messages.map((message, index) => {
+    if (message.role !== 'tool') return message;
+    if (protect.has(index)) return message;
+    const content = typeof message.content === 'string' ? message.content : '';
+    const folded = foldToolOutputText(content, maxChars);
+    if (!folded.folded) return message;
+    foldedCount += 1;
+    charsSaved += Math.max(0, folded.originalChars - folded.text.length);
+    return { ...message, content: folded.text };
+  });
+
+  return { messages: next, foldedCount, charsSaved };
+}
+
+/**
+ * Apply the latest compact boundary while building provider messages.
+ * Falls back to the previous hard slice when no compact event exists.
+ */
+export function buildChatMessagesFromEvents(
+  events: readonly Event[],
+  threadId: string,
+  latestUserText: string,
+  latestImages?: readonly ChatImageInput[],
+): ProviderMessage[] {
+  const history = collectThreadChatHistory(events, threadId);
+  const messages: ProviderMessage[] = history.messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
 
   // Ensure the latest user turn is present (appendMessage may not be in the
   // in-memory snapshot yet when prepareRunBinding runs in the same transition).
@@ -330,10 +1660,27 @@ export function buildChatMessagesFromEvents(
     }
   }
 
+  // Safety cap for never-compacted long threads.
   if (messages.length > MAX_HISTORY_MESSAGES) {
     return messages.slice(messages.length - MAX_HISTORY_MESSAGES);
   }
   return messages;
+}
+
+function userContentWithImages(
+  text: string,
+  images: readonly ChatImageInput[] | undefined,
+): ProviderMessage['content'] {
+  if (!images || images.length === 0) return text;
+  const parts: Array<{ type: 'text'; text: string } | { type: 'image'; imageUrl: string }> = [];
+  if (text.trim()) parts.push({ type: 'text', text });
+  for (const image of images) {
+    if (!image?.dataUrl || !image.dataUrl.startsWith('data:image/')) continue;
+    parts.push({ type: 'image', imageUrl: image.dataUrl });
+  }
+  if (parts.length === 0) return text || '';
+  if (parts.length === 1 && parts[0]!.type === 'text') return parts[0]!.text;
+  return parts;
 }
 
 export async function executeChatBuiltInTool(input: {
@@ -436,12 +1783,16 @@ export async function executeChatBuiltInTool(input: {
         break;
       case 'run_command': {
         const command = String(args.command ?? '');
+        const commandArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+        // Do NOT pre-block by basename (rg/fd/…). Try real execution first so
+        // absolute paths and installed tools work. ENOENT is handled below with
+        // a recovery hint via toolResultMeta / loop guard.
         events = new TerminalProcessWorker().exec(
           {
             workingDir: workspaceRoot,
             action: {
               command,
-              args: Array.isArray(args.args) ? args.args.map(String) : [],
+              args: commandArgs,
               cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
             },
           },
@@ -690,14 +2041,235 @@ async function collectWorkerResult(events: AsyncIterable<WorkerEvent>): Promise<
     if (event.type === 'completed') output = event.output;
   }
   if (failure) {
+    const message = failure.error.message;
+    const looksMissingBinary = /ENOENT|not found|is not recognized|不是内部或外部命令/i.test(
+      message,
+    );
     return JSON.stringify({
       ok: false,
-      error: failure.error.message,
+      error: message,
       failureClass: failure.failureClass,
+      code: looksMissingBinary ? 'COMMAND_UNAVAILABLE' : undefined,
+      hint: looksMissingBinary
+        ? 'This executable is not available. Prefer list_files / read_file / git_* tools instead of retrying.'
+        : undefined,
     });
   }
   if (!output) {
     return JSON.stringify({ ok: false, error: 'Tool worker returned no result' });
   }
   return JSON.stringify(output);
+}
+
+/**
+ * Recovery hint after a real ENOENT / missing-binary failure.
+ * Prefer built-in tools; do not invent absolute-path bans.
+ */
+export function unavailableExternalCommandHint(command: string): string | undefined {
+  const base = command
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .split(/[\\/]/)
+    .pop()
+    ?.toLowerCase()
+    .replace(/\.exe$/i, '');
+  if (!base) return undefined;
+  if (base === 'rg' || base === 'ripgrep') {
+    return (
+      'rg/ripgrep is not available (ENOENT). ' +
+      'Use built-in list_files + read_file to explore the project, ' +
+      'or run_command with Windows findstr only for narrow text search. ' +
+      'Do not call rg again unless you know it is installed on PATH.'
+    );
+  }
+  return undefined;
+}
+
+export type ToolLoopOutcomeKind = 'continue' | 'force_final';
+
+export interface ToolLoopGuardInput {
+  /** 1-based tool-loop round index after increment. */
+  toolLoopRound: number;
+  maxToolRounds: number;
+  /** JSON result strings from the just-finished tool batch. */
+  completedResults: readonly { toolCallId: string; content: string }[];
+  /** Fingerprints already seen in earlier rounds (mutated by caller via return). */
+  seenFingerprints?: ReadonlySet<string>;
+  /** Consecutive no-progress rounds before this batch. */
+  stagnantRounds?: number;
+}
+
+export interface ToolLoopGuardResult {
+  kind: ToolLoopOutcomeKind;
+  /** Reason shown to the model when forcing a final answer. */
+  reason?: string;
+  /** Updated fingerprint set including this batch. */
+  seenFingerprints: Set<string>;
+  /** Updated stagnant round counter. */
+  stagnantRounds: number;
+  /** How many tools in this batch failed. */
+  failedCount: number;
+  /** How many tools in this batch look like missing-binary failures. */
+  unavailableCount: number;
+}
+
+function toolResultMeta(content: string): {
+  ok: boolean;
+  unavailable: boolean;
+  fingerprint: string;
+} {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    const ok = parsed.ok !== false;
+    const error = typeof parsed.error === 'string' ? parsed.error : '';
+    const code = typeof parsed.code === 'string' ? parsed.code : '';
+    const unavailable =
+      code === 'COMMAND_UNAVAILABLE' ||
+      /ENOENT|not found|is not recognized|不是内部或外部命令|not available in this runtime|not installed/i.test(
+        error,
+      );
+    const command = typeof parsed.command === 'string' ? parsed.command : '';
+    const message = typeof parsed.message === 'string' ? parsed.message.slice(0, 80) : '';
+    // Include path / relative / args / content hash so reading different files
+    // does not look like "no progress" (same ok+message fingerprint).
+    const path =
+      typeof parsed.path === 'string'
+        ? parsed.path
+        : typeof parsed.relative === 'string'
+          ? parsed.relative
+          : '';
+    const argList = Array.isArray(parsed.args) ? parsed.args.map(String).join(' ') : '';
+    const body =
+      typeof parsed.content === 'string'
+        ? parsed.content
+        : typeof parsed.stdout === 'string'
+          ? parsed.stdout
+          : typeof parsed.text === 'string'
+            ? parsed.text
+            : '';
+    const bodyHash = body
+      ? `${body.length}:${body.slice(0, 24)}:${body.slice(-16)}`
+      : '';
+    const fingerprint = [
+      ok ? 'ok' : 'err',
+      code || '',
+      command,
+      path,
+      argList.slice(0, 80),
+      error.slice(0, 40),
+      message,
+      bodyHash,
+    ].join(':');
+    return { ok, unavailable, fingerprint };
+  } catch {
+    const unavailable = /ENOENT|not found|not recognized/i.test(content);
+    return {
+      ok: !/error|failed|ok":false/i.test(content),
+      unavailable,
+      fingerprint: content.slice(0, 96),
+    };
+  }
+}
+
+/**
+ * Decide whether the tool loop should continue or force a final user-facing reply.
+ * Stops empty thrash: repeated missing binaries, repeated identical failures, or
+ * hitting the hard round cap.
+ */
+export function evaluateToolLoopGuard(input: ToolLoopGuardInput): ToolLoopGuardResult {
+  const maxToolRounds = Math.max(1, input.maxToolRounds);
+  const seen = new Set(input.seenFingerprints ?? []);
+  let failedCount = 0;
+  let unavailableCount = 0;
+  let newFingerprints = 0;
+
+  for (const item of input.completedResults) {
+    const meta = toolResultMeta(item.content);
+    if (!meta.ok) failedCount += 1;
+    if (meta.unavailable) unavailableCount += 1;
+    if (!seen.has(meta.fingerprint)) {
+      seen.add(meta.fingerprint);
+      newFingerprints += 1;
+    }
+  }
+
+  const batchSize = input.completedResults.length;
+  const allFailed = batchSize > 0 && failedCount === batchSize;
+  const prevStagnant = Math.max(0, input.stagnantRounds ?? 0);
+  // A batch with no new fingerprints (or all failures of already-seen kinds) is stagnant.
+  const batchStagnant = batchSize > 0 && (newFingerprints === 0 || (allFailed && newFingerprints <= 1));
+  const stagnantRounds = batchStagnant ? prevStagnant + 1 : 0;
+
+  if (input.toolLoopRound >= maxToolRounds) {
+    return {
+      kind: 'force_final',
+      reason:
+        `已达到工具轮次上限（${maxToolRounds}）。请停止继续调用工具，` +
+        `根据已有结果直接给用户完整答复；若信息仍不足，说明缺什么并给出可执行的下一步建议。`,
+      seenFingerprints: seen,
+      stagnantRounds,
+      failedCount,
+      unavailableCount,
+    };
+  }
+
+  // First all-unavailable batch: allow one recovery round with tools still on.
+  // Only force_final after a second stagnant unavailable batch (stagnantRounds >= 2).
+  if (unavailableCount > 0 && unavailableCount === batchSize && stagnantRounds >= 2) {
+    return {
+      kind: 'force_final',
+      reason:
+        '连续多轮工具因命令不可用而失败（例如 rg 未安装）。' +
+        '不要再重试相同命令。请根据已有 list_files / read_file 结果直接答复用户；' +
+        '若无法完成“写入智能体库”等未暴露的能力，请明确说明产品边界并给出配置草案。',
+      seenFingerprints: seen,
+      stagnantRounds,
+      failedCount,
+      unavailableCount,
+    };
+  }
+
+  // Soft hint on first all-unavailable batch — still continue so the model can
+  // switch to list_files / read_file while tools remain available.
+  if (unavailableCount > 0 && unavailableCount === batchSize && stagnantRounds === 1) {
+    return {
+      kind: 'continue',
+      reason:
+        '本轮命令不可用。请改用 list_files / read_file / git_status / git_diff，不要重试相同缺失命令。',
+      seenFingerprints: seen,
+      stagnantRounds,
+      failedCount,
+      unavailableCount,
+    };
+  }
+
+  if (stagnantRounds >= 3) {
+    return {
+      kind: 'force_final',
+      reason:
+        '连续多轮工具调用没有新的有效进展（重复失败或重复相同结果）。' +
+        '请停止工具循环，汇总已有发现并直接回复用户；不要再发起同类搜索。',
+      seenFingerprints: seen,
+      stagnantRounds,
+      failedCount,
+      unavailableCount,
+    };
+  }
+
+  return {
+    kind: 'continue',
+    seenFingerprints: seen,
+    stagnantRounds,
+    failedCount,
+    unavailableCount,
+  };
+}
+
+/** User-visible nudge injected before the forced final model turn. */
+export function buildForceFinalToolLoopMessage(reason: string): string {
+  return [
+    '[system tool-loop guard]',
+    reason,
+    'Respond in the user\'s language. Do not call tools in this turn.',
+  ].join('\n');
 }

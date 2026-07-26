@@ -19,6 +19,8 @@ export const skillVersion = sqliteTable(
     contentFingerprint: text('content_fingerprint').notNull(),
     hasScripts: integer('has_scripts', { mode: 'boolean' }).notNull().default(false),
     warningsJson: text('warnings_json').notNull().default('[]'),
+    /** Reversible uninstall marker. Archived versions stay for audit/history. */
+    archivedAt: text('archived_at'),
     createdAt: text('created_at').notNull(),
   },
   (t) => ({

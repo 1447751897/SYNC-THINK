@@ -11,6 +11,10 @@ import type {
   CreateTaskResponse,
   CreateWorkspacePayload,
   CreateWorkspaceResponse,
+  UpdateWorkspacePayload,
+  UpdateWorkspaceResponse,
+  DeleteWorkspacePayload,
+  DeleteWorkspaceResponse,
   ListTasksPayload,
   ListTasksResponse,
   ListWorkspacesPayload,
@@ -41,8 +45,13 @@ import type {
   AddProviderCredentialResponse,
   RemoveProviderCredentialPayload,
   RemoveProviderCredentialResponse,
+  RevealProviderCredentialPayload,
+  RevealProviderCredentialResponse,
+  UpdateProviderCredentialResponse,
   SetModelPrioritiesPayload,
   SetModelPrioritiesResponse,
+  UpdateModelPayload,
+  UpdateModelResponse,
   RemoveModelPayload,
   RemoveModelResponse,
   GetSettingsPayload,
@@ -59,6 +68,10 @@ import type {
   ImportSkillResponse,
   ListSkillsPayload,
   ListSkillsResponse,
+  DeleteSkillPayload,
+  DeleteSkillResponse,
+  GetSkillPayload,
+  GetSkillResponse,
   RegisterMcpServerPayload,
   RegisterMcpServerResponse,
   ListMcpServersPayload,
@@ -154,6 +167,7 @@ import type {
   SetConversationArchivedPayload,
   SetConversationExecutionModePayload,
   UpgradeConversationTrackPayload,
+  RebindConversationTargetPayload,
   DeleteConversationPayload,
   ConversationDecideToolApprovalPayload,
   ConversationDecideToolApprovalResponse,
@@ -161,6 +175,7 @@ import type {
 import type {
   RendererCreateProviderPayload,
   RendererUpdateProviderPayload,
+  RendererUpdateProviderCredentialPayload,
 } from '../provider-payloads.js';
 import type { Event } from '@sync-think/shared';
 import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
@@ -190,6 +205,10 @@ const api = {
       ) as Promise<BindWorkspaceFolderResponse>,
     listWorkspaces: (payload: ListWorkspacesPayload = {}) =>
       ipcRenderer.invoke('runtime:workspace-list', payload) as Promise<ListWorkspacesResponse>,
+    updateWorkspace: (payload: UpdateWorkspacePayload) =>
+      ipcRenderer.invoke('runtime:workspace-update', payload) as Promise<UpdateWorkspaceResponse>,
+    deleteWorkspace: (payload: DeleteWorkspacePayload) =>
+      ipcRenderer.invoke('runtime:workspace-delete', payload) as Promise<DeleteWorkspaceResponse>,
     createTask: (payload: CreateTaskPayload) =>
       ipcRenderer.invoke('runtime:task-create', payload) as Promise<CreateTaskResponse>,
     listTasks: (payload: ListTasksPayload) =>
@@ -309,11 +328,23 @@ const api = {
         'runtime:provider-remove-credential',
         payload,
       ) as Promise<RemoveProviderCredentialResponse>,
+    revealProviderCredential: (payload: RevealProviderCredentialPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-reveal-credential',
+        payload,
+      ) as Promise<RevealProviderCredentialResponse>,
+    updateProviderCredential: (payload: RendererUpdateProviderCredentialPayload) =>
+      ipcRenderer.invoke(
+        'runtime:provider-update-credential',
+        payload,
+      ) as Promise<UpdateProviderCredentialResponse>,
     setModelPriorities: (payload: SetModelPrioritiesPayload) =>
       ipcRenderer.invoke(
         'runtime:provider-set-model-priorities',
         payload,
       ) as Promise<SetModelPrioritiesResponse>,
+    updateModel: (payload: UpdateModelPayload) =>
+      ipcRenderer.invoke('runtime:provider-update-model', payload) as Promise<UpdateModelResponse>,
     removeProviderModel: (payload: RemoveModelPayload) =>
       ipcRenderer.invoke(
         'runtime:provider-remove-model',
@@ -395,9 +426,36 @@ const api = {
         'runtime:conversation-decide-tool-approval',
         payload,
       ) as Promise<ConversationDecideToolApprovalResponse>,
+    /** AI 浏览器命令（click/type/read/screenshot）结果回传给 runtime 工具循环。 */
+    submitBrowserResult: (payload: {
+      requestId: string;
+      ok: boolean;
+      resultJson?: string;
+      error?: string;
+    }) =>
+      ipcRenderer.invoke('runtime:conversation-submit-browser-result', payload) as Promise<{
+        requestId: string;
+        accepted: boolean;
+      }>,
+    /** AI browser_screenshot：主进程 capturePage + PNG 写入项目 .sync-think/screenshots/。 */
+    saveBrowserScreenshot: (payload: { root: string; webContentsId: number }) =>
+      ipcRenderer.invoke('desktop:save-browser-screenshot', payload) as Promise<{
+        ok: boolean;
+        path?: string;
+        relativePath?: string;
+        embedUrl?: string;
+        pageUrl?: string;
+        error?: string;
+      }>,
     upgradeConversationTrack: (payload: UpgradeConversationTrackPayload) =>
       ipcRenderer.invoke(
         'runtime:conversation-upgrade-track',
+        payload,
+      ) as Promise<ConversationResponse>,
+    /** 对话内切换目标：同轨换绑或跨轨切换（model/agent/team 全放开）。 */
+    rebindConversationTarget: (payload: RebindConversationTargetPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-rebind-target',
         payload,
       ) as Promise<ConversationResponse>,
     deleteConversation: (payload: DeleteConversationPayload) =>
@@ -413,10 +471,21 @@ const api = {
         streamId?: string;
         conversationTitle?: string;
       }>,
+    compactConversation: (
+      payload: import('@sync-think/protocol').ConversationCompactPayload,
+    ) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-compact',
+        payload,
+      ) as Promise<import('@sync-think/protocol').ConversationCompactResponse>,
     importSkill: (payload: ImportSkillPayload) =>
       ipcRenderer.invoke('runtime:skill-import', payload) as Promise<ImportSkillResponse>,
     listSkills: (payload: ListSkillsPayload = {}) =>
       ipcRenderer.invoke('runtime:skill-list', payload) as Promise<ListSkillsResponse>,
+    deleteSkill: (payload: DeleteSkillPayload) =>
+      ipcRenderer.invoke('runtime:skill-delete', payload) as Promise<DeleteSkillResponse>,
+    getSkill: (payload: GetSkillPayload) =>
+      ipcRenderer.invoke('runtime:skill-get', payload) as Promise<GetSkillResponse>,
     registerMcpServer: (payload: RegisterMcpServerPayload) =>
       ipcRenderer.invoke('runtime:mcp-register', payload) as Promise<RegisterMcpServerResponse>,
     listMcpServers: (payload: ListMcpServersPayload = {}) =>
@@ -462,10 +531,50 @@ const api = {
         canceled: boolean;
         path: string | null;
       }>,
+    /** Push the renderer theme preference onto the native frame/title bar. */
+    setTheme: (theme: 'light' | 'dark' | 'system') =>
+      ipcRenderer.invoke('desktop:set-theme', theme) as Promise<{ dark: boolean }>,
     listProjectFiles: (payload: { root: string; query?: string; maxEntries?: number }) =>
       ipcRenderer.invoke('desktop:list-project-files', payload) as Promise<{
         root: string;
         files: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;
+      }>,
+    /** 右栏「文件」面板：读取项目内单个文本文件（只读）。 */
+    readProjectFile: (payload: { root: string; path: string }) =>
+      ipcRenderer.invoke('desktop:read-project-file', payload) as Promise<{
+        path: string;
+        content: string | null;
+        error: string | null;
+      }>,
+    /** 右栏「文件」面板树形视图：列出项目内单层目录（懒加载展开）。 */
+    listProjectDir: (payload: { root: string; dir?: string }) =>
+      ipcRenderer.invoke('desktop:list-project-dir', payload) as Promise<{
+        dir: string;
+        entries: Array<{ name: string; path: string; kind: 'file' | 'dir' }>;
+      }>,
+    /** 右栏「工作区」面板：git 分支 / 变更 / 最近提交摘要。 */
+    getGitInfo: (payload: { root: string }) =>
+      ipcRenderer.invoke('desktop:git-info', payload) as Promise<{
+        branch: string | null;
+        branches: string[];
+        changes: Array<{ status: string; path: string }>;
+        recentCommits: Array<{ hash: string; subject: string }>;
+        isRepo: boolean;
+      }>,
+    /** 右栏「工作区」面板：切换分支（脏工作区需显式 stash/force 策略）。 */
+    gitCheckout: (payload: { root: string; branch: string; strategy?: 'check' | 'stash' | 'force' }) =>
+      ipcRenderer.invoke('desktop:git-checkout', payload) as Promise<{
+        ok: boolean;
+        dirty: boolean;
+        changes: Array<{ status: string; path: string }>;
+        error: string | null;
+        stashed?: boolean;
+      }>,
+    /** 能力中心：主进程代理下载公网 SKILL.md 文本（renderer CSP 不放外网）。 */
+    fetchSkillMd: (payload: { url: string }) =>
+      ipcRenderer.invoke('desktop:fetch-skill-md', payload) as Promise<{
+        url: string;
+        skillMd: string;
       }>,
     getM1ExitEvidence: () =>
       ipcRenderer.invoke('desktop:m1-exit-evidence') as Promise<{
@@ -512,6 +621,19 @@ const api = {
       };
       ipcRenderer.on('runtime:event', handler);
       return () => ipcRenderer.removeListener('runtime:event', handler);
+    },
+    onOpenConversation: (
+      listener: (conversationId: string) => void,
+    ): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: { conversationId: string },
+      ) => listener(payload.conversationId);
+      ipcRenderer.on('desktop:open-conversation', handler);
+      return () => ipcRenderer.removeListener('desktop:open-conversation', handler);
+    },
+    notifyRendererReady: () => {
+      ipcRenderer.send('desktop:renderer-ready');
     },
   },
   platform: 'win32' as const,

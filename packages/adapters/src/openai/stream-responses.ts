@@ -5,7 +5,7 @@ import type {
   ProviderToolCall,
 } from '../types.js';
 import { normalizeOpenAICompatibleBaseUrl, scrubSecrets } from './discover-models.js';
-import { openAiReasoningBodyFields } from '../reasoning.js';
+import { normalizeReasoningEffort, shouldOmitReasoningEffort } from '../reasoning.js';
 import {
   closeResponseReader,
   createProviderCallControl,
@@ -412,7 +412,17 @@ export async function* streamOpenAIResponses(
   if (instructions) body.instructions = instructions;
   if (request.maxOutputTokens !== undefined) body.max_output_tokens = request.maxOutputTokens;
   if (request.temperature !== undefined) body.temperature = request.temperature;
-  Object.assign(body, openAiReasoningBodyFields(request.reasoningEffort));
+  // Responses API uses nested `reasoning` config (o-series / gpt-5); the flat
+  // chat-completions style `reasoning_effort` / `enable_thinking` is rejected.
+  {
+    const level = normalizeReasoningEffort(request.reasoningEffort);
+    if (level && !shouldOmitReasoningEffort(level)) {
+      body.reasoning = {
+        effort: level === 'xhigh' || level === 'max' ? 'high' : level,
+        summary: 'auto',
+      };
+    }
+  }
   if (request.tools?.length) {
     body.tools = request.tools.map((tool) => ({
       type: 'function',

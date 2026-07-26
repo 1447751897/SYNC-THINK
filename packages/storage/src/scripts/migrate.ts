@@ -114,7 +114,20 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0026_provider_source_config',
     sql: providerSourceConfigDdlSql(),
   },
+  {
+    name: '0027_skill_archive',
+    sql: skillArchiveDdlSql(),
+  },
 ];
+
+function skillArchiveDdlSql(): string {
+  return `
+-- Skill uninstall is reversible: archived versions remain available to
+-- historical runs and audit records but disappear from the active library.
+ALTER TABLE skill_version ADD COLUMN archived_at TEXT;
+CREATE INDEX skill_version_active_idx ON skill_version(archived_at, created_at);
+`;
+}
 
 function providerSourceConfigDdlSql(): string {
   return `

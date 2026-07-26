@@ -2,6 +2,7 @@
 export {
   resolveModelBinding,
   shouldAttemptFallback,
+  resolveProviderPriorityFallback,
   type AgentModelBinding,
   type ResolveModelBindingInput,
   type ModelBindingResolution,

@@ -11,6 +11,8 @@ export interface ConversationImage {
   storageRef: string;
 }
 
+export type SystemMessageTone = 'info' | 'success' | 'warning' | 'error';
+
 export interface ConversationMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -19,10 +21,15 @@ export interface ConversationMessage {
   images?: ConversationImage[];
   /** Extended thinking / reasoning channel (never mixed into text). */
   reasoningText?: string;
+  /** Visual tone for system notices (compact success, errors, …). */
+  tone?: SystemMessageTone;
   streaming?: boolean;
   runId?: string;
   modelId?: string;
   agentVersionId?: string;
+  /** Bound global Agent identity (mutable agent table). */
+  globalAgentId?: string;
+  globalAgentName?: string;
   occurredAt?: string;
 }
 
@@ -115,6 +122,8 @@ export function projectConversation(
   const runReasoning = new Map<string, string>();
   const runModel = new Map<string, string>();
   const runAgentVersion = new Map<string, string>();
+  const runGlobalAgentId = new Map<string, string>();
+  const runGlobalAgentName = new Map<string, string>();
   const runTerminal = new Map<string, 'completed' | 'failed' | 'cancelled' | 'paused'>();
   const runOrder: string[] = [];
   /** Maps runId -> message list index of the assistant bubble (if any). */
@@ -159,6 +168,17 @@ export function projectConversation(
           occurredAt: event.occurredAt,
         });
       } else if (event.payload.role === 'system' && typeof event.payload.text === 'string') {
+        const rawTone =
+          typeof event.payload.tone === 'string' ? event.payload.tone : undefined;
+        const tone: SystemMessageTone | undefined =
+          rawTone === 'info' ||
+          rawTone === 'success' ||
+          rawTone === 'warning' ||
+          rawTone === 'error'
+            ? rawTone
+            : event.payload.compact === true
+              ? 'info'
+              : undefined;
         messages.push({
           id:
             typeof event.payload.messageId === 'string'
@@ -166,6 +186,7 @@ export function projectConversation(
               : (event.messageId ?? event.id),
           role: 'system',
           text: event.payload.text,
+          tone,
           occurredAt: event.occurredAt,
         });
       }
@@ -207,6 +228,12 @@ export function projectConversation(
       if (typeof event.payload.agentVersionId === 'string') {
         runAgentVersion.set(event.runId, event.payload.agentVersionId);
       }
+      if (typeof event.payload.globalAgentId === 'string') {
+        runGlobalAgentId.set(event.runId, event.payload.globalAgentId);
+      }
+      if (typeof event.payload.globalAgentName === 'string') {
+        runGlobalAgentName.set(event.runId, event.payload.globalAgentName);
+      }
       // Place assistant placeholder after current messages (typically after user turn).
       const index = messages.length;
       messages.push({
@@ -218,6 +245,8 @@ export function projectConversation(
         runId: event.runId,
         modelId: runModel.get(event.runId),
         agentVersionId: runAgentVersion.get(event.runId),
+        globalAgentId: runGlobalAgentId.get(event.runId),
+        globalAgentName: runGlobalAgentName.get(event.runId),
         occurredAt: event.occurredAt,
       });
       assistantIndexByRun.set(event.runId, index);
@@ -259,6 +288,8 @@ export function projectConversation(
           runId: event.runId,
           modelId: runModel.get(event.runId),
           agentVersionId: runAgentVersion.get(event.runId),
+          globalAgentId: runGlobalAgentId.get(event.runId),
+          globalAgentName: runGlobalAgentName.get(event.runId),
           occurredAt: event.occurredAt,
         });
         assistantIndexByRun.set(event.runId, index);
@@ -291,6 +322,8 @@ export function projectConversation(
           runId: event.runId,
           modelId: runModel.get(event.runId),
           agentVersionId: runAgentVersion.get(event.runId),
+          globalAgentId: runGlobalAgentId.get(event.runId),
+          globalAgentName: runGlobalAgentName.get(event.runId),
           occurredAt: event.occurredAt,
         });
         assistantIndexByRun.set(event.runId, index);
@@ -321,6 +354,8 @@ export function projectConversation(
           reasoningText: finalReasoning || messages[idx]!.reasoningText,
           streaming: false,
           modelId: runModel.get(event.runId) ?? messages[idx]!.modelId,
+          globalAgentId: runGlobalAgentId.get(event.runId) ?? messages[idx]!.globalAgentId,
+          globalAgentName: runGlobalAgentName.get(event.runId) ?? messages[idx]!.globalAgentName,
         };
       } else if (finalText) {
         messages.push({
@@ -331,6 +366,8 @@ export function projectConversation(
           streaming: false,
           runId: event.runId,
           modelId: runModel.get(event.runId),
+          globalAgentId: runGlobalAgentId.get(event.runId),
+          globalAgentName: runGlobalAgentName.get(event.runId),
           occurredAt: event.occurredAt,
         });
       }

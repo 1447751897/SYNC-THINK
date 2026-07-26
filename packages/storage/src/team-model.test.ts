@@ -214,11 +214,42 @@ describe('SqliteConversationStore (first-class conversations)', () => {
     }
   });
 
+  it('rebinds the target within the same track and across tracks', async () => {
+    const { conversations, close } = await openStores();
+    try {
+      const conv = conversations.create({ target: { track: 'agent', agentId: 'agent-a' as AgentId } });
+
+      // Same-track retarget: agent → another agent.
+      const swapped = conversations.rebindTarget(conv.id, 'agent', 'agent-b');
+      expect(swapped.id).toBe(conv.id);
+      expect(swapped.track).toBe('agent');
+      expect(swapped.targetRef).toBe('agent-b');
+
+      // Cross-track: agent → team, then back down team → model (no direction limits).
+      const teamBound = conversations.rebindTarget(conv.id, 'team', 'team-t1');
+      expect(teamBound.track).toBe('team');
+      expect(teamBound.targetRef).toBe('team-t1');
+      const modelBound = conversations.rebindTarget(conv.id, 'model', MODEL);
+      expect(modelBound.track).toBe('model');
+      expect(modelBound.targetRef).toBe(MODEL);
+      // updated_at moves with the rebind.
+      expect(modelBound.updatedAt >= conv.updatedAt).toBe(true);
+
+      // Guards: empty targetRef and unknown conversation both throw.
+      expect(() => conversations.rebindTarget(conv.id, 'agent', '   ')).toThrow(/non-empty/);
+      expect(() =>
+        conversations.rebindTarget('conv-missing' as ConversationId, 'agent', 'agent-a'),
+      ).toThrow(/not found/);
+    } finally {
+      close();
+    }
+  });
+
   it('tracks the conversation-level permission mode as the only knob', async () => {
     const { conversations, close } = await openStores();
     try {
       const conv = conversations.create({ target: { track: 'model', modelId: MODEL } });
-      expect(conv.executionMode).toBe('workspace');
+      expect(conv.executionMode).toBe('full-access');
       const updated = conversations.setExecutionMode(conv.id, 'full-access');
       expect(updated.executionMode).toBe('full-access');
     } finally {

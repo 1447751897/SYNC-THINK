@@ -182,9 +182,13 @@ export class RuntimePipeClient {
     return this.connecting;
   }
 
-  async request<T = unknown>(type: CommandType, payload: unknown): Promise<T> {
+  async request<T = unknown>(
+    type: CommandType,
+    payload: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<T> {
     await this.connect();
-    return this.sendRequest(type, payload) as Promise<T>;
+    return this.sendRequest(type, payload, options?.timeoutMs) as Promise<T>;
   }
 
   async subscribeEvents(
@@ -337,13 +341,26 @@ export class RuntimePipeClient {
     if (!isHelloAcceptedPayload(accepted)) throw runtimeAuthenticationFailed();
   }
 
-  private sendRequest(type: string, payload: unknown): Promise<unknown> {
+  private sendRequest(
+    type: string,
+    payload: unknown,
+    timeoutMsOverride?: number,
+  ): Promise<unknown> {
     const socket = this.socket;
     if (!socket || socket.destroyed) {
       return Promise.reject(new RuntimeTransientError('Runtime is not connected'));
     }
     const id = `desktop_${ulid()}`;
-    const timeoutMs = this.options.requestTimeoutMs ?? 5_000;
+    // Compact may call the live model for a structured summary — allow far longer than the
+    // default 5s IPC budget used for ordinary CRUD.
+    const defaultTimeout =
+      type === 'conversation.compact'
+        ? 120_000
+        : (this.options.requestTimeoutMs ?? 5_000);
+    const timeoutMs =
+      typeof timeoutMsOverride === 'number' && timeoutMsOverride > 0
+        ? timeoutMsOverride
+        : defaultTimeout;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);

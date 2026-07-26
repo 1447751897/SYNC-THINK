@@ -158,7 +158,51 @@ describe('streamOpenAIChatCompletions', () => {
     expect(textFromEvents(events)).toBe('答案');
     const bodyJson = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
     expect(bodyJson.reasoning_effort).toBe('high');
+    // enable_thinking is gateway-specific (Qwen/GLM style); OpenAI rejects
+    // unknown params, so it must NOT be sent to a gpt-* model.
+    expect(bodyJson.enable_thinking).toBeUndefined();
+  });
+
+  it('sends enable_thinking only to Qwen/GLM-style models', async () => {
+    const body = sseStream(['data: [DONE]\n\n']);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(req({ modelId: 'qwen3-235b-a22b', reasoningEffort: 'high' }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+    const bodyJson = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
     expect(bodyJson.enable_thinking).toBe(true);
+    expect(bodyJson.reasoning_effort).toBe('high');
+  });
+
+  it('maps max_tokens → max_completion_tokens and drops temperature for o-series/gpt-5', async () => {
+    const body = sseStream(['data: [DONE]\n\n']);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(
+        req({ modelId: 'o3-mini', maxOutputTokens: 4096, temperature: 0.2 }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+    const bodyJson = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(bodyJson.max_completion_tokens).toBe(4096);
+    expect(bodyJson.max_tokens).toBeUndefined();
+    expect(bodyJson.temperature).toBeUndefined();
   });
 
   it('serializes tool schemas/history and assembles streamed tool calls', async () => {

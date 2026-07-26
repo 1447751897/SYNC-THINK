@@ -102,6 +102,7 @@ async function hello(
       features: [
         'skill.import',
         'skill.list',
+        'skill.delete',
         'agent.get',
         'agent.updateBinding',
         'provider.create',
@@ -562,6 +563,57 @@ describe('skill commands (§9 import + agent allowlist)', () => {
       // still has approved 0.2.0
       expect(rejSkills).toContain(upBody.skill.skillVersionId);
     }
+
+    sock.destroy();
+    await session.close();
+  }, 60_000);
+
+  it('deletes an unreferenced Skill version through the protocol', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-skill-delete-'));
+    tempDirs.push(dir);
+    const installId = `test-skill-delete-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const session = await openPersistentRuntime({
+      installId,
+      dbPath: join(dir, 'sync-think.db'),
+      secureStoreKeyPath: join(dir, 'secure', 'key.bin'),
+      allowNoToken: true,
+      demoProvider: new FakeProvider(),
+    });
+    await session.runtime.start();
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    await hello(sock, reader, installId);
+
+    const imported = await writeAndRead(sock, reader, {
+      id: 'skill-delete-import',
+      kind: 'request',
+      type: 'skill.import',
+      payload: { skillMd: fixture('minimal-skill') },
+    });
+    expect(imported.error).toBeUndefined();
+    const skillVersionId = (imported.payload as { skill: { skillVersionId: string } }).skill
+      .skillVersionId;
+
+    const deleted = await writeAndRead(sock, reader, {
+      id: 'skill-delete',
+      kind: 'request',
+      type: 'skill.delete',
+      payload: { skillVersionId },
+    });
+    expect(deleted.error).toBeUndefined();
+    expect(deleted.payload).toMatchObject({ deleted: true, skillVersionId });
+
+    const listed = await writeAndRead(sock, reader, {
+      id: 'skill-list-after-delete',
+      kind: 'request',
+      type: 'skill.list',
+      payload: {},
+    });
+    expect(
+      (listed.payload as { skills: Array<{ skillVersionId: string }> }).skills.some(
+        (skill) => skill.skillVersionId === skillVersionId,
+      ),
+    ).toBe(false);
 
     sock.destroy();
     await session.close();

@@ -8,6 +8,10 @@
   CreateTaskResponse,
   CreateWorkspacePayload,
   CreateWorkspaceResponse,
+  UpdateWorkspacePayload,
+  UpdateWorkspaceResponse,
+  DeleteWorkspacePayload,
+  DeleteWorkspaceResponse,
   ListTasksPayload,
   ListTasksResponse,
   ListWorkspacesPayload,
@@ -40,6 +44,8 @@
   RemoveProviderCredentialResponse,
   SetModelPrioritiesPayload,
   SetModelPrioritiesResponse,
+  UpdateModelPayload,
+  UpdateModelResponse,
   RemoveModelPayload,
   RemoveModelResponse,
   GetSettingsPayload,
@@ -56,6 +62,8 @@
   ImportSkillResponse,
   ListSkillsPayload,
   ListSkillsResponse,
+  DeleteSkillPayload,
+  DeleteSkillResponse,
   RegisterMcpServerPayload,
   RegisterMcpServerResponse,
   ListMcpServersPayload,
@@ -128,10 +136,13 @@
   ListAgentVersionsResponse,
   CreateAgentVersionPayload,
   CreateAgentVersionResponse,
+  ConversationSendMessagePayload,
+  ConversationSendMessageResponse,
 } from '@sync-think/protocol';
 import type {
   RendererCreateProviderPayload,
   RendererUpdateProviderPayload,
+  RendererUpdateProviderCredentialPayload,
 } from '../provider-payloads.js';
 import type { Event } from '@sync-think/shared';
 import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
@@ -148,6 +159,8 @@ declare global {
           payload: BindWorkspaceFolderPayload,
         ): Promise<BindWorkspaceFolderResponse>;
         listWorkspaces(payload?: ListWorkspacesPayload): Promise<ListWorkspacesResponse>;
+        updateWorkspace(payload: UpdateWorkspacePayload): Promise<UpdateWorkspaceResponse>;
+        deleteWorkspace(payload: DeleteWorkspacePayload): Promise<DeleteWorkspaceResponse>;
         createTask(payload: CreateTaskPayload): Promise<CreateTaskResponse>;
         listTasks(payload: ListTasksPayload): Promise<ListTasksResponse>;
         openTask(payload: OpenTaskPayload): Promise<OpenTaskResponse>;
@@ -213,9 +226,16 @@ declare global {
         removeProviderCredential(
           payload: RemoveProviderCredentialPayload,
         ): Promise<RemoveProviderCredentialResponse>;
+        revealProviderCredential(
+          payload: import('@sync-think/protocol').RevealProviderCredentialPayload,
+        ): Promise<import('@sync-think/protocol').RevealProviderCredentialResponse>;
+        updateProviderCredential(
+          payload: RendererUpdateProviderCredentialPayload,
+        ): Promise<import('@sync-think/protocol').UpdateProviderCredentialResponse>;
         setModelPriorities(
           payload: SetModelPrioritiesPayload,
         ): Promise<SetModelPrioritiesResponse>;
+        updateModel(payload: UpdateModelPayload): Promise<UpdateModelResponse>;
         removeProviderModel(payload: RemoveModelPayload): Promise<RemoveModelResponse>;
         getSettings(payload?: GetSettingsPayload): Promise<GetSettingsResponse>;
         setSetting(payload: SetSettingPayload): Promise<SetSettingResponse>;
@@ -260,6 +280,12 @@ declare global {
         createConversation(
           payload: import('@sync-think/protocol').CreateConversationPayload,
         ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        sendConversationMessage(
+          payload: ConversationSendMessagePayload,
+        ): Promise<ConversationSendMessageResponse>;
+        compactConversation(
+          payload: import('@sync-think/protocol').ConversationCompactPayload,
+        ): Promise<import('@sync-think/protocol').ConversationCompactResponse>;
         renameConversation(
           payload: import('@sync-think/protocol').RenameConversationPayload,
         ): Promise<import('@sync-think/protocol').ConversationResponse>;
@@ -275,14 +301,33 @@ declare global {
         decideToolApproval(
           payload: import('@sync-think/protocol').ConversationDecideToolApprovalPayload,
         ): Promise<import('@sync-think/protocol').ConversationDecideToolApprovalResponse>;
+        submitBrowserResult(
+          payload: import('@sync-think/protocol').ConversationSubmitBrowserResultPayload,
+        ): Promise<import('@sync-think/protocol').ConversationSubmitBrowserResultResponse>;
+        saveBrowserScreenshot(payload: { root: string; webContentsId: number }): Promise<{
+          ok: boolean;
+          path?: string;
+          relativePath?: string;
+          embedUrl?: string;
+          pageUrl?: string;
+          error?: string;
+        }>;
         upgradeConversationTrack(
           payload: import('@sync-think/protocol').UpgradeConversationTrackPayload,
+        ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        rebindConversationTarget(
+          payload: import('@sync-think/protocol').RebindConversationTargetPayload,
         ): Promise<import('@sync-think/protocol').ConversationResponse>;
         deleteConversation(
           payload: import('@sync-think/protocol').DeleteConversationPayload,
         ): Promise<Record<string, never>>;
         importSkill(payload: ImportSkillPayload): Promise<ImportSkillResponse>;
         listSkills(payload?: ListSkillsPayload): Promise<ListSkillsResponse>;
+        deleteSkill(payload: DeleteSkillPayload): Promise<DeleteSkillResponse>;
+        getSkill(
+          payload: import('@sync-think/protocol').GetSkillPayload,
+        ): Promise<import('@sync-think/protocol').GetSkillResponse>;
+        fetchSkillMd(payload: { url: string }): Promise<{ url: string; skillMd: string }>;
         registerMcpServer(payload: RegisterMcpServerPayload): Promise<RegisterMcpServerResponse>;
         listMcpServers(payload?: ListMcpServersPayload): Promise<ListMcpServersResponse>;
         probeMcpPolicy(payload?: ProbeMcpPolicyPayload): Promise<ProbeMcpPolicyResponse>;
@@ -301,6 +346,8 @@ declare global {
         amendContextPacket(payload: AmendContextPacketPayload): Promise<AmendContextPacketResponse>;
         listDiagnostics(payload?: ListDiagnosticsPayload): Promise<ListDiagnosticsResponse>;
         pickFolder(): Promise<{ canceled: boolean; path: string | null }>;
+        /** Push the renderer theme preference onto the native frame/title bar. */
+        setTheme(theme: 'light' | 'dark' | 'system'): Promise<{ dark: boolean }>;
         listProjectFiles(payload: {
           root: string;
           query?: string;
@@ -308,6 +355,33 @@ declare global {
         }): Promise<{
           root: string;
           files: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;
+        }>;
+        readProjectFile(payload: { root: string; path: string }): Promise<{
+          path: string;
+          content: string | null;
+          error: string | null;
+        }>;
+        listProjectDir(payload: { root: string; dir?: string }): Promise<{
+          dir: string;
+          entries: Array<{ name: string; path: string; kind: 'file' | 'dir' }>;
+        }>;
+        getGitInfo(payload: { root: string }): Promise<{
+          branch: string | null;
+          branches: string[];
+          changes: Array<{ status: string; path: string }>;
+          recentCommits: Array<{ hash: string; subject: string }>;
+          isRepo: boolean;
+        }>;
+        gitCheckout(payload: {
+          root: string;
+          branch: string;
+          strategy?: 'check' | 'stash' | 'force';
+        }): Promise<{
+          ok: boolean;
+          dirty: boolean;
+          changes: Array<{ status: string; path: string }>;
+          error: string | null;
+          stashed?: boolean;
         }>;
         getM1ExitEvidence(): Promise<{
           ok: boolean;
@@ -344,9 +418,24 @@ declare global {
           created: boolean;
         }>;
         onEvent(listener: (event: Event) => void): () => void;
+        onOpenConversation(listener: (conversationId: string) => void): () => void;
+        notifyRendererReady(): void;
       };
       platform: 'win32';
     };
+  }
+
+  // Electron <webview>（内置浏览器面板）。guest 权限在 main 侧收紧。
+  namespace JSX {
+    interface IntrinsicElements {
+      webview: React.DetailedHTMLProps<
+        React.HTMLAttributes<HTMLElement> & {
+          src?: string;
+          partition?: string;
+        },
+        HTMLElement
+      >;
+    }
   }
 }
 

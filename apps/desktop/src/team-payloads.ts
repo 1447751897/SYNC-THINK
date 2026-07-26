@@ -8,6 +8,7 @@ import type {
   DeleteConversationPayload,
   DeleteGlobalAgentPayload,
   DeleteTeamPayload,
+  ConversationCompactPayload,
   ListConversationsPayload,
   ListGlobalAgentsPayload,
   RenameConversationPayload,
@@ -20,7 +21,9 @@ import type {
   UpdateGlobalAgentPayload,
   UpdateTeamPayload,
   UpgradeConversationTrackPayload,
+  RebindConversationTargetPayload,
   ConversationDecideToolApprovalPayload,
+  ConversationSubmitBrowserResultPayload,
 } from '@sync-think/protocol';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -306,6 +309,25 @@ export function parseConversationDecideToolApprovalPayload(
   };
 }
 
+export function parseConversationSubmitBrowserResultPayload(
+  value: unknown,
+): ConversationSubmitBrowserResultPayload {
+  const label = 'Invalid conversation-submit-browser-result payload';
+  if (!isRecord(value)) throw new Error(label);
+  if (typeof value.ok !== 'boolean') throw new Error(label);
+  const resultJson = optionalString(value.resultJson, label);
+  const error = optionalString(value.error, label);
+  // Renderer-produced page content — hard cap before it reaches the pipe.
+  if (resultJson !== undefined && resultJson.length > 96_000) throw new Error(label);
+  if (error !== undefined && error.length > 2_000) throw new Error(label);
+  return {
+    requestId: requiredString(value.requestId, label),
+    ok: value.ok,
+    resultJson,
+    error,
+  };
+}
+
 export function parseUpgradeConversationTrackPayload(
   value: unknown,
 ): UpgradeConversationTrackPayload {
@@ -323,6 +345,23 @@ export function parseUpgradeConversationTrackPayload(
   };
 }
 
+export function parseRebindConversationTargetPayload(
+  value: unknown,
+): RebindConversationTargetPayload {
+  const label = 'Invalid rebind-conversation-target payload';
+  if (!isRecord(value)) throw new Error(label);
+  const track = requiredString(value.track, label);
+  if (track !== 'model' && track !== 'agent' && track !== 'team') throw new Error(label);
+  return {
+    conversationId: requiredString(
+      value.conversationId,
+      label,
+    ) as RebindConversationTargetPayload['conversationId'],
+    track,
+    targetRef: requiredString(value.targetRef, label),
+  };
+}
+
 export function parseDeleteConversationPayload(value: unknown): DeleteConversationPayload {
   const label = 'Invalid delete-conversation payload';
   if (!isRecord(value)) throw new Error(label);
@@ -331,5 +370,55 @@ export function parseDeleteConversationPayload(value: unknown): DeleteConversati
       value.conversationId,
       label,
     ) as DeleteConversationPayload['conversationId'],
+  };
+}
+
+export function parseConversationCompactPayload(value: unknown): ConversationCompactPayload {
+  const label = 'Invalid conversation-compact payload';
+  if (!isRecord(value)) throw new Error(label);
+  const mode = value.mode === undefined ? undefined : requiredString(value.mode, label);
+  if (mode !== undefined && mode !== 'manual' && mode !== 'auto') throw new Error(label);
+  if (value.contextWindow !== undefined) {
+    if (
+      typeof value.contextWindow !== 'number' ||
+      !Number.isFinite(value.contextWindow) ||
+      value.contextWindow <= 0
+    ) {
+      throw new Error(label);
+    }
+  }
+  if (value.usedTokens !== undefined) {
+    if (
+      typeof value.usedTokens !== 'number' ||
+      !Number.isFinite(value.usedTokens) ||
+      value.usedTokens < 0
+    ) {
+      throw new Error(label);
+    }
+  }
+  if (value.keepRecent !== undefined) {
+    if (
+      typeof value.keepRecent !== 'number' ||
+      !Number.isFinite(value.keepRecent) ||
+      value.keepRecent < 1 ||
+      value.keepRecent > 100
+    ) {
+      throw new Error(label);
+    }
+  }
+  if (value.onlyIfNeeded !== undefined && typeof value.onlyIfNeeded !== 'boolean') {
+    throw new Error(label);
+  }
+  return {
+    conversationId: requiredString(
+      value.conversationId,
+      label,
+    ) as ConversationCompactPayload['conversationId'],
+    mode: mode as ConversationCompactPayload['mode'],
+    contextWindow:
+      typeof value.contextWindow === 'number' ? Math.round(value.contextWindow) : undefined,
+    usedTokens: typeof value.usedTokens === 'number' ? Math.round(value.usedTokens) : undefined,
+    keepRecent: typeof value.keepRecent === 'number' ? Math.round(value.keepRecent) : undefined,
+    onlyIfNeeded: value.onlyIfNeeded as boolean | undefined,
   };
 }

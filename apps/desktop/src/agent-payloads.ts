@@ -3,6 +3,8 @@
   UpdateAgentBindingPayload,
   ImportSkillPayload,
   ListSkillsPayload,
+  DeleteSkillPayload,
+  GetSkillPayload,
 } from '@sync-think/protocol';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -93,10 +95,40 @@ export function parseImportSkillPayload(value: unknown): ImportSkillPayload {
 export function parseListSkillsPayload(value: unknown): ListSkillsPayload {
   if (value === undefined || value === null) return {};
   if (!isRecord(value)) throw new Error('Invalid list-skills payload');
-  if (value.limit !== undefined && (typeof value.limit !== 'number' || !Number.isFinite(value.limit))) {
+  if (
+    value.limit !== undefined &&
+    (typeof value.limit !== 'number' ||
+      !Number.isFinite(value.limit) ||
+      value.limit < 1 ||
+      value.limit > 500)
+  ) {
     throw new Error('Invalid list-skills payload');
   }
   return { limit: value.limit as number | undefined };
+}
+
+export function parseDeleteSkillPayload(value: unknown): DeleteSkillPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.skillVersionId !== 'string' ||
+    value.skillVersionId.trim().length === 0 ||
+    value.skillVersionId.length > 256
+  ) {
+    throw new Error('Invalid delete-skill payload');
+  }
+  return { skillVersionId: value.skillVersionId.trim() };
+}
+
+export function parseGetSkillPayload(value: unknown): GetSkillPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.skillVersionId !== 'string' ||
+    value.skillVersionId.trim().length === 0 ||
+    value.skillVersionId.length > 256
+  ) {
+    throw new Error('Invalid get-skill payload');
+  }
+  return { skillVersionId: value.skillVersionId.trim() };
 }
 
 export function parseRegisterMcpServerPayload(value: unknown): import('@sync-think/protocol').RegisterMcpServerPayload {

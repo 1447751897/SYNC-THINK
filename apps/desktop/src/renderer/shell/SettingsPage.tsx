@@ -2,7 +2,7 @@
 // Strictly follows the NewMax settings information architecture shown in the
 // product reference screenshots: searchable left navigation, compact rows,
 // page-local tabs, and a fixed completion action.
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
   Bot,
@@ -25,7 +25,16 @@ import {
   WalletCards,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { ModelSettings } from './ModelSettings.js';
+import { ModelSettings, type ModelSettingsHandle } from './ModelSettings.js';
+import { decideSettingsPageAction } from './settings-unsaved.js';
+import {
+  readDefaultPermission,
+  readUserName,
+  writeDefaultPermission,
+  writeUserName,
+  USER_NAME_MAX_LENGTH,
+  type DefaultPermissionPreference,
+} from '../ui-preferences.js';
 
 type ThemeMode = 'system' | 'light' | 'dark';
 type SettingsSection =
@@ -43,7 +52,7 @@ type SettingsSection =
   | 'plugins'
   | 'data'
   | 'about';
-type PermissionDefault = 'read-only' | 'workspace' | 'full-access';
+type PermissionDefault = DefaultPermissionPreference;
 
 const THEME_KEY = 'sync-think-shell-theme';
 
@@ -57,6 +66,9 @@ export function applyShellTheme(mode: ThemeMode): void {
     (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.classList.toggle('dark', dark);
   localStorage.setItem(THEME_KEY, mode);
+  // Mirror onto the native frame. Without this the OS title bar keeps whatever
+  // the system resolved and light mode shows a dark strip above the window.
+  void window.syncThink?.runtime?.setTheme?.(mode);
   window.dispatchEvent(new CustomEvent('shell-theme-applied', { detail: { mode, dark } }));
 }
 
@@ -92,11 +104,36 @@ const SECTIONS: Array<{
 export interface SettingsPageProps {
   onDone?(): void;
   onCatalogChanged?(): void;
+  onDirtyChange?(dirty: boolean): void;
 }
 
-export function SettingsPage({ onDone, onCatalogChanged }: SettingsPageProps) {
+export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: SettingsPageProps) {
   const [section, setSection] = useState<SettingsSection>('general');
   const [query, setQuery] = useState('');
+  const [modelDirty, setModelDirty] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const modelSettingsRef = useRef<ModelSettingsHandle | null>(null);
+
+  const reportDirty = useCallback((dirty: boolean) => {
+    setModelDirty(dirty);
+    onDirtyChange?.(dirty);
+  }, [onDirtyChange]);
+
+  const handleDone = async () => {
+    if (completing) return;
+    // When on the models page, force connectivity test before close/save.
+    if (section === 'models' && modelSettingsRef.current) {
+      setCompleting(true);
+      try {
+        const ok = await modelSettingsRef.current.complete();
+        if (!ok) return;
+        reportDirty(false);
+      } finally {
+        setCompleting(false);
+      }
+    }
+    onDone?.();
+  };
 
   const visibleSections = useMemo(() => {
     const value = query.trim().toLocaleLowerCase('zh-CN');
@@ -133,7 +170,20 @@ export function SettingsPage({ onDone, onCatalogChanged }: SettingsPageProps) {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setSection(item.id)}
+                onClick={() => {
+                  const decision = decideSettingsPageAction(
+                    {
+                      kind: 'select-section',
+                      currentSection: section,
+                      nextSection: item.id,
+                    },
+                    modelDirty,
+                    (message) => confirm(message),
+                  );
+                  if (decision.kind !== 'select-section') return;
+                  if (decision.discardChanges) reportDirty(false);
+                  setSection(decision.section as SettingsSection);
+                }}
                 className={clsx('settings-nav__item', active && 'is-active')}
                 aria-current={active ? 'page' : undefined}
               >
@@ -155,13 +205,24 @@ export function SettingsPage({ onDone, onCatalogChanged }: SettingsPageProps) {
         <div className="settings-content__viewport">
           {section === 'general' && <GeneralSection />}
           {section === 'theme' && <ThemeSection />}
-          {section === 'models' && <ModelSettings onCatalogChanged={onCatalogChanged} />}
+          {section === 'models' && (
+            <ModelSettings
+              ref={modelSettingsRef}
+              onCatalogChanged={onCatalogChanged}
+              onDirtyChange={reportDirty}
+            />
+          )}
           {section === 'about' && <AboutSection />}
           {!current.ready && <ComingSoonSection label={current.label} />}
         </div>
         <footer className="settings-footer">
-          <button type="button" className="settings-done" onClick={onDone}>
-            完成
+          <button
+            type="button"
+            className="settings-done"
+            disabled={completing}
+            onClick={() => void handleDone()}
+          >
+            {completing ? '测试连接中…' : '完成'}
           </button>
         </footer>
       </section>
@@ -233,17 +294,14 @@ const PERMISSION_OPTIONS: Array<{
   label: string;
   desc: string;
 }> = [
-  { value: 'read-only', label: '询问批准', desc: '执行工具前先询问你' },
+  { value: 'ask', label: '询问批准', desc: '执行工具前先询问你' },
   { value: 'workspace', label: '为我批准', desc: '在工作区内自动执行' },
   { value: 'full-access', label: '完全访问', desc: '直接执行并保留审计记录' },
 ];
 
 function GeneralSection() {
   const [tab, setTab] = useState<'general' | 'personal'>('general');
-  const [permission, setPermission] = useState<PermissionDefault>(
-    () =>
-      (localStorage.getItem('sync-think-default-permission') as PermissionDefault) || 'workspace',
-  );
+  const [permission, setPermission] = useState<PermissionDefault>(() => readDefaultPermission());
   const [animationEnabled, setAnimationEnabled] = useState<boolean>(() => {
     const stored = localStorage.getItem('sync-think-animation');
     return stored === null ? true : stored === '1';
@@ -251,7 +309,7 @@ function GeneralSection() {
 
   const handlePermission = (value: PermissionDefault) => {
     setPermission(value);
-    localStorage.setItem('sync-think-default-permission', value);
+    writeDefaultPermission(value);
   };
 
   const handleAnimation = (enabled: boolean) => {
@@ -326,11 +384,51 @@ function GeneralSection() {
           </section>
         </>
       ) : (
-        <div className="settings-empty-panel">
-          <CircleUserRound size={24} aria-hidden="true" />
-          <p>个性化设置将在后续切片接入。</p>
-        </div>
+        <PersonalizationPanel />
       )}
+    </div>
+  );
+}
+
+function PersonalizationPanel() {
+  const [name, setName] = useState(() => readUserName());
+  const [saved, setSaved] = useState(false);
+
+  const commit = (value: string) => {
+    const next = value.trim().slice(0, USER_NAME_MAX_LENGTH);
+    writeUserName(next);
+    // Let an already-mounted welcome screen pick the new name up immediately.
+    window.dispatchEvent(new CustomEvent('shell-user-name-changed'));
+    setSaved(true);
+  };
+
+  return (
+    <div className="settings-rows">
+      <SettingRow
+        title="你的名字"
+        description="用于新对话页的问候语，例如「晚上好，Kevin」"
+        control={
+          <input
+            data-testid="settings-user-name"
+            className="st-field-input"
+            style={{ width: 180 }}
+            value={name}
+            maxLength={USER_NAME_MAX_LENGTH}
+            placeholder="留空则不显示名字"
+            onChange={(e) => {
+              setName(e.target.value);
+              setSaved(false);
+            }}
+            onBlur={(e) => commit(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commit(e.currentTarget.value);
+            }}
+          />
+        }
+      />
+      <p className="settings-note">
+        {saved ? '已保存。' : '失焦或按回车保存，仅存在本机。'}
+      </p>
     </div>
   );
 }

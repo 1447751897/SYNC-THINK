@@ -1,12 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import type { Conversation } from '@sync-think/shared';
 import {
+  buildTrackTree,
+  closeConversationTab,
+  createConversationGroup,
+  deleteConversationGroup,
+  emptyConversationGroups,
   filterByWorkspace,
   filterConversationsByQuery,
   groupConversations,
   INITIAL_NAV,
+  moveConversationToGroup,
   openConversation,
+  openConversationTab,
   partitionActiveArchived,
+  pruneOpenTabs,
+  rememberWorkspaceSelection,
+  renameConversationGroup,
+  reorderConversationTab,
+  resolveWorkspaceSelection,
   selectStage,
   targetName,
   toggleSidebar,
@@ -25,6 +37,36 @@ function conv(
     ...partial,
   } as unknown as Conversation;
 }
+
+describe('targetName for agent track', () => {
+  it('resolves agent name from library and falls back safely', () => {
+    const agentConv = conv({ id: 'c-agent', track: 'agent', targetRef: 'agent-pirate' });
+    expect(
+      targetName(
+        agentConv,
+        [
+          {
+            id: 'agent-pirate' as never,
+            name: '海盗船长',
+            avatar: '🏴‍☠️',
+            persona: '啊哈',
+            description: '',
+            defaultModelId: 'model-1' as never,
+            fallbackModelIds: [],
+            skillIds: [],
+            mcpServerIds: [],
+            reasoningEffort: 'auto',
+            archived: false,
+            createdAt: '2026-07-22T00:00:00.000Z',
+            updatedAt: '2026-07-22T00:00:00.000Z',
+          },
+        ],
+        [],
+      ),
+    ).toBe('海盗船长');
+    expect(targetName(agentConv, [], [])).toBe('智能体');
+  });
+});
 
 describe('shell nav state', () => {
   it('defaults to talk stage with all three tracks expanded', () => {
@@ -54,20 +96,91 @@ describe('shell nav state', () => {
   });
 });
 
+describe('open conversation tabs', () => {
+  it('opens a tab without reordering on re-focus', () => {
+    const once = openConversationTab({}, 'ws-a', 'c1');
+    expect(once).toEqual({ 'ws-a': ['c1'] });
+    const twice = openConversationTab(once, 'ws-a', 'c2');
+    expect(twice).toEqual({ 'ws-a': ['c1', 'c2'] });
+    expect(openConversationTab(twice, 'ws-a', 'c1')).toBe(twice);
+  });
+
+  it('closes a tab and prefers the right neighbour as next selection', () => {
+    const tabs = { 'ws-a': ['c1', 'c2', 'c3'] };
+    const closed = closeConversationTab(tabs, 'ws-a', 'c2');
+    expect(closed.tabs).toEqual({ 'ws-a': ['c1', 'c3'] });
+    expect(closed.nextSelectedId).toBe('c3');
+  });
+
+  it('clears the workspace entry when the last tab closes', () => {
+    const closed = closeConversationTab({ 'ws-a': ['c1'] }, 'ws-a', 'c1');
+    expect(closed.tabs).toEqual({});
+    expect(closed.nextSelectedId).toBeUndefined();
+  });
+
+  it('prunes deleted conversation ids from open tabs', () => {
+    const tabs = { 'ws-a': ['c1', 'gone'], 'ws-b': ['gone-only'] };
+    const pruned = pruneOpenTabs(tabs, new Set(['c1']));
+    expect(pruned).toEqual({ 'ws-a': ['c1'] });
+  });
+
+  it('restores the remembered open tab when switching workspaces', () => {
+    const tabs = { 'ws-a': ['a1', 'a2'], 'ws-b': ['b1'] };
+    const selected = { 'ws-a': 'a1', 'ws-b': 'b1' };
+    expect(resolveWorkspaceSelection(tabs, selected, 'ws-a')).toBe('a1');
+    expect(resolveWorkspaceSelection(tabs, { 'ws-a': 'missing' }, 'ws-a')).toBe('a2');
+    expect(resolveWorkspaceSelection(tabs, {}, 'ws-b')).toBe('b1');
+    expect(resolveWorkspaceSelection(tabs, {}, 'ws-empty')).toBeUndefined();
+  });
+
+  it('remembers and clears per-workspace selection', () => {
+    const once = rememberWorkspaceSelection({}, 'ws-a', 'c1');
+    expect(once).toEqual({ 'ws-a': 'c1' });
+    expect(rememberWorkspaceSelection(once, 'ws-a', undefined)).toEqual({});
+  });
+
+  it('reorders open tabs by dragging one onto another', () => {
+    const tabs = { 'ws-a': ['c1', 'c2', 'c3'] };
+    expect(reorderConversationTab(tabs, 'ws-a', 'c1', 'c3')).toEqual({
+      'ws-a': ['c2', 'c3', 'c1'],
+    });
+    expect(reorderConversationTab(tabs, 'ws-a', 'c3', 'c1')).toEqual({
+      'ws-a': ['c3', 'c1', 'c2'],
+    });
+    expect(reorderConversationTab(tabs, 'ws-a', 'c2', 'c2')).toBe(tabs);
+  });
+});
+
 describe('conversation grouping', () => {
-  it('filters by project tab: undefined shows all including 未归类', () => {
+  it('filters by workspace: no 全部 — undefined yields empty; only matching workspace', () => {
     const conversations = [
       conv({ id: 'c1', track: 'model', workspaceId: 'ws-a' as never }),
       conv({ id: 'c2', track: 'model', workspaceId: 'ws-b' as never }),
       conv({ id: 'c3', track: 'model' }), // 未归类
     ];
-    expect(filterByWorkspace(conversations, undefined).map((c) => c.id)).toEqual([
-      'c1',
-      'c2',
-      'c3',
-    ]);
+    expect(filterByWorkspace(conversations, undefined)).toEqual([]);
     expect(filterByWorkspace(conversations, 'ws-a').map((c) => c.id)).toEqual(['c1']);
     expect(filterByWorkspace(conversations, 'ws-none')).toEqual([]);
+  });
+
+  it('builds track tree with groups and ungrouped residual', () => {
+    const conversations = [
+      conv({ id: 'c1', track: 'model' }),
+      conv({ id: 'c2', track: 'model' }),
+      conv({ id: 'c3', track: 'model' }),
+    ];
+    let groups = emptyConversationGroups();
+    groups = createConversationGroup(groups, 'model', 'Sync-think', 'g1');
+    groups = moveConversationToGroup(groups, 'model', 'c1', 'g1');
+    groups = moveConversationToGroup(groups, 'model', 'c2', 'g1');
+    const tree = buildTrackTree(conversations, groups.model);
+    expect(tree.groups).toHaveLength(1);
+    expect(tree.groups[0]!.conversations.map((c) => c.id)).toEqual(['c1', 'c2']);
+    expect(tree.ungrouped.map((c) => c.id)).toEqual(['c3']);
+    groups = renameConversationGroup(groups, 'model', 'g1', 'Main');
+    expect(groups.model[0]!.name).toBe('Main');
+    groups = deleteConversationGroup(groups, 'model', 'g1');
+    expect(buildTrackTree(conversations, groups.model).ungrouped).toHaveLength(3);
   });
 
   it('splits conversations by track preserving store order (pinned-first)', () => {
@@ -115,7 +228,10 @@ describe('conversation grouping', () => {
   it('resolves target display names per track with fallbacks', () => {
     const agents = [{ id: 'agent-1', name: '前端小张' }] as never[];
     const teams = [{ id: 'team-1', name: '交付小队' }] as never[];
-    const modelNames = new Map([['model-x', 'Claude Sonnet']]);
+    const modelNames = new Map([
+      ['model-x', 'Claude Sonnet'],
+      ['grok-4.5', 'Grok 4.5'],
+    ]);
     expect(targetName(conv({ id: 'a', track: 'agent', targetRef: 'agent-1' }), agents, teams)).toBe(
       '前端小张',
     );
@@ -129,11 +245,44 @@ describe('conversation grouping', () => {
     expect(
       targetName(conv({ id: 'd', track: 'model', targetRef: 'model-x' }), agents, teams, modelNames),
     ).toBe('Claude Sonnet');
+    // Unknown / stale model ids keep a model-like label, never the track name.
     expect(
       targetName(conv({ id: 'e', track: 'model', targetRef: 'model-unknown' }), agents, teams, modelNames),
-    ).toBe('模型对话');
+    ).toBe('model-unknown');
     expect(targetName(conv({ id: 'f', track: 'model', targetRef: 'model-x' }), agents, teams)).toBe(
-      '模型对话',
+      'model-x',
     );
+    expect(
+      targetName(conv({ id: 'g', track: 'model', targetRef: 'z-ai/glm-5.2' }), agents, teams),
+    ).toBe('glm-5.2');
+    // Compose model override wins over the conversation's original targetRef.
+    expect(
+      targetName(
+        conv({ id: 'h', track: 'model', targetRef: 'model-x' }),
+        agents,
+        teams,
+        modelNames,
+        { h: 'grok-4.5' },
+      ),
+    ).toBe('Grok 4.5');
+    expect(
+      targetName(
+        conv({ id: 'i', track: 'model', targetRef: 'model-x' }),
+        agents,
+        teams,
+        modelNames,
+        new Map([['i', 'grok-4.5']]),
+      ),
+    ).toBe('Grok 4.5');
+    // Agent/team tracks ignore model overrides — identity stays the agent/team.
+    expect(
+      targetName(
+        conv({ id: 'j', track: 'agent', targetRef: 'agent-1' }),
+        agents,
+        teams,
+        modelNames,
+        { j: 'grok-4.5' },
+      ),
+    ).toBe('前端小张');
   });
 });

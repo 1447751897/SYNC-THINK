@@ -40,6 +40,20 @@ export interface BindWorkspaceFolderInput {
   now?: string;
 }
 
+export interface UpdateWorkspaceInput {
+  workspaceId: WorkspaceId;
+  name?: string;
+  folderPath?: string;
+  /** Icon glyph. null clears; undefined keeps current. */
+  icon?: string | null;
+  allowedRoots?: readonly string[];
+  now?: string;
+}
+
+export interface WorkspaceUiPrefs {
+  icon?: string;
+}
+
 export interface CreateTaskInput {
   workspaceId: WorkspaceId;
   title: string;
@@ -216,6 +230,70 @@ export class SqliteWorkspaceStore {
       )
       .get(workspaceId) as WorkspaceRow | undefined;
     return row ? mapWorkspace(row) : undefined;
+  }
+
+  updateWorkspace(input: UpdateWorkspaceInput): WorkspaceRecord {
+    const workspaceId = String(input.workspaceId ?? '').trim() as WorkspaceId;
+    if (!workspaceId) throw new Error('Workspace id must not be empty');
+
+    const update = this.raw.transaction(() => {
+      const current = this.getWorkspace(workspaceId);
+      if (!current) throw new Error(`Workspace not found: ${workspaceId}`);
+
+      const name =
+        input.name === undefined ? current.name : input.name.trim();
+      if (name.length === 0) throw new Error('Workspace name must not be empty');
+
+      let folderPath = current.folderPath;
+      if (input.folderPath !== undefined) {
+        folderPath = assertAllowedWorkspacePath(
+          input.folderPath,
+          input.allowedRoots ?? [],
+        );
+        const existing = this.raw
+          .prepare(
+            'SELECT id FROM workspace WHERE lower(folder_path) = lower(?) AND id <> ?',
+          )
+          .get(folderPath, workspaceId) as { id: string } | undefined;
+        if (existing) {
+          throw new Error(`Workspace already exists for folder path: ${folderPath}`);
+        }
+      }
+
+      const prefs = parseWorkspaceUiPrefs(current.uiPrefsJson);
+      if (input.icon !== undefined) {
+        const icon = input.icon === null ? undefined : String(input.icon).trim() || undefined;
+        if (icon) prefs.icon = icon;
+        else delete prefs.icon;
+      }
+      const uiPrefsJson = serializeWorkspaceUiPrefs(prefs);
+
+      const updatedAt = input.now ?? new Date().toISOString();
+      this.raw
+        .prepare(
+          `UPDATE workspace
+           SET name = ?, folder_path = ?, ui_prefs_json = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(name, folderPath ?? null, uiPrefsJson, updatedAt, workspaceId);
+
+      const updated = this.getWorkspace(workspaceId);
+      if (!updated) {
+        throw new Error(`Workspace not found after update: ${workspaceId}`);
+      }
+      return updated;
+    });
+    return update.immediate();
+  }
+
+  deleteWorkspace(workspaceId: WorkspaceId): boolean {
+    const id = String(workspaceId ?? '').trim();
+    if (!id) return false;
+    // Conversations / tasks that reference this workspace keep their FK rows
+    // only if the schema allows it; for now we hard-delete the workspace row.
+    // Callers should confirm with the user first.
+    const result = this.raw.prepare(`DELETE FROM workspace WHERE id = ?`).run(id);
+    return result.changes > 0;
   }
 
   createTask(input: CreateTaskInput): CreateTaskResult {
@@ -667,6 +745,31 @@ function mapWorkspace(row: WorkspaceRow): WorkspaceRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export function parseWorkspaceUiPrefs(raw: string | undefined): WorkspaceUiPrefs {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const icon =
+      typeof (parsed as { icon?: unknown }).icon === 'string'
+        ? String((parsed as { icon: string }).icon).trim()
+        : '';
+    return icon ? { icon } : {};
+  } catch {
+    return {};
+  }
+}
+
+export function serializeWorkspaceUiPrefs(prefs: WorkspaceUiPrefs): string | null {
+  const icon = prefs.icon?.trim();
+  if (!icon) return null;
+  return JSON.stringify({ icon });
+}
+
+export function workspaceIconFromPrefs(uiPrefsJson: string | undefined): string | undefined {
+  return parseWorkspaceUiPrefs(uiPrefsJson).icon;
 }
 
 function mapTask(row: TaskRow, threadId: ThreadId): TaskRecord {

@@ -36,29 +36,27 @@ describe('M2 renderer wiring', () => {
     expect(source).toMatch(/delegateAgentVersionId:\s*input\.delegateAgentVersionId/);
   });
 
-  it('has no plaintext credential reveal route into Renderer payloads or state', () => {
-    expect(protocolSource).not.toContain("'provider.revealCredential'");
-    expect(protocolSource).not.toContain('RevealCredentialResponse');
-    expect(mainSource).not.toContain('runtime:provider-reveal-credential');
-    expect(preloadSource).not.toContain('revealCredential');
-    expect(globalSource).not.toContain('RevealCredential');
+  it('scopes credential reveal to an explicit short-lived bridge, not list payloads', () => {
+    expect(protocolSource).toContain("'provider.revealCredential'");
+    expect(protocolSource).toContain('RevealProviderCredentialResponse');
+    expect(protocolSource).toContain('/** Plaintext only for this reveal hop. */');
+    expect(mainSource).toContain('runtime:provider-reveal-credential');
+    expect(preloadSource).toContain('revealProviderCredential');
+    expect(globalSource).toContain('revealProviderCredential');
+    // Legacy ProvidersPanel and its wiring stay mask-only.
     expect(source).not.toContain('revealProviderCredential');
     expect(providersPanelSource).not.toContain('onRevealCredential');
+    expect(providerPayloadSource).not.toContain('apiKey');
   });
 
-  it('keeps provider credentials out of Renderer, preload, and metadata parser surfaces', () => {
-    for (const boundary of [
-      source,
-      preloadSource,
-      globalSource,
-      providersPanelSource,
-      providerPayloadSource,
-    ]) {
+  it('keeps create/update clipboard ownership in main and out of legacy renderer surfaces', () => {
+    for (const boundary of [source, providersPanelSource, providerPayloadSource]) {
       expect(boundary).not.toContain('apiKey');
     }
     expect(mainSource).toContain('clipboard.readText()');
     expect(mainSource).toContain('createProviderPayloadFromClipboard');
     expect(mainSource).toContain('updateProviderPayloadFromClipboard');
+    expect(mainSource).toContain('runtime:provider-update-credential');
   });
 
   it('debounces real orchestration event refreshes without a mount-stale callback', () => {
@@ -113,5 +111,24 @@ describe('M2 renderer wiring', () => {
     expect(source).not.toContain('sourceStepId: right.sourceStepId');
     expect(source).toContain('sourceStepId: mergeStepId');
     expect(source).toContain("active.participationMode === 'collaboration'");
+  });
+
+  it('wires syncthink://conversation deep links end to end', () => {
+    // Main registers the handler, locks a single instance, and parses links.
+    expect(mainSource).toContain("app.setAsDefaultProtocolClient('syncthink')");
+    expect(mainSource).toContain("app.requestSingleInstanceLock()");
+    expect(mainSource).toContain("app.on('open-url'");
+    expect(mainSource).toContain("app.on('second-instance'");
+    expect(mainSource).toContain('desktop:open-conversation');
+    expect(mainSource).toContain('desktop:renderer-ready');
+    expect(mainSource).toContain('parseDeepLinkUrl');
+    expect(mainSource).toContain('findDeepLinkInArgv');
+    // Preload exposes the renderer-facing listeners on the runtime bridge.
+    expect(preloadSource).toContain('onOpenConversation');
+    expect(preloadSource).toContain('notifyRendererReady');
+    expect(preloadSource).toContain('desktop:open-conversation');
+    // Types mirror the bridge for the renderer.
+    expect(globalSource).toContain('onOpenConversation');
+    expect(globalSource).toContain('notifyRendererReady');
   });
 });

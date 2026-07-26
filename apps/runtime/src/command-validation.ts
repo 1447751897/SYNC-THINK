@@ -9,6 +9,8 @@ import type {
   BindWorkspaceFolderPayload,
   CreateTaskPayload,
   CreateWorkspacePayload,
+  UpdateWorkspacePayload,
+  DeleteWorkspacePayload,
   ListTasksPayload,
   ListWorkspacesPayload,
   OpenTaskPayload,
@@ -30,7 +32,10 @@ import type {
   ReorderProvidersPayload,
   AddProviderCredentialPayload,
   RemoveProviderCredentialPayload,
+  RevealProviderCredentialPayload,
+  UpdateProviderCredentialPayload,
   SetModelPrioritiesPayload,
+  UpdateModelPayload,
   RemoveModelPayload,
   GetSettingsPayload,
   SetSettingPayload,
@@ -91,7 +96,9 @@ import type {
   SetConversationExecutionModePayload,
   UpgradeConversationTrackPayload,
   DeleteConversationPayload,
+  ConversationCompactPayload,
   ConversationDecideToolApprovalPayload,
+  ConversationSubmitBrowserResultPayload,
 } from '@sync-think/protocol';
 import {
   MAX_INLINE_ARTIFACT_CONTENT_BYTES,
@@ -197,6 +204,66 @@ export function parseListWorkspacesPayload(value: unknown): ListWorkspacesPayloa
   if (value === undefined || value === null) return {};
   if (!isRecord(value)) return undefined;
   return value as ListWorkspacesPayload;
+}
+
+export function parseUpdateWorkspacePayload(value: unknown): UpdateWorkspacePayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.workspaceId !== 'string' ||
+    value.workspaceId.trim().length === 0 ||
+    value.workspaceId.length > 256
+  ) {
+    return undefined;
+  }
+  if (value.name !== undefined) {
+    if (typeof value.name !== 'string' || value.name.trim().length === 0 || value.name.length > 256) {
+      return undefined;
+    }
+  }
+  if (value.folderPath !== undefined) {
+    if (
+      typeof value.folderPath !== 'string' ||
+      value.folderPath.trim().length === 0 ||
+      value.folderPath.length > 4096
+    ) {
+      return undefined;
+    }
+  }
+  if (value.icon !== undefined && value.icon !== null) {
+    if (typeof value.icon !== 'string' || value.icon.length > 32) return undefined;
+  }
+  if (
+    value.name === undefined &&
+    value.folderPath === undefined &&
+    value.icon === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    workspaceId: value.workspaceId.trim() as UpdateWorkspacePayload['workspaceId'],
+    name: typeof value.name === 'string' ? value.name.trim() : undefined,
+    folderPath: typeof value.folderPath === 'string' ? value.folderPath.trim() : undefined,
+    icon:
+      value.icon === null
+        ? null
+        : typeof value.icon === 'string'
+          ? value.icon.trim() || null
+          : undefined,
+  };
+}
+
+export function parseDeleteWorkspacePayload(value: unknown): DeleteWorkspacePayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.workspaceId !== 'string' ||
+    value.workspaceId.trim().length === 0 ||
+    value.workspaceId.length > 256
+  ) {
+    return undefined;
+  }
+  return {
+    workspaceId: value.workspaceId.trim() as DeleteWorkspacePayload['workspaceId'],
+  };
 }
 
 export function parseCreateTaskPayload(value: unknown): CreateTaskPayload | undefined {
@@ -982,7 +1049,12 @@ export function parseDiscoverModelsPayload(value: unknown): DiscoverModelsPayloa
   }
   if (value.credentialRefId !== undefined && typeof value.credentialRefId !== 'string')
     return undefined;
-  return value as unknown as DiscoverModelsPayload;
+  if (value.persist !== undefined && typeof value.persist !== 'boolean') return undefined;
+  return {
+    providerId: value.providerId as DiscoverModelsPayload['providerId'],
+    credentialRefId: value.credentialRefId as DiscoverModelsPayload['credentialRefId'],
+    persist: value.persist as boolean | undefined,
+  };
 }
 
 export function parseAddModelsPayload(value: unknown): AddModelsPayload | undefined {
@@ -1128,6 +1200,60 @@ export function parseRemoveProviderCredentialPayload(
   return value as unknown as RemoveProviderCredentialPayload;
 }
 
+export function parseRevealProviderCredentialPayload(
+  value: unknown,
+): RevealProviderCredentialPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256 ||
+    typeof value.credentialRefId !== 'string' ||
+    value.credentialRefId.length === 0 ||
+    value.credentialRefId.length > 256
+  ) {
+    return undefined;
+  }
+  return {
+    providerId: value.providerId as RevealProviderCredentialPayload['providerId'],
+    credentialRefId: value.credentialRefId as RevealProviderCredentialPayload['credentialRefId'],
+  };
+}
+
+export function parseUpdateProviderCredentialPayload(
+  value: unknown,
+): UpdateProviderCredentialPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256 ||
+    typeof value.credentialRefId !== 'string' ||
+    value.credentialRefId.length === 0 ||
+    value.credentialRefId.length > 256
+  ) {
+    return undefined;
+  }
+  if (value.label !== undefined) {
+    if (typeof value.label !== 'string' || value.label.length > 256) return undefined;
+  }
+  if (value.apiKey !== undefined) {
+    if (typeof value.apiKey !== 'string' || value.apiKey.length > 8192) return undefined;
+  }
+  const hasLabel = value.label !== undefined;
+  const hasApiKey = typeof value.apiKey === 'string' && value.apiKey.trim().length > 0;
+  if (!hasLabel && !hasApiKey) return undefined;
+  return {
+    providerId: value.providerId as UpdateProviderCredentialPayload['providerId'],
+    credentialRefId: value.credentialRefId as UpdateProviderCredentialPayload['credentialRefId'],
+    label: typeof value.label === 'string' ? value.label : undefined,
+    apiKey:
+      typeof value.apiKey === 'string' && value.apiKey.trim().length > 0
+        ? value.apiKey
+        : undefined,
+  };
+}
+
 export function parseSetModelPrioritiesPayload(
   value: unknown,
 ): SetModelPrioritiesPayload | undefined {
@@ -1177,6 +1303,44 @@ export function parseRemoveModelPayload(value: unknown): RemoveModelPayload | un
     return undefined;
   }
   return value as unknown as RemoveModelPayload;
+}
+
+export function parseUpdateModelPayload(value: unknown): UpdateModelPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.providerId !== 'string' ||
+    value.providerId.length === 0 ||
+    value.providerId.length > 256 ||
+    typeof value.modelId !== 'string' ||
+    value.modelId.length === 0 ||
+    value.modelId.length > 256
+  ) {
+    return undefined;
+  }
+  if (value.displayName !== undefined) {
+    if (typeof value.displayName !== 'string' || value.displayName.length > 256) return undefined;
+  }
+  if (value.contextWindow !== undefined && value.contextWindow !== null) {
+    if (
+      typeof value.contextWindow !== 'number' ||
+      !Number.isFinite(value.contextWindow) ||
+      value.contextWindow <= 0
+    ) {
+      return undefined;
+    }
+  }
+  if (value.displayName === undefined && value.contextWindow === undefined) return undefined;
+  return {
+    providerId: value.providerId as UpdateModelPayload['providerId'],
+    modelId: value.modelId as UpdateModelPayload['modelId'],
+    displayName: typeof value.displayName === 'string' ? value.displayName.trim() : undefined,
+    contextWindow:
+      value.contextWindow === null
+        ? null
+        : typeof value.contextWindow === 'number'
+          ? Math.round(value.contextWindow)
+          : undefined,
+  };
 }
 
 export function parseGetSettingsPayload(value: unknown): GetSettingsPayload | undefined {
@@ -1573,7 +1737,12 @@ function validGlobalAgentFields(
       !boundedAgentText(value.defaultModelId, 256))
   )
     return false;
-  if (value.avatar !== undefined && (typeof value.avatar !== 'string' || value.avatar.length > 512))
+  // Avatar accepts an emoji/short label or an imported image as a compact
+  // data URL (96×96 webp/jpeg ≈ a few KB); cap far below persona limits.
+  if (
+    value.avatar !== undefined &&
+    (typeof value.avatar !== 'string' || value.avatar.length > 65_536)
+  )
     return false;
   if (
     value.persona !== undefined &&
@@ -1666,7 +1835,11 @@ function validTeamFields(value: Record<string, unknown>, options: { full: boolea
     (!options.full && value.name !== undefined && !boundedAgentText(value.name, 256))
   )
     return false;
-  if (value.avatar !== undefined && (typeof value.avatar !== 'string' || value.avatar.length > 512))
+  // Team avatar also accepts a compact image data URL (same policy as agents).
+  if (
+    value.avatar !== undefined &&
+    (typeof value.avatar !== 'string' || value.avatar.length > 65_536)
+  )
     return false;
   if (
     value.mission !== undefined &&
@@ -1841,6 +2014,70 @@ export function parseSetConversationExecutionModePayload(
   };
 }
 
+export function parseConversationCompactPayload(
+  value: unknown,
+): ConversationCompactPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'conversationId',
+      'mode',
+      'contextWindow',
+      'usedTokens',
+      'keepRecent',
+      'onlyIfNeeded',
+    ]) ||
+    !boundedAgentText(value.conversationId, 128)
+  ) {
+    return undefined;
+  }
+  if (value.mode !== undefined && value.mode !== 'manual' && value.mode !== 'auto') {
+    return undefined;
+  }
+  if (value.contextWindow !== undefined) {
+    if (
+      typeof value.contextWindow !== 'number' ||
+      !Number.isFinite(value.contextWindow) ||
+      value.contextWindow <= 0
+    ) {
+      return undefined;
+    }
+  }
+  if (value.usedTokens !== undefined) {
+    if (
+      typeof value.usedTokens !== 'number' ||
+      !Number.isFinite(value.usedTokens) ||
+      value.usedTokens < 0
+    ) {
+      return undefined;
+    }
+  }
+  if (value.keepRecent !== undefined) {
+    if (
+      typeof value.keepRecent !== 'number' ||
+      !Number.isFinite(value.keepRecent) ||
+      value.keepRecent < 1 ||
+      value.keepRecent > 100
+    ) {
+      return undefined;
+    }
+  }
+  if (value.onlyIfNeeded !== undefined && typeof value.onlyIfNeeded !== 'boolean') {
+    return undefined;
+  }
+  return {
+    conversationId: value.conversationId as ConversationCompactPayload['conversationId'],
+    mode: value.mode as ConversationCompactPayload['mode'],
+    contextWindow:
+      typeof value.contextWindow === 'number' ? Math.round(value.contextWindow) : undefined,
+    usedTokens:
+      typeof value.usedTokens === 'number' ? Math.round(value.usedTokens) : undefined,
+    keepRecent:
+      typeof value.keepRecent === 'number' ? Math.round(value.keepRecent) : undefined,
+    onlyIfNeeded: value.onlyIfNeeded as boolean | undefined,
+  };
+}
+
 export function parseConversationDecideToolApprovalPayload(
   value: unknown,
 ): ConversationDecideToolApprovalPayload | undefined {
@@ -1855,6 +2092,33 @@ export function parseConversationDecideToolApprovalPayload(
   return {
     approvalId: value.approvalId,
     decision: value.decision,
+  };
+}
+
+export function parseConversationSubmitBrowserResultPayload(
+  value: unknown,
+): ConversationSubmitBrowserResultPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['requestId', 'ok', 'resultJson', 'error']) ||
+    !boundedAgentText(value.requestId, 128) ||
+    typeof value.ok !== 'boolean'
+  ) {
+    return undefined;
+  }
+  // resultJson is renderer-produced page content — cap at 64KB + JSON overhead
+  // so a hostile page cannot blow up the pipe frame (1 MiB hard cap).
+  if (value.resultJson !== undefined) {
+    if (typeof value.resultJson !== 'string' || value.resultJson.length > 96_000) return undefined;
+  }
+  if (value.error !== undefined) {
+    if (typeof value.error !== 'string' || value.error.length > 2_000) return undefined;
+  }
+  return {
+    requestId: value.requestId,
+    ok: value.ok,
+    resultJson: value.resultJson as string | undefined,
+    error: value.error as string | undefined,
   };
 }
 
@@ -2100,6 +2364,30 @@ export function parseListSkillsPayload(value: unknown): ListSkillsPayload | unde
   return {
     limit: value.limit as number | undefined,
   };
+}
+
+export function parseDeleteSkillPayload(value: unknown): import('@sync-think/protocol').DeleteSkillPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.skillVersionId !== 'string' ||
+    value.skillVersionId.trim().length === 0 ||
+    value.skillVersionId.length > 256
+  ) {
+    return undefined;
+  }
+  return { skillVersionId: value.skillVersionId.trim() };
+}
+
+export function parseGetSkillPayload(value: unknown): import('@sync-think/protocol').GetSkillPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.skillVersionId !== 'string' ||
+    value.skillVersionId.trim().length === 0 ||
+    value.skillVersionId.length > 256
+  ) {
+    return undefined;
+  }
+  return { skillVersionId: value.skillVersionId.trim() };
 }
 
 export function parseRegisterMcpServerPayload(

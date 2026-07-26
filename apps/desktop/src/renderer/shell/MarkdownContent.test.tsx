@@ -16,6 +16,18 @@ describe('MarkdownContent', () => {
     expect(html).toContain('<li');
     expect(html).toContain('shell-md-inline-code');
     expect(html).toContain('inline');
+    expect(html).toContain('shell-md-section__toggle');
+    expect(html).toContain('aria-expanded="true"');
+  });
+
+  it('keeps level-two markers inside fenced code as code instead of sections', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```md\n## 只是代码\n```',
+      }),
+    );
+    expect(html).toContain('只是代码');
+    expect(html).not.toContain('shell-md-section__toggle');
   });
 
   it('renders fenced code blocks with language label and copy control', () => {
@@ -34,26 +46,29 @@ describe('MarkdownContent', () => {
     expect(html).toMatch(/n\s*=\s*.*1/);
   });
 
-  it('shows expand and fullscreen controls for long fenced code', () => {
+  it('shows inline expand controls for long fenced code without a fullscreen action', () => {
     const lines = Array.from({ length: 14 }, (_, index) => `const line${index} = ${index};`).join('\n');
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: `\`\`\`ts\n${lines}\n\`\`\``,
       }),
     );
-    expect(html).toContain('放大查看代码');
+    expect(html).toContain('shell-md-code__collapse');
     expect(html).toContain('展开全部 14 行');
     expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain('放大查看代码');
+    expect(html).not.toContain('shell-md-code-lightbox');
   });
 
-  it('keeps short fenced code compact while still allowing fullscreen viewing', () => {
+  it('keeps short fenced code compact without unnecessary expand controls', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '```json\n{"ok":true}\n```',
       }),
     );
-    expect(html).toContain('放大查看代码');
+    expect(html).not.toContain('放大查看代码');
     expect(html).not.toContain('展开全部');
+    expect(html).not.toContain('shell-md-code__collapse');
   });
   it('shows streaming caret when streaming is true', () => {
     const html = renderToStaticMarkup(

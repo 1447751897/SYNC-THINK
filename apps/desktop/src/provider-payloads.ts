@@ -8,7 +8,9 @@
   ConfirmCapabilitiesPayload,
   ReorderProvidersPayload,
   RemoveProviderCredentialPayload,
+  RevealProviderCredentialPayload,
   SetModelPrioritiesPayload,
+  UpdateModelPayload,
   RemoveModelPayload,
   GetSettingsPayload,
   SetSettingPayload,
@@ -40,6 +42,22 @@ export interface RendererUpdateProviderPayload {
 export interface RendererAddProviderCredentialPayload {
   providerId: string;
   label?: string;
+}
+
+export interface RendererRevealProviderCredentialPayload {
+  providerId: string;
+  credentialRefId: string;
+}
+
+/**
+ * Renderer-facing credential update: secret stays out of this payload.
+ * When `rotateCredentialFromClipboard` is true, main reads the clipboard once.
+ */
+export interface RendererUpdateProviderCredentialPayload {
+  providerId: string;
+  credentialRefId: string;
+  label?: string;
+  rotateCredentialFromClipboard?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -113,9 +131,13 @@ export function parseDiscoverModelsPayload(value: unknown): DiscoverModelsPayloa
   if (value.credentialRefId !== undefined && typeof value.credentialRefId !== 'string') {
     throw new Error('Invalid discover-models payload');
   }
+  if (value.persist !== undefined && typeof value.persist !== 'boolean') {
+    throw new Error('Invalid discover-models payload');
+  }
   return {
     providerId: value.providerId as DiscoverModelsPayload['providerId'],
     credentialRefId: value.credentialRefId as DiscoverModelsPayload['credentialRefId'],
+    persist: value.persist as boolean | undefined,
   };
 }
 
@@ -240,6 +262,57 @@ export function parseRemoveProviderCredentialPayload(
   };
 }
 
+export function parseRevealProviderCredentialPayload(
+  value: unknown,
+): RevealProviderCredentialPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['providerId', 'credentialRefId']) ||
+    !isBoundedId(value.providerId) ||
+    !isBoundedId(value.credentialRefId)
+  ) {
+    throw new Error('Invalid reveal-provider-credential payload');
+  }
+  return {
+    providerId: value.providerId.trim() as RevealProviderCredentialPayload['providerId'],
+    credentialRefId:
+      value.credentialRefId.trim() as RevealProviderCredentialPayload['credentialRefId'],
+  };
+}
+
+export function parseUpdateProviderCredentialMetadata(
+  value: unknown,
+): RendererUpdateProviderCredentialPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'providerId',
+      'credentialRefId',
+      'label',
+      'rotateCredentialFromClipboard',
+    ]) ||
+    !isBoundedId(value.providerId) ||
+    !isBoundedId(value.credentialRefId) ||
+    (value.label !== undefined &&
+      (typeof value.label !== 'string' || value.label.length > 256)) ||
+    (value.rotateCredentialFromClipboard !== undefined &&
+      typeof value.rotateCredentialFromClipboard !== 'boolean')
+  ) {
+    throw new Error('Invalid update-provider-credential payload');
+  }
+  const rotate = value.rotateCredentialFromClipboard === true;
+  const hasLabel = value.label !== undefined;
+  if (!rotate && !hasLabel) {
+    throw new Error('Invalid update-provider-credential payload');
+  }
+  return {
+    providerId: value.providerId.trim(),
+    credentialRefId: value.credentialRefId.trim(),
+    label: typeof value.label === 'string' ? value.label.trim() : undefined,
+    rotateCredentialFromClipboard: rotate || undefined,
+  };
+}
+
 export function parseSetModelPrioritiesPayload(value: unknown): SetModelPrioritiesPayload {
   if (
     !isRecord(value) ||
@@ -297,6 +370,45 @@ export function parseRemoveModelPayload(value: unknown): RemoveModelPayload {
   return {
     providerId: value.providerId.trim() as RemoveModelPayload['providerId'],
     modelId: value.modelId.trim() as RemoveModelPayload['modelId'],
+  };
+}
+
+export function parseUpdateModelPayload(value: unknown): UpdateModelPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['providerId', 'modelId', 'displayName', 'contextWindow']) ||
+    !isBoundedId(value.providerId) ||
+    !isBoundedId(value.modelId)
+  ) {
+    throw new Error('Invalid update-model payload');
+  }
+  if (value.displayName !== undefined) {
+    if (typeof value.displayName !== 'string' || value.displayName.length > 256) {
+      throw new Error('Invalid update-model payload');
+    }
+  }
+  if (value.contextWindow !== undefined && value.contextWindow !== null) {
+    if (
+      typeof value.contextWindow !== 'number' ||
+      !Number.isFinite(value.contextWindow) ||
+      value.contextWindow <= 0
+    ) {
+      throw new Error('Invalid update-model payload');
+    }
+  }
+  if (value.displayName === undefined && value.contextWindow === undefined) {
+    throw new Error('Invalid update-model payload');
+  }
+  return {
+    providerId: value.providerId.trim() as UpdateModelPayload['providerId'],
+    modelId: value.modelId.trim() as UpdateModelPayload['modelId'],
+    displayName: typeof value.displayName === 'string' ? value.displayName.trim() : undefined,
+    contextWindow:
+      value.contextWindow === null
+        ? null
+        : typeof value.contextWindow === 'number'
+          ? Math.round(value.contextWindow)
+          : undefined,
   };
 }
 

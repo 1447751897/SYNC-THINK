@@ -32,6 +32,30 @@ export interface DemoRunState {
   credentialResolutionSource?: string;
   agentVersionId: string;
   resolutionSource: ModelResolutionSource;
+  /**
+   * Bound global Agent identity (mutable agent table).
+   * Used for persona injection and UI identity — not the legacy agent_version chain.
+   */
+  globalAgentId?: string;
+  globalAgentName?: string;
+  /** Persona / system instructions from the bound global Agent. */
+  persona?: string;
+  /** Bound team (team-track conversations): identity + orchestration prompt. */
+  teamId?: string;
+  teamName?: string;
+  /** Team mission + member roster injected into the system prompt. */
+  teamPromptBlock?: string;
+  /**
+   * Snapshot of the bound global agent's fallback chain at run start.
+   * Used on failure instead of re-reading a possibly-mutated legacy agent.
+   */
+  fallbackModelIds?: string[];
+  /** Skill bodies injected into system prompt for this run. */
+  skillPromptBlocks?: string[];
+  /** Bound skill version / skill ids for this run (allowlist snapshot). */
+  skillVersionIds?: string[];
+  /** Bound MCP server ids for this run (allowlist snapshot). */
+  mcpServerIds?: string[];
   /** Compose 推理强度（auto/off/low/medium/high…）；透传到 adapter。 */
   reasoningEffort?: string;
   /** Compose 联网开关：本轮是否暴露 web_search / web_fetch。 */
@@ -70,6 +94,16 @@ export interface CreateDemoRunInput {
   credentialResolutionSource?: string;
   agentVersionId?: string;
   resolutionSource?: ModelResolutionSource;
+  globalAgentId?: string;
+  globalAgentName?: string;
+  persona?: string;
+  teamId?: string;
+  teamName?: string;
+  teamPromptBlock?: string;
+  fallbackModelIds?: string[];
+  skillPromptBlocks?: string[];
+  skillVersionIds?: string[];
+  mcpServerIds?: string[];
   reasoningEffort?: string;
   networkEnabled?: boolean;
   images?: DemoRunImage[];
@@ -99,6 +133,28 @@ export function createDemoRun(
     credentialResolutionSource: extras.credentialResolutionSource,
     agentVersionId: extras.agentVersionId ?? 'agent-default-conversation',
     resolutionSource: extras.resolutionSource ?? 'agentDefault',
+    globalAgentId: extras.globalAgentId,
+    globalAgentName: extras.globalAgentName,
+    persona: extras.persona,
+    teamId: extras.teamId,
+    teamName: extras.teamName,
+    teamPromptBlock: extras.teamPromptBlock,
+    fallbackModelIds:
+      extras.fallbackModelIds && extras.fallbackModelIds.length > 0
+        ? [...extras.fallbackModelIds]
+        : undefined,
+    skillPromptBlocks:
+      extras.skillPromptBlocks && extras.skillPromptBlocks.length > 0
+        ? [...extras.skillPromptBlocks]
+        : undefined,
+    skillVersionIds:
+      extras.skillVersionIds && extras.skillVersionIds.length > 0
+        ? [...extras.skillVersionIds]
+        : undefined,
+    mcpServerIds:
+      extras.mcpServerIds && extras.mcpServerIds.length > 0
+        ? [...extras.mcpServerIds]
+        : undefined,
     reasoningEffort: extras.reasoningEffort,
     networkEnabled: extras.networkEnabled === true ? true : undefined,
     images: extras.images && extras.images.length > 0 ? extras.images : undefined,

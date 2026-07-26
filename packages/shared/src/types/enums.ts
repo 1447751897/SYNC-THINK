@@ -44,7 +44,9 @@ export type ModelResolutionSource =
   | 'runOverride'
   | 'workflowNode'
   | 'agentDefault'
-  | 'agentFallback';
+  | 'agentFallback'
+  /** Same-provider priority chain: walk forward only from the failed model. */
+  | 'providerFallback';
 
 export type ProtocolFamily =
   | 'openai-responses'

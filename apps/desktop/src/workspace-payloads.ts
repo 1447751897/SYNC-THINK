@@ -2,6 +2,8 @@
   CreateTaskPayload,
   BindWorkspaceFolderPayload,
   CreateWorkspacePayload,
+  UpdateWorkspacePayload,
+  DeleteWorkspacePayload,
   ListTasksPayload,
   ListWorkspacesPayload,
   OpenTaskPayload,
@@ -76,6 +78,64 @@ export function parseListWorkspacesPayload(value: unknown): ListWorkspacesPayloa
   if (value === undefined || value === null) return {};
   if (!isRecord(value)) throw new Error('Invalid list-workspaces payload');
   return {};
+}
+
+export function parseUpdateWorkspacePayload(value: unknown): UpdateWorkspacePayload {
+  if (!isRecord(value)) throw new Error('Invalid update-workspace payload');
+  if (
+    typeof value.workspaceId !== 'string' ||
+    value.workspaceId.trim().length === 0 ||
+    value.workspaceId.length > 256
+  ) {
+    throw new Error('Invalid update-workspace payload');
+  }
+  if (value.name !== undefined) {
+    if (typeof value.name !== 'string' || value.name.trim().length === 0 || value.name.length > 256) {
+      throw new Error('Invalid update-workspace payload');
+    }
+  }
+  if (value.folderPath !== undefined) {
+    if (
+      typeof value.folderPath !== 'string' ||
+      value.folderPath.trim().length === 0 ||
+      value.folderPath.length > 4096
+    ) {
+      throw new Error('Invalid update-workspace payload');
+    }
+  }
+  if (value.icon !== undefined && value.icon !== null) {
+    if (typeof value.icon !== 'string' || value.icon.length > 32) {
+      throw new Error('Invalid update-workspace payload');
+    }
+  }
+  if (value.name === undefined && value.folderPath === undefined && value.icon === undefined) {
+    throw new Error('Invalid update-workspace payload');
+  }
+  return {
+    workspaceId: value.workspaceId.trim() as UpdateWorkspacePayload['workspaceId'],
+    name: typeof value.name === 'string' ? value.name.trim() : undefined,
+    folderPath: typeof value.folderPath === 'string' ? value.folderPath.trim() : undefined,
+    icon:
+      value.icon === null
+        ? null
+        : typeof value.icon === 'string'
+          ? value.icon.trim() || null
+          : undefined,
+  };
+}
+
+export function parseDeleteWorkspacePayload(value: unknown): DeleteWorkspacePayload {
+  if (!isRecord(value)) throw new Error('Invalid delete-workspace payload');
+  if (
+    typeof value.workspaceId !== 'string' ||
+    value.workspaceId.trim().length === 0 ||
+    value.workspaceId.length > 256
+  ) {
+    throw new Error('Invalid delete-workspace payload');
+  }
+  return {
+    workspaceId: value.workspaceId.trim() as DeleteWorkspacePayload['workspaceId'],
+  };
 }
 
 export function parseCreateTaskPayload(value: unknown): CreateTaskPayload {

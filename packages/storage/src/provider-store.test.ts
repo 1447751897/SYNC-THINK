@@ -404,6 +404,47 @@ describe('SqliteProviderStore', () => {
     }
   });
 
+  it('updates a specific credential by id without touching other credentials', async () => {
+    const { store, close } = await openStore();
+    try {
+      const created = store.createProvider({
+        name: 'Scoped Keys',
+        baseUrl: 'https://scoped.example/v1',
+        protocol: 'openai-chat',
+        supportsDiscovery: true,
+        credentialGroupName: 'default',
+        credentialLabel: 'primary',
+        credentialKind: 'api-key',
+        storeHandle: 'HANDLE-PRIMARY-001',
+      });
+      const secondary = store.addCredentialRef({
+        credentialGroupId: created.credentialGroup.id,
+        label: 'secondary',
+        kind: 'api-key',
+        storeHandle: 'HANDLE-SECONDARY-001',
+      });
+
+      const owned = store.getCredentialRefForProvider(created.provider.id, secondary.id);
+      expect(owned?.storeHandle).toBe('HANDLE-SECONDARY-001');
+      expect(store.getCredentialRefForProvider('missing-provider', secondary.id)).toBeUndefined();
+
+      const rotated = store.updateCredentialRef({
+        providerId: created.provider.id,
+        credentialRefId: secondary.id,
+        label: 'relay-b',
+        storeHandle: 'HANDLE-SECONDARY-002',
+      });
+      expect(rotated.previousStoreHandle).toBe('HANDLE-SECONDARY-001');
+      expect(rotated.credential.label).toBe('relay-b');
+      expect(rotated.credential.storeHandle).toBe('HANDLE-SECONDARY-002');
+      expect(store.getPrimaryCredentialRef(created.provider.id)?.storeHandle).toBe(
+        'HANDLE-PRIMARY-001',
+      );
+    } finally {
+      close();
+    }
+  });
+
   it('rejects update of missing provider or empty name', async () => {
     const { store, close } = await openStore();
     try {

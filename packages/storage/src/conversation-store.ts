@@ -121,7 +121,7 @@ export class SqliteConversationStore {
         targetRefOf(input.target),
         input.workspaceId ?? null,
         input.title ?? '',
-        input.executionMode ?? 'workspace',
+        input.executionMode ?? 'full-access',
         now,
         now,
       );
@@ -235,6 +235,32 @@ export class SqliteConversationStore {
       .run(target.track, targetRefOf(target), ts, conversationId);
     const updated = this.get(conversationId);
     if (!updated) throw new Error('conversation upgrade failed');
+    return updated;
+  }
+
+  /**
+   * Rebind "who this conversation talks to" — same-track retarget (agent→
+   * another agent, model→another model, …) or a free cross-track switch.
+   * Unlike upgradeTrack there is no directionality restriction; history is
+   * preserved, only track/target_ref change.
+   */
+  rebindTarget(
+    conversationId: ConversationId,
+    track: ConversationTrack,
+    targetRef: string,
+    now?: string,
+  ): ConversationRecord {
+    if (typeof targetRef !== 'string' || targetRef.trim().length === 0) {
+      throw new Error('targetRef must be a non-empty string');
+    }
+    const current = this.get(conversationId);
+    if (!current) throw new Error(`conversation not found: ${conversationId}`);
+    const ts = now ?? new Date().toISOString();
+    this.raw
+      .prepare('UPDATE conversation SET track = ?, target_ref = ?, updated_at = ? WHERE id = ?')
+      .run(track, targetRef.trim(), ts, conversationId);
+    const updated = this.get(conversationId);
+    if (!updated) throw new Error('conversation rebind failed');
     return updated;
   }
 

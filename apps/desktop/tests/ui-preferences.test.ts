@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  readConversationGroups,
   readConversationLayoutPreference,
   readConversationTrackPreferences,
   readPinnedConversationIds,
   readRecentConversationSectionPreference,
   readThemePreference,
   readTraceCollapsedPreference,
+  writeConversationGroups,
   writeConversationLayoutPreference,
   writeConversationTrackPreferences,
   writePinnedConversationIds,
@@ -121,5 +123,69 @@ describe('ui-preferences (Locked IA §15.2 workspace prefs)', () => {
   it('treats true string as collapsed', () => {
     const s = memoryStorage({ [UI_PREF_KEYS.traceCollapsed]: 'true' });
     expect(readTraceCollapsedPreference(s)).toBe(true);
+  });
+
+  it('isolates conversation groups by workspace', () => {
+    const s = memoryStorage();
+    writeConversationGroups(
+      'ws-a',
+      {
+        model: [{ id: 'group-a', name: 'A', conversationIds: ['conv-a'] }],
+        agent: [],
+        team: [],
+      },
+      s,
+    );
+    writeConversationGroups(
+      'ws-b',
+      {
+        model: [],
+        agent: [{ id: 'group-b', name: 'B', conversationIds: ['conv-b'] }],
+        team: [],
+      },
+      s,
+    );
+
+    expect(readConversationGroups('ws-a', s).model[0]?.conversationIds).toEqual(['conv-a']);
+    expect(readConversationGroups('ws-a', s).agent).toEqual([]);
+    expect(readConversationGroups('ws-b', s).model).toEqual([]);
+    expect(readConversationGroups('ws-b', s).agent[0]?.conversationIds).toEqual(['conv-b']);
+    expect(readConversationGroups(undefined, s)).toEqual({ model: [], agent: [], team: [] });
+  });
+
+  it('migrates the former global conversation groups only into the active workspace', () => {
+    const legacy = {
+      model: [{ id: 'legacy', name: '旧分组', conversationIds: ['conv-a', 'conv-a'] }],
+      agent: [],
+      team: [],
+    };
+    const s = memoryStorage({
+      [UI_PREF_KEYS.conversationGroups]: JSON.stringify(legacy),
+    });
+
+    expect(readConversationGroups('ws-a', s).model[0]).toEqual({
+      id: 'legacy',
+      name: '旧分组',
+      collapsed: false,
+      conversationIds: ['conv-a'],
+    });
+    expect(readConversationGroups('ws-b', s)).toEqual({ model: [], agent: [], team: [] });
+    expect(JSON.parse(s.getItem(UI_PREF_KEYS.conversationGroups) ?? '{}')).toEqual({
+      version: 2,
+      workspaces: {
+        'ws-a': {
+          model: [
+            {
+              id: 'legacy',
+              name: '旧分组',
+              collapsed: false,
+              conversationIds: ['conv-a'],
+            },
+          ],
+          agent: [],
+          team: [],
+        },
+      },
+    });
   });
 });

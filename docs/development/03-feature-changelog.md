@@ -1,3 +1,58 @@
+## 2026-07-26 · 审查 11 项复核 + 智能体库 P2 收口
+
+- **审查报告 11 项复核**：对照工作树确认 1–11 均已落地（首轮不传欢迎页 modelId、Run 快照 fallback、Skill/MCP 进请求、空数组覆盖、删智能体归档、模型必选、rg 真实执行、工具 fingerprint、重启恢复选中、气泡身份展示）；相关 vitest 41/41 绿
+- **智能体库 P2**：
+  - 编辑表单分区：基本信息 / 模型 / Skill / MCP
+  - 支持配置 `fallbackModelIds`、`skillIds`、`mcpServerIds` 并写入 create/update
+  - 卡片展示备用数 / Skill 数 / MCP 数
+  - 删除：有对话引用时归档并弹提示；小队成员拒绝删除时中文提示
+- **小队库**：
+  - 保存要求至少 1 名成员；错误可读
+  - Runtime 删除小队时检查对话引用，有引用则拒绝（避免静默丢身份）
+- **对话管理 / Compose**：搜索、归档区、删除确认、@文件 chips 链路已存在，本轮只核对无缺口
+- 验证：desktop typecheck；shell-state + compose-mention + chat-tools + persona 相关测试；构建重启
+
+## 2026-07-25 · 从服务商拉取导入弹窗 + 测试连接
+
+- `provider.discoverModels` 支持 `persist: false` 预览模式：只探测供应商、返回 `discoveredIds` / `latencyMs`，不写入本地目录
+- 模型详情底部对齐 NewMax：
+  - `+ 添加模型`（手动）
+  - 绿色文字「从服务商拉取模型列表」→ 打开导入弹窗多选
+  - 全宽「测试连接」→ T1 探测，结果在按钮下方显示 `连接成功 · Nms`
+- 导入弹窗：搜索 ID/显示名；已添加默认勾选；取消勾选更新后立即从优先级列表移除并重排；无数量上限
+- 「完成」门闩：密钥草稿先提交；若未测过或 Base URL/密钥变更则先测试，通过后才关闭
+- 验证：protocol/runtime/desktop typecheck；Desktop 测试；构建重启
+
+## 2026-07-25 · 模型优先级拖拽不闪 + 密钥图三对齐 + 向后 fallback
+
+- **拖拽跳动修复**：`setModelPriorities` 成功后改为局部 merge models，禁止全量 `load()` 与成功 Toast，避免详情滚回顶部
+- **密钥 UI 对齐 NewMax 图三**：
+  - 去掉 `primary` 标签与铅笔编辑入口
+  - 整行掩码输入框 + 框内眼睛
+  - 点眼睛显示明文并可直接编辑；失焦仅暂存草稿
+  - 点击「完成」强制 `discoverModels` 测试连接；通过后才写入 secure-store 并关闭
+  - 多行密钥仍支持，但不显示任何 label
+- **供应商内 fallback（向后 walk）**：
+  - `resolveProviderPriorityFallback`：从当前失败模型在 priority 链上的位置只向后走
+  - 例：主 5.6 / 备 5.5 / 备 5.4；对话用 5.5 失败 → 5.4，不回 5.6
+  - Runtime `tryContinueWithFallback` 先走供应商链，再走 Agent `fallbackModelIds`
+  - 新增 resolution source：`providerFallback`
+- 测试：core model-binding；Desktop ModelSettings 密钥/草稿；构建与重启验收
+
+## 2026-07-25 · 模型密钥回显编辑与 NewMax 视觉收口
+
+- 新增按 `credentialRefId` 的受控密钥链路：
+  - `provider.revealCredential`：短时回显单条已保存密钥（默认 10 秒）
+  - `provider.updateCredential`：按密钥 ID 更新标签/轮换密钥
+  - Storage 增加 `getCredentialRefForProvider` / `updateCredentialRef`，禁止跨供应商误操作
+- Desktop 桥接：Main 校验来源后转发 Runtime；密钥替换仍由主进程读取剪贴板，Renderer 元数据 payload 不携带 `apiKey`
+- 模型设置页：
+  - 每条已添加密钥均可点眼睛显示/隐藏，并支持编辑标签与替换密钥
+  - 切换供应商、失焦、窗口隐藏、卸载时立即清除明文
+  - 模型发现/手填收进原位「添加模型」展开区
+  - 去掉 Provider 选中左侧绿色竖线；Responses 改为普通设置行
+- 测试：storage 233/233；Desktop 63/63 文件、425/425 用例；protocol/runtime/desktop typecheck；runtime + desktop build；应用重启后 `hello accepted`
+
 ## 2026-07-24 · 对话过程总折叠与代码放大
 
 - Assistant 每轮新增高于“深度思考/工具步骤/文件变更”的总过程层：执行中自动展开，完成后自动折叠；摘要直接显示深度思考、工具步骤数与文件变更数，避免大量过程卡平铺占满消息流。

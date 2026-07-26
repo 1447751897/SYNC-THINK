@@ -191,3 +191,31 @@ export function shouldAttemptFallback(failureClass: FailureClass | undefined): b
   if (failureClass === 'acceptance' || failureClass === 'permission') return false;
   return isRetryable(failureClass) || failureClass === 'auth' || failureClass === 'unknown';
 }
+
+/**
+ * Same-provider priority chain walk.
+ *
+ * Given an ordered priority list (index 0 = primary / 主模型) and the model
+ * that just failed, return the next model *after* the failed one.
+ *
+ * Examples (chain = [5.6, 5.5, 5.4]):
+ * - failed 5.6 → 5.5
+ * - failed 5.5 → 5.4   (does NOT go back to 5.6)
+ * - failed 5.4 → null  (exhausted)
+ * - failed unknown → null
+ */
+export function resolveProviderPriorityFallback(input: {
+  /** Ordered model ids for one provider; index 0 is primary. */
+  orderedModelIds: readonly ModelId[];
+  failedModelId: ModelId;
+}): { modelId: ModelId; fallbackIndex: number } | null {
+  const chain = input.orderedModelIds.filter(
+    (id): id is ModelId => typeof id === 'string' && id.trim().length > 0,
+  );
+  if (chain.length === 0) return null;
+  const failedIndex = chain.indexOf(input.failedModelId);
+  if (failedIndex < 0) return null;
+  const nextIndex = failedIndex + 1;
+  if (nextIndex >= chain.length) return null;
+  return { modelId: chain[nextIndex]!, fallbackIndex: nextIndex };
+}

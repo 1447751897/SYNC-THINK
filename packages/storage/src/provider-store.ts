@@ -677,6 +677,67 @@ export class SqliteProviderStore {
   }
 
   /**
+   * Update display name and/or context window (limitsJson.contextWindow) for one model.
+   * contextWindow: number > 0 sets; null clears; undefined keeps current.
+   */
+  updateModel(input: {
+    providerId: ProviderId | string;
+    modelId: ModelId | string;
+    displayName?: string;
+    contextWindow?: number | null;
+  }): ModelRecord {
+    const providerId = String(input.providerId ?? '').trim();
+    const modelId = String(input.modelId ?? '').trim();
+    if (!providerId) throw new Error('Provider id must not be empty');
+    if (!modelId) throw new Error('Model id must not be empty');
+    const existing = this.getModel(modelId as ModelId);
+    if (!existing) throw new Error(`Model not found: ${modelId}`);
+    if (String(existing.providerId) !== providerId) {
+      throw new Error(`Model ${modelId} does not belong to provider ${providerId}`);
+    }
+
+    let displayName = existing.displayName;
+    if (input.displayName !== undefined) {
+      displayName = input.displayName.trim() || existing.providerModelId;
+    }
+
+    let limitsJson = existing.limitsJson;
+    if (input.contextWindow !== undefined) {
+      let limits: Record<string, unknown> = {};
+      if (existing.limitsJson) {
+        try {
+          const parsed = JSON.parse(existing.limitsJson) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            limits = { ...(parsed as Record<string, unknown>) };
+          }
+        } catch {
+          limits = {};
+        }
+      }
+      if (input.contextWindow === null) {
+        delete limits.contextWindow;
+      } else if (
+        typeof input.contextWindow === 'number' &&
+        Number.isFinite(input.contextWindow) &&
+        input.contextWindow > 0
+      ) {
+        limits.contextWindow = Math.round(input.contextWindow);
+      } else {
+        throw new Error('contextWindow must be a positive number or null');
+      }
+      limitsJson = Object.keys(limits).length > 0 ? JSON.stringify(limits) : undefined;
+    }
+
+    this.raw
+      .prepare(`UPDATE model SET display_name = ?, limits_json = ? WHERE id = ? AND provider_id = ?`)
+      .run(displayName, limitsJson ?? null, modelId, providerId);
+
+    const updated = this.getModel(modelId as ModelId);
+    if (!updated) throw new Error(`Model not found after update: ${modelId}`);
+    return updated;
+  }
+
+  /**
    * Update provider metadata and optionally rotate the primary credential secret.
    * Secrets are never accepted as plaintext here — only secure-store handles.
    */
@@ -863,6 +924,67 @@ export class SqliteProviderStore {
     if (!id) return false;
     const result = this.raw.prepare(`DELETE FROM model WHERE id = ?`).run(id);
     return result.changes > 0;
+  }
+
+  /**
+   * Resolve a credential that belongs to the given provider.
+   * Returns undefined when the credential is missing or belongs to another provider.
+   */
+  getCredentialRefForProvider(
+    providerId: ProviderId | string,
+    credentialRefId: CredentialRefId | string,
+  ): CredentialRefRecord | undefined {
+    const pid = String(providerId ?? '').trim();
+    const cid = String(credentialRefId ?? '').trim();
+    if (!pid || !cid) return undefined;
+    const ref = this.getCredentialRef(cid);
+    if (!ref) return undefined;
+    const owner = this.getProviderIdForCredentialGroup(ref.credentialGroupId);
+    if (!owner || owner !== pid) return undefined;
+    return ref;
+  }
+
+  /**
+   * Update one credential by id: optional label and/or storeHandle rotation.
+   * Secrets are never accepted as plaintext here — only secure-store handles.
+   */
+  updateCredentialRef(input: {
+    providerId: ProviderId | string;
+    credentialRefId: CredentialRefId | string;
+    label?: string;
+    storeHandle?: string;
+    now?: string;
+  }): { credential: CredentialRefRecord; previousStoreHandle?: string } {
+    const providerId = String(input.providerId ?? '').trim();
+    const credentialRefId = String(input.credentialRefId ?? '').trim();
+    if (!providerId) throw new Error('Provider id must not be empty');
+    if (!credentialRefId) throw new Error('Credential ref id must not be empty');
+    const existing = this.getCredentialRefForProvider(providerId, credentialRefId);
+    if (!existing) {
+      throw new Error(`Credential ref not found for provider: ${credentialRefId}`);
+    }
+    const now = input.now ?? new Date().toISOString();
+    const nextLabel =
+      input.label !== undefined ? input.label.trim() || existing.label : existing.label;
+    let nextHandle = existing.storeHandle;
+    let previousStoreHandle: string | undefined;
+    if (input.storeHandle !== undefined) {
+      nextHandle = input.storeHandle.trim();
+      if (!nextHandle) throw new Error('Credential store handle must not be empty');
+      if (nextHandle !== existing.storeHandle) {
+        previousStoreHandle = existing.storeHandle;
+      }
+    }
+    this.raw
+      .prepare(
+        `UPDATE credential_ref
+         SET label = ?, store_handle = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(nextLabel, nextHandle, now, credentialRefId);
+    const updated = this.getCredentialRef(credentialRefId);
+    if (!updated) throw new Error(`Credential ref not found after update: ${credentialRefId}`);
+    return { credential: updated, previousStoreHandle };
   }
 
   /**

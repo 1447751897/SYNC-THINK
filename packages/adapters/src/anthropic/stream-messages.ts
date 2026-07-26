@@ -202,9 +202,20 @@ export async function* streamAnthropicMessages(
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const version = options.anthropicVersion ?? '2023-06-01';
 
+  // 推理字段先算出来:extended thinking 的 budget_tokens 必须小于 max_tokens,
+  // 否则 Anthropic 会直接 4xx 拒绝。
+  const reasoningFields = anthropicReasoningBodyFields(request.reasoningEffort);
+  const thinkingBudget =
+    typeof (reasoningFields.thinking as { budget_tokens?: number } | undefined)?.budget_tokens ===
+    'number'
+      ? (reasoningFields.thinking as { budget_tokens: number }).budget_tokens
+      : 0;
+  // 默认输出上限不能太小:之前的 1024 会让长回复以 stop_reason=max_tokens 截断
+  // (表现为回复为空/工具调用被拦腰截断),这里默认 8192 并保证高于 thinking budget。
+  const defaultMaxTokens = Math.max(8_192, thinkingBudget + 4_096);
   const body: Record<string, unknown> = {
     model: request.modelId,
-    max_tokens: request.maxOutputTokens ?? 1024,
+    max_tokens: request.maxOutputTokens ?? defaultMaxTokens,
     messages: toAnthropicMessages(request),
     stream: true,
   };
@@ -219,7 +230,7 @@ export async function* streamAnthropicMessages(
     if (systemParts.length > 0) body.system = systemParts.join('\n\n');
   }
   if (request.temperature !== undefined) body.temperature = request.temperature;
-  Object.assign(body, anthropicReasoningBodyFields(request.reasoningEffort));
+  Object.assign(body, reasoningFields);
   if (request.tools?.length) {
     body.tools = request.tools.map((tool) => ({
       name: tool.name,

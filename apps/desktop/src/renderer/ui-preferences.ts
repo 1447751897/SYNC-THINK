@@ -3,6 +3,10 @@
 
 export type ConversationLayoutPreference = 'default' | 'single';
 export type ThemePreference = 'light' | 'dark' | 'system';
+export type DefaultPermissionPreference = 'ask' | 'workspace' | 'full-access';
+
+/** Shell conversation permission defaults to the user-confirmed full access mode. */
+export const DEFAULT_PERMISSION_PREFERENCE: DefaultPermissionPreference = 'full-access';
 
 export const UI_PREF_KEYS = {
   conversationLayout: 'sync-think.conversationLayout',
@@ -11,7 +15,68 @@ export const UI_PREF_KEYS = {
   recentConversationSections: 'sync-think.recentConversationSections',
   pinnedConversations: 'sync-think.pinnedConversations',
   conversationTracks: 'sync-think.conversationTracks',
+  /** Default execution permission for newly created conversations. */
+  defaultPermission: 'sync-think-default-permission',
+  /** Draft retained while the empty-state target picker is open. */
+  newConversationDraft: 'sync-think.newConversationDraft',
+  /** Model selected in the empty-state compose. */
+  newConversationModel: 'sync-think.newConversationModel',
+  /** Shell: last used conversation track for 新建对话 (N3). */
+  lastConversationTrack: 'sync-think.lastConversationTrack',
+  /** Shell sidebar width in px (draggable). */
+  sidebarWidth: 'sync-think.sidebarWidth',
+  /** Active workspace id (no "全部" — always a workspace when possible). */
+  activeWorkspaceId: 'sync-think.activeWorkspaceId',
+  /** Display name used in the welcome greeting. */
+  userName: 'sync-think.userName',
+  /**
+   * Conversation groups, isolated per workspace.
+   * Stored as { version: 2, workspaces: Record<workspaceId, GroupsByTrack> }.
+   * The former global shape is migrated into the active workspace on read.
+   */
+  conversationGroups: 'sync-think.conversationGroups',
+  /**
+   * Open conversation tabs per workspace (stage tab strip).
+   * Shape: Record<workspaceId, conversationId[]>.
+   */
+  openConversationTabs: 'sync-think.openConversationTabs',
+  /**
+   * Last focused conversation per workspace while its tabs were open.
+   * Shape: Record<workspaceId, conversationId>.
+   */
+  selectedConversationByWorkspace: 'sync-think.selectedConversationByWorkspace',
+  /**
+   * Per-conversation model override (catalog modelId).
+   * Shape: Record<conversationId, modelId>.
+   * Survives restart so the compose model trigger does not fall back to a
+   * stale/unknown conversation.targetRef after rebuild.
+   */
+  conversationModelOverrides: 'sync-think.conversationModelOverrides',
 } as const;
+
+export type ConversationTrackPreference = 'model' | 'agent' | 'team';
+
+export interface ConversationGroupPreference {
+  id: string;
+  name: string;
+  collapsed?: boolean;
+  conversationIds: string[];
+}
+
+export type ConversationGroupsByTrack = Record<
+  ConversationTrackPreference,
+  ConversationGroupPreference[]
+>;
+
+const DEFAULT_CONVERSATION_GROUPS: ConversationGroupsByTrack = {
+  model: [],
+  agent: [],
+  team: [],
+};
+
+export const SIDEBAR_WIDTH_MIN = 220;
+export const SIDEBAR_WIDTH_MAX = 420;
+export const SIDEBAR_WIDTH_DEFAULT = 252;
 
 export type RecentConversationSectionState = Record<'model' | 'agent' | 'team', boolean>;
 
@@ -98,6 +163,97 @@ export function writeThemePreference(
     return;
   }
   safeSet(UI_PREF_KEYS.theme, theme);
+}
+
+export function readDefaultPermission(
+  storage?: Pick<Storage, 'getItem'>,
+): DefaultPermissionPreference {
+  let raw: string | null = null;
+  try {
+    raw = storage
+      ? storage.getItem(UI_PREF_KEYS.defaultPermission)
+      : safeGet(UI_PREF_KEYS.defaultPermission);
+  } catch {
+    raw = null;
+  }
+  if (raw === 'ask' || raw === 'workspace' || raw === 'full-access') return raw;
+  // Migrate the former SettingsPage value without propagating the old
+  // read-only alias into the conversation execution contract.
+  if (raw === 'read-only') return 'ask';
+  return DEFAULT_PERMISSION_PREFERENCE;
+}
+
+export function writeDefaultPermission(
+  permission: DefaultPermissionPreference,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  if (storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.defaultPermission, permission);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.defaultPermission, permission);
+}
+
+export function readNewConversationDraft(
+  storage?: Pick<Storage, 'getItem'>,
+): string {
+  try {
+    return (
+      storage?.getItem(UI_PREF_KEYS.newConversationDraft) ??
+      safeGet(UI_PREF_KEYS.newConversationDraft) ??
+      ''
+    );
+  } catch {
+    return '';
+  }
+}
+
+export function writeNewConversationDraft(
+  draft: string,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  if (storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.newConversationDraft, draft);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.newConversationDraft, draft);
+}
+
+export function readNewConversationModel(
+  storage?: Pick<Storage, 'getItem'>,
+): string {
+  try {
+    return (
+      storage?.getItem(UI_PREF_KEYS.newConversationModel) ??
+      safeGet(UI_PREF_KEYS.newConversationModel) ??
+      ''
+    );
+  } catch {
+    return '';
+  }
+}
+
+export function writeNewConversationModel(
+  modelId: string,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  if (storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.newConversationModel, modelId);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.newConversationModel, modelId);
 }
 
 /** Default: expanded (false). Collapsing does not pause Run — only UI rail. */
@@ -225,4 +381,385 @@ export function writeConversationTrackPreferences(
   storage?: Pick<Storage, 'setItem'>,
 ): void {
   writeJsonPreference(UI_PREF_KEYS.conversationTracks, tracks, storage);
+}
+
+export function readLastConversationTrack(
+  storage?: Pick<Storage, 'getItem'>,
+): ConversationTrackPreference {
+  const raw = storage
+    ? (() => {
+        try {
+          return storage.getItem(UI_PREF_KEYS.lastConversationTrack);
+        } catch {
+          return null;
+        }
+      })()
+    : safeGet(UI_PREF_KEYS.lastConversationTrack);
+  if (raw === 'model' || raw === 'agent' || raw === 'team') return raw;
+  return 'model';
+}
+
+export function writeLastConversationTrack(
+  track: ConversationTrackPreference,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  if (storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.lastConversationTrack, track);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.lastConversationTrack, track);
+}
+
+export function readSidebarWidth(
+  storage?: Pick<Storage, 'getItem'>,
+): number {
+  const raw = storage
+    ? (() => {
+        try {
+          return storage.getItem(UI_PREF_KEYS.sidebarWidth);
+        } catch {
+          return null;
+        }
+      })()
+    : safeGet(UI_PREF_KEYS.sidebarWidth);
+  const n = raw ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return SIDEBAR_WIDTH_DEFAULT;
+  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(n)));
+}
+
+export function writeSidebarWidth(
+  width: number,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  const clamped = Math.min(
+    SIDEBAR_WIDTH_MAX,
+    Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)),
+  );
+  const value = String(clamped);
+  if (storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.sidebarWidth, value);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.sidebarWidth, value);
+}
+
+export function readActiveWorkspaceId(
+  storage?: Pick<Storage, 'getItem'>,
+): string | undefined {
+  const raw = storage
+    ? (() => {
+        try {
+          return storage.getItem(UI_PREF_KEYS.activeWorkspaceId);
+        } catch {
+          return null;
+        }
+      })()
+    : safeGet(UI_PREF_KEYS.activeWorkspaceId);
+  if (!raw || !raw.trim()) return undefined;
+  return raw.trim();
+}
+
+export function writeActiveWorkspaceId(
+  workspaceId: string | undefined,
+  storage?: Pick<Storage, 'setItem' | 'removeItem'>,
+): void {
+  if (!workspaceId) {
+    if (storage && 'removeItem' in storage) {
+      try {
+        storage.removeItem?.(UI_PREF_KEYS.activeWorkspaceId);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(UI_PREF_KEYS.activeWorkspaceId);
+      }
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  if (storage && 'setItem' in storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.activeWorkspaceId, workspaceId);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.activeWorkspaceId, workspaceId);
+}
+
+function parseGroup(raw: unknown): ConversationGroupPreference | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const id = typeof record.id === 'string' ? record.id.trim() : '';
+  const name = typeof record.name === 'string' ? record.name.trim() : '';
+  if (!id || !name) return null;
+  const conversationIds = Array.isArray(record.conversationIds)
+    ? [
+        ...new Set(
+          record.conversationIds.filter(
+            (item): item is string => typeof item === 'string' && item.length > 0,
+          ),
+        ),
+      ]
+    : [];
+  return {
+    id,
+    name,
+    collapsed: record.collapsed === true,
+    conversationIds,
+  };
+}
+
+function parseGroupsByTrack(raw: unknown): ConversationGroupsByTrack {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { model: [], agent: [], team: [] };
+  }
+  const record = raw as Record<string, unknown>;
+  const parseTrack = (key: ConversationTrackPreference): ConversationGroupPreference[] => {
+    const list = record[key];
+    if (!Array.isArray(list)) return [];
+    return list
+      .map(parseGroup)
+      .filter((item): item is ConversationGroupPreference => item !== null);
+  };
+  return {
+    model: parseTrack('model'),
+    agent: parseTrack('agent'),
+    team: parseTrack('team'),
+  };
+}
+
+interface WorkspaceConversationGroupsPreference {
+  version: 2;
+  workspaces: Record<string, ConversationGroupsByTrack>;
+}
+
+function parseWorkspaceConversationGroups(raw: unknown): WorkspaceConversationGroupsPreference | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  if (record.version !== 2 || !record.workspaces || typeof record.workspaces !== 'object') {
+    return null;
+  }
+  const workspaces: Record<string, ConversationGroupsByTrack> = {};
+  for (const [workspaceId, groups] of Object.entries(
+    record.workspaces as Record<string, unknown>,
+  )) {
+    const id = workspaceId.trim();
+    if (!id) continue;
+    workspaces[id] = parseGroupsByTrack(groups);
+  }
+  return { version: 2, workspaces };
+}
+
+export function readConversationGroups(
+  workspaceId: string | undefined,
+  storage?: Pick<Storage, 'getItem' | 'setItem'>,
+): ConversationGroupsByTrack {
+  if (!workspaceId) return { model: [], agent: [], team: [] };
+  const raw = readJsonPreference(UI_PREF_KEYS.conversationGroups, storage);
+  const scoped = parseWorkspaceConversationGroups(raw);
+  if (scoped) {
+    return scoped.workspaces[workspaceId] ?? { model: [], agent: [], team: [] };
+  }
+
+  // One-time migration from the former global shape. Assign it only to the
+  // currently active workspace so it cannot leak into every workspace.
+  const migrated = parseGroupsByTrack(raw);
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    writeJsonPreference(
+      UI_PREF_KEYS.conversationGroups,
+      { version: 2, workspaces: { [workspaceId]: migrated } },
+      storage,
+    );
+  }
+  return migrated;
+}
+
+export function writeConversationGroups(
+  workspaceId: string,
+  groups: ConversationGroupsByTrack,
+  storage?: Pick<Storage, 'getItem' | 'setItem'>,
+): void {
+  const raw = readJsonPreference(UI_PREF_KEYS.conversationGroups, storage);
+  const current = parseWorkspaceConversationGroups(raw) ?? {
+    version: 2 as const,
+    workspaces: {},
+  };
+  writeJsonPreference(
+    UI_PREF_KEYS.conversationGroups,
+    {
+      version: 2,
+      workspaces: {
+        ...current.workspaces,
+        [workspaceId]: {
+          model: groups.model ?? DEFAULT_CONVERSATION_GROUPS.model,
+          agent: groups.agent ?? DEFAULT_CONVERSATION_GROUPS.agent,
+          team: groups.team ?? DEFAULT_CONVERSATION_GROUPS.team,
+        },
+      },
+    },
+    storage,
+  );
+}
+
+/** workspaceId → ordered open conversation ids for the stage tab strip. */
+export type OpenConversationTabsPreference = Record<string, string[]>;
+
+/** workspaceId → last focused conversation id. */
+export type SelectedConversationByWorkspacePreference = Record<string, string>;
+
+function parseIdListMap(raw: unknown): Record<string, string[]> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const result: Record<string, string[]> = {};
+  for (const [workspaceId, value] of Object.entries(raw as Record<string, unknown>)) {
+    const ws = workspaceId.trim();
+    if (!ws || !Array.isArray(value)) continue;
+    const ids = [
+      ...new Set(
+        value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0),
+      ),
+    ];
+    if (ids.length > 0) result[ws] = ids;
+  }
+  return result;
+}
+
+function parseIdMap(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const result: Record<string, string> = {};
+  for (const [workspaceId, value] of Object.entries(raw as Record<string, unknown>)) {
+    const ws = workspaceId.trim();
+    const id = typeof value === 'string' ? value.trim() : '';
+    if (!ws || !id) continue;
+    result[ws] = id;
+  }
+  return result;
+}
+
+export function readOpenConversationTabs(
+  storage?: Pick<Storage, 'getItem'>,
+): OpenConversationTabsPreference {
+  return parseIdListMap(readJsonPreference(UI_PREF_KEYS.openConversationTabs, storage));
+}
+
+export function writeOpenConversationTabs(
+  tabs: OpenConversationTabsPreference,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(UI_PREF_KEYS.openConversationTabs, tabs, storage);
+}
+
+export function readSelectedConversationByWorkspace(
+  storage?: Pick<Storage, 'getItem'>,
+): SelectedConversationByWorkspacePreference {
+  return parseIdMap(readJsonPreference(UI_PREF_KEYS.selectedConversationByWorkspace, storage));
+}
+
+export function writeSelectedConversationByWorkspace(
+  selected: SelectedConversationByWorkspacePreference,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(UI_PREF_KEYS.selectedConversationByWorkspace, selected, storage);
+}
+
+/** conversationId → catalog modelId override chosen in compose. */
+export type ConversationModelOverridesPreference = Record<string, string>;
+
+export function readConversationModelOverrides(
+  storage?: Pick<Storage, 'getItem'>,
+): ConversationModelOverridesPreference {
+  return parseIdMap(readJsonPreference(UI_PREF_KEYS.conversationModelOverrides, storage));
+}
+
+export function writeConversationModelOverrides(
+  overrides: ConversationModelOverridesPreference,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(UI_PREF_KEYS.conversationModelOverrides, overrides, storage);
+}
+
+export function readConversationModelOverride(
+  conversationId: string,
+  storage?: Pick<Storage, 'getItem'>,
+): string | undefined {
+  const id = conversationId.trim();
+  if (!id) return undefined;
+  const value = readConversationModelOverrides(storage)[id];
+  return value && value.trim() ? value.trim() : undefined;
+}
+
+export function writeConversationModelOverride(
+  conversationId: string,
+  modelId: string | undefined,
+  storage?: Pick<Storage, 'getItem' | 'setItem'>,
+): void {
+  const id = conversationId.trim();
+  if (!id) return;
+  const current = { ...readConversationModelOverrides(storage) };
+  const next = modelId?.trim();
+  if (!next) delete current[id];
+  else current[id] = next;
+  writeConversationModelOverrides(current, storage);
+}
+
+/** Max length for the greeting display name; keeps the welcome headline on one line. */
+export const USER_NAME_MAX_LENGTH = 24;
+
+export function readUserName(storage?: Pick<Storage, 'getItem'>): string {
+  let raw: string | null = null;
+  try {
+    raw = storage ? storage.getItem(UI_PREF_KEYS.userName) : safeGet(UI_PREF_KEYS.userName);
+  } catch {
+    raw = null;
+  }
+  return (raw ?? '').trim().slice(0, USER_NAME_MAX_LENGTH);
+}
+
+export function writeUserName(name: string, storage?: Pick<Storage, 'setItem'>): void {
+  const value = name.trim().slice(0, USER_NAME_MAX_LENGTH);
+  if (storage) {
+    try {
+      storage.setItem(UI_PREF_KEYS.userName, value);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  safeSet(UI_PREF_KEYS.userName, value);
+}
+
+/**
+ * Time-of-day greeting. Boundaries follow common zh-CN usage:
+ * 凌晨 0–4, 早上 5–10, 上午 11, 中午 12, 下午 13–17, 晚上 18–23.
+ */
+export function greetingForHour(hour: number): string {
+  if (!Number.isFinite(hour)) return '你好';
+  const h = Math.floor(hour) % 24;
+  if (h < 0) return '你好';
+  if (h < 5) return '凌晨好';
+  if (h < 11) return '早上好';
+  if (h < 12) return '上午好';
+  if (h < 13) return '中午好';
+  if (h < 18) return '下午好';
+  return '晚上好';
+}
+
+/** Full greeting line, e.g. "晚上好，Kevin" or just "晚上好" when unnamed. */
+export function buildGreeting(hour: number, userName: string): string {
+  const greeting = greetingForHour(hour);
+  const name = userName.trim();
+  return name ? `${greeting}，${name}` : greeting;
 }

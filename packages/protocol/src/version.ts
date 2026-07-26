@@ -8,6 +8,9 @@ export const PROTOCOL_VERSION = 2;
 // New features should extend this list (delta from prior version).
 export type Feature =
   | 'workspace.bindFolder'
+  | 'workspace.update'
+  | 'workspace.delete'
+  | 'provider.updateModel'
   | 'task.appendMessage'
   | 'task.create'
   | 'task.archive'
@@ -37,6 +40,8 @@ export type Feature =
   | 'provider.create'
   | 'provider.update'
   | 'provider.list'
+  | 'provider.revealCredential'
+  | 'provider.updateCredential'
   | 'provider.discoverModels'
   | 'provider.addModels'
   | 'provider.probeCapabilities'
@@ -70,6 +75,7 @@ export type Feature =
   | 'conversation.decideToolApproval'
   | 'skill.import'
   | 'skill.list'
+  | 'skill.delete'
   | 'mcp.register'
   | 'mcp.list'
   | 'mcp.policy.probe'
@@ -87,6 +93,9 @@ export type Feature =
 
 export const DEFAULT_FEATURES: Feature[] = [
   'workspace.bindFolder',
+  'workspace.update',
+  'workspace.delete',
+  'provider.updateModel',
   'task.appendMessage',
   'task.create',
   'task.archive',
@@ -121,6 +130,8 @@ export const DEFAULT_FEATURES: Feature[] = [
   'provider.confirmCapabilities',
   'provider.previewCcSwitchImport',
   'provider.importCcSwitch',
+  'provider.revealCredential',
+  'provider.updateCredential',
   'agent.get',
   'agent.updateBinding',
   'agent.list',
@@ -147,6 +158,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'conversation.delete',
   'skill.import',
   'skill.list',
+  'skill.delete',
   'mcp.register',
   'mcp.list',
   'mcp.policy.probe',

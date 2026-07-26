@@ -13,6 +13,8 @@ export interface ModelOption {
   modelId: string;
   displayName: string;
   providerName: string;
+  /** Configured context window in tokens; undefined falls back to a heuristic. */
+  contextWindow?: number;
 }
 
 export interface NewConversationDialogProps {
@@ -20,6 +22,7 @@ export interface NewConversationDialogProps {
   models: readonly ModelOption[];
   agents: readonly GlobalAgent[];
   teams: readonly Team[];
+  draft?: string;
   onPick(targetRef: string): void;
   onGoToLibrary(stage: 'agents' | 'teams'): void;
   onClose(): void;
@@ -48,6 +51,14 @@ export function NewConversationDialog(props: NewConversationDialogProps) {
               <X size={14} />
             </Dialog.Close>
           </div>
+          {props.draft !== undefined ? (
+            <div className="border-b border-border px-4 py-2 text-[11.5px] text-text-faint">
+              将保留当前输入：
+              <span className="ml-1 text-text-secondary">
+                {props.draft.trim() ? props.draft.trim().slice(0, 72) : '尚未输入内容'}
+              </span>
+            </div>
+          ) : null}
           <div className="flex items-center gap-2 border-b border-border px-4 py-2">
             <Search size={13} className="text-text-faint" />
             <input

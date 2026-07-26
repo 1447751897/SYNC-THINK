@@ -9,6 +9,9 @@ import {
   DEFAULT_CONVERSATION_AGENT_ID,
   SqliteAgentStore,
 } from './agent-store.js';
+import { SqliteGlobalAgentStore } from './global-agent-store.js';
+import { SqliteApprovalStore } from './approval-store.js';
+import type { WorkspaceId } from '@sync-think/shared';
 import type { ModelId } from '@sync-think/shared';
 
 const tempDirs: string[] = [];
@@ -32,6 +35,8 @@ async function openStores() {
   return {
     skillStore: new SqliteSkillStore(connection.raw),
     agentStore: new SqliteAgentStore(connection.raw),
+    globalAgentStore: new SqliteGlobalAgentStore(connection.raw),
+    approvalStore: new SqliteApprovalStore(connection.raw),
     close: () => connection.raw.close(),
   };
 }
@@ -148,6 +153,77 @@ describe('SqliteSkillStore', () => {
       expect(skillStore.findLatestByName('upgrade-diff', { excludeFingerprint: v2.contentFingerprint })?.id).toBe(
         v1.id,
       );
+    } finally {
+      close();
+    }
+  });
+
+  it('deletes an unreferenced version and refuses one equipped by a global agent', async () => {
+    const { skillStore, globalAgentStore, close } = await openStores();
+    try {
+      const removable = skillStore.importVersion({
+        name: 'removable',
+        description: 'd',
+        version: '0.1.0',
+        sourceMd: 'src',
+        body: 'body',
+        contentFingerprint: 'fp-delete-free',
+      });
+      expect(skillStore.deleteVersion(removable.id)).toMatchObject({ deleted: true });
+      expect(skillStore.listVersions().some((row) => row.id === removable.id)).toBe(false);
+      expect(skillStore.getVersion(removable.id)?.archivedAt).toBeDefined();
+
+      const equipped = skillStore.importVersion({
+        name: 'equipped',
+        description: 'd',
+        version: '0.1.0',
+        sourceMd: 'src',
+        body: 'body',
+        contentFingerprint: 'fp-delete-bound',
+      });
+      const agent = globalAgentStore.create({
+        name: 'Reviewer',
+        defaultModelId: 'model-a' as ModelId,
+        skillIds: [equipped.id],
+      });
+      const blocked = skillStore.deleteVersion(equipped.id);
+      expect(blocked.deleted).toBe(false);
+      expect(blocked.blockers.globalAgentIds).toContain(agent.id);
+      expect(skillStore.getVersion(equipped.id)).toBeDefined();
+
+      globalAgentStore.update({
+        agentId: agent.id,
+        skillIds: [],
+      });
+      expect(skillStore.deleteVersion(equipped.id)).toMatchObject({ deleted: true });
+      expect(skillStore.listVersions().some((row) => row.id === equipped.id)).toBe(false);
+      expect(skillStore.getVersion(equipped.id)?.archivedAt).toBeDefined();
+    } finally {
+      close();
+    }
+  });
+
+  it('blocks deletion while a permission approval for the version is pending', async () => {
+    const { skillStore, approvalStore, close } = await openStores();
+    try {
+      const skill = skillStore.importVersion({
+        name: 'pending-upgrade',
+        description: 'd',
+        version: '0.2.0',
+        sourceMd: 'src',
+        body: 'body',
+        contentFingerprint: 'fp-delete-pending',
+      });
+      const approval = approvalStore.enqueue({
+        workspaceId: 'ws-a' as WorkspaceId,
+        kind: 'skill-permission',
+        action: 'skill.permission-upgrade:pending-upgrade',
+        metadata: { skillVersionId: skill.id },
+      });
+      const blocked = skillStore.deleteVersion(skill.id);
+      expect(blocked.deleted).toBe(false);
+      expect(blocked.blockers.pendingApprovalIds).toContain(approval.id);
+      expect(skillStore.getVersion(skill.id)).toBeDefined();
     } finally {
       close();
     }

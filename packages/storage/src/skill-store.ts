@@ -14,6 +14,7 @@ export interface SkillVersionRecord {
   contentFingerprint: string;
   hasScripts: boolean;
   warnings: string[];
+  archivedAt?: string;
   createdAt: string;
 }
 
@@ -33,6 +34,16 @@ export interface ImportSkillVersionInput {
   now?: string;
 }
 
+export interface DeleteSkillVersionResult {
+  deleted: boolean;
+  blockers: {
+    globalAgentIds: string[];
+    activeLegacyAgentVersionIds: string[];
+    authorizationGrantVersionIds: string[];
+    pendingApprovalIds: string[];
+  };
+}
+
 interface SkillVersionRow {
   id: string;
   skill_id: string;
@@ -45,6 +56,7 @@ interface SkillVersionRow {
   content_fingerprint: string;
   has_scripts: number;
   warnings_json: string;
+  archived_at: string | null;
   created_at: string;
 }
 
@@ -71,6 +83,7 @@ function mapRow(row: SkillVersionRow): SkillVersionRecord {
     contentFingerprint: row.content_fingerprint,
     hasScripts: row.has_scripts === 1,
     warnings: parseJsonArray(row.warnings_json),
+    archivedAt: row.archived_at ?? undefined,
     createdAt: row.created_at,
   };
 }
@@ -96,7 +109,7 @@ export class SqliteSkillStore {
     const row = this.raw
       .prepare(
         `SELECT id, skill_id, name, description, version, source_md, body,
-                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, created_at
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
          FROM skill_version WHERE id = ?`,
       )
       .get(String(id)) as SkillVersionRow | undefined;
@@ -107,8 +120,9 @@ export class SqliteSkillStore {
     const row = this.raw
       .prepare(
         `SELECT id, skill_id, name, description, version, source_md, body,
-                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, created_at
-         FROM skill_version WHERE content_fingerprint = ? ORDER BY created_at DESC LIMIT 1`,
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
+         FROM skill_version WHERE content_fingerprint = ? AND archived_at IS NULL
+         ORDER BY created_at DESC LIMIT 1`,
       )
       .get(String(fingerprint)) as SkillVersionRow | undefined;
     return row ? mapRow(row) : undefined;
@@ -126,7 +140,7 @@ export class SqliteSkillStore {
       const row = this.raw
         .prepare(
           `SELECT id, skill_id, name, description, version, source_md, body,
-                  allowed_tools_json, content_fingerprint, has_scripts, warnings_json, created_at
+                  allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
            FROM skill_version
            WHERE name = ? AND content_fingerprint != ?
            ORDER BY created_at DESC
@@ -138,7 +152,7 @@ export class SqliteSkillStore {
     const row = this.raw
       .prepare(
         `SELECT id, skill_id, name, description, version, source_md, body,
-                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, created_at
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
          FROM skill_version
          WHERE name = ?
          ORDER BY created_at DESC
@@ -152,13 +166,131 @@ export class SqliteSkillStore {
     const rows = this.raw
       .prepare(
         `SELECT id, skill_id, name, description, version, source_md, body,
-                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, created_at
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
          FROM skill_version
+         WHERE archived_at IS NULL
          ORDER BY created_at DESC
          LIMIT ?`,
       )
       .all(Math.max(1, Math.min(500, limit))) as SkillVersionRow[];
     return rows.map(mapRow);
+  }
+
+  hasPendingPermissionApproval(skillVersionId: SkillVersionId | string): boolean {
+    const id = String(skillVersionId ?? '').trim();
+    if (!id) return false;
+    const row = this.raw
+      .prepare(
+        `SELECT id FROM approval_request
+         WHERE state = 'pending'
+           AND kind = 'skill-permission'
+           AND json_extract(metadata_json, '$.skillVersionId') = ?
+         LIMIT 1`,
+      )
+      .get(id) as { id: string } | undefined;
+    return Boolean(row);
+  }
+
+  isPermissionApproved(skillVersionId: SkillVersionId | string): boolean {
+    const id = String(skillVersionId ?? '').trim();
+    if (!id) return false;
+    const rows = this.raw
+      .prepare(
+        `SELECT state FROM approval_request
+         WHERE kind = 'skill-permission'
+           AND json_extract(metadata_json, '$.skillVersionId') = ?
+         ORDER BY created_at DESC`,
+      )
+      .all(id) as Array<{ state: string }>;
+    return rows.length === 0 || rows[0]?.state === 'approved';
+  }
+
+  /**
+   * Remove an exact immutable version only when nothing still references it.
+   * Agent allowlists are JSON columns without foreign keys, so the mutable
+   * global Agent source of truth must be checked explicitly before DELETE.
+   * Historical legacy Agent versions are intentionally retained as audit
+   * snapshots and do not keep a Skill installed after the active binding is
+   * removed. Authorization grants and pending permission approvals remain
+   * live references and therefore block deletion.
+   */
+  deleteVersion(id: SkillVersionId | string): DeleteSkillVersionResult {
+    const skillVersionId = String(id ?? '').trim();
+    const empty = {
+      globalAgentIds: [] as string[],
+      activeLegacyAgentVersionIds: [] as string[],
+      authorizationGrantVersionIds: [] as string[],
+      pendingApprovalIds: [] as string[],
+    };
+    if (!skillVersionId || !this.getVersion(skillVersionId) || this.getVersion(skillVersionId)?.archivedAt) {
+      return { deleted: false, blockers: empty };
+    }
+
+    const containsId = (raw: unknown): boolean => {
+      if (typeof raw !== 'string') return false;
+      return parseJsonArray(raw).includes(skillVersionId);
+    };
+    const globalAgentIds = (
+      this.raw.prepare(`SELECT id, skill_ids_json FROM agent`).all() as Array<{
+        id: string;
+        skill_ids_json: string;
+      }>
+    )
+      .filter((row) => containsId(row.skill_ids_json))
+      .map((row) => row.id);
+    const activeLegacyAgentVersionIds = (
+      this.raw
+        .prepare(
+          `SELECT av.id, av.skill_version_ids_json
+           FROM agent_version av
+           WHERE av.version = (
+             SELECT MAX(latest.version)
+             FROM agent_version latest
+             WHERE latest.agent_id = av.agent_id
+           )`,
+        )
+        .all() as Array<{ id: string; skill_version_ids_json: string }>
+    )
+      .filter((row) => containsId(row.skill_version_ids_json))
+      .map((row) => row.id);
+    const authorizationGrantVersionIds = (
+      this.raw
+        .prepare(
+          `SELECT id FROM authorization_grant_version WHERE skill_version_id = ? ORDER BY created_at DESC`,
+        )
+        .all(skillVersionId) as Array<{ id: string }>
+    ).map((row) => row.id);
+    const pendingApprovalIds = (
+      this.raw
+        .prepare(
+          `SELECT id FROM approval_request
+           WHERE state = 'pending'
+             AND kind = 'skill-permission'
+             AND json_extract(metadata_json, '$.skillVersionId') = ?
+           ORDER BY created_at DESC`,
+        )
+        .all(skillVersionId) as Array<{ id: string }>
+    ).map((row) => row.id);
+    const blockers = {
+      globalAgentIds,
+      activeLegacyAgentVersionIds,
+      authorizationGrantVersionIds,
+      pendingApprovalIds,
+    };
+    if (
+      globalAgentIds.length > 0 ||
+      activeLegacyAgentVersionIds.length > 0 ||
+      authorizationGrantVersionIds.length > 0 ||
+      pendingApprovalIds.length > 0
+    ) {
+      return { deleted: false, blockers };
+    }
+
+    const now = new Date().toISOString();
+    const result = this.raw
+      .prepare(`UPDATE skill_version SET archived_at = ? WHERE id = ? AND archived_at IS NULL`)
+      .run(now, skillVersionId);
+    return { deleted: result.changes > 0, blockers };
   }
 
   /**
@@ -173,6 +305,20 @@ export class SqliteSkillStore {
 
     const existing = this.findByFingerprint(fingerprint);
     if (existing) return existing;
+
+    const archived = this.raw
+      .prepare(
+        `SELECT id, skill_id, name, description, version, source_md, body,
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
+         FROM skill_version
+         WHERE content_fingerprint = ? AND archived_at IS NOT NULL
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(fingerprint) as SkillVersionRow | undefined;
+    if (archived) {
+      this.raw.prepare(`UPDATE skill_version SET archived_at = NULL WHERE id = ?`).run(archived.id);
+      return { ...mapRow(archived), archivedAt: undefined };
+    }
 
     const sameName = this.raw
       .prepare(

@@ -1,6 +1,6 @@
 ﻿import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
 import { scrubSecrets, normalizeOpenAICompatibleBaseUrl } from './discover-models.js';
-import { openAiReasoningBodyFields } from '../reasoning.js';
+import { normalizeReasoningEffort, shouldOmitReasoningEffort } from '../reasoning.js';
 import type { FailureClass } from '@sync-think/shared';
 import {
   closeResponseReader,
@@ -160,13 +160,31 @@ export async function* streamOpenAIChatCompletions(
   const control = createProviderCallControl(request.signal, timeoutMs);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
+  // Reasoning-model compatibility (o-series / gpt-5 / DeepSeek-R1 / Qwen):
+  // - OpenAI rejects unknown body params, so enable_thinking only goes to
+  //   gateways whose models are known to read it (Qwen/GLM style).
+  // - o-series & gpt-5 reject max_tokens (want max_completion_tokens) and
+  //   non-default temperature.
+  const modelTail = (request.modelId.split('/').pop() ?? request.modelId).toLowerCase();
+  const isOpenAiReasoningFamily = /^o[1-9](\b|[-.])/.test(modelTail) || modelTail.startsWith('gpt-5');
+  const wantsEnableThinking = /qwen|glm|doubao|hunyuan/.test(modelTail);
+  const effortLevel = normalizeReasoningEffort(request.reasoningEffort);
+  const sendEffort = Boolean(effortLevel) && !shouldOmitReasoningEffort(effortLevel);
+
   const body = {
     model: request.modelId,
     messages: toOpenAIMessages(request),
     stream: true,
-    ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
-    ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
-    ...openAiReasoningBodyFields(request.reasoningEffort),
+    ...(request.maxOutputTokens !== undefined
+      ? isOpenAiReasoningFamily
+        ? { max_completion_tokens: request.maxOutputTokens }
+        : { max_tokens: request.maxOutputTokens }
+      : {}),
+    ...(request.temperature !== undefined && !isOpenAiReasoningFamily
+      ? { temperature: request.temperature }
+      : {}),
+    ...(sendEffort ? { reasoning_effort: effortLevel } : {}),
+    ...(sendEffort && wantsEnableThinking ? { enable_thinking: true } : {}),
     ...(request.tools?.length
       ? {
           tools: request.tools.map((tool) => ({

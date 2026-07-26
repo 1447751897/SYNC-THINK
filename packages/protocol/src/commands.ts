@@ -37,6 +37,8 @@ export type CommandType =
   | 'workspace.create'
   | 'workspace.bindFolder'
   | 'workspace.list'
+  | 'workspace.update'
+  | 'workspace.delete'
   | 'task.create'
   | 'task.list'
   | 'task.open'
@@ -78,7 +80,10 @@ export type CommandType =
   | 'provider.reorder'
   | 'provider.addCredential'
   | 'provider.removeCredential'
+  | 'provider.revealCredential'
+  | 'provider.updateCredential'
   | 'provider.setModelPriorities'
+  | 'provider.updateModel'
   | 'provider.removeModel'
   | 'settings.get'
   | 'settings.set'
@@ -106,11 +111,16 @@ export type CommandType =
   | 'conversation.setArchived'
   | 'conversation.setExecutionMode'
   | 'conversation.upgradeTrack'
+  | 'conversation.rebindTarget'
   | 'conversation.delete'
   | 'conversation.sendMessage'
+  | 'conversation.compact'
   | 'conversation.decideToolApproval'
+  | 'conversation.submitBrowserResult'
   | 'skill.import'
   | 'skill.list'
+  | 'skill.get'
+  | 'skill.delete'
   | 'mcp.register'
   | 'mcp.list'
   | 'mcp.policy.probe'
@@ -196,12 +206,39 @@ export interface WorkspaceSummary {
   workspaceId: WorkspaceId;
   folderPath?: string;
   name: string;
+  /** Optional emoji / short icon glyph (stored in ui prefs). */
+  icon?: string;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ListWorkspacesResponse {
   workspaces: WorkspaceSummary[];
+}
+
+export interface UpdateWorkspacePayload {
+  workspaceId: WorkspaceId;
+  name?: string;
+  /** Set/replace bound folder path. */
+  folderPath?: string;
+  /**
+   * Workspace icon glyph. Pass null to clear; omit to keep current.
+   * Stored in workspace.ui_prefs_json.
+   */
+  icon?: string | null;
+}
+
+export interface UpdateWorkspaceResponse {
+  workspace: WorkspaceSummary;
+}
+
+export interface DeleteWorkspacePayload {
+  workspaceId: WorkspaceId;
+}
+
+export interface DeleteWorkspaceResponse {
+  workspaceId: WorkspaceId;
+  deleted: boolean;
 }
 
 export interface CreateTaskPayload {
@@ -735,6 +772,12 @@ export interface DiscoverModelsPayload {
   providerId: import('@sync-think/shared').ProviderId;
   /** Prefer a specific credential; defaults to first in default group. */
   credentialRefId?: import('@sync-think/shared').CredentialRefId;
+  /**
+   * When false, only probe the provider and return discovered ids —
+   * do NOT write models into the local catalog. Used by the NewMax-style
+   * "import models" picker and connection test. Default true for back-compat.
+   */
+  persist?: boolean;
 }
 
 export interface DiscoverModelsResponse {
@@ -748,6 +791,8 @@ export interface DiscoverModelsResponse {
   addedIds?: string[];
   /** Prior catalog size before upsert (observability). */
   previousModelCount?: number;
+  /** Wall-clock latency of the discovery hop in milliseconds. */
+  latencyMs?: number;
 }
 
 export interface AddModelsPayload {
@@ -838,6 +883,44 @@ export interface RemoveProviderCredentialResponse {
   removed: boolean;
 }
 
+/**
+ * Explicit short-lived reveal for a single saved credential.
+ * Only returned on this dedicated hop — never on list/summary responses.
+ * Renderer must clear plaintext on hide, blur, provider switch, and timeout.
+ */
+export interface RevealProviderCredentialPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+  credentialRefId: import('@sync-think/shared').CredentialRefId;
+}
+
+export interface RevealProviderCredentialResponse {
+  providerId: import('@sync-think/shared').ProviderId;
+  credentialRefId: import('@sync-think/shared').CredentialRefId;
+  label: string;
+  /** Plaintext only for this reveal hop. */
+  apiKey: string;
+  /** Suggested client-side hide deadline (ISO). */
+  expiresAt: string;
+}
+
+/**
+ * Update one credential by id: optional label and/or secret replacement.
+ * Plaintext apiKey is hop-only; Runtime stores into secure-store and never echoes it.
+ */
+export interface UpdateProviderCredentialPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+  credentialRefId: import('@sync-think/shared').CredentialRefId;
+  label?: string;
+  /** Optional plaintext secret replacement; omit/empty keeps existing secret. */
+  apiKey?: string;
+}
+
+export interface UpdateProviderCredentialResponse {
+  provider: ProviderSummary;
+  credentialRefId: import('@sync-think/shared').CredentialRefId;
+  secretRotated: boolean;
+}
+
 export interface SetModelPrioritiesPayload {
   providerId: import('@sync-think/shared').ProviderId;
   /** Desired chain order; index 0 is the primary model. */
@@ -851,6 +934,22 @@ export interface SetModelPrioritiesPayload {
 export interface SetModelPrioritiesResponse {
   providerId: import('@sync-think/shared').ProviderId;
   models: ProviderModelSummary[];
+}
+
+export interface UpdateModelPayload {
+  providerId: import('@sync-think/shared').ProviderId;
+  modelId: import('@sync-think/shared').ModelId;
+  displayName?: string;
+  /**
+   * Context window in tokens. Pass null to clear; omit to keep current.
+   * Persisted into model.limitsJson.contextWindow.
+   */
+  contextWindow?: number | null;
+}
+
+export interface UpdateModelResponse {
+  providerId: import('@sync-think/shared').ProviderId;
+  model: ProviderModelSummary;
 }
 
 export interface RemoveModelPayload {
@@ -968,26 +1067,19 @@ export interface ModelPricingEntry {
   cacheWritePerMillion: number;
 }
 
-/** Initial NewMax-compatible prices shown when the user has not customized pricing yet. */
+/**
+ * Official-ish baseline prices (USD / 1M tokens) used when the user has not
+ * customized `app_setting['model-pricing']` yet.
+ *
+ * Sources (as of 2026-07):
+ * - Anthropic Claude API pricing (platform.claude.com) — 5m cache write = 1.25× input, cache hit = 0.1× input
+ * - OpenAI API pricing (developers.openai.com) — standard short-context tier; cache write not billed separately → 0
+ * - xAI Grok pricing (docs.x.ai) — <200k context tier
+ *
+ * modelId is matched against both internal ModelId and providerModelId.
+ */
 export const DEFAULT_MODEL_PRICING: readonly ModelPricingEntry[] = [
-  {
-    modelId: 'claude-3-5-haiku-20241022',
-    displayName: 'Claude 3.5 Haiku',
-    currency: 'USD',
-    inputPerMillion: 0.8,
-    outputPerMillion: 4,
-    cacheReadPerMillion: 0.08,
-    cacheWritePerMillion: 1,
-  },
-  {
-    modelId: 'claude-3-5-sonnet-20241022',
-    displayName: 'Claude 3.5 Sonnet',
-    currency: 'USD',
-    inputPerMillion: 3,
-    outputPerMillion: 15,
-    cacheReadPerMillion: 0.3,
-    cacheWritePerMillion: 3.75,
-  },
+  // ── Anthropic Claude ────────────────────────────────────────────────────
   {
     modelId: 'claude-fable-5',
     displayName: 'Claude Fable 5',
@@ -996,6 +1088,151 @@ export const DEFAULT_MODEL_PRICING: readonly ModelPricingEntry[] = [
     outputPerMillion: 50,
     cacheReadPerMillion: 1,
     cacheWritePerMillion: 12.5,
+  },
+  {
+    modelId: 'claude-mythos-5',
+    displayName: 'Claude Mythos 5',
+    currency: 'USD',
+    inputPerMillion: 10,
+    outputPerMillion: 50,
+    cacheReadPerMillion: 1,
+    cacheWritePerMillion: 12.5,
+  },
+  {
+    modelId: 'claude-opus-5',
+    displayName: 'Claude Opus 5',
+    currency: 'USD',
+    inputPerMillion: 5,
+    outputPerMillion: 25,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 6.25,
+  },
+  {
+    modelId: 'claude-opus-4-8',
+    displayName: 'Claude Opus 4.8',
+    currency: 'USD',
+    inputPerMillion: 5,
+    outputPerMillion: 25,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 6.25,
+  },
+  {
+    modelId: 'claude-opus-4-7',
+    displayName: 'Claude Opus 4.7',
+    currency: 'USD',
+    inputPerMillion: 5,
+    outputPerMillion: 25,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 6.25,
+  },
+  {
+    modelId: 'claude-opus-4-6',
+    displayName: 'Claude Opus 4.6',
+    currency: 'USD',
+    inputPerMillion: 5,
+    outputPerMillion: 25,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 6.25,
+  },
+  {
+    modelId: 'claude-opus-4-5',
+    displayName: 'Claude Opus 4.5',
+    currency: 'USD',
+    inputPerMillion: 5,
+    outputPerMillion: 25,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 6.25,
+  },
+  {
+    modelId: 'claude-opus-4-5-20251101',
+    displayName: 'Claude Opus 4.5',
+    currency: 'USD',
+    inputPerMillion: 5,
+    outputPerMillion: 25,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 6.25,
+  },
+  {
+    modelId: 'claude-opus-4-1',
+    displayName: 'Claude Opus 4.1',
+    currency: 'USD',
+    inputPerMillion: 15,
+    outputPerMillion: 75,
+    cacheReadPerMillion: 1.5,
+    cacheWritePerMillion: 18.75,
+  },
+  {
+    modelId: 'claude-opus-4-1-20250805',
+    displayName: 'Claude Opus 4.1',
+    currency: 'USD',
+    inputPerMillion: 15,
+    outputPerMillion: 75,
+    cacheReadPerMillion: 1.5,
+    cacheWritePerMillion: 18.75,
+  },
+  {
+    modelId: 'claude-opus-4',
+    displayName: 'Claude Opus 4',
+    currency: 'USD',
+    inputPerMillion: 15,
+    outputPerMillion: 75,
+    cacheReadPerMillion: 1.5,
+    cacheWritePerMillion: 18.75,
+  },
+  {
+    modelId: 'claude-opus-4-20250514',
+    displayName: 'Claude Opus 4',
+    currency: 'USD',
+    inputPerMillion: 15,
+    outputPerMillion: 75,
+    cacheReadPerMillion: 1.5,
+    cacheWritePerMillion: 18.75,
+  },
+  {
+    // Introductory $2/$10 through 2026-08-31; store intro rate while it is active.
+    modelId: 'claude-sonnet-5',
+    displayName: 'Claude Sonnet 5',
+    currency: 'USD',
+    inputPerMillion: 2,
+    outputPerMillion: 10,
+    cacheReadPerMillion: 0.2,
+    cacheWritePerMillion: 2.5,
+  },
+  {
+    modelId: 'claude-sonnet-4-6',
+    displayName: 'Claude Sonnet 4.6',
+    currency: 'USD',
+    inputPerMillion: 3,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.3,
+    cacheWritePerMillion: 3.75,
+  },
+  {
+    modelId: 'claude-sonnet-4-5',
+    displayName: 'Claude Sonnet 4.5',
+    currency: 'USD',
+    inputPerMillion: 3,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.3,
+    cacheWritePerMillion: 3.75,
+  },
+  {
+    modelId: 'claude-sonnet-4-5-20250929',
+    displayName: 'Claude Sonnet 4.5',
+    currency: 'USD',
+    inputPerMillion: 3,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.3,
+    cacheWritePerMillion: 3.75,
+  },
+  {
+    modelId: 'claude-sonnet-4',
+    displayName: 'Claude Sonnet 4',
+    currency: 'USD',
+    inputPerMillion: 3,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.3,
+    cacheWritePerMillion: 3.75,
   },
   {
     modelId: 'claude-haiku-4-5',
@@ -1016,22 +1253,271 @@ export const DEFAULT_MODEL_PRICING: readonly ModelPricingEntry[] = [
     cacheWritePerMillion: 1.25,
   },
   {
-    modelId: 'claude-opus-4-20250514',
-    displayName: 'Claude Opus 4',
+    modelId: 'claude-3-5-haiku-20241022',
+    displayName: 'Claude 3.5 Haiku',
     currency: 'USD',
-    inputPerMillion: 15,
-    outputPerMillion: 75,
-    cacheReadPerMillion: 1.5,
-    cacheWritePerMillion: 18.75,
+    inputPerMillion: 0.8,
+    outputPerMillion: 4,
+    cacheReadPerMillion: 0.08,
+    cacheWritePerMillion: 1,
   },
   {
-    modelId: 'claude-opus-4-6',
-    displayName: 'Claude Opus 4.6',
+    modelId: 'claude-3-5-sonnet-20241022',
+    displayName: 'Claude 3.5 Sonnet',
+    currency: 'USD',
+    inputPerMillion: 3,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.3,
+    cacheWritePerMillion: 3.75,
+  },
+
+  // ── OpenAI GPT-5 family (standard short-context tier) ───────────────────
+  {
+    modelId: 'gpt-5.6-sol',
+    displayName: 'GPT-5.6 Sol',
     currency: 'USD',
     inputPerMillion: 5,
-    outputPerMillion: 25,
+    outputPerMillion: 30,
     cacheReadPerMillion: 0.5,
-    cacheWritePerMillion: 6.25,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-5.6-terra',
+    displayName: 'GPT-5.6 Terra',
+    currency: 'USD',
+    inputPerMillion: 2.5,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.25,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-5.6-luna',
+    displayName: 'GPT-5.6 Luna',
+    currency: 'USD',
+    inputPerMillion: 1,
+    outputPerMillion: 6,
+    cacheReadPerMillion: 0.1,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-5.5',
+    displayName: 'GPT-5.5',
+    currency: 'USD',
+    inputPerMillion: 5,
+    outputPerMillion: 30,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-5.5-pro',
+    displayName: 'GPT-5.5 Pro',
+    currency: 'USD',
+    inputPerMillion: 30,
+    outputPerMillion: 180,
+    cacheReadPerMillion: 0,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-5.4',
+    displayName: 'GPT-5.4',
+    currency: 'USD',
+    inputPerMillion: 2.5,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.25,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-5.4-mini',
+    displayName: 'GPT-5.4 Mini',
+    currency: 'USD',
+    inputPerMillion: 0.75,
+    outputPerMillion: 4.5,
+    cacheReadPerMillion: 0.075,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-5.4-nano',
+    displayName: 'GPT-5.4 Nano',
+    currency: 'USD',
+    inputPerMillion: 0.2,
+    outputPerMillion: 1.25,
+    cacheReadPerMillion: 0.02,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-5.4-pro',
+    displayName: 'GPT-5.4 Pro',
+    currency: 'USD',
+    inputPerMillion: 30,
+    outputPerMillion: 180,
+    cacheReadPerMillion: 0,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-5.3-codex',
+    displayName: 'GPT-5.3 Codex',
+    currency: 'USD',
+    inputPerMillion: 1.75,
+    outputPerMillion: 14,
+    cacheReadPerMillion: 0.175,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-4o',
+    displayName: 'GPT-4o',
+    currency: 'USD',
+    inputPerMillion: 2.5,
+    outputPerMillion: 10,
+    cacheReadPerMillion: 1.25,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-4o-mini',
+    displayName: 'GPT-4o Mini',
+    currency: 'USD',
+    inputPerMillion: 0.15,
+    outputPerMillion: 0.6,
+    cacheReadPerMillion: 0.075,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-4.1',
+    displayName: 'GPT-4.1',
+    currency: 'USD',
+    inputPerMillion: 2,
+    outputPerMillion: 8,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'gpt-4.1-mini',
+    displayName: 'GPT-4.1 Mini',
+    currency: 'USD',
+    inputPerMillion: 0.4,
+    outputPerMillion: 1.6,
+    cacheReadPerMillion: 0.1,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'o3',
+    displayName: 'o3',
+    currency: 'USD',
+    inputPerMillion: 2,
+    outputPerMillion: 8,
+    cacheReadPerMillion: 0.5,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'o4-mini',
+    displayName: 'o4-mini',
+    currency: 'USD',
+    inputPerMillion: 1.1,
+    outputPerMillion: 4.4,
+    cacheReadPerMillion: 0.275,
+    cacheWritePerMillion: 0,
+  },
+
+  // ── xAI Grok (<200k context tier) ───────────────────────────────────────
+  {
+    modelId: 'grok-4.5',
+    displayName: 'Grok 4.5',
+    currency: 'USD',
+    inputPerMillion: 2,
+    outputPerMillion: 6,
+    cacheReadPerMillion: 0.3,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'grok-4.3',
+    displayName: 'Grok 4.3',
+    currency: 'USD',
+    inputPerMillion: 1.25,
+    outputPerMillion: 2.5,
+    cacheReadPerMillion: 0.2,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'grok-4.20-0309-reasoning',
+    displayName: 'Grok 4.20 Reasoning',
+    currency: 'USD',
+    inputPerMillion: 1.25,
+    outputPerMillion: 2.5,
+    cacheReadPerMillion: 0.2,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'grok-4.20-0309-non-reasoning',
+    displayName: 'Grok 4.20',
+    currency: 'USD',
+    inputPerMillion: 1.25,
+    outputPerMillion: 2.5,
+    cacheReadPerMillion: 0.2,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'grok-build-0.1',
+    displayName: 'Grok Build 0.1',
+    currency: 'USD',
+    inputPerMillion: 1,
+    outputPerMillion: 2,
+    cacheReadPerMillion: 0.2,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'grok-4',
+    displayName: 'Grok 4',
+    currency: 'USD',
+    inputPerMillion: 3,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.75,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'grok-3',
+    displayName: 'Grok 3',
+    currency: 'USD',
+    inputPerMillion: 3,
+    outputPerMillion: 15,
+    cacheReadPerMillion: 0.75,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'grok-3-mini',
+    displayName: 'Grok 3 Mini',
+    currency: 'USD',
+    inputPerMillion: 0.3,
+    outputPerMillion: 0.5,
+    cacheReadPerMillion: 0.075,
+    cacheWritePerMillion: 0,
+  },
+
+  // ── Zhipu / GLM (public CNY list prices converted at face value as CNY) ─
+  {
+    modelId: 'z-ai/glm-5.2',
+    displayName: 'GLM-5.2',
+    currency: 'CNY',
+    inputPerMillion: 4,
+    outputPerMillion: 16,
+    cacheReadPerMillion: 0,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'glm-5.2',
+    displayName: 'GLM-5.2',
+    currency: 'CNY',
+    inputPerMillion: 4,
+    outputPerMillion: 16,
+    cacheReadPerMillion: 0,
+    cacheWritePerMillion: 0,
+  },
+  {
+    modelId: 'glm-4.5',
+    displayName: 'GLM-4.5',
+    currency: 'CNY',
+    inputPerMillion: 2,
+    outputPerMillion: 8,
+    cacheReadPerMillion: 0,
+    cacheWritePerMillion: 0,
   },
 ];
 
@@ -1236,6 +1722,29 @@ export interface ListSkillsPayload {
 
 export interface ListSkillsResponse {
   skills: SkillVersionSummary[];
+}
+
+export interface GetSkillPayload {
+  /** Exact immutable Skill version to read. */
+  skillVersionId: string;
+}
+
+export interface GetSkillResponse {
+  skill: SkillVersionSummary;
+  /** Full SKILL.md source (frontmatter + body) — display only, never executed. */
+  sourceMd: string;
+  /** Parsed body without frontmatter. */
+  body: string;
+}
+
+export interface DeleteSkillPayload {
+  /** Exact immutable Skill version to remove. */
+  skillVersionId: string;
+}
+
+export interface DeleteSkillResponse {
+  deleted: boolean;
+  skillVersionId: string;
 }
 
 // --- MCP server registry (搂9.3 authz skeleton; register does not spawn) ---
@@ -2042,6 +2551,17 @@ export interface UpgradeConversationTrackPayload {
   track: 'agent' | 'team';
   targetRef: string;
 }
+/**
+ * Rebind "who this conversation talks to". Unlike upgradeTrack (one-way
+ * model→agent/team), this allows same-track retargeting and any cross-track
+ * switch; targetRef is the modelId / agentId / teamId matching the track.
+ * Response: ConversationResponse (updated conversation summary).
+ */
+export interface RebindConversationTargetPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  track: import('@sync-think/shared').ConversationTrack;
+  targetRef: string;
+}
 export interface DeleteConversationPayload {
   conversationId: import('@sync-think/shared').ConversationId;
 }
@@ -2067,6 +2587,48 @@ export interface ConversationSendMessageResponse {
 }
 
 /**
+ * Compact earlier conversation context (NewMax / Claude Code style).
+ * Primary path: model-generated structured summary of older turns.
+ * Local truncate summary is only a degraded fallback.
+ * Writes a durable context.compacted boundary and keeps recent turns.
+ */
+export interface ConversationCompactPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  /** manual = user /compact; auto = threshold-triggered. */
+  mode?: 'manual' | 'auto';
+  /** Optional model context window used for occupancy estimates. */
+  contextWindow?: number;
+  /**
+   * Real occupancy from the client ring (usually latest provider.usage tokensIn).
+   * When present with contextWindow, onlyIfNeeded uses usedTokens / contextWindow
+   * instead of the local character estimate.
+   */
+  usedTokens?: number;
+  /** Keep this many newest messages verbatim after the summary. */
+  keepRecent?: number;
+  /**
+   * When true, compact only if occupancy is at/above the auto threshold.
+   * Used by auto-trigger paths so no-op conversations stay untouched.
+   */
+  onlyIfNeeded?: boolean;
+}
+
+export interface ConversationCompactResponse {
+  conversationId: import('@sync-think/shared').ConversationId;
+  threadId: import('@sync-think/shared').ThreadId;
+  /** False when onlyIfNeeded=true and occupancy was still under threshold. */
+  compacted: boolean;
+  mode: 'manual' | 'auto';
+  beforeTokens: number;
+  afterTokens: number;
+  foldedCount: number;
+  durationMs: number;
+  /** Present when a compact boundary was written. */
+  summaryText?: string;
+  messageId?: string;
+}
+
+/**
  * Resolve a chat tool approval that was paused under「询问批准」.
  * approvalId comes from the tool.approval_requested event payload.
  */
@@ -2079,6 +2641,26 @@ export interface ConversationDecideToolApprovalResponse {
   approvalId: string;
   decision: 'approve' | 'deny';
   runId?: RunId;
+}
+
+/**
+ * Renderer → Runtime reply for an interactive browser tool command
+ * (browser_click / browser_type / browser_read / browser_screenshot).
+ * requestId comes from the browser.command_requested event payload;
+ * resultJson is the JSON-serialized outcome from the <webview> (capped ~64KB).
+ */
+export interface ConversationSubmitBrowserResultPayload {
+  requestId: string;
+  ok: boolean;
+  /** JSON string with the command outcome (page text / click ack / screenshot path). */
+  resultJson?: string;
+  /** Human-readable error when ok=false (webview missing, element not found …). */
+  error?: string;
+}
+
+export interface ConversationSubmitBrowserResultResponse {
+  requestId: string;
+  accepted: boolean;
 }
 
 // Helper: build a typed request envelope.
