@@ -59,12 +59,9 @@ import {
   type CreateAgentVersionResponse,
   type ImportSkillResponse,
   type SkillPermissionDiffSummary,
-  type ListSkillsResponse,
   type DeleteSkillResponse,
-  type GetSkillResponse,
   type SkillVersionSummary,
   type RegisterMcpServerResponse,
-  type ListMcpServersResponse,
   type ProbeMcpPolicyResponse,
   type RequestMcpToolResponse,
   type ProbeMcpSpawnResponse,
@@ -307,11 +304,8 @@ import {
   parseListAgentVersionsPayload,
   parseCreateAgentVersionPayload,
   parseImportSkillPayload,
-  parseListSkillsPayload,
   parseDeleteSkillPayload,
-  parseGetSkillPayload,
   parseRegisterMcpServerPayload,
-  parseListMcpServersPayload,
   parseProbeMcpPolicyPayload,
   parseRequestMcpToolPayload,
   parseProbeMcpSpawnPayload,
@@ -388,6 +382,8 @@ import {
 import { toArtifactVersionSummary, toPolicyVersionSummary, toTaskSummary } from './summaries.js';
 import * as queries from './commands/queries.js';
 import type { QueryContext } from './commands/query-context.js';
+import * as skillQueries from './commands/skill-queries.js';
+import type { SkillQueryContext } from './commands/skill-query-context.js';
 
 export interface RuntimeOptions {
   installId: string;
@@ -8137,79 +8133,27 @@ export class Runtime {
     }
   }
 
+  private skillQueryContext(): SkillQueryContext {
+    return {
+      skillStore: this.skillStore,
+      mcpStore: this.mcpStore,
+      writeMalformedPayload: (socket, frame) => this.writeMalformedPayload(socket, frame),
+      writeSkillStoreUnavailable: (socket, frame) => this.writeSkillStoreUnavailable(socket, frame),
+      writeMcpStoreUnavailable: (socket, frame) => this.writeMcpStoreUnavailable(socket, frame),
+      writeProviderCommandError: (socket, frame, error) =>
+        this.writeProviderCommandError(socket, frame, error),
+      toSkillVersionSummary: (record) => this.toSkillVersionSummary(record),
+      toMcpServerSummary: (record) => this.toMcpServerSummary(record),
+    };
+  }
+
   /** Read one Skill version's full SKILL.md source for display (never executed). */
   private handleGetSkill(socket: Socket, frame: Frame): void {
-    const payload = parseGetSkillPayload(frame.payload);
-    if (!payload) {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    if (!this.skillStore) {
-      this.writeSkillStoreUnavailable(socket, frame);
-      return;
-    }
-    try {
-      const record = this.skillStore.getVersion(payload.skillVersionId);
-      if (!record) {
-        socket.write(
-          encodeFrame({
-            id: frame.id,
-            kind: 'response',
-            type: 'skill.get',
-            payload: {},
-            error: {
-              code: ErrorCode.STORAGE_WRITE_FAILED,
-              message: 'Skill version not found',
-              detail: { reason: 'not_found', skillVersionId: payload.skillVersionId },
-            },
-          }),
-        );
-        return;
-      }
-      const response: GetSkillResponse = {
-        skill: this.toSkillVersionSummary(record),
-        sourceMd: record.sourceMd,
-        body: record.body,
-      };
-      socket.write(
-        encodeFrame({
-          id: frame.id,
-          kind: 'response',
-          type: 'skill.get',
-          payload: response,
-        }),
-      );
-    } catch (error) {
-      this.writeProviderCommandError(socket, frame, error);
-    }
+    skillQueries.handleGetSkill(this.skillQueryContext(), socket, frame);
   }
 
   private handleListSkills(socket: Socket, frame: Frame): void {
-    const payload = parseListSkillsPayload(frame.payload ?? {});
-    if (!payload) {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    if (!this.skillStore) {
-      this.writeSkillStoreUnavailable(socket, frame);
-      return;
-    }
-    try {
-      const skills = this.skillStore
-        .listVersions(payload.limit ?? 100)
-        .map((r) => this.toSkillVersionSummary(r));
-      const response: ListSkillsResponse = { skills };
-      socket.write(
-        encodeFrame({
-          id: frame.id,
-          kind: 'response',
-          type: 'skill.list',
-          payload: response,
-        }),
-      );
-    } catch (error) {
-      this.writeProviderCommandError(socket, frame, error);
-    }
+    skillQueries.handleListSkills(this.skillQueryContext(), socket, frame);
   }
 
   /**
@@ -8277,31 +8221,7 @@ export class Runtime {
   }
 
   private handleListMcpServers(socket: Socket, frame: Frame): void {
-    const payload = parseListMcpServersPayload(frame.payload ?? {});
-    if (!payload) {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    if (!this.mcpStore) {
-      this.writeMcpStoreUnavailable(socket, frame);
-      return;
-    }
-    try {
-      const servers = this.mcpStore
-        .list(payload.limit ?? 100)
-        .map((r) => this.toMcpServerSummary(r));
-      const response: ListMcpServersResponse = { servers };
-      socket.write(
-        encodeFrame({
-          id: frame.id,
-          kind: 'response',
-          type: 'mcp.list',
-          payload: response,
-        }),
-      );
-    } catch (error) {
-      this.writeProviderCommandError(socket, frame, error);
-    }
+    skillQueries.handleListMcpServers(this.skillQueryContext(), socket, frame);
   }
 
   /**
