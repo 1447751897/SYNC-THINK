@@ -16,10 +16,6 @@ import {
   type EventReplayPagePayload,
   type EventStreamStartedPayload,
   type Frame,
-  type ListTasksResponse,
-  type ListWorkspacesResponse,
-  type OpenTaskResponse,
-  type SearchTasksResponse,
   type SetParticipationModeResponse,
   type UnarchiveTaskResponse,
   type SavePolicyResponse,
@@ -278,10 +274,6 @@ import {
   parseCreateWorkspacePayload,
   parseUpdateWorkspacePayload,
   parseDeleteWorkspacePayload,
-  parseListTasksPayload,
-  parseListWorkspacesPayload,
-  parseOpenTaskPayload,
-  parseSearchTasksPayload,
   parseSetParticipationModePayload,
   parseUnarchiveTaskPayload,
   parseSavePolicyPayload,
@@ -394,6 +386,8 @@ import {
   PolicyScopeBoundaryError,
 } from './errors.js';
 import { toArtifactVersionSummary, toPolicyVersionSummary, toTaskSummary } from './summaries.js';
+import * as queries from './commands/queries.js';
+import type { QueryContext } from './commands/query-context.js';
 
 export interface RuntimeOptions {
   installId: string;
@@ -1554,29 +1548,20 @@ export class Runtime {
     }
   }
 
-  private handleListWorkspaces(socket: Socket, frame: Frame): void {
-    const payload = parseListWorkspacesPayload(frame.payload ?? {});
-    if (!payload) {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    if (!this.workspaceStore) {
-      this.writeWorkspaceStoreUnavailable(socket, frame);
-      return;
-    }
-    const response: ListWorkspacesResponse = {
-      workspaces: this.workspaceStore.listWorkspaces().map((workspace) =>
-        this.toWorkspaceSummary(workspace),
-      ),
+  private queryContext(): QueryContext {
+    return {
+      workspaceStore: this.workspaceStore,
+      writeMalformedPayload: (socket, frame) => this.writeMalformedPayload(socket, frame),
+      writeWorkspaceStoreUnavailable: (socket, frame) =>
+        this.writeWorkspaceStoreUnavailable(socket, frame),
+      writeWorkspaceCommandError: (socket, frame, error) =>
+        this.writeWorkspaceCommandError(socket, frame, error),
+      toWorkspaceSummary: (workspace) => this.toWorkspaceSummary(workspace),
     };
-    socket.write(
-      encodeFrame({
-        id: frame.id,
-        kind: 'response',
-        type: 'workspace.list',
-        payload: response,
-      }),
-    );
+  }
+
+  private handleListWorkspaces(socket: Socket, frame: Frame): void {
+    queries.handleListWorkspaces(this.queryContext(), socket, frame);
   }
 
   private handleUpdateWorkspace(socket: Socket, frame: Frame): void {
@@ -1683,111 +1668,15 @@ export class Runtime {
   }
 
   private handleListTasks(socket: Socket, frame: Frame): void {
-    const payload = parseListTasksPayload(frame.payload);
-    if (!payload) {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    if (!this.workspaceStore) {
-      this.writeWorkspaceStoreUnavailable(socket, frame);
-      return;
-    }
-    if (!this.workspaceStore.getWorkspace(payload.workspaceId)) {
-      socket.write(
-        encodeFrame({
-          id: frame.id,
-          kind: 'response',
-          type: frame.type,
-          payload: {},
-          error: {
-            code: ErrorCode.WORKSPACE_NOT_FOUND,
-            message: `Workspace not found: ${payload.workspaceId}`,
-          },
-        }),
-      );
-      return;
-    }
-    const response: ListTasksResponse = {
-      tasks: this.workspaceStore
-        .listTasks(payload.workspaceId, { includeArchived: Boolean(payload.includeArchived) })
-        .map((task) => toTaskSummary(task)),
-    };
-    socket.write(
-      encodeFrame({
-        id: frame.id,
-        kind: 'response',
-        type: 'task.list',
-        payload: response,
-      }),
-    );
+    queries.handleListTasks(this.queryContext(), socket, frame);
   }
 
   private handleOpenTask(socket: Socket, frame: Frame): void {
-    const payload = parseOpenTaskPayload(frame.payload);
-    if (!payload) {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    if (!this.workspaceStore) {
-      this.writeWorkspaceStoreUnavailable(socket, frame);
-      return;
-    }
-    try {
-      const opened = this.workspaceStore.openTask(payload.taskId as TaskId);
-      const response: OpenTaskResponse = {
-        task: toTaskSummary(opened),
-      };
-      socket.write(
-        encodeFrame({
-          id: frame.id,
-          kind: 'response',
-          type: 'task.open',
-          payload: response,
-        }),
-      );
-    } catch (error) {
-      this.writeWorkspaceCommandError(socket, frame, error);
-    }
+    queries.handleOpenTask(this.queryContext(), socket, frame);
   }
 
   private handleSearchTasks(socket: Socket, frame: Frame): void {
-    const payload = parseSearchTasksPayload(frame.payload);
-    if (!payload) {
-      this.writeMalformedPayload(socket, frame);
-      return;
-    }
-    if (!this.workspaceStore) {
-      this.writeWorkspaceStoreUnavailable(socket, frame);
-      return;
-    }
-    if (!this.workspaceStore.getWorkspace(payload.workspaceId)) {
-      socket.write(
-        encodeFrame({
-          id: frame.id,
-          kind: 'response',
-          type: frame.type,
-          payload: {},
-          error: {
-            code: ErrorCode.WORKSPACE_NOT_FOUND,
-            message: `Workspace not found: ${payload.workspaceId}`,
-          },
-        }),
-      );
-      return;
-    }
-    const response: SearchTasksResponse = {
-      tasks: this.workspaceStore
-        .searchTasks(payload.workspaceId, payload.query)
-        .map((task) => toTaskSummary(task)),
-    };
-    socket.write(
-      encodeFrame({
-        id: frame.id,
-        kind: 'response',
-        type: 'task.search',
-        payload: response,
-      }),
-    );
+    queries.handleSearchTasks(this.queryContext(), socket, frame);
   }
 
   private handleSetParticipationMode(socket: Socket, frame: Frame): void {
