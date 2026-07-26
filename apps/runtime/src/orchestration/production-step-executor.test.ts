@@ -1321,6 +1321,155 @@ describe('production Step execution reservations', () => {
     }
   });
 
+  it('resolves the Agent default model through resolveModelBinding (not a local ?? shortcut)', async () => {
+    const f = await seedProductionRun('sync-think-production-binding-default-');
+    const requestedModelIds: string[] = [];
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(request): AsyncIterable<AdapterEvent> {
+        requestedModelIds.push(request.modelId);
+        yield { type: 'text-delta', text: 'binding-default-ok' };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const claimed = f.orchestration.claimReadySteps({
+      runId: f.graph.run.id,
+      stepIds: ['production-step' as never],
+      ownerId: 'production-binding-default',
+      leaseExpiresAt: '9999-12-31T23:59:59.999Z',
+    }).claimedSteps[0]!;
+    try {
+      const result = await productionExecutor(f, adapter).execute({
+        runId: f.graph.run.id,
+        step: claimed,
+        idempotencyKey: claimed.idempotencyKey!,
+        artifactVersions: [],
+        signal: new AbortController().signal,
+      });
+      expect(requestedModelIds).toEqual(['production-model']);
+      expect(result.outputVersions?.[0]).toMatchObject({
+        content: 'binding-default-ok',
+        metadata: {
+          modelId: f.agent.defaultModelId,
+          modelResolutionSource: 'agentDefault',
+        },
+      });
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
+  it('walks Agent fallbackModelIds after a retryable Provider failure', async () => {
+    const f = await seedProductionRun('sync-think-production-binding-fallback-');
+    const fallbackModel = f.providerStore.upsertModels({
+      providerId: f.providerStore.listProviders()[0]!.provider.id,
+      protocol: 'openai-chat',
+      models: [{ providerModelId: 'production-fallback-model' }],
+    })[0]!;
+    // Rewrite the agent version row so fallback chain is non-empty.
+    f.connection.raw
+      .prepare(
+        `UPDATE agent_version
+         SET fallback_model_ids_json = ?, pause_on_failure = 1
+         WHERE id = ?`,
+      )
+      .run(JSON.stringify([fallbackModel.id]), f.agent.id);
+
+    const requestedModelIds: string[] = [];
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(request): AsyncIterable<AdapterEvent> {
+        requestedModelIds.push(request.modelId);
+        if (request.modelId === 'production-model') {
+          throw Object.assign(new Error('primary model rate limited'), {
+            failureClass: 'rate-limit',
+          });
+        }
+        yield { type: 'text-delta', text: 'fallback-model-ok' };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const claimed = f.orchestration.claimReadySteps({
+      runId: f.graph.run.id,
+      stepIds: ['production-step' as never],
+      ownerId: 'production-binding-fallback',
+      leaseExpiresAt: '9999-12-31T23:59:59.999Z',
+    }).claimedSteps[0]!;
+    try {
+      const result = await productionExecutor(f, adapter).execute({
+        runId: f.graph.run.id,
+        step: claimed,
+        idempotencyKey: claimed.idempotencyKey!,
+        artifactVersions: [],
+        signal: new AbortController().signal,
+      });
+      expect(requestedModelIds).toEqual(['production-model', 'production-fallback-model']);
+      expect(result.outputVersions?.[0]).toMatchObject({
+        content: 'fallback-model-ok',
+        metadata: {
+          modelId: fallbackModel.id,
+          modelResolutionSource: 'agentFallback',
+        },
+      });
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
+  it('pauses (does not hard-swap models) when fallback is exhausted after a retryable failure', async () => {
+    const f = await seedProductionRun('sync-think-production-binding-pause-');
+    f.connection.raw
+      .prepare(
+        `UPDATE agent_version
+         SET fallback_model_ids_json = '[]', pause_on_failure = 1
+         WHERE id = ?`,
+      )
+      .run(f.agent.id);
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(): AsyncIterable<AdapterEvent> {
+        throw Object.assign(new Error('primary model timeout'), {
+          failureClass: 'timeout',
+        });
+      },
+    };
+    const claimed = f.orchestration.claimReadySteps({
+      runId: f.graph.run.id,
+      stepIds: ['production-step' as never],
+      ownerId: 'production-binding-pause',
+      leaseExpiresAt: '9999-12-31T23:59:59.999Z',
+    }).claimedSteps[0]!;
+    try {
+      await expect(
+        productionExecutor(f, adapter).execute({
+          runId: f.graph.run.id,
+          step: claimed,
+          idempotencyKey: claimed.idempotencyKey!,
+          artifactVersions: [],
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toMatchObject({
+        name: 'StepExecutionError',
+        failureClass: 'timeout',
+        message: expect.stringContaining('Model binding paused (no_fallback_configured)'),
+      });
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
   it('fails a recovered started/unknown reservation without calling the Provider again', async () => {
     const f = await seedProductionRun('sync-think-provider-reservation-unknown-');
     let providerCalls = 1;

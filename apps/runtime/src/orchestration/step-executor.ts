@@ -66,8 +66,9 @@ export class StepAwaitingApprovalError extends Error {
 }
 
 export class StepExecutionError extends Error {
-  override readonly name = 'StepExecutionError';
+  override readonly name: string = 'StepExecutionError';
   readonly code: string;
+  readonly isProviderSecretEcho: boolean = false;
 
   constructor(
     message: string,
@@ -77,4 +78,15 @@ export class StepExecutionError extends Error {
     super(message);
     this.code = `step.executor.${failureClass}`;
   }
+}
+
+/**
+ * Sentinel subclass: a Provider response echoed the credential secret. This is a
+ * non-retryable safety failure — it must never enter the agent fallback chain
+ * (advancing it would erase the real `summary` under a synthetic "paused" error)
+ * and must preserve its exact `summary` all the way to `step.failed`.
+ */
+export class ProviderSecretEchoError extends StepExecutionError {
+  override readonly name = 'ProviderSecretEchoError';
+  override readonly isProviderSecretEcho = true;
 }

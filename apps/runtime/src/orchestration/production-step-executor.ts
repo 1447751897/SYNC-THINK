@@ -9,13 +9,19 @@ import type {
   ProviderToolCall,
   ProviderToolSchema,
 } from '@sync-think/adapters';
-import { resolveCredentialRef } from '@sync-think/core';
+import {
+  resolveCredentialRef,
+  resolveModelBinding,
+  shouldAttemptFallback,
+  type AgentModelBinding,
+} from '@sync-think/core';
 import {
   MAX_INLINE_ARTIFACT_CONTENT_BYTES,
   isReviewOutcomeConsistent,
   type ArtifactVersionStatus,
   type FailureClass,
   type JsonValue,
+  type ModelId,
   type ProtocolFamily,
   type ReviewOutcome,
 } from '@sync-think/shared';
@@ -38,7 +44,9 @@ import {
   type WorkerToken,
 } from '@sync-think/workers';
 import {
+  StepAwaitingApprovalError,
   StepExecutionError,
+  ProviderSecretEchoError,
   type StepActionRequest,
   type StepExecutionContext,
   type StepExecutionResult,
@@ -192,156 +200,330 @@ async function executeProviderStep(
   if (!agent) {
     throw unavailable(`Exact AgentVersion is unavailable: ${context.step.agentVersionId}`);
   }
-  const modelId = context.step.modelOverrideId ?? agent.defaultModelId;
-  const model = options.providerStore.getModel(modelId);
-  if (!model) throw unavailable(`Configured model is unavailable: ${modelId}`);
-  const provider = options.providerStore.getProvider(model.providerId);
-  if (!provider) throw unavailable(`Configured provider is unavailable: ${model.providerId}`);
 
-  const adapter =
-    options.adaptersByProtocol?.[model.protocol] ??
-    (options.fallbackAdapter?.protocol === model.protocol ? options.fallbackAdapter : undefined);
-  if (!adapter) {
-    throw unavailable(`No production adapter is configured for protocol ${model.protocol}`);
-  }
-
-  const credential = resolveCredentialRef({
-    pinnedCredentialRefId: agent.pinnedCredentialRefId,
-    defaultCredentialGroupId: agent.defaultCredentialGroupId,
-    providerId: model.providerId,
-    getCredentialRef: (id) => options.providerStore.getCredentialRef(id),
-    getFirstCredentialInGroup: (groupId) =>
-      options.providerStore.getFirstCredentialInGroup(groupId),
-    getPrimaryCredentialRef: (providerId) =>
-      options.providerStore.getPrimaryCredentialRef(providerId),
-    getProviderIdForCredentialGroup: (groupId) =>
-      options.providerStore.getProviderIdForCredentialGroup(groupId),
+  // §5.3: production steps must share resolveModelBinding with chat/demo paths.
+  // Step.modelOverrideId is the workflow-node override (never a silent swap).
+  const agentBinding = toAgentModelBinding(agent);
+  let modelResolution = resolveModelBinding({
+    agent: agentBinding,
+    workflowNodeModelId: context.step.modelOverrideId,
   });
-  if (credential.status !== 'resolved' || !credential.credential) {
-    throw new StepExecutionError(
-      `No credential is available for configured model (${credential.reason ?? 'missing'})`,
-      'auth',
+  if (modelResolution.status === 'unresolved') {
+    throw unavailable(
+      `AgentVersion has no default model: ${context.step.agentVersionId}`,
     );
   }
-  const storeHandle = options.providerStore.getCredentialStoreHandle(credential.credential.id);
-  if (!storeHandle) throw new StepExecutionError('Credential handle is unavailable', 'auth');
-  const apiKey = await options.secureStore.retrieveSecret(storeHandle);
-  if (!apiKey.trim()) throw new StepExecutionError('Credential secret is empty', 'auth');
-  assertNotAborted(context.signal);
-
-  const reservation = options.executionStore.reserveProviderExecution({
-    ...fence,
-    idempotencyKey: context.idempotencyKey,
-  });
-  if (reservation.state === 'completed') {
-    return materializeExecutionResult(context, reservation.result!);
-  }
-  if (!reservation.created) {
+  if (modelResolution.status === 'paused') {
     throw new StepExecutionError(
-      'Provider execution outcome is unknown; external retry is blocked',
-      'acceptance',
+      `Model binding paused (${modelResolution.reason}) for AgentVersion ${context.step.agentVersionId}`,
+      modelResolution.failureClass ?? 'acceptance',
     );
   }
 
-  const workspaceRoot = resolveWorkspaceRoot(options, context);
-  const toolsEnabled =
-    context.reviewContext === undefined &&
-    workspaceRoot !== undefined &&
-    model.capabilities.includes('tool-calling');
-  let execution: { output: string; trace: ToolTraceEntry[] } | typeof ABORTED;
-  try {
-    execution = await executeProviderToolLoop({
-      options,
-      context,
-      adapter,
-      request: {
-        protocol: model.protocol,
-        baseUrl: provider.baseUrl,
-        modelId: model.providerModelId,
-        apiKey,
-        idempotencyKey: context.idempotencyKey,
-        signal: context.signal,
-        systemPrompt: buildSystemPrompt(agent),
-        messages: [{ role: 'user', content: buildStepPrompt(context) }],
-        ...(toolsEnabled ? { tools: [...BUILT_IN_TOOL_SCHEMAS] } : {}),
-        stream: true,
-      },
-      reservationCheckpoint: reservation.checkpoint,
-      workspaceRoot,
-      toolsEnabled,
-    });
-  } catch (error) {
-    if (error instanceof Error && error.message.includes(apiKey)) {
-      throw providerSecretEchoError();
+  let reserved = false;
+  let reservationCheckpoint: JsonValue | undefined;
+  let lastError: unknown;
+
+  // Walk agent fallback chain on retryable provider failures only.
+  // Never silently pick a model outside resolveModelBinding.
+  while (modelResolution.status === 'resolved') {
+    const modelId = modelResolution.modelId;
+    const model = options.providerStore.getModel(modelId);
+    if (!model) {
+      lastError = unavailable(`Configured model is unavailable: ${modelId}`);
+      modelResolution = advanceModelBindingAfterFailure(
+        agentBinding,
+        modelId,
+        'acceptance',
+        context.step.modelOverrideId,
+      );
+      continue;
     }
-    throw error;
-  }
-  if (execution === ABORTED) {
-    releaseApprovalReservation(options.executionStore, context);
-    return {};
-  }
-  const { output, trace } = execution;
-  if (!output.trim()) {
-    throw new StepExecutionError(
-      'Production adapter returned no persistable Step output',
-      'acceptance',
-    );
-  }
-  if (output.includes(apiKey)) throw providerSecretEchoError();
-  if (Buffer.byteLength(output, 'utf8') > MAX_INLINE_ARTIFACT_CONTENT_BYTES) {
-    throw new StepExecutionError(
-      'Production adapter output exceeds the inline artifact limit',
-      'acceptance',
-    );
+    const provider = options.providerStore.getProvider(model.providerId);
+    if (!provider) {
+      lastError = unavailable(`Configured provider is unavailable: ${model.providerId}`);
+      modelResolution = advanceModelBindingAfterFailure(
+        agentBinding,
+        modelId,
+        'acceptance',
+        context.step.modelOverrideId,
+      );
+      continue;
+    }
+
+    const adapter =
+      options.adaptersByProtocol?.[model.protocol] ??
+      (options.fallbackAdapter?.protocol === model.protocol
+        ? options.fallbackAdapter
+        : undefined);
+    if (!adapter) {
+      lastError = unavailable(
+        `No production adapter is configured for protocol ${model.protocol}`,
+      );
+      modelResolution = advanceModelBindingAfterFailure(
+        agentBinding,
+        modelId,
+        'acceptance',
+        context.step.modelOverrideId,
+      );
+      continue;
+    }
+
+    const credential = resolveCredentialRef({
+      pinnedCredentialRefId: agent.pinnedCredentialRefId,
+      defaultCredentialGroupId: agent.defaultCredentialGroupId,
+      providerId: model.providerId,
+      getCredentialRef: (id) => options.providerStore.getCredentialRef(id),
+      getFirstCredentialInGroup: (groupId) =>
+        options.providerStore.getFirstCredentialInGroup(groupId),
+      getPrimaryCredentialRef: (providerId) =>
+        options.providerStore.getPrimaryCredentialRef(providerId),
+      getProviderIdForCredentialGroup: (groupId) =>
+        options.providerStore.getProviderIdForCredentialGroup(groupId),
+    });
+    if (credential.status !== 'resolved' || !credential.credential) {
+      lastError = new StepExecutionError(
+        `No credential is available for configured model (${credential.reason ?? 'missing'})`,
+        'auth',
+      );
+      modelResolution = advanceModelBindingAfterFailure(
+        agentBinding,
+        modelId,
+        'auth',
+        context.step.modelOverrideId,
+      );
+      continue;
+    }
+    const storeHandle = options.providerStore.getCredentialStoreHandle(credential.credential.id);
+    if (!storeHandle) {
+      lastError = new StepExecutionError('Credential handle is unavailable', 'auth');
+      modelResolution = advanceModelBindingAfterFailure(
+        agentBinding,
+        modelId,
+        'auth',
+        context.step.modelOverrideId,
+      );
+      continue;
+    }
+    const apiKey = await options.secureStore.retrieveSecret(storeHandle);
+    if (!apiKey.trim()) {
+      lastError = new StepExecutionError('Credential secret is empty', 'auth');
+      modelResolution = advanceModelBindingAfterFailure(
+        agentBinding,
+        modelId,
+        'auth',
+        context.step.modelOverrideId,
+      );
+      continue;
+    }
+    assertNotAborted(context.signal);
+
+    if (!reserved) {
+      const reservation = options.executionStore.reserveProviderExecution({
+        ...fence,
+        idempotencyKey: context.idempotencyKey,
+      });
+      if (reservation.state === 'completed') {
+        return materializeExecutionResult(context, reservation.result!);
+      }
+      if (!reservation.created) {
+        throw new StepExecutionError(
+          'Provider execution outcome is unknown; external retry is blocked',
+          'acceptance',
+        );
+      }
+      reserved = true;
+      reservationCheckpoint = reservation.checkpoint;
+    }
+
+    const workspaceRoot = resolveWorkspaceRoot(options, context);
+    const toolsEnabled =
+      context.reviewContext === undefined &&
+      workspaceRoot !== undefined &&
+      model.capabilities.includes('tool-calling');
+    let execution: { output: string; trace: ToolTraceEntry[] } | typeof ABORTED;
+    try {
+      execution = await executeProviderToolLoop({
+        options,
+        context,
+        adapter,
+        request: {
+          protocol: model.protocol,
+          baseUrl: provider.baseUrl,
+          modelId: model.providerModelId,
+          apiKey,
+          idempotencyKey: context.idempotencyKey,
+          signal: context.signal,
+          systemPrompt: buildSystemPrompt(agent),
+          messages: [{ role: 'user', content: buildStepPrompt(context) }],
+          ...(toolsEnabled ? { tools: [...BUILT_IN_TOOL_SCHEMAS] } : {}),
+          stream: true,
+        },
+        reservationCheckpoint,
+        workspaceRoot,
+        toolsEnabled,
+      });
+    } catch (error) {
+      // Secret echo is a non-retryable safety failure: the inner tool loop
+      // already wraps it as ProviderSecretEchoError. Re-throw it verbatim and
+      // never route it into the agent fallback chain (which would mask the
+      // real `summary` under a synthetic "paused" error).
+      if (error instanceof ProviderSecretEchoError) throw error;
+      if (error instanceof Error && error.message.includes(apiKey)) {
+        throw providerSecretEchoError();
+      }
+      if (error instanceof StepAwaitingApprovalError) throw error;
+      if (context.signal.aborted) throw error;
+
+      const failureClass = failureClassOf(error);
+      lastError =
+        error instanceof StepExecutionError
+          ? error
+          : new StepExecutionError(
+              error instanceof Error ? error.message : 'Production Step execution failed',
+              failureClass,
+            );
+      modelResolution = advanceModelBindingAfterFailure(
+        agentBinding,
+        modelId,
+        failureClass,
+        context.step.modelOverrideId,
+      );
+      // Only the first attempt may resume a tool-loop checkpoint; later fallback
+      // models must start a fresh provider turn for this Step attempt.
+      reservationCheckpoint = undefined;
+      continue;
+    }
+    if (execution === ABORTED) {
+      releaseApprovalReservation(options.executionStore, context);
+      return {};
+    }
+    const { output, trace } = execution;
+    if (!output.trim()) {
+      lastError = new StepExecutionError(
+        'Production adapter returned no persistable Step output',
+        'acceptance',
+      );
+      modelResolution = advanceModelBindingAfterFailure(
+        agentBinding,
+        modelId,
+        'acceptance',
+        context.step.modelOverrideId,
+      );
+      reservationCheckpoint = undefined;
+      continue;
+    }
+    if (output.includes(apiKey)) throw providerSecretEchoError();
+    if (Buffer.byteLength(output, 'utf8') > MAX_INLINE_ARTIFACT_CONTENT_BYTES) {
+      throw new StepExecutionError(
+        'Production adapter output exceeds the inline artifact limit',
+        'acceptance',
+      );
+    }
+
+    const outputVersions: ProductionExecutionResult['outputVersions'] = [
+      {
+        artifactName:
+          context.reviewContext?.kind === 'reviewer'
+            ? `Review outcome ${context.step.id}`
+            : `Step output ${context.step.id}`,
+        content: output,
+        mimeType: context.reviewContext?.kind === 'reviewer' ? 'application/json' : 'text/plain',
+        status: 'candidate',
+        metadata: {
+          agentVersionId: context.step.agentVersionId,
+          modelId,
+          modelResolutionSource: modelResolution.source,
+          providerId: model.providerId,
+          executionKind: context.reviewContext?.kind ?? 'ordinary',
+          toolCallCount: trace.length,
+          toolNames: trace.map((entry) => entry.name),
+        },
+      },
+    ];
+    if (trace.length > 0) {
+      outputVersions.push({
+        artifactName: `Tool trace ${context.step.id}`,
+        content: JSON.stringify({ version: 1, calls: trace }, null, 2),
+        mimeType: 'application/json',
+        status: 'candidate',
+        metadata: {
+          agentVersionId: context.step.agentVersionId,
+          modelId,
+          modelResolutionSource: modelResolution.source,
+          providerId: model.providerId,
+          executionKind: 'tool-trace',
+          toolCallCount: trace.length,
+        },
+      });
+    }
+    const candidateResult: ProductionExecutionResult = { outputVersions };
+    const validatedResult = materializeExecutionResult(context, candidateResult);
+    assertNotAborted(context.signal);
+    options.executionStore.completeProviderExecution({
+      ...fence,
+      idempotencyKey: context.idempotencyKey,
+      result: candidateResult,
+    });
+    return validatedResult;
   }
 
-  const outputVersions: ProductionExecutionResult['outputVersions'] = [
-    {
-      artifactName:
-        context.reviewContext?.kind === 'reviewer'
-          ? `Review outcome ${context.step.id}`
-          : `Step output ${context.step.id}`,
-      content: output,
-      mimeType: context.reviewContext?.kind === 'reviewer' ? 'application/json' : 'text/plain',
-      status: 'candidate',
-      metadata: {
-        agentVersionId: context.step.agentVersionId,
-        modelId,
-        providerId: model.providerId,
-        executionKind: context.reviewContext?.kind ?? 'ordinary',
-        toolCallCount: trace.length,
-        toolNames: trace.map((entry) => entry.name),
-      },
-    },
-  ];
-  if (trace.length > 0) {
-    outputVersions.push({
-      artifactName: `Tool trace ${context.step.id}`,
-      content: JSON.stringify({ version: 1, calls: trace }, null, 2),
-      mimeType: 'application/json',
-      status: 'candidate',
-      metadata: {
-        agentVersionId: context.step.agentVersionId,
-        modelId,
-        providerId: model.providerId,
-        executionKind: 'tool-trace',
-        toolCallCount: trace.length,
-      },
-    });
+  if (modelResolution.status === 'paused') {
+    throw new StepExecutionError(
+      `Model binding paused (${modelResolution.reason}) after ${modelResolution.failedModelId}`,
+      modelResolution.failureClass ?? failureClassOf(lastError),
+    );
   }
-  const candidateResult: ProductionExecutionResult = { outputVersions };
-  const validatedResult = materializeExecutionResult(context, candidateResult);
-  assertNotAborted(context.signal);
-  options.executionStore.completeProviderExecution({
-    ...fence,
-    idempotencyKey: context.idempotencyKey,
-    result: candidateResult,
-  });
-  return validatedResult;
+  if (lastError instanceof StepExecutionError) throw lastError;
+  if (lastError instanceof Error) {
+    throw new StepExecutionError(lastError.message, failureClassOf(lastError));
+  }
+  throw unavailable(`Unable to resolve a model for AgentVersion ${context.step.agentVersionId}`);
 }
 
-function providerSecretEchoError(): StepExecutionError {
-  return new StepExecutionError(SECRET_ECHO_FAILURE, 'protocol');
+function toAgentModelBinding(
+  agent: NonNullable<ReturnType<SqliteAgentStore['getVersion']>>,
+): AgentModelBinding {
+  return {
+    agentVersionId: agent.id,
+    defaultModelId: agent.defaultModelId,
+    fallbackModelIds: [...agent.fallbackModelIds],
+    pauseOnFailure: agent.pauseOnFailure,
+    defaultCredentialGroupId: agent.defaultCredentialGroupId,
+    pinnedCredentialRefId: agent.pinnedCredentialRefId,
+  };
+}
+
+/**
+ * After a model attempt fails, walk the agent fallback chain only when the
+ * failure class is eligible. Returns the next resolveModelBinding result
+ * (resolved next model, paused, or a synthetic paused when fallback is forbidden).
+ */
+function advanceModelBindingAfterFailure(
+  agent: AgentModelBinding,
+  failedModelId: ModelId,
+  failureClass: FailureClass,
+  workflowNodeModelId?: ModelId,
+) {
+  if (!shouldAttemptFallback(failureClass)) {
+    return {
+      status: 'paused' as const,
+      reason: 'no_fallback_configured' as const,
+      failedModelId,
+      failureClass,
+      agentVersionId: agent.agentVersionId,
+    };
+  }
+  return resolveModelBinding({
+    agent,
+    workflowNodeModelId,
+    failedModelId,
+    failureClass,
+  });
+}
+
+function providerSecretEchoError(): ProviderSecretEchoError {
+  return new ProviderSecretEchoError(SECRET_ECHO_FAILURE, 'protocol');
 }
 
 function buildSystemPrompt(agent: ReturnType<SqliteAgentStore['getRequiredAgentVersion']>): string {
