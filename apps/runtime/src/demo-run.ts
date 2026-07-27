@@ -258,7 +258,6 @@ export function projectAdapterEvent(
         adapterEventIndex: run.nextAdapterEventIndex,
         modelId: run.modelId,
         packetId: run.packetId,
-        run: nextRun,
       },
       nextRun,
       terminal: false,
@@ -271,10 +270,8 @@ export function projectAdapterEvent(
       payload: {
         threadId: run.threadId,
         textDelta: adapterEvent.text,
-        reasoningText: nextRun.reasoningText,
         adapterEventIndex: run.nextAdapterEventIndex,
         modelId: run.modelId,
-        run: nextRun,
       },
       nextRun,
       terminal: false,
@@ -289,7 +286,6 @@ export function projectAdapterEvent(
         textDelta: adapterEvent.text,
         adapterEventIndex: run.nextAdapterEventIndex,
         modelId: run.modelId,
-        run: nextRun,
       },
       nextRun,
       terminal: false,
@@ -302,7 +298,6 @@ export function projectAdapterEvent(
       payload: {
         toolCall: adapterEvent.toolCall,
         adapterEventIndex: run.nextAdapterEventIndex,
-        run: nextRun,
       },
       nextRun,
       terminal: false,
@@ -316,7 +311,6 @@ export function projectAdapterEvent(
         toolCallId: adapterEvent.toolCallId,
         result: adapterEvent.result,
         adapterEventIndex: run.nextAdapterEventIndex,
-        run: nextRun,
       },
       nextRun,
       terminal: false,
@@ -329,7 +323,6 @@ export function projectAdapterEvent(
       imageRef: adapterEvent.imageRef,
       mimeType: adapterEvent.mimeType,
       adapterEventIndex: run.nextAdapterEventIndex,
-      run: nextRun,
     },
     nextRun,
     terminal: false,
@@ -338,7 +331,12 @@ export function projectAdapterEvent(
 
 export function serializeDemoRuns(runs: ReadonlyMap<string, DemoRunState>): DemoRunState[] {
   return Array.from(runs.values())
-    .map((run) => ({ ...run }))
+    .map((run) => ({
+      ...run,
+      images: run.images
+        ?.filter((image) => Boolean(image.stagingPath))
+        .map(({ dataUrl: _dataUrl, ...image }) => image),
+    }))
     .sort((left, right) => left.runId.localeCompare(right.runId));
 }
 

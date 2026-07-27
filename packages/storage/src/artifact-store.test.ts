@@ -240,6 +240,7 @@ async function openLegacyConflictStore() {
       '0025_conversation_task_binding',
       '0026_provider_source_config',
       '0027_skill_archive',
+      '0028_message_pagination',
     ]);
     await runMigrations(dbPath);
   } finally {

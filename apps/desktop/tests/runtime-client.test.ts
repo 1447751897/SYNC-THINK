@@ -1110,6 +1110,230 @@ describe('RuntimePipeClient', () => {
     }
   });
 
+  it('consumes transient replay and live frames once, reports reset, and unsubscribes', async () => {
+    const installId = `desktop-client-transient-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const unsubscribeIds: string[] = [];
+    const server = createServer((socket) => {
+      let pending = Buffer.alloc(0);
+      socket.on('data', (chunk: Buffer) => {
+        const decoded = decodeFrames(Buffer.concat([pending, chunk]));
+        pending = decoded.remaining;
+        for (const frame of decoded.frames) {
+          if (frame.type === '__hello') {
+            socket.write(
+              encodeFrame({
+                id: frame.id,
+                kind: 'response',
+                type: '__hello',
+                payload: { ok: true },
+              }),
+            );
+          }
+          if (frame.type === 'conversation.subscribeTransientStream') {
+            socket.write(
+              Buffer.concat([
+                encodeFrame({
+                  id: frame.id,
+                  kind: 'response',
+                  type: 'conversation.subscribeTransientStream',
+                  payload: {
+                    streamId: 'transient-client-test',
+                    threadId: 'thread-transient-client',
+                    latestStreamSequence: 3,
+                    resetRequired: true,
+                    snapshot: {
+                      threadId: 'thread-transient-client',
+                      runId: 'run-transient-client',
+                      streamSequence: 3,
+                      text: 'snapshot answer',
+                      reasoningText: 'snapshot thought',
+                      updatedAt: '2026-07-27T00:00:01.000Z',
+                    },
+                    replayedFrames: [
+                      {
+                        threadId: 'thread-transient-client',
+                        runId: 'run-transient-client',
+                        streamSequence: 2,
+                        kind: 'text',
+                        textDelta: 'replay',
+                        occurredAt: '2026-07-27T00:00:00.000Z',
+                      },
+                      {
+                        threadId: 'thread-transient-client',
+                        runId: 'run-transient-client',
+                        streamSequence: 3,
+                        kind: 'reasoning',
+                        textDelta: 'think',
+                        occurredAt: '2026-07-27T00:00:01.000Z',
+                      },
+                    ],
+                  },
+                }),
+                encodeFrame({
+                  id: 'transient-client-test',
+                  kind: 'event',
+                  type: 'conversation.transientFrame',
+                  payload: {
+                    streamId: 'transient-client-test',
+                    frame: {
+                      threadId: 'thread-transient-client',
+                      runId: 'run-transient-client',
+                      streamSequence: 3,
+                      kind: 'reasoning',
+                      textDelta: 'duplicate',
+                      occurredAt: '2026-07-27T00:00:01.000Z',
+                    },
+                  },
+                }),
+                encodeFrame({
+                  id: 'transient-client-test',
+                  kind: 'event',
+                  type: 'conversation.transientFrame',
+                  payload: {
+                    streamId: 'transient-client-test',
+                    frame: {
+                      threadId: 'thread-transient-client',
+                      runId: 'run-transient-client',
+                      streamSequence: 4,
+                      kind: 'terminal',
+                      terminalState: 'completed',
+                      occurredAt: '2026-07-27T00:00:02.000Z',
+                    },
+                  },
+                }),
+              ]),
+            );
+          }
+          if (frame.type === 'conversation.unsubscribeTransientStream') {
+            const payload = frame.payload as { streamId: string };
+            unsubscribeIds.push(payload.streamId);
+            socket.write(
+              encodeFrame({
+                id: frame.id,
+                kind: 'response',
+                type: 'conversation.unsubscribeTransientStream',
+                payload,
+              }),
+            );
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(pipePathPortable(installId), resolve);
+    });
+    const client = new RuntimePipeClient({ installId, appVersion: '0.0.1' });
+    const sequences: number[] = [];
+    const resets: Array<{
+      latest: number;
+      snapshot?: { text: string; reasoningText?: string; streamSequence: number };
+    }> = [];
+
+    try {
+      const unsubscribe = await client.subscribeConversationTransientStream(
+        'thread-transient-client',
+        0,
+        (frame) => sequences.push(frame.streamSequence),
+        (latest, snapshot) => resets.push({ latest, snapshot }),
+      );
+      expect(sequences).toEqual([4]);
+      expect(resets).toEqual([
+        {
+          latest: 3,
+          snapshot: {
+            threadId: 'thread-transient-client',
+            runId: 'run-transient-client',
+            streamSequence: 3,
+            text: 'snapshot answer',
+            reasoningText: 'snapshot thought',
+            updatedAt: '2026-07-27T00:00:01.000Z',
+          },
+        },
+      ]);
+      await unsubscribe();
+      expect(unsubscribeIds).toEqual(['transient-client-test']);
+    } finally {
+      client.disconnect();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('restores transient subscriptions from the latest thread cursor', async () => {
+    const installId = `desktop-client-transient-reconnect-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let connectionCount = 0;
+    const cursors: number[] = [];
+    const server = createServer((socket) => {
+      connectionCount++;
+      const connection = connectionCount;
+      let pending = Buffer.alloc(0);
+      socket.on('data', (chunk: Buffer) => {
+        const decoded = decodeFrames(Buffer.concat([pending, chunk]));
+        pending = decoded.remaining;
+        for (const frame of decoded.frames) {
+          if (frame.type === '__hello') {
+            socket.write(
+              encodeFrame({ id: frame.id, kind: 'response', type: '__hello', payload: { ok: true } }),
+            );
+          }
+          if (frame.type === 'conversation.subscribeTransientStream') {
+            const payload = frame.payload as { afterStreamSequence: number };
+            cursors.push(payload.afterStreamSequence);
+            const sequence = connection;
+            socket.write(
+              encodeFrame({
+                id: frame.id,
+                kind: 'response',
+                type: 'conversation.subscribeTransientStream',
+                payload: {
+                  streamId: `transient-reconnect-${connection}`,
+                  threadId: 'thread-transient-reconnect',
+                  latestStreamSequence: sequence,
+                  resetRequired: false,
+                  replayedFrames: [
+                    {
+                      threadId: 'thread-transient-reconnect',
+                      runId: 'run-transient-reconnect',
+                      streamSequence: sequence,
+                      kind: 'text',
+                      textDelta: String(sequence),
+                      occurredAt: '2026-07-27T00:00:00.000Z',
+                    },
+                  ],
+                },
+              }),
+            );
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(pipePathPortable(installId), resolve);
+    });
+    const client = new RuntimePipeClient({
+      installId,
+      appVersion: '0.0.1',
+      reconnectDelayMs: 10,
+    });
+    const received: number[] = [];
+
+    try {
+      await client.subscribeConversationTransientStream(
+        'thread-transient-reconnect',
+        0,
+        (frame) => received.push(frame.streamSequence),
+      );
+      const firstTransport = (client as unknown as { socket: Socket | null }).socket;
+      firstTransport?.destroy();
+      expect(await waitFor(() => received.includes(2), 1_500)).toBe(true);
+      expect(cursors).toEqual([0, 1]);
+      expect(received).toEqual([1, 2]);
+    } finally {
+      client.disconnect();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
   it('does not automatically retry after Runtime authentication fails', async () => {
     const installId = `desktop-client-auth-retry-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const secret = 'install-secret';

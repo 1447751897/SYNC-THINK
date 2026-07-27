@@ -159,7 +159,7 @@ describe('model binding + live stream', () => {
       const types = store.listEvents(workspaceId, 0).map((e) => e.type);
       expect(types).toContain('context.packet.built');
       expect(types).toContain('run.started');
-      expect(types).toContain('message.delta');
+      expect(types).not.toContain('message.delta');
       expect(types).toContain('run.completed');
 
       const packet = store.listEvents(workspaceId, 0).find((e) => e.type === 'context.packet.built');

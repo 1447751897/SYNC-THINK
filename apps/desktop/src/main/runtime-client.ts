@@ -11,6 +11,9 @@ import {
   pipePathPortable,
   verifyHmac,
   type CommandType,
+  type ConversationTransientFrame,
+  type ConversationTransientSnapshot,
+  type ConversationTransientStreamEvent,
   type EventReplayPagePayload,
   type EventStreamEvent,
   type EventStreamStartedPayload,
@@ -18,6 +21,7 @@ import {
   type Hello,
   type HelloChallengePayload,
   type HelloProofPayload,
+  type SubscribeConversationTransientStreamResponse,
 } from '@sync-think/protocol';
 import { ErrorCode, ulid, type Event, type EventCategory } from '@sync-think/shared';
 import type { RuntimeConnectFailure } from '../runtime-bridge-contract.js';
@@ -44,6 +48,37 @@ interface EventSubscription {
   phase: 'catching-up' | 'live';
   highWatermark: number | null;
   pendingLiveEvents: Event[];
+}
+
+interface TransientSubscription {
+  threadId: string;
+  afterStreamSequence: number;
+  listener: (frame: ConversationTransientFrame) => void;
+  snapshotListener?: (
+    latestStreamSequence: number,
+    snapshot: ConversationTransientSnapshot | undefined,
+  ) => void;
+  streamId: string | null;
+  phase: 'catching-up' | 'live';
+  pendingLiveFrames: ConversationTransientFrame[];
+}
+
+function isConversationTransientSnapshot(
+  value: unknown,
+): value is ConversationTransientSnapshot {
+  if (!value || typeof value !== 'object') return false;
+  const snapshot = value as Partial<ConversationTransientSnapshot>;
+  return (
+    typeof snapshot.threadId === 'string' &&
+    snapshot.threadId.length > 0 &&
+    typeof snapshot.runId === 'string' &&
+    snapshot.runId.length > 0 &&
+    Number.isSafeInteger(snapshot.streamSequence) &&
+    (snapshot.streamSequence ?? -1) >= 0 &&
+    typeof snapshot.text === 'string' &&
+    (snapshot.reasoningText === undefined || typeof snapshot.reasoningText === 'string') &&
+    typeof snapshot.updatedAt === 'string'
+  );
 }
 
 export class RuntimeAuthenticationError extends Error {
@@ -157,6 +192,9 @@ export class RuntimePipeClient {
   private readonly subscriptions = new Set<EventSubscription>();
   private readonly streamSubscriptions = new Map<string, EventSubscription>();
   private readonly pendingStreamEvents = new Map<string, Event[]>();
+  private readonly transientSubscriptions = new Set<TransientSubscription>();
+  private readonly transientStreamSubscriptions = new Map<string, TransientSubscription>();
+  private readonly pendingTransientFrames = new Map<string, ConversationTransientFrame[]>();
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
 
@@ -177,7 +215,7 @@ export class RuntimePipeClient {
       })
       .finally(() => {
         this.connecting = null;
-        if (!this.socket && retryable && this.subscriptions.size > 0) this.scheduleReconnect();
+        if (!this.socket && retryable && this.hasSubscriptions()) this.scheduleReconnect();
       });
     return this.connecting;
   }
@@ -233,6 +271,47 @@ export class RuntimePipeClient {
     return () => this.closeSubscription(subscription);
   }
 
+  async subscribeConversationTransientStream(
+    threadId: string,
+    afterStreamSequence: number,
+    listener: (frame: ConversationTransientFrame) => void,
+    snapshotListener?: (
+      latestStreamSequence: number,
+      snapshot: ConversationTransientSnapshot | undefined,
+    ) => void,
+  ): Promise<() => Promise<void>> {
+    await this.connect();
+    const subscription: TransientSubscription = {
+      threadId,
+      afterStreamSequence,
+      listener,
+      snapshotListener,
+      streamId: null,
+      phase: 'catching-up',
+      pendingLiveFrames: [],
+    };
+    this.transientSubscriptions.add(subscription);
+    try {
+      await this.openTransientSubscription(subscription);
+    } catch (error) {
+      const transportDisconnected = !this.socket || this.socket.destroyed;
+      if (transportDisconnected && isRetryableConnectionError(error)) {
+        try {
+          await this.connect();
+          if (this.transientSubscriptions.has(subscription) && subscription.phase === 'live') {
+            return () => this.closeTransientSubscription(subscription);
+          }
+        } catch (reconnectError) {
+          await this.closeTransientSubscription(subscription).catch(() => undefined);
+          throw reconnectError;
+        }
+      }
+      await this.closeTransientSubscription(subscription).catch(() => undefined);
+      throw error;
+    }
+    return () => this.closeTransientSubscription(subscription);
+  }
+
   disconnect(): void {
     const socket = this.socket;
     this.socket = null;
@@ -241,6 +320,9 @@ export class RuntimePipeClient {
     this.subscriptions.clear();
     this.streamSubscriptions.clear();
     this.pendingStreamEvents.clear();
+    this.transientSubscriptions.clear();
+    this.transientStreamSubscriptions.clear();
+    this.pendingTransientFrames.clear();
     this.clearReconnectTimer();
     this.rejectPending(new RuntimeTransientError('Runtime connection closed'));
     if (socket && !socket.destroyed) socket.destroy();
@@ -408,12 +490,45 @@ export class RuntimePipeClient {
       return;
     }
 
+    if (frame.kind === 'event' && frame.type === 'conversation.transientFrame') {
+      const payload = frame.payload as ConversationTransientStreamEvent;
+      const subscription = this.transientStreamSubscriptions.get(payload.streamId);
+      if (!subscription) {
+        this.pendingTransientFrames.get(payload.streamId)?.push(payload.frame);
+        return;
+      }
+      if (subscription.phase === 'catching-up') {
+        subscription.pendingLiveFrames.push(payload.frame);
+        return;
+      }
+      try {
+        this.deliverTransientFrame(subscription, payload.frame);
+      } catch {
+        console.error('[desktop] runtime transient listener failed');
+        void this.closeTransientSubscription(subscription).catch(() => undefined);
+      }
+      return;
+    }
+
     const pending = this.pendingRequests.get(frame.id);
     if (!pending) {
-      if (frame.kind === 'response' && frame.type === 'runtime.subscribeEvents' && !frame.error) {
-        const streamId = (frame.payload as Partial<EventStreamStartedPayload>).streamId;
+      if (
+        frame.kind === 'response' &&
+        (frame.type === 'runtime.subscribeEvents' ||
+          frame.type === 'conversation.subscribeTransientStream') &&
+        !frame.error
+      ) {
+        const streamId = (
+          frame.payload as Partial<
+            EventStreamStartedPayload | SubscribeConversationTransientStreamResponse
+          >
+        ).streamId;
         if (typeof streamId === 'string') {
-          void this.unsubscribeOrphanStream(streamId).catch(() => undefined);
+          const unsubscribe =
+            frame.type === 'runtime.subscribeEvents'
+              ? this.unsubscribeOrphanStream(streamId)
+              : this.unsubscribeOrphanTransientStream(streamId);
+          void unsubscribe.catch(() => undefined);
         }
       }
       return;
@@ -422,6 +537,12 @@ export class RuntimePipeClient {
     if (frame.type === 'runtime.subscribeEvents' && !frame.error) {
       const streamId = (frame.payload as Partial<EventStreamStartedPayload>).streamId;
       if (typeof streamId === 'string') this.pendingStreamEvents.set(streamId, []);
+    }
+    if (frame.type === 'conversation.subscribeTransientStream' && !frame.error) {
+      const streamId = (
+        frame.payload as Partial<SubscribeConversationTransientStreamResponse>
+      ).streamId;
+      if (typeof streamId === 'string') this.pendingTransientFrames.set(streamId, []);
     }
 
     this.pendingRequests.delete(frame.id);
@@ -440,11 +561,7 @@ export class RuntimePipeClient {
     this.pendingBytes = Buffer.alloc(0);
     this.resetSubscriptionStreams();
     this.rejectPending(error);
-    if (
-      !this.connecting &&
-      this.subscriptions.size > 0 &&
-      isRetryableConnectionError(error)
-    ) {
+    if (!this.connecting && this.hasSubscriptions() && isRetryableConnectionError(error)) {
       this.scheduleReconnect();
     }
   }
@@ -452,11 +569,18 @@ export class RuntimePipeClient {
   private resetSubscriptionStreams(): void {
     this.streamSubscriptions.clear();
     this.pendingStreamEvents.clear();
+    this.transientStreamSubscriptions.clear();
+    this.pendingTransientFrames.clear();
     for (const subscription of this.subscriptions) {
       subscription.streamId = null;
       subscription.phase = 'catching-up';
       subscription.highWatermark = null;
       subscription.pendingLiveEvents = [];
+    }
+    for (const subscription of this.transientSubscriptions) {
+      subscription.streamId = null;
+      subscription.phase = 'catching-up';
+      subscription.pendingLiveFrames = [];
     }
   }
 
@@ -483,6 +607,98 @@ export class RuntimePipeClient {
         await this.closeSubscription(subscription).catch(() => undefined);
       }
     }
+    for (const subscription of this.transientSubscriptions) {
+      try {
+        await this.openTransientSubscription(subscription);
+      } catch (error) {
+        const transportDisconnected = !this.socket || this.socket.destroyed;
+        if (transportDisconnected && isRetryableConnectionError(error)) throw error;
+        console.error('[desktop] runtime transient listener failed');
+        await this.closeTransientSubscription(subscription).catch(() => undefined);
+      }
+    }
+  }
+
+  private async openTransientSubscription(
+    subscription: TransientSubscription,
+  ): Promise<void> {
+    if (!this.transientSubscriptions.has(subscription)) return;
+    const response = (await this.sendRequest('conversation.subscribeTransientStream', {
+      threadId: subscription.threadId,
+      afterStreamSequence: subscription.afterStreamSequence,
+    })) as SubscribeConversationTransientStreamResponse;
+    if (!this.transientSubscriptions.has(subscription)) {
+      if (typeof response.streamId === 'string') {
+        await this.unsubscribeOrphanTransientStream(response.streamId).catch(() => undefined);
+      }
+      return;
+    }
+    this.commitTransientSubscription(subscription, response);
+  }
+
+  private commitTransientSubscription(
+    subscription: TransientSubscription,
+    response: SubscribeConversationTransientStreamResponse,
+  ): void {
+    if (
+      typeof response.streamId !== 'string' ||
+      !response.streamId ||
+      response.threadId !== subscription.threadId ||
+      !Number.isSafeInteger(response.latestStreamSequence) ||
+      response.latestStreamSequence < 0 ||
+      typeof response.resetRequired !== 'boolean' ||
+      !Array.isArray(response.replayedFrames)
+    ) {
+      throw new RuntimeProtocolError();
+    }
+    if (response.snapshot !== undefined && !isConversationTransientSnapshot(response.snapshot)) {
+      throw new RuntimeProtocolError();
+    }
+    subscription.streamId = response.streamId;
+    subscription.phase = 'catching-up';
+    this.transientStreamSubscriptions.set(response.streamId, subscription);
+
+    if (response.resetRequired) {
+      // The replay is explicitly incomplete. Drop it and resume at the Runtime's
+      // latest cursor; callers rebuild their draft from the durable message/event
+      // fallback, while pending live frames beyond this watermark still apply.
+      subscription.afterStreamSequence = response.latestStreamSequence;
+      subscription.snapshotListener?.(response.latestStreamSequence, response.snapshot);
+    } else {
+      for (const transientFrame of response.replayedFrames) {
+        this.deliverTransientFrame(subscription, transientFrame);
+      }
+    }
+    if (subscription.afterStreamSequence !== response.latestStreamSequence) {
+      throw new RuntimeProtocolError();
+    }
+    const beforeMapping = this.pendingTransientFrames.get(response.streamId) ?? [];
+    this.pendingTransientFrames.delete(response.streamId);
+    const liveFrames = [...beforeMapping, ...subscription.pendingLiveFrames].sort(
+      (left, right) => left.streamSequence - right.streamSequence,
+    );
+    subscription.pendingLiveFrames = [];
+    subscription.phase = 'live';
+    for (const transientFrame of liveFrames) this.deliverTransientFrame(subscription, transientFrame);
+  }
+
+  private deliverTransientFrame(
+    subscription: TransientSubscription,
+    transientFrame: ConversationTransientFrame,
+  ): void {
+    if (
+      transientFrame.threadId !== subscription.threadId ||
+      !Number.isSafeInteger(transientFrame.streamSequence) ||
+      transientFrame.streamSequence < 1
+    ) {
+      throw new RuntimeProtocolError();
+    }
+    if (transientFrame.streamSequence <= subscription.afterStreamSequence) return;
+    if (transientFrame.streamSequence !== subscription.afterStreamSequence + 1) {
+      throw new RuntimeProtocolError();
+    }
+    subscription.listener(transientFrame);
+    subscription.afterStreamSequence = transientFrame.streamSequence;
   }
 
   private async closeSubscription(subscription: EventSubscription): Promise<void> {
@@ -494,7 +710,7 @@ export class RuntimePipeClient {
       this.pendingStreamEvents.delete(streamId);
     }
     subscription.pendingLiveEvents = [];
-    if (this.subscriptions.size === 0) this.clearReconnectTimer();
+    if (!this.hasSubscriptions()) this.clearReconnectTimer();
     if (!streamId || !this.socket || this.socket.destroyed) return;
     await this.sendRequest('runtime.unsubscribeEvents', { streamId });
   }
@@ -504,8 +720,33 @@ export class RuntimePipeClient {
     await this.sendRequest('runtime.unsubscribeEvents', { streamId });
   }
 
+  private async closeTransientSubscription(
+    subscription: TransientSubscription,
+  ): Promise<void> {
+    if (!this.transientSubscriptions.delete(subscription)) return;
+    const streamId = subscription.streamId;
+    subscription.streamId = null;
+    if (streamId) {
+      this.transientStreamSubscriptions.delete(streamId);
+      this.pendingTransientFrames.delete(streamId);
+    }
+    subscription.pendingLiveFrames = [];
+    if (!this.hasSubscriptions()) this.clearReconnectTimer();
+    if (!streamId || !this.socket || this.socket.destroyed) return;
+    await this.sendRequest('conversation.unsubscribeTransientStream', { streamId });
+  }
+
+  private async unsubscribeOrphanTransientStream(streamId: string): Promise<void> {
+    if (!this.socket || this.socket.destroyed) return;
+    await this.sendRequest('conversation.unsubscribeTransientStream', { streamId });
+  }
+
+  private hasSubscriptions(): boolean {
+    return this.subscriptions.size > 0 || this.transientSubscriptions.size > 0;
+  }
+
   private scheduleReconnect(): void {
-    if (this.reconnectTimer || this.subscriptions.size === 0) return;
+    if (this.reconnectTimer || !this.hasSubscriptions()) return;
     const baseDelay = this.options.reconnectDelayMs ?? 250;
     const delay = baseDelay * Math.min(2 ** this.reconnectAttempt, 8);
     this.reconnectAttempt++;

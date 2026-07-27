@@ -1,3 +1,56 @@
+## 2026-07-27 · 会话上下文性能 S2 完成：Non-durable Delta + Active Snapshot
+
+- Desktop `RuntimePipeClient`、`RuntimeSession`、Main IPC、Preload 与 ChatView 已完整接入 thread-scoped transient stream；当前会话以 transient text/reasoning frame 更新助手草稿，durable terminal 负责 final message 收敛。
+- Runtime 停止持久化 `message.delta` / `message.reasoning_delta`；output chunk 只更新内存 active run、thread-local replay 和 live subscribers，下一条 durable 边界才携带最新 checkpoint。
+- transient subscribe response 增加 active-run snapshot；cursor 超前或 replay 窗口淘汰时，Desktop 直接恢复完整 text/reasoning 草稿，不再依赖 durable delta 回填。
+- terminal 会清理 active snapshot，并保持“先写 final assistant message、后发布 `run.completed`”顺序；失败/取消也继续发布 durable terminal 和 transient terminal。
+- 新增 1000 chunk SQLite 收敛验收：0 条 durable delta、1 条 `run.completed`，durable event 总量保持常数级；覆盖 live/replay/reset/snapshot/reconnect/thread 隔离。
+- 验证：Protocol 4 文件/18 项、Runtime 44 文件/306 项、Desktop 73 文件/543 项全部通过；全仓 build 11/11 通过。
+
+- 全仓验证通过：typecheck 20/20 tasks、test 20/20 tasks、build 11/11 tasks。
+- ChatView 按 sequence 消费全部新增事件，不再假设 `run.completed` 是 `eventHistory` 最后一项；兼容 `reasoningDelta` / `textDelta` / `delta`。
+- 新增会话/请求 generation 隔离，晚到的旧 `listConversationMessages` 响应不能覆盖当前会话或较新的终态刷新。
+- 流事件按 runId 分离并按事件顺序应用，旧 run 终态与新 run delta 同批到达时不会串接草稿。
+- 分页 prepend 增加 durable message id 去重，并继续按 thread-local sequence 排序。
+- Runtime 在发布 `run.completed` 前先持久化 final assistant message，消除终态刷新与 Message Store 写入竞态。
+- 新增 Chat stream 3 项回归测试；Desktop 72 文件 / 537 项、Runtime 43 文件 / 299 项测试通过。
+
+## 2026-07-27 · 会话上下文性能 S1 完成：分页 ChatView
+
+- **ChatView 不再扫描全库事件构建消息列表**；改为调用 `listConversationMessages` 分页读取最近 50 条。
+- 旧事件 backfill 在 Runtime 恢复时自动执行，进度持久化到 `app_setting`，可重跑幂等。
+- 流式输出（`message.delta` / `message.reasoning_delta`）通过局部 `streamingMessage` 状态实时更新，不触发全历史重算。
+- `run.completed` / `run.failed` / `run.cancelled` 终态时清空流式状态并刷新最新页，最终消息自动来自 Message Store。
+- 向上滚动到顶部时触发分页加载（`beforeSequence` cursor），prepend 更早消息并保持滚动位置。
+- `eventHistory` 仍供执行过程、待批准卡片、上下文圆环使用，但不再用于构建消息文本。
+- Desktop 全量测试 534/534，typecheck/build 通过。
+- S1 全部切片完成：Message Store → 分页协议 → final message 写入 → 旧事件回填 → ChatView 分页加载。
+
+## 2026-07-27 · 会话上下文性能 S1 final message 写入
+
+- Runtime `task.appendMessage` 现在把最终用户/系统/工具文本写入 `SqliteMessageStore`（thread 内 `nextSequence`）。
+- `run.completed` 把助手终态写入 durable message（稳定 id `asst-${runId}`，幂等）；空回复不写。
+- `message.attachImages` 在已有最终文本消息上 `updateBlocks` 合并 image `storageRef` blocks，不写 data URL。
+- Message Store 新增 `nextSequence` / `updateBlocks`；真实 SQLite 与 Runtime 集成测试覆盖用户+图片+助手终态后的 `conversation.listMessages` 分页。
+- 旧事件 backfill 与 ChatView 分页切换仍待做；现有 eventHistory UI 路径保持兼容。
+
+## 2026-07-27 · 会话上下文性能 S1 数据层
+
+- 新增 `0028_message_pagination`：以 `UNIQUE(thread_id, sequence)` 保证 thread 内稳定顺序，并增加 `run_id` 索引；遗留重复 sequence 会使迁移原子失败，不静默删改历史消息。
+- 新增并导出 `SqliteMessageStore`：共享 `Message`/品牌 ID 写入与读取、同 ID 同内容幂等、冲突检测、thread 校验，以及默认 50/max 100 的 exclusive cursor 分页（SQL DESC、返回 ASC）。
+- message blocks 增加数量、JSON 深度和 256 KiB UTF-8 上界；图片 `storageRef` 可往返，任何嵌套 `data:image/` 均拒绝持久化。
+- 真实 SQLite 测试覆盖分页顺序/游标/thread 隔离、图片 blocks、幂等与冲突、非法输入、迁移索引和查询计划。
+- S1 数据层 + 查询全链路完成：`conversation.listMessages` 已接通 shared/protocol、Runtime 持久库查询与 Desktop main/preload/renderer bridge；默认最新 50 条、最大 100、exclusive `beforeSequence`，按 thread 隔离且返回升序消息。
+- ChatView 切换到分页消息源、旧事件回填和滚动加载仍待实施；本片不修改 UI，也不扫描 `eventHistory`。
+
+## 2026-07-27 · 会话上下文性能 S0 基线与保护
+
+- Runtime durable delta payload 不再嵌入不断增长的完整 `run` / reasoning 快照；运行恢复状态仍由 checkpoint/内存中的 `nextRun` 维护。
+- 新增 1000 个 text/reasoning delta 的确定性 payload 字节上界，防止事件体积退化为 O(D²)。
+- 新增 durable event/checkpoint 禁止 `data:image/` 的保护；本轮 provider 可使用 data URL，但不会进入持久化 payload。
+- Desktop `RuntimeSession` 顺序 replay 改为数组原地追加，避免逐事件展开复制导致 O(N²)；增加 10,000 顺序事件数组身份测试。
+- S0 完成时尚未实施 S1 message store；性能测试使用结构、计数和字节上界，不使用过紧墙钟阈值。
+
 ## 2026-07-26 · 审查 11 项复核 + 智能体库 P2 收口
 
 - **审查报告 11 项复核**：对照工作树确认 1–11 均已落地（首轮不传欢迎页 modelId、Run 快照 fallback、Skill/MCP 进请求、空数组覆盖、删智能体归档、模型必选、rg 真实执行、工具 fingerprint、重启恢复选中、气泡身份展示）；相关 vitest 41/41 绿

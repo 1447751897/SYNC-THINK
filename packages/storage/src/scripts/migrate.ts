@@ -118,7 +118,21 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0027_skill_archive',
     sql: skillArchiveDdlSql(),
   },
+  {
+    name: '0028_message_pagination',
+    sql: messagePaginationDdlSql(),
+  },
 ];
+
+function messagePaginationDdlSql(): string {
+  return `
+-- Existing message data is preserved. If a legacy database contains duplicate
+-- thread-local sequences, CREATE UNIQUE INDEX fails and this migration rolls
+-- back atomically rather than silently deleting or renumbering messages.
+CREATE UNIQUE INDEX message_thread_sequence_uidx ON message(thread_id, sequence);
+CREATE INDEX message_run_idx ON message(run_id);
+`;
+}
 
 function skillArchiveDdlSql(): string {
   return `

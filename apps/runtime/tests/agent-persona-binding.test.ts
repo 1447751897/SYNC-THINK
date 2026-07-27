@@ -242,12 +242,13 @@ describe('agent-track persona + default model binding', () => {
         providerModelId: 'persona-mini',
       });
 
-      const deltas = store
+      const completed = store
         .listEvents(workspaceId, 0)
-        .filter((e) => e.type === 'message.delta')
-        .map((e) => String((e.payload as { textDelta?: string }).textDelta ?? ''))
-        .join('');
-      expect(deltas).toContain('啊哈');
+        .find((event) => event.type === 'run.completed');
+      expect(String(completed?.payload.assistantText ?? '')).toContain('啊哈');
+      expect(store.listEvents(workspaceId, 0).map((event) => event.type)).not.toContain(
+        'message.delta',
+      );
     } finally {
       socket.destroy();
       await runtime.stop();

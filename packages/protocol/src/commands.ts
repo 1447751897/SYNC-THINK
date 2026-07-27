@@ -51,6 +51,8 @@ export type CommandType =
   | 'runtime.subscribeEvents'
   | 'runtime.continueEventReplay'
   | 'runtime.unsubscribeEvents'
+  | 'conversation.subscribeTransientStream'
+  | 'conversation.unsubscribeTransientStream'
   | 'context.packet.peek'
   | 'context.packet.amend'
   | 'plan.draft'
@@ -105,6 +107,7 @@ export type CommandType =
   | 'team.startRun'
   | 'team.setRunStatus'
   | 'conversation.list'
+  | 'conversation.listMessages'
   | 'conversation.create'
   | 'conversation.rename'
   | 'conversation.setPinned'
@@ -423,6 +426,62 @@ export interface ContinueEventReplayPayload {
 }
 
 export interface UnsubscribeEventsPayload {
+  streamId: string;
+}
+
+/**
+ * Subscribe to non-durable chat output for one message thread. The cursor is
+ * thread-local and independent from the durable Runtime event sequence.
+ */
+export interface SubscribeConversationTransientStreamPayload {
+  threadId: ThreadId;
+  /** Only replay frames whose thread-local streamSequence is greater than this cursor. */
+  afterStreamSequence?: number;
+}
+
+export interface UnsubscribeConversationTransientStreamPayload {
+  streamId: string;
+}
+
+export type ConversationTransientFrameKind = 'text' | 'reasoning' | 'terminal';
+export type ConversationTransientTerminalState = 'completed' | 'failed' | 'cancelled';
+
+/** Short-lived output frame. It is never written to the durable event store. */
+export interface ConversationTransientFrame {
+  threadId: ThreadId;
+  runId: RunId;
+  /** Monotonic within threadId only. */
+  streamSequence: number;
+  kind: ConversationTransientFrameKind;
+  textDelta?: string;
+  terminalState?: ConversationTransientTerminalState;
+  errorMessage?: string;
+  occurredAt: string;
+}
+
+export interface ConversationTransientSnapshot {
+  threadId: ThreadId;
+  runId: RunId;
+  /** Latest thread cursor represented by this snapshot. */
+  streamSequence: number;
+  text: string;
+  reasoningText?: string;
+  updatedAt: string;
+}
+
+export interface SubscribeConversationTransientStreamResponse {
+  streamId: string;
+  threadId: ThreadId;
+  replayedFrames: ConversationTransientFrame[];
+  /** Current active run state; lets reset/reconnect recover without durable deltas. */
+  snapshot?: ConversationTransientSnapshot;
+  /** Greatest retained/current sequence observed for this thread. */
+  latestStreamSequence: number;
+  /** True when the requested cursor predates the bounded replay window. */
+  resetRequired: boolean;
+}
+
+export interface UnsubscribeConversationTransientStreamResponse {
   streamId: string;
 }
 
@@ -2517,6 +2576,24 @@ export interface ListConversationsPayload {
 }
 export interface ListConversationsResponse {
   conversations: import('@sync-think/shared').Conversation[];
+}
+
+/** Wire-safe aliases of the shared durable message model. */
+export type MessageBlock = import('@sync-think/shared').MessageBlock;
+export type MessageSummary = import('@sync-think/shared').Message;
+
+export interface ConversationListMessagesPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  /** Exclusive thread-local sequence cursor. */
+  beforeSequence?: number;
+  /** Defaults to 50; valid range is 1..100. */
+  limit?: number;
+}
+
+export interface ConversationListMessagesResponse {
+  messages: MessageSummary[];
+  nextCursor?: number;
+  hasMore: boolean;
 }
 export interface CreateConversationPayload {
   track: import('@sync-think/shared').ConversationTrack;

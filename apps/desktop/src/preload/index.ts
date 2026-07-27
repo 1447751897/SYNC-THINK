@@ -160,6 +160,10 @@ import type {
   TeamResponse,
   ListConversationsPayload,
   ListConversationsResponse,
+  ConversationListMessagesPayload,
+  ConversationListMessagesResponse,
+  ConversationTransientFrame,
+  ConversationTransientSnapshot,
   CreateConversationPayload,
   ConversationResponse,
   RenameConversationPayload,
@@ -402,6 +406,62 @@ const api = {
         'runtime:conversation-list',
         payload,
       ) as Promise<ListConversationsResponse>,
+    listConversationMessages: (payload: ConversationListMessagesPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-list-messages',
+        payload,
+      ) as Promise<ConversationListMessagesResponse>,
+    subscribeConversationTransientStream: (
+      payload: { threadId: string; afterStreamSequence?: number },
+      listener: (event:
+        | { type: 'frame'; frame: ConversationTransientFrame }
+        | {
+            type: 'reset';
+            latestStreamSequence: number;
+            snapshot?: ConversationTransientSnapshot;
+          }) => void,
+    ) => {
+      const subscriptionId = `renderer-transient-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const channel = 'runtime:conversation-transient';
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        event: ({ subscriptionId: string } & (
+          | { type: 'frame'; frame: ConversationTransientFrame }
+          | {
+              type: 'reset';
+              latestStreamSequence: number;
+              snapshot?: ConversationTransientSnapshot;
+            }
+        )),
+      ) => {
+        if (event.subscriptionId !== subscriptionId) return;
+        if (event.type === 'frame') listener({ type: 'frame', frame: event.frame });
+        else
+          listener({
+            type: 'reset',
+            latestStreamSequence: event.latestStreamSequence,
+            ...(event.snapshot ? { snapshot: event.snapshot } : {}),
+          });
+      };
+      ipcRenderer.on(channel, handler);
+      const ready = ipcRenderer.invoke('runtime:conversation-subscribe-transient', {
+        ...payload,
+        subscriptionId,
+      }) as Promise<{ subscriptionId: string }>;
+      let closed = false;
+      return {
+        ready,
+        unsubscribe: async () => {
+          if (closed) return;
+          closed = true;
+          ipcRenderer.removeListener(channel, handler);
+          await ready.catch(() => undefined);
+          await ipcRenderer
+            .invoke('runtime:conversation-unsubscribe-transient', { subscriptionId })
+            .catch(() => undefined);
+        },
+      };
+    },
     createConversation: (payload: CreateConversationPayload) =>
       ipcRenderer.invoke('runtime:conversation-create', payload) as Promise<ConversationResponse>,
     renameConversation: (payload: RenameConversationPayload) =>

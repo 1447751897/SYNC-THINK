@@ -1,4 +1,8 @@
-import type { CommandType } from '@sync-think/protocol';
+import type {
+  CommandType,
+  ConversationTransientFrame,
+  ConversationTransientSnapshot,
+} from '@sync-think/protocol';
 import type { Event } from '@sync-think/shared';
 import { mergeEventHistory } from '../event-history.js';
 import type {
@@ -88,6 +92,15 @@ export interface RuntimeSessionClient {
     afterCursor: number,
     listener: (event: Event) => void,
   ): Promise<() => Promise<void>>;
+  subscribeConversationTransientStream?(
+    threadId: string,
+    afterStreamSequence: number,
+    listener: (frame: ConversationTransientFrame) => void,
+    snapshotListener?: (
+      latestStreamSequence: number,
+      snapshot: ConversationTransientSnapshot | undefined,
+    ) => void,
+  ): Promise<() => Promise<void>>;
   request<T = unknown>(type: CommandType, payload: unknown): Promise<T>;
 }
 
@@ -96,6 +109,10 @@ export class RuntimeSession {
   /** O(1) dedupe for event sequences — avoids O(n) scans on every replay event. */
   private seenSequences = new Set<number>();
   private runtimeSubscription: Promise<() => Promise<void>> | null = null;
+  private readonly transientSubscriptions = new Map<
+    string,
+    { senderId: number; unsubscribe: () => Promise<void> }
+  >();
 
   constructor(
     private readonly client: RuntimeSessionClient,
@@ -139,6 +156,56 @@ export class RuntimeSession {
     }
   }
 
+  async subscribeConversationTransientStream(input: {
+    senderId: number;
+    subscriptionId: string;
+    threadId: string;
+    afterStreamSequence?: number;
+    listener: (frame: ConversationTransientFrame) => void;
+    snapshotListener?: (
+      latestStreamSequence: number,
+      snapshot: ConversationTransientSnapshot | undefined,
+    ) => void;
+  }): Promise<void> {
+    if (!this.client.subscribeConversationTransientStream) {
+      throw new Error('Runtime client does not support transient conversation streams');
+    }
+    await this.unsubscribeConversationTransientStream(input.senderId, input.subscriptionId);
+    const key = this.transientSubscriptionKey(input.senderId, input.subscriptionId);
+    const unsubscribe = await this.client.subscribeConversationTransientStream(
+      input.threadId,
+      input.afterStreamSequence ?? 0,
+      input.listener,
+      input.snapshotListener,
+    );
+    this.transientSubscriptions.set(key, { senderId: input.senderId, unsubscribe });
+  }
+
+  async unsubscribeConversationTransientStream(
+    senderId: number,
+    subscriptionId: string,
+  ): Promise<void> {
+    const key = this.transientSubscriptionKey(senderId, subscriptionId);
+    const existing = this.transientSubscriptions.get(key);
+    if (!existing) return;
+    this.transientSubscriptions.delete(key);
+    await existing.unsubscribe().catch(() => undefined);
+  }
+
+  async unsubscribeConversationTransientStreamsForSender(senderId: number): Promise<void> {
+    const matching = [...this.transientSubscriptions.entries()].filter(
+      ([, subscription]) => subscription.senderId === senderId,
+    );
+    for (const [key, subscription] of matching) {
+      this.transientSubscriptions.delete(key);
+      await subscription.unsubscribe().catch(() => undefined);
+    }
+  }
+
+  private transientSubscriptionKey(senderId: number, subscriptionId: string): string {
+    return `${senderId}:${subscriptionId}`;
+  }
+
   private recordEvent(event: Event): void {
     if (this.seenSequences.has(event.sequence)) return;
     this.seenSequences.add(event.sequence);
@@ -146,7 +213,7 @@ export class RuntimeSession {
     // Sequential append is the common path during replay; avoid full re-merge.
     const last = this.eventHistory[this.eventHistory.length - 1];
     if (!last || sanitizedEvent.sequence > last.sequence) {
-      this.eventHistory = [...this.eventHistory, sanitizedEvent];
+      this.eventHistory.push(sanitizedEvent);
     } else {
       this.eventHistory = mergeEventHistory(this.eventHistory, [sanitizedEvent]);
     }

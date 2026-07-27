@@ -10,6 +10,8 @@ import type {
   DeleteTeamPayload,
   ConversationCompactPayload,
   ListConversationsPayload,
+  ConversationListMessagesPayload,
+  SubscribeConversationTransientStreamPayload,
   ListGlobalAgentsPayload,
   RenameConversationPayload,
   SetConversationArchivedPayload,
@@ -227,6 +229,69 @@ export function parseListConversationsPayload(value: unknown): ListConversations
         : (requiredString(value.workspaceId, label) as ListConversationsPayload['workspaceId']),
     includeArchived: value.includeArchived as boolean | undefined,
   };
+}
+
+export function parseConversationListMessagesPayload(
+  value: unknown,
+): ConversationListMessagesPayload {
+  const label = 'Invalid list-conversation-messages payload';
+  if (!isRecord(value)) throw new Error(label);
+  const allowed = new Set(['conversationId', 'beforeSequence', 'limit']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
+  if (
+    value.beforeSequence !== undefined &&
+    (!Number.isSafeInteger(value.beforeSequence) || (value.beforeSequence as number) < 0)
+  ) {
+    throw new Error(label);
+  }
+  if (
+    value.limit !== undefined &&
+    (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100)
+  ) {
+    throw new Error(label);
+  }
+  return {
+    conversationId: requiredString(
+      value.conversationId,
+      label,
+    ) as ConversationListMessagesPayload['conversationId'],
+    beforeSequence: value.beforeSequence as number | undefined,
+    limit: value.limit as number | undefined,
+  };
+}
+
+export function parseSubscribeConversationTransientStreamPayload(
+  value: unknown,
+): SubscribeConversationTransientStreamPayload & { subscriptionId: string } {
+  const label = 'Invalid subscribe-conversation-transient-stream payload';
+  if (!isRecord(value)) throw new Error(label);
+  const allowed = new Set(['threadId', 'afterStreamSequence', 'subscriptionId']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
+  if (
+    value.afterStreamSequence !== undefined &&
+    (!Number.isSafeInteger(value.afterStreamSequence) ||
+      (value.afterStreamSequence as number) < 0)
+  ) {
+    throw new Error(label);
+  }
+  return {
+    threadId: requiredString(
+      value.threadId,
+      label,
+    ) as SubscribeConversationTransientStreamPayload['threadId'],
+    afterStreamSequence: value.afterStreamSequence as number | undefined,
+    subscriptionId: requiredString(value.subscriptionId, label),
+  };
+}
+
+export function parseUnsubscribeConversationTransientStreamPayload(
+  value: unknown,
+): { subscriptionId: string } {
+  const label = 'Invalid unsubscribe-conversation-transient-stream payload';
+  if (!isRecord(value)) throw new Error(label);
+  const allowed = new Set(['subscriptionId']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
+  return { subscriptionId: requiredString(value.subscriptionId, label) };
 }
 
 export function parseCreateConversationPayload(value: unknown): CreateConversationPayload {

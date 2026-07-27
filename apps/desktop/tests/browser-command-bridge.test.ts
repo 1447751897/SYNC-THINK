@@ -36,6 +36,24 @@ function fakeWebview(overrides: Partial<BrowserWebviewElement> = {}): BrowserWeb
 }
 
 describe('browser command bridge wiring', () => {
+  it('bridges listConversationMessages through main / preload / global.d.ts', () => {
+    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-list-messages'");
+    expect(mainSource).toContain("'conversation.listMessages'");
+    expect(preloadSource).toContain('listConversationMessages:');
+    expect(preloadSource).toContain("'runtime:conversation-list-messages'");
+    expect(globalSource).toContain('listConversationMessages(');
+  });
+
+  it('bridges conversation transient subscriptions through main / preload / global.d.ts', () => {
+    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-subscribe-transient'");
+    expect(mainSource).toContain('subscribeConversationTransientStream({');
+    expect(mainSource).toContain("'runtime:conversation-transient'");
+    expect(preloadSource).toContain('subscribeConversationTransientStream:');
+    expect(preloadSource).toContain("'runtime:conversation-subscribe-transient'");
+    expect(preloadSource).toContain("'runtime:conversation-unsubscribe-transient'");
+    expect(globalSource).toContain('subscribeConversationTransientStream(');
+  });
+
   it('bridges submitBrowserResult and screenshot IPC through main / preload / global.d.ts', () => {
     expect(mainSource).toContain("ipcMain.handle('runtime:conversation-submit-browser-result'");
     expect(mainSource).toContain("'conversation.submitBrowserResult'");

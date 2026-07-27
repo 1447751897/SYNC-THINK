@@ -1,4 +1,5 @@
 import type { Event } from '@sync-think/shared';
+import type { ConversationTransientFrame } from './commands.js';
 
 // Server-pushed event stream (embodied as Frame kind='event'). Subscriptions
 // carry a cursor and atomically return durable catch-up events before live
@@ -31,4 +32,10 @@ export interface EventStreamClosedPayload {
   reason: 'client-requested' | 'cursor-too-old' | 'protocol-error' | 'runtime-shutdown';
   /** Server points client to the next fetchable cursor for durable replay. */
   nextCursor: number;
+}
+
+/** Live delivery envelope for a conversation-scoped transient output frame. */
+export interface ConversationTransientStreamEvent {
+  streamId: string;
+  frame: ConversationTransientFrame;
 }

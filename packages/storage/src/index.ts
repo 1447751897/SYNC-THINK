@@ -5,6 +5,7 @@ export * from './unit-of-work.js';
 export * from './backup.js';
 export * from './fts.js';
 export * from './runtime-state-store.js';
+export * from './message-store.js';
 export { MIGRATIONS, planMigrations, runMigrations } from './scripts/migrate.js';
 export * from './path-allowlist.js';
 export * from './workspace-store.js';

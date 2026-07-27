@@ -12,6 +12,7 @@ import {
   SqliteGlobalAgentStore,
   SqliteTeamStore,
   SqliteConversationStore,
+  SqliteMessageStore,
   SqliteMemoryStore,
   SqliteSkillStore,
   SqliteMcpStore,
@@ -35,7 +36,7 @@ import { Runtime, type RuntimeOptions } from './runtime.js';
 import { createProductionStepExecutor } from './orchestration/production-step-executor.js';
 
 export interface OpenPersistentRuntimeOptions
-  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'globalAgentStore' | 'teamStore' | 'conversationStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'unitOfWork' | 'secureStore' | 'appSettingStore' | 'queryUsageSummary'> {
+  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'globalAgentStore' | 'teamStore' | 'conversationStore' | 'messageStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'unitOfWork' | 'secureStore' | 'appSettingStore' | 'queryUsageSummary'> {
   dbPath: string;
   secureStoreBackend?: SecureStoreBackend;
   secureStoreKeyPath?: string;
@@ -219,7 +220,7 @@ export async function openPersistentRuntime(
         }
       >();
       for (const request of requests) {
-        const key = `${request.providerId ?? ''} ${request.modelId}`;
+        const key = `${request.providerId ?? ''}|${request.modelId}`;
         const current = byModel.get(key) ?? {
           modelId: request.modelId,
           providerId: request.providerId,
@@ -438,6 +439,7 @@ export async function openPersistentRuntime(
       globalAgentStore,
       teamStore,
       conversationStore,
+      messageStore: new SqliteMessageStore(connection.raw),
       memoryStore: new SqliteMemoryStore(connection.raw),
       skillStore: new SqliteSkillStore(connection.raw),
       mcpStore: new SqliteMcpStore(connection.raw),

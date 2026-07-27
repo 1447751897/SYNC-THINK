@@ -3,6 +3,9 @@ import {
   parseBindWorkspaceFolderPayload,
   parseCreateTaskPayload,
   parseCreateWorkspacePayload,
+  parseConversationListMessagesPayload,
+  parseSubscribeConversationTransientStreamPayload,
+  parseUnsubscribeConversationTransientStreamPayload,
 } from './command-validation.js';
 
 const validTask = {
@@ -28,6 +31,57 @@ describe('create Task acceptance criteria validation', () => {
     expect(parseCreateTaskPayload({ ...validTask, acceptanceCriteria: [] })).toMatchObject({
       acceptanceCriteria: [],
     });
+  });
+});
+
+describe('conversation transient stream payload validation', () => {
+  it('accepts bounded thread-local cursors and rejects unknown or invalid fields', () => {
+    expect(parseSubscribeConversationTransientStreamPayload({ threadId: 'thread-1' })).toEqual({
+      threadId: 'thread-1',
+      afterStreamSequence: undefined,
+    });
+    expect(
+      parseSubscribeConversationTransientStreamPayload({
+        threadId: 'thread-1',
+        afterStreamSequence: 42,
+      }),
+    ).toEqual({ threadId: 'thread-1', afterStreamSequence: 42 });
+    expect(
+      parseSubscribeConversationTransientStreamPayload({
+        threadId: 'thread-1',
+        afterStreamSequence: -1,
+      }),
+    ).toBeUndefined();
+    expect(
+      parseSubscribeConversationTransientStreamPayload({ threadId: 'thread-1', extra: true }),
+    ).toBeUndefined();
+    expect(
+      parseUnsubscribeConversationTransientStreamPayload({ streamId: 'transient-1' }),
+    ).toEqual({ streamId: 'transient-1' });
+    expect(
+      parseUnsubscribeConversationTransientStreamPayload({ streamId: 'transient-1', extra: true }),
+    ).toBeUndefined();
+  });
+});
+
+describe('conversation list messages payload validation', () => {
+  it('accepts valid pagination and rejects unknown or invalid fields', () => {
+    expect(parseConversationListMessagesPayload({ conversationId: 'conv-1' })).toEqual({
+      conversationId: 'conv-1',
+      beforeSequence: undefined,
+      limit: undefined,
+    });
+    expect(
+      parseConversationListMessagesPayload({
+        conversationId: 'conv-1',
+        beforeSequence: 0,
+        limit: 100,
+      }),
+    ).toMatchObject({ beforeSequence: 0, limit: 100 });
+    expect(parseConversationListMessagesPayload({ conversationId: 'conv-1', limit: 0 })).toBeUndefined();
+    expect(parseConversationListMessagesPayload({ conversationId: 'conv-1', limit: 101 })).toBeUndefined();
+    expect(parseConversationListMessagesPayload({ conversationId: 'conv-1', beforeSequence: -1 })).toBeUndefined();
+    expect(parseConversationListMessagesPayload({ conversationId: 'conv-1', extra: true })).toBeUndefined();
   });
 });
 

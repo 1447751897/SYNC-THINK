@@ -1,5 +1,5 @@
 // team-conversation command payload parsers (extracted from command-validation.ts).
-import type { AppendMessagePayload, CreateTeamPayload, UpdateTeamPayload, DeleteTeamPayload, StartTeamRunPayload, SetTeamRunStatusPayload, ListConversationsPayload, CreateConversationPayload, RenameConversationPayload, SetConversationPinnedPayload, SetConversationArchivedPayload, SetConversationExecutionModePayload, UpgradeConversationTrackPayload, DeleteConversationPayload, ConversationCompactPayload, ConversationSubmitBrowserResultPayload } from '@sync-think/protocol';
+import type { AppendMessagePayload, CreateTeamPayload, UpdateTeamPayload, DeleteTeamPayload, StartTeamRunPayload, SetTeamRunStatusPayload, ListConversationsPayload, ConversationListMessagesPayload, CreateConversationPayload, RenameConversationPayload, SetConversationPinnedPayload, SetConversationArchivedPayload, SetConversationExecutionModePayload, UpgradeConversationTrackPayload, DeleteConversationPayload, ConversationCompactPayload, ConversationSubmitBrowserResultPayload } from '@sync-think/protocol';
 import { MESSAGE_ROLES, hasOnlyKeys, isRecord, boundedAgentText, CONVERSATION_TRACKS, CONVERSATION_UPGRADE_TRACKS, TEAM_RUN_STATUSES, TEAM_KEYS, validTeamFields } from './shared.js';
 
 export function parseAppendMessagePayload(value: unknown): AppendMessagePayload | undefined {
@@ -150,6 +150,35 @@ export function parseListConversationsPayload(
   if (value.includeArchived !== undefined && typeof value.includeArchived !== 'boolean')
     return undefined;
   return value as unknown as ListConversationsPayload;
+}
+
+export function parseConversationListMessagesPayload(
+  value: unknown,
+): ConversationListMessagesPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'beforeSequence', 'limit']) ||
+    !boundedAgentText(value.conversationId, 128)
+  ) {
+    return undefined;
+  }
+  if (
+    value.beforeSequence !== undefined &&
+    (!Number.isSafeInteger(value.beforeSequence) || (value.beforeSequence as number) < 0)
+  ) {
+    return undefined;
+  }
+  if (
+    value.limit !== undefined &&
+    (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100)
+  ) {
+    return undefined;
+  }
+  return {
+    conversationId: value.conversationId as ConversationListMessagesPayload['conversationId'],
+    beforeSequence: value.beforeSequence as number | undefined,
+    limit: value.limit as number | undefined,
+  };
 }
 
 export function parseCreateConversationPayload(

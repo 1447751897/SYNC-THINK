@@ -1,5 +1,5 @@
 // run-plan command payload parsers (extracted from command-validation.ts).
-import type { CancelRunPayload, PauseRunPayload, ResumeRunPayload, ContinueEventReplayPayload, SubscribeEventsPayload, UnsubscribeEventsPayload, PlanDraftPayload, PlanRevisePayload, PlanListRevisionsPayload, PlanApprovePayload, RunGetGraphPayload } from '@sync-think/protocol';
+import type { CancelRunPayload, PauseRunPayload, ResumeRunPayload, ContinueEventReplayPayload, SubscribeEventsPayload, UnsubscribeEventsPayload, SubscribeConversationTransientStreamPayload, UnsubscribeConversationTransientStreamPayload, PlanDraftPayload, PlanRevisePayload, PlanListRevisionsPayload, PlanApprovePayload, RunGetGraphPayload } from '@sync-think/protocol';
 import type { EventCategory } from '@sync-think/shared';
 import { EVENT_CATEGORIES, parseOrchestrationRunMutationPayload, PLAN_ID_MAX_LENGTH, PLAN_TITLE_MAX_LENGTH, hasOnlyKeys, isBoundedText, parsePlanSteps, isRecord } from './shared.js';
 
@@ -44,6 +44,38 @@ export function parseUnsubscribeEventsPayload(
     return undefined;
   }
   return value as unknown as UnsubscribeEventsPayload;
+}
+
+export function parseSubscribeConversationTransientStreamPayload(
+  value: unknown,
+): SubscribeConversationTransientStreamPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['threadId', 'afterStreamSequence']) ||
+    !isBoundedText(value.threadId, 256) ||
+    (value.afterStreamSequence !== undefined &&
+      (!Number.isSafeInteger(value.afterStreamSequence) ||
+        (value.afterStreamSequence as number) < 0))
+  ) {
+    return undefined;
+  }
+  return {
+    threadId: value.threadId as SubscribeConversationTransientStreamPayload['threadId'],
+    afterStreamSequence: value.afterStreamSequence as number | undefined,
+  };
+}
+
+export function parseUnsubscribeConversationTransientStreamPayload(
+  value: unknown,
+): UnsubscribeConversationTransientStreamPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['streamId']) ||
+    !isBoundedText(value.streamId, 256)
+  ) {
+    return undefined;
+  }
+  return { streamId: value.streamId };
 }
 
 export function parseCancelRunPayload(value: unknown): CancelRunPayload | undefined {

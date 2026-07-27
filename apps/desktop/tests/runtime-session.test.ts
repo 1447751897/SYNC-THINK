@@ -4,6 +4,11 @@ import {
   RuntimeSession,
   type RuntimeSessionClient,
 } from '../src/main/runtime-session.js';
+import type {
+  CommandType,
+  ConversationTransientFrame,
+  ConversationTransientSnapshot,
+} from '@sync-think/protocol';
 import type { RuntimeHealth } from '../src/runtime-bridge-contract.js';
 
 function eventAt(sequence: number): Event {
@@ -51,7 +56,44 @@ class FakeRuntimeClient implements RuntimeSessionClient {
     return this.replayFinished;
   }
 
-  async request<T>(type: string, payload: unknown): Promise<T> {
+  private transientListener: ((frame: ConversationTransientFrame) => void) | undefined;
+  private transientSnapshotListener:
+    | ((
+        latestStreamSequence: number,
+        snapshot: ConversationTransientSnapshot | undefined,
+      ) => void)
+    | undefined;
+  transientUnsubscribeCount = 0;
+
+  async subscribeConversationTransientStream(
+    _threadId: string,
+    _afterStreamSequence: number,
+    listener: (frame: ConversationTransientFrame) => void,
+    snapshotListener?: (
+      latestStreamSequence: number,
+      snapshot: ConversationTransientSnapshot | undefined,
+    ) => void,
+  ): Promise<() => Promise<void>> {
+    this.transientListener = listener;
+    this.transientSnapshotListener = snapshotListener;
+    return async () => {
+      this.transientUnsubscribeCount++;
+      this.transientListener = undefined;
+      this.transientSnapshotListener = undefined;
+    };
+  }
+
+  emitTransient(frame: ConversationTransientFrame): void {
+    this.transientListener?.(frame);
+  }
+
+  resetTransient(
+    latestStreamSequence: number,
+    snapshot?: ConversationTransientSnapshot,
+  ): void {
+    this.transientSnapshotListener?.(latestStreamSequence, snapshot);
+  }
+  async request<T>(type: CommandType, payload: unknown): Promise<T> {
     expect(type).toBe('runtime.healthcheck');
     expect(payload).toEqual({});
     this.requestCount++;
@@ -102,6 +144,60 @@ describe('desktop main RuntimeSession', () => {
     client.emit(eventAt(3));
     const afterLive = await session.connect();
     expect(afterLive.snapshot.map((event) => event.sequence)).toEqual([1, 2, 3]);
+  });
+
+  it('records a large sequential replay without replacing the history array per event', async () => {
+    const client = new FakeRuntimeClient();
+    const session = new RuntimeSession(client, () => {});
+    await session.connect();
+    await expect.poll(() => client.subscribeCount).toBe(1);
+
+    const internal = session as unknown as { eventHistory: Event[] };
+    const initialHistory = internal.eventHistory;
+    for (let sequence = 1; sequence <= 10_000; sequence++) client.emit(eventAt(sequence));
+
+    expect(internal.eventHistory).toBe(initialHistory);
+    expect(internal.eventHistory).toHaveLength(10_000);
+    expect(internal.eventHistory[9_999]?.sequence).toBe(10_000);
+    client.completeReplay();
+  });
+
+  it('owns renderer transient subscriptions by sender and subscription id', async () => {
+    const client = new FakeRuntimeClient();
+    const session = new RuntimeSession(client, () => {});
+    const received: number[] = [];
+    const resets: number[] = [];
+
+    await session.subscribeConversationTransientStream({
+      senderId: 7,
+      subscriptionId: 'chat-a',
+      threadId: 'thread-a',
+      afterStreamSequence: 2,
+      listener: (frame) => received.push(frame.streamSequence),
+      snapshotListener: (latest) => resets.push(latest),
+    });
+    client.emitTransient({
+      threadId: 'thread-a' as ConversationTransientFrame['threadId'],
+      runId: 'run-a' as ConversationTransientFrame['runId'],
+      streamSequence: 3,
+      kind: 'text',
+      textDelta: 'hello',
+      occurredAt: '2026-07-27T00:00:00.000Z',
+    });
+    client.resetTransient(3);
+    expect(received).toEqual([3]);
+    expect(resets).toEqual([3]);
+
+    // Replacing the same renderer key first releases its prior Runtime stream.
+    await session.subscribeConversationTransientStream({
+      senderId: 7,
+      subscriptionId: 'chat-a',
+      threadId: 'thread-b',
+      listener: () => {},
+    });
+    expect(client.transientUnsubscribeCount).toBe(1);
+    await session.unsubscribeConversationTransientStreamsForSender(7);
+    expect(client.transientUnsubscribeCount).toBe(2);
   });
 
   it('isolates renderer forwarding failures without closing the global subscription', async () => {

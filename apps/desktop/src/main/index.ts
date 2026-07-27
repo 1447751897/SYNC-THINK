@@ -32,7 +32,12 @@ import { findDeepLinkInArgv, parseDeepLinkUrl } from './deep-link.js';
 import { listDogfoodDayReports } from './m1-exit-evidence-load.js';
 import { parseHandtestDocMarkdown } from '../m1-handtest-doc-parse.js';
 import { fileURLToPath } from 'node:url';
-import { encodeFrame, decodeFrames } from '@sync-think/protocol';
+import {
+  encodeFrame,
+  decodeFrames,
+  type ConversationTransientFrame,
+  type ConversationTransientSnapshot,
+} from '@sync-think/protocol';
 import type {
   AppendMessagePayload,
   AppendMessageResponse,
@@ -139,6 +144,9 @@ import {
   parseDeleteGlobalAgentPayload,
   parseDeleteTeamPayload,
   parseListConversationsPayload,
+  parseConversationListMessagesPayload,
+  parseSubscribeConversationTransientStreamPayload,
+  parseUnsubscribeConversationTransientStreamPayload,
   parseListGlobalAgentsPayload,
   parseRenameConversationPayload,
   parseSetConversationArchivedPayload,
@@ -183,6 +191,7 @@ let mainWindow: BrowserWindow | null = null;
 let trustedRendererLocation: TrustedRendererLocation | null = null;
 let runtimeClient: RuntimePipeClient | null = null;
 let runtimeSession: RuntimeSession | null = null;
+const transientCleanupRegisteredSenders = new Set<number>();
 
 function createWindow(): void {
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -283,6 +292,28 @@ function sendRuntimeEventToRenderer(event: Event): void {
     return;
   }
   webContents.send('runtime:event', event);
+}
+
+function sendRuntimeTransientFrameToRenderer(
+  sender: IpcMainInvokeEvent['sender'],
+  subscriptionId: string,
+  payload:
+    | { type: 'frame'; frame: ConversationTransientFrame }
+    | {
+        type: 'reset';
+        latestStreamSequence: number;
+        snapshot?: ConversationTransientSnapshot;
+      },
+): void {
+  const location = trustedRendererLocation;
+  if (
+    !location ||
+    sender.isDestroyed() ||
+    !isTrustedRendererUrl(sender.getURL(), location)
+  ) {
+    return;
+  }
+  sender.send('runtime:conversation-transient', { subscriptionId, ...payload });
 }
 
 // ─── Deep links (syncthink://conversation/{id}) ───────────────────────────
@@ -913,6 +944,53 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('conversation.list', parseListConversationsPayload(value));
+  });
+  ipcMain.handle('runtime:conversation-list-messages', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.listMessages',
+      parseConversationListMessagesPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-subscribe-transient', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseSubscribeConversationTransientStreamPayload(value);
+    await ensureRuntimeConnection();
+    await getRuntimeSession().subscribeConversationTransientStream({
+      senderId: event.sender.id,
+      subscriptionId: payload.subscriptionId,
+      threadId: payload.threadId,
+      afterStreamSequence: payload.afterStreamSequence,
+      listener: (frame) =>
+        sendRuntimeTransientFrameToRenderer(event.sender, payload.subscriptionId, {
+          type: 'frame',
+          frame,
+        }),
+      snapshotListener: (latestStreamSequence, snapshot) =>
+        sendRuntimeTransientFrameToRenderer(event.sender, payload.subscriptionId, {
+          type: 'reset',
+          latestStreamSequence,
+          ...(snapshot ? { snapshot } : {}),
+        }),
+    });
+    if (!transientCleanupRegisteredSenders.has(event.sender.id)) {
+      transientCleanupRegisteredSenders.add(event.sender.id);
+      event.sender.once('destroyed', () => {
+        transientCleanupRegisteredSenders.delete(event.sender.id);
+        void getRuntimeSession().unsubscribeConversationTransientStreamsForSender(event.sender.id);
+      });
+    }
+    return { subscriptionId: payload.subscriptionId };
+  });
+  ipcMain.handle('runtime:conversation-unsubscribe-transient', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseUnsubscribeConversationTransientStreamPayload(value);
+    await getRuntimeSession().unsubscribeConversationTransientStream(
+      event.sender.id,
+      payload.subscriptionId,
+    );
+    return { subscriptionId: payload.subscriptionId };
   });
   ipcMain.handle('runtime:conversation-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

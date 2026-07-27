@@ -77,6 +77,7 @@ async function waitFor(
 class PauseAfterFirstDeltaProvider implements ProviderAdapter {
   readonly protocol = 'openai-chat' as const;
   private readonly delegate = new FakeProvider({ chunksPerWord: 1 });
+  emittedDelta = false;
 
   discoverModels(): Promise<string[]> {
     return this.delegate.discoverModels();
@@ -87,6 +88,9 @@ class PauseAfterFirstDeltaProvider implements ProviderAdapter {
     for await (const event of this.delegate.call(request)) {
       yield event;
       emitted++;
+      if (event.type === 'text-delta' || event.type === 'reasoning-delta') {
+        this.emittedDelta = true;
+      }
       if (emitted === 2) await new Promise<void>(() => {});
     }
   }
@@ -446,7 +450,7 @@ describe('M0 fake provider run', () => {
       expect(types[0]).toBe('message.appended');
       expect(types).toContain('run.started');
       expect(types).toContain('provider.usage');
-      expect(types).toContain('message.delta');
+      expect(types).not.toContain('message.delta');
       expect(types[types.length - 1]).toBe('run.completed');
       expect(events.map((event) => event.sequence)).toEqual(
         events.map((_, index) => index + 1),
@@ -462,7 +466,7 @@ describe('M0 fake provider run', () => {
     }
   });
 
-  it('resumes at the next adapter event after restart without duplicating durable output', async () => {
+  it('restarts from the last durable boundary when transient output was interrupted', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-demo-run-restart-'));
     tempDirs.push(dir);
     const dbPath = join(dir, 'sync-think.db');
@@ -473,13 +477,14 @@ describe('M0 fake provider run', () => {
 
     const firstConnection = await openDatabaseAsync({ path: dbPath });
     const firstStore = new SqliteEventCheckpointStore(firstConnection.raw);
+    const firstProvider = new PauseAfterFirstDeltaProvider();
     const firstRuntime = new Runtime({
       installId,
       allowNoToken: true,
       stateStore: firstStore,
       workspaceId,
       checkpointRunId,
-      demoProvider: new PauseAfterFirstDeltaProvider(),
+      demoProvider: firstProvider,
     });
     await firstRuntime.start();
     const firstSocket = await connectRuntime(installId);
@@ -509,16 +514,10 @@ describe('M0 fake provider run', () => {
         },
       });
       expect((append.payload as { streamId?: string }).streamId).toBeTruthy();
-      expect(
-        await waitFor(() =>
-          firstStore
-            .listEvents(workspaceId, 0)
-            .some((event) => event.type === 'message.delta'),
-        ),
-      ).toBe(true);
-      expect(
-        firstStore.listEvents(workspaceId, 0).some((event) => event.type === 'run.completed'),
-      ).toBe(false);
+      expect(await waitFor(() => firstProvider.emittedDelta)).toBe(true);
+      const durableTypes = firstStore.listEvents(workspaceId, 0).map((event) => event.type);
+      expect(durableTypes).not.toContain('message.delta');
+      expect(durableTypes).not.toContain('run.completed');
     } finally {
       firstSocket.destroy();
       await firstRuntime.stop();
@@ -548,12 +547,10 @@ describe('M0 fake provider run', () => {
       expect(events.filter((event) => event.type === 'run.started')).toHaveLength(1);
       expect(events.filter((event) => event.type === 'provider.usage')).toHaveLength(1);
       expect(events.filter((event) => event.type === 'run.completed')).toHaveLength(1);
-      expect(
-        events
-          .filter((event) => event.type === 'message.delta')
-          .map((event) => event.payload.textDelta)
-          .join(''),
-      ).toBe('[fake-mini] Echo from fake provider: resume without duplicate ');
+      expect(events.filter((event) => event.type === 'message.delta')).toHaveLength(0);
+      expect(events.find((event) => event.type === 'run.completed')?.payload.assistantText).toBe(
+        '[fake-mini] Echo from fake provider: resume without duplicate ',
+      );
       expect(events.map((event) => event.sequence)).toEqual(
         events.map((_, index) => index + 1),
       );
@@ -616,11 +613,7 @@ it('cancels an in-flight demo run and persists run.cancelled', async () => {
       const runId = (append.payload as { streamId?: string }).streamId;
       expect(typeof runId).toBe('string');
 
-      expect(
-        await waitFor(() =>
-          store.listEvents(workspaceId, 0).some((event) => event.type === 'message.delta'),
-        ),
-      ).toBe(true);
+      expect(await waitFor(() => provider.emittedDelta)).toBe(true);
 
       const cancel = await inbox.send({
         id: 'cancel-run',

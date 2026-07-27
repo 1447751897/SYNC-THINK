@@ -18,6 +18,7 @@ export type Feature =
   | 'task.setParticipationMode'
   | 'runtime.subscribeEvents'
   | 'runtime.continueEventReplay'
+  | 'conversation.transientStream'
   | 'runtime.healthcheck'
   | 'context.packet.peek'
   | 'context.packet.amend'
@@ -65,6 +66,7 @@ export type Feature =
   | 'team.startRun'
   | 'team.setRunStatus'
   | 'conversation.list'
+  | 'conversation.listMessages'
   | 'conversation.create'
   | 'conversation.rename'
   | 'conversation.setPinned'
@@ -103,6 +105,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'task.setParticipationMode',
   'runtime.subscribeEvents',
   'runtime.continueEventReplay',
+  'conversation.transientStream',
   'runtime.healthcheck',
   'context.packet.peek',
   'context.packet.amend',
@@ -149,6 +152,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'team.startRun',
   'team.setRunStatus',
   'conversation.list',
+  'conversation.listMessages',
   'conversation.create',
   'conversation.rename',
   'conversation.setPinned',

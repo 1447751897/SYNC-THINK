@@ -37,9 +37,22 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import type { Conversation, Event, GlobalAgent, RunId, TaskId, Team } from '@sync-think/shared';
-import type { WorkspaceSummary } from '@sync-think/protocol';
-import { projectConversation } from '../m0-projection.js';
+import type {
+  Conversation,
+  Event,
+  GlobalAgent,
+  Message,
+  MessageBlock,
+  RunId,
+  TaskId,
+  Team,
+} from '@sync-think/shared';
+import type {
+  ConversationListMessagesResponse,
+  ConversationTransientFrame,
+  ConversationTransientSnapshot,
+  WorkspaceSummary,
+} from '@sync-think/protocol';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { RightDock } from './RightDock.js';
 import type { ModelOption } from './NewConversationDialog.js';
@@ -102,6 +115,11 @@ import {
 import { MarkdownContent } from './MarkdownContent.js';
 import { executeBrowserCommand } from './browser-commands.js';
 import {
+  applyConversationStreamOperations,
+  collectConversationStreamBatch,
+} from './chat-stream.js';
+import { applyTransientConversationFrame } from './chat-transient-stream.js';
+import {
   readConversationModelOverride,
   writeConversationModelOverride,
 } from '../ui-preferences.js';
@@ -117,11 +135,47 @@ interface ChatMessage {
   /** Visual tone for system notices — never treat all system as error. */
   tone?: SystemMessageTone;
   timestamp: string;
+  /** Durable thread-local order; present for messages loaded from the store. */
+  sequence?: number;
   streaming?: boolean;
   runId?: string;
   /** Bound global agent identity for this assistant turn. */
   globalAgentId?: string;
   globalAgentName?: string;
+}
+
+/** Convert a durable Message from the store into the UI ChatMessage shape. */
+function messageToChat(msg: Message): ChatMessage {
+  const textBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'text');
+  const text = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
+  const imageBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'image');
+  const images: MessageImage[] | undefined =
+    imageBlocks.length > 0
+      ? imageBlocks.map((b: MessageBlock) => {
+          const p = (b.payload ?? {}) as Record<string, unknown>;
+          const storageRef = typeof p.storageRef === 'string' ? p.storageRef : String(p.id ?? '');
+          return {
+            id: typeof p.id === 'string' ? p.id : storageRef,
+            name: typeof p.name === 'string' ? p.name : 'image',
+            mimeType: typeof p.mimeType === 'string' ? p.mimeType : 'image/png',
+            url: `sync-think-image://media/${encodeURIComponent(storageRef)}`,
+          };
+        })
+      : undefined;
+  // Map role — 'tool' is not a valid ChatMessage role, show as system.
+  const role: ChatMessage['role'] =
+    msg.role === 'user' ? 'user' : msg.role === 'assistant' ? 'assistant' : 'system';
+  return {
+    id: String(msg.id),
+    role,
+    text,
+    images,
+    timestamp: msg.createdAt ?? '',
+    sequence: msg.sequence,
+    runId: msg.runId ? String(msg.runId) : undefined,
+    // sequence carried via id ordering; globalAgent fields are not in the store Message model
+    // but could be enriched later if needed.
+  };
 }
 
 type CompactProgressStatus = 'running' | 'success' | 'noop' | 'failure';
@@ -255,6 +309,33 @@ export function ChatView({
   /** Optimistic user bubbles not yet present in durable event history. */
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessage[]>([]);
   const [localErrors, setLocalErrors] = useState<ChatMessage[]>([]);
+  /** Paginated message store state. */
+  const [loadedMessages, setLoadedMessages] = useState<ChatMessage[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<number | undefined>(undefined);
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** Whether the initial page load has completed (success or failure). */
+  const [initialLoaded, setInitialLoaded] = useState(false);
+  /** Streaming message accumulated from the transient stream (durable delta is fallback only). */
+  const [streamingMessage, setStreamingMessage] = useState<ChatMessage | null>(null);
+  /** Last durable event sequence consumed by the fallback streaming bridge. */
+  const lastConsumedEventSequenceRef = useRef(0);
+  /** Thread-local transient cursor, preserved across Runtime reconnects within this ChatView. */
+  const lastTransientSequenceRef = useRef(0);
+  /** Live subscription availability: fallback durable deltas are consumed only when false. */
+  const transientStreamHealthyRef = useRef(false);
+  /** resetRequired pins this ChatView to durable fallback until it resubscribes cleanly. */
+  const transientFallbackOnlyRef = useRef(false);
+  /** Forces fallback replay after a reset/subscribe failure even if no new durable event arrived. */
+  const [transientFallbackEpoch, setTransientFallbackEpoch] = useState(0);
+  /** resetRequired means the bounded replay had a gap; rebuild the current draft from durable deltas. */
+  const transientResetGenerationRef = useRef(0);
+  /** Guards against processing events with a stale threadId after switching chats. */
+  const threadConversationIdRef = useRef<string | undefined>(undefined);
+  /** Invalidates in-flight durable message reads after a refresh or conversation switch. */
+  const messageLoadGenerationRef = useRef(0);
+  const activeConversationIdRef = useRef(String(conversation.id));
+  activeConversationIdRef.current = String(conversation.id);
   /** Active @-mention query (null = picker closed). */
   const [mention, setMention] = useState<MentionQuery | null>(null);
   const [mentionFiles, setMentionFiles] = useState<
@@ -298,6 +379,19 @@ export function ChatView({
     setSending(false);
     setPendingUserMessages([]);
     setLocalErrors([]);
+    setLoadedMessages([]);
+    setHasMore(false);
+    setNextCursor(undefined);
+    setLoadingMore(false);
+    setInitialLoaded(false);
+    setStreamingMessage(null);
+    lastConsumedEventSequenceRef.current = 0;
+    lastTransientSequenceRef.current = 0;
+    transientStreamHealthyRef.current = false;
+    transientFallbackOnlyRef.current = false;
+    transientResetGenerationRef.current += 1;
+    threadConversationIdRef.current = undefined;
+    messageLoadGenerationRef.current += 1;
     setMention(null);
     setMentionFiles([]);
     setSlash(null);
@@ -328,7 +422,9 @@ export function ChatView({
       .then((response: { task?: { threadId?: string } }) => {
         if (cancelled) return;
         const resolved = response?.task?.threadId;
-        setThreadId(typeof resolved === 'string' && resolved.length > 0 ? resolved : undefined);
+        const nextThreadId = typeof resolved === 'string' && resolved.length > 0 ? resolved : undefined;
+        threadConversationIdRef.current = nextThreadId ? String(conversation.id) : undefined;
+        setThreadId(nextThreadId);
       })
       .catch(() => {
         if (!cancelled) setThreadId(undefined);
@@ -339,52 +435,277 @@ export function ChatView({
     };
   }, [conversation.id, conversation.taskId]);
 
-  // Project durable history for this thread into chat messages.
+  // ─── Paginated message loading from the durable store ───────────────────────
+  const loadMessages = useCallback(
+    async (cursor?: number): Promise<boolean> => {
+      const api = bridge();
+      if (!api?.listConversationMessages) {
+        if (cursor === undefined) setInitialLoaded(true);
+        return false;
+      }
+      const conversationId = String(conversation.id);
+      // Every latest-page read supersedes earlier initial/terminal refreshes and
+      // any older-page request that started from an obsolete list snapshot.
+      const generation =
+        cursor === undefined
+          ? (messageLoadGenerationRef.current += 1)
+          : messageLoadGenerationRef.current;
+      if (cursor === undefined) setLoadingMore(false);
+      else setLoadingMore(true);
+      try {
+        const res: ConversationListMessagesResponse = await api.listConversationMessages({
+          conversationId: conversation.id,
+          beforeSequence: cursor,
+          limit: 50,
+        });
+        if (
+          activeConversationIdRef.current !== conversationId ||
+          messageLoadGenerationRef.current !== generation
+        ) {
+          return false;
+        }
+        const converted = res.messages
+          .map(messageToChat)
+          .filter((m) => m.text.trim().length > 0 || Boolean(m.images?.length));
+        if (cursor !== undefined) {
+          // Prepend older messages and de-duplicate defensive retries. Durable
+          // sequence is the canonical order, not async response arrival order.
+          setLoadedMessages((prev) => {
+            const byId = new Map<string, ChatMessage>();
+            for (const message of [...converted, ...prev]) byId.set(message.id, message);
+            return [...byId.values()].sort(
+              (left, right) =>
+                (left.sequence ?? Number.MAX_SAFE_INTEGER) -
+                (right.sequence ?? Number.MAX_SAFE_INTEGER),
+            );
+          });
+        } else {
+          // Initial / terminal refresh — already in chronological order (ASC).
+          setLoadedMessages(converted);
+        }
+        setHasMore(res.hasMore);
+        setNextCursor(res.nextCursor);
+        return true;
+      } catch {
+        // Non-fatal: the user can still send messages.
+        return false;
+      } finally {
+        if (
+          activeConversationIdRef.current === conversationId &&
+          messageLoadGenerationRef.current === generation
+        ) {
+          if (cursor !== undefined) setLoadingMore(false);
+          else setInitialLoaded(true);
+        }
+      }
+    },
+    [conversation.id],
+  );
+
+  // Load initial page when conversation/thread resolves.
+  useEffect(() => {
+    if (!conversation.id) return;
+    void loadMessages();
+  }, [conversation.id, threadId, loadMessages]);
+
+  // Lightweight streaming/activeRunId detection from eventHistory.
+  // This only scans run lifecycle events (O(n) but no message text building).
   const projected = useMemo(() => {
     if (!threadId) {
-      return {
-        messages: [] as ChatMessage[],
-        streaming: false,
-        activeRunId: undefined as string | undefined,
-      };
+      return { streaming: false, activeRunId: undefined as string | undefined };
     }
-    const projection = projectConversation(eventHistory, threadId, conversation.taskId);
-    const messages: ChatMessage[] = projection.messages
-      .filter(
-        (message) =>
-          message.text.trim().length > 0 ||
-          Boolean(message.images?.length) ||
-          Boolean(message.reasoningText?.trim()) ||
-          message.streaming,
-      )
-      .map((message) => ({
-        id: message.id,
-        role: message.role,
-        text: message.text,
-        tone: message.tone,
-        images: message.images?.map((image) => ({
-          id: image.id,
-          name: image.name,
-          mimeType: image.mimeType,
-          url: `sync-think-image://media/${encodeURIComponent(image.storageRef)}`,
-        })),
-        reasoningText: message.reasoningText,
-        timestamp: message.occurredAt ?? '',
-        streaming: message.streaming,
-        runId: message.runId,
-        globalAgentId: message.globalAgentId,
-        globalAgentName: message.globalAgentName,
-      }));
-    const streaming = projection.stream.state === 'streaming';
-    const activeRunId =
-      (streaming ? projection.stream.runId : undefined) ||
-      [...messages].reverse().find((message) => message.streaming && message.runId)?.runId;
-    return {
-      messages,
-      streaming,
-      activeRunId,
-    };
+    const startedRuns = new Set<string>();
+    const endedRuns = new Set<string>();
+    for (const event of eventHistory) {
+      const eventThread =
+        typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
+      if (eventThread && eventThread !== threadId) continue;
+      if (
+        !eventThread &&
+        conversation.taskId &&
+        event.taskId &&
+        event.taskId !== conversation.taskId
+      ) {
+        continue;
+      }
+      if (event.type === 'run.started' && event.runId) {
+        startedRuns.add(event.runId);
+      } else if (
+        (event.type === 'run.completed' ||
+          event.type === 'run.failed' ||
+          event.type === 'run.cancelled') &&
+        event.runId
+      ) {
+        endedRuns.add(event.runId);
+      }
+    }
+    // Active run = started but not ended.
+    let activeRunId: string | undefined;
+    for (const rid of startedRuns) {
+      if (!endedRuns.has(rid)) {
+        activeRunId = rid;
+      }
+    }
+    return { streaming: Boolean(activeRunId), activeRunId };
   }, [conversation.taskId, eventHistory, threadId]);
+
+  // Primary S2 streaming path: subscribe only to the currently opened thread.
+  // Replay/live frames use a thread-local cursor and never enter global eventHistory.
+  useEffect(() => {
+    if (!threadId) return;
+    if (threadConversationIdRef.current !== String(conversation.id)) return;
+    const api = bridge();
+    if (!api?.subscribeConversationTransientStream) return;
+
+    const generation = transientResetGenerationRef.current;
+    let disposed = false;
+    transientStreamHealthyRef.current = true;
+    const subscription = api.subscribeConversationTransientStream(
+      { threadId, afterStreamSequence: lastTransientSequenceRef.current },
+      (event: {
+        type: 'frame' | 'reset';
+        frame?: ConversationTransientFrame;
+        latestStreamSequence?: number;
+        snapshot?: ConversationTransientSnapshot;
+      }) => {
+        if (disposed || transientResetGenerationRef.current !== generation) return;
+        if (event.type === 'reset') {
+          const latestStreamSequence = event.latestStreamSequence ?? 0;
+          lastTransientSequenceRef.current = latestStreamSequence;
+          if (event.snapshot && event.snapshot.threadId === threadId) {
+            transientFallbackOnlyRef.current = false;
+            transientStreamHealthyRef.current = true;
+            setStreamingMessage({
+              id: `streaming-${event.snapshot.runId}`,
+              role: 'assistant',
+              text: event.snapshot.text,
+              reasoningText: event.snapshot.reasoningText,
+              timestamp: event.snapshot.updatedAt,
+              streaming: true,
+              runId: event.snapshot.runId,
+            });
+          } else {
+            transientFallbackOnlyRef.current = false;
+            transientStreamHealthyRef.current = true;
+            setStreamingMessage(null);
+            void loadMessages();
+          }
+          return;
+        }
+        const frame = event.frame;
+        if (!frame) return;
+        if (transientFallbackOnlyRef.current) {
+          lastTransientSequenceRef.current = Math.max(
+            lastTransientSequenceRef.current,
+            frame.streamSequence,
+          );
+          if (frame.kind === 'terminal') void loadMessages();
+          return;
+        }
+        transientStreamHealthyRef.current = true;
+        setStreamingMessage((previous) => {
+          const current = previous
+            ? {
+                runId: previous.runId,
+                text: previous.text,
+                reasoningText: previous.reasoningText,
+                timestamp: previous.timestamp,
+              }
+            : null;
+          const next = applyTransientConversationFrame({
+            current,
+            frame,
+            threadId,
+            afterStreamSequence: lastTransientSequenceRef.current,
+          });
+          lastTransientSequenceRef.current = next.lastStreamSequence;
+          return next.draft
+            ? {
+                id: `streaming-${next.draft.runId ?? next.lastStreamSequence}`,
+                role: 'assistant',
+                text: next.draft.text,
+                reasoningText: next.draft.reasoningText,
+                timestamp: next.draft.timestamp,
+                streaming: true,
+                runId: next.draft.runId,
+              }
+            : null;
+        });
+        if (frame.kind === 'terminal') void loadMessages();
+      },
+    );
+    void subscription.ready.catch(() => {
+      if (!disposed && transientResetGenerationRef.current === generation) {
+        transientFallbackOnlyRef.current = true;
+        transientStreamHealthyRef.current = false;
+        lastConsumedEventSequenceRef.current = 0;
+        setTransientFallbackEpoch((value) => value + 1);
+      }
+    });
+
+    return () => {
+      disposed = true;
+      void subscription.unsubscribe();
+    };
+  }, [conversation.id, loadMessages, threadId]);
+
+  // Streaming via durable events is now a compatibility/failure fallback.
+  // Terminal events are always consumed so final Message Store refresh remains
+  // correct even while transient is healthy.
+  useEffect(() => {
+    if (!threadId) return;
+    if (threadConversationIdRef.current !== String(conversation.id)) return;
+
+    const batch = collectConversationStreamBatch({
+      events: eventHistory,
+      afterSequence: lastConsumedEventSequenceRef.current,
+      threadId,
+      taskId: conversation.taskId ? String(conversation.taskId) : undefined,
+    });
+    if (batch.maxSeenSequence === lastConsumedEventSequenceRef.current) return;
+
+    lastConsumedEventSequenceRef.current = batch.maxSeenSequence;
+    if (batch.operations.length > 0) {
+      const operations = transientStreamHealthyRef.current
+        ? batch.operations.filter((operation) => operation.type === 'run.terminal')
+        : batch.operations;
+      if (operations.length === 0 && !batch.sawTerminalEvent) return;
+      setStreamingMessage((previous) => {
+        const current = previous
+          ? {
+              runId: previous.runId,
+              text: previous.text,
+              reasoningText: previous.reasoningText,
+              timestamp: previous.timestamp,
+            }
+          : null;
+        const next = applyConversationStreamOperations(current, operations);
+        return next
+          ? {
+              id: `streaming-${next.runId ?? batch.maxSeenSequence}`,
+              role: 'assistant',
+              text: next.text,
+              reasoningText: next.reasoningText,
+              timestamp: next.timestamp,
+              streaming: true,
+              runId: next.runId,
+            }
+          : null;
+      });
+    }
+    if (batch.sawTerminalEvent) {
+      // The runtime persists a successful final message before publishing
+      // run.completed. Failed/cancelled runs still refresh terminal state.
+      void loadMessages();
+    }
+  }, [
+    conversation.id,
+    conversation.taskId,
+    eventHistory,
+    loadMessages,
+    threadId,
+    transientFallbackEpoch,
+  ]);
 
   // Pending tool approvals for「询问批准」(from tool.approval_requested events).
   const pendingApprovals = useMemo(() => {
@@ -481,10 +802,10 @@ export function ChatView({
   useEffect(() => {
     if (pendingUserMessages.length === 0) return;
     const durableUserIds = new Set(
-      projected.messages.filter((message) => message.role === 'user').map((message) => message.id),
+      loadedMessages.filter((message) => message.role === 'user').map((message) => message.id),
     );
     setPendingUserMessages((prev) => prev.filter((message) => !durableUserIds.has(message.id)));
-  }, [pendingUserMessages.length, projected.messages]);
+  }, [pendingUserMessages.length, loadedMessages]);
 
   // Clear "sending" once the run leaves the streaming state (or fails via local error).
   useEffect(() => {
@@ -501,8 +822,10 @@ export function ChatView({
   }, [pendingUserMessages.length, projected.streaming, sending, stopping]);
 
   const messages = useMemo(() => {
-    return [...projected.messages, ...pendingUserMessages, ...localErrors];
-  }, [localErrors, pendingUserMessages, projected.messages]);
+    const base = [...loadedMessages];
+    if (streamingMessage) base.push(streamingMessage);
+    return [...base, ...pendingUserMessages, ...localErrors];
+  }, [localErrors, loadedMessages, pendingUserMessages, streamingMessage]);
 
   // Pin to bottom without a smooth animation. Smooth scroll on every switch
   // felt like the list was "rolling down" each time you clicked a conversation.
@@ -1970,17 +2293,35 @@ export function ChatView({
             const distance =
               scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
             stickToBottomRef.current = distance < 80;
+            // Load older messages when scrolled near top.
+            if (scroller.scrollTop < 50 && hasMore && !loadingMore) {
+              const prevHeight = scroller.scrollHeight;
+              void loadMessages(nextCursor).then((applied) => {
+                if (!applied) return;
+                // Preserve scroll position after prepending older messages.
+                requestAnimationFrame(() => {
+                  const newHeight = scroller.scrollHeight;
+                  scroller.scrollTop = newHeight - prevHeight;
+                });
+              });
+            }
           }}
         >
           {messages.length === 0 && !showTyping && (
             <div className="flex h-full items-center justify-center">
               <span className="text-[13px] text-text-faint">
-                {conversation.taskId ? '历史消息加载中，或发送消息开始对话' : '发送消息开始对话'}
+                {!initialLoaded ? '加载中…' : '发送消息开始对话'}
               </span>
             </div>
           )}
           {/* Keep message column and compose at the same content width. */}
           <div className="shell-chat-content mx-auto flex flex-col gap-6">
+            {loadingMore && (
+              <div className="flex items-center justify-center py-3">
+                <LoaderCircle className="h-4 w-4 animate-spin text-text-faint" />
+                <span className="ml-2 text-[12px] text-text-faint">加载更早消息…</span>
+              </div>
+            )}
             {messages.map((msg) => (
               <MessageBubble
                 key={msg.id}

@@ -188,7 +188,7 @@ async function expectAtomic0020Failure(path: string, code: string): Promise<void
 
 describe('0017_reviewer_rework migration', () => {
   it('is appended after the frozen 0016 migration', () => {
-    expect(MIGRATIONS.slice(-12).map((migration) => migration.name)).toEqual([
+    expect(MIGRATIONS.slice(-13).map((migration) => migration.name)).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',
       '0018_complete_agent_version',
@@ -201,6 +201,7 @@ describe('0017_reviewer_rework migration', () => {
       '0025_conversation_task_binding',
       '0026_provider_source_config',
       '0027_skill_archive',
+      '0028_message_pagination',
     ]);
   });
 

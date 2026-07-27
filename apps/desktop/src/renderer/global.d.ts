@@ -138,6 +138,8 @@
   CreateAgentVersionResponse,
   ConversationSendMessagePayload,
   ConversationSendMessageResponse,
+  ConversationTransientFrame,
+  ConversationTransientSnapshot,
 } from '@sync-think/protocol';
 import type {
   RendererCreateProviderPayload,
@@ -277,6 +279,22 @@ declare global {
         listConversations(
           payload?: import('@sync-think/protocol').ListConversationsPayload,
         ): Promise<import('@sync-think/protocol').ListConversationsResponse>;
+        listConversationMessages(
+          payload: import('@sync-think/protocol').ConversationListMessagesPayload,
+        ): Promise<import('@sync-think/protocol').ConversationListMessagesResponse>;
+        subscribeConversationTransientStream(
+          payload: { threadId: string; afterStreamSequence?: number },
+          listener: (event:
+            | { type: 'frame'; frame: ConversationTransientFrame }
+            | {
+                type: 'reset';
+                latestStreamSequence: number;
+                snapshot?: ConversationTransientSnapshot;
+              }) => void,
+        ): {
+          ready: Promise<{ subscriptionId: string }>;
+          unsubscribe(): Promise<void>;
+        };
         createConversation(
           payload: import('@sync-think/protocol').CreateConversationPayload,
         ): Promise<import('@sync-think/protocol').ConversationResponse>;

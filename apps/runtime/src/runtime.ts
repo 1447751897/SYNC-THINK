@@ -101,7 +101,12 @@ import {
   type TeamResponse,
   type TeamRunResponse,
   type ListConversationsResponse,
+  type ConversationListMessagesResponse,
   type ConversationResponse,
+  type ConversationTransientFrame,
+  type ConversationTransientSnapshot,
+  type SubscribeConversationTransientStreamResponse,
+  type UnsubscribeConversationTransientStreamResponse,
 } from '@sync-think/protocol';
 import {
   ErrorCode,
@@ -135,10 +140,20 @@ import {
   type Team,
   type TeamRun,
   type Conversation,
+  type Message,
+  type MessageBlock,
 } from '@sync-think/shared';
 import { defaultSurfaceForProtocol, inferProviderSurface } from '@sync-think/shared';
 import {
+  backfillMessagesFromEvents,
+  MESSAGE_STORE_BACKFILL_SETTING_KEY,
+  MESSAGE_STORE_BACKFILL_VERSION,
+  readBackfillProgress,
+  type MessageStoreBackfillProgress,
+} from './message-store-backfill.js';
+import {
   WorkspacePathError,
+  MessageStoreError,
   type CheckpointDraft,
   type CommitTransitionInput,
   type CommittedTransition,
@@ -164,6 +179,7 @@ import {
   type SqliteGlobalAgentStore,
   type SqliteTeamStore,
   type SqliteConversationStore,
+  type SqliteMessageStore,
   type GlobalAgentRecord,
   type TeamRecord,
   type TeamRunRecord,
@@ -277,6 +293,8 @@ import {
   parseListPoliciesPayload,
   parseSubscribeEventsPayload,
   parseUnsubscribeEventsPayload,
+  parseSubscribeConversationTransientStreamPayload,
+  parseUnsubscribeConversationTransientStreamPayload,
   parseCreateProviderPayload,
   parseUpdateProviderPayload,
   parsePreviewCcSwitchImportPayload,
@@ -347,6 +365,7 @@ import {
   parseStartTeamRunPayload,
   parseSetTeamRunStatusPayload,
   parseListConversationsPayload,
+  parseConversationListMessagesPayload,
   parseCreateConversationPayload,
   parseRenameConversationPayload,
   parseSetConversationPinnedPayload,
@@ -400,6 +419,7 @@ export interface RuntimeOptions {
   globalAgentStore?: SqliteGlobalAgentStore;
   teamStore?: SqliteTeamStore;
   conversationStore?: SqliteConversationStore;
+  messageStore?: SqliteMessageStore;
   memoryStore?: SqliteMemoryStore;
   approvalStore?: SqliteApprovalStore;
   policyStore?: SqlitePolicyStore;
@@ -518,9 +538,19 @@ interface RuntimeEventSubscription {
   liveCursor: number;
 }
 
+interface ConversationTransientSubscription {
+  socket: Socket;
+  threadId: ThreadId;
+  liveCursor: number;
+}
+
 const MAX_REPLAY_EVENTS_PER_PAGE = 64;
 const MAX_REPLAY_SCANNED_EVENTS_PER_PAGE = 256;
 const REPLAY_FRAME_RESERVE_BYTES = 1_024;
+/** Global memory bound; frames retain a thread-local cursor for isolated replay. */
+const MAX_TRANSIENT_REPLAY_FRAMES = 256;
+/** Keep a subscribe response comfortably under the 1 MiB pipe frame limit. */
+const MAX_TRANSIENT_REPLAY_BYTES = 512 * 1024;
 
 
 export class Runtime {
@@ -532,6 +562,14 @@ export class Runtime {
   private readonly threadVersions = new Map<string, number>();
   private readonly events: Event[] = [];
   private readonly subscriptions = new Map<string, RuntimeEventSubscription>();
+  private readonly transientSubscriptions = new Map<
+    string,
+    ConversationTransientSubscription
+  >();
+  private readonly transientReplay: ConversationTransientFrame[] = [];
+  /** Current transient snapshot per thread; survives replay eviction for active runs. */
+  private readonly transientSnapshotByThread = new Map<string, ConversationTransientSnapshot>();
+  private readonly transientSequenceByThread = new Map<string, number>();
   private readonly stateStore?: RuntimeStateStore;
   private readonly workspaceStore?: SqliteWorkspaceStore;
   private readonly workspaceId: WorkspaceId;
@@ -544,6 +582,7 @@ export class Runtime {
   private readonly globalAgentStore?: SqliteGlobalAgentStore;
   private readonly teamStore?: SqliteTeamStore;
   private readonly conversationStore?: SqliteConversationStore;
+  private readonly messageStore?: SqliteMessageStore;
   private readonly memoryStore?: SqliteMemoryStore;
   private readonly approvalStore?: SqliteApprovalStore;
   private readonly policyStore?: SqlitePolicyStore;
@@ -620,6 +659,7 @@ export class Runtime {
     this.globalAgentStore = opts.globalAgentStore;
     this.teamStore = opts.teamStore;
     this.conversationStore = opts.conversationStore;
+    this.messageStore = opts.messageStore;
     this.memoryStore = opts.memoryStore;
     this.approvalStore = opts.approvalStore;
     this.policyStore = opts.policyStore;
@@ -707,6 +747,9 @@ export class Runtime {
         for (const [streamId, subscription] of this.subscriptions) {
           if (subscription.socket === socket) this.subscriptions.delete(streamId);
         }
+        for (const [streamId, subscription] of this.transientSubscriptions) {
+          if (subscription.socket === socket) this.transientSubscriptions.delete(streamId);
+        }
         if (!socket.destroyed) socket.destroy();
       },
       onFrame: (socket, frame: Frame) => {
@@ -732,6 +775,14 @@ export class Runtime {
         }
         if (frame.type === 'runtime.unsubscribeEvents') {
           this.handleUnsubscribeEvents(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.subscribeTransientStream') {
+          this.handleSubscribeConversationTransientStream(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.unsubscribeTransientStream') {
+          this.handleUnsubscribeConversationTransientStream(socket, frame);
           return;
         }
         if (frame.type === 'workspace.create') {
@@ -998,6 +1049,10 @@ export class Runtime {
           this.handleListConversations(socket, frame);
           return;
         }
+        if (frame.type === 'conversation.listMessages') {
+          this.handleListConversationMessages(socket, frame);
+          return;
+        }
         if (frame.type === 'conversation.create') {
           this.handleCreateConversation(socket, frame);
           return;
@@ -1210,6 +1265,55 @@ export class Runtime {
     for (const event of persistedEvents) {
       this.eventSequence = Math.max(this.eventSequence, event.sequence);
       if (event.sequence > replayAfter) this.applyEventToProjection(event);
+    }
+    this.backfillDurableMessages(persistedEvents);
+  }
+
+  /**
+   * S1: project historical chat events into SqliteMessageStore so conversation.listMessages
+   * can serve old threads without scanning the full event log in the UI.
+   * Progress is stored in app_setting and the job is safe to re-run.
+   */
+  private backfillDurableMessages(events: readonly Event[]): void {
+    if (!this.messageStore) return;
+    try {
+      const previous = readBackfillProgress(
+        this.appSettingStore?.get(MESSAGE_STORE_BACKFILL_SETTING_KEY)?.value,
+      );
+      // Re-run from 0 when version bumps; otherwise resume after last processed sequence.
+      const afterSequence =
+        previous && previous.version === MESSAGE_STORE_BACKFILL_VERSION
+          ? previous.lastEventSequence
+          : 0;
+      const result = backfillMessagesFromEvents(this.messageStore, events, { afterSequence });
+      if (result.processedEvents === 0 && previous?.version === MESSAGE_STORE_BACKFILL_VERSION) {
+        return;
+      }
+      const progress: MessageStoreBackfillProgress = {
+        version: MESSAGE_STORE_BACKFILL_VERSION,
+        lastEventSequence: Math.max(afterSequence, result.lastEventSequence),
+        processedEvents: (previous?.processedEvents ?? 0) + result.processedEvents,
+        writtenMessages: (previous?.writtenMessages ?? 0) + result.writtenMessages,
+        updatedMessages: (previous?.updatedMessages ?? 0) + result.updatedMessages,
+        skippedEvents: (previous?.skippedEvents ?? 0) + result.skippedEvents,
+        completedAt: result.completedAt,
+      };
+      this.appSettingStore?.set(MESSAGE_STORE_BACKFILL_SETTING_KEY, progress);
+      if (result.writtenMessages > 0 || result.updatedMessages > 0) {
+        console.log(
+          '[runtime] message-store backfill',
+          `from=${result.fromSequence}`,
+          `to=${result.toSequence}`,
+          `written=${result.writtenMessages}`,
+          `updated=${result.updatedMessages}`,
+          `skipped=${result.skippedEvents}`,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        '[runtime] message-store backfill failed:',
+        error instanceof Error ? error.message : error,
+      );
     }
   }
 
@@ -1466,6 +1570,91 @@ export class Runtime {
         kind: 'response',
         type: 'runtime.unsubscribeEvents',
         payload: { streamId: payload.streamId },
+      }),
+    );
+  }
+
+  private handleSubscribeConversationTransientStream(socket: Socket, frame: Frame): void {
+    const payload = parseSubscribeConversationTransientStreamPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const afterStreamSequence = payload.afterStreamSequence ?? 0;
+    const latestStreamSequence = this.transientSequenceByThread.get(payload.threadId) ?? 0;
+    const cursorAhead = afterStreamSequence > latestStreamSequence;
+
+    const retained = this.transientReplay.filter(
+      (candidate) => candidate.threadId === payload.threadId,
+    );
+    const candidates = cursorAhead
+      ? []
+      : retained.filter((candidate) => candidate.streamSequence > afterStreamSequence);
+    const replayedFrames: ConversationTransientFrame[] = [];
+    let replayBytes = 0;
+    for (let index = candidates.length - 1; index >= 0; index--) {
+      const candidate = candidates[index]!;
+      const candidateBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
+      if (candidateBytes > MAX_TRANSIENT_REPLAY_BYTES - replayBytes) break;
+      replayedFrames.push(candidate);
+      replayBytes += candidateBytes;
+    }
+    replayedFrames.reverse();
+    const earliestReplayedSequence = replayedFrames[0]?.streamSequence;
+    const earliestRetainedSequence = retained[0]?.streamSequence;
+    const resetRequired =
+      cursorAhead ||
+      (latestStreamSequence > afterStreamSequence &&
+        (earliestRetainedSequence === undefined ||
+          afterStreamSequence < earliestRetainedSequence - 1 ||
+          earliestReplayedSequence === undefined ||
+          afterStreamSequence < earliestReplayedSequence - 1));
+    const streamId = `transient_${ulid()}`;
+    this.transientSubscriptions.set(streamId, {
+      socket,
+      threadId: payload.threadId,
+      liveCursor: latestStreamSequence,
+    });
+    const activeSnapshot = this.transientSnapshotByThread.get(payload.threadId);
+    const response: SubscribeConversationTransientStreamResponse = {
+      streamId,
+      threadId: payload.threadId,
+      replayedFrames,
+      ...(activeSnapshot ? { snapshot: activeSnapshot } : {}),
+      latestStreamSequence,
+      resetRequired,
+    };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'conversation.subscribeTransientStream',
+        payload: response,
+      }),
+    );
+  }
+
+  private handleUnsubscribeConversationTransientStream(socket: Socket, frame: Frame): void {
+    const payload = parseUnsubscribeConversationTransientStreamPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const subscription = this.transientSubscriptions.get(payload.streamId);
+    if (!subscription || subscription.socket !== socket) {
+      this.writeUnexpectedRequest(socket, frame, 'Transient stream subscription is not valid');
+      return;
+    }
+    this.transientSubscriptions.delete(payload.streamId);
+    const response: UnsubscribeConversationTransientStreamResponse = {
+      streamId: payload.streamId,
+    };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'conversation.unsubscribeTransientStream',
+        payload: response,
       }),
     );
   }
@@ -5640,6 +5829,64 @@ export class Runtime {
           id: frame.id,
           kind: 'response',
           type: 'conversation.list',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleListConversationMessages(socket: Socket, frame: Frame): void {
+    const payload = parseConversationListMessagesPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelCommandError(socket, frame, new Error('Conversation store unavailable'));
+      return;
+    }
+    if (!this.workspaceStore) {
+      this.writeTeamModelCommandError(socket, frame, new Error('Workspace/task store unavailable'));
+      return;
+    }
+    if (!this.messageStore) {
+      this.writeTeamModelCommandError(socket, frame, new Error('Message store unavailable'));
+      return;
+    }
+    try {
+      const conversation = this.conversationStore.get(payload.conversationId);
+      if (!conversation) {
+        throw new Error(`Conversation not found: ${payload.conversationId}`);
+      }
+      // Conversations that never had a message sent have no task/thread — return empty page.
+      const emptyPage: ConversationListMessagesResponse = { messages: [], hasMore: false };
+      if (!conversation.taskId) {
+        socket.write(
+          encodeFrame({ id: frame.id, kind: 'response', type: 'conversation.listMessages', payload: emptyPage }),
+        );
+        return;
+      }
+      const task = this.workspaceStore.getTask(conversation.taskId);
+      if (!task || !task.threadId) {
+        socket.write(
+          encodeFrame({ id: frame.id, kind: 'response', type: 'conversation.listMessages', payload: emptyPage }),
+        );
+        return;
+      }
+      const response: ConversationListMessagesResponse = this.messageStore.listMessages(
+        task.threadId,
+        {
+          beforeSequence: payload.beforeSequence,
+          limit: payload.limit,
+        },
+      );
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.listMessages',
           payload: response,
         }),
       );
@@ -10159,6 +10406,7 @@ export class Runtime {
     }
     const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
     try {
+      this.mergeDurableMessageImages(messageId as MessageId, images);
       const draft: EventDraft = {
         id: ulid() as Event['id'],
         workspaceId: task?.workspaceId ?? this.workspaceId,
@@ -10461,6 +10709,28 @@ export class Runtime {
     }
     this.threadVersions.set(payload.threadId, nextVersion);
     if (demoRunId && demoRun) this.demoRuns.set(demoRunId, demoRun);
+
+    // Durable Message Store write (S1): final user/system/tool text message.
+    // Images are attached later via message.attachImages (Desktop promotes staging → storageRef).
+    this.persistFinalChatMessage({
+      id: messageId,
+      threadId: payload.threadId as ThreadId,
+      role: payload.role,
+      text: payload.text,
+      agentVersionId:
+        typeof payload.agentVersionId === 'string'
+          ? (payload.agentVersionId as AgentVersionId)
+          : undefined,
+      modelId:
+        typeof payload.modelId === 'string' && payload.modelId.trim()
+          ? (payload.modelId.trim() as ModelId)
+          : undefined,
+      credentialRefId:
+        typeof payload.credentialRefId === 'string'
+          ? (payload.credentialRefId as CredentialRefId)
+          : undefined,
+      createdAt: messageEventDraft.occurredAt,
+    });
 
     const response: AppendMessageResponse = {
       messageId,
@@ -11028,8 +11298,40 @@ export class Runtime {
               if (scrubbed) payload.errorMessage = scrubbed;
               else delete payload.errorMessage;
             }
+            const isTransientDelta =
+              projection.type === 'message.delta' ||
+              projection.type === 'message.reasoning_delta';
+            if (isTransientDelta) {
+              if (!projection.nextRun) {
+                throw new Error('A transient delta projection requires a next run state');
+              }
+              this.demoRuns.set(runId, projection.nextRun);
+              const occurredAt = new Date().toISOString();
+              this.publishTransientDelta({
+                threadId: currentRun.threadId as ThreadId,
+                runId,
+                kind: projection.type === 'message.delta' ? 'text' : 'reasoning',
+                textDelta:
+                  typeof payload.textDelta === 'string'
+                    ? payload.textDelta
+                    : typeof payload.delta === 'string'
+                      ? payload.delta
+                      : '',
+                occurredAt,
+              });
+              this.transientSnapshotByThread.set(currentRun.threadId, {
+                threadId: currentRun.threadId as ThreadId,
+                runId,
+                streamSequence:
+                  this.transientSequenceByThread.get(currentRun.threadId) ?? 0,
+                text: projection.nextRun.assistantText,
+                ...(projection.nextRun.reasoningText
+                  ? { reasoningText: projection.nextRun.reasoningText }
+                  : {}),
+                updatedAt: occurredAt,
+              });
             // Skip publishing the intermediate tool-turn marker to keep user UI clean.
-            if (projection.type !== 'tool.turn_pending') {
+            } else if (projection.type !== 'tool.turn_pending') {
               const event = this.persistProjectedEvent(
                 {
                   id: ulid() as Event['id'],
@@ -11043,8 +11345,16 @@ export class Runtime {
                 projectedRuns,
               );
 
-              if (projection.terminal) this.demoRuns.delete(runId);
-              else if (projection.nextRun) this.demoRuns.set(runId, projection.nextRun);
+              if (projection.terminal) {
+                this.demoRuns.delete(runId);
+                this.transientSnapshotByThread.delete(currentRun.threadId);
+              } else if (projection.nextRun) this.demoRuns.set(runId, projection.nextRun);
+              // Make the durable final visible before consumers observe run.completed.
+              // ChatView can then refresh the message page immediately on the terminal event
+              // without racing a later message-store write.
+              if (projection.terminal && projection.type === 'run.completed') {
+                this.persistAssistantFinalMessage(runId, currentRun, projection.payload);
+              }
               this.publishEvent(event);
               if (projection.terminal) {
                 if (projection.type === 'run.failed') {
@@ -14127,6 +14437,128 @@ export class Runtime {
     }
   }
 
+  /**
+   * Persist a final chat message into SqliteMessageStore (S1 durable message path).
+   * Failures are logged but never fail the live chat event stream — events remain source of truth
+   * until ChatView fully switches to the message store.
+   */
+  private persistFinalChatMessage(input: {
+    id: MessageId;
+    threadId: ThreadId;
+    role: Message['role'];
+    text: string;
+    blocks?: MessageBlock[];
+    runId?: RunId;
+    stepId?: StepId;
+    agentVersionId?: AgentVersionId;
+    modelId?: ModelId;
+    credentialRefId?: CredentialRefId;
+    createdAt?: string;
+    sequence?: number;
+  }): void {
+    if (!this.messageStore) return;
+    try {
+      const text = typeof input.text === 'string' ? input.text : '';
+      const blocks: MessageBlock[] =
+        input.blocks && input.blocks.length > 0
+          ? [...input.blocks]
+          : text
+            ? [{ type: 'text', text }]
+            : [];
+      // Empty user messages can still carry images attached later; empty assistant is skipped.
+      if (blocks.length === 0 && input.role !== 'user') return;
+      if (blocks.length === 0 && input.role === 'user') {
+        // Keep a stable empty text block so image attach can updateBlocks later.
+        blocks.push({ type: 'text', text: '' });
+      }
+      const sequence =
+        typeof input.sequence === 'number' && Number.isSafeInteger(input.sequence)
+          ? input.sequence
+          : this.messageStore.nextSequence(input.threadId);
+      const message: Message = {
+        id: input.id,
+        threadId: input.threadId,
+        role: input.role,
+        sequence,
+        blocks,
+        createdAt: input.createdAt ?? new Date().toISOString(),
+        ...(input.runId ? { runId: input.runId } : {}),
+        ...(input.stepId ? { stepId: input.stepId } : {}),
+        ...(input.agentVersionId ? { agentVersionId: input.agentVersionId } : {}),
+        ...(input.modelId ? { modelId: input.modelId } : {}),
+        ...(input.credentialRefId ? { credentialRefId: input.credentialRefId } : {}),
+      };
+      this.messageStore.createFinalMessage(message);
+    } catch (error) {
+      if (error instanceof MessageStoreError && error.code === 'message.conflict') {
+        // Idempotent retry / same-id replay — ignore.
+        return;
+      }
+      console.warn(
+        '[runtime] durable message write failed:',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  private persistAssistantFinalMessage(
+    runId: RunId,
+    run: DemoRunState,
+    payload: Record<string, unknown>,
+  ): void {
+    const assistantText =
+      typeof payload.assistantText === 'string'
+        ? payload.assistantText
+        : typeof run.assistantText === 'string'
+          ? run.assistantText
+          : '';
+    if (!assistantText.trim()) return;
+    this.persistFinalChatMessage({
+      // Deterministic id so resume/redelivery of run.completed stays idempotent.
+      id: `asst-${runId}` as MessageId,
+      threadId: run.threadId as ThreadId,
+      role: 'assistant',
+      text: assistantText,
+      runId,
+      modelId: run.modelId ? (run.modelId as ModelId) : undefined,
+      credentialRefId: run.credentialRefId
+        ? (run.credentialRefId as CredentialRefId)
+        : undefined,
+      agentVersionId: run.agentVersionId
+        ? (run.agentVersionId as AgentVersionId)
+        : undefined,
+    });
+  }
+
+  private mergeDurableMessageImages(
+    messageId: MessageId,
+    images: Array<{ id: string; name: string; mimeType: string; storageRef: string }>,
+  ): void {
+    if (!this.messageStore || images.length === 0) return;
+    const existing = this.messageStore.getMessage(messageId);
+    if (!existing) {
+      console.warn('[runtime] message.attachImages: durable message missing', messageId);
+      return;
+    }
+    const blocks: MessageBlock[] = existing.blocks.filter((block) => block.type !== 'image');
+    // Preserve non-image blocks (usually a leading text block).
+    if (!blocks.some((block) => block.type === 'text')) {
+      blocks.unshift({ type: 'text', text: '' });
+    }
+    for (const image of images) {
+      blocks.push({
+        type: 'image',
+        payload: {
+          id: image.id,
+          name: image.name,
+          mimeType: image.mimeType,
+          storageRef: image.storageRef,
+        },
+      });
+    }
+    this.messageStore.updateBlocks(messageId, blocks);
+  }
+
   private recordRunDiagnostic(
     runId: RunId,
     run: DemoRunState,
@@ -14374,6 +14806,119 @@ export class Runtime {
       if (!this.subscriptionMatches(sub, event)) continue;
       this.writeLiveEvent(sub.socket, streamId, event);
     }
+    this.publishTransientProjection(event);
+  }
+
+  private publishTransientDelta(input: {
+    threadId: ThreadId;
+    runId: RunId;
+    kind: 'text' | 'reasoning';
+    textDelta: string;
+    occurredAt: string;
+  }): void {
+    this.publishTransientFrame({
+      threadId: input.threadId,
+      runId: input.runId,
+      kind: input.kind,
+      textDelta: input.textDelta,
+      occurredAt: input.occurredAt,
+    });
+  }
+
+  private publishTransientProjection(event: Event): void {
+    const threadId =
+      typeof event.payload.threadId === 'string' ? (event.payload.threadId as ThreadId) : undefined;
+    if (!threadId || !event.runId) return;
+
+    let projection:
+      | Pick<
+          ConversationTransientFrame,
+          'kind' | 'textDelta' | 'terminalState' | 'errorMessage'
+        >
+      | undefined;
+    if (event.type === 'message.delta') {
+      const textDelta =
+        typeof event.payload.textDelta === 'string'
+          ? event.payload.textDelta
+          : typeof event.payload.delta === 'string'
+            ? event.payload.delta
+            : undefined;
+      if (textDelta === undefined) return;
+      projection = { kind: 'text', textDelta };
+    } else if (event.type === 'message.reasoning_delta') {
+      const textDelta =
+        typeof event.payload.textDelta === 'string'
+          ? event.payload.textDelta
+          : typeof event.payload.reasoningDelta === 'string'
+            ? event.payload.reasoningDelta
+            : typeof event.payload.delta === 'string'
+              ? event.payload.delta
+              : undefined;
+      if (textDelta === undefined) return;
+      projection = { kind: 'reasoning', textDelta };
+    } else if (event.type === 'run.completed') {
+      projection = { kind: 'terminal', terminalState: 'completed' };
+    } else if (event.type === 'run.failed') {
+      projection = {
+        kind: 'terminal',
+        terminalState: 'failed',
+        ...(typeof event.payload.errorMessage === 'string'
+          ? { errorMessage: event.payload.errorMessage }
+          : {}),
+      };
+    } else if (event.type === 'run.cancelled') {
+      projection = { kind: 'terminal', terminalState: 'cancelled' };
+    } else {
+      return;
+    }
+
+    if (projection.kind === 'terminal') {
+      this.transientSnapshotByThread.delete(threadId);
+    }
+    this.publishTransientFrame({
+      threadId,
+      runId: event.runId,
+      occurredAt: event.occurredAt,
+      ...projection,
+    });
+  }
+
+  private publishTransientFrame(
+    input: Omit<ConversationTransientFrame, 'streamSequence'>,
+  ): ConversationTransientFrame {
+    const streamSequence = (this.transientSequenceByThread.get(input.threadId) ?? 0) + 1;
+    this.transientSequenceByThread.set(input.threadId, streamSequence);
+    const transientFrame: ConversationTransientFrame = {
+      ...input,
+      streamSequence,
+    };
+    this.transientReplay.push(transientFrame);
+    if (this.transientReplay.length > MAX_TRANSIENT_REPLAY_FRAMES) {
+      this.transientReplay.splice(
+        0,
+        this.transientReplay.length - MAX_TRANSIENT_REPLAY_FRAMES,
+      );
+    }
+
+    for (const [streamId, subscription] of this.transientSubscriptions) {
+      if (
+        subscription.socket.destroyed ||
+        subscription.threadId !== input.threadId ||
+        transientFrame.streamSequence <= subscription.liveCursor
+      ) {
+        continue;
+      }
+      subscription.liveCursor = transientFrame.streamSequence;
+      subscription.socket.write(
+        encodeFrame({
+          id: streamId,
+          kind: 'event',
+          type: 'conversation.transientFrame',
+          payload: { streamId, frame: transientFrame },
+        }),
+      );
+    }
+    return transientFrame;
   }
 
   private subscriptionMatches(subscription: RuntimeEventSubscription, event: Event): boolean {
@@ -14420,6 +14965,7 @@ export class Runtime {
       const server = this.server;
       this.server = null;
       this.subscriptions.clear();
+      this.transientSubscriptions.clear();
       server.destroyConnections();
       server.close(() => resolve());
     });
