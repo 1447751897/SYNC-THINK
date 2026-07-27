@@ -32,6 +32,40 @@ function eventDraft(id: string, workspaceId: WorkspaceId, text: string) {
 }
 
 describe('SqliteEventCheckpointStore', () => {
+  it('lists one run in stable (sequence, id) order without returning other runs', async () => {
+    const dbPath = makeDbPath();
+    const workspaceId = 'workspace-run-events' as WorkspaceId;
+    const runA = 'run-a' as RunId;
+    const runB = 'run-b' as RunId;
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+
+    try {
+      const store = new SqliteEventCheckpointStore(connection.raw);
+      store.commitTransition({
+        events: [
+          { ...eventDraft('event-run-a-1', workspaceId, 'a1'), runId: runA },
+          { ...eventDraft('event-run-b-1', workspaceId, 'b1'), runId: runB },
+          { ...eventDraft('event-run-a-3', workspaceId, 'a3'), runId: runA },
+          { ...eventDraft('event-run-a-2', workspaceId, 'a2'), runId: runA },
+        ],
+      });
+      connection.raw
+        .prepare('UPDATE event SET sequence = 3 WHERE id IN (?, ?)')
+        .run('event-run-a-2', 'event-run-a-3');
+
+      expect(store.listEventsByRun(runA).map((event) => [event.sequence, event.id])).toEqual([
+        [1, 'event-run-a-1'],
+        [3, 'event-run-a-2'],
+        [3, 'event-run-a-3'],
+      ]);
+      expect(store.listEventsByRun(runB).map((event) => event.id)).toEqual(['event-run-b-1']);
+      expect(store.listEventsByRun('missing-run' as RunId)).toEqual([]);
+    } finally {
+      connection.raw.close();
+    }
+  });
+
   it('allocates a global sequence across workspaces and lists the durable global stream', async () => {
     const dbPath = makeDbPath();
     const workspaceA = 'workspace-global-a' as WorkspaceId;
@@ -48,9 +82,7 @@ describe('SqliteEventCheckpointStore', () => {
       });
 
       expect([first.events[0].sequence, second.events[0].sequence]).toEqual([1, 2]);
-      expect(
-        store.listAllEvents(0).map((event) => [event.workspaceId, event.sequence]),
-      ).toEqual([
+      expect(store.listAllEvents(0).map((event) => [event.workspaceId, event.sequence])).toEqual([
         [workspaceA, 1],
         [workspaceB, 2],
       ]);
@@ -69,6 +101,71 @@ describe('SqliteEventCheckpointStore', () => {
       ).toEqual(['event-global-a', 'event-global-b']);
     } finally {
       reopenedConnection.raw.close();
+    }
+  });
+
+  it('reads the global event stream in bounded pages with a stable duplicate-sequence order', async () => {
+    const dbPath = makeDbPath();
+    const workspaceId = 'workspace-page' as WorkspaceId;
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+
+    try {
+      const store = new SqliteEventCheckpointStore(connection.raw);
+      store.commitTransition({
+        events: [
+          eventDraft('event-page-1', workspaceId, 'message 1'),
+          ...Array.from({ length: 5 }, (_, index) =>
+            eventDraft(`event-page-${index + 2}`, workspaceId, `message ${index + 2}`),
+          ),
+        ],
+      });
+      connection.raw
+        .prepare('UPDATE event SET sequence = 2 WHERE id IN (?, ?)')
+        .run('event-page-3', 'event-page-4');
+
+      expect(store.getLatestEventSequence()).toBe(6);
+      expect(store.getLatestEventCursor()).toEqual({
+        sequence: 6,
+        eventId: 'event-page-6',
+      });
+      const first = store.listEventPage({ afterSequence: 0, throughSequence: 6, limit: 2 });
+      expect(first).toHaveLength(2);
+      expect(first.map((event) => [event.sequence, event.id])).toEqual([
+        [1, 'event-page-1'],
+        [2, 'event-page-2'],
+      ]);
+      const second = store.listEventPage({
+        afterSequence: 2,
+        afterId: 'event-page-2',
+        throughSequence: 6,
+        throughId: 'event-page-6',
+        limit: 2,
+      });
+      expect(second).toHaveLength(2);
+      expect(second.map((event) => [event.sequence, event.id])).toEqual([
+        [2, 'event-page-3'],
+        [2, 'event-page-4'],
+      ]);
+      const third = store.listEventPage({
+        afterSequence: 2,
+        afterId: 'event-page-4',
+        throughSequence: 6,
+        throughId: 'event-page-6',
+        limit: 2,
+      });
+      expect(third).toHaveLength(2);
+      expect(third.map((event) => [event.sequence, event.id])).toEqual([
+        [5, 'event-page-5'],
+        [6, 'event-page-6'],
+      ]);
+      expect(
+        store
+          .listEventPage({ afterSequence: 2, throughSequence: 6, limit: 10 })
+          .map((event) => event.id),
+      ).toEqual(['event-page-5', 'event-page-6']);
+    } finally {
+      connection.raw.close();
     }
   });
 

@@ -1,4 +1,4 @@
-﻿// Runtime - long-lived Agent Runtime process entry. UI lifecycle independent:
+// Runtime - long-lived Agent Runtime process entry. UI lifecycle independent:
 // killing the UI must not terminate active Runs (design 锟?6 / 锟?).
 
 import {
@@ -13,6 +13,7 @@ import {
   type CreateWorkspaceResponse,
   type UpdateWorkspaceResponse,
   type DeleteWorkspaceResponse,
+  type EventReplayCursor,
   type EventReplayPagePayload,
   type EventStreamStartedPayload,
   type Frame,
@@ -102,6 +103,8 @@ import {
   type TeamRunResponse,
   type ListConversationsResponse,
   type ConversationListMessagesResponse,
+  type ConversationGetContextStatusResponse,
+  parseConversationGetContextStatusPayload,
   type ConversationResponse,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
@@ -144,12 +147,13 @@ import {
   type MessageBlock,
 } from '@sync-think/shared';
 import { defaultSurfaceForProtocol, inferProviderSurface } from '@sync-think/shared';
+import type { ConversationGetRunProcessResponse } from '@sync-think/protocol';
+import { projectRunProcess } from './run-process-view.js';
 import {
   backfillMessagesFromEvents,
   MESSAGE_STORE_BACKFILL_SETTING_KEY,
   MESSAGE_STORE_BACKFILL_VERSION,
   readBackfillProgress,
-  type MessageStoreBackfillProgress,
 } from './message-store-backfill.js';
 import {
   WorkspacePathError,
@@ -241,7 +245,6 @@ import {
   type DemoRunState,
 } from './demo-run.js';
 import {
-  buildChatMessagesFromEvents,
   buildCompactSummaryUserPrompt,
   buildLocalCompactSummary,
   BROWSER_COMMAND_RESULT_MAX_CHARS,
@@ -277,6 +280,14 @@ import {
   wrapModelCompactSummary,
 } from './chat-tools.js';
 import { resolveAppendMessageImageDataUrl } from './chat-image-staging.js';
+import {
+  ContextSnapshotBuilder,
+  selectRecentMessagesWithinBudget,
+  type ContextSnapshot,
+  type ContextSnapshotSource,
+} from './context-snapshot.js';
+import { buildProviderMessagesFromDurableMessages } from './context-message-history.js';
+import { resolveHistoricalMessageImageDataUrl } from './message-image-context.js';
 import {
   parseAppendMessagePayload,
   parseBindWorkspaceFolderPayload,
@@ -366,6 +377,7 @@ import {
   parseSetTeamRunStatusPayload,
   parseListConversationsPayload,
   parseConversationListMessagesPayload,
+  parseConversationGetRunProcessPayload,
   parseCreateConversationPayload,
   parseRenameConversationPayload,
   parseSetConversationPinnedPayload,
@@ -389,7 +401,11 @@ import {
   previewMcpOutput,
 } from '@sync-think/workers';
 
-import { estimateUsageCost, MODEL_PRICING_SETTING_KEY, parseModelPricingEntries } from './pricing.js';
+import {
+  estimateUsageCost,
+  MODEL_PRICING_SETTING_KEY,
+  parseModelPricingEntries,
+} from './pricing.js';
 import { parseRebindConversationTargetPayload } from './payload-parsers.js';
 import {
   canonicalApprovalDetails,
@@ -496,12 +512,24 @@ export interface RuntimeOptions {
   };
 }
 
-
 export interface RuntimeStateStore {
   commitTransition(input: CommitTransitionInput): CommittedTransition;
   listEvents(workspaceId: WorkspaceId, afterSequence: number): Event[];
+  /** Run-local durable query used by the conversation process read model. */
+  listEventsByRun?(runId: RunId): Event[];
   /** Global durable stream used by Runtime replay; optional for legacy/test stores. */
   listAllEvents?(afterSequence: number): Event[];
+  /** Latest durable global cursor; optional for legacy/test stores. */
+  getLatestEventSequence?(): number;
+  getLatestEventCursor?(): EventReplayCursor;
+  /** Bounded global durable page ordered by (sequence, id). */
+  listEventPage?(input: {
+    afterSequence: number;
+    afterId?: string;
+    throughSequence: number;
+    throughId?: string;
+    limit: number;
+  }): Event[];
   loadLatestCheckpoint(runId: RunId): import('@sync-think/shared').Checkpoint | undefined;
 }
 
@@ -532,10 +560,22 @@ interface RuntimeEventSubscription {
   socket: Socket;
   phase: 'catching-up' | 'live';
   categories?: ReadonlySet<EventCategory>;
-  highWatermark: number;
-  replayCursor: number;
-  replayIndex: number;
-  liveCursor: number;
+  highWatermark: EventReplayCursor;
+  replayCursor: EventReplayCursor;
+  liveCursor: EventReplayCursor;
+}
+
+function cursorForEvent(event: Event): EventReplayCursor {
+  return { sequence: event.sequence, eventId: String(event.id) };
+}
+
+function sameCursor(left: EventReplayCursor, right: EventReplayCursor): boolean {
+  return left.sequence === right.sequence && left.eventId === right.eventId;
+}
+
+function compareCursor(left: EventReplayCursor, right: EventReplayCursor): number {
+  if (left.sequence !== right.sequence) return left.sequence - right.sequence;
+  return left.eventId.localeCompare(right.eventId);
 }
 
 interface ConversationTransientSubscription {
@@ -546,12 +586,13 @@ interface ConversationTransientSubscription {
 
 const MAX_REPLAY_EVENTS_PER_PAGE = 64;
 const MAX_REPLAY_SCANNED_EVENTS_PER_PAGE = 256;
+const MAX_RECENT_RUNTIME_EVENTS = 2_048;
+const RESTORE_EVENT_PAGE_SIZE = 1_000;
 const REPLAY_FRAME_RESERVE_BYTES = 1_024;
 /** Global memory bound; frames retain a thread-local cursor for isolated replay. */
 const MAX_TRANSIENT_REPLAY_FRAMES = 256;
 /** Keep a subscribe response comfortably under the 1 MiB pipe frame limit. */
 const MAX_TRANSIENT_REPLAY_BYTES = 512 * 1024;
-
 
 export class Runtime {
   readonly startedAt = Date.now();
@@ -562,10 +603,7 @@ export class Runtime {
   private readonly threadVersions = new Map<string, number>();
   private readonly events: Event[] = [];
   private readonly subscriptions = new Map<string, RuntimeEventSubscription>();
-  private readonly transientSubscriptions = new Map<
-    string,
-    ConversationTransientSubscription
-  >();
+  private readonly transientSubscriptions = new Map<string, ConversationTransientSubscription>();
   private readonly transientReplay: ConversationTransientFrame[] = [];
   /** Current transient snapshot per thread; survives replay eviction for active runs. */
   private readonly transientSnapshotByThread = new Map<string, ConversationTransientSnapshot>();
@@ -643,6 +681,21 @@ export class Runtime {
   private readonly backgroundTasks = new Set<Promise<void>>();
   /** Thread-scoped Manifest amendments (force-exclude source ids). In-memory for M1. */
   private readonly threadContextAmendments = new Map<string, { excludeSourceIds: string[] }>();
+  private readonly contextSnapshotByThread = new Map<string, ContextSnapshot>();
+  private readonly contextRunByThread = new Map<
+    string,
+    {
+      run: DemoRunState;
+      workspaceRoot?: string;
+      executionMode: string;
+      toolsEnabled: boolean;
+      networkEnabled: boolean;
+    }
+  >();
+  private readonly latestCompactByThread = new Map<
+    string,
+    { summaryText: string; compactedAt: string }
+  >();
   private eventSequence = 0;
 
   constructor(opts: RuntimeOptions) {
@@ -1053,6 +1106,14 @@ export class Runtime {
           this.handleListConversationMessages(socket, frame);
           return;
         }
+        if (frame.type === 'conversation.getContextStatus') {
+          this.handleGetConversationContextStatus(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.getRunProcess') {
+          this.handleGetConversationRunProcess(socket, frame);
+          return;
+        }
         if (frame.type === 'conversation.create') {
           this.handleCreateConversation(socket, frame);
           return;
@@ -1241,10 +1302,14 @@ export class Runtime {
       this.threadVersions.set(threadId, version);
     }
     this.events.length = 0;
-    this.events.push(
-      ...checkpoint.events.map((event) => ({ ...event, payload: { ...event.payload } })),
+    this.rememberRecentEvents(
+      checkpoint.events.map((event) => ({ ...event, payload: { ...event.payload } })),
     );
-    this.events.sort((left, right) => left.sequence - right.sequence);
+    this.events.sort((left, right) =>
+      left.sequence === right.sequence
+        ? String(left.id).localeCompare(String(right.id))
+        : left.sequence - right.sequence,
+    );
   }
 
   private restorePersistedState(): void {
@@ -1255,59 +1320,133 @@ export class Runtime {
       this.eventSequence = checkpoint.lastEventSequence;
     }
 
-    const persistedEvents = this.stateStore.listAllEvents
-      ? this.stateStore.listAllEvents(0)
-      : this.stateStore.listEvents(this.workspaceId, 0);
-    this.events.push(
-      ...persistedEvents.map((event) => ({ ...event, payload: { ...event.payload } })),
-    );
     const replayAfter = checkpoint?.lastEventSequence ?? 0;
-    for (const event of persistedEvents) {
-      this.eventSequence = Math.max(this.eventSequence, event.sequence);
-      if (event.sequence > replayAfter) this.applyEventToProjection(event);
+    if (
+      this.stateStore.listEventPage &&
+      (this.stateStore.getLatestEventCursor || this.stateStore.getLatestEventSequence)
+    ) {
+      const throughCursor = this.stateStore.getLatestEventCursor
+        ? this.stateStore.getLatestEventCursor()
+        : { sequence: this.stateStore.getLatestEventSequence!(), eventId: '' };
+      let cursor: EventReplayCursor = { sequence: replayAfter, eventId: '' };
+      while (true) {
+        const page = this.stateStore.listEventPage({
+          afterSequence: cursor.sequence,
+          ...(cursor.eventId ? { afterId: cursor.eventId } : {}),
+          throughSequence: throughCursor.sequence,
+          ...(throughCursor.eventId ? { throughId: throughCursor.eventId } : {}),
+          limit: RESTORE_EVENT_PAGE_SIZE,
+        });
+        if (page.length === 0) break;
+        for (const event of page) {
+          this.eventSequence = Math.max(this.eventSequence, event.sequence);
+          this.applyEventToProjection(event);
+        }
+        this.rememberRecentEvents(
+          page.map((event) => ({ ...event, payload: { ...event.payload } })),
+        );
+        cursor = cursorForEvent(page[page.length - 1]!);
+      }
+      this.eventSequence = Math.max(this.eventSequence, throughCursor.sequence);
+    } else {
+      const persistedEvents = this.stateStore.listAllEvents
+        ? this.stateStore.listAllEvents(0)
+        : this.stateStore.listEvents(this.workspaceId, 0);
+      for (const event of persistedEvents) {
+        this.eventSequence = Math.max(this.eventSequence, event.sequence);
+        if (event.sequence > replayAfter) this.applyEventToProjection(event);
+      }
+      this.rememberRecentEvents(
+        persistedEvents.map((event) => ({ ...event, payload: { ...event.payload } })),
+      );
     }
-    this.backfillDurableMessages(persistedEvents);
+    this.backfillDurableMessages();
   }
 
   /**
-   * S1: project historical chat events into SqliteMessageStore so conversation.listMessages
-   * can serve old threads without scanning the full event log in the UI.
-   * Progress is stored in app_setting and the job is safe to re-run.
+   * S1/S3: project historical chat events into SqliteMessageStore in bounded
+   * cursor pages. Progress is durable and the job is safe to resume.
    */
-  private backfillDurableMessages(events: readonly Event[]): void {
-    if (!this.messageStore) return;
+  private backfillDurableMessages(): void {
+    if (!this.messageStore || !this.stateStore) return;
     try {
-      const previous = readBackfillProgress(
+      const stored = readBackfillProgress(
         this.appSettingStore?.get(MESSAGE_STORE_BACKFILL_SETTING_KEY)?.value,
       );
-      // Re-run from 0 when version bumps; otherwise resume after last processed sequence.
-      const afterSequence =
-        previous && previous.version === MESSAGE_STORE_BACKFILL_VERSION
-          ? previous.lastEventSequence
-          : 0;
-      const result = backfillMessagesFromEvents(this.messageStore, events, { afterSequence });
-      if (result.processedEvents === 0 && previous?.version === MESSAGE_STORE_BACKFILL_VERSION) {
-        return;
-      }
-      const progress: MessageStoreBackfillProgress = {
-        version: MESSAGE_STORE_BACKFILL_VERSION,
-        lastEventSequence: Math.max(afterSequence, result.lastEventSequence),
-        processedEvents: (previous?.processedEvents ?? 0) + result.processedEvents,
-        writtenMessages: (previous?.writtenMessages ?? 0) + result.writtenMessages,
-        updatedMessages: (previous?.updatedMessages ?? 0) + result.updatedMessages,
-        skippedEvents: (previous?.skippedEvents ?? 0) + result.skippedEvents,
-        completedAt: result.completedAt,
+      const previous = stored?.version === MESSAGE_STORE_BACKFILL_VERSION ? stored : undefined;
+      let cursor: EventReplayCursor = {
+        sequence: previous?.lastEventSequence ?? 0,
+        eventId: previous?.lastEventId ?? '',
       };
-      this.appSettingStore?.set(MESSAGE_STORE_BACKFILL_SETTING_KEY, progress);
-      if (result.writtenMessages > 0 || result.updatedMessages > 0) {
-        console.log(
-          '[runtime] message-store backfill',
-          `from=${result.fromSequence}`,
-          `to=${result.toSequence}`,
-          `written=${result.writtenMessages}`,
-          `updated=${result.updatedMessages}`,
-          `skipped=${result.skippedEvents}`,
-        );
+      const throughCursor = this.stateStore.getLatestEventCursor
+        ? this.stateStore.getLatestEventCursor()
+        : this.stateStore.getLatestEventSequence
+          ? { sequence: this.stateStore.getLatestEventSequence(), eventId: '' }
+          : undefined;
+      const legacyEvents =
+        throughCursor === undefined
+          ? this.stateStore.listAllEvents
+            ? this.stateStore.listAllEvents(cursor.sequence)
+            : this.stateStore.listEvents(this.workspaceId, cursor.sequence)
+          : undefined;
+      let legacyConsumed = false;
+      let progress = previous;
+
+      while (true) {
+        const events =
+          throughCursor === undefined
+            ? legacyConsumed
+              ? []
+              : ((legacyConsumed = true), legacyEvents ?? [])
+            : this.stateStore.listEventPage
+              ? this.stateStore.listEventPage({
+                  afterSequence: cursor.sequence,
+                  ...(cursor.eventId ? { afterId: cursor.eventId } : {}),
+                  throughSequence: throughCursor.sequence,
+                  ...(throughCursor.eventId ? { throughId: throughCursor.eventId } : {}),
+                  limit: RESTORE_EVENT_PAGE_SIZE,
+                })
+              : [];
+        if (events.length === 0) break;
+        const result = backfillMessagesFromEvents(this.messageStore, events, {
+          afterSequence: cursor.sequence,
+          ...(cursor.eventId ? { afterEventId: cursor.eventId } : {}),
+        });
+        cursor = cursorForEvent(events[events.length - 1]!);
+        progress = {
+          version: MESSAGE_STORE_BACKFILL_VERSION,
+          lastEventSequence: cursor.sequence,
+          lastEventId: cursor.eventId,
+          processedEvents: (progress?.processedEvents ?? 0) + result.processedEvents,
+          writtenMessages: (progress?.writtenMessages ?? 0) + result.writtenMessages,
+          updatedMessages: (progress?.updatedMessages ?? 0) + result.updatedMessages,
+          skippedEvents: (progress?.skippedEvents ?? 0) + result.skippedEvents,
+          completedAt: result.completedAt,
+        };
+        this.appSettingStore?.set(MESSAGE_STORE_BACKFILL_SETTING_KEY, progress);
+        if (result.writtenMessages > 0 || result.updatedMessages > 0) {
+          console.log(
+            '[runtime] message-store backfill',
+            `from=${result.fromSequence}`,
+            `to=${result.toSequence}`,
+            `written=${result.writtenMessages}`,
+            `updated=${result.updatedMessages}`,
+            `skipped=${result.skippedEvents}`,
+          );
+        }
+      }
+
+      if (throughCursor && !progress && throughCursor.sequence === 0) {
+        this.appSettingStore?.set(MESSAGE_STORE_BACKFILL_SETTING_KEY, {
+          version: MESSAGE_STORE_BACKFILL_VERSION,
+          lastEventSequence: 0,
+          lastEventId: '',
+          processedEvents: 0,
+          writtenMessages: 0,
+          updatedMessages: 0,
+          skippedEvents: 0,
+          completedAt: new Date().toISOString(),
+        });
       }
     } catch (error) {
       console.warn(
@@ -1358,8 +1497,18 @@ export class Runtime {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const highWatermark = this.eventSequence;
-    if (payload.afterCursor > highWatermark) {
+    const highWatermark = this.latestEventCursor();
+    const afterCursor: EventReplayCursor = {
+      sequence: payload.afterCursor,
+      eventId: payload.afterEventId ?? '',
+    };
+    if (
+      afterCursor.sequence > highWatermark.sequence ||
+      (afterCursor.sequence === highWatermark.sequence &&
+        afterCursor.eventId !== '' &&
+        highWatermark.eventId !== '' &&
+        afterCursor.eventId.localeCompare(highWatermark.eventId) > 0)
+    ) {
       this.writeUnexpectedRequest(socket, frame, 'Subscription cursor is ahead of the Runtime');
       return;
     }
@@ -1372,12 +1521,17 @@ export class Runtime {
           ? new Set(payload.categories)
           : undefined,
       highWatermark,
-      replayCursor: payload.afterCursor,
-      replayIndex: this.findEventIndexAfter(payload.afterCursor),
+      replayCursor: afterCursor,
       liveCursor: highWatermark,
     };
     this.subscriptions.set(streamId, subscription);
-    this.writeReplayPage(socket, frame, streamId, subscription, payload.afterCursor + 1);
+    this.writeReplayPage(
+      socket,
+      frame,
+      streamId,
+      subscription,
+      payload.afterCursor + (payload.afterEventId ? 0 : 1),
+    );
   }
 
   private handleContinueEventReplay(socket: Socket, frame: Frame): void {
@@ -1391,7 +1545,9 @@ export class Runtime {
       !subscription ||
       subscription.socket !== socket ||
       subscription.phase !== 'catching-up' ||
-      subscription.replayCursor !== payload.afterCursor
+      subscription.replayCursor.sequence !== payload.afterCursor ||
+      (payload.afterEventId !== undefined &&
+        subscription.replayCursor.eventId !== payload.afterEventId)
     ) {
       this.writeUnexpectedRequest(socket, frame, 'Event replay continuation is not valid');
       return;
@@ -1425,23 +1581,30 @@ export class Runtime {
     }
 
     socket.write(page.encoded);
-    subscription.replayCursor = page.payload.nextCursor;
-    subscription.replayIndex = page.nextIndex;
+    subscription.replayCursor = {
+      sequence: page.payload.nextCursor,
+      eventId: page.payload.nextEventId ?? '',
+    };
     if (!page.payload.replayComplete) return;
 
-    const activationWatermark = this.eventSequence;
+    const activationWatermark = this.latestEventCursor();
+    let cursor = subscription.highWatermark;
+    while (true) {
+      const events = this.listReplayEventPage(
+        cursor,
+        activationWatermark,
+        MAX_REPLAY_SCANNED_EVENTS_PER_PAGE,
+      );
+      if (events.length === 0) break;
+      for (const event of events) {
+        if (this.subscriptionMatches(subscription, event)) {
+          this.writeLiveEvent(socket, streamId, event);
+        }
+      }
+      cursor = cursorForEvent(events[events.length - 1]!);
+    }
     subscription.phase = 'live';
     subscription.liveCursor = activationWatermark;
-    for (const event of this.events) {
-      if (
-        event.sequence <= subscription.highWatermark ||
-        event.sequence > activationWatermark ||
-        !this.subscriptionMatches(subscription, event)
-      ) {
-        continue;
-      }
-      this.writeLiveEvent(socket, streamId, event);
-    }
   }
 
   private buildReplayPage(
@@ -1453,26 +1616,24 @@ export class Runtime {
     | {
         encoded: Buffer;
         payload: EventReplayPagePayload | EventStreamStartedPayload;
-        nextIndex: number;
       }
     | undefined {
     const replayedEvents: Event[] = [];
-    let nextCursor = subscription.replayCursor;
-    let matchingCount = 0;
-    let scannedCount = 0;
-    let replayIndex = subscription.replayIndex;
+    let nextCursor = { ...subscription.replayCursor };
     let serializedEventBytes = 0;
 
     const createPayload = (
       events: Event[],
-      cursor: number,
+      cursor: EventReplayCursor,
       complete: boolean,
     ): EventReplayPagePayload | EventStreamStartedPayload => {
       const page: EventReplayPagePayload = {
         streamId,
         replayedEvents: events,
-        nextCursor: cursor,
-        highWatermark: subscription.highWatermark,
+        nextCursor: cursor.sequence,
+        nextEventId: cursor.eventId,
+        highWatermark: subscription.highWatermark.sequence,
+        highWatermarkEventId: subscription.highWatermark.eventId,
         replayComplete: complete,
       };
       return startingSequence === undefined ? page : { ...page, startingSequence };
@@ -1492,43 +1653,46 @@ export class Runtime {
     }
     const eventBytesBudget =
       MAX_FRAME_BYTES - (emptyFrame.length - HEADER_BYTES) - REPLAY_FRAME_RESERVE_BYTES;
+    const candidates = this.listReplayEventPage(
+      subscription.replayCursor,
+      subscription.highWatermark,
+      MAX_REPLAY_SCANNED_EVENTS_PER_PAGE,
+    );
+    let stoppedBeforeCandidate = false;
 
-    while (replayIndex < this.events.length && scannedCount < MAX_REPLAY_SCANNED_EVENTS_PER_PAGE) {
-      const event = this.events[replayIndex];
-      if (event.sequence <= subscription.replayCursor) {
-        replayIndex++;
-        continue;
-      }
-      if (event.sequence > subscription.highWatermark) break;
+    for (const event of candidates) {
       const matches = this.subscriptionMatches(subscription, event);
-      if (matches && matchingCount >= MAX_REPLAY_EVENTS_PER_PAGE) break;
+      if (matches && replayedEvents.length >= MAX_REPLAY_EVENTS_PER_PAGE) {
+        stoppedBeforeCandidate = true;
+        break;
+      }
       if (matches) {
         let eventBytes: number;
         try {
           eventBytes = Buffer.byteLength(JSON.stringify(event), 'utf8');
+          if (replayedEvents.length > 0) eventBytes += 1;
         } catch {
           return undefined;
         }
-        const separatorBytes = replayedEvents.length === 0 ? 0 : 1;
-        if (serializedEventBytes + separatorBytes + eventBytes > eventBytesBudget) {
-          if (nextCursor === subscription.replayCursor && replayedEvents.length === 0) {
-            return undefined;
-          }
+        if (serializedEventBytes + eventBytes > eventBytesBudget) {
+          if (sameCursor(nextCursor, subscription.replayCursor)) return undefined;
+          stoppedBeforeCandidate = true;
           break;
         }
         replayedEvents.push(event);
-        serializedEventBytes += separatorBytes + eventBytes;
-        matchingCount++;
+        serializedEventBytes += eventBytes;
       }
-      nextCursor = event.sequence;
-      replayIndex++;
-      scannedCount++;
+      nextCursor = cursorForEvent(event);
     }
 
+    const reachedKnownHighWatermark =
+      subscription.highWatermark.eventId !== '' &&
+      compareCursor(nextCursor, subscription.highWatermark) >= 0;
     const replayComplete =
-      replayIndex >= this.events.length ||
-      this.events[replayIndex].sequence > subscription.highWatermark;
-    if (replayComplete) nextCursor = subscription.highWatermark;
+      candidates.length === 0 ||
+      reachedKnownHighWatermark ||
+      (!stoppedBeforeCandidate && candidates.length < MAX_REPLAY_SCANNED_EVENTS_PER_PAGE);
+    if (replayComplete) nextCursor = { ...subscription.highWatermark };
     const payload = createPayload(replayedEvents, nextCursor, replayComplete);
     try {
       return {
@@ -1539,22 +1703,62 @@ export class Runtime {
           payload,
         }),
         payload,
-        nextIndex: replayIndex,
       };
     } catch {
       return undefined;
     }
   }
 
-  private findEventIndexAfter(sequence: number): number {
-    let low = 0;
-    let high = this.events.length;
-    while (low < high) {
-      const middle = low + Math.floor((high - low) / 2);
-      if (this.events[middle].sequence <= sequence) low = middle + 1;
-      else high = middle;
+  private latestEventCursor(): EventReplayCursor {
+    let latest: EventReplayCursor = { sequence: this.eventSequence, eventId: '' };
+    if (this.stateStore?.getLatestEventCursor) {
+      const stored = this.stateStore.getLatestEventCursor();
+      if (compareCursor(stored, latest) > 0 || stored.sequence === latest.sequence) {
+        latest = { ...stored };
+      }
     }
-    return low;
+    for (const event of this.events) {
+      const candidate = cursorForEvent(event);
+      if (compareCursor(candidate, latest) > 0) latest = candidate;
+    }
+    return latest;
+  }
+
+  private listReplayEventPage(
+    afterCursor: EventReplayCursor,
+    throughCursor: EventReplayCursor,
+    limit: number,
+  ): Event[] {
+    if (throughCursor.sequence < afterCursor.sequence) return [];
+    if (this.stateStore?.listEventPage) {
+      return this.stateStore.listEventPage({
+        afterSequence: afterCursor.sequence,
+        ...(afterCursor.eventId ? { afterId: afterCursor.eventId } : {}),
+        throughSequence: throughCursor.sequence,
+        ...(throughCursor.eventId ? { throughId: throughCursor.eventId } : {}),
+        limit,
+      });
+    }
+    return this.events
+      .filter((event) => {
+        const id = String(event.id);
+        const after =
+          event.sequence > afterCursor.sequence ||
+          (afterCursor.eventId !== '' &&
+            event.sequence === afterCursor.sequence &&
+            id.localeCompare(afterCursor.eventId) > 0);
+        const through =
+          event.sequence < throughCursor.sequence ||
+          (event.sequence === throughCursor.sequence &&
+            (throughCursor.eventId === '' || id.localeCompare(throughCursor.eventId) <= 0));
+        return after && through;
+      })
+      .sort((left, right) =>
+        left.sequence === right.sequence
+          ? String(left.id).localeCompare(String(right.id))
+          : left.sequence - right.sequence,
+      )
+      .slice(0, limit);
   }
 
   private handleUnsubscribeEvents(socket: Socket, frame: Frame): void {
@@ -3619,7 +3823,7 @@ export class Runtime {
         try {
           const committed = this.stateStore.commitTransition({ events: [draft] });
           for (const event of committed.events) {
-            this.events.push(event);
+            this.rememberRecentEvents([event]);
             this.eventSequence = Math.max(this.eventSequence, event.sequence);
             this.publishEvent(event);
           }
@@ -3734,7 +3938,7 @@ export class Runtime {
         try {
           const committed = this.stateStore.commitTransition({ events: [draft] });
           for (const event of committed.events) {
-            this.events.push(event);
+            this.rememberRecentEvents([event]);
             this.eventSequence = Math.max(this.eventSequence, event.sequence);
             this.publishEvent(event);
           }
@@ -4141,7 +4345,7 @@ export class Runtime {
         try {
           const committed = this.stateStore.commitTransition({ events: [draft] });
           for (const event of committed.events) {
-            this.events.push(event);
+            this.rememberRecentEvents([event]);
             this.eventSequence = Math.max(this.eventSequence, event.sequence);
             this.publishEvent(event);
           }
@@ -4310,7 +4514,7 @@ export class Runtime {
         try {
           const committed = this.stateStore.commitTransition({ events: [draft] });
           for (const event of committed.events) {
-            this.events.push(event);
+            this.rememberRecentEvents([event]);
             this.eventSequence = Math.max(this.eventSequence, event.sequence);
             this.publishEvent(event);
           }
@@ -4384,7 +4588,7 @@ export class Runtime {
         try {
           const committed = this.stateStore.commitTransition({ events: [draft] });
           for (const event of committed.events) {
-            this.events.push(event);
+            this.rememberRecentEvents([event]);
             this.eventSequence = Math.max(this.eventSequence, event.sequence);
             this.publishEvent(event);
           }
@@ -4605,7 +4809,7 @@ export class Runtime {
           };
           const committed = this.stateStore.commitTransition({ events: [draft] });
           for (const event of committed.events) {
-            this.events.push(event);
+            this.rememberRecentEvents([event]);
             this.eventSequence = Math.max(this.eventSequence, event.sequence);
             this.publishEvent(event);
           }
@@ -4705,7 +4909,7 @@ export class Runtime {
           };
           const committedEvents = this.stateStore.commitTransition({ events: [draft] });
           for (const event of committedEvents.events) {
-            this.events.push(event);
+            this.rememberRecentEvents([event]);
             this.eventSequence = Math.max(this.eventSequence, event.sequence);
             this.publishEvent(event);
           }
@@ -4977,12 +5181,10 @@ export class Runtime {
       });
       const rows: UsageSummaryRow[] = raw.rows.map((row) => {
         const matchingRequests = requests.filter(
-          (request) =>
-            request.modelId === row.modelId && request.providerId === row.providerId,
+          (request) => request.modelId === row.modelId && request.providerId === row.providerId,
         );
         const pricedRequests = matchingRequests.filter(
-          (request) =>
-            typeof request.estimatedCost === 'number' && request.currency !== undefined,
+          (request) => typeof request.estimatedCost === 'number' && request.currency !== undefined,
         );
         const currencies = new Set(pricedRequests.map((request) => request.currency));
         return {
@@ -4991,10 +5193,7 @@ export class Runtime {
           providerName: row.providerId ? providerNameById.get(row.providerId) : undefined,
           totalCost:
             pricedRequests.length > 0 && currencies.size === 1
-              ? pricedRequests.reduce(
-                  (sum, request) => sum + (request.estimatedCost ?? 0),
-                  0,
-                )
+              ? pricedRequests.reduce((sum, request) => sum + (request.estimatedCost ?? 0), 0)
               : undefined,
           currency:
             currencies.size === 1
@@ -5010,7 +5209,9 @@ export class Runtime {
         ...row,
         displayName: row.modelId ? resolveDisplayName(row.modelId) : undefined,
       }));
-      const cachedHits = requests.map((row) => row.cachedTokensHit).filter((v): v is number => typeof v === 'number');
+      const cachedHits = requests
+        .map((row) => row.cachedTokensHit)
+        .filter((v): v is number => typeof v === 'number');
       const cachedCreated = requests
         .map((row) => row.cachedTokensCreated)
         .filter((v): v is number => typeof v === 'number');
@@ -5864,14 +6065,24 @@ export class Runtime {
       const emptyPage: ConversationListMessagesResponse = { messages: [], hasMore: false };
       if (!conversation.taskId) {
         socket.write(
-          encodeFrame({ id: frame.id, kind: 'response', type: 'conversation.listMessages', payload: emptyPage }),
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'conversation.listMessages',
+            payload: emptyPage,
+          }),
         );
         return;
       }
       const task = this.workspaceStore.getTask(conversation.taskId);
       if (!task || !task.threadId) {
         socket.write(
-          encodeFrame({ id: frame.id, kind: 'response', type: 'conversation.listMessages', payload: emptyPage }),
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'conversation.listMessages',
+            payload: emptyPage,
+          }),
         );
         return;
       }
@@ -5887,6 +6098,167 @@ export class Runtime {
           id: frame.id,
           kind: 'response',
           type: 'conversation.listMessages',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private buildRunAgentInstructions(run: DemoRunState, workspaceRoot?: string): string[] {
+    const agentIdentityPrompt = run.teamPromptBlock
+      ? [
+          run.globalAgentName
+            ? `You are the Agent?${run.globalAgentName}?in SYNC-THINK, acting as the team coordinator.`
+            : undefined,
+          run.persona ? `Coordinator persona:\n${run.persona}` : undefined,
+          run.teamPromptBlock,
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+      : run.globalAgentName
+        ? [
+            `You are the Agent?${run.globalAgentName}?in SYNC-THINK.`,
+            run.persona
+              ? `Follow this persona / system instructions exactly:\n${run.persona}`
+              : 'Stay in character for this Agent across the whole conversation.',
+            'Answer as this Agent. Do not claim to be a different agent unless the user reassigns you.',
+          ].join('\n')
+        : run.persona
+          ? `Persona / system instructions:\n${run.persona}`
+          : undefined;
+    const skillPrompt =
+      run.skillPromptBlocks && run.skillPromptBlocks.length > 0
+        ? [
+            'Bound Skills (follow these instructions when relevant):',
+            ...run.skillPromptBlocks,
+          ].join('\n\n')
+        : undefined;
+    return [
+      agentIdentityPrompt ??
+        (workspaceRoot
+          ? 'You are a coding assistant with filesystem tools for the bound project folder.'
+          : 'You are a helpful assistant.'),
+      skillPrompt,
+    ].filter((value): value is string => Boolean(value));
+  }
+
+  private getOrBuildConversationContextSnapshot(input: {
+    threadId: string;
+    modelId?: string;
+    globalAgentId?: string;
+    teamId?: string;
+  }): ContextSnapshot {
+    const cached = this.contextSnapshotByThread.get(input.threadId);
+    if (cached) return cached;
+
+    const prepared = this.prepareRunBinding({
+      runId: ulid() as RunId,
+      threadId: input.threadId,
+      userText: '',
+      modelId: input.modelId,
+      globalAgentId: input.globalAgentId,
+      teamId: input.teamId,
+    });
+    const messages = this.buildChatProviderMessages(prepared.run);
+    const agentInstructions = this.buildRunAgentInstructions(prepared.run);
+    const sources = (prepared.run.contextSources ?? []).map((source) => {
+      if (source.disposition !== 'included') return source;
+      if ((source.section === 'messages' && !source.content) || source.section === 'tools') {
+        return { ...source, disposition: 'audit-only' as const, tokens: 0 };
+      }
+      if (source.section === 'agent' && source.kind === 'agent-instructions') {
+        return { ...source, content: agentInstructions[0] ?? 'You are' };
+      }
+      return source;
+    });
+    const snapshot = new ContextSnapshotBuilder().build({
+      modelId: prepared.run.modelId,
+      contextWindow: prepared.run.contextWindow ?? 128_000,
+      systemInstructions: ['SYNC-THINK conversation runtime'],
+      agentInstructions,
+      projectContext: prepared.run.projectContextPromptBlocks ?? [],
+      compactSummary: prepared.run.compactSummary,
+      messages,
+      tools: [],
+      sources,
+      compactedAt: prepared.run.compactedAt,
+    });
+    this.contextSnapshotByThread.set(input.threadId, snapshot);
+    return snapshot;
+  }
+
+  private handleGetConversationContextStatus(socket: Socket, frame: Frame): void {
+    let payload: ReturnType<typeof parseConversationGetContextStatusPayload>;
+    try {
+      payload = parseConversationGetContextStatusPayload(frame.payload);
+    } catch {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelCommandError(socket, frame, new Error('Conversation store unavailable'));
+      return;
+    }
+    try {
+      const conversation = this.conversationStore.get(payload.conversationId);
+      if (!conversation) throw new Error(`Conversation not found: ${payload.conversationId}`);
+      const task =
+        conversation.taskId && this.workspaceStore
+          ? this.workspaceStore.getTask(conversation.taskId)
+          : undefined;
+      const threadId = task?.threadId ? String(task.threadId) : String(conversation.id);
+      const snapshot = this.getOrBuildConversationContextSnapshot({
+        threadId,
+        modelId: conversation.track === 'model' ? conversation.targetRef : undefined,
+        globalAgentId: conversation.track === 'agent' ? conversation.targetRef : undefined,
+        teamId: conversation.track === 'team' ? conversation.targetRef : undefined,
+      });
+      const response: ConversationGetContextStatusResponse = {
+        modelId: snapshot.status.modelId,
+        contextWindow: snapshot.status.contextWindow,
+        estimatedUsedTokens: snapshot.status.estimatedUsedTokens,
+        usageRatio: snapshot.status.usageRatio,
+        compactThreshold: snapshot.status.compactThreshold,
+        ...(snapshot.status.compactedAt ? { compactedAt: snapshot.status.compactedAt } : {}),
+        sections: snapshot.status.sections.map((section) => ({ ...section })),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.getContextStatus',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleGetConversationRunProcess(socket: Socket, frame: Frame): void {
+    const payload = parseConversationGetRunProcessPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.stateStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const events = this.stateStore.listEventsByRun
+        ? this.stateStore.listEventsByRun(payload.runId)
+        : this.events.filter((event) => event.runId === payload.runId);
+      const response: ConversationGetRunProcessResponse = {
+        process: projectRunProcess(payload.runId, events),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.getRunProcess',
           payload: response,
         }),
       );
@@ -6222,16 +6594,20 @@ export class Runtime {
       const events = this.stateStore.listAllEvents
         ? this.stateStore.listAllEvents(0)
         : this.stateStore.listEvents(this.workspaceId, 0);
-
-      // Prefer real usage occupancy from the client (usedTokens + contextWindow).
-      // Fall back to local transcript estimate when the ring has no usage yet.
-      const history = collectThreadChatHistory(events, threadId, {
-        contextWindow: payload.contextWindow,
-        usedTokens: payload.usedTokens,
+      const snapshot = this.getOrBuildConversationContextSnapshot({
+        threadId,
+        modelId: conversation.track === 'model' ? conversation.targetRef : undefined,
+        globalAgentId: conversation.track === 'agent' ? conversation.targetRef : undefined,
+        teamId: conversation.track === 'team' ? conversation.targetRef : undefined,
       });
+      const history = collectThreadChatHistory(events, threadId);
+      const beforeTokens = snapshot.status.estimatedUsedTokens;
+      const messageTokens =
+        snapshot.status.sections.find((section) => section.type === 'messages')?.tokens ?? 0;
+      const fixedContextTokens = Math.max(0, beforeTokens - messageTokens);
       const mode = payload.mode === 'auto' ? 'auto' : 'manual';
       const onlyIfNeeded = payload.onlyIfNeeded === true || mode === 'auto';
-      if (onlyIfNeeded && !history.shouldAutoCompact) {
+      if (onlyIfNeeded && !snapshot.status.shouldAutoCompact) {
         socket.write(
           encodeFrame({
             id: frame.id,
@@ -6242,8 +6618,8 @@ export class Runtime {
               threadId,
               compacted: false,
               mode,
-              beforeTokens: history.estimatedTokens,
-              afterTokens: history.estimatedTokens,
+              beforeTokens,
+              afterTokens: beforeTokens,
               foldedCount: 0,
               durationMs: Date.now() - startedAt,
             },
@@ -6265,8 +6641,8 @@ export class Runtime {
               threadId,
               compacted: false,
               mode,
-              beforeTokens: split.beforeTokens,
-              afterTokens: split.beforeTokens,
+              beforeTokens,
+              afterTokens: beforeTokens,
               foldedCount: 0,
               durationMs: Date.now() - startedAt,
             },
@@ -6276,9 +6652,8 @@ export class Runtime {
       }
 
       // Primary: model-generated structured summary (NewMax / Claude Code path).
-      // If the model summary does not shrink occupancy (common on short threads where a
-      // 9-section summary is larger than the original turns), fall back to local fold.
-      const beforeTokens = split.beforeTokens;
+      // Compare the compacted message estimate against the same full-request snapshot
+      // used by the context ring; project/system/tool tokens remain fixed.
       let summaryText = '';
       let summarySource: 'model' | 'local' = 'local';
       let afterTokens = beforeTokens;
@@ -6286,7 +6661,7 @@ export class Runtime {
       const local = buildLocalCompactSummary({
         messages: history.messages,
         keepRecent,
-        contextWindow: payload.contextWindow,
+        contextWindow: snapshot.status.contextWindow,
       });
 
       const compactModelId = this.resolveCompactModelId(conversation);
@@ -6298,12 +6673,10 @@ export class Runtime {
       });
       if (modelSummary) {
         const wrapped = wrapModelCompactSummary(modelSummary);
-        const modelAfter = estimateCompactAfterTokens(wrapped, split.keptMessages);
+        const modelAfter =
+          fixedContextTokens + estimateCompactAfterTokens(wrapped, split.keptMessages);
         // Require a real reduction; otherwise local truncate is better for the ring.
-        if (
-          wrapped &&
-          isMeaningfulCompactReduction(beforeTokens, modelAfter)
-        ) {
+        if (wrapped && isMeaningfulCompactReduction(beforeTokens, modelAfter)) {
           summaryText = wrapped;
           summarySource = 'model';
           afterTokens = modelAfter;
@@ -6313,7 +6686,7 @@ export class Runtime {
         // Local path already rejects non-shrinking summaries (empty summaryText).
         summaryText = local.summaryText;
         summarySource = 'local';
-        afterTokens = local.afterTokens;
+        afterTokens = fixedContextTokens + local.afterTokens;
       }
 
       if (
@@ -6405,6 +6778,12 @@ export class Runtime {
       };
 
       const written = this.runInUnitOfWork(writeCompact);
+      this.latestCompactByThread.set(threadId, {
+        summaryText,
+        compactedAt: written.compactEvent.occurredAt,
+      });
+      this.contextSnapshotByThread.delete(threadId);
+      this.contextRunByThread.delete(threadId);
       this.publishEvent(written.compactEvent);
       this.publishEvent(written.markerEvent);
 
@@ -6449,15 +6828,15 @@ export class Runtime {
     if (track === 'agent') {
       const agent = this.globalAgentStore?.get(targetRef as AgentId);
       const modelId =
-        agent && typeof agent.defaultModelId === 'string' ? String(agent.defaultModelId).trim() : '';
+        agent && typeof agent.defaultModelId === 'string'
+          ? String(agent.defaultModelId).trim()
+          : '';
       return modelId || undefined;
     }
     if (track === 'team') {
       const team = this.teamStore?.get(targetRef as TeamId);
       const coordinatorId =
-        team && typeof team.coordinatorAgentId === 'string'
-          ? team.coordinatorAgentId
-          : undefined;
+        team && typeof team.coordinatorAgentId === 'string' ? team.coordinatorAgentId : undefined;
       if (coordinatorId) {
         const agent = this.globalAgentStore?.get(coordinatorId as AgentId);
         const modelId =
@@ -11039,7 +11418,15 @@ export class Runtime {
   private recordCommittedEvents(events: readonly Event[]): void {
     if (events.length === 0) throw new Error('Cannot project an empty event transition');
     this.eventSequence = Math.max(this.eventSequence, events[events.length - 1]!.sequence);
+    this.rememberRecentEvents(events);
+  }
+
+  private rememberRecentEvents(events: readonly Event[]): void {
+    if (events.length === 0) return;
     this.events.push(...events);
+    if (this.events.length > MAX_RECENT_RUNTIME_EVENTS) {
+      this.events.splice(0, this.events.length - MAX_RECENT_RUNTIME_EVENTS);
+    }
   }
 
   private syncOrchestrationEvents(): void {
@@ -11299,8 +11686,7 @@ export class Runtime {
               else delete payload.errorMessage;
             }
             const isTransientDelta =
-              projection.type === 'message.delta' ||
-              projection.type === 'message.reasoning_delta';
+              projection.type === 'message.delta' || projection.type === 'message.reasoning_delta';
             if (isTransientDelta) {
               if (!projection.nextRun) {
                 throw new Error('A transient delta projection requires a next run state');
@@ -11319,18 +11705,15 @@ export class Runtime {
                       : '',
                 occurredAt,
               });
-              this.transientSnapshotByThread.set(currentRun.threadId, {
+              this.updateTransientTextSnapshot({
                 threadId: currentRun.threadId as ThreadId,
                 runId,
-                streamSequence:
-                  this.transientSequenceByThread.get(currentRun.threadId) ?? 0,
+                streamSequence: this.transientSequenceByThread.get(currentRun.threadId) ?? 0,
                 text: projection.nextRun.assistantText,
-                ...(projection.nextRun.reasoningText
-                  ? { reasoningText: projection.nextRun.reasoningText }
-                  : {}),
+                reasoningText: projection.nextRun.reasoningText,
                 updatedAt: occurredAt,
               });
-            // Skip publishing the intermediate tool-turn marker to keep user UI clean.
+              // Skip publishing the intermediate tool-turn marker to keep user UI clean.
             } else if (projection.type !== 'tool.turn_pending') {
               const event = this.persistProjectedEvent(
                 {
@@ -11473,10 +11856,11 @@ export class Runtime {
               // MCP tools (mcp__server__tool) go through the MCP pipeline; built-ins stay local.
               let resultText: string;
               const mcpDispatch =
-                (currentRun as DemoRunState & {
-                  mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
-                }).mcpToolDispatch?.get(toolCall.name) ??
-                parseMcpProviderToolName(toolCall.name);
+                (
+                  currentRun as DemoRunState & {
+                    mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+                  }
+                ).mcpToolDispatch?.get(toolCall.name) ?? parseMcpProviderToolName(toolCall.name);
               if (CHAT_PLAN_TOOL_NAMES.has(toolCall.name)) {
                 resultText = executeChatPlanTool(toolCall.argumentsJson);
               } else if (CHAT_BROWSER_COMMAND_TOOL_NAMES.has(toolCall.name)) {
@@ -11577,8 +11961,7 @@ export class Runtime {
             !forceFinalAnswer
           ) {
             forceFinalAnswer = true;
-            forceFinalReason =
-              `已达到工具轮次上限（${MAX_TOOL_ROUNDS}）。请停止调用工具，直接根据已有结果回复用户。`;
+            forceFinalReason = `已达到工具轮次上限（${MAX_TOOL_ROUNDS}）。请停止调用工具，直接根据已有结果回复用户。`;
             const live = this.demoRuns.get(runId);
             if (live) {
               this.demoRuns.set(runId, { ...live, nextAdapterEventIndex: 0 });
@@ -11716,6 +12099,7 @@ export class Runtime {
     const task = this.resolveTaskForThread(input.threadId);
     const candidates: ContextSourceRef[] = [];
     const summaries: Array<{ sourceId: string; summary: string }> = [];
+    const contentBySourceId = new Map<string, string>();
 
     if (task?.goal?.trim()) {
       candidates.push({
@@ -11727,6 +12111,11 @@ export class Runtime {
         sourceId: `task-goal:${task.id}`,
         summary: task.goal.slice(0, 120),
       });
+      contentBySourceId.set(
+        `task-goal:${task.id}`,
+        `Task goal:
+${task.goal.trim()}`,
+      );
     }
 
     if (task) {
@@ -11739,6 +12128,7 @@ export class Runtime {
         sourceId: `task-status:${task.id}`,
         summary: task.status,
       });
+      contentBySourceId.set(`task-status:${task.id}`, `Task status: ${task.status}`);
     }
 
     if (task && task.acceptanceCriteria.length > 0) {
@@ -11752,6 +12142,11 @@ export class Runtime {
         sourceId: `acceptance:${task.id}`,
         summary: task.acceptanceCriteria.slice(0, 3).join(' · ').slice(0, 120),
       });
+      contentBySourceId.set(
+        `acceptance:${task.id}`,
+        `Acceptance criteria:
+${task.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`,
+      );
     }
 
     // Explicit cross-task ref via parentTaskId only (搂10.1) 锟?never sibling scrape.
@@ -11778,6 +12173,22 @@ export class Runtime {
     for (const summary of cross.summaries) {
       summaries.push(summary);
     }
+    if (parent && cross.sources.length > 0) {
+      contentBySourceId.set(
+        `cross-task:${parent.id}`,
+        [
+          `Parent task: ${parent.title}`,
+          `Goal: ${parent.goal}`,
+          `Status: ${parent.status}`,
+          parent.acceptanceCriteria.length > 0
+            ? `Acceptance:
+${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
+    }
 
     // Approved/active project memory (搂10.1 layer 2) 锟?explicit durable entries only.
     let memoryEvidenceRefs: string[] = [];
@@ -11801,6 +12212,13 @@ export class Runtime {
         });
         for (const source of memory.sources) {
           candidates.push(source);
+          const entry = entries.find((candidate) => `memory:${candidate.id}` === source.id);
+          if (entry) {
+            contentBySourceId.set(
+              source.id,
+              `Project memory [${entry.scope}] ${entry.key}: ${entry.value}`,
+            );
+          }
         }
         for (const summary of memory.summaries) {
           summaries.push(summary);
@@ -11831,6 +12249,7 @@ export class Runtime {
           getSkill: (id) => {
             const row = this.skillStore?.getVersion(id);
             if (!row) return undefined;
+            contentBySourceId.set(`skill:${id}`, row.body.trim());
             return {
               id: row.id,
               name: row.name,
@@ -11937,6 +12356,7 @@ export class Runtime {
       resolvedMcpServerIds,
       missingMcpServerIds,
       toolSchemaCount,
+      contentBySourceId,
       summaries: summaries.filter(
         (s) =>
           selected.included.some((i) => i.id === s.sourceId) ||
@@ -12000,8 +12420,7 @@ export class Runtime {
         throw new Error(`TEAM_NOT_FOUND: ${input.teamId}`);
       }
       if (!effectiveGlobalAgentId) {
-        effectiveGlobalAgentId =
-          teamRecord.coordinatorAgentId ?? teamRecord.members[0]?.agentId;
+        effectiveGlobalAgentId = teamRecord.coordinatorAgentId ?? teamRecord.members[0]?.agentId;
       }
     }
     const globalAgent =
@@ -12021,9 +12440,7 @@ export class Runtime {
               `- ${name}`,
               member.title ? `（${member.title}）` : '',
               member.role ? `：${member.role}` : '',
-              agent?.persona?.trim()
-                ? `\n  人设摘要：${agent.persona.trim().slice(0, 160)}`
-                : '',
+              agent?.persona?.trim() ? `\n  人设摘要：${agent.persona.trim().slice(0, 160)}` : '',
               member.dependsOn.length > 0
                 ? `\n  依赖：${member.dependsOn
                     .map((id) => this.globalAgentStore?.get(id)?.name ?? id)
@@ -12033,8 +12450,8 @@ export class Runtime {
             return parts.join('');
           });
           const coordinatorName = teamRecord.coordinatorAgentId
-            ? this.globalAgentStore?.get(teamRecord.coordinatorAgentId)?.name ??
-              teamRecord.coordinatorAgentId
+            ? (this.globalAgentStore?.get(teamRecord.coordinatorAgentId)?.name ??
+              teamRecord.coordinatorAgentId)
             : undefined;
           return [
             `你正在主持小队「${teamRecord.name}」的协作对话。`,
@@ -12068,12 +12485,8 @@ export class Runtime {
       : agent;
     const agentVersionId = effectiveAgentBinding.agentVersionId;
     const agentMeta = this.resolveAgentManifestMeta(agentVersionId);
-    const effectiveSkillIds = globalAgent
-      ? [...globalAgent.skillIds]
-      : agentMeta.skillVersionIds;
-    const effectiveMcpIds = globalAgent
-      ? [...globalAgent.mcpServerIds]
-      : agentMeta.mcpServerIds;
+    const effectiveSkillIds = globalAgent ? [...globalAgent.skillIds] : agentMeta.skillVersionIds;
+    const effectiveMcpIds = globalAgent ? [...globalAgent.mcpServerIds] : agentMeta.mcpServerIds;
 
     const resolution = resolveModelBinding({
       agent: effectiveAgentBinding,
@@ -12123,6 +12536,7 @@ export class Runtime {
       summaries: protectedSummaries,
       crossTaskRefs: protectedCrossTaskRefs,
       memoryEvidenceRefs: protectedMemoryEvidenceRefs,
+      contentBySourceId,
     } = this.buildProtectedContextSelection({
       runId: input.runId,
       threadId: input.threadId,
@@ -12160,14 +12574,13 @@ export class Runtime {
     // Global agent reasoning default applies when Compose did not override.
     const reasoningEffort =
       input.reasoningEffort ??
-      (globalAgent &&
-      globalAgent.reasoningEffort &&
-      globalAgent.reasoningEffort !== 'auto'
+      (globalAgent && globalAgent.reasoningEffort && globalAgent.reasoningEffort !== 'auto'
         ? globalAgent.reasoningEffort
         : undefined);
 
     // Resolve skill bodies for system-prompt injection (not just Manifest IDs).
     const skillPromptBlocks: string[] = [];
+    const skillPromptBySourceId = new Map<string, string>();
     if (this.skillStore && effectiveSkillIds.length > 0) {
       for (const skillId of effectiveSkillIds.slice(0, 8)) {
         let row = this.skillStore.getVersion(skillId);
@@ -12184,12 +12597,76 @@ export class Runtime {
           if (match) row = match;
         }
         if (row?.body?.trim()) {
-          skillPromptBlocks.push(
-            `### Skill: ${row.name}${row.version ? ` (${row.version})` : ''}\n${row.body.trim()}`,
-          );
+          const block = `### Skill: ${row.name}${row.version ? ` (${row.version})` : ''}\n${row.body.trim()}`;
+          skillPromptBlocks.push(block);
+          skillPromptBySourceId.set(`skill:${skillId}`, row.body.trim());
         }
       }
     }
+
+    let contextWindow = 128_000;
+    if (modelRecord?.limitsJson) {
+      try {
+        const limits = JSON.parse(modelRecord.limitsJson) as { contextWindow?: unknown };
+        if (
+          typeof limits.contextWindow === 'number' &&
+          Number.isFinite(limits.contextWindow) &&
+          limits.contextWindow > 0
+        ) {
+          contextWindow = Math.round(limits.contextWindow);
+        }
+      } catch {
+        // Keep the stable Runtime fallback when provider metadata is malformed.
+      }
+    }
+
+    const contextSectionForKind = (
+      kind: ContextSourceRef['kind'],
+    ): ContextSnapshotSource['section'] => {
+      if (kind === 'agent-instructions' || kind === 'skill-definition') return 'agent';
+      if (kind === 'tool-schema') return 'tools';
+      if (kind === 'message-excerpt') return 'messages';
+      return 'project';
+    };
+    const toSnapshotSource = (
+      source: ContextSourceRef,
+      disposition: ContextSnapshotSource['disposition'],
+    ): ContextSnapshotSource => {
+      let content = contentBySourceId.get(source.id);
+      let toolName: string | undefined;
+      if (source.kind === 'skill-definition')
+        content = skillPromptBySourceId.get(source.id) ?? content;
+      if (source.kind === 'agent-instructions') content = 'You are';
+      if (source.kind === 'message-excerpt') content = input.userText;
+      if (source.kind === 'tool-schema') {
+        const [, serverId, ...toolParts] = source.id.split(':');
+        const rawToolName = toolParts.join(':');
+        if (serverId && rawToolName) {
+          toolName = `mcp__${serverId}__${rawToolName}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+        }
+      }
+      return {
+        id: source.id,
+        kind: source.kind,
+        section: contextSectionForKind(source.kind),
+        disposition,
+        ...(content ? { content } : {}),
+        ...(toolName ? { toolName } : {}),
+        tokens: disposition === 'included' ? source.tokenEstimate : 0,
+      };
+    };
+    const contextSources: ContextSnapshotSource[] = [
+      ...included.map((source) => toSnapshotSource(source, 'included')),
+      ...built.packet.excludedSources.map((source) => toSnapshotSource(source, 'audit-only')),
+    ];
+    const projectContextPromptBlocks = contextSources
+      .filter(
+        (source) =>
+          source.disposition === 'included' &&
+          source.section === 'project' &&
+          typeof source.content === 'string',
+      )
+      .map((source) => source.content!);
 
     const run = createDemoRun(input.runId, input.threadId, input.userText, {
       modelId: resolvedModelId,
@@ -12211,6 +12688,9 @@ export class Runtime {
       skillPromptBlocks,
       skillVersionIds: effectiveSkillIds,
       mcpServerIds: effectiveMcpIds,
+      contextWindow,
+      projectContextPromptBlocks,
+      contextSources,
       reasoningEffort,
       networkEnabled: input.networkEnabled === true ? true : undefined,
       images: input.images,
@@ -12288,11 +12768,7 @@ export class Runtime {
           failedModelId,
         });
         if (providerNext) {
-          const nextRun = this.rebindRunToModel(
-            run,
-            providerNext.modelId,
-            'providerFallback',
-          );
+          const nextRun = this.rebindRunToModel(run, providerNext.modelId, 'providerFallback');
           return this.persistFallbackContinuation(runId, run, nextRun, {
             failureClass,
             scrubbedMessage,
@@ -12633,14 +13109,63 @@ export class Runtime {
     return 'unknown';
   }
 
+  private resolveLatestCompactBoundary(
+    threadId: string,
+  ): { summaryText: string; compactedAt: string } | undefined {
+    const cached = this.latestCompactByThread.get(threadId);
+    if (cached) return cached;
+    if (!this.stateStore) return undefined;
+    const events = this.stateStore.listAllEvents
+      ? this.stateStore.listAllEvents(0)
+      : this.stateStore.listEvents(this.workspaceId, 0);
+    let latest: { summaryText: string; compactedAt: string; sequence: number } | undefined;
+    for (const event of events) {
+      if (event.type !== 'context.compacted' || event.payload.threadId !== threadId) continue;
+      const summaryText =
+        typeof event.payload.summaryText === 'string' ? event.payload.summaryText.trim() : '';
+      if (!summaryText || (latest && latest.sequence >= event.sequence)) continue;
+      latest = { summaryText, compactedAt: event.occurredAt, sequence: event.sequence };
+    }
+    if (!latest) return undefined;
+    const value = { summaryText: latest.summaryText, compactedAt: latest.compactedAt };
+    this.latestCompactByThread.set(threadId, value);
+    return value;
+  }
+
+  private listDurableContextMessages(
+    threadId: string,
+    contextWindow: number,
+    compact?: { compactedAt: string },
+  ): Message[] {
+    if (!this.messageStore) return [];
+    const collected: Message[] = [];
+    let beforeSequence: number | undefined;
+    let roughTokens = 0;
+    const compactedAtMs = compact ? Date.parse(compact.compactedAt) : Number.NaN;
+    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+      const page = this.messageStore.listMessages(threadId as ThreadId, {
+        ...(beforeSequence !== undefined ? { beforeSequence } : {}),
+        limit: 100,
+      });
+      collected.unshift(...page.messages);
+      roughTokens += page.messages.reduce(
+        (sum, message) => sum + Math.ceil(JSON.stringify(message.blocks).length / 4),
+        0,
+      );
+      const crossedCompact =
+        Number.isFinite(compactedAtMs) &&
+        page.messages.some((message) => Date.parse(message.createdAt) <= compactedAtMs);
+      if (!page.hasMore || crossedCompact || roughTokens >= contextWindow * 1.25) break;
+      beforeSequence = page.nextCursor;
+      if (beforeSequence === undefined) break;
+    }
+    return collected;
+  }
+
   private buildChatProviderMessages(
     run: DemoRunState,
   ): import('@sync-think/adapters').ProviderMessage[] {
-    const events = this.stateStore
-      ? this.stateStore.listAllEvents
-        ? this.stateStore.listAllEvents(0)
-        : this.stateStore.listEvents(this.workspaceId, 0)
-      : [];
+    const compact = this.resolveLatestCompactBoundary(run.threadId);
     const resolvedImages = run.images
       ?.map((image) => {
         const dataUrl = resolveAppendMessageImageDataUrl(image);
@@ -12649,7 +13174,25 @@ export class Runtime {
       .filter((image): image is { name: string; mimeType: string; dataUrl: string } =>
         Boolean(image),
       );
-    return buildChatMessagesFromEvents(events, run.threadId, run.userText, resolvedImages);
+    const durableMessages = this.listDurableContextMessages(
+      run.threadId,
+      run.contextWindow ?? 128_000,
+      compact,
+    );
+    const built = buildProviderMessagesFromDurableMessages({
+      messages: durableMessages,
+      compact,
+      currentUserText: run.userText,
+      currentImages: resolvedImages,
+      resolveImageDataUrl: (storageRef, mimeType) =>
+        resolveHistoricalMessageImageDataUrl(storageRef, mimeType),
+    });
+    run.compactSummary = built.compactSummary;
+    run.compactedAt = built.compactedAt;
+    return selectRecentMessagesWithinBudget(
+      built.messages,
+      Math.max(1, Math.floor((run.contextWindow ?? 128_000) * 0.82)),
+    );
   }
 
   /**
@@ -12873,8 +13416,7 @@ export class Runtime {
       }));
       const approvedSkills = (this.skillStore?.listVersions(100) ?? [])
         .filter(
-          (skill) =>
-            !skill.archivedAt && this.skillStore?.isPermissionApproved(skill.id) === true,
+          (skill) => !skill.archivedAt && this.skillStore?.isPermissionApproved(skill.id) === true,
         )
         .map((skill) => ({
           skillVersionId: skill.id,
@@ -12931,13 +13473,16 @@ export class Runtime {
       | { ok: false; error: string } => {
       const ref = typeof raw === 'string' ? raw.trim() : '';
       if (!ref) {
-        return { ok: false, error: 'agent is required: pass an exact agent id or unique agent name.' };
+        return {
+          ok: false,
+          error: 'agent is required: pass an exact agent id or unique agent name.',
+        };
       }
       const byId = this.globalAgentStore!.get(ref);
       if (byId) return { ok: true, agent: byId };
-      const matches = this.globalAgentStore!
-        .list()
-        .filter((a) => a.name.trim().toLowerCase() === ref.toLowerCase());
+      const matches = this.globalAgentStore!.list().filter(
+        (a) => a.name.trim().toLowerCase() === ref.toLowerCase(),
+      );
       if (matches.length === 1) return { ok: true, agent: matches[0]! };
       if (matches.length > 1) {
         return {
@@ -13051,9 +13596,7 @@ export class Runtime {
           const collision = this.globalAgentStore
             .list({ includeArchived: true })
             .find(
-              (a) =>
-                a.id !== current.id &&
-                a.name.trim().toLowerCase() === nextName!.toLowerCase(),
+              (a) => a.id !== current.id && a.name.trim().toLowerCase() === nextName!.toLowerCase(),
             );
           if (collision) {
             return JSON.stringify({
@@ -13086,9 +13629,9 @@ export class Runtime {
       }
 
       const nextPersona = typeof args.persona === 'string' ? args.persona : undefined;
-      if (nextPersona !== undefined && nextPersona !== current.persona) changedFields.push('persona');
-      const nextDescription =
-        typeof args.description === 'string' ? args.description : undefined;
+      if (nextPersona !== undefined && nextPersona !== current.persona)
+        changedFields.push('persona');
+      const nextDescription = typeof args.description === 'string' ? args.description : undefined;
       if (nextDescription !== undefined && nextDescription !== current.description) {
         changedFields.push('description');
       }
@@ -13111,7 +13654,8 @@ export class Runtime {
       ) {
         return JSON.stringify({
           ok: false,
-          error: 'No fields to update. Pass at least one of name / persona / description / defaultModelId / skillIds / reasoningEffort.',
+          error:
+            'No fields to update. Pass at least one of name / persona / description / defaultModelId / skillIds / reasoningEffort.',
         });
       }
 
@@ -13446,9 +13990,9 @@ export class Runtime {
       }
       const byId = this.teamStore!.get(ref);
       if (byId) return { ok: true, team: byId };
-      const matches = this.teamStore!
-        .list()
-        .filter((t) => t.name.trim().toLowerCase() === ref.toLowerCase());
+      const matches = this.teamStore!.list().filter(
+        (t) => t.name.trim().toLowerCase() === ref.toLowerCase(),
+      );
       if (matches.length === 1) return { ok: true, team: matches[0]! };
       if (matches.length > 1) {
         return {
@@ -13525,8 +14069,7 @@ export class Runtime {
           error: `Another team is already named "${name}" (${collision.id}). Pick a different name.`,
         });
       }
-      const strategy =
-        args.strategy === 'parallel' ? ('parallel' as const) : ('serial' as const);
+      const strategy = args.strategy === 'parallel' ? ('parallel' as const) : ('serial' as const);
       const resolved = resolveMembers(args.members);
       if (!resolved.ok) return JSON.stringify({ ok: false, error: resolved.error });
       let coordinatorAgentId: AgentId | undefined;
@@ -13593,8 +14136,7 @@ export class Runtime {
           const collision = this.teamStore
             .list()
             .find(
-              (t) =>
-                t.id !== current.id && t.name.trim().toLowerCase() === nextName!.toLowerCase(),
+              (t) => t.id !== current.id && t.name.trim().toLowerCase() === nextName!.toLowerCase(),
             );
           if (collision) {
             return JSON.stringify({
@@ -13632,8 +14174,7 @@ export class Runtime {
         } else {
           const coordinator = resolveAgentRef(ref);
           if (!coordinator.ok) return JSON.stringify({ ok: false, error: coordinator.error });
-          const finalRoster =
-            nextMembers ?? current.members.map((m) => ({ agentId: m.agentId }));
+          const finalRoster = nextMembers ?? current.members.map((m) => ({ agentId: m.agentId }));
           if (!finalRoster.some((m) => m.agentId === coordinator.agentId)) {
             return JSON.stringify({
               ok: false,
@@ -13921,8 +14462,7 @@ export class Runtime {
       // runtime restart / cancelled run. Resolve gracefully instead of erroring.
       let priorDecision: 'approve' | 'deny' | undefined;
       let orphanRequested:
-        | { threadId: string; runId: RunId; toolCallId?: string; toolName?: string }
-        | undefined;
+        { threadId: string; runId: RunId; toolCallId?: string; toolName?: string } | undefined;
       for (let i = this.events.length - 1; i >= 0; i--) {
         const event = this.events[i];
         if (event.payload?.approvalId !== payload.approvalId) continue;
@@ -14167,7 +14707,10 @@ export class Runtime {
     // MCP tools bound on the run — expose schemas to the provider when tools are on.
     const mcpExtra = (() => {
       if (!options.toolsEnabled || !this.mcpStore || !run.mcpServerIds?.length) {
-        return { tools: [] as import('@sync-think/adapters').ProviderToolSchema[], dispatch: new Map<string, { mcpServerId: string; toolName: string }>() };
+        return {
+          tools: [] as import('@sync-think/adapters').ProviderToolSchema[],
+          dispatch: new Map<string, { mcpServerId: string; toolName: string }>(),
+        };
       }
       const servers = run.mcpServerIds
         .map((id) => this.mcpStore?.get(id))
@@ -14181,8 +14724,11 @@ export class Runtime {
     })();
     // Stash dispatch on the run for the tool loop (in-memory only).
     if (mcpExtra.dispatch.size > 0) {
-      (run as DemoRunState & { mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }> }).mcpToolDispatch =
-        mcpExtra.dispatch;
+      (
+        run as DemoRunState & {
+          mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+        }
+      ).mcpToolDispatch = mcpExtra.dispatch;
     }
     const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
     const tools =
@@ -14253,69 +14799,71 @@ export class Runtime {
       '- If a tool fails as unavailable, do not retry the same command; change approach or answer with what you already know.',
       '- Avoid long pure-exploration loops. After a few targeted looks, give the user a useful answer.',
     ].join('\n');
-    const agentIdentityPrompt = run.teamPromptBlock
+    const agentInstructions = this.buildRunAgentInstructions(run, options.workspaceRoot);
+    const projectContext = options.workspaceRoot
       ? [
-          run.globalAgentName
-            ? `You are the Agent「${run.globalAgentName}」in SYNC-THINK, acting as the team coordinator.`
-            : undefined,
-          run.persona ? `Coordinator persona:\n${run.persona}` : undefined,
-          run.teamPromptBlock,
-        ]
-          .filter(Boolean)
-          .join('\n\n')
-      : run.globalAgentName
-        ? [
-            `You are the Agent「${run.globalAgentName}」in SYNC-THINK.`,
-            run.persona
-              ? `Follow this persona / system instructions exactly:\n${run.persona}`
-              : 'Stay in character for this Agent across the whole conversation.',
-            'Answer as this Agent. Do not claim to be a different agent unless the user reassigns you.',
-          ].join('\n')
-        : run.persona
-          ? `Persona / system instructions:\n${run.persona}`
-          : undefined;
-    // Skill bodies from the bound agent — must reach the model, not only Manifest IDs.
-    const skillPrompt =
-      run.skillPromptBlocks && run.skillPromptBlocks.length > 0
-        ? ['Bound Skills (follow these instructions when relevant):', ...run.skillPromptBlocks].join(
-            '\n\n',
-          )
-        : undefined;
-    const defaultSystemPrompt = options.workspaceRoot
-      ? [
-          agentIdentityPrompt ??
-            'You are a coding assistant with filesystem tools for the bound project folder.',
-          skillPrompt,
           `Project folder: ${options.workspaceRoot}`,
           `Permission mode: ${executionMode}` +
             (executionMode === 'ask'
               ? ' (「询问批准」: you MAY call write_file / run_command; the user will be prompted to approve each mutating action before it runs. Prefer read-only tools when enough.)'
               : ' (write_file / run_command auto-allowed inside the project folder).'),
           'Use tools when needed. Paths are relative to the project folder. Prefer tools over guessing file contents.',
-          productBoundaryPrompt,
-          networkPrompt,
+          ...(run.projectContextPromptBlocks ?? []),
         ]
-          .filter(Boolean)
-          .join('\n')
       : [
-          agentIdentityPrompt ?? 'You are a helpful assistant.',
-          skillPrompt,
           'No project folder is bound for this conversation, so filesystem tools are unavailable.',
           'If the user asks about local project files, tell them to open/select a project folder first.',
-          productBoundaryPrompt,
-          networkPrompt,
-        ]
-          .filter(Boolean)
-          .join('\n');
-    const systemPrompt =
-      typeof options.systemPromptOverride === 'string' && options.systemPromptOverride.trim()
-        ? options.systemPromptOverride.trim()
-        : defaultSystemPrompt;
-    const requestExtras = {
-      messages: options.messages,
-      tools,
-      systemPrompt,
+          ...(run.projectContextPromptBlocks ?? []),
+        ];
+
+    let requestExtras: {
+      messages?: import('@sync-think/adapters').ProviderMessage[];
+      tools?: import('@sync-think/adapters').ProviderToolSchema[];
+      systemPrompt: string;
     };
+    if (typeof options.systemPromptOverride === 'string' && options.systemPromptOverride.trim()) {
+      requestExtras = {
+        messages: options.messages,
+        tools,
+        systemPrompt: options.systemPromptOverride.trim(),
+      };
+    } else {
+      const actualSources = (run.contextSources ?? []).map((source) => {
+        if (source.disposition !== 'included') return source;
+        if (
+          source.section === 'tools' &&
+          (!tools || !source.toolName || !tools.some((tool) => tool.name === source.toolName))
+        ) {
+          return { ...source, disposition: 'audit-only' as const, tokens: 0 };
+        }
+        if (source.section === 'agent' && source.kind === 'agent-instructions') {
+          return { ...source, content: agentInstructions[0] ?? 'You are' };
+        }
+        return source;
+      });
+      const snapshot = new ContextSnapshotBuilder().build({
+        modelId: run.modelId,
+        contextWindow: run.contextWindow ?? 128_000,
+        systemInstructions: [productBoundaryPrompt, networkPrompt],
+        agentInstructions,
+        projectContext,
+        compactSummary: run.compactSummary,
+        messages: options.messages ?? [{ role: 'user', content: run.userText }],
+        tools,
+        sources: actualSources,
+        compactedAt: run.compactedAt,
+      });
+      run.contextSnapshot = snapshot;
+      this.contextSnapshotByThread.set(run.threadId, snapshot);
+      this.contextRunByThread.set(run.threadId, {
+        run,
+        workspaceRoot: options.workspaceRoot,
+        executionMode,
+        toolsEnabled: options.toolsEnabled === true,
+        networkEnabled,
+      });
+      requestExtras = snapshot.providerRequest;
+    }
 
     // Diagnostic: confirm multimodal parts actually reached the provider request.
     if (run.images && run.images.length > 0) {
@@ -14521,12 +15069,8 @@ export class Runtime {
       text: assistantText,
       runId,
       modelId: run.modelId ? (run.modelId as ModelId) : undefined,
-      credentialRefId: run.credentialRefId
-        ? (run.credentialRefId as CredentialRefId)
-        : undefined,
-      agentVersionId: run.agentVersionId
-        ? (run.agentVersionId as AgentVersionId)
-        : undefined,
+      credentialRefId: run.credentialRefId ? (run.credentialRefId as CredentialRefId) : undefined,
+      agentVersionId: run.agentVersionId ? (run.agentVersionId as AgentVersionId) : undefined,
     });
   }
 
@@ -14738,7 +15282,7 @@ export class Runtime {
   }
 
   private rememberCommittedEvent(event: Event): void {
-    this.events.push(event);
+    this.rememberRecentEvents([event]);
     this.eventSequence = Math.max(this.eventSequence, event.sequence);
   }
 
@@ -14757,7 +15301,7 @@ export class Runtime {
       return event;
     }
     const event: Event = { ...draft, sequence: ++this.eventSequence };
-    this.events.push(event);
+    this.rememberRecentEvents([event]);
     return event;
   }
 
@@ -14784,7 +15328,7 @@ export class Runtime {
       const committed = this.stateStore.commitTransition({ events: [draft] });
       const event = committed.events[0];
       if (!event) throw new Error('The event store returned an empty transition');
-      this.events.push(event);
+      this.rememberRecentEvents([event]);
       this.eventSequence = Math.max(this.eventSequence, event.sequence);
       return event;
     }
@@ -14793,16 +15337,21 @@ export class Runtime {
       ...draft,
       sequence: ++this.eventSequence,
     };
-    this.events.push(event);
+    this.rememberRecentEvents([event]);
     return event;
   }
 
   private publishEvent(event: Event): void {
     for (const [streamId, sub] of this.subscriptions) {
-      if (sub.socket.destroyed || sub.phase === 'catching-up' || event.sequence <= sub.liveCursor) {
+      const eventCursor = cursorForEvent(event);
+      if (
+        sub.socket.destroyed ||
+        sub.phase === 'catching-up' ||
+        compareCursor(eventCursor, sub.liveCursor) <= 0
+      ) {
         continue;
       }
-      sub.liveCursor = event.sequence;
+      sub.liveCursor = eventCursor;
       if (!this.subscriptionMatches(sub, event)) continue;
       this.writeLiveEvent(sub.socket, streamId, event);
     }
@@ -14825,6 +15374,26 @@ export class Runtime {
     });
   }
 
+  private updateTransientTextSnapshot(input: {
+    threadId: ThreadId;
+    runId: RunId;
+    streamSequence: number;
+    text: string;
+    reasoningText?: string;
+    updatedAt: string;
+  }): void {
+    const current = this.transientSnapshotByThread.get(input.threadId);
+    this.transientSnapshotByThread.set(input.threadId, {
+      threadId: input.threadId,
+      runId: input.runId,
+      streamSequence: input.streamSequence,
+      text: input.text,
+      ...(input.reasoningText ? { reasoningText: input.reasoningText } : {}),
+      ...(current?.runId === input.runId && current.process ? { process: current.process } : {}),
+      updatedAt: input.updatedAt,
+    });
+  }
+
   private publishTransientProjection(event: Event): void {
     const threadId =
       typeof event.payload.threadId === 'string' ? (event.payload.threadId as ThreadId) : undefined;
@@ -14833,9 +15402,15 @@ export class Runtime {
     let projection:
       | Pick<
           ConversationTransientFrame,
-          'kind' | 'textDelta' | 'terminalState' | 'errorMessage'
+          'kind' | 'textDelta' | 'terminalState' | 'errorMessage' | 'process'
         >
       | undefined;
+    const runProcess = (): ConversationGetRunProcessResponse['process'] => {
+      const events = this.stateStore?.listEventsByRun
+        ? this.stateStore.listEventsByRun(event.runId!)
+        : this.events.filter((candidate) => candidate.runId === event.runId);
+      return projectRunProcess(event.runId!, events);
+    };
     if (event.type === 'message.delta') {
       const textDelta =
         typeof event.payload.textDelta === 'string'
@@ -14857,30 +15432,56 @@ export class Runtime {
       if (textDelta === undefined) return;
       projection = { kind: 'reasoning', textDelta };
     } else if (event.type === 'run.completed') {
-      projection = { kind: 'terminal', terminalState: 'completed' };
+      projection = { kind: 'terminal', terminalState: 'completed', process: runProcess() };
     } else if (event.type === 'run.failed') {
       projection = {
         kind: 'terminal',
         terminalState: 'failed',
+        process: runProcess(),
         ...(typeof event.payload.errorMessage === 'string'
           ? { errorMessage: event.payload.errorMessage }
           : {}),
       };
     } else if (event.type === 'run.cancelled') {
-      projection = { kind: 'terminal', terminalState: 'cancelled' };
+      projection = { kind: 'terminal', terminalState: 'cancelled', process: runProcess() };
+    } else if (
+      event.type === 'run.started' ||
+      event.type === 'provider.usage' ||
+      event.type === 'tool.requested' ||
+      event.type === 'tool.completed' ||
+      event.type === 'tool.failed' ||
+      event.type === 'execution.tool.requested' ||
+      event.type === 'execution.tool.completed' ||
+      event.type === 'execution.tool.failed' ||
+      event.type.startsWith('mcp.tool_')
+    ) {
+      projection = { kind: 'process', process: runProcess() };
     } else {
       return;
     }
 
-    if (projection.kind === 'terminal') {
-      this.transientSnapshotByThread.delete(threadId);
-    }
-    this.publishTransientFrame({
+    const transientFrame = this.publishTransientFrame({
       threadId,
       runId: event.runId,
       occurredAt: event.occurredAt,
       ...projection,
     });
+    if (projection.kind === 'terminal') {
+      this.transientSnapshotByThread.delete(threadId);
+    } else if (projection.process) {
+      const current = this.transientSnapshotByThread.get(threadId);
+      this.transientSnapshotByThread.set(threadId, {
+        threadId,
+        runId: event.runId,
+        streamSequence: transientFrame.streamSequence,
+        text: current?.runId === event.runId ? current.text : '',
+        ...(current?.runId === event.runId && current.reasoningText
+          ? { reasoningText: current.reasoningText }
+          : {}),
+        process: projection.process,
+        updatedAt: event.occurredAt,
+      });
+    }
   }
 
   private publishTransientFrame(
@@ -14894,10 +15495,7 @@ export class Runtime {
     };
     this.transientReplay.push(transientFrame);
     if (this.transientReplay.length > MAX_TRANSIENT_REPLAY_FRAMES) {
-      this.transientReplay.splice(
-        0,
-        this.transientReplay.length - MAX_TRANSIENT_REPLAY_FRAMES,
-      );
+      this.transientReplay.splice(0, this.transientReplay.length - MAX_TRANSIENT_REPLAY_FRAMES);
     }
 
     for (const [streamId, subscription] of this.transientSubscriptions) {

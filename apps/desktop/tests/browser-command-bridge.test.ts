@@ -44,6 +44,22 @@ describe('browser command bridge wiring', () => {
     expect(globalSource).toContain('listConversationMessages(');
   });
 
+  it('bridges getConversationContextStatus through main / preload / global.d.ts', () => {
+    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-get-context-status'");
+    expect(mainSource).toContain("'conversation.getContextStatus'");
+    expect(preloadSource).toContain('getConversationContextStatus:');
+    expect(preloadSource).toContain("'runtime:conversation-get-context-status'");
+    expect(globalSource).toContain('getConversationContextStatus(');
+  });
+
+  it('bridges getConversationRunProcess through main / preload / global.d.ts', () => {
+    expect(mainSource).toContain("ipcMain.handle('runtime:conversation-get-run-process'");
+    expect(mainSource).toContain("'conversation.getRunProcess'");
+    expect(preloadSource).toContain('getConversationRunProcess:');
+    expect(preloadSource).toContain("'runtime:conversation-get-run-process'");
+    expect(globalSource).toContain('getConversationRunProcess(');
+  });
+
   it('bridges conversation transient subscriptions through main / preload / global.d.ts', () => {
     expect(mainSource).toContain("ipcMain.handle('runtime:conversation-subscribe-transient'");
     expect(mainSource).toContain('subscribeConversationTransientStream({');

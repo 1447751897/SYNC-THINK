@@ -11,6 +11,8 @@ import type {
   ConversationCompactPayload,
   ListConversationsPayload,
   ConversationListMessagesPayload,
+  ConversationGetContextStatusPayload,
+  ConversationGetRunProcessPayload,
   SubscribeConversationTransientStreamPayload,
   ListGlobalAgentsPayload,
   RenameConversationPayload,
@@ -258,6 +260,32 @@ export function parseConversationListMessagesPayload(
     beforeSequence: value.beforeSequence as number | undefined,
     limit: value.limit as number | undefined,
   };
+}
+
+export function parseConversationGetContextStatusPayload(
+  value: unknown,
+): ConversationGetContextStatusPayload {
+  const label = 'Invalid get-conversation-context-status payload';
+  if (!isRecord(value)) throw new Error(label);
+  const allowed = new Set(['conversationId']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
+  const conversationId = requiredString(value.conversationId, label);
+  if (conversationId.length > 128) throw new Error(label);
+  return {
+    conversationId: conversationId as ConversationGetContextStatusPayload['conversationId'],
+  };
+}
+
+export function parseConversationGetRunProcessPayload(
+  value: unknown,
+): ConversationGetRunProcessPayload {
+  const label = 'Invalid get-conversation-run-process payload';
+  if (!isRecord(value)) throw new Error(label);
+  const allowed = new Set(['runId']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
+  const runId = requiredString(value.runId, label);
+  if (runId.length > 128) throw new Error(label);
+  return { runId: runId as ConversationGetRunProcessPayload['runId'] };
 }
 
 export function parseSubscribeConversationTransientStreamPayload(

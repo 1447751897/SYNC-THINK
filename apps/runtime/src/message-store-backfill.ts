@@ -1,6 +1,14 @@
 // Idempotent projection of durable chat events into SqliteMessageStore (S1).
 // Safe to re-run: same message ids are skipped when already present; image attach merges blocks.
-import type { Event, Message, MessageBlock, MessageId, ModelId, RunId, ThreadId } from '@sync-think/shared';
+import type {
+  Event,
+  Message,
+  MessageBlock,
+  MessageId,
+  ModelId,
+  RunId,
+  ThreadId,
+} from '@sync-think/shared';
 import { MessageStoreError, type SqliteMessageStore } from '@sync-think/storage';
 
 export const MESSAGE_STORE_BACKFILL_SETTING_KEY = 'message-store-backfill';
@@ -9,6 +17,7 @@ export const MESSAGE_STORE_BACKFILL_VERSION = 1;
 export interface MessageStoreBackfillProgress {
   version: number;
   lastEventSequence: number;
+  lastEventId?: string;
   processedEvents: number;
   writtenMessages: number;
   updatedMessages: number;
@@ -106,17 +115,19 @@ function writeMessage(store: MessageStoreLike, message: Message): 'written' | 's
 
 /**
  * Project chat-relevant durable events into the message table.
- * Only processes events with sequence > afterSequence (exclusive cursor).
+ * Only processes events after the exclusive (sequence,eventId) cursor.
  */
 export function backfillMessagesFromEvents(
   store: MessageStoreLike,
   events: readonly Event[],
-  options: { afterSequence?: number } = {},
+  options: { afterSequence?: number; afterEventId?: string } = {},
 ): MessageStoreBackfillResult {
   const afterSequence =
     typeof options.afterSequence === 'number' && Number.isSafeInteger(options.afterSequence)
       ? Math.max(0, options.afterSequence)
       : 0;
+
+  const afterEventId = typeof options.afterEventId === 'string' ? options.afterEventId : undefined;
 
   let processedEvents = 0;
   let writtenMessages = 0;
@@ -125,7 +136,13 @@ export function backfillMessagesFromEvents(
   let toSequence = afterSequence;
 
   const ordered = [...events]
-    .filter((event) => event.sequence > afterSequence)
+    .filter(
+      (event) =>
+        event.sequence > afterSequence ||
+        (afterEventId !== undefined &&
+          event.sequence === afterSequence &&
+          String(event.id).localeCompare(afterEventId) > 0),
+    )
     .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
 
   for (const event of ordered) {
@@ -180,8 +197,7 @@ export function backfillMessagesFromEvents(
         typeof payload.threadId === 'string' && payload.threadId
           ? (payload.threadId as ThreadId)
           : undefined;
-      const assistantText =
-        typeof payload.assistantText === 'string' ? payload.assistantText : '';
+      const assistantText = typeof payload.assistantText === 'string' ? payload.assistantText : '';
       const runId =
         (typeof event.runId === 'string' && event.runId) ||
         (typeof payload.idempotencyKey === 'string' && payload.idempotencyKey) ||
@@ -252,6 +268,11 @@ export function backfillMessagesFromEvents(
   return {
     version: MESSAGE_STORE_BACKFILL_VERSION,
     lastEventSequence: toSequence,
+    ...(ordered.length > 0
+      ? { lastEventId: String(ordered[ordered.length - 1]!.id) }
+      : afterEventId !== undefined
+        ? { lastEventId: afterEventId }
+        : {}),
     processedEvents,
     writtenMessages,
     updatedMessages,
@@ -266,7 +287,11 @@ export function readBackfillProgress(value: unknown): MessageStoreBackfillProgre
   const record = asRecord(value);
   if (!record) return undefined;
   const lastEventSequence = record.lastEventSequence;
-  if (typeof lastEventSequence !== 'number' || !Number.isSafeInteger(lastEventSequence) || lastEventSequence < 0) {
+  if (
+    typeof lastEventSequence !== 'number' ||
+    !Number.isSafeInteger(lastEventSequence) ||
+    lastEventSequence < 0
+  ) {
     return undefined;
   }
   return {
@@ -275,6 +300,7 @@ export function readBackfillProgress(value: unknown): MessageStoreBackfillProgre
         ? record.version
         : MESSAGE_STORE_BACKFILL_VERSION,
     lastEventSequence,
+    ...(typeof record.lastEventId === 'string' ? { lastEventId: record.lastEventId } : {}),
     processedEvents:
       typeof record.processedEvents === 'number' && Number.isSafeInteger(record.processedEvents)
         ? record.processedEvents
@@ -303,5 +329,6 @@ export function runMessageStoreBackfill(input: {
 }): MessageStoreBackfillResult {
   return backfillMessagesFromEvents(input.messageStore, input.events, {
     afterSequence: input.progress?.lastEventSequence ?? 0,
+    afterEventId: input.progress?.lastEventId,
   });
 }

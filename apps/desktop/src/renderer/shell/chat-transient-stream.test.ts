@@ -50,6 +50,22 @@ describe('chat transient stream reducer', () => {
     });
   });
 
+  it('advances process-only frames without treating them as reasoning text', () => {
+    const result = applyTransientConversationFrame({
+      current: null,
+      frame: frame(1, 'process'),
+      threadId: 'thread-a',
+      afterStreamSequence: 0,
+    });
+
+    expect(result.draft).toEqual({
+      runId: 'run-a',
+      text: '',
+      timestamp: '2026-07-27T00:00:01.000Z',
+    });
+    expect(result.lastStreamSequence).toBe(1);
+  });
+
   it('ignores other threads and clears only the matching run on terminal', () => {
     const current = {
       runId: 'run-a',

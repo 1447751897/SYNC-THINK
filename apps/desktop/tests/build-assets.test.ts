@@ -34,14 +34,8 @@ describe('desktop renderer build assets', () => {
     const preloadSourcePath = join(desktopRoot, 'src/preload/index.ts');
     const rendererGlobalPath = join(desktopRoot, 'src/renderer/global.d.ts');
     const rendererSourcePath = join(desktopRoot, 'src/renderer/index.tsx');
-    const runtimeConnectionSourcePath = join(
-      desktopRoot,
-      'src/renderer/runtime-connection.ts',
-    );
-    const runtimeViewStateSourcePath = join(
-      desktopRoot,
-      'src/renderer/runtime-view-state.ts',
-    );
+    const runtimeConnectionSourcePath = join(desktopRoot, 'src/renderer/runtime-connection.ts');
+    const runtimeViewStateSourcePath = join(desktopRoot, 'src/renderer/runtime-view-state.ts');
 
     expect(existsSync(htmlPath)).toBe(true);
     expect(existsSync(jsPath)).toBe(true);
@@ -83,7 +77,8 @@ describe('desktop renderer build assets', () => {
     expect(preload).not.toContain('secure-store:');
     expect(preload).toContain('runtime:connect');
     expect(preload).toContain('runtime:event');
-    expect(runtimeSession).toContain('subscribeEvents(0');
+    expect(runtimeSession).toContain('activityCursorStore.load()');
+    expect(runtimeSession).toContain('ACTIVITY_EVENT_CATEGORIES');
     expect(runtimeSession).toContain('snapshot:');
     expect(bridgeContract).toContain('interface RuntimeConnectResult');
     expect(bridgeContract).toContain('type RuntimeConnectOutcome');

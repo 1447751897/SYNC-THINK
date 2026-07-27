@@ -1,3 +1,35 @@
+## 2026-07-27 · 会话上下文性能 S5 交接检查点：Runtime Context Truth
+
+- 新增 `ContextSnapshotBuilder` 与 `conversation.getContextStatus`；Provider 请求和 Runtime status 统一输出 system/agent/project/summary/messages/tools 六类 token 构成，Renderer 不再使用 chars/4、provider.usage 或本地 context window 推导。
+- compact 阈值改由 Runtime `usageRatio >= compactThreshold(0.7)` 判定；manual/auto compact 完成后，Renderer token 状态继续只读取 Runtime status。
+- ContextRing 已接入 Runtime tooltip，可展示 prompt/source/reasoning 分项、使用率、阈值和各来源构成，不暴露隐藏 reasoning 文本或完整 Provider context。
+- Protocol 增加 browser-safe `conversation-context-status` export，Desktop bundle 不再引入 Node-only `pipe` / `handshake` 依赖。
+- 修复普通 model 会话没有绑定 Agent 时，status 路径因 `included source is absent from provider payload: agent-instructions` 导致失败的问题；默认 Agent 指令现与真实 Provider 调用共享 `buildRunAgentInstructions`。
+- 自动化基线：Runtime 52 文件/334 项、Desktop 78 文件/579 项；全仓 test/typecheck 20/20 tasks、build 11/11 tasks、`git diff --check` 全部通过。
+- S5 尚未最终关闭：cache-miss status 重建仍需与真实 Provider system/project/tools 构造完整同源；Electron ContextRing 最终实窗验收也因 Computer Use 被中断而待完成。
+
+## 2026-07-27 · 会话上下文性能 S4 完成：Run-local Process Projection
+
+- Storage 新增 `listEventsByRun(runId)`；Protocol/Runtime 新增 `conversation.getRunProcess` 与 `RunProcessView`，历史过程不再依赖 Desktop 全局事件窗口重新投影。
+- Desktop Main/Preload/Renderer bridge 对 `runId` 做严格 payload 校验；ChatView 以 `Map<runId, RunProcessView>` 缓存历史与当前过程，并用 conversation generation 阻止旧异步响应污染新会话。
+- 历史过程查询瞬时失败后以 500ms 起步、最大 8 秒的指数退避自动重试；成功、切换对话和卸载都会清理重试状态。
+- transient stream 新增 `process` frame/snapshot；工具事件只更新对应 run，terminal 携带最终过程；Runtime 文本/reasoning snapshot 更新与重连恢复不会丢失已有 process。
+- `MessageBubble` 只接收单个 `processView`，并通过 `memo()` 与稳定 callback 保持历史气泡引用稳定；ExecutionProcessBlock、FileChangesCard、RightRail 不再扫描原始事件或调用旧 projector。
+- 读/写步骤标题直接包含路径；command、generic、list_files 的单行长输出也同时按行数和字符数截断。
+- MCP requested/called/refused 在生产事件缺少 toolCallId 时按共同 `actionDigest` 聚合；called/refused 与 run terminal 会把步骤最终收敛为 done/error，不遗留 running。
+- 新增 30 步投影、run Map 对象隔离、Desktop 生产接线、payload、transient reducer、重连 snapshot、历史查询重试与持久命令回归测试；旧 transient sequence 测试已纳入新增 process frame。
+- 验证：Protocol 5 文件/20 项、Storage 22 文件/246 项、Runtime 48 文件/319 项、Desktop 77 文件/567 项；全仓 test/typecheck 20/20 tasks、build 11/11 tasks 全部通过。
+
+## 2026-07-27 · 会话上下文性能 S3 完成：Cursor Replay + Checkpoint Tail Recovery
+
+- Desktop 全局订阅收敛为轻量 `message` / `run` activity，并在 `app.getPath('userData')/runtime-activity-cursor.json` 持久化单调 cursor；即使 replay 页没有命中 category，也会保存页面进度，重启不再从 0 回放。
+- Desktop activity `eventHistory` 固定保留最近 2048 条，按 event ID 去重并以 `(sequence, id)` 稳定排序；同 sequence 的遗留事件不会被误删。
+- Runtime 从 checkpoint projection + checkpoint 后的 SQLite event page 恢复，常驻事件窗口限制为最近 2048 条；message backfill 使用独立分页 cursor，不再依赖启动时加载全库事件。
+- durable event replay 直接读取 Store cursor page，不再扫描 Runtime 内存历史；replay/live handoff 继续受 event 数量与 frame byte budget 双重约束。
+- Storage 新增 `getLatestEventCursor()`、严格有界的 `(sequence, id)` `listEventPage()` 与迁移 `0029_event_global_cursor`（`event(sequence, id)`）；遗留重复 sequence 可安全跨页，且无遗漏、无重复。
+- 新增 Desktop cursor 持久化/万条 replay 有界内存测试、Runtime checkpoint-tail/分页 replay 测试，并补齐 migration 回归断言。
+- 验证：全仓 test 20/20 tasks（Desktop 74 文件/549 项、Runtime 45 文件/310 项、Storage 22 文件/245 项）、typecheck 20/20 tasks、build 11/11 tasks 全部通过。
+
 ## 2026-07-27 · 会话上下文性能 S2 完成：Non-durable Delta + Active Snapshot
 
 - Desktop `RuntimePipeClient`、`RuntimeSession`、Main IPC、Preload 与 ChatView 已完整接入 thread-scoped transient stream；当前会话以 transient text/reasoning frame 更新助手草稿，durable terminal 负责 final message 收敛。
@@ -115,8 +147,6 @@
 - 过程投影补齐 `edit_file` 映射、`new_string` 预览和严格 run 隔离，避免无 run 事件串到其他回答的过程组。
 - 验证：Desktop typecheck；Markdown/过程投影聚焦测试 15/15；Desktop build；`git diff --check`。
 
-
-
 - 继续以用户最新八张 NewMax 截图为唯一结构基准，完成使用统计全过程：
   - 时间范围改为 `24h / 近 7 天 / 近 30 天 / 全部` 分段选择器
   - 四项 KPI 改为四张独立卡片，卡间 `12px`；顶部、二级 Tab 与表格节奏按截图收紧
@@ -142,7 +172,6 @@
   - `usage.summary` 从 durable `provider.usage`、run 终态与 `tool.requested` 重建真实请求日志、延迟、供应商/模型/工具聚合；没有真实价格或缓存用量时显示 `—`，不伪造数据
 - 供应商密钥继续遵守 Renderer 安全边界：表单值先写系统剪贴板，由主进程读取后送 Runtime；Renderer/preload 元数据类型不携带 `apiKey`
 - 验证：protocol/runtime/desktop typecheck；Provider 安全边界 15/15；Provider Runtime 命令 5/5；Desktop build
-
 
 - **根因 A（消息发送后图片消失）**：图片只存在 renderer optimistic state；durable `message.appended` 只有文本，投影按文本清理 pending 后图片立即消失，重开对话也无法恢复
 - **根因 B（当前模型看不到图片）**：实际协议为 `openai-responses`，Responses adapter 把多模态 `content[]` 压成纯文本，静默丢弃 image part
@@ -461,7 +490,6 @@
 - 左栏视觉收敛为 NewMax 式安静密度：弱化品牌、分隔与大按钮，统一深浅色 token、hover/focus/选中态，并保留键盘可达与减少动画支持。
 - 本轮不更换 Electron + React 技术栈：现有栈足以实现目标视觉，换栈不能替代信息架构、组件层级和 token 设计。
 - 验证：Desktop 聚焦测试 **28/28**、typecheck、Desktop build 通过。
-
 
 - 规格锁定：`docs/superpowers/specs/2026-07-22-newmax-shell-nav-agent-model.md`（权限只跟对话、Agent 默认 Skill 进项目可用、子任务默认嵌本对话、分屏 P0/P1、统筹代审等）。
 - Desktop 主导航改为 NewMax 式一级：`对话 / 项目 / 智能体 / 小队 / 能力 / 设置`；对话下增加三轨 `模型对话 / 智能体对话 / 小队对话`。

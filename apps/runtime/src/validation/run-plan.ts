@@ -1,11 +1,40 @@
 // run-plan command payload parsers (extracted from command-validation.ts).
-import type { CancelRunPayload, PauseRunPayload, ResumeRunPayload, ContinueEventReplayPayload, SubscribeEventsPayload, UnsubscribeEventsPayload, SubscribeConversationTransientStreamPayload, UnsubscribeConversationTransientStreamPayload, PlanDraftPayload, PlanRevisePayload, PlanListRevisionsPayload, PlanApprovePayload, RunGetGraphPayload } from '@sync-think/protocol';
+import type {
+  CancelRunPayload,
+  PauseRunPayload,
+  ResumeRunPayload,
+  ContinueEventReplayPayload,
+  SubscribeEventsPayload,
+  UnsubscribeEventsPayload,
+  SubscribeConversationTransientStreamPayload,
+  UnsubscribeConversationTransientStreamPayload,
+  PlanDraftPayload,
+  PlanRevisePayload,
+  PlanListRevisionsPayload,
+  PlanApprovePayload,
+  RunGetGraphPayload,
+} from '@sync-think/protocol';
 import type { EventCategory } from '@sync-think/shared';
-import { EVENT_CATEGORIES, parseOrchestrationRunMutationPayload, PLAN_ID_MAX_LENGTH, PLAN_TITLE_MAX_LENGTH, hasOnlyKeys, isBoundedText, parsePlanSteps, isRecord } from './shared.js';
+import {
+  EVENT_CATEGORIES,
+  parseOrchestrationRunMutationPayload,
+  PLAN_ID_MAX_LENGTH,
+  PLAN_TITLE_MAX_LENGTH,
+  hasOnlyKeys,
+  isBoundedText,
+  parsePlanSteps,
+  isRecord,
+} from './shared.js';
 
 export function parseSubscribeEventsPayload(value: unknown): SubscribeEventsPayload | undefined {
   if (!isRecord(value)) return undefined;
   if (!Number.isInteger(value.afterCursor) || (value.afterCursor as number) < 0) {
+    return undefined;
+  }
+  if (
+    value.afterEventId !== undefined &&
+    (typeof value.afterEventId !== 'string' || value.afterEventId.length > 256)
+  ) {
     return undefined;
   }
   if (
@@ -30,7 +59,9 @@ export function parseContinueEventReplayPayload(
     value.streamId.length === 0 ||
     value.streamId.length > 256 ||
     !Number.isInteger(value.afterCursor) ||
-    (value.afterCursor as number) < 0
+    (value.afterCursor as number) < 0 ||
+    (value.afterEventId !== undefined &&
+      (typeof value.afterEventId !== 'string' || value.afterEventId.length > 256))
   ) {
     return undefined;
   }

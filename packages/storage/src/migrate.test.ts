@@ -43,6 +43,7 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -244,6 +245,7 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -424,13 +426,14 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
 
 describe('migration planner (pure)', () => {
   it('appends message pagination after the prior storage migrations', () => {
-    expect(MIGRATIONS.at(-7)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0023_provider_execution_checkpoint');
-    expect(MIGRATIONS.at(-5)?.name).toBe('0024_mutable_agent_team_conversation');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0025_conversation_task_binding');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0026_provider_source_config');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0027_skill_archive');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-7)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.at(-6)?.name).toBe('0024_mutable_agent_team_conversation');
+    expect(MIGRATIONS.at(-5)?.name).toBe('0025_conversation_task_binding');
+    expect(MIGRATIONS.at(-4)?.name).toBe('0026_provider_source_config');
+    expect(MIGRATIONS.at(-3)?.name).toBe('0027_skill_archive');
+    expect(MIGRATIONS.at(-2)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-1)?.name).toBe('0029_event_global_cursor');
   });
 
   it.runIf(canOpenNativeSqlite())(
@@ -439,7 +442,7 @@ describe('migration planner (pure)', () => {
       const dir = mkdtempSync(join(tmpdir(), 'sync-think-project-folder-migration-'));
       const dbPath = join(dir, 'sync-think.db');
       try {
-        const trailing = MIGRATIONS.splice(-7);
+        const trailing = MIGRATIONS.splice(-8);
         try {
           await runMigrations(dbPath);
         } finally {
@@ -484,7 +487,8 @@ describe('migration planner (pure)', () => {
           '0025_conversation_task_binding',
           '0026_provider_source_config',
           '0027_skill_archive',
-        '0028_message_pagination',
+          '0028_message_pagination',
+          '0029_event_global_cursor',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -540,36 +544,38 @@ describe('migration planner (pure)', () => {
   );
 
   it('appends the complete AgentVersion migration after reviewer/rework', () => {
-    expect(MIGRATIONS.at(-12)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-11)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-10)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-9)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-8)?.name).toBe('0021_merge_step_conflict_resolution');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0023_provider_execution_checkpoint');
-    expect(MIGRATIONS.at(-5)?.name).toBe('0024_mutable_agent_team_conversation');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0025_conversation_task_binding');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0026_provider_source_config');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0027_skill_archive');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-13)?.name).toBe('0017_reviewer_rework');
+    expect(MIGRATIONS.at(-12)?.name).toBe('0018_complete_agent_version');
+    expect(MIGRATIONS.at(-11)?.name).toBe('0019_review_source_evidence_integrity');
+    expect(MIGRATIONS.at(-10)?.name).toBe('0020_review_bounds_integrity');
+    expect(MIGRATIONS.at(-9)?.name).toBe('0021_merge_step_conflict_resolution');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-7)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.at(-6)?.name).toBe('0024_mutable_agent_team_conversation');
+    expect(MIGRATIONS.at(-5)?.name).toBe('0025_conversation_task_binding');
+    expect(MIGRATIONS.at(-4)?.name).toBe('0026_provider_source_config');
+    expect(MIGRATIONS.at(-3)?.name).toBe('0027_skill_archive');
+    expect(MIGRATIONS.at(-2)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-1)?.name).toBe('0029_event_global_cursor');
   });
 
   it('reserves 0016 for production execution fencing after frozen 0015', () => {
-    expect(MIGRATIONS.at(-14)?.name).toBe('0015_capability_authorization');
-    expect(MIGRATIONS.at(-13)?.name).toBe('0016_production_execution');
-    expect(MIGRATIONS.at(-12)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-11)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-10)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-9)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-8)?.name).toBe('0021_merge_step_conflict_resolution');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0023_provider_execution_checkpoint');
-    expect(MIGRATIONS.at(-5)?.name).toBe('0024_mutable_agent_team_conversation');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0025_conversation_task_binding');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0026_provider_source_config');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0027_skill_archive');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0028_message_pagination');
-    const through0015 = MIGRATIONS.slice(0, -13).map((migration) => migration.name);
+    expect(MIGRATIONS.at(-15)?.name).toBe('0015_capability_authorization');
+    expect(MIGRATIONS.at(-14)?.name).toBe('0016_production_execution');
+    expect(MIGRATIONS.at(-13)?.name).toBe('0017_reviewer_rework');
+    expect(MIGRATIONS.at(-12)?.name).toBe('0018_complete_agent_version');
+    expect(MIGRATIONS.at(-11)?.name).toBe('0019_review_source_evidence_integrity');
+    expect(MIGRATIONS.at(-10)?.name).toBe('0020_review_bounds_integrity');
+    expect(MIGRATIONS.at(-9)?.name).toBe('0021_merge_step_conflict_resolution');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-7)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.at(-6)?.name).toBe('0024_mutable_agent_team_conversation');
+    expect(MIGRATIONS.at(-5)?.name).toBe('0025_conversation_task_binding');
+    expect(MIGRATIONS.at(-4)?.name).toBe('0026_provider_source_config');
+    expect(MIGRATIONS.at(-3)?.name).toBe('0027_skill_archive');
+    expect(MIGRATIONS.at(-2)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-1)?.name).toBe('0029_event_global_cursor');
+    const through0015 = MIGRATIONS.slice(0, -14).map((migration) => migration.name);
     expect(planMigrations(through0015).applied).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',
@@ -584,13 +590,14 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
   });
 
   it('appends capability authorization after the frozen 0014 migration', () => {
-    expect(MIGRATIONS.at(-15)?.name).toBe('0014_scheduler_fencing');
-    expect(MIGRATIONS.at(-14)?.name).toBe('0015_capability_authorization');
-    const through0014 = MIGRATIONS.slice(0, -14).map((migration) => migration.name);
+    expect(MIGRATIONS.at(-16)?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS.at(-15)?.name).toBe('0015_capability_authorization');
+    const through0014 = MIGRATIONS.slice(0, -15).map((migration) => migration.name);
     expect(planMigrations(through0014).applied).toEqual([
       '0015_capability_authorization',
       '0016_production_execution',
@@ -606,6 +613,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
   });
 
@@ -637,6 +645,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
   });
 
@@ -661,6 +670,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
   });
 
@@ -684,6 +694,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
   });
 
@@ -724,6 +735,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -757,6 +769,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -793,6 +806,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -833,6 +847,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -874,6 +889,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -916,6 +932,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -959,6 +976,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1004,6 +1022,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1041,6 +1060,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1075,6 +1095,7 @@ describe('migration planner (pure)', () => {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1202,6 +1223,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   it('upgrades a complete 0017 AgentVersion without rewriting history and uses safe defaults', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-agent-version-upgrade-'));
     const dbPath = join(dir, 'sync-think.db');
+    const eventGlobalCursorMigration =
+      MIGRATIONS.at(-1)?.name === '0029_event_global_cursor' ? MIGRATIONS.pop() : undefined;
     const messagePaginationMigration =
       MIGRATIONS.at(-1)?.name === '0028_message_pagination' ? MIGRATIONS.pop() : undefined;
     const skillArchiveMigration =
@@ -1267,6 +1290,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       if (providerSourceConfigMigration) MIGRATIONS.push(providerSourceConfigMigration);
       if (skillArchiveMigration) MIGRATIONS.push(skillArchiveMigration);
       if (messagePaginationMigration) MIGRATIONS.push(messagePaginationMigration);
+      if (eventGlobalCursorMigration) MIGRATIONS.push(eventGlobalCursorMigration);
       expect((await runMigrations(dbPath)).applied).toEqual([
         '0018_complete_agent_version',
         '0019_review_source_evidence_integrity',
@@ -1279,6 +1303,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1385,6 +1410,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1434,6 +1460,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1446,7 +1473,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         upgraded.raw.close();
       }
     } finally {
-      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0028_message_pagination') {
+      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0029_event_global_cursor') {
         MIGRATIONS.push(...trailingMigrations);
       }
       rmSync(dir, { recursive: true, force: true });
@@ -1572,7 +1599,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   });
 
   it('appends 0014 scheduler fencing and exact Step output mapping', async () => {
-    expect(MIGRATIONS.at(-15)?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS.at(-16)?.name).toBe('0014_scheduler_fencing');
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduler-fencing-migration-'));
     const dbPath = join(dir, 'sync-think.db');
     try {
@@ -1708,6 +1735,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1770,6 +1798,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1807,6 +1836,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1843,6 +1873,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1886,6 +1917,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1997,6 +2029,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2059,6 +2092,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0026_provider_source_config',
         '0027_skill_archive',
         '0028_message_pagination',
+        '0029_event_global_cursor',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2087,6 +2121,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   it('fails 0028 atomically instead of rewriting duplicate legacy sequences', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-message-pagination-upgrade-'));
     const dbPath = join(dir, 'sync-think.db');
+    const eventGlobalCursorMigration =
+      MIGRATIONS.at(-1)?.name === '0029_event_global_cursor' ? MIGRATIONS.pop() : undefined;
     const messagePaginationMigration =
       MIGRATIONS.at(-1)?.name === '0028_message_pagination' ? MIGRATIONS.pop() : undefined;
     expect(messagePaginationMigration?.name).toBe('0028_message_pagination');
@@ -2147,6 +2183,9 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       if (messagePaginationMigration && !MIGRATIONS.includes(messagePaginationMigration)) {
         MIGRATIONS.push(messagePaginationMigration);
       }
+      if (eventGlobalCursorMigration && !MIGRATIONS.includes(eventGlobalCursorMigration)) {
+        MIGRATIONS.push(eventGlobalCursorMigration);
+      }
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -2183,6 +2222,34 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
           .get(failingMigration.name);
         expect(partialTable).toBeUndefined();
         expect(migrationRecord).toBeUndefined();
+      } finally {
+        raw.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('0029 event global cursor migration', () => {
+  it('creates the stable global replay index exactly once', async () => {
+    if (!canOpenNativeSqlite()) return;
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-event-cursor-index-'));
+    const dbPath = join(dir, 'sync-think.db');
+    try {
+      await runMigrations(dbPath);
+      await runMigrations(dbPath);
+      const { raw } = await openDatabaseAsync({ path: dbPath });
+      try {
+        expect(raw.prepare(`PRAGMA index_info('event_global_cursor_idx')`).all()).toMatchObject([
+          { seqno: 0, name: 'sequence' },
+          { seqno: 1, name: 'id' },
+        ]);
+        expect(
+          raw
+            .prepare('SELECT COUNT(*) AS count FROM migration_record WHERE name = ?')
+            .get('0029_event_global_cursor'),
+        ).toEqual({ count: 1 });
       } finally {
         raw.close();
       }

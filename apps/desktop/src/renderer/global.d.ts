@@ -282,6 +282,12 @@ declare global {
         listConversationMessages(
           payload: import('@sync-think/protocol').ConversationListMessagesPayload,
         ): Promise<import('@sync-think/protocol').ConversationListMessagesResponse>;
+        getConversationContextStatus(
+          payload: import('@sync-think/protocol').ConversationGetContextStatusPayload,
+        ): Promise<import('@sync-think/protocol').ConversationGetContextStatusResponse>;
+        getConversationRunProcess(
+          payload: import('@sync-think/protocol').ConversationGetRunProcessPayload,
+        ): Promise<import('@sync-think/protocol').ConversationGetRunProcessResponse>;
         subscribeConversationTransientStream(
           payload: { threadId: string; afterStreamSequence?: number },
           listener: (event:

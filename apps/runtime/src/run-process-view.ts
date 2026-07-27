@@ -1,0 +1,659 @@
+import type {
+  ExecutionProcessStep,
+  FileChangeItem,
+  ProcessToolKind,
+  RunProcessView,
+  TaskPlanItem,
+  TaskPlanView,
+} from '@sync-think/protocol';
+import type { Event, RunId } from '@sync-think/shared';
+
+const TOOL_META: Record<
+  string,
+  { verb: string; kind: ProcessToolKind; zh: string }
+> = {
+  read_file: { verb: 'Read', kind: 'read', zh: '读取文件' },
+  write_file: { verb: 'Edit', kind: 'write', zh: '写入文件' },
+  edit_file: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
+  list_files: { verb: 'List', kind: 'list', zh: '列出文件' },
+  run_command: { verb: 'Bash', kind: 'bash', zh: '执行命令' },
+  git_status: { verb: 'Git', kind: 'git', zh: 'Git 状态' },
+  git_diff: { verb: 'Git', kind: 'git', zh: 'Git diff' },
+  browser_open: { verb: 'Browse', kind: 'browser', zh: '打开网页' },
+  update_task_plan: { verb: 'Plan', kind: 'other', zh: '更新任务清单' },
+  browser_navigate: { verb: 'Browse', kind: 'browser', zh: '打开网页' },
+  browser_extract: { verb: 'Extract', kind: 'browser', zh: '提取网页' },
+  browser_click: { verb: 'Click', kind: 'browser', zh: '点击网页' },
+  browser_fill: { verb: 'Fill', kind: 'browser', zh: '填写' },
+  browser_type: { verb: 'Type', kind: 'browser', zh: '输入文字' },
+  browser_read: { verb: 'Read', kind: 'browser', zh: '读取页面' },
+  browser_screenshot: { verb: 'Shot', kind: 'browser', zh: '页面截图' },
+  search_web: { verb: 'Search', kind: 'search', zh: '搜索' },
+  web_search: { verb: 'Search', kind: 'search', zh: '联网搜索' },
+  web_fetch: { verb: 'Fetch', kind: 'browser', zh: '读取网页' },
+};
+
+function shortText(value: string, max = 48): string {
+  const text = value.trim();
+  if (text.length <= max) return text;
+  return `…${text.slice(-(max - 1))}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function eventThreadId(event: Event): string | undefined {
+  if (typeof event.payload.threadId === 'string') return event.payload.threadId;
+  const run = asRecord(event.payload.run);
+  return typeof run?.threadId === 'string' ? run.threadId : undefined;
+}
+
+function eventRunId(event: Event): string | undefined {
+  if (event.runId) return String(event.runId);
+  if (typeof event.payload.runId === 'string') return event.payload.runId;
+  const run = asRecord(event.payload.run);
+  return typeof run?.runId === 'string' ? run.runId : undefined;
+}
+
+function eventProviderModelId(event: Event): string | undefined {
+  if (typeof event.payload.providerModelId === 'string' && event.payload.providerModelId) {
+    return event.payload.providerModelId;
+  }
+  const run = asRecord(event.payload.run);
+  return typeof run?.providerModelId === 'string' && run.providerModelId
+    ? run.providerModelId
+    : undefined;
+}
+
+function eventModelId(event: Event): string | undefined {
+  if (typeof event.payload.modelId === 'string' && event.payload.modelId) {
+    return event.payload.modelId;
+  }
+  const run = asRecord(event.payload.run);
+  return typeof run?.modelId === 'string' && run.modelId ? run.modelId : undefined;
+}
+
+function isToolEvent(type: string): boolean {
+  return (
+    type === 'tool.requested' ||
+    type === 'tool.completed' ||
+    type === 'tool.failed' ||
+    type === 'execution.tool.requested' ||
+    type === 'execution.tool.completed' ||
+    type === 'execution.tool.failed' ||
+    type.startsWith('mcp.tool_') ||
+    type.startsWith('mcp.')
+  );
+}
+
+function toolMeta(name: string): { verb: string; kind: ProcessToolKind; zh: string } {
+  if (TOOL_META[name]) return TOOL_META[name]!;
+  if (name.startsWith('mcp.') || name.includes('__')) {
+    return { verb: 'MCP', kind: 'mcp', zh: name };
+  }
+  return { verb: name, kind: 'other', zh: name };
+}
+
+function extractArgs(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  return (
+    asRecord(payload.arguments) ??
+    asRecord(payload.args) ??
+    asRecord(asRecord(payload.toolCall)?.arguments) ??
+    asRecord(parseMaybeJson(asRecord(payload.toolCall)?.argumentsJson))
+  );
+}
+
+function extractToolName(payload: Record<string, unknown>): string {
+  if (typeof payload.toolName === 'string' && payload.toolName) return payload.toolName;
+  if (typeof payload.tool === 'string' && payload.tool) return payload.tool;
+  if (typeof payload.name === 'string' && payload.name) return payload.name;
+  const toolCall = asRecord(payload.toolCall);
+  if (typeof toolCall?.name === 'string' && toolCall.name) return toolCall.name;
+  return 'tool';
+}
+
+function extractToolCallId(payload: Record<string, unknown>, eventId: string): string {
+  if (typeof payload.toolCallId === 'string' && payload.toolCallId) return payload.toolCallId;
+  if (typeof payload.callId === 'string' && payload.callId) return payload.callId;
+  const toolCall = asRecord(payload.toolCall);
+  if (typeof toolCall?.id === 'string' && toolCall.id) return toolCall.id;
+  if (typeof payload.actionDigest === 'string' && payload.actionDigest) return payload.actionDigest;
+  return eventId;
+}
+
+function buildLabel(toolName: string, args?: Record<string, unknown>): {
+  label: string;
+  verb: string;
+  zh: string;
+  kind: ProcessToolKind;
+  path?: string;
+  command?: string;
+  url?: string;
+} {
+  const meta = toolMeta(toolName);
+  const path =
+    typeof args?.path === 'string'
+      ? args.path
+      : typeof args?.file === 'string'
+        ? args.file
+        : undefined;
+  const command = typeof args?.command === 'string' ? args.command : undefined;
+  const url = typeof args?.url === 'string' ? args.url : undefined;
+  const query = typeof args?.query === 'string' ? args.query : undefined;
+  const focus = path ?? command ?? url ?? query;
+  const label = focus ? `${meta.verb} · ${shortText(String(focus), 52)}` : meta.verb;
+  return { label, verb: meta.verb, zh: meta.zh, kind: meta.kind, path, command, url };
+}
+
+/** Prefer written body from tool args; result only carries status/bytes. */
+function extractWriteContent(args?: Record<string, unknown>): string | undefined {
+  if (!args) return undefined;
+  if (typeof args.content === 'string') return args.content;
+  if (typeof args.text === 'string') return args.text;
+  if (typeof args.body === 'string') return args.body;
+  if (typeof args.new_string === 'string') return args.new_string;
+  if (typeof args.newString === 'string') return args.newString;
+  return undefined;
+}
+
+function clipContentPreview(content: string, maxLines = 200, maxChars = 12_000): string {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const lineClipped = lines.length <= maxLines
+    ? lines.join('\n')
+    : `${lines.slice(0, maxLines).join('\n')}\n... (${lines.length} lines total)`;
+  if (lineClipped.length <= maxChars) return lineClipped;
+  return `${lineClipped.slice(0, maxChars)}\n... (content truncated)`;
+}
+
+function summarizeResult(
+  toolName: string,
+  resultRaw: unknown,
+  args?: Record<string, unknown>,
+): { preview?: string; exitCode?: number; created?: boolean; content?: string } {
+  const parsed = parseMaybeJson(resultRaw);
+  const obj = asRecord(parsed);
+
+  if (toolName === 'list_files') {
+    const entries =
+      (Array.isArray(obj?.entries) && obj.entries) ||
+      (Array.isArray(obj?.items) && obj.items) ||
+      (Array.isArray(obj?.files) && obj.files) ||
+      (Array.isArray(parsed) ? parsed : undefined);
+    if (entries) {
+      const names = entries
+        .slice(0, 20)
+        .map((item) => {
+          if (typeof item === 'string') return item;
+          const rec = asRecord(item);
+          return typeof rec?.name === 'string'
+            ? rec.name
+            : typeof rec?.path === 'string'
+              ? rec.path
+              : JSON.stringify(item);
+        })
+        .filter(Boolean);
+      const total =
+        typeof obj?.count === 'number'
+          ? obj.count
+          : typeof obj?.total === 'number'
+            ? obj.total
+            : entries.length;
+      return {
+        preview: clipContentPreview(
+          `找到 ${total} 项\n${names.join('\n')}${total > names.length ? '\n…' : ''}`,
+          22,
+        ),
+      };
+    }
+  }
+
+  if (toolName === 'read_file') {
+    const content =
+      typeof obj?.content === 'string'
+        ? obj.content
+        : typeof obj?.text === 'string'
+          ? obj.text
+          : typeof parsed === 'string'
+            ? parsed
+            : undefined;
+    if (content) {
+      return {
+        preview: clipContentPreview(content, 40),
+        content,
+      };
+    }
+  }
+
+  if (toolName === 'write_file' || toolName === 'edit_file') {
+    const created = obj?.created === true || obj?.isNew === true;
+    const bytes =
+      typeof obj?.bytes === 'number'
+        ? obj.bytes
+        : typeof obj?.size === 'number'
+          ? obj.size
+          : undefined;
+    // NewMax shows the written body itself, not just "已写入".
+    const content = extractWriteContent(args);
+    if (content !== undefined) {
+      return {
+        preview: clipContentPreview(content, 200),
+        content,
+        created,
+      };
+    }
+    return {
+      preview: created
+        ? bytes
+          ? `已创建（${bytes} bytes）`
+          : '已创建'
+        : bytes
+          ? `已写入（${bytes} bytes）`
+          : '已写入',
+      created,
+    };
+  }
+
+  if (toolName === 'run_command') {
+    const exitCode =
+      typeof obj?.exitCode === 'number'
+        ? obj.exitCode
+        : typeof obj?.code === 'number'
+          ? obj.code
+          : undefined;
+    const stdout =
+      typeof obj?.stdout === 'string'
+        ? obj.stdout
+        : typeof obj?.output === 'string'
+          ? obj.output
+          : '';
+    const stderr = typeof obj?.stderr === 'string' ? obj.stderr : '';
+    const body = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n').trim();
+    const summary = body || (exitCode === undefined ? '命令已完成' : `退出码 ${exitCode}`);
+    return {
+      exitCode,
+      preview: clipContentPreview(summary, 40),
+    };
+  }
+
+  if (typeof parsed === 'string' && parsed.trim()) {
+    return { preview: clipContentPreview(parsed, 30) };
+  }
+  if (obj) {
+    try {
+      const text = JSON.stringify(obj, null, 2);
+      return { preview: clipContentPreview(text, 30, 1200) };
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+/**
+ * Project NewMax-style "执行过程" steps + file changes + token usage.
+ */
+export function projectRunProcess(
+  runId: RunId,
+  events: readonly Event[],
+): RunProcessView {
+  const threadId: string | undefined = undefined;
+  const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
+  const byId = new Map<string, ExecutionProcessStep>();
+  const order: string[] = [];
+  const fileChanges: FileChangeItem[] = [];
+  let taskPlan: TaskPlanView | undefined;
+  /** write_file body often only appears on tool.requested args, not on completed result. */
+  const writeContentByCall = new Map<string, string>();
+  let tokensIn: number | undefined;
+  let tokensOut: number | undefined;
+  let startedAt: string | undefined;
+  let completedAt: string | undefined;
+  let providerModelId: string | undefined;
+  let modelId: string | undefined;
+  let terminalStepStatus: 'done' | 'error' | undefined;
+
+  for (const event of ordered) {
+    if (runId && eventRunId(event) !== runId) continue;
+    const eventThread = eventThreadId(event);
+    if (threadId && eventThread && eventThread !== threadId) continue;
+
+    if (event.type === 'run.started') {
+      startedAt = event.occurredAt;
+      providerModelId = eventProviderModelId(event) ?? providerModelId;
+      modelId = eventModelId(event) ?? modelId;
+      continue;
+    }
+    if (
+      event.type === 'run.completed' ||
+      event.type === 'run.failed' ||
+      event.type === 'run.cancelled' ||
+      event.type === 'run.paused'
+    ) {
+      completedAt = event.occurredAt;
+      if (event.type === 'run.completed') terminalStepStatus = 'done';
+      if (event.type === 'run.failed' || event.type === 'run.cancelled') {
+        terminalStepStatus = 'error';
+      }
+      providerModelId = eventProviderModelId(event) ?? providerModelId;
+      modelId = eventModelId(event) ?? modelId;
+      continue;
+    }
+
+    if (event.type === 'provider.usage') {
+      if (typeof event.payload.tokensIn === 'number') tokensIn = event.payload.tokensIn;
+      if (typeof event.payload.tokensOut === 'number') tokensOut = event.payload.tokensOut;
+      // Some adapters use input/output naming.
+      if (tokensIn === undefined && typeof event.payload.inputTokens === 'number') {
+        tokensIn = event.payload.inputTokens;
+      }
+      if (tokensOut === undefined && typeof event.payload.outputTokens === 'number') {
+        tokensOut = event.payload.outputTokens;
+      }
+      providerModelId = eventProviderModelId(event) ?? providerModelId;
+      modelId = eventModelId(event) ?? modelId;
+      // Do NOT treat mid-run provider.usage as completion — tool loops emit usage
+      // every round and would make the process look finished while still spinning.
+      continue;
+    }
+
+    if (!isToolEvent(event.type)) continue;
+    if (!runId && threadId && eventThread && eventThread !== threadId) continue;
+
+    const payload = event.payload;
+    const toolCallId = extractToolCallId(payload, event.id);
+    const toolName = extractToolName(payload);
+
+    // update_task_plan is a pure UI signal: project the checklist, keep it out
+    // of the tool step list (it would be noise there).
+    if (toolName === 'update_task_plan') {
+      const parsedPlan = extractTaskPlan(payload);
+      if (parsedPlan) taskPlan = parsedPlan;
+      continue;
+    }
+
+    const args = extractArgs(payload);
+    const built = buildLabel(toolName, args);
+    const writeBody = extractWriteContent(args);
+    if (writeBody !== undefined) {
+      writeContentByCall.set(toolCallId, writeBody);
+    }
+    const argsForSummary =
+      writeBody !== undefined
+        ? args
+        : writeContentByCall.has(toolCallId)
+          ? { ...(args ?? {}), content: writeContentByCall.get(toolCallId) }
+          : args;
+
+    const requested =
+      event.type.endsWith('.requested') ||
+      event.type === 'tool.requested' ||
+      event.type === 'execution.tool.requested' ||
+      event.type === 'mcp.tool_requested';
+    const failed =
+      event.type.endsWith('.failed') ||
+      event.type === 'tool.failed' ||
+      event.type === 'execution.tool.failed' ||
+      event.type === 'mcp.tool_failed' ||
+      event.type === 'mcp.tool_refused';
+    const completed =
+      event.type.endsWith('.completed') ||
+      event.type === 'tool.completed' ||
+      event.type === 'execution.tool.completed' ||
+      event.type === 'mcp.tool_completed' ||
+      event.type === 'mcp.tool_called';
+
+    const existing = byId.get(toolCallId);
+    if (!existing) {
+      order.push(toolCallId);
+      const resultSummary =
+        completed || failed
+          ? summarizeResult(
+              toolName,
+              payload.result ?? payload.output ?? payload.error,
+              argsForSummary,
+            )
+          : {};
+      const resultFailed =
+        completed && isToolResultFailure(payload.result ?? payload.output, resultSummary);
+      byId.set(toolCallId, {
+        id: toolCallId,
+        label: built.label,
+        verb: built.verb,
+        zh: built.zh,
+        toolName,
+        kind: built.kind,
+        status: failed || resultFailed ? 'error' : completed ? 'done' : 'running',
+        path: built.path,
+        command: built.command,
+        url: built.url,
+        preview: resultSummary.preview,
+        exitCode: resultSummary.exitCode,
+        error:
+          failed && typeof payload.error === 'string'
+            ? payload.error
+            : failed && typeof payload.errorMessage === 'string'
+              ? payload.errorMessage
+              : resultFailed
+                ? extractToolResultError(payload.result ?? payload.output) ?? resultSummary.preview
+                : undefined,
+        occurredAt: event.occurredAt,
+      });
+      if (
+        completed &&
+        (toolName === 'write_file' || toolName === 'edit_file') &&
+        built.path
+      ) {
+        fileChanges.push({
+          path: built.path,
+          action: resultSummary.created ? 'created' : 'edited',
+          toolCallId,
+          preview: resultSummary.preview,
+        });
+      }
+      continue;
+    }
+
+    if (failed) {
+      existing.status = 'error';
+      existing.error =
+        typeof payload.error === 'string'
+          ? payload.error
+          : typeof payload.errorMessage === 'string'
+            ? payload.errorMessage
+            : existing.error;
+    } else if (completed) {
+      const summary = summarizeResult(
+        toolName,
+        payload.result ?? payload.output,
+        argsForSummary,
+      );
+      const resultFailed = isToolResultFailure(payload.result ?? payload.output, summary);
+      existing.status =
+        existing.status === 'error' || resultFailed ? 'error' : 'done';
+      existing.preview = summary.preview ?? existing.preview;
+      existing.exitCode = summary.exitCode ?? existing.exitCode;
+      if (resultFailed && !existing.error) {
+        existing.error = extractToolResultError(payload.result ?? payload.output) ?? existing.preview;
+      }
+      if (
+        (toolName === 'write_file' || toolName === 'edit_file') &&
+        (existing.path || built.path)
+      ) {
+        const path = existing.path || built.path!;
+        const contentPreview = summary.preview;
+        const already = fileChanges.find(
+          (item) => item.path === path && item.toolCallId === toolCallId,
+        );
+        if (already) {
+          if (contentPreview) already.preview = contentPreview;
+          if (summary.created) already.action = 'created';
+        } else {
+          fileChanges.push({
+            path,
+            action: summary.created ? 'created' : 'edited',
+            toolCallId,
+            preview: contentPreview,
+          });
+        }
+      }
+    } else if (requested) {
+      existing.status =
+        existing.status === 'done' || existing.status === 'error' ? existing.status : 'running';
+    }
+
+    // Prefer richer labels/args if a later event carries them.
+    if (built.path) existing.path = built.path;
+    if (built.command) existing.command = built.command;
+    if (built.url) existing.url = built.url;
+    const titleDetail = existing.path ?? existing.command ?? existing.url;
+    existing.label = titleDetail
+      ? `${built.verb} ? ${shortText(titleDetail, 52)}`
+      : built.label || existing.label;
+    existing.verb = built.verb || existing.verb;
+    existing.zh = built.zh || existing.zh;
+    existing.toolName = toolName || existing.toolName;
+    existing.kind = built.kind || existing.kind;
+    existing.occurredAt = event.occurredAt;
+  }
+
+  if (terminalStepStatus) {
+    for (const step of byId.values()) {
+      if (step.status !== 'running') continue;
+      step.status = terminalStepStatus;
+      if (terminalStepStatus === 'error' && !step.error) {
+        step.error = 'Run ended before the tool reported completion';
+      }
+    }
+  }
+
+  // Merge adjacent identical labels (read-only / same command) into ×N.
+  const raw = order.map((id) => byId.get(id)!).filter(Boolean);
+  const steps: ExecutionProcessStep[] = [];
+  for (const step of raw) {
+    const prev = steps[steps.length - 1];
+    const sameKey =
+      prev &&
+      prev.toolName === step.toolName &&
+      (prev.path ?? prev.command ?? prev.url ?? prev.label) ===
+        (step.path ?? step.command ?? step.url ?? step.label) &&
+      prev.status === step.status &&
+      prev.status !== 'error';
+    if (sameKey && prev) {
+      prev.count = (prev.count ?? 1) + 1;
+      const base = prev.label.replace(/ ×\d+$/, '');
+      prev.label = `${base} ×${prev.count}`;
+      prev.preview = step.preview ?? prev.preview;
+      prev.occurredAt = step.occurredAt ?? prev.occurredAt;
+      continue;
+    }
+    steps.push({ ...step, count: 1 });
+  }
+
+  // Dedupe file changes by path (keep last action).
+  const changeByPath = new Map<string, FileChangeItem>();
+  for (const change of fileChanges) {
+    changeByPath.set(change.path, change);
+  }
+
+  let durationMs: number | undefined;
+  if (startedAt && completedAt) {
+    const start = Date.parse(startedAt);
+    const end = Date.parse(completedAt);
+    if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+      durationMs = end - start;
+    }
+  }
+
+  return {
+    runId,
+    steps,
+    fileChanges: [...changeByPath.values()],
+    taskPlan,
+    running: steps.some((step) => step.status === 'running'),
+    doneCount: steps.filter((step) => step.status === 'done').length,
+    errorCount: steps.filter((step) => step.status === 'error').length,
+    tokensIn,
+    tokensOut,
+    durationMs,
+    providerModelId,
+    modelId,
+    startedAt,
+    completedAt,
+  };
+}
+
+/**
+ * Parse the checklist from an update_task_plan tool event.
+ * Prefers the executed result (`{ok:true, plan:{...}}` on tool.completed);
+ * falls back to the request arguments so the capsule updates as soon as the
+ * call is streamed, before the round-trip completes.
+ */
+function extractTaskPlan(payload: Record<string, unknown>): TaskPlanView | undefined {
+  const fromResult = (() => {
+    const parsed = parseMaybeJson(payload.result ?? payload.output);
+    const obj = asRecord(parsed);
+    if (obj?.ok !== true) return undefined;
+    const plan = asRecord(obj.plan);
+    return plan ? normalizeTaskPlanItems(plan.items) : undefined;
+  })();
+  if (fromResult) return fromResult;
+  const args = extractArgs(payload);
+  return args ? normalizeTaskPlanItems(args.items) : undefined;
+}
+
+function normalizeTaskPlanItems(raw: unknown): TaskPlanView | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const items: TaskPlanItem[] = [];
+  for (const entry of raw.slice(0, 20)) {
+    const rec = asRecord(entry);
+    const title = typeof rec?.title === 'string' ? rec.title.trim() : '';
+    if (!title) continue;
+    const status =
+      rec?.status === 'in_progress' || rec?.status === 'completed'
+        ? rec.status
+        : 'pending';
+    items.push({ title, status });
+  }
+  if (items.length === 0) return undefined;
+  return {
+    items,
+    completed: items.filter((item) => item.status === 'completed').length,
+    total: items.length,
+  };
+}
+
+function isToolResultFailure(
+  resultRaw: unknown,
+  summary: { exitCode?: number },
+): boolean {
+  if (typeof summary.exitCode === 'number' && summary.exitCode !== 0) return true;
+  const parsed = parseMaybeJson(resultRaw);
+  const obj = asRecord(parsed);
+  if (obj && obj.ok === false) return true;
+  if (typeof resultRaw === 'string' && /"ok"\s*:\s*false/.test(resultRaw)) return true;
+  return false;
+}
+
+function extractToolResultError(resultRaw: unknown): string | undefined {
+  const parsed = parseMaybeJson(resultRaw);
+  const obj = asRecord(parsed);
+  if (typeof obj?.error === 'string' && obj.error.trim()) return obj.error;
+  if (typeof obj?.message === 'string' && obj.message.trim()) return obj.message;
+  return undefined;
+}

@@ -143,7 +143,7 @@ function transientFrames(inbox: ReturnType<typeof createInbox>): ConversationTra
 }
 
 describe('conversation transient shadow stream', () => {
-  it('delivers text, reasoning, and terminal frames without persisting delta events', async () => {
+  it('delivers process, text, reasoning, and terminal frames without persisting delta events', async () => {
     const fixture = await createFixture(() => [
       { type: 'reasoning-delta', text: 'think' },
       { type: 'text-delta', text: 'answer' },
@@ -186,13 +186,14 @@ describe('conversation transient shadow stream', () => {
           text: 'hello',
         },
       });
-      expect(await waitFor(() => transientFrames(inboxA).length === 3)).toBe(true);
+      expect(await waitFor(() => transientFrames(inboxA).length === 4)).toBe(true);
       expect(transientFrames(inboxA)).toMatchObject([
-        { threadId: 'thread-a', streamSequence: 1, kind: 'reasoning', textDelta: 'think' },
-        { threadId: 'thread-a', streamSequence: 2, kind: 'text', textDelta: 'answer' },
+        { threadId: 'thread-a', streamSequence: 1, kind: 'process' },
+        { threadId: 'thread-a', streamSequence: 2, kind: 'reasoning', textDelta: 'think' },
+        { threadId: 'thread-a', streamSequence: 3, kind: 'text', textDelta: 'answer' },
         {
           threadId: 'thread-a',
-          streamSequence: 3,
+          streamSequence: 4,
           kind: 'terminal',
           terminalState: 'completed',
         },
@@ -251,11 +252,12 @@ describe('conversation transient shadow stream', () => {
         payload: { threadId: 'thread-replay', afterStreamSequence: 1 },
       });
       expect(subscribed.payload).toMatchObject({
-        latestStreamSequence: 3,
+        latestStreamSequence: 4,
         resetRequired: false,
         replayedFrames: [
-          { streamSequence: 2, kind: 'text' },
-          { streamSequence: 3, kind: 'terminal' },
+          { streamSequence: 2, kind: 'reasoning' },
+          { streamSequence: 3, kind: 'text' },
+          { streamSequence: 4, kind: 'terminal' },
         ],
       });
       const streamId = (subscribed.payload as { streamId: string }).streamId;
@@ -367,11 +369,11 @@ describe('conversation transient shadow stream', () => {
         payload: { threadId: 'thread-snapshot', afterStreamSequence: 0 },
       });
       expect(subscribed.payload).toMatchObject({
-        latestStreamSequence: 260,
+        latestStreamSequence: 261,
         resetRequired: true,
         snapshot: {
           threadId: 'thread-snapshot',
-          streamSequence: 260,
+          streamSequence: 261,
           text: 'x'.repeat(260),
         },
       });
@@ -506,12 +508,12 @@ describe('conversation transient shadow stream', () => {
         latestStreamSequence: number;
         resetRequired: boolean;
       };
-      expect(payload.latestStreamSequence).toBe(261);
+      expect(payload.latestStreamSequence).toBe(262);
       expect(payload.resetRequired).toBe(true);
       expect(payload.replayedFrames).toHaveLength(256);
-      expect(payload.replayedFrames[0]?.streamSequence).toBe(6);
+      expect(payload.replayedFrames[0]?.streamSequence).toBe(7);
       expect(payload.replayedFrames.at(-1)).toMatchObject({
-        streamSequence: 261,
+        streamSequence: 262,
         kind: 'terminal',
       });
     } finally {

@@ -1,4 +1,5 @@
 import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
+import type { ContextSnapshot, ContextSnapshotSource } from './context-snapshot.js';
 import type {
   Event,
   EventCategory,
@@ -56,6 +57,16 @@ export interface DemoRunState {
   skillVersionIds?: string[];
   /** Bound MCP server ids for this run (allowlist snapshot). */
   mcpServerIds?: string[];
+  /** Provider model context window used by snapshot estimation and auto compact. */
+  contextWindow?: number;
+  /** Included project/task/memory blocks selected for the real provider request. */
+  projectContextPromptBlocks?: string[];
+  /** Context Packet sources with their provider disposition. */
+  contextSources?: ContextSnapshotSource[];
+  /** Last provider request snapshot; in-memory only and safe for UI projection. */
+  contextSnapshot?: ContextSnapshot;
+  compactSummary?: string;
+  compactedAt?: string;
   /** Compose 推理强度（auto/off/low/medium/high…）；透传到 adapter。 */
   reasoningEffort?: string;
   /** Compose 联网开关：本轮是否暴露 web_search / web_fetch。 */
@@ -104,6 +115,9 @@ export interface CreateDemoRunInput {
   skillPromptBlocks?: string[];
   skillVersionIds?: string[];
   mcpServerIds?: string[];
+  contextWindow?: number;
+  projectContextPromptBlocks?: string[];
+  contextSources?: ContextSnapshotSource[];
   reasoningEffort?: string;
   networkEnabled?: boolean;
   images?: DemoRunImage[];
@@ -154,6 +168,15 @@ export function createDemoRun(
     mcpServerIds:
       extras.mcpServerIds && extras.mcpServerIds.length > 0
         ? [...extras.mcpServerIds]
+        : undefined,
+    contextWindow: extras.contextWindow,
+    projectContextPromptBlocks:
+      extras.projectContextPromptBlocks && extras.projectContextPromptBlocks.length > 0
+        ? [...extras.projectContextPromptBlocks]
+        : undefined,
+    contextSources:
+      extras.contextSources && extras.contextSources.length > 0
+        ? extras.contextSources.map((source) => ({ ...source }))
         : undefined,
     reasoningEffort: extras.reasoningEffort,
     networkEnabled: extras.networkEnabled === true ? true : undefined,

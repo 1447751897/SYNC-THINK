@@ -14,9 +14,9 @@ async function waitFor(predicate: () => boolean, timeoutMs: number = 1_000): Pro
   return predicate();
 }
 
-function eventAt(sequence: number): Event {
+function eventAt(sequence: number, eventId = `event-${sequence}`): Event {
   return {
-    id: `event-${sequence}` as Event['id'],
+    id: eventId as Event['id'],
     workspaceId: 'workspace-page-test' as Event['workspaceId'],
     category: 'message',
     type: 'message.appended',
@@ -431,6 +431,7 @@ describe('RuntimePipeClient', () => {
             expect(frame.payload).toMatchObject({
               streamId: 'stream-paged',
               afterCursor: 2,
+              afterEventId: 'event-paged-2',
             });
             const response: Frame = {
               id: frame.id,
@@ -472,11 +473,117 @@ describe('RuntimePipeClient', () => {
     }
   });
 
+  it('continues duplicate sequences with the composite cursor and dedupes live handoff', async () => {
+    const installId = `desktop-client-composite-replay-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const subscriptionPayloads: unknown[] = [];
+    const continuationPayloads: unknown[] = [];
+    let page = 0;
+    const server = createServer((socket) => {
+      let pending = Buffer.alloc(0);
+      socket.on('data', (chunk: Buffer) => {
+        const decoded = decodeFrames(Buffer.concat([pending, chunk]));
+        pending = decoded.remaining;
+        for (const frame of decoded.frames) {
+          if (frame.type === '__hello') {
+            socket.write(
+              encodeFrame({
+                id: frame.id,
+                kind: 'response',
+                type: '__hello',
+                payload: { ok: true },
+              }),
+            );
+          }
+          if (frame.type === 'runtime.subscribeEvents') {
+            subscriptionPayloads.push(frame.payload);
+            socket.write(
+              encodeFrame({
+                id: frame.id,
+                kind: 'response',
+                type: 'runtime.subscribeEvents',
+                payload: {
+                  streamId: 'stream-composite',
+                  startingSequence: 7,
+                  replayedEvents: [eventAt(7, 'event-a')],
+                  nextCursor: 7,
+                  nextEventId: 'event-a',
+                  highWatermark: 7,
+                  highWatermarkEventId: 'event-c',
+                  replayComplete: false,
+                },
+              }),
+            );
+          }
+          if (frame.type === 'runtime.continueEventReplay') {
+            continuationPayloads.push(frame.payload);
+            page++;
+            const eventId = page === 1 ? 'event-b' : 'event-c';
+            const response: Frame = {
+              id: frame.id,
+              kind: 'response',
+              type: 'runtime.continueEventReplay',
+              payload: {
+                streamId: 'stream-composite',
+                replayedEvents: [eventAt(7, eventId)],
+                nextCursor: 7,
+                nextEventId: eventId,
+                highWatermark: 7,
+                highWatermarkEventId: 'event-c',
+                replayComplete: page === 2,
+              },
+            };
+            if (page === 2) {
+              const duplicateLive: Frame = {
+                id: 'stream-composite',
+                kind: 'event',
+                type: 'runtime.event',
+                payload: { streamId: 'stream-composite', event: eventAt(7, 'event-c') },
+              };
+              socket.write(Buffer.concat([encodeFrame(response), encodeFrame(duplicateLive)]));
+            } else {
+              socket.write(encodeFrame(response));
+            }
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(pipePathPortable(installId), resolve);
+    });
+    const client = new RuntimePipeClient({ installId, appVersion: '0.0.1' });
+    const received: string[] = [];
+    const committed: Array<{ sequence: number; eventId: string }> = [];
+
+    try {
+      await client.subscribeEvents(
+        { sequence: 7, eventId: '' },
+        (event) => received.push(String(event.id)),
+        undefined,
+        (cursor) => committed.push(cursor),
+      );
+      expect(subscriptionPayloads).toEqual([{ afterCursor: 7, afterEventId: '' }]);
+      expect(continuationPayloads).toEqual([
+        { streamId: 'stream-composite', afterCursor: 7, afterEventId: 'event-a' },
+        { streamId: 'stream-composite', afterCursor: 7, afterEventId: 'event-b' },
+      ]);
+      expect(received).toEqual(['event-a', 'event-b', 'event-c']);
+      expect(committed).toEqual([
+        { sequence: 7, eventId: 'event-a' },
+        { sequence: 7, eventId: 'event-b' },
+        { sequence: 7, eventId: 'event-c' },
+      ]);
+    } finally {
+      client.disconnect();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('buffers live from the first response package until every replay page is committed', async () => {
     const installId = `desktop-client-paged-replay-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const received: number[] = [];
     const receivedBeforeContinuation: number[][] = [];
-    const continuationCursors: number[] = [];
+    const continuationCursors: Array<{ sequence: number; eventId?: string }> = [];
     const server = createServer((socket) => {
       let pending = Buffer.alloc(0);
       socket.on('data', (chunk: Buffer) => {
@@ -516,8 +623,11 @@ describe('RuntimePipeClient', () => {
             socket.write(Buffer.concat([encodeFrame(firstPage), encodeFrame(liveEvent)]));
           }
           if (frame.type === 'runtime.continueEventReplay') {
-            const payload = frame.payload as { afterCursor: number };
-            continuationCursors.push(payload.afterCursor);
+            const payload = frame.payload as { afterCursor: number; afterEventId?: string };
+            continuationCursors.push({
+              sequence: payload.afterCursor,
+              eventId: payload.afterEventId,
+            });
             receivedBeforeContinuation.push([...received]);
             socket.write(
               encodeFrame({
@@ -545,7 +655,7 @@ describe('RuntimePipeClient', () => {
 
     try {
       await client.subscribeEvents(0, (event) => received.push(event.sequence));
-      expect(continuationCursors).toEqual([1]);
+      expect(continuationCursors).toEqual([{ sequence: 1, eventId: 'event-1' }]);
       expect(receivedBeforeContinuation).toEqual([[1]]);
       expect(received).toEqual([1, 2, 3, 4]);
     } finally {
@@ -556,7 +666,11 @@ describe('RuntimePipeClient', () => {
 
   it('reconnects paged replay from the last committed cursor and preserves categories', async () => {
     const installId = `desktop-client-paged-reconnect-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const subscriptionPayloads: Array<{ afterCursor: number; categories?: string[] }> = [];
+    const subscriptionPayloads: Array<{
+      afterCursor: number;
+      afterEventId?: string;
+      categories?: string[];
+    }> = [];
     let connectionCount = 0;
     const server = createServer((socket) => {
       connectionCount++;
@@ -578,7 +692,11 @@ describe('RuntimePipeClient', () => {
           }
           if (frame.type === 'runtime.subscribeEvents') {
             subscriptionPayloads.push(
-              frame.payload as { afterCursor: number; categories?: string[] },
+              frame.payload as {
+                afterCursor: number;
+                afterEventId?: string;
+                categories?: string[];
+              },
             );
             const response: Frame =
               connectionNumber === 1
@@ -630,6 +748,7 @@ describe('RuntimePipeClient', () => {
             expect(frame.payload).toMatchObject({
               streamId: 'stream-paged-first',
               afterCursor: 1,
+              afterEventId: 'event-1',
             });
             socket.destroy();
           }
@@ -652,8 +771,8 @@ describe('RuntimePipeClient', () => {
         client.subscribeEvents(0, (event) => received.push(event.sequence), ['message']),
       ).resolves.toBeTypeOf('function');
       expect(subscriptionPayloads).toEqual([
-        { afterCursor: 0, categories: ['message'] },
-        { afterCursor: 1, categories: ['message'] },
+        { afterCursor: 0, afterEventId: '', categories: ['message'] },
+        { afterCursor: 1, afterEventId: 'event-1', categories: ['message'] },
       ]);
       expect(received).toEqual([1, 2, 3, 4]);
     } finally {
@@ -664,7 +783,11 @@ describe('RuntimePipeClient', () => {
 
   it('keeps reconnecting when a paged subscription restore disconnects again', async () => {
     const installId = `desktop-client-paged-double-reconnect-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const subscriptionPayloads: Array<{ afterCursor: number; categories?: string[] }> = [];
+    const subscriptionPayloads: Array<{
+      afterCursor: number;
+      afterEventId?: string;
+      categories?: string[];
+    }> = [];
     let connectionCount = 0;
     const server = createServer((socket) => {
       connectionCount++;
@@ -686,7 +809,11 @@ describe('RuntimePipeClient', () => {
           }
           if (frame.type === 'runtime.subscribeEvents') {
             subscriptionPayloads.push(
-              frame.payload as { afterCursor: number; categories?: string[] },
+              frame.payload as {
+                afterCursor: number;
+                afterEventId?: string;
+                categories?: string[];
+              },
             );
             if (connectionNumber === 1) {
               socket.write(
@@ -747,6 +874,7 @@ describe('RuntimePipeClient', () => {
             expect(frame.payload).toMatchObject({
               streamId: 'stream-double-second',
               afterCursor: 2,
+              afterEventId: 'event-2',
             });
             socket.destroy();
           }
@@ -771,9 +899,9 @@ describe('RuntimePipeClient', () => {
 
       expect(await waitFor(() => received.includes(5), 1_500)).toBe(true);
       expect(subscriptionPayloads).toEqual([
-        { afterCursor: 0, categories: ['message'] },
-        { afterCursor: 1, categories: ['message'] },
-        { afterCursor: 2, categories: ['message'] },
+        { afterCursor: 0, afterEventId: '', categories: ['message'] },
+        { afterCursor: 1, afterEventId: 'event-1', categories: ['message'] },
+        { afterCursor: 2, afterEventId: 'event-2', categories: ['message'] },
       ]);
       expect(received).toEqual([1, 2, 3, 4, 5]);
     } finally {
@@ -1273,7 +1401,12 @@ describe('RuntimePipeClient', () => {
         for (const frame of decoded.frames) {
           if (frame.type === '__hello') {
             socket.write(
-              encodeFrame({ id: frame.id, kind: 'response', type: '__hello', payload: { ok: true } }),
+              encodeFrame({
+                id: frame.id,
+                kind: 'response',
+                type: '__hello',
+                payload: { ok: true },
+              }),
             );
           }
           if (frame.type === 'conversation.subscribeTransientStream') {
@@ -1319,10 +1452,8 @@ describe('RuntimePipeClient', () => {
     const received: number[] = [];
 
     try {
-      await client.subscribeConversationTransientStream(
-        'thread-transient-reconnect',
-        0,
-        (frame) => received.push(frame.streamSequence),
+      await client.subscribeConversationTransientStream('thread-transient-reconnect', 0, (frame) =>
+        received.push(frame.streamSequence),
       );
       const firstTransport = (client as unknown as { socket: Socket | null }).socket;
       firstTransport?.destroy();

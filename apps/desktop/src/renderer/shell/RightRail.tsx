@@ -1,22 +1,20 @@
 // Right rail: Changes + tasks only (process lives in-message, not duplicated here).
 // Changes panel is an editor-style preview aligned with NewMax.
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { FileDiff, ListTodo, X } from 'lucide-react';
-import type { Event } from '@sync-think/shared';
+import type { RunProcessView } from '@sync-think/protocol';
 import {
   CodePreview,
   actionLabel,
   fileName,
   isStatusOnlyPreview,
 } from './ExecutionProcessBlock.js';
-import { projectExecutionProcess } from './execution-process.js';
 
 export type RailTab = 'changes' | 'tasks';
 
 interface RightRailProps {
   conversationId: string | null;
-  eventHistory?: readonly Event[];
-  threadId?: string;
+  processView?: RunProcessView;
   activeTab?: RailTab | 'process';
   selectedChangePath?: string;
   onTabChange?: (tab: RailTab) => void;
@@ -29,8 +27,7 @@ function normalizeTab(tab: RightRailProps['activeTab']): RailTab {
 }
 
 export function RightRail({
-  eventHistory = [],
-  threadId,
+  processView,
   activeTab,
   selectedChangePath,
   onTabChange,
@@ -44,14 +41,10 @@ export function RightRail({
     setInnerTab(next);
   };
 
-  const view = useMemo(
-    () => projectExecutionProcess(eventHistory, { threadId }),
-    [eventHistory, threadId],
-  );
-
+  const fileChanges = processView?.fileChanges ?? [];
   const selected = selectedChangePath
-    ? view.fileChanges.find((item) => item.path === selectedChangePath) ?? view.fileChanges[0]
-    : view.fileChanges[0];
+    ? fileChanges.find((item) => item.path === selectedChangePath) ?? fileChanges[0]
+    : fileChanges[0];
 
   return (
     <aside
@@ -83,7 +76,7 @@ export function RightRail({
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {tab === 'changes' && (
           <div className="flex h-full min-h-0 flex-col">
-            {view.fileChanges.length === 0 ? (
+            {fileChanges.length === 0 ? (
               <EmptyState
                 icon={<FileDiff size={22} className="text-text-faint opacity-40" />}
                 title="暂无文件变更"
@@ -93,10 +86,10 @@ export function RightRail({
               <>
                 <div className="shell-rail-files shrink-0 border-b border-border px-2 py-2">
                   <div className="mb-1.5 px-1 text-[10.5px] font-medium uppercase tracking-wide text-text-faint">
-                    本轮改动 · {view.fileChanges.length}
+                    本轮改动 · {fileChanges.length}
                   </div>
                   <ul className="space-y-0.5">
-                    {view.fileChanges.map((item) => {
+                    {fileChanges.map((item) => {
                       const active = selected?.path === item.path;
                       return (
                         <li key={item.path}>

@@ -27,6 +27,21 @@ export function applyTransientConversationFrame(input: {
     };
   }
 
+  if (frame.kind === 'process') {
+    return {
+      draft:
+        input.current?.runId === frame.runId
+          ? input.current
+          : {
+              runId: frame.runId,
+              text: '',
+              timestamp: frame.occurredAt,
+            },
+      lastStreamSequence: frame.streamSequence,
+      terminal: false,
+    };
+  }
+
   let operation: ConversationStreamOperation;
   if (frame.kind === 'terminal') {
     operation = {

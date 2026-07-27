@@ -5,14 +5,24 @@ import type { ConversationTransientFrame } from './commands.js';
 // carry a cursor and atomically return durable catch-up events before live
 // delivery begins, so reconnecting clients cannot miss the handoff boundary.
 
+export interface EventReplayCursor {
+  sequence: number;
+  /** Stable tie-breaker for legacy rows that share a sequence. */
+  eventId: string;
+}
+
 export interface EventReplayPagePayload {
   streamId: string;
   /** Durable events in this bounded page, ordered by sequence. */
   replayedEvents: Event[];
   /** Global sequence fully scanned by this page, including filtered events. */
   nextCursor: number;
+  /** Tie-breaker for nextCursor when a legacy sequence spans multiple pages. */
+  nextEventId?: string;
   /** Fixed sequence captured when the subscription began. */
   highWatermark: number;
+  /** Fixed tie-breaker captured with highWatermark. */
+  highWatermarkEventId?: string;
   /** True only when nextCursor has reached highWatermark. */
   replayComplete: boolean;
 }
@@ -32,6 +42,7 @@ export interface EventStreamClosedPayload {
   reason: 'client-requested' | 'cursor-too-old' | 'protocol-error' | 'runtime-shutdown';
   /** Server points client to the next fetchable cursor for durable replay. */
   nextCursor: number;
+  nextEventId?: string;
 }
 
 /** Live delivery envelope for a conversation-scoped transient output frame. */

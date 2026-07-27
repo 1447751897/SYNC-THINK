@@ -1,5 +1,5 @@
 // team-conversation command payload parsers (extracted from command-validation.ts).
-import type { AppendMessagePayload, CreateTeamPayload, UpdateTeamPayload, DeleteTeamPayload, StartTeamRunPayload, SetTeamRunStatusPayload, ListConversationsPayload, ConversationListMessagesPayload, CreateConversationPayload, RenameConversationPayload, SetConversationPinnedPayload, SetConversationArchivedPayload, SetConversationExecutionModePayload, UpgradeConversationTrackPayload, DeleteConversationPayload, ConversationCompactPayload, ConversationSubmitBrowserResultPayload } from '@sync-think/protocol';
+import type { AppendMessagePayload, CreateTeamPayload, UpdateTeamPayload, DeleteTeamPayload, StartTeamRunPayload, SetTeamRunStatusPayload, ListConversationsPayload, ConversationListMessagesPayload, ConversationGetRunProcessPayload, CreateConversationPayload, RenameConversationPayload, SetConversationPinnedPayload, SetConversationArchivedPayload, SetConversationExecutionModePayload, UpgradeConversationTrackPayload, DeleteConversationPayload, ConversationCompactPayload, ConversationSubmitBrowserResultPayload } from '@sync-think/protocol';
 import { MESSAGE_ROLES, hasOnlyKeys, isRecord, boundedAgentText, CONVERSATION_TRACKS, CONVERSATION_UPGRADE_TRACKS, TEAM_RUN_STATUSES, TEAM_KEYS, validTeamFields } from './shared.js';
 
 export function parseAppendMessagePayload(value: unknown): AppendMessagePayload | undefined {
@@ -179,6 +179,19 @@ export function parseConversationListMessagesPayload(
     beforeSequence: value.beforeSequence as number | undefined,
     limit: value.limit as number | undefined,
   };
+}
+
+export function parseConversationGetRunProcessPayload(
+  value: unknown,
+): ConversationGetRunProcessPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['runId']) ||
+    !boundedAgentText(value.runId, 128)
+  ) {
+    return undefined;
+  }
+  return { runId: value.runId as ConversationGetRunProcessPayload['runId'] };
 }
 
 export function parseCreateConversationPayload(

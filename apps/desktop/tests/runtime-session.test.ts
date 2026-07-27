@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Event } from '@sync-think/shared';
 import {
   RuntimeSession,
+  type RuntimeActivityCursorStore,
   type RuntimeSessionClient,
 } from '../src/main/runtime-session.js';
 import type {
   CommandType,
   ConversationTransientFrame,
   ConversationTransientSnapshot,
+  EventReplayCursor,
 } from '@sync-think/protocol';
 import type { RuntimeHealth } from '../src/runtime-bridge-contract.js';
 
@@ -28,7 +30,10 @@ class FakeRuntimeClient implements RuntimeSessionClient {
   connectCount = 0;
   subscribeCount = 0;
   requestCount = 0;
+  subscribedAfterCursor: EventReplayCursor | undefined;
+  subscribedCategories: readonly string[] | undefined;
   private listener: ((event: Event) => void) | undefined;
+  private cursorListener: ((cursor: EventReplayCursor) => void) | undefined;
   private finishReplay: ((unsubscribe: () => Promise<void>) => void) | undefined;
   private readonly replayFinished = new Promise<() => Promise<void>>((resolve) => {
     this.finishReplay = resolve;
@@ -49,19 +54,23 @@ class FakeRuntimeClient implements RuntimeSessionClient {
     this.connectCount++;
   }
 
-  subscribeEvents(afterCursor: number, listener: (event: Event) => void) {
-    expect(afterCursor).toBe(0);
+  subscribeEvents(
+    afterCursor: EventReplayCursor,
+    listener: (event: Event) => void,
+    categories?: readonly string[],
+    cursorListener?: (cursor: EventReplayCursor) => void,
+  ) {
+    this.subscribedAfterCursor = afterCursor;
+    this.subscribedCategories = categories;
     this.subscribeCount++;
     this.listener = listener;
+    this.cursorListener = cursorListener;
     return this.replayFinished;
   }
 
   private transientListener: ((frame: ConversationTransientFrame) => void) | undefined;
   private transientSnapshotListener:
-    | ((
-        latestStreamSequence: number,
-        snapshot: ConversationTransientSnapshot | undefined,
-      ) => void)
+    | ((latestStreamSequence: number, snapshot: ConversationTransientSnapshot | undefined) => void)
     | undefined;
   transientUnsubscribeCount = 0;
 
@@ -87,10 +96,7 @@ class FakeRuntimeClient implements RuntimeSessionClient {
     this.transientListener?.(frame);
   }
 
-  resetTransient(
-    latestStreamSequence: number,
-    snapshot?: ConversationTransientSnapshot,
-  ): void {
+  resetTransient(latestStreamSequence: number, snapshot?: ConversationTransientSnapshot): void {
     this.transientSnapshotListener?.(latestStreamSequence, snapshot);
   }
   async request<T>(type: CommandType, payload: unknown): Promise<T> {
@@ -102,6 +108,11 @@ class FakeRuntimeClient implements RuntimeSessionClient {
 
   emit(event: Event): void {
     this.listener?.(event);
+    this.cursorListener?.({ sequence: event.sequence, eventId: String(event.id) });
+  }
+
+  advanceCursor(cursor: EventReplayCursor): void {
+    this.cursorListener?.(cursor);
   }
 
   completeReplay(): void {
@@ -110,6 +121,25 @@ class FakeRuntimeClient implements RuntimeSessionClient {
 }
 
 describe('desktop main RuntimeSession', () => {
+  it('resumes the lightweight activity stream from a persisted cursor and saves progress', async () => {
+    const client = new FakeRuntimeClient();
+    const saved: EventReplayCursor[] = [];
+    const cursorStore: RuntimeActivityCursorStore = {
+      load: () => ({ sequence: 41, eventId: 'event-41' }),
+      save: (cursor) => saved.push(cursor),
+    };
+    const session = new RuntimeSession(client, () => {}, cursorStore);
+
+    await session.connect();
+    await expect.poll(() => client.subscribeCount).toBe(1);
+    expect(client.subscribedAfterCursor).toEqual({ sequence: 41, eventId: 'event-41' });
+    expect(client.subscribedCategories).toEqual(['message', 'run']);
+
+    client.advanceCursor({ sequence: 57, eventId: 'event-57' });
+    expect(saved).toEqual([{ sequence: 57, eventId: 'event-57' }]);
+    client.completeReplay();
+  });
+
   it('returns quickly without waiting for full event replay catch-up', async () => {
     const client = new FakeRuntimeClient();
     const forwarded: number[] = [];
@@ -146,7 +176,7 @@ describe('desktop main RuntimeSession', () => {
     expect(afterLive.snapshot.map((event) => event.sequence)).toEqual([1, 2, 3]);
   });
 
-  it('records a large sequential replay without replacing the history array per event', async () => {
+  it('bounds a large sequential replay without replacing the history array per event', async () => {
     const client = new FakeRuntimeClient();
     const session = new RuntimeSession(client, () => {});
     await session.connect();
@@ -157,8 +187,9 @@ describe('desktop main RuntimeSession', () => {
     for (let sequence = 1; sequence <= 10_000; sequence++) client.emit(eventAt(sequence));
 
     expect(internal.eventHistory).toBe(initialHistory);
-    expect(internal.eventHistory).toHaveLength(10_000);
-    expect(internal.eventHistory[9_999]?.sequence).toBe(10_000);
+    expect(internal.eventHistory).toHaveLength(2_048);
+    expect(internal.eventHistory[0]?.sequence).toBe(7_953);
+    expect(internal.eventHistory[2_047]?.sequence).toBe(10_000);
     client.completeReplay();
   });
 

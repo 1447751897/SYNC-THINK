@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  memo,
   useMemo,
   useRef,
   useState,
@@ -48,11 +49,15 @@ import type {
   Team,
 } from '@sync-think/shared';
 import type {
+  ConversationGetContextStatusResponse,
+  ConversationGetRunProcessResponse,
   ConversationListMessagesResponse,
   ConversationTransientFrame,
   ConversationTransientSnapshot,
+  RunProcessView,
   WorkspaceSummary,
 } from '@sync-think/protocol';
+import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { RightDock } from './RightDock.js';
 import type { ModelOption } from './NewConversationDialog.js';
@@ -86,7 +91,6 @@ import {
 import { compressImageDataUrl } from './image-compress.js';
 import {
   ContextRing,
-  estimateContextWindow,
   IdentityPickerMenu,
   ModelPickerMenu,
   ModelTrigger,
@@ -110,7 +114,6 @@ import {
   formatMessageClock,
   formatRunModelLabel,
   formatTokenUsage,
-  projectExecutionProcess,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { executeBrowserCommand } from './browser-commands.js';
@@ -119,6 +122,7 @@ import {
   collectConversationStreamBatch,
 } from './chat-stream.js';
 import { applyTransientConversationFrame } from './chat-transient-stream.js';
+import { updateRunProcessMap } from './run-process-state.js';
 import {
   readConversationModelOverride,
   writeConversationModelOverride,
@@ -269,8 +273,6 @@ export function ChatView({
   const [compactProgress, setCompactProgress] = useState<CompactProgressState | null>(null);
   /** In-flight compact lock — blocks concurrent compact / command swallow. */
   const compactingRef = useRef(false);
-  /** After successful compact, prefer afterTokens for the ring until next usage. */
-  const compactAfterTokensRef = useRef<{ sequence: number; tokens: number } | null>(null);
   /**
    * Single dismiss timer for the compact capsule.
    * Without this, an older success/noop timeout can clear a newer running state.
@@ -311,11 +313,38 @@ export function ChatView({
   const [localErrors, setLocalErrors] = useState<ChatMessage[]>([]);
   /** Paginated message store state. */
   const [loadedMessages, setLoadedMessages] = useState<ChatMessage[]>([]);
+  const [runProcessById, setRunProcessById] = useState<Map<string, RunProcessView>>(
+    () => new Map(),
+  );
+  const inFlightRunProcessesRef = useRef(new Set<string>());
+  const processLoadGenerationRef = useRef(0);
+  const runProcessRetryTimersRef = useRef(new Map<string, number>());
+  const runProcessRetryAttemptsRef = useRef(new Map<string, number>());
+  const [runProcessRetryEpoch, setRunProcessRetryEpoch] = useState(0);
+  const clearRunProcessRetryState = useCallback(() => {
+    for (const timer of runProcessRetryTimersRef.current.values()) {
+      window.clearTimeout(timer);
+    }
+    runProcessRetryTimersRef.current.clear();
+    runProcessRetryAttemptsRef.current.clear();
+  }, []);
+  useEffect(() => () => clearRunProcessRetryState(), [clearRunProcessRetryState]);
+  const loadedMessagesConversationIdRef = useRef<string | undefined>(undefined);
+  const updateRunProcess = useCallback((process: RunProcessView) => {
+    setRunProcessById((previous) => updateRunProcessMap(previous, process));
+  }, []);
   const [hasMore, setHasMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<number | undefined>(undefined);
   const [loadingMore, setLoadingMore] = useState(false);
   /** Whether the initial page load has completed (success or failure). */
   const [initialLoaded, setInitialLoaded] = useState(false);
+  /** Runtime-owned snapshot used by the ring and compact threshold. */
+  const [contextStatus, setContextStatus] = useState<ConversationGetContextStatusResponse | null>(
+    null,
+  );
+  const contextStatusRef = useRef<ConversationGetContextStatusResponse | null>(null);
+  contextStatusRef.current = contextStatus;
+  const contextStatusLoadGenerationRef = useRef(0);
   /** Streaming message accumulated from the transient stream (durable delta is fallback only). */
   const [streamingMessage, setStreamingMessage] = useState<ChatMessage | null>(null);
   /** Last durable event sequence consumed by the fallback streaming bridge. */
@@ -370,9 +399,6 @@ export function ChatView({
   const identityBtnRef = useRef<HTMLButtonElement>(null);
   const [mentionPopStyle, setMentionPopStyle] = useState<React.CSSProperties | null>(null);
   const [slashPopStyle, setSlashPopStyle] = useState<React.CSSProperties | null>(null);
-  /** Latest context occupancy for auto-compact (updated each render). */
-  const contextOccupancyRef = useRef({ used: 0, limit: 128_000 });
-
   // Reset local compose state when switching conversations.
   useEffect(() => {
     setInput('');
@@ -380,10 +406,17 @@ export function ChatView({
     setPendingUserMessages([]);
     setLocalErrors([]);
     setLoadedMessages([]);
+    setRunProcessById(new Map());
+    inFlightRunProcessesRef.current.clear();
+    clearRunProcessRetryState();
+    processLoadGenerationRef.current += 1;
+    loadedMessagesConversationIdRef.current = undefined;
     setHasMore(false);
     setNextCursor(undefined);
     setLoadingMore(false);
     setInitialLoaded(false);
+    contextStatusLoadGenerationRef.current += 1;
+    setContextStatus(null);
     setStreamingMessage(null);
     lastConsumedEventSequenceRef.current = 0;
     lastTransientSequenceRef.current = 0;
@@ -404,7 +437,7 @@ export function ChatView({
     // Always land at the latest message when opening a chat — no animated scroll.
     stickToBottomRef.current = true;
     // Right-rail open state is owned by the stage; do not force-close it on switch.
-  }, [conversation.id, conversation.executionMode]);
+  }, [clearRunProcessRetryState, conversation.id, conversation.executionMode]);
 
   // Resolve threadId from the bound task so we can project history for this conversation.
   useEffect(() => {
@@ -422,7 +455,8 @@ export function ChatView({
       .then((response: { task?: { threadId?: string } }) => {
         if (cancelled) return;
         const resolved = response?.task?.threadId;
-        const nextThreadId = typeof resolved === 'string' && resolved.length > 0 ? resolved : undefined;
+        const nextThreadId =
+          typeof resolved === 'string' && resolved.length > 0 ? resolved : undefined;
         threadConversationIdRef.current = nextThreadId ? String(conversation.id) : undefined;
         setThreadId(nextThreadId);
       })
@@ -464,6 +498,7 @@ export function ChatView({
         ) {
           return false;
         }
+        loadedMessagesConversationIdRef.current = conversationId;
         const converted = res.messages
           .map(messageToChat)
           .filter((m) => m.text.trim().length > 0 || Boolean(m.images?.length));
@@ -502,11 +537,32 @@ export function ChatView({
     [conversation.id],
   );
 
-  // Load initial page when conversation/thread resolves.
+  const refreshContextStatus = useCallback(async (): Promise<void> => {
+    const api = bridge();
+    if (!api?.getConversationContextStatus) return;
+    const conversationId = String(conversation.id);
+    const generation = (contextStatusLoadGenerationRef.current += 1);
+    try {
+      const response = parseConversationGetContextStatusResponse(
+        await api.getConversationContextStatus({ conversationId: conversation.id }),
+      );
+      if (
+        activeConversationIdRef.current === conversationId &&
+        contextStatusLoadGenerationRef.current === generation
+      ) {
+        setContextStatus(response);
+      }
+    } catch {
+      // Keep the last validated snapshot on transient IPC/runtime failures.
+    }
+  }, [conversation.id]);
+
+  // Load initial durable messages and the Runtime-owned context snapshot.
   useEffect(() => {
     if (!conversation.id) return;
     void loadMessages();
-  }, [conversation.id, threadId, loadMessages]);
+    void refreshContextStatus();
+  }, [conversation.id, threadId, loadMessages, refreshContextStatus]);
 
   // Lightweight streaming/activeRunId detection from eventHistory.
   // This only scans run lifecycle events (O(n) but no message text building).
@@ -575,6 +631,7 @@ export function ChatView({
           if (event.snapshot && event.snapshot.threadId === threadId) {
             transientFallbackOnlyRef.current = false;
             transientStreamHealthyRef.current = true;
+            if (event.snapshot.process) updateRunProcess(event.snapshot.process);
             setStreamingMessage({
               id: `streaming-${event.snapshot.runId}`,
               role: 'assistant',
@@ -595,14 +652,36 @@ export function ChatView({
         const frame = event.frame;
         if (!frame) return;
         if (transientFallbackOnlyRef.current) {
+          if (frame.kind === 'terminal') {
+            inFlightRunProcessesRef.current.delete(String(frame.runId));
+            setRunProcessById((previous) => {
+              if (!previous.has(frame.runId)) return previous;
+              const next = new Map(previous);
+              next.delete(frame.runId);
+              return next;
+            });
+          }
           lastTransientSequenceRef.current = Math.max(
             lastTransientSequenceRef.current,
             frame.streamSequence,
           );
-          if (frame.kind === 'terminal') void loadMessages();
+          if (frame.kind === 'terminal') {
+            void loadMessages();
+            void refreshContextStatus();
+          }
           return;
         }
         transientStreamHealthyRef.current = true;
+        if (frame.process) updateRunProcess(frame.process);
+        else if (frame.kind === 'terminal') {
+          inFlightRunProcessesRef.current.delete(String(frame.runId));
+          setRunProcessById((previous) => {
+            if (!previous.has(frame.runId)) return previous;
+            const next = new Map(previous);
+            next.delete(frame.runId);
+            return next;
+          });
+        }
         setStreamingMessage((previous) => {
           const current = previous
             ? {
@@ -631,7 +710,10 @@ export function ChatView({
               }
             : null;
         });
-        if (frame.kind === 'terminal') void loadMessages();
+        if (frame.kind === 'terminal') {
+          void loadMessages();
+          void refreshContextStatus();
+        }
       },
     );
     void subscription.ready.catch(() => {
@@ -647,7 +729,7 @@ export function ChatView({
       disposed = true;
       void subscription.unsubscribe();
     };
-  }, [conversation.id, loadMessages, threadId]);
+  }, [conversation.id, loadMessages, refreshContextStatus, threadId, updateRunProcess]);
 
   // Streaming via durable events is now a compatibility/failure fallback.
   // Terminal events are always consumed so final Message Store refresh remains
@@ -697,12 +779,14 @@ export function ChatView({
       // The runtime persists a successful final message before publishing
       // run.completed. Failed/cancelled runs still refresh terminal state.
       void loadMessages();
+      void refreshContextStatus();
     }
   }, [
     conversation.id,
     conversation.taskId,
     eventHistory,
     loadMessages,
+    refreshContextStatus,
     threadId,
     transientFallbackEpoch,
   ]);
@@ -827,6 +911,63 @@ export function ChatView({
     return [...base, ...pendingUserMessages, ...localErrors];
   }, [localErrors, loadedMessages, pendingUserMessages, streamingMessage]);
 
+  // Historical assistant bubbles load one already-projected process snapshot per run.
+  useEffect(() => {
+    const conversationId = String(conversation.id);
+    if (loadedMessagesConversationIdRef.current !== conversationId) return;
+    const api = bridge();
+    if (!api?.getConversationRunProcess) return;
+    const generation = processLoadGenerationRef.current;
+    const runIds = new Set(
+      loadedMessages
+        .filter((message) => message.role === 'assistant' && Boolean(message.runId))
+        .map((message) => message.runId as string),
+    );
+    for (const runId of runIds) {
+      if (runProcessById.has(runId) || inFlightRunProcessesRef.current.has(runId)) continue;
+      inFlightRunProcessesRef.current.add(runId);
+      void api
+        .getConversationRunProcess({ runId })
+        .then((response: ConversationGetRunProcessResponse) => {
+          if (
+            activeConversationIdRef.current !== conversationId ||
+            processLoadGenerationRef.current !== generation
+          ) {
+            return;
+          }
+          inFlightRunProcessesRef.current.delete(runId);
+          runProcessRetryAttemptsRef.current.delete(runId);
+          const retryTimer = runProcessRetryTimersRef.current.get(runId);
+          if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+          runProcessRetryTimersRef.current.delete(runId);
+          updateRunProcess(response.process);
+        })
+        .catch(() => {
+          if (
+            processLoadGenerationRef.current !== generation ||
+            activeConversationIdRef.current !== conversationId
+          ) {
+            return;
+          }
+          inFlightRunProcessesRef.current.delete(runId);
+          if (runProcessRetryTimersRef.current.has(runId)) return;
+          const attempts = (runProcessRetryAttemptsRef.current.get(runId) ?? 0) + 1;
+          runProcessRetryAttemptsRef.current.set(runId, attempts);
+          const delayMs = Math.min(500 * 2 ** Math.min(attempts - 1, 4), 8_000);
+          const timer = window.setTimeout(() => {
+            runProcessRetryTimersRef.current.delete(runId);
+            if (
+              processLoadGenerationRef.current === generation &&
+              activeConversationIdRef.current === conversationId
+            ) {
+              setRunProcessRetryEpoch((value) => value + 1);
+            }
+          }, delayMs);
+          runProcessRetryTimersRef.current.set(runId, timer);
+        });
+    }
+  }, [conversation.id, loadedMessages, runProcessById, runProcessRetryEpoch, updateRunProcess]);
+
   // Pin to bottom without a smooth animation. Smooth scroll on every switch
   // felt like the list was "rolling down" each time you clicked a conversation.
   useLayoutEffect(() => {
@@ -843,12 +984,12 @@ export function ChatView({
 
       // Auto-compact when context occupancy is near the window limit (~70%).
       // Failures are non-fatal — the user message still goes out.
-      const occupancy = contextOccupancyRef.current;
+      const status = contextStatusRef.current;
       if (
         api.compactConversation &&
         !compactingRef.current &&
-        occupancy.limit > 0 &&
-        occupancy.used / occupancy.limit >= 0.7
+        status &&
+        status.usageRatio >= status.compactThreshold
       ) {
         // NewMax: "Automatically compacting context" / 自动压缩上下文
         const startedAt = Date.now();
@@ -864,8 +1005,6 @@ export function ChatView({
           const compactResult = await api.compactConversation({
             conversationId: conversation.id,
             mode: 'auto',
-            contextWindow: occupancy.limit,
-            usedTokens: occupancy.used,
             onlyIfNeeded: true,
           });
           if (compactResult.compacted) {
@@ -874,15 +1013,6 @@ export function ChatView({
                 ? `（${compactResult.beforeTokens} → ${compactResult.afterTokens}）`
                 : '';
             const elapsed = formatCompactElapsed(startedAt);
-            if (
-              typeof compactResult.afterTokens === 'number' &&
-              compactResult.afterTokens >= 0
-            ) {
-              compactAfterTokensRef.current = {
-                sequence: Number.MAX_SAFE_INTEGER,
-                tokens: compactResult.afterTokens,
-              };
-            }
             setCompactProgress({
               status: 'success',
               mode: 'auto',
@@ -901,6 +1031,7 @@ export function ChatView({
           clearCompactDismissTimer();
           setCompactProgress(null);
         } finally {
+          await refreshContextStatus();
           compactingRef.current = false;
         }
       }
@@ -1013,6 +1144,7 @@ export function ChatView({
       netEnabled,
       onTitleUpdated,
       reasoningEffort,
+      refreshContextStatus,
       scheduleCompactDismiss,
       sending,
     ],
@@ -1037,10 +1169,14 @@ export function ChatView({
     [messages, sendUserText, sending],
   );
 
-  const openChangeInRail = useCallback((_path: string) => {
-    // R2/H2: open empty right shell only (no real Changes data this cut).
-    setRailOpen(true);
-  }, []);
+  const openChangeInRail = useCallback(
+    (_path: string) => {
+      // R2/H2: open empty right shell only (no real Changes data this cut).
+      setRailOpen(true);
+    },
+    [setRailOpen],
+  );
+  const expandRail = useCallback(() => setRailOpen(true), [setRailOpen]);
 
   const boundWorkspace = conversation.workspaceId
     ? workspaces.find((workspace) => workspace.workspaceId === conversation.workspaceId)
@@ -1137,10 +1273,7 @@ export function ChatView({
     closeSlash();
   }, [closeMention, closeSlash]);
 
-  const slashCommands = useMemo(
-    () => (slash ? filterSlashCommands(slash.query) : []),
-    [slash],
-  );
+  const slashCommands = useMemo(() => (slash ? filterSlashCommands(slash.query) : []), [slash]);
 
   // Tick while compacting so the capsule can show NewMax-style elapsed time.
   useEffect(() => {
@@ -1199,7 +1332,6 @@ export function ChatView({
     if (compactingRef.current) return;
     compactingRef.current = true;
     const startedAt = Date.now();
-    const occupancy = contextOccupancyRef.current;
     clearCompactDismissTimer();
     setCompactProgress({
       status: 'running',
@@ -1211,8 +1343,6 @@ export function ChatView({
       const result = await api.compactConversation({
         conversationId: conversation.id,
         mode: 'manual',
-        contextWindow: occupancy.limit > 0 ? occupancy.limit : undefined,
-        usedTokens: occupancy.used > 0 ? occupancy.used : undefined,
         onlyIfNeeded: false,
       });
       const elapsed = formatCompactElapsed(startedAt);
@@ -1221,12 +1351,6 @@ export function ChatView({
           ? `（${result.beforeTokens} → ${result.afterTokens}）`
           : '';
       if (result.compacted) {
-        if (typeof result.afterTokens === 'number' && result.afterTokens >= 0) {
-          compactAfterTokensRef.current = {
-            sequence: Number.MAX_SAFE_INTEGER,
-            tokens: result.afterTokens,
-          };
-        }
         setCompactProgress({
           status: 'success',
           mode: 'manual',
@@ -1267,9 +1391,10 @@ export function ChatView({
         },
       ]);
     } finally {
+      await refreshContextStatus();
       compactingRef.current = false;
     }
-  }, [clearCompactDismissTimer, conversation.id, scheduleCompactDismiss]);
+  }, [clearCompactDismissTimer, conversation.id, refreshContextStatus, scheduleCompactDismiss]);
 
   const selectSlashCommand = useCallback(
     (cmd: SlashCommand) => {
@@ -1609,17 +1734,13 @@ export function ChatView({
         }
         if (e.key === 'ArrowDown') {
           e.preventDefault();
-          setSlashIndex((i) =>
-            slashCommands.length === 0 ? 0 : (i + 1) % slashCommands.length,
-          );
+          setSlashIndex((i) => (slashCommands.length === 0 ? 0 : (i + 1) % slashCommands.length));
           return;
         }
         if (e.key === 'ArrowUp') {
           e.preventDefault();
           setSlashIndex((i) =>
-            slashCommands.length === 0
-              ? 0
-              : (i - 1 + slashCommands.length) % slashCommands.length,
+            slashCommands.length === 0 ? 0 : (i - 1 + slashCommands.length) % slashCommands.length,
           );
           return;
         }
@@ -1727,8 +1848,7 @@ export function ChatView({
         models.find((model) => model.displayName.toLowerCase() === key.toLowerCase()) ||
         models.find(
           (model) =>
-            model.displayName.toLowerCase() ===
-            key.slice(key.lastIndexOf('/') + 1).toLowerCase(),
+            model.displayName.toLowerCase() === key.slice(key.lastIndexOf('/') + 1).toLowerCase(),
         )
       );
     };
@@ -1865,108 +1985,8 @@ export function ChatView({
   // After a successful compact, prefer context.compacted.afterTokens until a
   // newer provider.usage arrives so the ring drops immediately.
   // Runtime stores threadId under payload.run.threadId (not always top-level).
-  const contextUsed = useMemo(() => {
-    let bestUsage = 0;
-    let bestUsageSequence = -1;
-    let bestCompact = 0;
-    let bestCompactSequence = -1;
-    const ordered = [...eventHistory].sort((a, b) => a.sequence - b.sequence);
-    for (const event of ordered) {
-      const runPayload =
-        event.payload.run && typeof event.payload.run === 'object'
-          ? (event.payload.run as Record<string, unknown>)
-          : undefined;
-      const eventThread =
-        typeof event.payload.threadId === 'string'
-          ? event.payload.threadId
-          : typeof runPayload?.threadId === 'string'
-            ? runPayload.threadId
-            : undefined;
-      if (threadId && eventThread && eventThread !== threadId) continue;
-      // When thread is known but event has no thread, only keep events for this task.
-      if (
-        threadId &&
-        !eventThread &&
-        conversation.taskId &&
-        event.taskId &&
-        event.taskId !== conversation.taskId
-      ) {
-        continue;
-      }
-
-      if (event.type === 'context.compacted') {
-        const after =
-          typeof event.payload.afterTokens === 'number' ? event.payload.afterTokens : 0;
-        if (after > 0 && event.sequence >= bestCompactSequence) {
-          bestCompactSequence = event.sequence;
-          bestCompact = after;
-        }
-        continue;
-      }
-
-      if (event.type !== 'provider.usage') continue;
-      const inn =
-        typeof event.payload.tokensIn === 'number'
-          ? event.payload.tokensIn
-          : typeof event.payload.inputTokens === 'number'
-            ? event.payload.inputTokens
-            : 0;
-      // Prefer input-side usage as the context-window occupancy.
-      // Fall back to in+out only when providers report a single total.
-      const out =
-        typeof event.payload.tokensOut === 'number'
-          ? event.payload.tokensOut
-          : typeof event.payload.outputTokens === 'number'
-            ? event.payload.outputTokens
-            : 0;
-      const total = inn > 0 ? inn : Math.max(0, inn + out);
-      if (total <= 0) continue;
-      // Latest usage for this thread wins — that is the live context footprint.
-      if (event.sequence >= bestUsageSequence) {
-        bestUsageSequence = event.sequence;
-        bestUsage = total;
-      }
-    }
-
-    // Client-side compact result (response arrived before event history refresh).
-    const clientCompact = compactAfterTokensRef.current;
-    if (clientCompact && clientCompact.tokens > 0) {
-      if (bestUsageSequence > bestCompactSequence && bestUsageSequence !== -1) {
-        // A real usage event after compact supersedes the optimistic estimate.
-        if (clientCompact.sequence === Number.MAX_SAFE_INTEGER) {
-          compactAfterTokensRef.current = null;
-        }
-      } else if (clientCompact.tokens > 0) {
-        bestCompact = clientCompact.tokens;
-        bestCompactSequence = Math.max(bestCompactSequence, clientCompact.sequence);
-      }
-    }
-
-    // Prefer whichever is newer: compact afterTokens or provider usage.
-    if (bestCompactSequence > bestUsageSequence && bestCompact > 0) {
-      return bestCompact;
-    }
-    if (bestUsage > 0) return bestUsage;
-    if (bestCompact > 0) return bestCompact;
-
-    // Rough local estimate from visible text when no usage yet.
-    const chars = messages.reduce((n, m) => n + m.text.length, 0) + input.length;
-    return Math.round(chars / 4);
-  }, [conversation.taskId, eventHistory, input.length, messages, threadId, compactProgress?.afterTokens]);
-
-  // Prefer the context window configured on the model in 设置 → 模型; only fall
-  // back to the id-pattern heuristic when it has not been set.
-  const contextLimit =
-    (typeof activeModelOption?.contextWindow === 'number' &&
-    activeModelOption.contextWindow > 0
-      ? activeModelOption.contextWindow
-      : undefined) ||
-    estimateContextWindow(
-      activeModelOption?.displayName || activeModelId || activeModel,
-    );
-
-  // Keep occupancy in a ref so send paths defined earlier can read latest values.
-  contextOccupancyRef.current = { used: contextUsed, limit: contextLimit };
+  const contextUsed = contextStatus?.estimatedUsedTokens ?? 0;
+  const contextLimit = contextStatus?.contextWindow ?? 0;
 
   // Session metrics for the NewMax ring hover card (会话 耗时 / 用量).
   const sessionMetrics = useMemo(() => {
@@ -2078,7 +2098,14 @@ export function ChatView({
         // 换绑失败保持原状（无 toast 通道，静默即可，下次点击可重试）。
       }
     },
-    [conversation.id, conversation.track, conversation.targetRef, activeModelId, models, onConversationUpdated],
+    [
+      conversation.id,
+      conversation.track,
+      conversation.targetRef,
+      activeModelId,
+      models,
+      onConversationUpdated,
+    ],
   );
   const showTyping = sending || projected.streaming;
   const canStop = Boolean(projected.activeRunId) && (sending || projected.streaming);
@@ -2256,17 +2283,13 @@ export function ChatView({
 
   // Live task progress for the active run — powers the spinner capsule above
   // the composer (hover reveals the full step list, NewMax-style).
-  const liveTaskView = useMemo(() => {
-    if (!projected.activeRunId) return undefined;
-    return projectExecutionProcess(eventHistory, {
-      threadId,
-      runId: projected.activeRunId,
-    });
-  }, [eventHistory, projected.activeRunId, threadId]);
+  const liveTaskView = projected.activeRunId
+    ? runProcessById.get(projected.activeRunId)
+    : undefined;
   const showTaskCapsule = Boolean(
     (sending || projected.streaming) &&
-      liveTaskView &&
-      (liveTaskView.steps.length > 0 || (liveTaskView.taskPlan?.total ?? 0) > 0),
+    liveTaskView &&
+    (liveTaskView.steps.length > 0 || (liveTaskView.taskPlan?.total ?? 0) > 0),
   );
 
   return (
@@ -2277,8 +2300,8 @@ export function ChatView({
       <div className="flex min-h-0 min-w-[260px] flex-1 flex-col overflow-hidden bg-surface">
         {!hasProjectFolder ? (
           <div className="shell-warning-banner border-b px-4 py-2 text-[12px] leading-relaxed">
-            当前对话没有绑定本地项目文件夹，所以 AI 不能读取工作区目录。
-            请先在工作区 Tab 选择/打开项目（带真实文件夹路径），再新建对话。
+            当前对话没有绑定本地项目文件夹，所以 AI 不能读取工作区目录。 请先在工作区 Tab
+            选择/打开项目（带真实文件夹路径），再新建对话。
           </div>
         ) : null}
 
@@ -2290,8 +2313,7 @@ export function ChatView({
             const scroller = messagesScrollRef.current;
             if (!scroller) return;
             // If the user scrolls up, stop pinning; near-bottom re-enables pin.
-            const distance =
-              scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+            const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
             stickToBottomRef.current = distance < 80;
             // Load older messages when scrolled near top.
             if (scroller.scrollTop < 50 && hasMore && !loadingMore) {
@@ -2326,14 +2348,13 @@ export function ChatView({
               <MessageBubble
                 key={msg.id}
                 message={msg}
-                eventHistory={eventHistory}
-                threadId={threadId}
+                processView={msg.runId ? runProcessById.get(msg.runId) : undefined}
                 models={models}
                 agents={agents}
                 regenerating={sending}
-                onRegenerate={() => void handleRegenerate(msg.id)}
+                onRegenerate={handleRegenerate}
                 onOpenChange={openChangeInRail}
-                onExpandRail={() => setRailOpen(true)}
+                onExpandRail={expandRail}
                 onOpenImage={setLightbox}
               />
             ))}
@@ -2356,9 +2377,7 @@ export function ChatView({
         {/* ─── Compose (NewMax-style) ─────────────────────────────────── */}
         <div className="shell-chat-content-wrap shrink-0 pb-4 pt-2">
           <div className="shell-chat-content mx-auto">
-            {showTaskCapsule && liveTaskView ? (
-              <RunTaskCapsule view={liveTaskView} />
-            ) : null}
+            {showTaskCapsule && liveTaskView ? <RunTaskCapsule view={liveTaskView} /> : null}
             {compactProgress ? (
               <div
                 className="shell-compact-capsule"
@@ -2581,7 +2600,9 @@ export function ChatView({
                       ref={permissionBtnRef}
                       type="button"
                       className="shell-compose__tool"
-                      data-active={menu === 'permission' || permissionMode === 'full-access' ? '1' : '0'}
+                      data-active={
+                        menu === 'permission' || permissionMode === 'full-access' ? '1' : '0'
+                      }
                       onClick={() => setMenu((m) => (m === 'permission' ? null : 'permission'))}
                       title={`权限：${PERMISSION_LABELS[permissionMode]}`}
                     >
@@ -2652,7 +2673,9 @@ export function ChatView({
                       ref={identityBtnRef}
                       type="button"
                       className="shell-compose__tool"
-                      data-active={menu === 'identity' || conversation.track !== 'model' ? '1' : '0'}
+                      data-active={
+                        menu === 'identity' || conversation.track !== 'model' ? '1' : '0'
+                      }
                       data-testid="compose-identity"
                       onClick={() => setMenu((m) => (m === 'identity' ? null : 'identity'))}
                       title={`对话对象：${identityLabel}`}
@@ -2684,6 +2707,8 @@ export function ChatView({
                   <ContextRing
                     used={contextUsed}
                     limit={contextLimit}
+                    usageRatio={contextStatus?.usageRatio}
+                    sections={contextStatus?.sections}
                     sessionDurationMs={sessionMetrics.durationMs}
                     sessionTokens={sessionMetrics.tokens}
                   />
@@ -2709,7 +2734,10 @@ export function ChatView({
                         // (模型 · xxx) updates immediately — targetRef alone
                         // still points at the original create-time model.
                         setModelOverride(modelId);
-                        writeConversationModelOverride(String(conversation.id), modelId || undefined);
+                        writeConversationModelOverride(
+                          String(conversation.id),
+                          modelId || undefined,
+                        );
                         onConversationUpdated?.();
                       }}
                     />
@@ -2779,7 +2807,10 @@ export function ChatView({
         >
           <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
             <FileCode2 size={13} className="shrink-0 text-accent" />
-            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-text" title={splitFile.path}>
+            <span
+              className="min-w-0 flex-1 truncate text-[12px] font-medium text-text"
+              title={splitFile.path}
+            >
               {splitFile.path}
             </span>
             <span className="shrink-0 text-[10.5px] text-text-faint">只读</span>
@@ -2870,10 +2901,9 @@ export function ChatView({
 
 // ─── Message Bubble ───────────────────────────────────────────────────────────
 
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
-  eventHistory,
-  threadId,
+  processView,
   models,
   agents,
   regenerating,
@@ -2883,12 +2913,11 @@ function MessageBubble({
   onOpenImage,
 }: {
   message: ChatMessage;
-  eventHistory: readonly Event[];
-  threadId?: string;
+  processView?: RunProcessView;
   models?: readonly ModelOption[];
   agents?: readonly GlobalAgent[];
   regenerating?: boolean;
-  onRegenerate?: () => void;
+  onRegenerate?: (messageId: string) => void;
   onOpenChange?: (path: string) => void;
   onExpandRail?: () => void;
   onOpenImage?: (image: MessageImage) => void;
@@ -2898,14 +2927,6 @@ function MessageBubble({
   const systemTone: SystemMessageTone = resolveSystemMessageTone(message.tone, message.text);
   const [copied, setCopied] = useState(false);
   const [shared, setShared] = useState(false);
-
-  const processView = useMemo(() => {
-    if (message.role !== 'assistant') return undefined;
-    return projectExecutionProcess(eventHistory, {
-      threadId,
-      runId: message.runId,
-    });
-  }, [eventHistory, message.role, message.runId, threadId]);
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
@@ -3084,14 +3105,14 @@ function MessageBubble({
             text={message.reasoningText}
             streaming={Boolean(message.streaming && !message.text.trim())}
           />
-          <ExecutionProcessBlock
-            events={eventHistory}
-            threadId={threadId}
-            runId={message.runId}
-            forceExpanded={Boolean(message.streaming)}
-            nested
-            onOpenChange={onOpenChange}
-          />
+          {processView ? (
+            <ExecutionProcessBlock
+              view={processView}
+              forceExpanded={Boolean(message.streaming)}
+              nested
+              onOpenChange={onOpenChange}
+            />
+          ) : null}
         </AssistantProcessGroup>
         {message.text ? (
           <MarkdownContent text={message.text} streaming={Boolean(message.streaming)} />
@@ -3101,11 +3122,9 @@ function MessageBubble({
         {/* NewMax: the per-run file summary stays visible after the reply
             lands (outside the auto-collapsing process group) so「本轮改了
             哪些文件」is always one glance away. */}
-        {!message.streaming ? (
+        {!message.streaming && processView ? (
           <FileChangesCard
-            events={eventHistory}
-            threadId={threadId}
-            runId={message.runId}
+            view={processView}
             nested
             onOpenChange={onOpenChange}
             onExpandRail={onExpandRail}
@@ -3127,7 +3146,7 @@ function MessageBubble({
               <button
                 type="button"
                 className="shell-msg-footer__btn"
-                onClick={onRegenerate}
+                onClick={() => void onRegenerate?.(message.id)}
                 disabled={regenerating}
                 title="重新生成"
               >
@@ -3224,7 +3243,7 @@ function MessageBubble({
       </div>
     </div>
   );
-}
+});
 
 // ─── NewMax-style meta hover (replaces native title tooltips) ────────────────
 
@@ -3313,7 +3332,7 @@ function AssistantProcessGroup({
   children,
 }: {
   reasoningText?: string;
-  processView?: ReturnType<typeof projectExecutionProcess>;
+  processView?: RunProcessView;
   streaming?: boolean;
   children: ReactNode;
 }) {
@@ -3439,67 +3458,64 @@ function ToolApprovalCard({
   // Per-tool presentation: icon + subtitle + approve label.
   // Agent Library mutations get distinct icons so the user can tell at a glance
   // whether the model wants to create, modify, or archive an agent.
-  const presentation: Record<
-    string,
-    { Icon: typeof Bot; subtitle: string; approveLabel: string }
-  > = {
-    create_agent: {
-      Icon: Bot,
-      subtitle: '创建智能体 · 需要你批准后才会写入智能体库',
-      approveLabel: '批准创建',
-    },
-    update_agent: {
-      Icon: PenLine,
-      subtitle: '修改智能体 · 批准后变更立即生效',
-      approveLabel: '批准修改',
-    },
-    archive_agent: {
-      Icon: Archive,
-      subtitle: '归档智能体 · 软删除，可在智能体库随时恢复',
-      approveLabel: '批准归档',
-    },
-    create_skill: {
-      Icon: Sparkles,
-      subtitle: '创建 Skill · 只导入说明文本，不会执行脚本',
-      approveLabel: '批准创建',
-    },
-    update_skill: {
-      Icon: Sparkles,
-      subtitle: '更新 Skill · 新版本入库，旧版本保留',
-      approveLabel: '批准更新',
-    },
-    delete_skill: {
-      Icon: Archive,
-      subtitle: '卸载 Skill · 被智能体装备时会被拒绝',
-      approveLabel: '批准卸载',
-    },
-    create_team: {
-      Icon: Users,
-      subtitle: '创建小队 · 需要你批准后才会写入小队库',
-      approveLabel: '批准创建',
-    },
-    update_team: {
-      Icon: Users,
-      subtitle: '修改小队 · 批准后变更立即生效，进行中的运行不受影响',
-      approveLabel: '批准修改',
-    },
-    delete_team: {
-      Icon: Users,
-      subtitle: '删除小队 · 仍被对话引用或已有运行记录时会被拒绝',
-      approveLabel: '批准删除',
-    },
-    write_file: {
-      Icon: FileWarning,
-      subtitle: '询问批准 · 需要你确认后才会执行',
-      approveLabel: '批准执行',
-    },
-  };
-  const view =
-    presentation[approval.toolName] ?? {
-      Icon: Terminal,
-      subtitle: '询问批准 · 需要你确认后才会执行',
-      approveLabel: '批准执行',
+  const presentation: Record<string, { Icon: typeof Bot; subtitle: string; approveLabel: string }> =
+    {
+      create_agent: {
+        Icon: Bot,
+        subtitle: '创建智能体 · 需要你批准后才会写入智能体库',
+        approveLabel: '批准创建',
+      },
+      update_agent: {
+        Icon: PenLine,
+        subtitle: '修改智能体 · 批准后变更立即生效',
+        approveLabel: '批准修改',
+      },
+      archive_agent: {
+        Icon: Archive,
+        subtitle: '归档智能体 · 软删除，可在智能体库随时恢复',
+        approveLabel: '批准归档',
+      },
+      create_skill: {
+        Icon: Sparkles,
+        subtitle: '创建 Skill · 只导入说明文本，不会执行脚本',
+        approveLabel: '批准创建',
+      },
+      update_skill: {
+        Icon: Sparkles,
+        subtitle: '更新 Skill · 新版本入库，旧版本保留',
+        approveLabel: '批准更新',
+      },
+      delete_skill: {
+        Icon: Archive,
+        subtitle: '卸载 Skill · 被智能体装备时会被拒绝',
+        approveLabel: '批准卸载',
+      },
+      create_team: {
+        Icon: Users,
+        subtitle: '创建小队 · 需要你批准后才会写入小队库',
+        approveLabel: '批准创建',
+      },
+      update_team: {
+        Icon: Users,
+        subtitle: '修改小队 · 批准后变更立即生效，进行中的运行不受影响',
+        approveLabel: '批准修改',
+      },
+      delete_team: {
+        Icon: Users,
+        subtitle: '删除小队 · 仍被对话引用或已有运行记录时会被拒绝',
+        approveLabel: '批准删除',
+      },
+      write_file: {
+        Icon: FileWarning,
+        subtitle: '询问批准 · 需要你确认后才会执行',
+        approveLabel: '批准执行',
+      },
     };
+  const view = presentation[approval.toolName] ?? {
+    Icon: Terminal,
+    subtitle: '询问批准 · 需要你确认后才会执行',
+    approveLabel: '批准执行',
+  };
   const Icon = view.Icon;
   const isAgentMutation =
     approval.toolName === 'create_agent' ||
@@ -3575,7 +3591,7 @@ function ToolApprovalCard({
 // NewMax 语义：优先展示模型通过 update_task_plan 维护的「任务清单」（真正的
 // 待办，不是工具调用流水）；模型没报清单时回退为工具步骤概览。
 
-function RunTaskCapsule({ view }: { view: ReturnType<typeof projectExecutionProcess> }) {
+function RunTaskCapsule({ view }: { view: RunProcessView }) {
   const [hovered, setHovered] = useState(false);
   const plan = view.taskPlan;
 
@@ -3665,7 +3681,9 @@ function RunTaskCapsule({ view }: { view: ReturnType<typeof projectExecutionProc
     >
       {hovered ? (
         <div className="shell-task-capsule__pop" role="list" aria-label="本轮执行步骤">
-          <div className="shell-task-capsule__pop-title">执行步骤（{doneCount}/{total}）</div>
+          <div className="shell-task-capsule__pop-title">
+            执行步骤（{doneCount}/{total}）
+          </div>
           <ul className="shell-task-capsule__pop-list">
             {view.steps.map((step) => (
               <li key={step.id} className="shell-task-capsule__pop-item" data-status={step.status}>
@@ -3678,7 +3696,10 @@ function RunTaskCapsule({ view }: { view: ReturnType<typeof projectExecutionProc
                 ) : (
                   <span className="shell-task-capsule__dot" aria-hidden />
                 )}
-                <span className="shell-task-capsule__pop-text" title={formatExecutionStepTitle(step)}>
+                <span
+                  className="shell-task-capsule__pop-text"
+                  title={formatExecutionStepTitle(step)}
+                >
                   {formatExecutionStepTitle(step)}
                 </span>
               </li>

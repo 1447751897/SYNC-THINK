@@ -23,12 +23,11 @@ import bash from 'highlight.js/lib/languages/bash';
 import python from 'highlight.js/lib/languages/python';
 import yaml from 'highlight.js/lib/languages/yaml';
 import sql from 'highlight.js/lib/languages/sql';
-import type { Event } from '@sync-think/shared';
-import {
-  projectExecutionProcess,
-  type ExecutionProcessStep,
-  type ProcessToolKind,
-} from './execution-process.js';
+import type {
+  ExecutionProcessStep,
+  ProcessToolKind,
+  RunProcessView,
+} from '@sync-think/protocol';
 
 // Register a compact set of languages for NewMax-like file previews.
 let hljsReady = false;
@@ -110,9 +109,7 @@ function isStatusOnlyPreview(preview?: string): boolean {
 }
 
 interface ExecutionProcessBlockProps {
-  events: readonly Event[];
-  threadId?: string;
-  runId?: string;
+  view: RunProcessView;
   forceExpanded?: boolean;
   nested?: boolean;
   onOpenChange?: (path: string) => void;
@@ -256,18 +253,11 @@ function StepCard({
 }
 
 export function ExecutionProcessBlock({
-  events,
-  threadId,
-  runId,
+  view,
   forceExpanded = false,
   nested = false,
   onOpenChange,
 }: ExecutionProcessBlockProps) {
-  const view = useMemo(
-    () => projectExecutionProcess(events, { threadId, runId }),
-    [events, runId, threadId],
-  );
-
   if (view.steps.length === 0) return null;
 
   return (
@@ -387,24 +377,16 @@ export function CodePreview({
 }
 
 export function FileChangesCard({
-  events,
-  threadId,
-  runId,
+  view,
   nested = false,
   onOpenChange,
   onExpandRail,
 }: {
-  events: readonly Event[];
-  threadId?: string;
-  runId?: string;
+  view: RunProcessView;
   nested?: boolean;
   onOpenChange?: (path: string) => void;
   onExpandRail?: () => void;
 }) {
-  const view = useMemo(
-    () => projectExecutionProcess(events, { threadId, runId }),
-    [events, runId, threadId],
-  );
   // Single-file runs expand body by default (NewMax glance); multi-file stays list-first.
   const [expandedPath, setExpandedPath] = useState<string | null>(
     view.fileChanges.length === 1 ? view.fileChanges[0]?.path ?? null : null,

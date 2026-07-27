@@ -67,6 +67,8 @@ export type Feature =
   | 'team.setRunStatus'
   | 'conversation.list'
   | 'conversation.listMessages'
+  | 'conversation.getContextStatus'
+  | 'conversation.getRunProcess'
   | 'conversation.create'
   | 'conversation.rename'
   | 'conversation.setPinned'
@@ -153,6 +155,8 @@ export const DEFAULT_FEATURES: Feature[] = [
   'team.setRunStatus',
   'conversation.list',
   'conversation.listMessages',
+  'conversation.getContextStatus',
+  'conversation.getRunProcess',
   'conversation.create',
   'conversation.rename',
   'conversation.setPinned',

@@ -14,6 +14,7 @@ import {
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
   type ConversationTransientStreamEvent,
+  type EventReplayCursor,
   type EventReplayPagePayload,
   type EventStreamEvent,
   type EventStreamStartedPayload,
@@ -41,13 +42,29 @@ interface PendingRequest {
 }
 
 interface EventSubscription {
-  afterCursor: number;
+  cursor: EventReplayCursor;
   categories?: EventCategory[];
   listener: (event: Event) => void;
+  cursorListener?: (cursor: EventReplayCursor) => void;
   streamId: string | null;
   phase: 'catching-up' | 'live';
-  highWatermark: number | null;
+  highWatermark: { sequence: number; eventId?: string } | null;
   pendingLiveEvents: Event[];
+}
+
+function normalizeEventReplayCursor(cursor: number | EventReplayCursor): EventReplayCursor {
+  if (typeof cursor === 'number') return { sequence: cursor, eventId: '' };
+  return { sequence: cursor.sequence, eventId: cursor.eventId };
+}
+
+function compareEventReplayCursors(left: EventReplayCursor, right: EventReplayCursor): number {
+  if (left.sequence !== right.sequence) return left.sequence - right.sequence;
+  if (left.eventId === right.eventId) return 0;
+  return left.eventId < right.eventId ? -1 : 1;
+}
+
+function cursorForEvent(event: Event): EventReplayCursor {
+  return { sequence: event.sequence, eventId: String(event.id) };
 }
 
 interface TransientSubscription {
@@ -63,9 +80,7 @@ interface TransientSubscription {
   pendingLiveFrames: ConversationTransientFrame[];
 }
 
-function isConversationTransientSnapshot(
-  value: unknown,
-): value is ConversationTransientSnapshot {
+function isConversationTransientSnapshot(value: unknown): value is ConversationTransientSnapshot {
   if (!value || typeof value !== 'object') return false;
   const snapshot = value as Partial<ConversationTransientSnapshot>;
   return (
@@ -230,18 +245,22 @@ export class RuntimePipeClient {
   }
 
   async subscribeEvents(
-    afterCursor: number,
+    afterCursor: number | EventReplayCursor,
     listener: (event: Event) => void,
     categories?: readonly EventCategory[],
+    cursorListener?: (cursor: EventReplayCursor) => void,
   ): Promise<() => Promise<void>> {
+    const cursor = normalizeEventReplayCursor(afterCursor);
     const response = await this.request<EventStreamStartedPayload>('runtime.subscribeEvents', {
-      afterCursor,
+      afterCursor: cursor.sequence,
+      afterEventId: cursor.eventId,
       categories: categories ? [...categories] : undefined,
     });
     const subscription: EventSubscription = {
-      afterCursor,
+      cursor,
       categories: categories ? [...categories] : undefined,
       listener,
+      cursorListener,
       streamId: response.streamId,
       phase: 'catching-up',
       highWatermark: null,
@@ -367,9 +386,7 @@ export class RuntimePipeClient {
         this.socket = null;
         this.pendingBytes = Buffer.alloc(0);
         this.resetSubscriptionStreams();
-        this.rejectPending(
-          error instanceof Error ? error : new RuntimeTransientError(),
-        );
+        this.rejectPending(error instanceof Error ? error : new RuntimeTransientError());
       }
       if (!socket.destroyed) socket.destroy();
       throw error;
@@ -406,12 +423,7 @@ export class RuntimePipeClient {
       installId: this.options.installId,
       clientNonce: hello.nonce,
       runtimeNonce: response.runtimeNonce,
-      token: computeClientProof(
-        secret,
-        hello.nonce,
-        response.runtimeNonce,
-        this.options.installId,
-      ),
+      token: computeClientProof(secret, hello.nonce, response.runtimeNonce, this.options.installId),
     };
     let accepted: unknown;
     try {
@@ -436,9 +448,7 @@ export class RuntimePipeClient {
     // Compact may call the live model for a structured summary — allow far longer than the
     // default 5s IPC budget used for ordinary CRUD.
     const defaultTimeout =
-      type === 'conversation.compact'
-        ? 120_000
-        : (this.options.requestTimeoutMs ?? 5_000);
+      type === 'conversation.compact' ? 120_000 : (this.options.requestTimeoutMs ?? 5_000);
     const timeoutMs =
       typeof timeoutMsOverride === 'number' && timeoutMsOverride > 0
         ? timeoutMsOverride
@@ -539,9 +549,8 @@ export class RuntimePipeClient {
       if (typeof streamId === 'string') this.pendingStreamEvents.set(streamId, []);
     }
     if (frame.type === 'conversation.subscribeTransientStream' && !frame.error) {
-      const streamId = (
-        frame.payload as Partial<SubscribeConversationTransientStreamResponse>
-      ).streamId;
+      const streamId = (frame.payload as Partial<SubscribeConversationTransientStreamResponse>)
+        .streamId;
       if (typeof streamId === 'string') this.pendingTransientFrames.set(streamId, []);
     }
 
@@ -587,7 +596,8 @@ export class RuntimePipeClient {
   private async restoreSubscriptions(): Promise<void> {
     for (const subscription of this.subscriptions) {
       const response = (await this.sendRequest('runtime.subscribeEvents', {
-        afterCursor: subscription.afterCursor,
+        afterCursor: subscription.cursor.sequence,
+        afterEventId: subscription.cursor.eventId,
         categories: subscription.categories,
       })) as EventStreamStartedPayload;
       if (!this.subscriptions.has(subscription)) {
@@ -619,9 +629,7 @@ export class RuntimePipeClient {
     }
   }
 
-  private async openTransientSubscription(
-    subscription: TransientSubscription,
-  ): Promise<void> {
+  private async openTransientSubscription(subscription: TransientSubscription): Promise<void> {
     if (!this.transientSubscriptions.has(subscription)) return;
     const response = (await this.sendRequest('conversation.subscribeTransientStream', {
       threadId: subscription.threadId,
@@ -679,7 +687,8 @@ export class RuntimePipeClient {
     );
     subscription.pendingLiveFrames = [];
     subscription.phase = 'live';
-    for (const transientFrame of liveFrames) this.deliverTransientFrame(subscription, transientFrame);
+    for (const transientFrame of liveFrames)
+      this.deliverTransientFrame(subscription, transientFrame);
   }
 
   private deliverTransientFrame(
@@ -720,9 +729,7 @@ export class RuntimePipeClient {
     await this.sendRequest('runtime.unsubscribeEvents', { streamId });
   }
 
-  private async closeTransientSubscription(
-    subscription: TransientSubscription,
-  ): Promise<void> {
+  private async closeTransientSubscription(subscription: TransientSubscription): Promise<void> {
     if (!this.transientSubscriptions.delete(subscription)) return;
     const streamId = subscription.streamId;
     subscription.streamId = null;
@@ -778,55 +785,125 @@ export class RuntimePipeClient {
       }
       page = (await this.sendRequest('runtime.continueEventReplay', {
         streamId: subscription.streamId,
-        afterCursor: subscription.afterCursor,
+        afterCursor: subscription.cursor.sequence,
+        afterEventId: subscription.cursor.eventId,
       })) as EventReplayPagePayload;
     }
   }
 
-  private commitReplayPage(
-    subscription: EventSubscription,
-    page: EventReplayPagePayload,
-  ): void {
+  private commitReplayPage(subscription: EventSubscription, page: EventReplayPagePayload): void {
     if (
-      !subscription.streamId ||
-      page.streamId !== subscription.streamId ||
-      !Number.isInteger(page.nextCursor) ||
-      !Number.isInteger(page.highWatermark) ||
+      !Number.isSafeInteger(page.nextCursor) ||
+      page.nextCursor < 0 ||
+      !Number.isSafeInteger(page.highWatermark) ||
+      page.highWatermark < 0 ||
       typeof page.replayComplete !== 'boolean' ||
       !Array.isArray(page.replayedEvents) ||
-      page.nextCursor < subscription.afterCursor ||
-      page.nextCursor > page.highWatermark ||
-      (page.replayComplete && page.nextCursor !== page.highWatermark) ||
-      (!page.replayComplete && page.nextCursor >= page.highWatermark)
+      (page.nextEventId !== undefined && typeof page.nextEventId !== 'string') ||
+      (page.highWatermarkEventId !== undefined && typeof page.highWatermarkEventId !== 'string')
     ) {
       throw new RuntimeProtocolError();
     }
-    if (subscription.highWatermark === null) subscription.highWatermark = page.highWatermark;
-    if (subscription.highWatermark !== page.highWatermark) throw new RuntimeProtocolError();
+    const nextCursor = this.pageCursor(page);
+    const highWatermark = {
+      sequence: page.highWatermark,
+      eventId:
+        typeof page.highWatermarkEventId === 'string'
+          ? page.highWatermarkEventId
+          : page.replayComplete && page.highWatermark === nextCursor.sequence
+            ? nextCursor.eventId
+            : undefined,
+    };
+    if (
+      !subscription.streamId ||
+      page.streamId !== subscription.streamId ||
+      !Number.isSafeInteger(nextCursor.sequence) ||
+      nextCursor.sequence < 0 ||
+      !Number.isSafeInteger(highWatermark.sequence) ||
+      highWatermark.sequence < 0 ||
+      typeof page.replayComplete !== 'boolean' ||
+      !Array.isArray(page.replayedEvents) ||
+      (page.nextEventId !== undefined && typeof page.nextEventId !== 'string') ||
+      (page.highWatermarkEventId !== undefined && typeof page.highWatermarkEventId !== 'string') ||
+      compareEventReplayCursors(nextCursor, subscription.cursor) < 0 ||
+      nextCursor.sequence > highWatermark.sequence ||
+      (highWatermark.eventId !== undefined &&
+        compareEventReplayCursors(nextCursor, {
+          sequence: highWatermark.sequence,
+          eventId: highWatermark.eventId,
+        }) > 0) ||
+      (page.replayComplete &&
+        (nextCursor.sequence !== highWatermark.sequence ||
+          (highWatermark.eventId !== undefined && nextCursor.eventId !== highWatermark.eventId))) ||
+      (!page.replayComplete &&
+        nextCursor.sequence === highWatermark.sequence &&
+        (highWatermark.eventId === undefined ||
+          compareEventReplayCursors(nextCursor, {
+            sequence: highWatermark.sequence,
+            eventId: highWatermark.eventId,
+          }) >= 0))
+    ) {
+      throw new RuntimeProtocolError();
+    }
+    if (subscription.highWatermark === null) {
+      subscription.highWatermark = highWatermark;
+    } else if (
+      subscription.highWatermark.sequence !== highWatermark.sequence ||
+      (subscription.highWatermark.eventId !== undefined &&
+        highWatermark.eventId !== undefined &&
+        subscription.highWatermark.eventId !== highWatermark.eventId)
+    ) {
+      throw new RuntimeProtocolError();
+    } else if (
+      subscription.highWatermark.eventId === undefined &&
+      highWatermark.eventId !== undefined
+    ) {
+      subscription.highWatermark.eventId = highWatermark.eventId;
+    }
 
-    let previousSequence = subscription.afterCursor;
+    let previousCursor = subscription.cursor;
     for (const event of page.replayedEvents) {
+      const eventCursor = cursorForEvent(event);
       if (
-        !Number.isInteger(event.sequence) ||
-        event.sequence <= previousSequence ||
-        event.sequence > page.nextCursor
+        !Number.isSafeInteger(eventCursor.sequence) ||
+        eventCursor.sequence < 0 ||
+        compareEventReplayCursors(eventCursor, previousCursor) <= 0 ||
+        compareEventReplayCursors(eventCursor, nextCursor) > 0
       ) {
         throw new RuntimeProtocolError();
       }
       subscription.listener(event);
-      previousSequence = event.sequence;
+      previousCursor = eventCursor;
     }
-    subscription.afterCursor = page.nextCursor;
+    subscription.cursor = nextCursor;
+    subscription.cursorListener?.({ ...nextCursor });
+  }
+
+  private pageCursor(page: EventReplayPagePayload): EventReplayCursor {
+    if (typeof page.nextEventId === 'string') {
+      return { sequence: page.nextCursor, eventId: page.nextEventId };
+    }
+    for (let index = page.replayedEvents.length - 1; index >= 0; index--) {
+      const event = page.replayedEvents[index];
+      if (event && event.sequence === page.nextCursor) return cursorForEvent(event);
+    }
+    return { sequence: page.nextCursor, eventId: '' };
   }
 
   private finishReplay(subscription: EventSubscription): void {
-    if (!subscription.streamId || subscription.highWatermark !== subscription.afterCursor) {
+    if (
+      !subscription.streamId ||
+      !subscription.highWatermark ||
+      subscription.highWatermark.sequence !== subscription.cursor.sequence ||
+      (subscription.highWatermark.eventId !== undefined &&
+        subscription.highWatermark.eventId !== subscription.cursor.eventId)
+    ) {
       throw new RuntimeProtocolError();
     }
     const beforeMapping = this.pendingStreamEvents.get(subscription.streamId) ?? [];
     this.pendingStreamEvents.delete(subscription.streamId);
-    const liveEvents = [...beforeMapping, ...subscription.pendingLiveEvents].sort(
-      (left, right) => left.sequence - right.sequence,
+    const liveEvents = [...beforeMapping, ...subscription.pendingLiveEvents].sort((left, right) =>
+      compareEventReplayCursors(cursorForEvent(left), cursorForEvent(right)),
     );
     subscription.pendingLiveEvents = [];
     subscription.phase = 'live';
@@ -834,9 +911,11 @@ export class RuntimePipeClient {
   }
 
   private deliverEvent(subscription: EventSubscription, event: Event): void {
-    if (event.sequence <= subscription.afterCursor) return;
+    const eventCursor = cursorForEvent(event);
+    if (compareEventReplayCursors(eventCursor, subscription.cursor) <= 0) return;
     subscription.listener(event);
-    subscription.afterCursor = event.sequence;
+    subscription.cursor = eventCursor;
+    subscription.cursorListener?.({ ...eventCursor });
   }
 
   private rejectPending(error: Error): void {

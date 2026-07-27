@@ -20,6 +20,7 @@ import type { IpcMainInvokeEvent } from 'electron';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { FileRuntimeActivityCursorStore } from './runtime-activity-cursor-store.js';
 import {
   isAllowedM1OpenDocId,
   isValidDogfoodDayDate,
@@ -145,6 +146,8 @@ import {
   parseDeleteTeamPayload,
   parseListConversationsPayload,
   parseConversationListMessagesPayload,
+  parseConversationGetContextStatusPayload,
+  parseConversationGetRunProcessPayload,
   parseSubscribeConversationTransientStreamPayload,
   parseUnsubscribeConversationTransientStreamPayload,
   parseListGlobalAgentsPayload,
@@ -306,11 +309,7 @@ function sendRuntimeTransientFrameToRenderer(
       },
 ): void {
   const location = trustedRendererLocation;
-  if (
-    !location ||
-    sender.isDestroyed() ||
-    !isTrustedRendererUrl(sender.getURL(), location)
-  ) {
+  if (!location || sender.isDestroyed() || !isTrustedRendererUrl(sender.getURL(), location)) {
     return;
   }
   sender.send('runtime:conversation-transient', { subscriptionId, ...payload });
@@ -347,7 +346,13 @@ function handleDeepLink(raw: string): void {
 }
 
 function getRuntimeSession(): RuntimeSession {
-  runtimeSession ??= new RuntimeSession(getRuntimeClient(), sendRuntimeEventToRenderer);
+  runtimeSession ??= new RuntimeSession(
+    getRuntimeClient(),
+    sendRuntimeEventToRenderer,
+    new FileRuntimeActivityCursorStore(
+      path.join(app.getPath('userData'), 'runtime-activity-cursor.json'),
+    ),
+  );
   return runtimeSession;
 }
 
@@ -953,6 +958,22 @@ function setupRuntimeBridge(): void {
       parseConversationListMessagesPayload(value),
     );
   });
+  ipcMain.handle('runtime:conversation-get-context-status', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.getContextStatus',
+      parseConversationGetContextStatusPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-get-run-process', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.getRunProcess',
+      parseConversationGetRunProcessPayload(value),
+    );
+  });
   ipcMain.handle('runtime:conversation-subscribe-transient', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     const payload = parseSubscribeConversationTransientStreamPayload(value);
@@ -1086,10 +1107,7 @@ function setupRuntimeBridge(): void {
         return { ok: false, error: '截图路径越界，已拒绝。' };
       }
       fs.writeFileSync(absolute, image.toPNG());
-      const relativePath = path
-        .relative(root, absolute)
-        .split(path.sep)
-        .join('/');
+      const relativePath = path.relative(root, absolute).split(path.sep).join('/');
       return {
         ok: true,
         path: absolute,
@@ -1673,7 +1691,12 @@ function setupRuntimeBridge(): void {
     if (changes.length > 0 && strategy === 'stash') {
       const stash = await run(['stash', 'push', '-u', '-m', `sync-think: switch to ${branch}`]);
       if (!stash.ok) {
-        return { ok: false, dirty: true, changes, error: `暂存失败：${stash.stderr.trim() || '未知错误'}` };
+        return {
+          ok: false,
+          dirty: true,
+          changes,
+          error: `暂存失败：${stash.stderr.trim() || '未知错误'}`,
+        };
       }
     }
     const checkout = await run(['checkout', branch]);
@@ -1687,7 +1710,13 @@ function setupRuntimeBridge(): void {
         error: `切换失败：${detail}${strategy === 'stash' && changes.length > 0 ? '（你的更改已存入 git stash，可用 git stash pop 恢复）' : ''}`,
       };
     }
-    return { ok: true, dirty: false, changes: [], error: null, stashed: strategy === 'stash' && changes.length > 0 };
+    return {
+      ok: true,
+      dirty: false,
+      changes: [],
+      error: null,
+      stashed: strategy === 'stash' && changes.length > 0,
+    };
   });
 
   // 右栏「工作区」面板：git 分支 / 状态摘要（只读命令，无 shell）。
@@ -1715,7 +1744,8 @@ function setupRuntimeBridge(): void {
         );
       });
     const branch = (await run(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
-    if (!branch) return { branch: null, branches: [], changes: [], recentCommits: [], isRepo: false };
+    if (!branch)
+      return { branch: null, branches: [], changes: [], recentCommits: [], isRepo: false };
     const branchesRaw = await run(['branch', '--format=%(refname:short)']);
     const branches = branchesRaw
       .split(/\r?\n/)

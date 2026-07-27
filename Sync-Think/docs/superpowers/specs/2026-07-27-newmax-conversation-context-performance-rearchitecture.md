@@ -259,7 +259,7 @@ Transient frame：
 ### 5.3 上下文预览
 
 ```ts
-conversation.getContextStatus({ conversationId })
+conversation.getContextStatus({ conversationId });
 ```
 
 返回：
@@ -384,16 +384,20 @@ conversation.getContextStatus({ conversationId })
 - 停止、失败、重连正确；
 - DB 不随 chunk 数二次增长。
 
-### S3：停止全库 Replay 与 Runtime 全表恢复
+### S3：停止全库 Replay 与 Runtime 全表恢复 ✅ 完成 2026-07-27
 
 目标：冷启动成本与历史总量解耦。
 
-- Shell 只订阅轻量 conversation activity。
-- 当前打开会话才订阅 stream。
-- Desktop 持久化轻量 activity cursor，不再每次从 0 replay。
-- Runtime 从最新 checkpoint + checkpoint 后事件恢复，不把全库 events 常驻内存。
-- replay 查询直接走 SQLite cursor page。
-- event 增加全局 sequence 索引；旧重复 sequence 用 `(sequence, rowid/id)` 唯一游标兼容。
+- [x] Shell 只订阅轻量 conversation activity。
+- [x] 当前打开会话才订阅 stream。
+- [x] Desktop 持久化轻量 activity cursor，不再每次从 0 replay。
+- [x] Runtime 从最新 checkpoint + checkpoint 后事件恢复，不把全库 events 常驻内存。
+- [x] replay 查询直接走 SQLite cursor page。
+- [x] event 增加全局 sequence 索引；旧重复 sequence 用 `(sequence, rowid/id)` 稳定兼容。
+
+当前实现：Desktop/Runtime 各自保留 2048 条 recent event 窗口；SQLite replay 使用严格有界的 `(sequence, id)` 复合 cursor，遗留重复 sequence 可安全跨页，单页严格不超过 limit，且无遗漏、无重复；activity cursor 跨进程重启持久化。
+
+当前验收：全仓 test 20/20 tasks（Desktop 74 文件/549 项、Runtime 45 文件/310 项、Storage 22 文件/245 项）、typecheck 20/20 tasks、build 11/11 tasks 全部通过。
 
 验收：
 
@@ -401,15 +405,21 @@ conversation.getContextStatus({ conversationId })
 - Main/Renderer 内存不与全库事件量同比增长；
 - 对话列表立即可用。
 
-### S4：执行过程按 Run 聚合
+### S4：执行过程按 Run 聚合 ✅ 完成 2026-07-27
 
 目标：保留 NewMax 式过程展示，移除重复全局投影。
 
-- Runtime/Store 按 runId 生成 `RunProcessView`。
-- 一个助手气泡只接收一个已经投影好的过程对象。
-- `MessageBubble`、`ExecutionProcessBlock`、`FileChangesCard` 不再各自调用 `projectExecutionProcess()`。
-- 读/写文件路径在步骤标题直接显示。
-- 输出详情按需读取或使用 artifactRef。
+- [x] Storage 提供 `listEventsByRun(runId)`，Runtime 统一投影 `RunProcessView`，并通过 `conversation.getRunProcess` 按 runId 查询历史过程。
+- [x] Desktop Main/Preload/Renderer bridge 严格校验仅含非空、最长 128 字符的 `runId`；ChatView 用 `Map<runId, RunProcessView>` 隔离缓存与 in-flight 查询。
+- [x] 历史过程查询瞬时失败时从 500ms 开始指数退避、最大 8 秒自动重试；成功、切换对话或组件卸载时清理 timer/attempt，旧请求继续受 conversation generation 隔离。
+- [x] transient stream 增加 `process` frame/snapshot；工具事件局部更新当前 run，终态携带最终过程，重连后的文本/reasoning snapshot 保留已有 process。
+- [x] 一个助手气泡只接收一个已经投影好的过程对象；`MessageBubble` 使用 `memo()` 和稳定 callback，历史气泡不随当前 run 更新重复渲染。
+- [x] `ChatView`、`MessageBubble`、`ExecutionProcessBlock`、`FileChangesCard`、`RightRail` 生产链路不再调用 `projectExecutionProcess()` 或扫描原始事件。
+- [x] 读/写文件路径在步骤标题直接显示；command、generic 与 list_files 的单行长输出也同时受行数和字符数上限约束，避免大文本进入 Renderer。
+- [x] MCP `tool_requested` / `tool_called` / `tool_refused` 在生产事件缺少 toolCallId 时按共同 `actionDigest` 聚合，called/refused 分别收敛为 done/error。
+- [x] `run.completed` / `run.failed` / `run.cancelled` 会收敛未完成工具步骤，不在 terminal 后遗留 running。
+
+当前验收：30 步投影与 run Map 隔离测试确认只替换目标 run，历史 run 对象引用保持稳定；Protocol 5 文件/20 项、Storage 22 文件/246 项、Runtime 48 文件/319 项、Desktop 77 文件/567 项测试通过。全仓 test/typecheck 20/20 tasks、build 11/11 tasks 通过。
 
 验收：一轮包含 30 个工具步骤时，流式更新只影响当前过程卡和当前助手草稿。
 
@@ -481,25 +491,23 @@ apps/desktop/src/renderer/m0-projection.ts             # 迁移期兼容，最�
 
 建议在目标开发机上固定以下预算：
 
-| 场景 | 目标 |
-|---|---:|
-| Desktop 窗口出现后列表可操作 | ≤ 1 秒（Runtime 已运行） |
-| 冷启动到 Runtime pipe ready | ≤ 3 秒 |
-| 打开普通会话首屏 | ≤ 300ms |
-| 打开 1000+ 消息会话首屏 | ≤ 500ms |
-| 切换两个已加载会话 | ≤ 150ms |
-| 单个流式 delta UI 处理 | ≤ 4ms |
-| 50 条首屏 DOM 消息 | 仅一页/虚拟窗口 |
-| 1000 delta durable assistant message | 1 条 final message |
-| Renderer 内存 | 不随全库 event 数线性增长 |
+| 场景                                 |                      目标 |
+| ------------------------------------ | ------------------------: |
+| Desktop 窗口出现后列表可操作         |  ≤ 1 秒（Runtime 已运行） |
+| 冷启动到 Runtime pipe ready          |                    ≤ 3 秒 |
+| 打开普通会话首屏                     |                   ≤ 300ms |
+| 打开 1000+ 消息会话首屏              |                   ≤ 500ms |
+| 切换两个已加载会话                   |                   ≤ 150ms |
+| 单个流式 delta UI 处理               |                     ≤ 4ms |
+| 50 条首屏 DOM 消息                   |           仅一页/虚拟窗口 |
+| 1000 delta durable assistant message |        1 条 final message |
+| Renderer 内存                        | 不随全库 event 数线性增长 |
 
 ## 11. 推荐下一步
 
-从 **S0 → S1** 开始，不先做 UI 视觉调整：
+S0–S4 已完成，下一轮进入 **S5：上下文快照与圆环真值**：
 
-1. 先建立性能保护测试；
-2. 再启用 message store 和 `conversation.listMessages`；
-3. 完成后单独构建、重启，让用户验收“打开会话是否立即有内容、滚动加载是否自然”；
-4. 验收通过再进入 transient stream。
-
-这是风险最低、收益最大、且最容易逐片验收的顺序。
+1. 建立 `ContextSnapshotBuilder` 与 provider request 快照测试；
+2. 让 Context Packet 的 included/audit-only、圆环和 70% compact 共用同一 token 估算；
+3. 接入“查看本次上下文构成”，只展示来源与 token，不暴露隐藏 reasoning；
+4. 单独构建、重启并验收 UI breakdown 与实际 provider request 一致。

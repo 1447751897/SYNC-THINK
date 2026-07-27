@@ -1,3 +1,16 @@
+## Resume checkpoint (2026-07-27 — S5 cross-machine handoff)
+
+- Branch: `feature/newmax-shell-rewrite`; pull the latest remote commit before continuing.
+- S3 cursor replay/checkpoint tail recovery: complete.
+- S4 run-local process projection: complete.
+- S5 Runtime context status, six-section breakdown, 70% compact truth, ContextRing and browser-safe Protocol parser: implemented and all automated gates green.
+- The ordinary model/no-bound-Agent crash is fixed by sharing `buildRunAgentInstructions`.
+- **Blocking next task:** cache-miss `getOrBuildConversationContextSnapshot` still assembles simplified system/project/tools context instead of sharing the full real Provider request construction. Fix this with TDD before declaring S5 complete.
+- Keep `ContextSnapshotBuilder` strict: do not weaken the “included source exists in Provider payload” invariant and do not rely on a `'You are'` sentinel.
+- Electron was rebuilt and launched, but final ContextRing visual QA was interrupted by user Esc and remains pending.
+- Current automated baseline: Runtime 52 files / 334 tests; Desktop 78 files / 579 tests; root test/typecheck 20/20 tasks; root build 11/11 tasks; `git diff --check` passed.
+- Windows Runtime tests use `$env:TEMP='D:\tmp\sync-think-s4'; $env:TMP=$env:TEMP`.
+
 ## Resume checkpoint (2026-07-12)
 
 - M1 Providers panel + secure store: done.

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+﻿import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -241,6 +241,7 @@ async function openLegacyConflictStore() {
       '0026_provider_source_config',
       '0027_skill_archive',
       '0028_message_pagination',
+      '0029_event_global_cursor',
     ]);
     await runMigrations(dbPath);
   } finally {

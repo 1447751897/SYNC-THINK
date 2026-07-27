@@ -42,9 +42,7 @@ class MemoryMessageStore {
   }
 }
 
-function event(
-  partial: Partial<Event> & Pick<Event, 'sequence' | 'type' | 'payload'>,
-): Event {
+function event(partial: Partial<Event> & Pick<Event, 'sequence' | 'type' | 'payload'>): Event {
   return {
     id: `event-${partial.sequence}` as Event['id'],
     workspaceId: 'ws-1' as Event['workspaceId'],
@@ -160,6 +158,52 @@ describe('message-store-backfill', () => {
           storageRef: 'a.png',
         },
       },
+    ]);
+  });
+
+  it('continues within a duplicate sequence using the event id cursor', () => {
+    const store = new MemoryMessageStore();
+    const events: Event[] = [
+      event({
+        id: 'event-a' as Event['id'],
+        sequence: 7,
+        type: 'message.appended',
+        messageId: 'msg-a' as MessageId,
+        payload: {
+          threadId: 'thread-1',
+          role: 'user',
+          text: 'first',
+          messageId: 'msg-a',
+        },
+      }),
+      event({
+        id: 'event-b' as Event['id'],
+        sequence: 7,
+        type: 'message.appended',
+        messageId: 'msg-b' as MessageId,
+        payload: {
+          threadId: 'thread-1',
+          role: 'user',
+          text: 'second',
+          messageId: 'msg-b',
+        },
+      }),
+    ];
+
+    const result = backfillMessagesFromEvents(store, events, {
+      afterSequence: 7,
+      afterEventId: 'event-a',
+    });
+
+    expect(result).toMatchObject({
+      fromSequence: 7,
+      toSequence: 7,
+      processedEvents: 1,
+      writtenMessages: 1,
+    });
+    expect(store.getMessage('msg-a' as MessageId)).toBeUndefined();
+    expect(store.getMessage('msg-b' as MessageId)?.blocks).toEqual([
+      { type: 'text', text: 'second' },
     ]);
   });
 

@@ -2,13 +2,11 @@ import type {
   CommandType,
   ConversationTransientFrame,
   ConversationTransientSnapshot,
+  EventReplayCursor,
 } from '@sync-think/protocol';
-import type { Event } from '@sync-think/shared';
+import type { Event, EventCategory } from '@sync-think/shared';
 import { mergeEventHistory } from '../event-history.js';
-import type {
-  RuntimeConnectResult,
-  RuntimeHealth,
-} from '../runtime-bridge-contract.js';
+import type { RuntimeConnectResult, RuntimeHealth } from '../runtime-bridge-contract.js';
 
 const REDACTED = '[REDACTED]';
 const SAFE_SECRET_METADATA_KEYS = new Set([
@@ -71,9 +69,7 @@ function scrubRendererValue(value: unknown, seen: WeakSet<object>): unknown {
   seen.add(value);
   const sanitized: Record<string, unknown> = {};
   for (const [key, nestedValue] of Object.entries(value)) {
-    sanitized[key] = isSensitiveKey(key)
-      ? REDACTED
-      : scrubRendererValue(nestedValue, seen);
+    sanitized[key] = isSensitiveKey(key) ? REDACTED : scrubRendererValue(nestedValue, seen);
   }
   seen.delete(value);
   return sanitized;
@@ -89,8 +85,10 @@ export function sanitizeRuntimeEventForRenderer(event: Event): Event {
 export interface RuntimeSessionClient {
   connect(): Promise<void>;
   subscribeEvents(
-    afterCursor: number,
+    afterCursor: EventReplayCursor,
     listener: (event: Event) => void,
+    categories?: readonly EventCategory[],
+    cursorListener?: (cursor: EventReplayCursor) => void,
   ): Promise<() => Promise<void>>;
   subscribeConversationTransientStream?(
     threadId: string,
@@ -104,10 +102,23 @@ export interface RuntimeSessionClient {
   request<T = unknown>(type: CommandType, payload: unknown): Promise<T>;
 }
 
+export interface RuntimeActivityCursorStore {
+  load(): EventReplayCursor;
+  save(cursor: EventReplayCursor): void;
+}
+
+const EMPTY_ACTIVITY_CURSOR_STORE: RuntimeActivityCursorStore = {
+  load: () => ({ sequence: 0, eventId: '' }),
+  save: () => undefined,
+};
+
+const ACTIVITY_EVENT_CATEGORIES = ['message', 'run'] as const satisfies readonly EventCategory[];
+const MAX_ACTIVITY_EVENT_HISTORY = 2_048;
+
 export class RuntimeSession {
   private eventHistory: Event[] = [];
   /** O(1) dedupe for event sequences — avoids O(n) scans on every replay event. */
-  private seenSequences = new Set<number>();
+  private seenEventIds = new Set<string>();
   private runtimeSubscription: Promise<() => Promise<void>> | null = null;
   private readonly transientSubscriptions = new Map<
     string,
@@ -117,6 +128,7 @@ export class RuntimeSession {
   constructor(
     private readonly client: RuntimeSessionClient,
     private readonly forwardEvent: (event: Event) => void,
+    private readonly activityCursorStore: RuntimeActivityCursorStore = EMPTY_ACTIVITY_CURSOR_STORE,
   ) {}
 
   /**
@@ -145,7 +157,19 @@ export class RuntimeSession {
   private async ensureSubscription(): Promise<void> {
     let subscription = this.runtimeSubscription;
     if (!subscription) {
-      subscription = this.client.subscribeEvents(0, (event) => this.recordEvent(event));
+      const persistedCursor = this.activityCursorStore.load();
+      const afterCursor =
+        Number.isSafeInteger(persistedCursor.sequence) &&
+        persistedCursor.sequence >= 0 &&
+        typeof persistedCursor.eventId === 'string'
+          ? persistedCursor
+          : { sequence: 0, eventId: '' };
+      subscription = this.client.subscribeEvents(
+        afterCursor,
+        (event) => this.recordEvent(event),
+        ACTIVITY_EVENT_CATEGORIES,
+        (cursor) => this.saveActivityCursor(cursor),
+      );
       this.runtimeSubscription = subscription;
     }
     try {
@@ -207,8 +231,9 @@ export class RuntimeSession {
   }
 
   private recordEvent(event: Event): void {
-    if (this.seenSequences.has(event.sequence)) return;
-    this.seenSequences.add(event.sequence);
+    const eventId = String(event.id);
+    if (this.seenEventIds.has(eventId)) return;
+    this.seenEventIds.add(eventId);
     const sanitizedEvent = sanitizeRuntimeEventForRenderer(event);
     // Sequential append is the common path during replay; avoid full re-merge.
     const last = this.eventHistory[this.eventHistory.length - 1];
@@ -217,10 +242,32 @@ export class RuntimeSession {
     } else {
       this.eventHistory = mergeEventHistory(this.eventHistory, [sanitizedEvent]);
     }
+    if (this.eventHistory.length > MAX_ACTIVITY_EVENT_HISTORY) {
+      const removed = this.eventHistory.splice(
+        0,
+        this.eventHistory.length - MAX_ACTIVITY_EVENT_HISTORY,
+      );
+      for (const staleEvent of removed) this.seenEventIds.delete(String(staleEvent.id));
+    }
     try {
       this.forwardEvent(sanitizedEvent);
     } catch {
       console.warn('[desktop] runtime event forwarding failed');
+    }
+  }
+
+  private saveActivityCursor(cursor: EventReplayCursor): void {
+    if (
+      !Number.isSafeInteger(cursor.sequence) ||
+      cursor.sequence < 0 ||
+      typeof cursor.eventId !== 'string'
+    ) {
+      return;
+    }
+    try {
+      this.activityCursorStore.save(cursor);
+    } catch {
+      console.warn('[desktop] runtime activity cursor persistence failed');
     }
   }
 }

@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./conversation-context-status": {
+      "types": "./dist/conversation-context-status.d.ts",
+      "default": "./dist/conversation-context-status.js"
     }
   },
   "scripts": {

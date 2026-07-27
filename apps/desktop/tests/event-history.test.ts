@@ -154,15 +154,22 @@ describe('desktop runtime event history', () => {
     expect(liveBeforeSnapshot.map((event) => event.sequence)).toEqual([1, 2, 3]);
   });
 
-  it('sorts by sequence and removes repeated sequences', () => {
+  it('sorts by sequence and id, removes repeated ids, and preserves duplicate sequences', () => {
     const repeated = eventAt(2);
+    const legacyDuplicate = { ...eventAt(2), id: 'event-2b' as Event['id'] };
 
     const history = mergeEventHistory(
       [eventAt(3), repeated],
-      [eventAt(1), repeated, eventAt(4), eventAt(3)],
+      [eventAt(1), legacyDuplicate, repeated, eventAt(4), eventAt(3)],
     );
 
-    expect(history.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
+    expect(history.map((event) => [event.sequence, event.id])).toEqual([
+      [1, 'event-1'],
+      [2, 'event-2'],
+      [2, 'event-2b'],
+      [3, 'event-3'],
+      [4, 'event-4'],
+    ]);
   });
 
   it('rebuilds user messages and the latest demo assistant without repeated output', () => {

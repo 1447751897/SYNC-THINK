@@ -1431,3 +1431,57 @@ Workspace IA、Conversation 可观测性、Providers SecureStore、真实 OpenAI
 - **后续边界**
   - 本轮没有删除任何高级执行能力，也没有改变模型路由或凭据解析。
   - 视觉概念图服务两次返回上游 502；最终以 Multica 实屏、项目 tokens 和两档 Electron 实窗为设计/验证真源。
+
+---
+
+## 交接检查点（2026-07-27）：S3/S4 完成，S5 跨机器收口
+
+### 分支状态
+
+`feature/newmax-shell-rewrite` 已与 `origin/feature/newmax-shell-rewrite` 对齐；本轮工作基于提交 `0741c94`，提交前远端没有新增提交。
+
+### 已完成
+
+- S3：完成 Desktop activity cursor 持久化、eventHistory 有界缓存、Runtime checkpoint tail recovery、SQLite cursor page replay；冷启动不再全库回放。
+- S4：完成 Storage/Protocol/Runtime 的 run-local process projection、`conversation.getRunProcess`、transient process frame/snapshot，以及 Desktop `Map<runId, RunProcessView>` 隔离缓存。
+- S5 主体：完成 `ContextSnapshotBuilder`、`conversation.getContextStatus`、六类 context breakdown、Runtime 70% compact 真值、Renderer 删除本地 chars/usage 推导、ContextRing tooltip，以及历史图片安全进入 Provider context。
+- Protocol 增加 browser-safe `@sync-think/protocol/conversation-context-status` 导出，避免 Renderer bundle 引入 `node:os` / `node:crypto`。
+- 修复普通 model 会话没有绑定 Agent 时，`conversation.getContextStatus` 触发 `storage.write_failed` 的问题；真实 Provider 调用与状态路径现已共享 `buildRunAgentInstructions` 的默认 Agent 指令语义。
+
+### 自动化基线
+
+```text
+Runtime：52 files / 334 tests passed
+Desktop：78 files / 579 tests passed
+Root test：20/20 tasks successful
+Root typecheck：20/20 tasks successful
+Root build：11/11 tasks successful
+git diff --check：passed（仅既有 CRLF/LF warning）
+```
+
+Desktop/Runtime 已完成构建和启动验证，Runtime pipe ready 且 stderr 无新增异常。Computer Use 实窗检查被用户按 Esc 中断，因此 ContextRing 最终视觉验收仍待下一台机器完成。
+
+### 已知阻塞：S5 尚未最终关闭
+
+`getOrBuildConversationContextSnapshot` 的 cache-miss 状态重建仍使用简化请求；其 system instructions、workspace project context、tools、workspace 默认 Agent 指令与真实 `openProviderStream` 调用尚未完整同源。普通 model 路径的崩溃已修复，但这项一致性风险仍是 S5 的最后阻塞。
+
+下一轮应以 TDD 抽取完整、纯粹的 Provider context/request 构造函数，供 cache-miss 状态重建和真实 Provider 调用共同使用，至少统一：
+
+1. `workspaceRoot` / `executionMode` / `networkEnabled` / `toolsEnabled`；
+2. product boundary 与 network system prompts；
+3. Agent/Team/Persona/Skill 指令；
+4. project context；
+5. workspace / network / Agent Library / MCP tools；
+6. included source 与实际 Provider payload 的严格映射。
+
+不要放松 `ContextSnapshotBuilder` 的 included-source 校验，也不要依赖 `'You are'` 哨兵字符串。没有真实来源时，应改为 `audit-only` 或不创建 included source。
+
+### 下一台机器继续步骤
+
+1. 拉取 `feature/newmax-shell-rewrite` 最新提交。
+2. Windows Runtime 测试前设置：
+   `$env:TEMP='D:\tmp\sync-think-s4'; $env:TMP=$env:TEMP`。
+3. 先补 cache-miss/Runtime restart 回归测试，证明普通 model 与绑定 Agent 的 status snapshot 和真实 Provider request 在 system/agent/project/messages/tools 及 token 口径上一致。
+4. 完成同源重构后，复跑 Runtime 定向测试、全仓 test/typecheck/build 和 `git diff --check`。
+5. 重启 Electron，实窗验收 ContextRing：空会话显示 0/0、hover breakdown 正确、prompt/reasoning 分离、compact 后使用 Runtime 真值。
+6. 验收通过后再把 S5 标记为完成并更新 changelog，然后进入 S6。

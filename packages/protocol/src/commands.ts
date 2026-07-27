@@ -108,6 +108,8 @@ export type CommandType =
   | 'team.setRunStatus'
   | 'conversation.list'
   | 'conversation.listMessages'
+  | 'conversation.getContextStatus'
+  | 'conversation.getRunProcess'
   | 'conversation.create'
   | 'conversation.rename'
   | 'conversation.setPinned'
@@ -415,6 +417,8 @@ export interface AttachMessageImagesResponse {
 export interface SubscribeEventsPayload {
   /** Only send events with workspace-scoped sequence greater than cursor. */
   afterCursor: number;
+  /** Optional tie-breaker for legacy rows that share afterCursor. */
+  afterEventId?: string;
   /** Filters by category / source; empty = all. */
   categories?: import('@sync-think/shared').EventCategory[];
 }
@@ -423,6 +427,8 @@ export interface ContinueEventReplayPayload {
   streamId: string;
   /** Must equal the last page cursor committed for this stream. */
   afterCursor: number;
+  /** Must equal the last page event-id cursor when one was returned. */
+  afterEventId?: string;
 }
 
 export interface UnsubscribeEventsPayload {
@@ -443,7 +449,7 @@ export interface UnsubscribeConversationTransientStreamPayload {
   streamId: string;
 }
 
-export type ConversationTransientFrameKind = 'text' | 'reasoning' | 'terminal';
+export type ConversationTransientFrameKind = 'text' | 'reasoning' | 'process' | 'terminal';
 export type ConversationTransientTerminalState = 'completed' | 'failed' | 'cancelled';
 
 /** Short-lived output frame. It is never written to the durable event store. */
@@ -456,6 +462,8 @@ export interface ConversationTransientFrame {
   textDelta?: string;
   terminalState?: ConversationTransientTerminalState;
   errorMessage?: string;
+  /** Already-projected run-local process snapshot; never raw durable events. */
+  process?: RunProcessView;
   occurredAt: string;
 }
 
@@ -466,6 +474,7 @@ export interface ConversationTransientSnapshot {
   streamSequence: number;
   text: string;
   reasoningText?: string;
+  process?: RunProcessView;
   updatedAt: string;
 }
 
@@ -2595,6 +2604,109 @@ export interface ConversationListMessagesResponse {
   nextCursor?: number;
   hasMore: boolean;
 }
+export type ContextStatusSectionType =
+  | 'system'
+  | 'agent'
+  | 'project'
+  | 'summary'
+  | 'messages'
+  | 'tools';
+
+/** Audit-only context composition data. It must never contain prompt text or reasoning. */
+export interface ContextStatusSection {
+  type: ContextStatusSectionType;
+  tokens: number;
+}
+
+export interface ConversationGetContextStatusPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+}
+
+export interface ConversationGetContextStatusResponse {
+  modelId: string;
+  contextWindow: number;
+  estimatedUsedTokens: number;
+  usageRatio: number;
+  compactThreshold: 0.7;
+  compactedAt?: string;
+  sections: ContextStatusSection[];
+}
+
+export type ProcessStepStatus = 'running' | 'done' | 'error';
+export type ProcessToolKind =
+  | 'read'
+  | 'list'
+  | 'write'
+  | 'bash'
+  | 'git'
+  | 'browser'
+  | 'search'
+  | 'mcp'
+  | 'other';
+
+export interface ExecutionProcessStep {
+  id: string;
+  label: string;
+  verb: string;
+  zh: string;
+  toolName: string;
+  kind: ProcessToolKind;
+  status: ProcessStepStatus;
+  path?: string;
+  command?: string;
+  url?: string;
+  /** Bounded summary only. Full output is loaded separately when an artifactRef exists. */
+  preview?: string;
+  artifactRef?: string;
+  exitCode?: number;
+  error?: string;
+  count?: number;
+  occurredAt?: string;
+}
+
+export interface FileChangeItem {
+  path: string;
+  action: 'created' | 'edited' | 'deleted';
+  toolCallId?: string;
+  preview?: string;
+  artifactRef?: string;
+}
+
+export interface TaskPlanItem {
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+export interface TaskPlanView {
+  items: TaskPlanItem[];
+  completed: number;
+  total: number;
+}
+
+export interface RunProcessView {
+  runId: RunId;
+  steps: ExecutionProcessStep[];
+  fileChanges: FileChangeItem[];
+  taskPlan?: TaskPlanView;
+  running: boolean;
+  doneCount: number;
+  errorCount: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  durationMs?: number;
+  providerModelId?: string;
+  modelId?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ConversationGetRunProcessPayload {
+  runId: RunId;
+}
+
+export interface ConversationGetRunProcessResponse {
+  process: RunProcessView;
+}
 export interface CreateConversationPayload {
   track: import('@sync-think/shared').ConversationTrack;
   /** modelId / agentId / teamId matching the track. */
@@ -2673,13 +2785,9 @@ export interface ConversationCompactPayload {
   conversationId: import('@sync-think/shared').ConversationId;
   /** manual = user /compact; auto = threshold-triggered. */
   mode?: 'manual' | 'auto';
-  /** Optional model context window used for occupancy estimates. */
+  /** Legacy renderer hint retained for compatibility; Runtime snapshot is authoritative. */
   contextWindow?: number;
-  /**
-   * Real occupancy from the client ring (usually latest provider.usage tokensIn).
-   * When present with contextWindow, onlyIfNeeded uses usedTokens / contextWindow
-   * instead of the local character estimate.
-   */
+  /** Legacy renderer hint retained for compatibility; Runtime snapshot is authoritative. */
   usedTokens?: number;
   /** Keep this many newest messages verbatim after the summary. */
   keepRecent?: number;

@@ -122,7 +122,17 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0028_message_pagination',
     sql: messagePaginationDdlSql(),
   },
+  {
+    name: '0029_event_global_cursor',
+    sql: eventGlobalCursorDdlSql(),
+  },
 ];
+
+function eventGlobalCursorDdlSql(): string {
+  return `
+CREATE INDEX event_global_cursor_idx ON event(sequence, id);
+`;
+}
 
 function messagePaginationDdlSql(): string {
   return `

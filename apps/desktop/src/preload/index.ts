@@ -162,6 +162,10 @@ import type {
   ListConversationsResponse,
   ConversationListMessagesPayload,
   ConversationListMessagesResponse,
+  ConversationGetContextStatusPayload,
+  ConversationGetContextStatusResponse,
+  ConversationGetRunProcessPayload,
+  ConversationGetRunProcessResponse,
   ConversationTransientFrame,
   ConversationTransientSnapshot,
   CreateConversationPayload,
@@ -411,6 +415,16 @@ const api = {
         'runtime:conversation-list-messages',
         payload,
       ) as Promise<ConversationListMessagesResponse>,
+    getConversationContextStatus: (payload: ConversationGetContextStatusPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-get-context-status',
+        payload,
+      ) as Promise<ConversationGetContextStatusResponse>,
+    getConversationRunProcess: (payload: ConversationGetRunProcessPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-get-run-process',
+        payload,
+      ) as Promise<ConversationGetRunProcessResponse>,
     subscribeConversationTransientStream: (
       payload: { threadId: string; afterStreamSequence?: number },
       listener: (event:

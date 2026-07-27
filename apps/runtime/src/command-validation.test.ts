@@ -4,6 +4,7 @@ import {
   parseCreateTaskPayload,
   parseCreateWorkspacePayload,
   parseConversationListMessagesPayload,
+  parseConversationGetRunProcessPayload,
   parseSubscribeConversationTransientStreamPayload,
   parseUnsubscribeConversationTransientStreamPayload,
 } from './command-validation.js';
@@ -82,6 +83,14 @@ describe('conversation list messages payload validation', () => {
     expect(parseConversationListMessagesPayload({ conversationId: 'conv-1', limit: 101 })).toBeUndefined();
     expect(parseConversationListMessagesPayload({ conversationId: 'conv-1', beforeSequence: -1 })).toBeUndefined();
     expect(parseConversationListMessagesPayload({ conversationId: 'conv-1', extra: true })).toBeUndefined();
+  });
+});
+
+describe('conversation get run process payload validation', () => {
+  it('accepts one bounded run id and rejects unknown fields', () => {
+    expect(parseConversationGetRunProcessPayload({ runId: 'run-1' })).toEqual({ runId: 'run-1' });
+    expect(parseConversationGetRunProcessPayload({ runId: '' })).toBeUndefined();
+    expect(parseConversationGetRunProcessPayload({ runId: 'run-1', extra: true })).toBeUndefined();
   });
 });
 

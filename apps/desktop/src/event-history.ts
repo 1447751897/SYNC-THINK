@@ -1,17 +1,12 @@
 import type { Event } from '@sync-think/shared';
 
-export function mergeEventHistory(
-  current: readonly Event[],
-  incoming: readonly Event[],
-): Event[] {
-  const eventsBySequence = new Map<number, Event>();
+export function mergeEventHistory(current: readonly Event[], incoming: readonly Event[]): Event[] {
+  const eventsById = new Map<string, Event>();
   for (const event of [...current, ...incoming]) {
-    const existing = eventsBySequence.get(event.sequence);
-    if (!existing || String(event.id).localeCompare(String(existing.id)) < 0) {
-      eventsBySequence.set(event.sequence, event);
-    }
+    eventsById.set(String(event.id), event);
   }
-  return [...eventsBySequence.values()].sort(
-    (left, right) => left.sequence - right.sequence,
-  );
+  return [...eventsById.values()].sort((left, right) => {
+    const sequenceOrder = left.sequence - right.sequence;
+    return sequenceOrder === 0 ? String(left.id).localeCompare(String(right.id)) : sequenceOrder;
+  });
 }

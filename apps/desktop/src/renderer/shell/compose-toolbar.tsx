@@ -15,18 +15,12 @@ import {
   Users,
   Zap,
 } from 'lucide-react';
+import type { ContextStatusSection, ContextStatusSectionType } from '@sync-think/protocol';
 import type { ModelOption } from './NewConversationDialog.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
 /** Fixed NewMax-style effort ladder (full set always shown). */
-export type ReasoningEffort =
-  | 'auto'
-  | 'off'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max';
+export type ReasoningEffort = 'auto' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const PERMISSION_OPTIONS: Array<{
   value: PermissionMode;
@@ -79,9 +73,7 @@ export const REASONING_LABELS: Record<ReasoningEffort, string> = {
 };
 
 /** Full fixed ladder — always show every rung (no per-model filtering). */
-export function reasoningLevelsForModel(
-  _modelId?: string,
-): readonly ReasoningEffort[] {
+export function reasoningLevelsForModel(_modelId?: string): readonly ReasoningEffort[] {
   return REASONING_OPTIONS.map((o) => o.value);
 }
 
@@ -335,9 +327,13 @@ export function IdentityPickerMenu(props: {
           </span>
           <div className="shell-menu__item-text">
             <div className="shell-menu__item-title">直接跟模型聊</div>
-            <div className="shell-menu__item-desc">不经过智能体人设，右侧模型选择器决定用哪个模型</div>
+            <div className="shell-menu__item-desc">
+              不经过智能体人设，右侧模型选择器决定用哪个模型
+            </div>
           </div>
-          {props.currentTrack === 'model' ? <Check size={14} className="shell-menu__check" /> : null}
+          {props.currentTrack === 'model' ? (
+            <Check size={14} className="shell-menu__check" />
+          ) : null}
         </button>
         {sections.map((section) =>
           section.items.length === 0 ? null : (
@@ -552,7 +548,9 @@ export function ModelPickerMenu(props: {
                                 >
                                   <Sparkles size={13} className="shell-menu__item-icon" />
                                   <div className="shell-menu__item-text" dir="ltr">
-                                    <div className="shell-menu__item-title">{model.displayName}</div>
+                                    <div className="shell-menu__item-title">
+                                      {model.displayName}
+                                    </div>
                                   </div>
                                   {active ? (
                                     <Check size={14} className="shell-menu__check" />
@@ -575,6 +573,15 @@ export function ModelPickerMenu(props: {
   );
 }
 
+const CONTEXT_SECTION_LABELS: Record<ContextStatusSectionType, string> = {
+  system: '系统指令',
+  agent: '智能体 / 小队',
+  project: '项目上下文',
+  summary: '压缩摘要',
+  messages: '消息',
+  tools: '工具',
+};
+
 /**
  * Context occupancy ring. Hover shows a NewMax-style "上下文窗口" card.
  * Session cost/duration hover lives on the message footer metrics instead.
@@ -584,6 +591,10 @@ export function ContextRing(props: {
   used: number;
   /** Context window limit for the ring. */
   limit: number;
+  /** Runtime-computed ratio; may exceed 1 when the request is over the window. */
+  usageRatio?: number;
+  /** Audit-only Runtime breakdown. It contains category names and token counts only. */
+  sections?: ContextStatusSection[];
   /** 本会话累计时长（ms），tooltip 里展示。 */
   sessionDurationMs?: number;
   /** 本会话累计消耗 tokens（输入+输出跨全部轮次），tooltip 里展示。 */
@@ -595,11 +606,18 @@ export function ContextRing(props: {
   const btnRef = useRef<HTMLButtonElement>(null);
   const closeTimer = useRef<number | null>(null);
 
-  const ratio = props.limit > 0 ? Math.min(1, Math.max(0, props.used / props.limit)) : 0;
+  const rawRatio =
+    typeof props.usageRatio === 'number' && Number.isFinite(props.usageRatio)
+      ? Math.max(0, props.usageRatio)
+      : props.limit > 0
+        ? Math.max(0, props.used / props.limit)
+        : 0;
+  const visualRatio = Math.min(1, rawRatio);
   const r = 8;
   const c = 2 * Math.PI * r;
-  const dash = `${(ratio * c).toFixed(2)} ${c.toFixed(2)}`;
-  const pct = Math.round(ratio * 100);
+  const dash = `${(visualRatio * c).toFixed(2)} ${c.toFixed(2)}`;
+  const pct = Math.round(rawRatio * 100);
+  const sections = props.sections ?? [];
   const usedLabel = formatTokenCount(props.used);
   const limitLabel = formatTokenCount(props.limit);
   const remaining = Math.max(0, props.limit - props.used);
@@ -676,7 +694,7 @@ export function ContextRing(props: {
             cy="11"
             r={r}
             fill="none"
-            stroke={ratio > 0.9 ? 'var(--color-error)' : 'var(--color-accent)'}
+            stroke={rawRatio > 0.9 ? 'var(--color-error)' : 'var(--color-accent)'}
             strokeWidth="2.2"
             strokeDasharray={dash}
             strokeLinecap="round"
@@ -713,6 +731,24 @@ export function ContextRing(props: {
               <div className="shell-ctx-tooltip__hint">
                 占用 = 最近一次请求送入模型的内容量（含全部历史），随对话增长
               </div>
+              {sections.length > 0 ? (
+                <>
+                  <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
+                  <div className="shell-ctx-tooltip__title shell-ctx-tooltip__title--section">
+                    本次上下文构成
+                  </div>
+                  {sections.map((section) => (
+                    <div
+                      key={section.type}
+                      className="shell-ctx-tooltip__row"
+                      data-testid={`context-section-${section.type}`}
+                    >
+                      <span>{CONTEXT_SECTION_LABELS[section.type]}</span>
+                      <strong>{formatTokenCount(section.tokens)}</strong>
+                    </div>
+                  ))}
+                </>
+              ) : null}
               {sessionTokensLabel || sessionDurationLabel ? (
                 <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
               ) : null}
@@ -732,9 +768,8 @@ export function ContextRing(props: {
                 <div
                   className="shell-ctx-tooltip__bar-fill"
                   style={{
-                    width: `${pct}%`,
-                    background:
-                      ratio > 0.9 ? 'var(--color-error)' : 'var(--color-accent)',
+                    width: `${visualRatio * 100}%`,
+                    background: rawRatio > 0.9 ? 'var(--color-error)' : 'var(--color-accent)',
                   }}
                 />
               </div>
