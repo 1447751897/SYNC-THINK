@@ -10,10 +10,12 @@ import {
   ChevronLeft,
   Lock,
   MessageSquare,
+  Puzzle,
   Shield,
   Sparkles,
   Users,
   Zap,
+  X,
 } from 'lucide-react';
 import type { ContextStatusSection, ContextStatusSectionType } from '@sync-think/protocol';
 import type { ModelOption } from './NewConversationDialog.js';
@@ -156,6 +158,10 @@ function MenuShell(props: {
   satelliteEls?: Array<HTMLElement | null>;
   children: React.ReactNode;
 }) {
+  const open = props.open;
+  const onClose = props.onClose;
+  const anchorEl = props.anchorEl;
+  const satelliteEls = props.satelliteEls;
   const menuRef = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<AnchorRect | null>(null);
   const width = props.width ?? 280;
@@ -176,18 +182,18 @@ function MenuShell(props: {
   }, [props.open, props.anchorEl]);
 
   useEffect(() => {
-    if (!props.open) return;
+    if (!open) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (menuRef.current?.contains(t)) return;
-      if (props.anchorEl?.contains(t)) return;
+      if (anchorEl?.contains(t)) return;
       // Model flyout (and any other satellite portal) lives outside menuRef;
       // treating it as outside would close the picker before the click lands.
-      if (props.satelliteEls?.some((el) => el?.contains(t))) return;
-      props.onClose();
+      if (satelliteEls?.some((el) => el?.contains(t))) return;
+      onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') props.onClose();
+      if (e.key === 'Escape') onClose();
     };
     const timer = window.setTimeout(() => {
       document.addEventListener('mousedown', onDown);
@@ -198,7 +204,7 @@ function MenuShell(props: {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [props.open, props.onClose, props.anchorEl, props.satelliteEls]);
+  }, [anchorEl, onClose, open, satelliteEls]);
 
   if (!props.open || !anchor || typeof document === 'undefined') return null;
 
@@ -415,6 +421,98 @@ export function ReasoningMenu(props: {
           );
         })}
       </div>
+    </MenuShell>
+  );
+}
+
+export interface SkillPickerOption {
+  skillVersionId: string;
+  name: string;
+  version: string;
+  description: string;
+}
+
+export function SkillPickerMenu(props: {
+  open: boolean;
+  options: readonly SkillPickerOption[];
+  selectedSkillVersionIds: readonly string[];
+  loading?: boolean;
+  error?: string;
+  anchorEl: HTMLElement | null;
+  onClose(): void;
+  onToggle(skillVersionId: string): void;
+  onClear(): void;
+  onRetry?(): void;
+}) {
+  const selected = new Set(props.selectedSkillVersionIds);
+  return (
+    <MenuShell open={props.open} onClose={props.onClose} anchorEl={props.anchorEl} width={320}>
+      <div className="shell-menu__heading">
+        <span className="min-w-0 flex-1">本轮 Skill · {selected.size}/8</span>
+        {selected.size > 0 ? (
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-faint hover:bg-hover hover:text-text"
+            aria-label="清除本轮 Skill"
+            title="清除本轮 Skill"
+            onClick={props.onClear}
+          >
+            <X size={13} />
+          </button>
+        ) : null}
+      </div>
+      <div className="shell-menu__scroll">
+        {props.loading ? (
+          <div className="shell-menu__empty" role="status">正在加载 Skill…</div>
+        ) : props.error ? (
+          <div className="shell-menu__empty text-error" role="alert">
+            <div>{props.error}</div>
+            {props.onRetry ? (
+              <button
+                type="button"
+                className="mt-2 text-[12px] font-medium text-accent hover:underline"
+                data-testid="turn-skill-retry"
+                onClick={props.onRetry}
+              >
+                重试
+              </button>
+            ) : null}
+          </div>
+        ) : props.options.length === 0 ? (
+          <div className="shell-menu__empty">当前智能体未装备 Skill</div>
+        ) : (
+          props.options.map((skill) => {
+            const active = selected.has(skill.skillVersionId);
+            const disabled = !active && selected.size >= 8;
+            return (
+              <button
+                key={skill.skillVersionId}
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={active}
+                disabled={disabled}
+                data-testid={`turn-skill-option-${skill.skillVersionId}`}
+                className={`shell-menu__item ${active ? 'is-active' : ''} disabled:cursor-not-allowed disabled:opacity-40`}
+                onClick={() => props.onToggle(skill.skillVersionId)}
+              >
+                <span className="shell-menu__item-icon-wrap" data-active={active ? '1' : '0'}>
+                  <Puzzle size={15} />
+                </span>
+                <div className="shell-menu__item-text">
+                  <div className="shell-menu__item-title">
+                    {skill.name} <span className="font-normal text-text-faint">@{skill.version}</span>
+                  </div>
+                  {skill.description ? (
+                    <div className="shell-menu__item-desc">{skill.description}</div>
+                  ) : null}
+                </div>
+                {active ? <Check size={14} className="shell-menu__check" /> : null}
+              </button>
+            );
+          })
+        )}
+      </div>
+      <div className="shell-menu__footer">当前会话临时设置</div>
     </MenuShell>
   );
 }

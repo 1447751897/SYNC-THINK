@@ -298,7 +298,7 @@ export function AgentBindingPanel(inputProps: AgentBindingPanelProps) {
   const [mcpMaxBytesDraft, setMcpMaxBytesDraft] = useState('65536');
   const [mcpToolNameDraft, setMcpToolNameDraft] = useState('write_file');
 
-  const credentials = props.credentials ?? [];
+  const credentials = useMemo(() => props.credentials ?? [], [props.credentials]);
   const skills = props.skills ?? [];
   const mcpServers = props.mcpServers ?? [];
   const layout = props.layout ?? 'full';

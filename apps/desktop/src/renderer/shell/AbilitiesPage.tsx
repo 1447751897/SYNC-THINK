@@ -264,7 +264,7 @@ export function AbilitiesPage(props: {
         setImportError('SKILL.md 超过 512,000 字符限制。');
         return;
       }
-      setDraft(source.replace(/^﻿/, ''));
+      setDraft(source.replace(/^\uFEFF/, ''));
       setFileName(file.name);
     } catch {
       setImportError('无法读取所选文件，请确认它是 UTF-8 文本。');

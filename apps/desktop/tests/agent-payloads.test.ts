@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseGetAgentPayload,
+  parseListSkillsPayload,
   parseUpdateAgentBindingPayload,
 } from '../src/agent-payloads.js';
 
@@ -38,5 +39,19 @@ describe('agent payloads', () => {
       pinnedCredentialRefId: null,
     });
     expect(clear.pinnedCredentialRefId).toBeNull();
+  });
+
+  it('normalizes exact Skill metadata ids and enforces the Agent allowlist bound', () => {
+    expect(
+      parseListSkillsPayload({ skillVersionIds: [' skill-b ', 'skill-b', 'skill-a'] }),
+    ).toEqual({
+      limit: undefined,
+      skillVersionIds: ['skill-b', 'skill-a'],
+    });
+    expect(() =>
+      parseListSkillsPayload({
+        skillVersionIds: Array.from({ length: 65 }, (_, index) => `skill-${index}`),
+      }),
+    ).toThrow(/list-skills/);
   });
 });

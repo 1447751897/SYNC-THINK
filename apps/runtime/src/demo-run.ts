@@ -53,8 +53,12 @@ export interface DemoRunState {
   fallbackModelIds?: string[];
   /** Skill bodies injected into system prompt for this run. */
   skillPromptBlocks?: string[];
+  /** Per-turn request before Context budget/amendment filtering. */
+  requestedSkillVersionIds?: string[];
   /** Bound skill version / skill ids for this run (allowlist snapshot). */
   skillVersionIds?: string[];
+  /** Integrity metadata used when exact bodies are reloaded after recovery. */
+  skillSnapshots?: Array<{ skillVersionId: string; contentFingerprint: string }>;
   /** Bound MCP server ids for this run (allowlist snapshot). */
   mcpServerIds?: string[];
   /** Provider model context window used by snapshot estimation and auto compact. */
@@ -113,7 +117,9 @@ export interface CreateDemoRunInput {
   teamPromptBlock?: string;
   fallbackModelIds?: string[];
   skillPromptBlocks?: string[];
+  requestedSkillVersionIds?: string[];
   skillVersionIds?: string[];
+  skillSnapshots?: Array<{ skillVersionId: string; contentFingerprint: string }>;
   mcpServerIds?: string[];
   contextWindow?: number;
   projectContextPromptBlocks?: string[];
@@ -161,10 +167,16 @@ export function createDemoRun(
       extras.skillPromptBlocks && extras.skillPromptBlocks.length > 0
         ? [...extras.skillPromptBlocks]
         : undefined,
+    requestedSkillVersionIds:
+      extras.requestedSkillVersionIds === undefined
+        ? undefined
+        : [...extras.requestedSkillVersionIds],
     skillVersionIds:
-      extras.skillVersionIds && extras.skillVersionIds.length > 0
-        ? [...extras.skillVersionIds]
-        : undefined,
+      extras.skillVersionIds === undefined ? undefined : [...extras.skillVersionIds],
+    skillSnapshots:
+      extras.skillSnapshots === undefined
+        ? undefined
+        : extras.skillSnapshots.map((snapshot) => ({ ...snapshot })),
     mcpServerIds:
       extras.mcpServerIds && extras.mcpServerIds.length > 0
         ? [...extras.mcpServerIds]
@@ -354,13 +366,29 @@ export function projectAdapterEvent(
 
 export function serializeDemoRuns(runs: ReadonlyMap<string, DemoRunState>): DemoRunState[] {
   return Array.from(runs.values())
-    .map((run) => ({
-      ...run,
-      images: run.images
-        ?.filter((image) => Boolean(image.stagingPath))
-        .map(({ dataUrl: _dataUrl, ...image }) => image),
-    }))
+    .map(serializeDemoRun)
     .sort((left, right) => left.runId.localeCompare(right.runId));
+}
+
+/** Durable Run projection: exact references stay; expanded Skill/provider context does not. */
+export function serializeDemoRun(run: DemoRunState): DemoRunState {
+  const durable = { ...run };
+  delete durable.skillPromptBlocks;
+  delete durable.contextSnapshot;
+  const result = {
+    ...durable,
+    images: run.images
+      ?.filter((image) => Boolean(image.stagingPath))
+      .map(({ dataUrl: _dataUrl, ...image }) => image),
+    contextSources: run.contextSources?.map((source) => {
+      if (source.kind !== 'skill-definition') return { ...source };
+      const metadata = { ...source };
+      delete metadata.content;
+      return metadata;
+    }),
+  } as DemoRunState & { mcpToolDispatch?: unknown };
+  delete result.mcpToolDispatch;
+  return result;
 }
 
 export function parseDemoRuns(value: unknown): DemoRunState[] {
@@ -400,6 +428,64 @@ function parseDemoRun(value: unknown): DemoRunState {
     throw new Error('Runtime checkpoint contains an invalid demo run');
   }
   const modelId = run.modelId;
+  const stringArray = (input: unknown, max = 64): string[] | undefined => {
+    if (input === undefined) return undefined;
+    if (!Array.isArray(input) || input.length > max || input.some((item) => typeof item !== 'string')) {
+      throw new Error('Runtime checkpoint contains an invalid run string array');
+    }
+    return input.map((item) => String(item));
+  };
+  const skillSnapshots = (() => {
+    if (run.skillSnapshots === undefined) return undefined;
+    if (!Array.isArray(run.skillSnapshots) || run.skillSnapshots.length > 8) {
+      throw new Error('Runtime checkpoint contains invalid Skill snapshots');
+    }
+    return run.skillSnapshots.map((value) => {
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        typeof value.skillVersionId !== 'string' ||
+        typeof value.contentFingerprint !== 'string'
+      ) {
+        throw new Error('Runtime checkpoint contains an invalid Skill snapshot');
+      }
+      return {
+        skillVersionId: value.skillVersionId,
+        contentFingerprint: value.contentFingerprint,
+      };
+    });
+  })();
+  const contextSources = (() => {
+    if (run.contextSources === undefined) return undefined;
+    if (!Array.isArray(run.contextSources) || run.contextSources.length > 256) {
+      throw new Error('Runtime checkpoint contains invalid context sources');
+    }
+    return run.contextSources.map((value) => {
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        typeof value.id !== 'string' ||
+        typeof value.kind !== 'string' ||
+        typeof value.section !== 'string' ||
+        (value.disposition !== 'included' && value.disposition !== 'audit-only')
+      ) {
+        throw new Error('Runtime checkpoint contains an invalid context source');
+      }
+      return {
+        id: value.id,
+        kind: value.kind,
+        section: value.section,
+        disposition: value.disposition,
+        ...(value.kind !== 'skill-definition' && typeof value.content === 'string'
+          ? { content: value.content }
+          : {}),
+        ...(typeof value.toolName === 'string' ? { toolName: value.toolName } : {}),
+        ...(typeof value.tokens === 'number' && Number.isFinite(value.tokens)
+          ? { tokens: value.tokens }
+          : {}),
+      } as ContextSnapshotSource;
+    });
+  })();
   return {
     runId: run.runId as RunId,
     threadId: run.threadId,
@@ -413,6 +499,25 @@ function parseDemoRun(value: unknown): DemoRunState {
     agentVersionId:
       typeof run.agentVersionId === 'string' ? run.agentVersionId : 'agent-default-conversation',
     resolutionSource: (run.resolutionSource as ModelResolutionSource) ?? 'agentDefault',
+    globalAgentId: typeof run.globalAgentId === 'string' ? run.globalAgentId : undefined,
+    globalAgentName: typeof run.globalAgentName === 'string' ? run.globalAgentName : undefined,
+    persona: typeof run.persona === 'string' ? run.persona : undefined,
+    teamId: typeof run.teamId === 'string' ? run.teamId : undefined,
+    teamName: typeof run.teamName === 'string' ? run.teamName : undefined,
+    teamPromptBlock: typeof run.teamPromptBlock === 'string' ? run.teamPromptBlock : undefined,
+    fallbackModelIds: stringArray(run.fallbackModelIds),
+    requestedSkillVersionIds: stringArray(run.requestedSkillVersionIds, 8),
+    skillVersionIds: stringArray(run.skillVersionIds, 8),
+    skillSnapshots,
+    mcpServerIds: stringArray(run.mcpServerIds),
+    contextWindow:
+      typeof run.contextWindow === 'number' && Number.isFinite(run.contextWindow)
+        ? run.contextWindow
+        : undefined,
+    projectContextPromptBlocks: stringArray(run.projectContextPromptBlocks, 256),
+    contextSources,
+    compactSummary: typeof run.compactSummary === 'string' ? run.compactSummary : undefined,
+    compactedAt: typeof run.compactedAt === 'string' ? run.compactedAt : undefined,
     reasoningEffort: typeof run.reasoningEffort === 'string' ? run.reasoningEffort : undefined,
     networkEnabled: run.networkEnabled === true ? true : undefined,
     images: Array.isArray(run.images)

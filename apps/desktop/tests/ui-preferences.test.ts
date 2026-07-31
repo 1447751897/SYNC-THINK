@@ -3,6 +3,7 @@ import {
   readConversationGroups,
   readConversationLayoutPreference,
   readConversationTrackPreferences,
+  readWorkspacePaneLayouts,
   readPinnedConversationIds,
   readRecentConversationSectionPreference,
   readThemePreference,
@@ -10,12 +11,14 @@ import {
   writeConversationGroups,
   writeConversationLayoutPreference,
   writeConversationTrackPreferences,
+  writeWorkspacePaneLayouts,
   writePinnedConversationIds,
   writeRecentConversationSectionPreference,
   writeThemePreference,
   writeTraceCollapsedPreference,
   UI_PREF_KEYS,
 } from '../src/renderer/ui-preferences.js';
+import { createWorkspacePaneLayout, paneConversationIds } from '../src/renderer/shell/pane-layout.js';
 
 function memoryStorage(initial: Record<string, string> = {}): Storage {
   const map = new Map<string, string>(Object.entries(initial));
@@ -187,5 +190,26 @@ describe('ui-preferences (Locked IA §15.2 workspace prefs)', () => {
         },
       },
     });
+  });
+
+  it('persists versioned pane snapshots and drops malformed workspace entries', () => {
+    const s = memoryStorage();
+    const layout = createWorkspacePaneLayout('ws-a', ['c1', 'c2'], 'c2');
+    writeWorkspacePaneLayouts({ 'ws-a': layout }, s);
+
+    const restored = readWorkspacePaneLayouts(s);
+    expect(paneConversationIds(restored['ws-a']!)).toEqual(['c1', 'c2']);
+
+    s.setItem(
+      UI_PREF_KEYS.workspacePaneLayouts,
+      JSON.stringify({
+        version: 1,
+        workspaces: {
+          broken: { version: 1, panes: {}, root: { type: 'pane', id: 'n', paneId: 'gone' } },
+          'ws-a': layout,
+        },
+      }),
+    );
+    expect(Object.keys(readWorkspacePaneLayouts(s))).toEqual(['ws-a']);
   });
 });

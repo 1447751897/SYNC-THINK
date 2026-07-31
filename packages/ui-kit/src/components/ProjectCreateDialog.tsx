@@ -10,28 +10,30 @@ export interface ProjectCreateDialogProps {
 }
 
 export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
+  const open = props.open;
+  const onClose = props.onClose;
   const [name, setName] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!props.open) return;
+    if (!open) return;
     setName('');
     setValidationError(null);
     const frame = window.requestAnimationFrame(() => inputRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
-  }, [props.open]);
+  }, [open]);
 
   useEffect(() => {
-    if (!props.open) return;
+    if (!open) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
-      props.onClose();
+      onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [props.onClose, props.open]);
+  }, [onClose, open]);
 
   if (!props.open) return null;
 

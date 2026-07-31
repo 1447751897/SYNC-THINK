@@ -13,6 +13,7 @@ import {
   SqliteOrchestrationStore,
   SqliteProductionExecutionStore,
   SqliteProviderStore,
+  SqliteSkillStore,
   SqliteWorkspaceStore,
   SqliteUnitOfWork,
 } from '@sync-think/storage';
@@ -137,6 +138,7 @@ function productionExecutor(
     workspaceStore: new SqliteWorkspaceStore(fixture.connection.raw),
     orchestrationStore: fixture.orchestration,
     executionStore: new SqliteProductionExecutionStore(fixture.connection.raw),
+    skillStore: new SqliteSkillStore(fixture.connection.raw),
     secureStore: fixture.secureStore,
     adaptersByProtocol: { 'openai-chat': adapter },
   });
@@ -244,6 +246,236 @@ function expectLatestReservationUncompleted(
 }
 
 describe('production Step execution reservations', () => {
+  it('loads only each automated Step AgentVersion Skills and records the exact IDs', async () => {
+    const f = await seedProductionRun('sync-think-production-agent-skills-');
+    const skillStore = new SqliteSkillStore(f.connection.raw);
+    const skillA = skillStore.importVersion({
+      name: 'Agent A Skill',
+      description: 'Only Agent A uses this',
+      version: '1.0.0',
+      sourceMd: 'SKILL_A_SOURCE',
+      body: 'SKILL_A_BODY',
+      contentFingerprint: 'production-agent-skill-a',
+    });
+    const skillB = skillStore.importVersion({
+      name: 'Agent B Skill',
+      description: 'Only Agent B uses this',
+      version: '2.0.0',
+      sourceMd: 'SKILL_B_SOURCE',
+      body: 'SKILL_B_BODY',
+      contentFingerprint: 'production-agent-skill-b',
+    });
+    const agentStore = new SqliteAgentStore(f.connection.raw);
+    const agentA = agentStore.createAgent({
+      name: 'Team member A',
+      role: 'worker',
+      developerInstructions: 'Execute as member A.',
+      inputContract: 'step instructions',
+      outputContract: 'text artifact',
+      defaultModelId: f.agent.defaultModelId,
+      defaultCredentialGroupId: f.agent.defaultCredentialGroupId,
+      skillVersionIds: [skillA.id],
+    });
+    const agentB = agentStore.createAgent({
+      name: 'Team member B',
+      role: 'worker',
+      developerInstructions: 'Execute as member B.',
+      inputContract: 'step instructions',
+      outputContract: 'text artifact',
+      defaultModelId: f.agent.defaultModelId,
+      defaultCredentialGroupId: f.agent.defaultCredentialGroupId,
+      skillVersionIds: [skillB.id],
+    });
+    const plan = f.orchestration.createPlanDraft({
+      taskId: 'task-production' as never,
+      title: 'Member Skill isolation',
+      steps: [
+        {
+          id: 'member-step-a' as never,
+          title: 'Member A',
+          instructions: 'Run member A',
+          agentVersionId: agentA.id,
+          dependsOn: [],
+        },
+        {
+          id: 'member-step-b' as never,
+          title: 'Member B',
+          instructions: 'Run member B',
+          agentVersionId: agentB.id,
+          dependsOn: [],
+        },
+      ],
+      now: '2026-07-29T01:00:00.000Z',
+    });
+    const graph = f.orchestration.approvePlan({
+      planId: plan.planId,
+      revision: plan.revision,
+      now: '2026-07-29T01:00:01.000Z',
+    });
+    const requests: Parameters<ProviderAdapter['call']>[0][] = [];
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(request): AsyncIterable<AdapterEvent> {
+        requests.push(request);
+        yield { type: 'text-delta', text: `output-${requests.length}` };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const claimed = f.orchestration.claimReadySteps({
+      runId: graph.run.id,
+      stepIds: ['member-step-a' as never, 'member-step-b' as never],
+      ownerId: 'member-skill-owner',
+      leaseExpiresAt: '9999-12-31T23:59:59.999Z',
+    }).claimedSteps;
+
+    try {
+      const executor = productionExecutor(f, adapter);
+      const results = [];
+      for (const step of claimed) {
+        results.push({
+          step,
+          result: await executor.execute({
+            runId: graph.run.id,
+            step,
+            idempotencyKey: step.idempotencyKey!,
+            artifactVersions: [],
+            signal: new AbortController().signal,
+          }),
+        });
+      }
+
+      const requestA = requests.find((request) =>
+        (request.systemPrompt ?? '').includes('member A'),
+      )!;
+      const requestB = requests.find((request) =>
+        (request.systemPrompt ?? '').includes('member B'),
+      )!;
+      expect(requestA.systemPrompt ?? '').toContain('SKILL_A_BODY');
+      expect(requestA.systemPrompt ?? '').not.toContain('SKILL_B_BODY');
+      expect(requestA.systemPrompt ?? '').not.toContain('SKILL_A_SOURCE');
+      expect(requestB.systemPrompt ?? '').toContain('SKILL_B_BODY');
+      expect(requestB.systemPrompt ?? '').not.toContain('SKILL_A_BODY');
+      expect(requestB.systemPrompt ?? '').not.toContain('SKILL_B_SOURCE');
+
+      const resultA = results.find((entry) => entry.step.agentVersionId === agentA.id)!.result;
+      const resultB = results.find((entry) => entry.step.agentVersionId === agentB.id)!.result;
+      expect(resultA.outputVersions?.[0]?.metadata).toMatchObject({
+        agentVersionId: agentA.id,
+        skillVersionIds: [skillA.id],
+      });
+      expect(resultB.outputVersions?.[0]?.metadata).toMatchObject({
+        agentVersionId: agentB.id,
+        skillVersionIds: [skillB.id],
+      });
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
+  it('rejects missing, archived, or unapproved automated Step Skills before Provider calls', async () => {
+    const f = await seedProductionRun('sync-think-production-invalid-agent-skills-');
+    const skillStore = new SqliteSkillStore(f.connection.raw);
+    const archived = skillStore.importVersion({
+      name: 'Archived Skill',
+      description: '',
+      version: '1.0.0',
+      sourceMd: 'ARCHIVED_SOURCE',
+      body: 'ARCHIVED_BODY',
+      contentFingerprint: 'production-archived-skill',
+    });
+    expect(skillStore.deleteVersion(archived.id).deleted).toBe(true);
+    const unapproved = skillStore.importVersion({
+      name: 'Unapproved Skill',
+      description: '',
+      version: '1.0.0',
+      sourceMd: 'UNAPPROVED_SOURCE',
+      body: 'UNAPPROVED_BODY',
+      contentFingerprint: 'production-unapproved-skill',
+    });
+    new SqliteApprovalStore(f.connection.raw).enqueue({
+      workspaceId: 'workspace-production' as never,
+      kind: 'skill-permission',
+      action: 'skill.permission-upgrade:test',
+      metadata: { skillVersionId: unapproved.id },
+    });
+    const agentStore = new SqliteAgentStore(f.connection.raw);
+    const invalidAgents = [
+      { label: 'missing', skillVersionId: 'missing-skill-version' },
+      { label: 'archived', skillVersionId: archived.id },
+      { label: 'unapproved', skillVersionId: unapproved.id },
+    ].map(({ label, skillVersionId }) => ({
+      label,
+      agent: agentStore.createAgent({
+        name: `Invalid ${label} Agent`,
+        role: 'worker',
+        developerInstructions: `Execute ${label}.`,
+        inputContract: 'step instructions',
+        outputContract: 'text artifact',
+        defaultModelId: f.agent.defaultModelId,
+        defaultCredentialGroupId: f.agent.defaultCredentialGroupId,
+        skillVersionIds: [skillVersionId],
+      }),
+    }));
+    const plan = f.orchestration.createPlanDraft({
+      taskId: 'task-production' as never,
+      title: 'Invalid member Skills',
+      steps: invalidAgents.map(({ label, agent }) => ({
+        id: `invalid-${label}-step` as never,
+        title: `Invalid ${label}`,
+        instructions: `Run ${label}`,
+        agentVersionId: agent.id,
+        dependsOn: [],
+      })),
+      now: '2026-07-29T02:00:00.000Z',
+    });
+    const graph = f.orchestration.approvePlan({
+      planId: plan.planId,
+      revision: plan.revision,
+      now: '2026-07-29T02:00:01.000Z',
+    });
+    let providerCalls = 0;
+    const adapter: ProviderAdapter = {
+      protocol: 'openai-chat',
+      async discoverModels() {
+        return [];
+      },
+      async *call(): AsyncIterable<AdapterEvent> {
+        providerCalls += 1;
+        yield { type: 'text-delta', text: 'must not run' };
+        yield { type: 'finished', reason: 'stop' };
+      },
+    };
+    const claimed = f.orchestration.claimReadySteps({
+      runId: graph.run.id,
+      stepIds: invalidAgents.map(({ label }) => `invalid-${label}-step` as never),
+      ownerId: 'invalid-member-skill-owner',
+      leaseExpiresAt: '9999-12-31T23:59:59.999Z',
+    }).claimedSteps;
+
+    try {
+      const executor = productionExecutor(f, adapter);
+      for (const step of claimed) {
+        await expect(
+          executor.execute({
+            runId: graph.run.id,
+            step,
+            idempotencyKey: step.idempotencyKey!,
+            artifactVersions: [],
+            signal: new AbortController().signal,
+          }),
+        ).rejects.toThrow(/Skill version/);
+      }
+      expect(providerCalls).toBe(0);
+    } finally {
+      f.secureStore.shutdown();
+      f.connection.raw.close();
+    }
+  });
+
   it('executes approved workspace tools across Provider turns and persists an inspectable trace artifact', async () => {
     const f = await seedProductionRun('sync-think-production-tools-');
     f.connection.raw
@@ -643,6 +875,7 @@ describe('production Step execution reservations', () => {
     async (failurePoint) => {
       const f = await seedProductionRun(`sync-think-production-secret-${failurePoint}-`);
       async function* collectFailure(): AsyncIterable<AdapterEvent> {
+        yield* [];
         throw new Error(`collect failure echoed ${PRODUCTION_SECRET_CANARY}`);
       }
       const adapter: ProviderAdapter = {
@@ -1292,6 +1525,7 @@ describe('production Step execution reservations', () => {
         workspaceStore: new SqliteWorkspaceStore(f.connection.raw),
         orchestrationStore: f.orchestration,
         executionStore: new SqliteProductionExecutionStore(f.connection.raw),
+        skillStore: new SqliteSkillStore(f.connection.raw),
         secureStore: {
           async retrieveSecret() {
             throw new Error('live credential is unavailable during completed replay');
@@ -1439,6 +1673,7 @@ describe('production Step execution reservations', () => {
         return [];
       },
       async *call(): AsyncIterable<AdapterEvent> {
+        yield* [];
         throw Object.assign(new Error('primary model timeout'), {
           failureClass: 'timeout',
         });
@@ -1533,6 +1768,7 @@ describe('production Step execution reservations', () => {
         return [];
       },
       async *call(request): AsyncIterable<AdapterEvent> {
+        yield* [];
         entered.resolve();
         try {
           await new Promise<void>((resolve) => {

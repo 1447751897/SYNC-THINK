@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { ConversationTransientFrame } from '@sync-think/protocol';
-import { applyTransientConversationFrame } from './chat-transient-stream.js';
+import {
+  applyTransientConversationFrame,
+  applyTransientConversationFrames,
+} from './chat-transient-stream.js';
 
 function frame(
   streamSequence: number,
@@ -103,5 +106,27 @@ describe('chat transient stream reducer', () => {
     expect(otherRunTerminal.terminal).toBe(true);
     expect(terminal.draft).toBeNull();
     expect(terminal.terminal).toBe(true);
+  });
+
+  it('reduces a render-frame batch with one cursor advance and terminal flush', () => {
+    const frames = Array.from({ length: 100 }, (_, index) =>
+      frame(index + 1, index % 2 === 0 ? 'reasoning' : 'text', {
+        textDelta: index % 2 === 0 ? 'r' : 't',
+      }),
+    );
+    frames.push(frame(101, 'terminal', { terminalState: 'cancelled' }));
+
+    const result = applyTransientConversationFrames({
+      current: null,
+      frames,
+      threadId: 'thread-a',
+      afterStreamSequence: 0,
+    });
+
+    expect(result).toEqual({
+      draft: null,
+      lastStreamSequence: 101,
+      terminal: true,
+    });
   });
 });

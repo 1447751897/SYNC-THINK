@@ -9,6 +9,7 @@ import {
   PanelLeft,
   Pencil,
   Plus,
+  SquareTerminal,
   Trash2,
   X,
 } from 'lucide-react';
@@ -37,6 +38,8 @@ export interface TopBarProps {
   }): Promise<boolean>;
   onDeleteWorkspace(workspaceId: string): Promise<boolean>;
   onToggleSidebar(): void;
+  onOpenTerminal?(): void;
+  canOpenTerminal?: boolean;
   /** Optional pick-folder bridge used by the create/edit dialog. */
   onPickFolder(): Promise<{ canceled: boolean; path?: string }>;
   /**
@@ -276,6 +279,23 @@ export function TopBar(props: TopBarProps) {
             : null}
         </div>
       </div>
+
+      {props.onOpenTerminal ? (
+        <button
+          type="button"
+          data-testid="topbar-open-terminal"
+          disabled={props.canOpenTerminal === false}
+          className={clsx(
+            'st-icon-motion mb-0.5 ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-(--radius-row) text-text-secondary hover:bg-hover hover:text-text',
+            props.canOpenTerminal === false && 'cursor-not-allowed opacity-35',
+          )}
+          title={props.canOpenTerminal === false ? '先绑定项目文件夹' : '在当前窗格打开终端'}
+          aria-label="在当前窗格打开终端"
+          onClick={props.onOpenTerminal}
+        >
+          <SquareTerminal size={14} />
+        </button>
+      ) : null}
 
       {createOpen ? (
         <WorkspaceFormDialog

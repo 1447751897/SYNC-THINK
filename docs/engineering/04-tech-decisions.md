@@ -417,6 +417,204 @@ Phase 3 再引入端到端（Playwright 测 UI 或 Spectron 替代方案评估�
 
 ---
 
+### TD-015: NewMax P0 工作区、文件编辑与流式持久边界
+
+日期：2026-07-28
+状态：已采用
+用户确认：2026-07-28「可以，开始吧」
+
+背景：现有双聊天分屏、ChatView 内只读文件预览和逐 frame Renderer 更新无法组成可恢复工作台；同时不能牺牲 Sync-Think 已有的路径约束、transient replay 和 SQLite Message Store 边界。
+
+采用方案：
+
+```text
+Workspace UI：
+  - 版本化递归二叉 Pane 树（horizontal / vertical），Pane 内统一 conversation/file tabs
+  - localStorage 按 Workspace 保存布局快照，并从旧 openTabs/selected 偏好迁移
+  - ratio clamp 20%–80%；每 Pane 最多 100 Tabs；任意深度最多挂载 2 个 ChatView
+
+Streaming：
+  - transient text/reasoning frame 在 Renderer 以 requestAnimationFrame 合批
+  - delta 不写 durable event；成功只写最终 assistant message
+  - failed/cancelled 在终态前写入已生成的部分 assistant 正文
+
+File editing：
+  - Main 进程重新验证 root 内路径与 realpath；拒绝绝对路径、穿越和链接越界
+  - read 返回 mtimeMs + size；write 使用 expected metadata、显式 force 与同目录原子替换
+  - 父目录 fs.watch + 100ms 合并 + 5 秒轮询兜底；订阅随 Renderer 生命周期释放
+  - P0 使用 textarea；草稿只保留 Renderer 内存 Session，布局快照仅保存相对路径
+```
+
+理由与影响：
+
+- 递归 Pane 满足工作区扩展性，但 `ChatView` 挂载上限保留当前 transient subscription 的性能约束；文件 Pane 不占聊天订阅配额。
+- localStorage 是当前最小变更，因为 Workspace 协议与存储层尚未暴露完整 UI preferences；快照版本化和旧键双写保留回滚路径。
+- mtime 与 size 是轻量乐观并发，不依赖新增编辑器或文件数据库；冲突必须由用户显式选择，避免静默覆盖。
+- 未保存正文不进入 durable SQLite 或布局偏好，避免恢复出一份脱离磁盘真值的隐藏副本；代价是应用进程退出后草稿不恢复，此边界需要持续在 UI 与文档中保持明确。
+- 后续若引入 Monaco/CodeMirror、持久草稿或递归 Workspace watcher，必须重新走依赖、性能与数据真源技术门禁。
+
+---
+
+### TD-016: Workspace 内容搜索与受控终端 Pane
+
+日期：2026-07-28
+状态：已采用
+用户确认：2026-07-28「按照你说的来」
+
+技术需求：项目磁盘正文搜索；Pane 内 ANSI 终端输出、停止和恢复；复用既有路径边界与 `TerminalProcessWorker`；重型前端能力不进入首屏主包。
+
+内容搜索方案：
+
+| 方案 | 优点 | 缺点 | 结论 |
+| --- | --- | --- | --- |
+| `rg --json` + 有界 Node fallback | 大仓库快；结果结构化；未安装 `rg` 仍可用 | 需要维护双引擎一致性 | 采用 |
+| 纯 Node 递归扫描 | 零外部命令 | 大仓库 CPU/IO 更高 | 仅作 fallback |
+| 把工作区正文镜像到 SQLite FTS | 查询快、可排序 | 复制磁盘真值；watch/index/migration 成本高 | 本切片不采用 |
+
+终端方案：
+
+| 方案 | 优点 | 缺点 | 结论 |
+| --- | --- | --- | --- |
+| `@xterm/xterm` + 既有受控 Worker | ANSI/滚动/键盘体验成熟；复用 `shell:false`、超时、取消和输出上限 | 不是持久 PTY；需独立 vendor bundle | 采用 |
+| React `<pre>` 日志面板 | 依赖最小 | ANSI、选择、终端滚动和可访问性体验弱 | 不采用 |
+| `node-pty` + `@xterm/xterm` | 完整 PowerShell/cmd 交互 | 新增原生模块、打包/签名/进程恢复与权限面显著扩大 | 后续独立 spike |
+
+采用边界：
+
+```text
+Search:
+  - rg literal smart-case 主路径；5 秒、200 条、2 MiB/文件上限
+  - shell:false；查询使用独立 argv；symlink/vendor/binary 跳过
+  - fallback 不持久化索引或正文
+
+Terminal:
+  - xterm vendor 单独构建，用户打开终端时才加载 JS
+  - Main 负责 session/command 唯一性、Renderer 销毁清理和 IPC 事件
+  - TerminalProcessWorker 流式产生 stdout/stderr，命令仍为 executable + argv
+  - 布局只持久化 terminalId/cwd；输出和运行状态只在 Renderer Session
+```
+
+性能：搜索结果和终端输出均限幅；终端 JS 不进入首屏 shell bundle。
+安全：不通过 shell 拼接查询或命令；cwd 与真实路径必须位于 Workspace root；每次人工命令只给 Worker 精确 executable allowlist。
+维护与回滚：移除 terminal tab 类型、vendor 构建与新 IPC 即可回退；文件/对话 Pane 快照保持兼容。
+后续门禁：引入 `node-pty`、持久 shell、终端恢复或工作区 FTS 索引时重新走技术选择。
+
+---
+
+### TD-017: Agent Skill 默认继承、临时覆盖与懒上下文装载
+
+日期：2026-07-29
+状态：已采用
+用户确认：2026-07-29「继续后续任务开发」；后续确认「小队里面智能体自动化工作不应再逐个配置」
+
+技术需求：Agent Library 是 Skill 的一次性配置真源。Agent/Team 对话默认启用有效所有者已装备的 Skill，Composer 只承担临时取消/调整；自动化 Run 中每个 Step 自动读取自身精确 AgentVersion 的 Skill。正文仍按需加载，fallback、rebind 和恢复不得因后续编辑而漂移。
+
+方案对比：
+
+| 方案 | 优点 | 缺点 | 结论 |
+| --- | --- | --- | --- |
+| Agent 配置默认生成精确选择；Composer 临时覆盖；Runtime 校验并冻结；目录 metadata 懒加载 | 配置一次即可复用；仍可见、可取消；恢复可复现；不新增依赖 | 需要区分“持久配置默认值”和“当前会话临时覆盖” | 采用 |
+| 每轮默认空选，由用户重新勾选 | 单轮上下文最小 | 重复配置，Team 自动执行语义断裂，容易出现界面选了但自动 Step 没带 Skill | 废弃 |
+| 自动推荐 + 项目/任务临时附件 | 能覆盖更多场景 | 推荐可信度、作用域、权限和持久化边界显著扩大 | 后续独立设计 |
+
+采用合同：
+
+```text
+AppendMessagePayload.skillVersionIds:
+  undefined -> 旧客户端继承有效 Agent allowlist
+  []        -> 本轮明确不加载 Skill
+  [ids]     -> trim、按首次出现去重、最多 8 个精确不可变版本
+
+Runtime:
+  effective Agent owner -> allowlist 子集/存在/未归档/审批校验
+  -> 按精确 ID 加载正文 -> Context selection
+  -> Provider prompt + Manifest + frozen Run snapshot
+  -> fallback/rebind/retry/recovery 继续使用冻结 ID
+
+Durable state:
+  event/checkpoint 保存 ID + fingerprint，不复制 SKILL.md 正文
+  restart 从不可变 Skill store 重新加载并校验 fingerprint
+
+Desktop default:
+  Agent -> 自身已配置 SkillVersion IDs
+  Team  -> coordinator；缺失时首成员的 SkillVersion IDs
+  model -> []
+  send success/failure -> 保持当前选择
+  switch Agent/Team -> 新 owner 默认值
+
+Automated Step:
+  frozen step.agentVersionId -> 该 AgentVersion.skillVersionIds
+  -> Provider 调用前校验与有界正文解析
+  -> 只注入该成员自己的 system prompt
+  -> Artifact metadata 记录实际 skillVersionIds
+```
+
+性能：`skill.list` 使用 metadata-only SQL；Composer 只有打开菜单才请求目录；Renderer 从不为选择菜单调用 `skill.get`。完整正文只为本轮最终选择加载，未选中或被 Context 排除的 Skill 不进入 Provider。
+
+安全与一致性：Renderer 只能缩小 allowlist，Runtime 是最终权限边界；选择不执行脚本、不增加工具或 MCP 权限。Context Packet 的 `skill-definition`、Provider prompt、Manifest ID 与 Run 快照必须来自同一次选择结果，不允许第二条旁路注入。
+
+交互与回滚：Agent/Team 初始选择来自有效 owner 配置，成功与失败都保持；切换 Agent/Team 时使用新 owner 默认值，模型直聊显式发送 `[]`。仅切换模型 override 不改变 Agent Skill。欢迎页首条消息把临时覆盖交给新建对话。回滚可恢复默认空选，但旧 `undefined` 兼容路径继续可用。
+
+自动化边界：Team Composer 的 coordinator 规则只决定用户当前与谁对话时的默认显示；DAG Step 始终以自身已冻结的 `agentVersionId` 为权威。Skill 正文不会执行脚本，也不会增加 Worker、Tool 或 MCP 授权；任一配置版本缺失、归档或审批失效时在 Provider 调用前失败。
+
+---
+
+### TD-018: 外部系统浏览器 + 持久 Profile + Playwright CDP Browser Worker
+
+日期：2026-07-30
+状态：已采用
+用户确认：2026-07-30「可以」；此前已明确选择方案 B
+
+技术需求：把现有 Renderer `<webview>` 从自动化执行链路中移除，改由长驻 Runtime 管理可见的系统 Edge/Chrome。浏览器登录态需要按 Profile 持久保存；不同对话/Step 使用独立 Tab；同一 Tab 的动作不能互相穿插；遇到登录、验证码、支付或其他人工卡点时，Run 必须能够持久暂停并由用户继续。
+
+方案对比：
+
+| 方案 | 优点 | 缺点 | 结论 |
+| --- | --- | --- | --- |
+| Renderer `<webview>` 执行 JavaScript | 已有原型，接线短 | 依赖 UI 存活和一个全局活动页；登录态、Tab 所有权、恢复与最小权限边界薄弱 | 从真实执行路径移除，只保留预览壳 |
+| 系统 Edge/Chrome + 独立 Profile + `playwright-core` 通过 CDP 接管 | 浏览器真实可见；复用用户熟悉的系统浏览器；不下载浏览器内核；Profile、Tab、人工接管边界清楚 | 需管理外部进程、CDP 端口和浏览器版本兼容 | 采用 |
+| Playwright 自带 Chromium + `launchPersistentContext` | Playwright 版本匹配最稳定 | 安装体积明显增加；与“使用系统浏览器”目标不符 | 不采用 |
+
+采用合同：
+
+```text
+Agent / Team Step
+  -> Runtime（先持久化意图、校验站点与动作权限）
+  -> shared BrowserHost
+  -> BrowserWorker restricted API
+  -> playwright-core / CDP
+  -> visible Edge or Chrome + dedicated Profile directory
+
+Process:
+  one active browser process per profileId
+  profile root defaults to dirname(sync-think.db)/browser-profiles
+  executable discovery prefers explicit override, then Edge, then Chrome
+  CDP binds to 127.0.0.1 on a dynamically reserved port
+
+Tabs:
+  lease owner = conversation/run/step identity
+  one owner lease maps to one Page
+  commands on one lease are serialized
+  different leases may execute concurrently
+  release/close and browser shutdown are explicit lifecycle operations
+
+Actions:
+  navigate / click / fill / read / wait / screenshot
+  selectors and returned text are bounded
+  screenshots live under <project>/.sync-think/screenshots
+  Renderer <webview> may mirror the final URL but never executes the command
+```
+
+分片边界：P0.1 只交付 Browser Host、系统浏览器发现/启动、CDP、Profile、Tab lease 和受限动作；P0.2 把聊天 `browser_*` 真正接到 Worker；P0.3 增加命令/授权持久化与重启恢复；P0.4 接 Team Step；P0.5 增加持久 `waiting_user` 与继续/取消交互。只有 P0.1-P0.5 全部完成后，路线图中的“Browser Worker 与网页授权执行”才可勾选完成。
+
+性能：一个 Profile 复用一个浏览器进程；同 Tab 串行避免状态竞争，不同 Tab 保留并行度；使用 `playwright-core`，不下载或打包 Playwright 浏览器二进制。读取正文和截图结果必须限幅。
+
+安全与恢复：CDP 仅监听 loopback；Profile ID 和截图路径不能越过受控根目录；站点允许列表以 URL origin 为边界并在 Runtime 再校验；新域、敏感动作与人类专属动作不能由网页内容自行授权。Runtime/Worker 重启后的幂等、授权恢复与人工卡点由 P0.3/P0.5 完成前，不声称闭环已交付。
+
+维护与回滚：移除 Browser Host 和 `playwright-core` 即可回到现有 `<webview>` 原型；Profile 目录是独立数据，不与默认浏览器 Profile 混用。旧 `conversation.submitBrowserResult` 协议在 P0.2 迁移期间保留兼容，确认没有调用方后再单独删除。
+
+---
+
 ## 4. 确认清单（已全部勾选）
 
 - [x] TD-004 better-sqlite3 + Drizzle
@@ -430,6 +628,10 @@ Phase 3 再引入端到端（Playwright 测 UI 或 Spectron 替代方案评估�
 - [x] TD-012 Radix 行为 + 自研皮肤 + Lucide
 - [x] TD-013 electron-builder + 私有更新
 - [x] TD-014 Vitest
+- [x] TD-015 递归 Pane + transient 合批 + 受约束文件编辑
+- [x] TD-016 `rg` + fallback 内容搜索、lazy xterm + 受控 Worker 终端
+- [x] TD-017 Agent 默认继承 + 每轮精确覆盖 + 自动 Step 成员隔离 + metadata 懒加载
+- [x] TD-018 系统 Edge/Chrome + 持久 Profile + Playwright CDP Browser Worker
 
 确认语：全部接受推荐，计划确认（2026-07-11）
 

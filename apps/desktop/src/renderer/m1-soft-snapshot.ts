@@ -155,8 +155,8 @@ export function formatM1SoftSnapshot(input: M1SoftSnapshotInput): M1SoftSnapshot
 export function softSnapshotLooksSecretFree(text: string): boolean {
   if (!text) return true;
   // sk-… / Bearer long tokens / anthropic-ish
-  if (/\bsk-[A-Za-z0-9_\-]{16,}\b/.test(text)) return false;
-  if (/\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b/i.test(text)) return false;
-  if (/api[_-]?key\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{12,}/i.test(text)) return false;
+  if (/\bsk-[A-Za-z0-9_-]{16,}\b/.test(text)) return false;
+  if (/\bBearer\s+[A-Za-z0-9_.-]{20,}\b/i.test(text)) return false;
+  if (/api[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9_-]{12,}/i.test(text)) return false;
   return true;
 }

@@ -322,7 +322,7 @@ export function formatM1EvidenceBundle(input: M1EvidenceBundleInput): M1Evidence
     '',
     '## 边界与当前状态',
     '- 本包 claimsM1Closed=false · 不自动勾手测 · 不写 dogfood 盘',
-    Boolean(input.hardGatesMet)
+    input.hardGatesMet
       ? `- 手测文档 ${docChecked}/${docTotal} 与 dogfood ${input.dogfoodRealDays | 0}/${dogfoodRequired} 已满足；M1 状态以验证区为准`
       : docChecked >= docTotal && docTotal > 0
         ? `- 手测文档 ${docChecked}/${docTotal} 已完成；仍需 dogfood 真实日记 ≥${dogfoodRequired} 天`
@@ -379,9 +379,9 @@ export function formatM1EvidenceBundle(input: M1EvidenceBundleInput): M1Evidence
 /** True if text looks free of common API key patterns. */
 export function evidenceBundleLooksSecretFree(text: string): boolean {
   if (!text) return true;
-  if (/\bsk-[A-Za-z0-9_\-]{16,}\b/.test(text)) return false;
-  if (/\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b/i.test(text)) return false;
-  if (/api[_-]?key\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{12,}/i.test(text)) return false;
+  if (/\bsk-[A-Za-z0-9_-]{16,}\b/.test(text)) return false;
+  if (/\bBearer\s+[A-Za-z0-9_.-]{20,}\b/i.test(text)) return false;
+  if (/api[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9_-]{12,}/i.test(text)) return false;
   return true;
 }
 

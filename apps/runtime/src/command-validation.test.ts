@@ -7,7 +7,64 @@ import {
   parseConversationGetRunProcessPayload,
   parseSubscribeConversationTransientStreamPayload,
   parseUnsubscribeConversationTransientStreamPayload,
+  parseAppendMessagePayload,
+  parseListSkillsPayload,
 } from './command-validation.js';
+
+describe('Skill metadata list validation', () => {
+  it('normalizes exact immutable ids independently from the per-turn selection limit', () => {
+    expect(
+      parseListSkillsPayload({
+        skillVersionIds: [' skill-b ', 'skill-b', 'skill-a'],
+      })?.skillVersionIds,
+    ).toEqual(['skill-b', 'skill-a']);
+    expect(
+      parseListSkillsPayload({
+        skillVersionIds: Array.from({ length: 64 }, (_, index) => `skill-${index}`),
+      })?.skillVersionIds,
+    ).toHaveLength(64);
+  });
+
+  it('rejects malformed or oversized exact metadata queries', () => {
+    expect(parseListSkillsPayload({ skillVersionIds: [''] })).toBeUndefined();
+    expect(
+      parseListSkillsPayload({
+        skillVersionIds: Array.from({ length: 65 }, (_, index) => `skill-${index}`),
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe('append message per-turn Skill validation', () => {
+  const base = {
+    threadId: 'thread-1',
+    expectedTaskVersion: 0,
+    role: 'user' as const,
+    text: 'hello',
+  };
+
+  it('normalizes empty, duplicate, and bounded exact selections', () => {
+    expect(parseAppendMessagePayload({ ...base, skillVersionIds: [] })?.skillVersionIds).toEqual(
+      [],
+    );
+    expect(
+      parseAppendMessagePayload({
+        ...base,
+        skillVersionIds: [' skill-b ', 'skill-b', 'skill-a'],
+      })?.skillVersionIds,
+    ).toEqual(['skill-b', 'skill-a']);
+  });
+
+  it('rejects malformed or oversized selections', () => {
+    expect(parseAppendMessagePayload({ ...base, skillVersionIds: [''] })).toBeUndefined();
+    expect(
+      parseAppendMessagePayload({
+        ...base,
+        skillVersionIds: Array.from({ length: 9 }, (_, index) => `skill-${index}`),
+      }),
+    ).toBeUndefined();
+  });
+});
 
 const validTask = {
   workspaceId: 'workspace-criteria-validation',

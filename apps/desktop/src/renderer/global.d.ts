@@ -148,6 +148,15 @@ import type {
 } from '../provider-payloads.js';
 import type { Event } from '@sync-think/shared';
 import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
+import type {
+  CancelProjectTerminalPayload,
+  CancelProjectTerminalResult,
+  ProjectTerminalEvent,
+  SearchProjectContentPayload,
+  SearchProjectContentResult,
+  StartProjectTerminalPayload,
+  StartProjectTerminalResult,
+} from '../workspace-tools-contract.js';
 
 declare global {
   interface Window {
@@ -380,11 +389,48 @@ declare global {
           root: string;
           files: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;
         }>;
+        searchProjectContent(payload: SearchProjectContentPayload): Promise<SearchProjectContentResult>;
+        startProjectTerminal(payload: StartProjectTerminalPayload): Promise<StartProjectTerminalResult>;
+        cancelProjectTerminal(
+          payload: CancelProjectTerminalPayload,
+        ): Promise<CancelProjectTerminalResult>;
+        subscribeProjectTerminal(listener: (event: ProjectTerminalEvent) => void): () => void;
         readProjectFile(payload: { root: string; path: string }): Promise<{
           path: string;
           content: string | null;
           error: string | null;
+          errorCode: string | null;
+          mtimeMs: number | null;
+          size: number | null;
         }>;
+        writeProjectFile(payload: {
+          root: string;
+          path: string;
+          content: string;
+          expectedMtimeMs: number | null;
+          expectedSize?: number | null;
+          force?: boolean;
+        }): Promise<{
+          path: string;
+          ok: boolean;
+          conflict: boolean;
+          error: string | null;
+          errorCode: string | null;
+          mtimeMs: number | null;
+          size: number | null;
+        }>;
+        watchProjectFile(
+          payload: { root: string; path: string },
+          listener: (change: {
+            path: string;
+            exists: boolean;
+            mtimeMs: number | null;
+            size: number | null;
+          }) => void,
+        ): {
+          ready: Promise<{ subscriptionId: string }>;
+          unsubscribe(): Promise<void>;
+        };
         listProjectDir(payload: { root: string; dir?: string }): Promise<{
           dir: string;
           entries: Array<{ name: string; path: string; kind: 'file' | 'dir' }>;

@@ -8,7 +8,9 @@ import { TerminalProcessWorker } from './terminal-worker.js';
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
 });
 
 function fixture(): string {
@@ -18,6 +20,133 @@ function fixture(): string {
 }
 
 describe('TerminalProcessWorker', () => {
+  it('emits stdout before a long-running process exits', async () => {
+    const root = fixture();
+    const controller = new AbortController();
+    const events = new TerminalProcessWorker().exec(
+        {
+          workingDir: root,
+          action: {
+            command: process.execPath,
+            args: [
+              '-e',
+              "process.stdout.write('first'); setTimeout(() => process.stdout.write('second'), 2500)",
+            ],
+          },
+        },
+        {
+          token: 'terminal-stream-token',
+          allowedRoot: root,
+          allowedCommands: [process.execPath],
+          timeoutMs: 10_000,
+          maxOutputBytes: 1_024,
+          signal: controller.signal,
+        },
+      );
+    const iterator = events[Symbol.asyncIterator]();
+
+    const first = await Promise.race([
+      iterator.next(),
+      new Promise<{ timeout: true }>((resolve) =>
+        setTimeout(() => resolve({ timeout: true }), 4000),
+      ),
+    ]);
+
+    if ('timeout' in first) {
+      controller.abort();
+      await iterator.return?.();
+    }
+    expect(first).not.toEqual({ timeout: true });
+    expect('timeout' in first ? undefined : first.value).toEqual({ type: 'stdout', text: 'first' });
+
+    const remaining = [];
+    if (!('timeout' in first)) {
+      for (;;) {
+        const event = await iterator.next();
+        if (event.done) break;
+        remaining.push(event.value);
+      }
+    }
+    expect(remaining).toEqual([
+      { type: 'stdout', text: 'second' },
+      expect.objectContaining({ type: 'completed' }),
+    ]);
+  }, 10_000);
+
+  it('kills the spawned process tree when the event consumer closes early', async () => {
+    const root = fixture();
+    const events = new TerminalProcessWorker().exec(
+        {
+          workingDir: root,
+          action: {
+            command: process.execPath,
+            args: [
+              '-e',
+              [
+                "const { spawn } = require('node:child_process')",
+                "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+                'process.stdout.write(String(child.pid))',
+                'setInterval(() => {}, 1000)',
+              ].join(';'),
+            ],
+          },
+        },
+        {
+          token: 'terminal-tree-token',
+          allowedRoot: root,
+          allowedCommands: [process.execPath],
+          timeoutMs: 15_000,
+          maxOutputBytes: 1_024,
+        },
+      );
+    const iterator = events[Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    expect(first.value).toMatchObject({ type: 'stdout' });
+    const childPid = Number(first.value && 'text' in first.value ? first.value.text : '');
+    expect(Number.isInteger(childPid)).toBe(true);
+    await iterator.return?.();
+
+    await expectProcessToExit(childPid);
+  }, 20_000);
+
+  it('decodes a multibyte character split across streamed process chunks', async () => {
+    const root = fixture();
+    const events = await collect(
+      new TerminalProcessWorker().exec(
+        {
+          workingDir: root,
+          action: {
+            command: process.execPath,
+            args: [
+              '-e',
+              "const bytes=Buffer.from('\\u4f60'); process.stdout.write(bytes.subarray(0,1)); setTimeout(() => process.stdout.write(bytes.subarray(1)), 200)",
+            ],
+          },
+        },
+        {
+          token: 'terminal-utf8-token',
+          allowedRoot: root,
+          allowedCommands: [process.execPath],
+          timeoutMs: 5_000,
+          maxOutputBytes: 1_024,
+        },
+      ),
+    );
+
+    expect(
+      events
+        .filter((event) => event.type === 'stdout')
+        .map((event) => event.text)
+        .join(''),
+    ).toBe('\u4f60');
+    expect(events.at(-1)).toMatchObject({
+      type: 'completed',
+      output: { stdout: '\u4f60' },
+    });
+  }, 10_000);
+
   it('spawns an allowlisted executable without a shell and captures bounded output', async () => {
     const root = fixture();
     const events = await collect(
@@ -196,3 +325,21 @@ describe('TerminalProcessWorker', () => {
     },
   );
 });
+
+async function expectProcessToExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // Process exited between the final probe and cleanup.
+  }
+  throw new Error(`child process ${pid} remained alive after terminal cancellation`);
+}

@@ -70,7 +70,8 @@ describe('conversation.getContextStatus protocol', () => {
 
   it('accepts a bounded internally consistent response', () => {
     expect(parseConversationGetContextStatusResponse(validResponse)).toEqual(validResponse);
-    const { compactedAt: _compactedAt, ...withoutCompactedAt } = validResponse;
+    const { compactedAt, ...withoutCompactedAt } = validResponse;
+    void compactedAt;
     expect(parseConversationGetContextStatusResponse(withoutCompactedAt)).toEqual(
       withoutCompactedAt,
     );

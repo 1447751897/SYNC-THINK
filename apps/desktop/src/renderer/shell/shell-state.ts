@@ -148,7 +148,8 @@ export function closeConversationTab(
   const next = current.filter((item) => item !== id);
   const nextSelectedId = next[idx] ?? next[idx - 1];
   if (next.length === 0) {
-    const { [ws]: _removed, ...rest } = tabs;
+    const rest = { ...tabs };
+    delete rest[ws];
     return { tabs: rest, nextSelectedId };
   }
   return { tabs: { ...tabs, [ws]: next }, nextSelectedId };
@@ -179,7 +180,8 @@ export function rememberWorkspaceSelection(
   if (!ws) return selectedByWorkspace;
   if (!conversationId) {
     if (!(ws in selectedByWorkspace)) return selectedByWorkspace;
-    const { [ws]: _removed, ...rest } = selectedByWorkspace;
+    const rest = { ...selectedByWorkspace };
+    delete rest[ws];
     return rest;
   }
   if (selectedByWorkspace[ws] === conversationId) return selectedByWorkspace;

@@ -40,7 +40,7 @@ describe('LocalStdioMcpWorker', () => {
       w.exec(
         {
           workingDir: process.cwd(),
-          endpoint: 'node -e "process.stdout.write(\"MCP_SPAWN_OK\")"',
+          endpoint: 'node -e "process.stdout.write("MCP_SPAWN_OK")"',
           transport: 'local-stdio',
           policy: { maxOutputBytes: 4096, timeoutMs: 10_000, trusted: false },
           mcpServerId: 'mcp-real-1',
@@ -352,11 +352,12 @@ describe('LocalStdioMcpWorker list-tools (JSON-RPC tools/list)', () => {
         refuseReason?: string;
         ok: boolean;
         toolCount?: number;
+        tools?: unknown[];
       };
       expect(out.spawned).toBe(false);
       expect(out.ok).toBe(false);
       expect(out.refuseReason).toBeTruthy();
-      expect(out.toolCount === 0 || out.toolCount === undefined || Array.isArray((out as any).tools)).toBe(true);
+      expect(out.toolCount === 0 || out.toolCount === undefined || Array.isArray(out.tools)).toBe(true);
     }
   });
 });

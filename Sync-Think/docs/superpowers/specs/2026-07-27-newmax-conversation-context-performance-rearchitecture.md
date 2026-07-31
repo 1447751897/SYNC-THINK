@@ -423,27 +423,35 @@ conversation.getContextStatus({ conversationId });
 
 验收：一轮包含 30 个工具步骤时，流式更新只影响当前过程卡和当前助手草稿。
 
-### S5：上下文快照与圆环真值
+### S5：上下文快照与圆环真值 ✅ 完成 2026-07-28
 
 目标：上下文展示与实际 provider request 一致。
 
-- 建立 `ContextSnapshotBuilder`。
-- Context Packet 的 included/audit-only 语义闭环。
-- 圆环读取 Runtime context status。
-- 70% 自动 compact 使用同一 token 估算结果。
-- 历史图片、project memory、task goal、acceptance 按规则实际送模。
-- 增加“查看本次上下文构成”入口；只显示来源和 token，不暴露隐藏 reasoning。
+- [x] 建立 `ContextSnapshotBuilder`。
+- [x] Context Packet 的 included/audit-only 语义闭环。
+- [x] 圆环读取 Runtime context status。
+- [x] 70% 自动 compact 使用同一 token 估算结果。
+- [x] 历史图片、project memory、task goal、acceptance 按规则实际送模。
+- [x] 增加“查看本次上下文构成”入口；只显示来源和 token，不暴露隐藏 reasoning。
+- [x] cache-miss status 与真实 Provider 调用共用 system/agent/project/messages/tools 构造器，并按 thread 解析 workspace、权限和工具能力。
+
+当前验收：Provider request 与 Runtime status 的六类 token breakdown 一致；cache-miss 与 cache-hit 均有集成测试覆盖，隐藏 reasoning 不进入请求或状态；Runtime 52 文件/335 项测试通过。
 
 验收：测试 provider request 快照与 UI context breakdown 一致。
 
-### S6：消息虚拟化与 UI 收尾
+### S6：消息虚拟化与 UI 收尾 🚧 首切片完成 2026-07-28
 
 目标：超长会话 DOM 仍保持流畅。
 
-- 引入固定版本的虚拟列表依赖，或实现受控 windowing。
-- 保持向上加载锚点、自动滚底、代码块全屏、图片 lightbox。
-- 离屏消息不挂载 Markdown 高亮、深度思考和工具详情。
-- 当前流式消息保持稳定，不因估算高度频繁跳动。
+- [x] 实现仓库内受控动态高度 windowing，不引入新的第三方运行时依赖。
+- [x] durable 历史消息按视口、上下 overscan 和 spacer 有界挂载；1000 条消息的计算窗口保持常数级。
+- [x] 当前 streaming message、optimistic 用户消息、本地错误和工具审批卡保持稳定挂载，不随历史窗口卸载。
+- [x] 使用 `ResizeObserver` 校准动态高度，并补偿视口上方测量差，降低高度估算收敛时的滚动跳动。
+- [x] scroll viewport 更新经 `requestAnimationFrame` 合并，避免每个原生滚动事件触发 React 更新。
+- [x] 向上分页按 `previousScrollTop + scrollHeight delta` 保留精确视口锚点；动态高度校准只补偿完全位于视口上方的消息。
+- [ ] 实窗验收自动滚底、代码块全屏和图片 lightbox。
+- [ ] 增加 1000 条复杂 Markdown/过程/图片消息的 Renderer 性能 fixture 与验收记录。
+- [x] 历史 run process 查询跟随可见/overscan 窗口，离屏重试 timer 会取消，不再为整页 loaded messages 预取。
 
 验收：1000 条复杂消息下滚动和输入保持可用。
 
@@ -505,9 +513,9 @@ apps/desktop/src/renderer/m0-projection.ts             # 迁移期兼容，最�
 
 ## 11. 推荐下一步
 
-S0–S4 已完成，下一轮进入 **S5：上下文快照与圆环真值**：
+S0–S5 已完成，下一轮进入 **S6：消息虚拟化与 UI 收尾**：
 
-1. 建立 `ContextSnapshotBuilder` 与 provider request 快照测试；
-2. 让 Context Packet 的 included/audit-only、圆环和 70% compact 共用同一 token 估算；
-3. 接入“查看本次上下文构成”，只展示来源与 token，不暴露隐藏 reasoning；
-4. 单独构建、重启并验收 UI breakdown 与实际 provider request 一致。
+1. 固定虚拟列表/windowing 实现与版本，先覆盖历史 durable messages，当前 streaming message 保持稳定挂载；
+2. 保留向上分页锚点、自动滚底、代码块全屏和图片 lightbox；
+3. 离屏消息不挂载 Markdown 高亮、深度思考与工具详情；
+4. 增加 1000 条复杂消息的结构/渲染回归，并单独重启进行实窗滚动验收。

@@ -3,7 +3,7 @@
 // - AI 通过 browser_open 工具驱动时，宿主把 URL 下发到这里并自动切到浏览器页；
 // - 文件面板：搜索 + 预览项目内文本文件（主进程只读 IPC，防目录穿越）；
 // - 工作区面板：当前分支 / 未提交变更 / 最近提交。
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Check,
@@ -21,11 +21,16 @@ import {
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
+import type {
+  ProjectContentMatch,
+  ProjectTextLocation,
+  SearchProjectContentResult,
+} from '../../workspace-tools-contract.js';
 import { BrowserPanel } from './BrowserPanel.js';
 
 /** Preload bridge accessor (undefined in bare unit-test DOM). */
 function dockBridge() {
-  return (window as unknown as { syncThink?: { runtime?: any } }).syncThink?.runtime;
+  return window.syncThink?.runtime;
 }
 
 export type DockTab = 'browser' | 'files' | 'workspace';
@@ -52,13 +57,10 @@ export function RightDock(props: {
   /** Bump this counter to re-navigate even when the URL string is unchanged. */
   browserNavSeq?: number;
   initialTab?: DockTab;
-  /**
-   * 文件分屏：提供该回调时，文件树点击文件不再内嵌小预览，
-   * 而是交给宿主（ChatView）在主区域以分屏面板打开（IDE 式查看）。
-   */
-  onOpenFileSplit?(path: string): void;
-  /** 当前在分屏中打开的文件（用于树/搜索列表高亮）。 */
-  splitFilePath?: string | null;
+  /** 提供该回调时，文件树把文件交给 Workspace Pane 宿主打开。 */
+  onOpenFile?(path: string, location?: ProjectTextLocation): void;
+  /** 当前活动文件（用于树/搜索列表高亮）。 */
+  activeFilePath?: string | null;
   onClose(): void;
 }) {
   const [tab, setTab] = useState<DockTab>(props.initialTab ?? 'browser');
@@ -117,8 +119,8 @@ export function RightDock(props: {
           <div className="shell-dock-panel absolute inset-0 is-active">
             <FilesPanel
               projectFolder={props.projectFolder}
-              onOpenFileSplit={props.onOpenFileSplit}
-              splitFilePath={props.splitFilePath}
+              onOpenFile={props.onOpenFile}
+              activeFilePath={props.activeFilePath}
             />
           </div>
         ) : null}
@@ -142,24 +144,28 @@ interface TreeDirState {
 
 function FilesPanel({
   projectFolder,
-  onOpenFileSplit,
-  splitFilePath,
+  onOpenFile,
+  activeFilePath,
 }: {
   projectFolder?: string;
-  onOpenFileSplit?(path: string): void;
-  splitFilePath?: string | null;
+  onOpenFile?(path: string, location?: ProjectTextLocation): void;
+  activeFilePath?: string | null;
 }) {
   const [query, setQuery] = useState('');
+  const [searchKind, setSearchKind] = useState<'filename' | 'content'>('filename');
   const [files, setFiles] = useState<ProjectFileEntry[]>([]);
+  const [contentSearch, setContentSearch] = useState<SearchProjectContentResult>();
+  const [contentError, setContentError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [selectedInternal, setSelectedInternal] = useState<string | null>(null);
   // 分屏模式下高亮跟随宿主的分屏文件；内嵌预览模式沿用内部选中态。
-  const selected = onOpenFileSplit ? (splitFilePath ?? null) : selectedInternal;
+  const selected = onOpenFile ? (activeFilePath ?? null) : selectedInternal;
   const [preview, setPreview] = useState<{ path: string; content: string | null; error: string | null } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   // 树形状态：dir path ('' = root) → children；expanded 记录展开集合。
   const [dirs, setDirs] = useState<Record<string, TreeDirState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const contentRequestRef = useRef(0);
   const searchMode = query.trim().length > 0;
 
   const loadDir = useCallback(
@@ -214,7 +220,7 @@ function FilesPanel({
 
   // 搜索模式：沿用平铺模糊搜索。
   useEffect(() => {
-    if (!projectFolder || !searchMode) return;
+    if (!projectFolder || !searchMode || searchKind !== 'filename') return;
     const api = dockBridge();
     if (!api) return;
     let cancelled = false;
@@ -236,13 +242,47 @@ function FilesPanel({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [projectFolder, query, searchMode]);
+  }, [projectFolder, query, searchKind, searchMode]);
+
+  useEffect(() => {
+    contentRequestRef.current += 1;
+    const requestId = contentRequestRef.current;
+    if (!projectFolder || !searchMode || searchKind !== 'content') {
+      setContentSearch(undefined);
+      setContentError(undefined);
+      return;
+    }
+    const api = dockBridge();
+    if (!api?.searchProjectContent) return;
+    let cancelled = false;
+    setLoading(true);
+    setContentError(undefined);
+    const timer = window.setTimeout(() => {
+      void api
+        .searchProjectContent({ root: projectFolder, query: query.trim(), maxResults: 200 })
+        .then((result) => {
+          if (!cancelled && requestId === contentRequestRef.current) setContentSearch(result);
+        })
+        .catch((error: unknown) => {
+          if (cancelled || requestId !== contentRequestRef.current) return;
+          setContentSearch(undefined);
+          setContentError(error instanceof Error ? error.message : '内容搜索失败');
+        })
+        .finally(() => {
+          if (!cancelled && requestId === contentRequestRef.current) setLoading(false);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [projectFolder, query, searchKind, searchMode]);
 
   const openFile = useCallback(
-    (path: string) => {
+    (path: string, location?: ProjectTextLocation) => {
       // 分屏模式：直接交给宿主在主区域打开文件面板（IDE 式）。
-      if (onOpenFileSplit) {
-        onOpenFileSplit(path);
+      if (onOpenFile) {
+        onOpenFile(path, location);
         return;
       }
       const api = dockBridge();
@@ -255,7 +295,7 @@ function FilesPanel({
         .catch(() => setPreview({ path, content: null, error: '读取失败' }))
         .finally(() => setPreviewLoading(false));
     },
-    [projectFolder, onOpenFileSplit],
+    [projectFolder, onOpenFile],
   );
 
   if (!projectFolder) {
@@ -265,13 +305,36 @@ function FilesPanel({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-border p-2">
+        <div
+          className="mb-1.5 grid grid-cols-2 rounded-md border border-border bg-page p-0.5"
+          role="group"
+          aria-label="搜索范围"
+        >
+          {(['filename', 'content'] as const).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              aria-label={kind === 'filename' ? '文件名' : '内容'}
+              aria-pressed={searchKind === kind}
+              className={clsx(
+                'h-6 rounded text-[10.5px] transition-colors',
+                searchKind === kind
+                  ? 'bg-surface text-text shadow-sm'
+                  : 'text-text-faint hover:text-text',
+              )}
+              onClick={() => setSearchKind(kind)}
+            >
+              {kind === 'filename' ? '文件名' : '内容'}
+            </button>
+          ))}
+        </div>
         <div className="relative">
           <Search size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-text-faint" />
           <input
             className="h-7 w-full rounded-md border border-border bg-page pl-6.5 pr-2 text-[11.5px] text-text focus:border-accent focus:outline-none"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索文件名…"
+            placeholder={searchKind === 'filename' ? '搜索文件名…' : '搜索文件内容…'}
             spellCheck={false}
             data-testid="dock-files-search"
           />
@@ -281,7 +344,7 @@ function FilesPanel({
         <div
           className={clsx(
             'shrink-0 overflow-y-auto border-b border-border',
-            !onOpenFileSplit && selected ? 'max-h-[38%]' : 'flex-1',
+            !onOpenFile && selected ? 'max-h-[38%]' : 'flex-1',
           )}
         >
           {searchMode ? (
@@ -289,6 +352,23 @@ function FilesPanel({
               <div className="flex items-center gap-2 px-3 py-3 text-[11.5px] text-text-faint">
                 <Loader2 size={12} className="animate-spin" /> 加载中…
               </div>
+            ) : searchKind === 'content' ? (
+              contentError ? (
+                <div className="flex items-start gap-2 px-3 py-3 text-[11.5px] text-error" role="alert">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  <span>{contentError}</span>
+                </div>
+              ) : !contentSearch || contentSearch.results.length === 0 ? (
+                <div className="px-3 py-3 text-[11.5px] text-text-faint">没有匹配的内容</div>
+              ) : (
+                <ContentSearchResults
+                  result={contentSearch}
+                  selected={selected}
+                  onOpen={(match) =>
+                    openFile(match.path, { line: match.line, column: match.column })
+                  }
+                />
+              )
             ) : files.length === 0 ? (
               <div className="px-3 py-3 text-[11.5px] text-text-faint">没有匹配的文件</div>
             ) : (
@@ -312,6 +392,8 @@ function FilesPanel({
                 ))}
               </ul>
             )
+          ) : searchKind === 'content' ? (
+            <div className="px-3 py-3 text-[11.5px] text-text-faint">输入关键词搜索文件内容</div>
           ) : (
             <div className="p-1" data-testid="dock-files-tree">
               <FileTreeLevel
@@ -326,7 +408,7 @@ function FilesPanel({
             </div>
           )}
         </div>
-        {!onOpenFileSplit && selected ? (
+        {!onOpenFile && selected ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3">
               <FileText size={12} className="shrink-0 text-text-faint" />
@@ -359,6 +441,58 @@ function FilesPanel({
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function ContentSearchResults({
+  result: searchResult,
+  selected,
+  onOpen,
+}: {
+  result: SearchProjectContentResult;
+  selected: string | null;
+  onOpen(match: ProjectContentMatch): void;
+}) {
+  return (
+    <div>
+      <ul className="p-1">
+        {searchResult.results.map((result, index) => (
+          <li key={`${result.path}:${result.line}:${result.column}:${index}`}>
+            <button
+              type="button"
+              className={clsx(
+                'w-full rounded-md px-2 py-1.5 text-left',
+                selected === result.path
+                  ? 'bg-accent-soft text-accent-text'
+                  : 'text-text hover:bg-hover',
+              )}
+              aria-label={`打开 ${result.path} 第 ${result.line} 行第 ${result.column} 列`}
+              onClick={() => onOpen(result)}
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <FileCode2 size={12} className="shrink-0 text-text-faint" />
+                <span className="min-w-0 flex-1 truncate text-[11.5px]" title={result.path}>
+                  {result.path}
+                </span>
+                <span className="shrink-0 font-mono text-[10px] text-text-faint">
+                  {result.line}:{result.column}
+                </span>
+              </span>
+              <span className="mt-0.5 block truncate pl-5 font-mono text-[10.5px] text-text-faint">
+                {result.preview}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {searchResult.truncated || searchResult.timedOut ? (
+        <div className="border-t border-border px-3 py-2 text-[10px] text-text-faint">
+          {searchResult.timedOut
+            ? '搜索达到 5 秒上限，仅显示已找到的结果'
+            : '仅显示前 200 条结果'}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -617,7 +751,7 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
         >
           <div className="w-full max-w-[340px] rounded-xl border border-border bg-surface p-4 shadow-xl">
             <div className="mb-2 flex items-center gap-2">
-              <AlertTriangle size={14} className="shrink-0 text-[var(--color-warning,#e5a50a)]" />
+              <AlertTriangle size={14} className="shrink-0 text-[var(--color-warning)]" />
               <span className="text-[13px] font-semibold text-text">有未提交的更改</span>
             </div>
             <p className="mb-2 text-[11.5px] leading-relaxed text-text-secondary">
@@ -654,7 +788,7 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
               </button>
               <button
                 type="button"
-                className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-[11.5px] font-medium text-white hover:opacity-90 disabled:opacity-60"
+                className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-60"
                 disabled={switching}
                 data-testid="dock-dirty-stash-switch"
                 onClick={() => requestCheckout(pendingBranch, 'stash')}

@@ -242,6 +242,7 @@ async function openLegacyConflictStore() {
       '0027_skill_archive',
       '0028_message_pagination',
       '0029_event_global_cursor',
+      '0030_browser_persistence_permissions',
     ]);
     await runMigrations(dbPath);
   } finally {

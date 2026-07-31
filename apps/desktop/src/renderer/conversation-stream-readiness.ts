@@ -171,9 +171,9 @@ function failureCodeHint(code: string | null | undefined): string | null {
 export function scrubFailureText(raw: string | null | undefined): string {
   if (!raw) return '';
   let s = String(raw);
-  s = s.replace(/\bsk-[A-Za-z0-9_\-]{8,}\b/g, 'sk-***');
-  s = s.replace(/\bBearer\s+[A-Za-z0-9_\-\.]{12,}/gi, 'Bearer ***');
-  s = s.replace(/api[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9_\-]{8,}/gi, 'api_key=***');
+  s = s.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-***');
+  s = s.replace(/\bBearer\s+[A-Za-z0-9_.-]{12,}/gi, 'Bearer ***');
+  s = s.replace(/api[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9_-]{8,}/gi, 'api_key=***');
   // collapse whitespace
   s = s.replace(/\s+/g, ' ').trim();
   // hard cap length for subtitle

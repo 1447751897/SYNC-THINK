@@ -1,6 +1,11 @@
 // Workspace UI preferences (product §15.2 / §10.1 L3 soft craft).
 // M1: renderer localStorage — calm, restart-safe, no Runtime dependency.
 
+import {
+  parseWorkspacePaneLayouts,
+  type WorkspacePaneLayouts,
+} from './shell/pane-layout.js';
+
 export type ConversationLayoutPreference = 'default' | 'single';
 export type ThemePreference = 'light' | 'dark' | 'system';
 export type DefaultPermissionPreference = 'ask' | 'workspace' | 'full-access';
@@ -45,6 +50,8 @@ export const UI_PREF_KEYS = {
    * Shape: Record<workspaceId, conversationId>.
    */
   selectedConversationByWorkspace: 'sync-think.selectedConversationByWorkspace',
+  /** Versioned recursive pane tree and focused tab state per workspace. */
+  workspacePaneLayouts: 'sync-think.workspacePaneLayouts',
   /**
    * Per-conversation model override (catalog modelId).
    * Shape: Record<conversationId, modelId>.
@@ -673,6 +680,23 @@ export function writeSelectedConversationByWorkspace(
   storage?: Pick<Storage, 'setItem'>,
 ): void {
   writeJsonPreference(UI_PREF_KEYS.selectedConversationByWorkspace, selected, storage);
+}
+
+export function readWorkspacePaneLayouts(
+  storage?: Pick<Storage, 'getItem'>,
+): WorkspacePaneLayouts {
+  return parseWorkspacePaneLayouts(readJsonPreference(UI_PREF_KEYS.workspacePaneLayouts, storage));
+}
+
+export function writeWorkspacePaneLayouts(
+  layouts: WorkspacePaneLayouts,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(
+    UI_PREF_KEYS.workspacePaneLayouts,
+    { version: 1, workspaces: layouts },
+    storage,
+  );
 }
 
 /** conversationId → catalog modelId override chosen in compose. */

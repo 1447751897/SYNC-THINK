@@ -2,6 +2,7 @@ import type { Socket } from 'node:net';
 import type { Frame, McpServerSummary, SkillVersionSummary } from '@sync-think/protocol';
 import type {
   McpServerRecord,
+  SkillVersionMetadataRecord,
   SkillVersionRecord,
   SqliteMcpStore,
   SqliteSkillStore,
@@ -26,7 +27,9 @@ export interface SkillQueryContext {
   /** Map a caught error onto the provider-command error frame. */
   writeProviderCommandError(socket: Socket, frame: Frame, error: unknown): void;
   /** Project a SkillVersionRecord onto the protocol summary shape. */
-  toSkillVersionSummary(record: SkillVersionRecord): SkillVersionSummary;
+  toSkillVersionSummary(
+    record: SkillVersionRecord | SkillVersionMetadataRecord,
+  ): SkillVersionSummary;
   /** Project an McpServerRecord onto the protocol summary shape. */
   toMcpServerSummary(record: McpServerRecord): McpServerSummary;
 }

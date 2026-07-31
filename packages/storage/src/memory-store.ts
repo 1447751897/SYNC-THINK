@@ -145,7 +145,7 @@ interface DiagnosticRow {
 const SECRET_PATTERNS: Array<{ re: RegExp; replace: string }> = [
   { re: /\bsk-[A-Za-z0-9_-]{8,}\b/g, replace: '[REDACTED]' },
   { re: /Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, replace: 'Bearer [REDACTED]' },
-  { re: /api[_-]?key["'\s:=]+[A-Za-z0-9._\-]{8,}/gi, replace: 'api_key=[REDACTED]' },
+  { re: /api[_-]?key["'\s:=]+[A-Za-z0-9._-]{8,}/gi, replace: 'api_key=[REDACTED]' },
   { re: /plaintext-secret/gi, replace: '[REDACTED]' },
   { re: /\b[A-Za-z]:\\(?:[^\\\s]+\\)*[^\\\s]*/g, replace: '[PATH]' },
   { re: /\/(?:Users|home|var|tmp|private|opt|srv)\/[^\s"']+/g, replace: '[PATH]' },

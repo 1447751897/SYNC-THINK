@@ -1,4 +1,83 @@
-## 2026-07-27 · 会话上下文性能 S5 交接检查点：Runtime Context Truth
+## 2026-07-30 · Browser Worker P0.1/P0.2：系统浏览器 Host 与 Runtime 真执行链
+
+- **系统浏览器 Host**：新增 `BrowserHost`，发现显式浏览器路径或系统 Edge/Chrome，以 loopback 动态 CDP 端口启动可见外部进程，并通过 `playwright-core.connectOverCDP` 接管独立持久 Profile；不下载或打包 Playwright Chromium。
+- **Profile 与 Tab 生命周期**：一个活跃 Profile 只创建一个 Browser Session；同一 `profileId + ownerId` 复用一个 Page lease，不同 owner 使用不同 Page。同 Page 命令严格串行，不同 Page 保留并行；release/acquire 竞态按 Promise 身份校验，旧 release 不会删除新的 owner lease；Runtime shutdown 显式关闭受管 Page/浏览器。
+- **受限动作**：真实 Worker 支持 navigate/click/fill/read/wait/screenshot；origin 以精确 `URL.origin` 校验，并同时用 BrowserContext 首请求 route 与 CDP Fetch 响应阶段拦截阻断未授权 `target=_blank` 和 3xx Location，确保被拒 origin 在真实 Edge smoke 中请求计数为 0。截图与 Profile 目录均做 lexical path、realpath 与 junction/symlink 三层防越界。
+- **Runtime 真链路**：全部聊天 `browser_*` 已从 Renderer `<webview>` 请求-响应回路迁到 Runtime Browser Controller/Worker。外部副作用前先持久化脱敏 `browser.command.started`；`browser_open` 完成结果仍提供去查询串 URL 给右栏预览；真实路径不再发布 `browser.command_requested`。
+- **隐私边界**：填写正文和 URL query 不进入意图事件；完整 Browser Worker 结果只供当前 Provider 工具轮使用。SQLite `tool.completed` 只保留脱敏 URL、结果元数据、正文/链接/按钮/输入数量与截图引用；失败时仅保存固定错误摘要、错误码和 failureClass，不复制 Playwright 原始错误、网页正文、selector、URL path/query/hash 或页面秘密。
+- **默认数据目录**：生产 Profile 根目录为 `dirname(sync-think.db)/browser-profiles`；可用 `SYNC_THINK_BROWSER_EXECUTABLE` 指定 Edge/Chrome。`playwright-core` 是唯一新增依赖，不包含浏览器二进制。
+- **验证**：Browser 聚焦 15/15（含 Host 级硬期限、release/acquire 竞态、Profile junction/dangling link 拒绝），真实 Edge CDP smoke 2/2（基础动作 + 未授权 302/popup 目标请求计数为 0）；Workers 全量 67/67、typecheck/lint/build；Runtime Browser 工具链 2/2、单 worker 全量 56 文件/354 项、typecheck/lint/build；`git diff --check` 退出码 0。Desktop 旧桥兼容仍沿用上一轮 13/13、typecheck/build 证据，本次未改 Desktop 路径。
+- **明确限制**：本次只完成 P0.1/P0.2。origin grant 当前按 owner 内存保存且由成功 `browser_open` 临时建立；命令/授权持久化、敏感动作审批与幂等恢复属于 P0.3，Team Step 属于 P0.4，持久 `waiting_user` 与人工接管属于 P0.5。路线图主项保持未完成。
+
+## 2026-07-29 · NewMax P2：Agent Skill 默认继承、会话覆盖与自动 Step 隔离
+
+- **协议语义**：`task.appendMessage` 增加可选 `skillVersionIds?: string[]`。`undefined` 保持旧客户端兼容并继承 Agent allowlist，`[]` 表示本轮明确不加载 Skill，非空数组只接受 trim、按首次出现去重后的最多 8 个精确不可变 SkillVersion ID。
+- **Runtime 权威边界**：本轮选择必须是有效 Agent allowlist 的子集，并在用户消息落库与 Run 启动前完成存在、未归档和权限已批准校验；Renderer 校验只改善体验，不承担授权。
+- **上下文同源**：Runtime 只按最终选中的精确 ID 加载完整 Skill。Context Packet、Provider system prompt、Context Manifest、fallback/rebind/retry 和恢复共用同一冻结快照；被 Context 选择排除或截断的 Skill 不会从第二条路径进入 Provider。
+- **持久化边界**：Run event/checkpoint 只保存 SkillVersion ID、fingerprint 等完整性信息，不复制 `SKILL.md` 正文。Runtime 重启后从不可变 Skill store 重新加载并核对 fingerprint，Agent 后续换绑不会改写历史 Run。
+- **Desktop 交互**：新增 `TurnSkillControl`。Agent 对话默认启用自身装备列表，Team 对话默认启用 coordinator（缺失时首成员）的装备列表；模型直聊显示 `0/8` 并禁用。菜单首次打开才按有效 owner allowlist 的精确 SkillVersion ID 调用 metadata-only `skill.list`，Renderer 不调用 `skill.get`；支持 loading/error/retry/empty、多选和清空，最多选择 8 个。
+- **会话生命周期**：Composer 只保存当前会话的临时缩减或恢复，不修改 Agent Library。append 成功和失败都保持当前选择；切换到不同 Agent/Team 或有效 owner 时恢复新 owner 默认值，切到模型时恢复 `0/8`，只切换模型 override 不清空 Agent/Team Skill。欢迎页首条消息把临时覆盖交给新会话；重新生成显式发送 `[]`，避免意外继承旧 Run 的 Skill。
+- **自动化小队**：DAG 中每个 Step 直接读取自身冻结 `agentVersionId` 的 `skillVersionIds`，在 Provider 调用前校验并注入对应 Skill 正文；不同成员互不借用 coordinator 或其他成员的 Skill，Artifact metadata 记录实际版本。用户只需在 Agent Library 一次性配置角色能力，自动执行时无需逐 Step 重选。
+- **状态修复**：欢迎页 Agent/Team 草稿切模型只更新模型 override，不再把目标 owner 改成模型 ID；Team coordinator 即使与旧 owner 装备相同 Skill ID，也会按 owner 身份变化恢复默认值；目录等价刷新不会覆盖当前会话的临时选择。
+- **自动化**：Desktop Skill 聚焦 4 文件 / 47 项、Runtime 自动 Step/冻结恢复聚焦 27/27、Runtime 单 worker 全量 54 文件 / 348 项通过；根 test 任务汇总 20/20，强制 typecheck 20/20、lint 11/11、build 11/11 均 0 cache，`git diff --check` 通过。首次强制根 test 在高负载下仅有租约时钟预设先过期，单文件复跑 8/8、Runtime 串行全量 348/348，未放宽断言。
+- **独立复审**：复用唯一 P2 复审智能体确认上轮 Owner、coordinator scope 与文档三项问题均已修复，最终 P0/P1/P2 发现为 0；另补 Team 欢迎页切模型仍保持 owner/default Skill 的组合回归。
+- **Electron 实窗**：最新版 Electron/Runtime 在浅色 1440x900 验证 Team 默认 `1/8`、切换到 `gpt-5.6-sol` 后仍为 `1/8`、菜单显示 `code-review @0.1.0` 与“当前会话临时设置”，模型直聊为禁用 `0/8`；深色 1280x720 的页面/菜单/Compose 均无横纵或内部溢出，alert、console warning/error、pageerror、请求失败和新 stderr 均为 0。临时 QA 小队已删除，窗口恢复浅色 1440x900。
+- **明确限制**：本切片不增加自动 Skill 推荐、项目/任务临时附件、脚本执行、MCP 选择或市场；Composer 只能缩小 Agent 已装备 allowlist，不能扩大权限。
+
+## 2026-07-28 · NewMax P1：项目内容搜索与终端 Pane
+
+- **内容搜索**：文件 Dock 增加“文件名 / 内容”分段模式；正文搜索采用 literal smart-case、300ms 防抖、5 秒期限、最多 200 条和 2 MiB/文件上限。主路径通过 `rg --json` 结构化读取，缺少 `rg` 或启动失败时使用同语义 Node fallback；两条路径统一跳过 symlink/junction、二进制文件、VCS/vendor/build 与本项目临时数据目录。
+- **结果定位**：结果携带相对路径、行、列、单行预览与匹配文本；点击后在当前焦点 Pane 打开文件并定位到命中位置。行列只属于瞬时界面状态，不进入 Workspace 布局快照。
+- **终端 Pane**：terminal 成为与 conversation/file 并列的一等 Tab；`@xterm/xterm` 通过独立 vendor bundle 按需加载，支持 ANSI 输出、命令历史、运行、停止、清空、`Ctrl+C` 和受约束的相对 `cd`。
+- **进程边界**：命令先解析为 executable + argv，再以 `shell:false` 交给 `TerminalProcessWorker`。Main 用 `senderId + terminalId` 原子注册表保证同会话单命令，并在取消、Renderer 销毁和应用退出时等待父子进程清理；POSIX 终止独立进程组，Windows 等待 `taskkill /t /f` 并保留兜底。
+- **状态边界**：Workspace 快照只保存 terminal Tab 身份与相对 cwd；输出、历史、运行态和未提交命令只在 Renderer Session。应用重启后恢复空闲 Tab/cwd，但不会伪装旧进程仍存活。
+- **审查修复**：覆盖快速命令事件早于 IPC reply、旧 reply 清空新输入、并发启动占位、Renderer 校验期间销毁、搜索新查询取消旧查询、`rg` 部分文件锁定 code 2、双引擎排除目录与 `--no-ignore` 一致性、xterm 加载重试和浅深主题同步等竞态/边界。
+- **自动化**：P1 聚焦 Desktop 9 文件 / 71 项；Terminal Worker 8/8；Pane + Shell 42/42。最终全仓强制 test 20/20 tasks（0 cache）、typecheck 20/20 tasks（0 cache）、lint 11/11 tasks、build 11/11 tasks（0 cache）全部通过。
+- **Electron 实窗**：内容搜索命中 `ProjectTerminalRegistry` 并定位到 `12:14`；延迟双段输出、停止父子进程、历史、清空、`cd apps/desktop`、Workspace 往返和冷重启恢复均通过。浅色 1440×900、深色 1280×720 均无页面溢出、alert 或终端三区重叠，xterm 背景随主题同步。
+- **明确限制**：当前是受控命令终端，不是 PTY；不包含交互 stdin、shell completion、持久 PowerShell/cmd 或应用重启后的进程续接。引入 `node-pty` 需重新走技术选择与打包/权限门禁。
+
+## 2026-07-28 · NewMax P0：递归工作区、流式合批与可编辑文件
+
+- 工作区主舞台由单一/双聊天状态升级为版本化递归 Pane 树；支持横向/纵向嵌套分屏、20%–80% 比例、鼠标拖动、键盘调整、Pane 焦点与每 Pane 独立 Tab 条，并从旧对话 Tab 偏好一次性迁移。
+- Pane 快照按 Workspace 写入本地 UI preferences；对话与文件资源可恢复，文件正文、未保存草稿、loading/error、transient cursor 不进入快照。任意深度布局仍最多同时挂载 2 个 `ChatView`，避免重复 transient subscription。
+- transient text/reasoning frame 进入 Renderer 后用 `requestAnimationFrame` 合批；成功仍只写最终 assistant message，失败/取消则把已产生的部分正文持久化后再发布终态，重启后不再丢掉用户已经看到的半段回答。
+- 新增受 Workspace root 约束的文件服务：读取返回 `mtimeMs/size`，保存携带 expected metadata 并通过同目录临时文件 + rename 原子替换；绝对路径、路径穿越与 symlink/junction 越界均拒绝。
+- 文件监听使用父目录 `fs.watch`、100ms 事件合并与 5 秒轮询兜底，并按 Renderer sender 自动释放。干净文件外部变化自动刷新；脏文件进入“加载磁盘版本 / 覆盖磁盘版本”冲突条。
+- 文件编辑器使用现有 React + `<textarea>`，未新增重型依赖；支持 `Ctrl+S`、保存状态、内存草稿恢复、关闭脏文件/Pane 二次确认，以及文件标签未保存圆点。脏状态按 `workspaceId + path` 隔离，同名文件不会跨工作区串状态。
+- 验证：文件/Pane/流式聚焦 10 文件 / 70 项通过；脏状态集成 4 文件 / 34 项通过；Desktop 全量 87 文件 / 633 项、Runtime 全量 52 文件 / 337 项；全仓强制 test 20/20 tasks（0 cache，串行规避 Windows 进程测试资源竞争）、typecheck 20/20 tasks、build 11/11 tasks 通过。
+- Electron 实窗：1440×900 浅色窗口完成文件树打开、未保存圆点、`Ctrl+S` 写盘、Tab/Workspace 草稿恢复、干净外改自动刷新、脏外改冲突、加载/覆盖磁盘版本和关闭确认；横向双 Pane 键盘从 50% 调到 55%，Workspace 往返与 Electron 重启均恢复 2 Pane/55%。检查结束后关闭新增 Pane 与测试文件，文档横纵溢出均为 0。
+
+## 2026-07-28 · 递归 Pane P0 边界审查修复
+
+- Pane 布局提交改为基于最新 Workspace 快照的函数式更新；延迟完成的新建/复制不会覆盖期间发生的分屏、重排，也不会把旧 Workspace 对话写入当前导航状态。
+- 恢复或激活深层 Pane 树时最多挂载两路 `ChatView`，焦点 Pane 优先，额外 Pane/Tab 与布局快照完整保留。
+- 快照解析与 legacy 迁移拒绝 `__proto__`、`constructor`、`prototype` 保留键，并用 own-property 判断阻断原型链误命中。
+- 每 Pane 明确限制 100 个 Tab；达到上限时保留活动 Tab 与最新 99 个其他 Tab，内存、迁移、写盘与恢复使用同一规则。
+- Pane 增加键盘 `focus` 捕获；从 Pane 新建对话直接继承该 Pane 的 track/target，不依赖尚未提交的全局导航状态。
+- 仅 talk stage、无 draft、无 settings 遮罩且实际挂载的活动 Pane 会被标记已读。
+- TDD 聚焦验证：Pane layout、WorkspacePaneHost、ConversationTabs、ShellApp、UI preferences 共 5 文件 / 51 项通过；Desktop 全量 85 文件 / 623 项、typecheck 与 `git diff --check` 通过。
+
+## 2026-07-28 · 会话上下文性能 S6 第二切片：可见过程预取与锚点收敛
+
+- 历史 run process 查询已收敛到可见/overscan 消息窗口，离屏查询不再发起，离屏失败重试 timer 会取消。
+- 修复向上分页锚点：保留触发加载前的原始 scrollTop，再叠加 scrollHeight 增量；动态高度变化只补偿完全位于视口上方的消息。
+- 新增几何回归覆盖分页原偏移、动态高度补偿边界；S6 第二切片聚焦测试 13/13 通过。
+
+## 2026-07-28 · 会话上下文性能 S6 首切片：动态高度消息 Windowing
+
+- ChatView durable 历史消息改为视口窗口渲染，使用动态高度测量、上下 overscan 与 spacer，1000 条消息的挂载范围保持常数级。
+- streaming assistant、optimistic user、本地错误和审批卡仍稳定挂载在尾部，不受历史窗口切换影响。
+- `ResizeObserver` 校准 Markdown/过程/图片等动态高度，并对视口上方测量差补偿 scrollTop；scroll 状态通过 requestAnimationFrame 合并。
+- 新增纯算法测试覆盖 1000 条有界窗口、动态高度几何与空/单消息边界；Desktop typecheck、79 文件全量测试及全仓 11/11 build 通过。
+- 下一切片：实窗验收分页锚点/自动滚底/代码与图片交互，并让历史 run process 预取跟随可见窗口。
+
+## 2026-07-28 · 会话上下文性能 S5 完成：Context Truth 同源收口
+
+- `conversation.getContextStatus` 的 cache-miss 路径不再使用简化 system prompt 和空 tools；它与真实 Provider 调用共用默认上下文快照构造器。
+- cache-miss 按 thread 解析 workspace folder、execution mode、Agent/Skill/MCP 和工具能力，system/agent/project/tools breakdown 与下一次真实请求一致。
+- 保留 compact 的独立 `systemPromptOverride`，不会把摘要专用请求污染到普通会话上下文缓存。
+- 新增 cache-miss → 首次 Provider 请求一致性回归；Runtime 52 文件/335 项测试通过。
+- `dev:runtime:pipe-test` 改为无副作用的 handshake + healthcheck，不再从 cursor 0 全库 replay 或写入测试消息，历史库规模不再造成启动 smoke 假超时。
 
 - 新增 `ContextSnapshotBuilder` 与 `conversation.getContextStatus`；Provider 请求和 Runtime status 统一输出 system/agent/project/summary/messages/tools 六类 token 构成，Renderer 不再使用 chars/4、provider.usage 或本地 context window 推导。
 - compact 阈值改由 Runtime `usageRatio >= compactThreshold(0.7)` 判定；manual/auto compact 完成后，Renderer token 状态继续只读取 Runtime status。

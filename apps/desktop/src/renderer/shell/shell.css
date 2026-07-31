@@ -418,8 +418,22 @@ body {
   border-radius: var(--radius-card, 10px);
   background: var(--color-overlay);
   box-shadow: 0 12px 32px color-mix(in srgb, #000 18%, transparent);
-  animation: st-popover-in var(--shell-motion-fast, 110ms)
+  /* Keep the horizontal centering transform during the entrance animation.
+     st-popover-in ends with transform:none, which cancels translateX(-50%)
+     and leaves this list visibly offset from its capsule. */
+  animation: shell-task-popover-in var(--shell-motion-fast, 110ms)
     var(--shell-ease-out, cubic-bezier(0.16, 1, 0.3, 1)) both;
+}
+
+@keyframes shell-task-popover-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
 }
 
 .shell-task-capsule__pop-title {
@@ -594,6 +608,12 @@ body {
 .shell-chat-content-wrap {
   padding-left: 16px;
   padding-right: 16px;
+}
+
+/* Message windowing owns viewport anchoring. Chromium's native scroll anchoring
+ * would otherwise compensate the same spacer/height updates a second time. */
+.shell-chat-message-scroller {
+  overflow-anchor: none;
 }
 .shell-chat-content {
   width: 100%;
@@ -1851,6 +1871,7 @@ body {
      internally instead of growing without bound. */
   max-height: 420px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .shell-process-group__body > :last-child {
@@ -2455,6 +2476,7 @@ body {
   padding: 8px 12px 10px;
   max-height: 220px;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .shell-reasoning__text {
@@ -5875,6 +5897,400 @@ body {
 
 /* ============ Split view (dual-talk) ============ */
 
+.shell-pane-tree,
+.shell-pane-split,
+.shell-pane-branch,
+.shell-workspace-pane {
+  min-width: 0;
+  min-height: 0;
+}
+
+.shell-pane-tree {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.shell-pane-split {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.shell-pane-split--horizontal {
+  flex-direction: row;
+}
+
+.shell-pane-split--vertical {
+  flex-direction: column;
+}
+
+.shell-pane-branch {
+  display: flex;
+  overflow: hidden;
+}
+
+.shell-pane-branch--secondary {
+  flex: 1 1 0;
+}
+
+.shell-workspace-pane {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 1px transparent;
+  transition: box-shadow var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-workspace-pane--focused {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 42%, transparent);
+}
+
+.shell-pane-tree-divider {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  border: 0;
+  outline: 0;
+  background: var(--color-border);
+  transition: background var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-pane-tree-divider--horizontal {
+  width: 5px;
+  margin: 0 -2px;
+}
+
+.shell-pane-tree-divider--vertical {
+  height: 5px;
+  margin: -2px 0;
+}
+
+.shell-pane-tree-divider:hover,
+.shell-pane-tree-divider:active,
+.shell-pane-tree-divider:focus-visible {
+  background: color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
+}
+
+.shell-pane-tree-divider:focus-visible::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 1px solid var(--color-accent);
+  pointer-events: none;
+}
+
+.shell-pane-drop-overlay {
+  border: 2px dashed color-mix(in srgb, var(--color-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.shell-file-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-page);
+}
+
+.shell-file-pane-header {
+  display: flex;
+  flex: 0 0 34px;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.shell-file-pane-path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text);
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-file-pane-status {
+  flex: 0 0 auto;
+  color: var(--color-text-faint);
+  font-size: 10px;
+}
+
+.shell-file-pane-status.is-dirty {
+  color: var(--color-warning);
+}
+
+.shell-file-pane-icon-button {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-text-faint);
+  background: transparent;
+}
+
+.shell-file-pane-icon-button:hover:not(:disabled),
+.shell-file-pane-icon-button:focus-visible {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.shell-file-pane-icon-button:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.shell-file-pane-icon-button:disabled {
+  opacity: 0.45;
+}
+
+.shell-file-pane-conflict,
+.shell-file-pane-error {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-warning) 34%, var(--color-border));
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 9%, var(--color-surface));
+  font-size: 11px;
+}
+
+.shell-file-pane-conflict button {
+  display: inline-flex;
+  min-height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 38%, var(--color-border));
+  border-radius: 5px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: 10.5px;
+}
+
+.shell-file-pane-conflict button:hover,
+.shell-file-pane-conflict button:focus-visible {
+  border-color: var(--color-warning);
+  background: var(--color-hover);
+}
+
+.shell-file-pane-error {
+  border-bottom-color: color-mix(in srgb, var(--color-error) 34%, var(--color-border));
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 8%, var(--color-surface));
+}
+
+.shell-file-pane-editor-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.shell-file-pane-loading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+
+.shell-file-pane-editor {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  resize: none;
+  border: 0;
+  outline: 0;
+  padding: 12px 14px 28px;
+  color: var(--color-text);
+  caret-color: var(--color-accent);
+  background: var(--color-page);
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  tab-size: 2;
+}
+
+.shell-file-pane-editor:focus {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 38%, transparent);
+}
+
+.shell-file-pane-editor:disabled {
+  opacity: 0.72;
+}
+
+.shell-terminal-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-page);
+}
+
+.shell-terminal-header {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.shell-terminal-cwd {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text);
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-terminal-status {
+  flex: 0 0 auto;
+  color: var(--color-text-faint);
+  font-size: 10px;
+}
+
+.shell-terminal-status[data-status='running'],
+.shell-terminal-status[data-status='starting'] {
+  color: var(--color-accent-text);
+}
+
+.shell-terminal-status[data-status='stopping'] {
+  color: var(--color-warning);
+}
+
+.shell-terminal-status[data-status='error'] {
+  color: var(--color-error);
+}
+
+.shell-terminal-output {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: var(--color-page);
+}
+
+.shell-terminal-output .xterm {
+  height: 100%;
+  padding: 10px 12px;
+}
+
+.shell-terminal-output .xterm-viewport {
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+.shell-terminal-load-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  color: var(--color-error);
+  font-size: 11px;
+}
+
+.shell-terminal-commandbar {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 38px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px 5px 11px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.shell-terminal-prompt {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.shell-terminal-commandbar input {
+  min-width: 0;
+  height: 28px;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  color: var(--color-text);
+  background: transparent;
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
+  font-size: 11.5px;
+}
+
+.shell-terminal-commandbar input::placeholder {
+  color: var(--color-text-faint);
+}
+
+.shell-terminal-commandbar input:focus {
+  box-shadow: inset 0 -1px 0 var(--color-accent);
+}
+
+.shell-terminal-run {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+}
+
+.shell-terminal-run.is-stop {
+  color: #fff;
+  background: var(--color-error);
+}
+
+.shell-terminal-run:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.shell-terminal-run:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 .shell-split-pane {
   /* flex-basis carries the ratio; both panes must be allowed to shrink,
      but never below a usable chat width — otherwise a narrow window (or a
@@ -6188,7 +6604,7 @@ body {
 }
 
 .shell-tab-ctx-menu__item.is-danger:hover:not(:disabled) {
-  color: var(--color-error, #e5484d);
+  color: var(--color-error);
 }
 
 @keyframes shell-pop-in {

@@ -255,6 +255,19 @@ describe('skill commands (§9 import + agent allowlist)', () => {
     expect(list.some((s) => s.skillVersionId === skillVersionId)).toBe(true);
     expect(list.some((s) => s.name === 'with-scripts')).toBe(true);
 
+    const exactListed = await writeAndRead(sock, reader, {
+      id: 'skill-list-exact',
+      kind: 'request',
+      type: 'skill.list',
+      payload: { skillVersionIds: [skillVersionId] },
+    });
+    expect(exactListed.error).toBeUndefined();
+    expect(
+      (exactListed.payload as { skills: Array<{ skillVersionId: string }> }).skills.map(
+        (skill) => skill.skillVersionId,
+      ),
+    ).toEqual([skillVersionId]);
+
     // Agent still has empty allowlist until explicit bind
     const agentBefore = await writeAndRead(sock, reader, {
       id: 'agent-get-1',
@@ -324,22 +337,19 @@ describe('skill commands (§9 import + agent allowlist)', () => {
       summaries?: Array<{ sourceId: string; summary: string }>;
     };
     expect(Array.isArray(peekBody.skillVersionIds)).toBe(true);
-    expect(peekBody.skillVersionIds).toContain(skillVersionId);
+    expect(peekBody.skillVersionIds).toEqual([]);
 
-    // §10.2 — allowlisted skill body enters packet as skill-definition source
+    // Read-only maintenance paths have no per-turn draft selection and must not
+    // inherit or load the Agent's full Skill allowlist.
     expect(Array.isArray(peekBody.includedSources)).toBe(true);
     const skillSources = (peekBody.includedSources ?? []).filter(
       (src) => src.kind === 'skill-definition',
     );
-    expect(skillSources.length).toBeGreaterThanOrEqual(1);
-    expect(skillSources.some((src) => src.id.includes(skillVersionId) || src.id.startsWith('skill:'))).toBe(
-      true,
-    );
+    expect(skillSources).toEqual([]);
     const skillSummaries = (peekBody.summaries ?? []).filter((row) =>
       row.sourceId.startsWith('skill:'),
     );
-    expect(skillSummaries.length).toBeGreaterThanOrEqual(1);
-    expect(skillSummaries[0]?.summary).toMatch(/minimal|Skill/i);
+    expect(skillSummaries).toEqual([]);
 
     // Empty allowlist → no skill-definition (install ≠ available)
     const cleared = await writeAndRead(sock, reader, {

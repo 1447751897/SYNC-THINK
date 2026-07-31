@@ -119,3 +119,27 @@ Renderer 由 `apps/desktop/scripts/build-renderer.mjs` 打包为本地 JS/CSS，
 4. 关闭 Electron 不应结束 Runtime PID。
 5. Runtime 重启后应从 SQLite checkpoint 续跑；客户端按 cursor 自动重连并补收 durable events。
 6. Electron 控制台不得出现 CSP、安全、preload 或 renderer 异常。
+
+## 7. Browser Worker 本机验证
+
+生产 Runtime 默认在数据库同级创建独立浏览器 Profile：
+
+```text
+%LOCALAPPDATA%\SYNC-THINK\browser-profiles\default
+```
+
+浏览器发现顺序为：显式覆盖、Microsoft Edge、Google Chrome。需要指定便携版或非标准安装位置时，仅在启动 Runtime 的终端设置：
+
+```powershell
+$env:SYNC_THINK_BROWSER_EXECUTABLE = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+```
+
+真实 CDP smoke 会打开一个可见系统浏览器，使用临时 Profile 和本地 HTTP 页面，完成后关闭并清理：
+
+```powershell
+$env:SYNC_THINK_BROWSER_SMOKE = '1'
+pnpm --filter @sync-think/workers exec vitest run src/browser/browser-host.smoke.test.ts
+Remove-Item Env:SYNC_THINK_BROWSER_SMOKE
+```
+
+普通 `pnpm test` 默认跳过该 smoke，避免每次回归弹出浏览器。不要把默认 Edge/Chrome 用户数据目录配置为 Sync-Think Profile；登录态必须留在专用 Profile 中。

@@ -162,9 +162,8 @@ export interface CommandResponse<T = unknown> {
 
 // --- per-command payload shapes ---
 
-export interface HealthcheckPayload {
-  /** Empty for Phase 0; later carries negotiated feature masks. */
-}
+/** Empty for Phase 0; later carries negotiated feature masks. */
+export type HealthcheckPayload = Record<string, never>;
 
 export interface HealthcheckResponse {
   runtimePid: number;
@@ -203,9 +202,8 @@ export interface BindWorkspaceFolderResponse {
   updatedAt: string;
 }
 
-export interface ListWorkspacesPayload {
-  /** Reserved for future filters; currently unused. */
-}
+/** Reserved for future filters; currently unused. */
+export type ListWorkspacesPayload = Record<string, never>;
 
 export interface WorkspaceSummary {
   workspaceId: WorkspaceId;
@@ -385,6 +383,11 @@ export interface AppendMessagePayload {
    * 不落库；仅影响当前 live run。
    */
   networkEnabled?: boolean;
+  /**
+   * Exact immutable Skill versions selected for this turn.
+   * Undefined keeps the legacy Agent-default behavior; [] explicitly loads none.
+   */
+  skillVersionIds?: string[];
   /** Optional vision inputs for this user turn (live run only). */
   images?: AppendMessageImage[];
   /** Set when assistant message originates from a Run step. */
@@ -828,9 +831,8 @@ export interface ImportCcSwitchResponse {
   failedCount: number;
 }
 
-export interface ListProvidersPayload {
-  /** Reserved for filters. */
-}
+/** Reserved for filters. */
+export type ListProvidersPayload = Record<string, never>;
 
 export interface ListProvidersResponse {
   providers: ProviderSummary[];
@@ -1666,9 +1668,8 @@ export interface AgentDefinitionSummary extends AgentBindingSummary {
   artifactRules: import('@sync-think/shared').AgentArtifactRules;
 }
 
-export interface ListAgentsPayload {
-  /** Reserved for future workspace/role filters. */
-}
+/** Reserved for future workspace/role filters. */
+export type ListAgentsPayload = Record<string, never>;
 
 export interface ListAgentsResponse {
   agents: AgentDefinitionSummary[];
@@ -1786,6 +1787,8 @@ export interface ImportSkillResponse {
 
 export interface ListSkillsPayload {
   limit?: number;
+  /** Exact immutable versions for an Agent picker; metadata only, max Agent allowlist size. */
+  skillVersionIds?: string[];
 }
 
 export interface ListSkillsResponse {

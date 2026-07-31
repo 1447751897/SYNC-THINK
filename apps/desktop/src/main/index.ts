@@ -17,6 +17,7 @@ import {
   shell,
 } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
+import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -29,6 +30,24 @@ import {
   type M1OpenDocId,
 } from './m1-open-doc.js';
 import { listProjectFiles } from './project-files.js';
+import {
+  ProjectContentSearchRegistry,
+  searchProjectContent,
+} from './project-content-search.js';
+import {
+  parseProjectTerminalCommand,
+  resolveProjectTerminalCwd,
+} from './project-terminal.js';
+import {
+  ProjectTerminalRegistry,
+  type ProjectTerminalReservation,
+} from './project-terminal-registry.js';
+import {
+  readProjectFile,
+  watchProjectFile,
+  writeProjectFile,
+  type ProjectFileChange,
+} from './project-file-editor.js';
 import { findDeepLinkInArgv, parseDeepLinkUrl } from './deep-link.js';
 import { listDogfoodDayReports } from './m1-exit-evidence-load.js';
 import { parseHandtestDocMarkdown } from '../m1-handtest-doc-parse.js';
@@ -36,6 +55,7 @@ import { fileURLToPath } from 'node:url';
 import {
   encodeFrame,
   decodeFrames,
+  normalizeSelectedSkillVersionIds,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
 } from '@sync-think/protocol';
@@ -179,6 +199,14 @@ import { ensureRuntimeProcess, stopManagedRuntime } from './runtime-supervisor.j
 import { stageChatImageDataUrl } from './image-staging.js';
 import { messageImageUrl, persistMessageImages, readMessageImage } from './message-images.js';
 import type { RuntimeConnectOutcome, RuntimeConnectResult } from '../runtime-bridge-contract.js';
+import { TerminalProcessWorker, type TerminalWorkerOutput } from '@sync-think/workers';
+import type {
+  CancelProjectTerminalPayload,
+  ProjectTerminalEvent,
+  SearchProjectContentPayload,
+  StartProjectTerminalPayload,
+  StartProjectTerminalResult,
+} from '../workspace-tools-contract.js';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -195,6 +223,26 @@ let trustedRendererLocation: TrustedRendererLocation | null = null;
 let runtimeClient: RuntimePipeClient | null = null;
 let runtimeSession: RuntimeSession | null = null;
 const transientCleanupRegisteredSenders = new Set<number>();
+const projectFileWatchCleanupRegisteredSenders = new Set<number>();
+const projectFileWatchSubscriptions = new Map<
+  string,
+  { senderId: number; dispose: () => void }
+>();
+const projectTerminalCleanupRegisteredSenders = new Set<number>();
+const projectContentSearchCleanupRegisteredSenders = new Set<number>();
+const projectContentSearchRegistry = new ProjectContentSearchRegistry();
+
+interface ActiveProjectTerminalCommand {
+  senderId: number;
+  terminalId: string;
+  commandId: string;
+  root: string;
+  cwd: string;
+  controller: AbortController;
+  sender: IpcMainInvokeEvent['sender'];
+}
+
+const projectTerminalRegistry = new ProjectTerminalRegistry<ActiveProjectTerminalCommand>();
 
 function createWindow(): void {
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -313,6 +361,159 @@ function sendRuntimeTransientFrameToRenderer(
     return;
   }
   sender.send('runtime:conversation-transient', { subscriptionId, ...payload });
+}
+
+function projectFileWatchKey(senderId: number, subscriptionId: string): string {
+  return `${senderId}:${subscriptionId}`;
+}
+
+function disposeProjectFileWatchesForSender(senderId: number): void {
+  for (const [key, subscription] of projectFileWatchSubscriptions) {
+    if (subscription.senderId !== senderId) continue;
+    subscription.dispose();
+    projectFileWatchSubscriptions.delete(key);
+  }
+}
+
+function sendProjectFileChangeToRenderer(
+  sender: IpcMainInvokeEvent['sender'],
+  subscriptionId: string,
+  change: ProjectFileChange,
+): void {
+  const location = trustedRendererLocation;
+  if (!location || sender.isDestroyed() || !isTrustedRendererUrl(sender.getURL(), location)) {
+    return;
+  }
+  sender.send('desktop:project-file-changed', { subscriptionId, change });
+}
+
+function registerProjectContentSearchSenderCleanup(sender: IpcMainInvokeEvent['sender']): void {
+  if (projectContentSearchCleanupRegisteredSenders.has(sender.id)) return;
+  projectContentSearchCleanupRegisteredSenders.add(sender.id);
+  sender.once('destroyed', () => {
+    projectContentSearchCleanupRegisteredSenders.delete(sender.id);
+    projectContentSearchRegistry.abortForSender(sender.id);
+  });
+}
+
+function sendProjectTerminalEvent(
+  sender: IpcMainInvokeEvent['sender'],
+  event: ProjectTerminalEvent,
+): void {
+  const location = trustedRendererLocation;
+  if (!location || sender.isDestroyed() || !isTrustedRendererUrl(sender.getURL(), location)) {
+    return;
+  }
+  sender.send('desktop:project-terminal-event', event);
+}
+
+function abortProjectTerminalsForSender(senderId: number): void {
+  projectTerminalRegistry.abortForSender(senderId);
+}
+
+function abortAllProjectTerminals(): void {
+  projectTerminalRegistry.abortAll();
+}
+
+function registerProjectTerminalSenderCleanup(sender: IpcMainInvokeEvent['sender']): void {
+  if (projectTerminalCleanupRegisteredSenders.has(sender.id)) return;
+  projectTerminalCleanupRegisteredSenders.add(sender.id);
+  sender.once('destroyed', () => {
+    projectTerminalCleanupRegisteredSenders.delete(sender.id);
+    abortProjectTerminalsForSender(sender.id);
+  });
+}
+
+async function streamProjectTerminalCommand(
+  command: ActiveProjectTerminalCommand,
+  reservation: ProjectTerminalReservation<ActiveProjectTerminalCommand>,
+  executable: string,
+  args: string[],
+): Promise<void> {
+  try {
+    const events = new TerminalProcessWorker().exec(
+      {
+        workingDir: command.root,
+        action: {
+          command: executable,
+          args,
+          cwd: command.cwd || '.',
+        },
+      },
+      {
+        token: randomUUID(),
+        allowedRoot: command.root,
+        allowedCommands: [executable],
+        timeoutMs: 10 * 60_000,
+        maxOutputBytes: 256 * 1024,
+        signal: command.controller.signal,
+      },
+    );
+    for await (const workerEvent of events) {
+      if (workerEvent.type === 'stdout' || workerEvent.type === 'stderr') {
+        sendProjectTerminalEvent(command.sender, {
+          terminalId: command.terminalId,
+          commandId: command.commandId,
+          type: workerEvent.type,
+          text: workerEvent.text,
+        });
+        continue;
+      }
+      if (workerEvent.type === 'completed') {
+        const output = workerEvent.output as TerminalWorkerOutput;
+        sendProjectTerminalEvent(command.sender, {
+          terminalId: command.terminalId,
+          commandId: command.commandId,
+          type: 'completed',
+          exitCode: typeof output.exitCode === 'number' ? output.exitCode : null,
+          truncated: output.truncated === true,
+          cwd: command.cwd,
+        });
+        continue;
+      }
+      if (workerEvent.type === 'failed') {
+        if (command.controller.signal.aborted || workerEvent.error.code === 'worker.aborted') {
+          sendProjectTerminalEvent(command.sender, {
+            terminalId: command.terminalId,
+            commandId: command.commandId,
+            type: 'cancelled',
+            cwd: command.cwd,
+          });
+        } else {
+          sendProjectTerminalEvent(command.sender, {
+            terminalId: command.terminalId,
+            commandId: command.commandId,
+            type: 'failed',
+            failureClass: workerEvent.failureClass,
+            code: workerEvent.error.code,
+            message: workerEvent.error.message,
+            cwd: command.cwd,
+          });
+        }
+      }
+    }
+  } catch (error) {
+    if (command.controller.signal.aborted) {
+      sendProjectTerminalEvent(command.sender, {
+        terminalId: command.terminalId,
+        commandId: command.commandId,
+        type: 'cancelled',
+        cwd: command.cwd,
+      });
+    } else {
+      sendProjectTerminalEvent(command.sender, {
+        terminalId: command.terminalId,
+        commandId: command.commandId,
+        type: 'failed',
+        failureClass: 'unknown',
+        code: 'terminal.stream-failed',
+        message: errorMessage(error),
+        cwd: command.cwd,
+      });
+    }
+  } finally {
+    projectTerminalRegistry.release(reservation);
+  }
 }
 
 // ─── Deep links (syncthink://conversation/{id}) ───────────────────────────
@@ -497,7 +698,11 @@ function parseAppendMessagePayload(value: unknown): AppendMessagePayload {
   if (payload.networkEnabled !== undefined && typeof payload.networkEnabled !== 'boolean') {
     throw new Error('Invalid append-message networkEnabled');
   }
-  return payload as AppendMessagePayload;
+  const skillVersionIds = normalizeSelectedSkillVersionIds(payload.skillVersionIds);
+  return {
+    ...payload,
+    ...(skillVersionIds === undefined ? {} : { skillVersionIds }),
+  } as AppendMessagePayload;
 }
 
 function parseCancelRunPayload(value: unknown): CancelRunPayload {
@@ -1507,7 +1712,7 @@ function setupRuntimeBridge(): void {
       if (buffer.byteLength > MAX_BYTES) {
         throw new Error('文件超过 2 MB 限制');
       }
-      const text = buffer.toString('utf8').replace(/^﻿/, '');
+      const text = buffer.toString('utf8').replace(/^\uFEFF/, '');
       if (!text.trim()) throw new Error('下载内容为空');
       return { url: parsed.toString(), skillMd: text };
     } finally {
@@ -1541,13 +1746,155 @@ function setupRuntimeBridge(): void {
     return { root, files };
   });
 
+  ipcMain.handle('desktop:search-project-content', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid search-project-content payload');
+    }
+    const payload = value as Partial<SearchProjectContentPayload>;
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid search-project-content payload: root required');
+    }
+    if (typeof payload.query !== 'string' || !payload.query.trim()) {
+      throw new Error('Invalid search-project-content payload: query required');
+    }
+    if (
+      payload.maxResults !== undefined &&
+      (!Number.isFinite(payload.maxResults) || payload.maxResults < 1)
+    ) {
+      throw new Error('Invalid search-project-content payload: maxResults invalid');
+    }
+    const controller = projectContentSearchRegistry.begin(event.sender.id);
+    registerProjectContentSearchSenderCleanup(event.sender);
+    try {
+      return await searchProjectContent({
+        root: payload.root,
+        query: payload.query,
+        ...(payload.maxResults === undefined ? {} : { maxResults: payload.maxResults }),
+        signal: controller.signal,
+      });
+    } finally {
+      projectContentSearchRegistry.release(event.sender.id, controller);
+    }
+  });
+
+  ipcMain.handle('desktop:start-project-terminal', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid start-project-terminal payload');
+    }
+    const payload = value as Partial<StartProjectTerminalPayload>;
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid start-project-terminal payload: root required');
+    }
+    if (
+      typeof payload.terminalId !== 'string' ||
+      !payload.terminalId.trim() ||
+      payload.terminalId.length > 200 ||
+      payload.terminalId.includes('\0')
+    ) {
+      throw new Error('Invalid start-project-terminal payload: terminalId required');
+    }
+    if (typeof payload.commandLine !== 'string' || !payload.commandLine.trim()) {
+      throw new Error('Invalid start-project-terminal payload: commandLine required');
+    }
+    if (typeof payload.cwd !== 'string' || payload.cwd.length > 4_096) {
+      throw new Error('Invalid start-project-terminal payload: cwd required');
+    }
+    const terminalId = payload.terminalId.trim();
+    const reservation = projectTerminalRegistry.reserve(event.sender.id, terminalId);
+    if (!reservation) {
+      throw new Error('Terminal session is already running a command');
+    }
+    registerProjectTerminalSenderCleanup(event.sender);
+    let keepReservation = false;
+    try {
+      if (event.sender.isDestroyed() || reservation.controller.signal.aborted) {
+        throw new Error('Terminal start was cancelled before validation');
+      }
+      const cwdInput = payload.cwd.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+      if (
+        path.isAbsolute(cwdInput) ||
+        path.win32.isAbsolute(cwdInput) ||
+        cwdInput.split('/').some((part) => part === '..')
+      ) {
+        throw new Error('Terminal cwd must stay inside the project root');
+      }
+      const parsed = parseProjectTerminalCommand(payload.commandLine);
+      const commandId = randomUUID();
+      if (parsed.kind === 'cd') {
+        const resolved = await resolveProjectTerminalCwd(
+          payload.root,
+          cwdInput,
+          parsed.path,
+        );
+        if (event.sender.isDestroyed() || reservation.controller.signal.aborted) {
+          throw new Error('Terminal start was cancelled during validation');
+        }
+        return {
+          terminalId,
+          commandId,
+          cwd: resolved.cwd,
+          state: 'completed',
+        } satisfies StartProjectTerminalResult;
+      }
+      const resolved = await resolveProjectTerminalCwd(payload.root, '', cwdInput || '.');
+      if (event.sender.isDestroyed() || reservation.controller.signal.aborted) {
+        throw new Error('Terminal start was cancelled during validation');
+      }
+      const command: ActiveProjectTerminalCommand = {
+        senderId: event.sender.id,
+        terminalId,
+        commandId,
+        root: resolved.root,
+        cwd: resolved.cwd,
+        controller: reservation.controller,
+        sender: event.sender,
+      };
+      if (!projectTerminalRegistry.activate(reservation, command)) {
+        throw new Error('Terminal start was cancelled during validation');
+      }
+      keepReservation = true;
+      void streamProjectTerminalCommand(command, reservation, parsed.command, parsed.args);
+      return {
+        terminalId,
+        commandId,
+        cwd: resolved.cwd,
+        state: 'running',
+      } satisfies StartProjectTerminalResult;
+    } finally {
+      if (!keepReservation) projectTerminalRegistry.release(reservation);
+    }
+  });
+
+  ipcMain.handle('desktop:cancel-project-terminal', (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid cancel-project-terminal payload');
+    }
+    const payload = value as Partial<CancelProjectTerminalPayload>;
+    if (typeof payload.terminalId !== 'string' || !payload.terminalId.trim()) {
+      throw new Error('Invalid cancel-project-terminal payload: terminalId required');
+    }
+    if (typeof payload.commandId !== 'string' || !payload.commandId.trim()) {
+      throw new Error('Invalid cancel-project-terminal payload: commandId required');
+    }
+    return {
+      cancelled: projectTerminalRegistry.cancel(
+        event.sender.id,
+        payload.terminalId.trim(),
+        payload.commandId.trim(),
+      ),
+    };
+  });
+
   ipcMain.handle('runtime:run-cancel', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('run.cancel', parseCancelRunPayload(value));
   });
 
-  // 右栏「文件」面板：读取项目内单个文本文件（只读，防目录穿越）。
+  // 文件 Pane：读取文本及乐观并发元数据；真实路径边界由服务统一校验。
   ipcMain.handle('desktop:read-project-file', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -1560,24 +1907,109 @@ function setupRuntimeBridge(): void {
     if (typeof payload.path !== 'string' || !payload.path.trim()) {
       throw new Error('Invalid read-project-file payload: path required');
     }
-    const root = path.resolve(payload.root);
-    const target = path.resolve(root, payload.path);
-    // Escape guard: the resolved target must stay inside the bound root.
-    if (target !== root && !target.startsWith(root + path.sep)) {
-      throw new Error('read-project-file: path escapes the project root');
+    return readProjectFile({ root: payload.root, path: payload.path });
+  });
+
+  ipcMain.handle('desktop:write-project-file', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid write-project-file payload');
     }
-    const MAX_BYTES = 512 * 1024;
-    try {
-      const stat = fs.statSync(target);
-      if (!stat.isFile()) return { path: payload.path, content: null, error: '不是文件' };
-      if (stat.size > MAX_BYTES) {
-        return { path: payload.path, content: null, error: '文件超过 512KB，暂不支持预览' };
-      }
-      const content = fs.readFileSync(target, 'utf8');
-      return { path: payload.path, content, error: null };
-    } catch {
-      return { path: payload.path, content: null, error: '读取失败或文件不存在' };
+    const payload = value as {
+      root?: unknown;
+      path?: unknown;
+      content?: unknown;
+      expectedMtimeMs?: unknown;
+      expectedSize?: unknown;
+      force?: unknown;
+    };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid write-project-file payload: root required');
     }
+    if (typeof payload.path !== 'string' || !payload.path.trim()) {
+      throw new Error('Invalid write-project-file payload: path required');
+    }
+    if (typeof payload.content !== 'string') {
+      throw new Error('Invalid write-project-file payload: content required');
+    }
+    if (payload.expectedMtimeMs !== null && typeof payload.expectedMtimeMs !== 'number') {
+      throw new Error('Invalid write-project-file payload: expectedMtimeMs required');
+    }
+    if (
+      payload.expectedSize !== undefined &&
+      payload.expectedSize !== null &&
+      typeof payload.expectedSize !== 'number'
+    ) {
+      throw new Error('Invalid write-project-file payload: expectedSize invalid');
+    }
+    if (payload.force !== undefined && typeof payload.force !== 'boolean') {
+      throw new Error('Invalid write-project-file payload: force invalid');
+    }
+    return writeProjectFile({
+      root: payload.root,
+      path: payload.path,
+      content: payload.content,
+      expectedMtimeMs: payload.expectedMtimeMs,
+      ...(payload.expectedSize === undefined ? {} : { expectedSize: payload.expectedSize }),
+      ...(payload.force === undefined ? {} : { force: payload.force }),
+    });
+  });
+
+  ipcMain.handle('desktop:watch-project-file', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid watch-project-file payload');
+    }
+    const payload = value as { root?: unknown; path?: unknown; subscriptionId?: unknown };
+    if (typeof payload.root !== 'string' || !payload.root.trim()) {
+      throw new Error('Invalid watch-project-file payload: root required');
+    }
+    if (typeof payload.path !== 'string' || !payload.path.trim()) {
+      throw new Error('Invalid watch-project-file payload: path required');
+    }
+    if (
+      typeof payload.subscriptionId !== 'string' ||
+      !payload.subscriptionId.trim() ||
+      payload.subscriptionId.length > 200
+    ) {
+      throw new Error('Invalid watch-project-file payload: subscriptionId required');
+    }
+    const subscriptionId = payload.subscriptionId.trim();
+    const key = projectFileWatchKey(event.sender.id, subscriptionId);
+    projectFileWatchSubscriptions.get(key)?.dispose();
+    projectFileWatchSubscriptions.delete(key);
+    const dispose = await watchProjectFile(
+      { root: payload.root, path: payload.path },
+      (change) => sendProjectFileChangeToRenderer(event.sender, subscriptionId, change),
+    );
+    if (event.sender.isDestroyed()) {
+      dispose();
+      return { subscriptionId };
+    }
+    projectFileWatchSubscriptions.set(key, { senderId: event.sender.id, dispose });
+    if (!projectFileWatchCleanupRegisteredSenders.has(event.sender.id)) {
+      projectFileWatchCleanupRegisteredSenders.add(event.sender.id);
+      event.sender.once('destroyed', () => {
+        projectFileWatchCleanupRegisteredSenders.delete(event.sender.id);
+        disposeProjectFileWatchesForSender(event.sender.id);
+      });
+    }
+    return { subscriptionId };
+  });
+
+  ipcMain.handle('desktop:unwatch-project-file', (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Invalid unwatch-project-file payload');
+    }
+    const payload = value as { subscriptionId?: unknown };
+    if (typeof payload.subscriptionId !== 'string' || !payload.subscriptionId.trim()) {
+      throw new Error('Invalid unwatch-project-file payload: subscriptionId required');
+    }
+    const key = projectFileWatchKey(event.sender.id, payload.subscriptionId.trim());
+    projectFileWatchSubscriptions.get(key)?.dispose();
+    projectFileWatchSubscriptions.delete(key);
+    return { subscriptionId: payload.subscriptionId.trim() };
   });
 
   // 右栏「文件」面板树形视图：列出项目内单层目录（懒加载展开，防目录穿越）。
@@ -1658,7 +2090,16 @@ function setupRuntimeBridge(): void {
     }
     const branch = payload.branch.trim();
     // Branch-name guard: no flag injection / path tricks.
-    if (branch.startsWith('-') || /[\s~^:?*[\\\x00-\x1f]/.test(branch)) {
+    const hasInvalidBranchCharacter = [...branch].some((character) => {
+      const codePoint = character.charCodeAt(0);
+      return (
+        /\s/.test(character) ||
+        ['~', '^', ':', '?', '*', '[', '\\'].includes(character) ||
+        codePoint <= 0x1f ||
+        codePoint === 0x7f
+      );
+    });
+    if (branch.startsWith('-') || hasInvalidBranchCharacter) {
       throw new Error('git-checkout: invalid branch name');
     }
     const strategy =
@@ -1864,6 +2305,10 @@ if (!gotLock) {
 }
 
 app.on('before-quit', () => {
+  projectContentSearchRegistry.abortAll();
+  abortAllProjectTerminals();
+  for (const subscription of projectFileWatchSubscriptions.values()) subscription.dispose();
+  projectFileWatchSubscriptions.clear();
   runtimeClient?.disconnect();
   stopManagedRuntime();
 });

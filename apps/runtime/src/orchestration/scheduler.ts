@@ -789,24 +789,25 @@ export class Scheduler {
         });
       }
     } catch (error) {
-      if (error instanceof StepLeaseHeartbeatError) controller.abort(error);
-      if (error instanceof StepAwaitingApprovalError) {
-        const mayExecute = this.persistStepApproval(runId, step, error.request, {
+      let effectiveError = error;
+      if (effectiveError instanceof StepLeaseHeartbeatError) controller.abort(effectiveError);
+      if (effectiveError instanceof StepAwaitingApprovalError) {
+        const mayExecute = this.persistStepApproval(runId, step, effectiveError.request, {
           ownerId: this.ownerId,
           executionAttempt: step.executionAttempt,
         });
         if (!mayExecute) return;
-        error = new StepExecutionError(
+        effectiveError = new StepExecutionError(
           'Executor requested approval for an auto-approved action',
           'protocol',
         );
       }
-      if (isStepFenceMismatchError(error)) return;
+      if (isStepFenceMismatchError(effectiveError)) return;
       const current = this.options.store.getGraph(runId);
       const currentStep = current?.steps.find((entry) => entry.id === step.id);
       if (current?.run.state === 'cancelled' || currentStep?.state === 'cancelled') return;
       if (this.stopped && controller.signal.aborted) return;
-      const failure = this.classifyFailure(error);
+      const failure = this.classifyFailure(effectiveError);
       try {
         this.options.store.failStep({
           runId,

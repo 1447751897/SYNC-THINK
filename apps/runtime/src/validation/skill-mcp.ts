@@ -22,8 +22,24 @@ export function parseListSkillsPayload(value: unknown): ListSkillsPayload | unde
       return undefined;
     }
   }
+  let skillVersionIds: string[] | undefined;
+  if (value.skillVersionIds !== undefined) {
+    if (!Array.isArray(value.skillVersionIds) || value.skillVersionIds.length > 64) return undefined;
+    skillVersionIds = [];
+    const seen = new Set<string>();
+    for (const raw of value.skillVersionIds) {
+      if (typeof raw !== 'string' || raw.trim().length === 0 || raw.length > 256) {
+        return undefined;
+      }
+      const id = raw.trim();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      skillVersionIds.push(id);
+    }
+  }
   return {
     limit: value.limit as number | undefined,
+    skillVersionIds,
   };
 }
 

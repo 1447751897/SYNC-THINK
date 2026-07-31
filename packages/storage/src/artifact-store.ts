@@ -350,12 +350,19 @@ function requireHash(value: unknown, path: string, code: ArtifactDataErrorCode):
   return value;
 }
 
+function hasAsciiControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.charCodeAt(0);
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+}
+
 function isLocalContentRef(value: string): boolean {
   if (
     !value ||
     value.trim() !== value ||
     value.length > MAX_CONTENT_REF_LENGTH ||
-    /[\u0000-\u001f\u007f]/.test(value)
+    hasAsciiControlCharacter(value)
   ) {
     return false;
   }

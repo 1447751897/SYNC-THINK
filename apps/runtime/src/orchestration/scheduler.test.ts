@@ -1009,8 +1009,7 @@ describe('Scheduler protected Step approvals', () => {
     await firstScheduler.shutdown();
 
     let recoveredContext: StepExecutionContext | undefined;
-    let recoveredScheduler!: Scheduler;
-    recoveredScheduler = new Scheduler({
+    const recoveredScheduler = new Scheduler({
       store,
       approvalStore,
       unitOfWork,

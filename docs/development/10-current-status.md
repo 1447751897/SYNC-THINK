@@ -1,3 +1,62 @@
+## 本轮进度：2026-07-31 · Browser Worker P0.3 最小持久权限闭环完成
+
+- **持久状态**：新增 `0030_browser_persistence_permissions`，建立 `browser_command` 与 `browser_origin_grant`。Browser 命令保存精确 workspace/owner/profile/run/lease/page、脱敏参数摘要、幂等键、状态和稳定结果；Origin Grant 保存精确 scope/origin/action、allow/deny、审批来源、过期与撤销信息。
+- **Runtime 前置门禁**：聊天 Browser 工具在 Worker 副作用前先解析目标 Origin/Action 并查询持久 Grant；缺少授权时复用现有 Approval Center，批准/拒绝后写入 Run 精确 Grant。Controller 执行前再次校验，调用路径绕过 UI 时仍会 fail closed；不再用 Runtime 生命周期内的内存 Map 自动放权。
+- **动作边界**：navigate/read/screenshot 可按 Run + Origin + Action 复用；click/fill 使用带 tool-call 幂等摘要的一次性动作权限，避免一次批准后无限重复敏感点击或填写。跨 Run、跨 Origin、跨 Action 不继承权限。
+- **幂等与恢复**：相同 idempotency key + 相同输入复用已完成结果，不重复浏览器副作用；key 被不同输入复用时拒绝。Runtime 重启后遗留 `running` 命令转为 `browser.command-inspection-required`，不会盲目重放非幂等点击、提交或填写。
+- **安全与审计**：授权事实源已迁到 SQLite；拒绝/无授权时 Worker 调用数为 0。命令结果继续只持久化脱敏 URL、数量、截图引用和稳定错误码，不写 URL query/hash、输入正文或 Playwright 原始错误文本。
+- **同期 UI 修复**：消息流使用稳定 sequence 归并，思考/执行卡固定在本轮用户消息之后；停用存在几何自激的动态消息虚拟窗口，保留 50 条分页并改用原生列表滚动，滚轮、滚动条拖动、流式期间查看历史和 prepend 单次锚点不再互相抢 `scrollTop`。长对话虚拟化需后续作为独立性能切片重做。
+- **验证**：Storage 全量 **22 文件 / 248 项**通过；Browser migration/Artifact/Store 聚焦 **69/69**，Runtime Browser Controller/工具链 **8/8**；Storage/Runtime typecheck 与 lint 均通过。Runtime 全量首轮 **55 文件 / 355 项通过、1 项 MCP 子进程 3 秒 spawn 时序失败**，该 MCP 文件隔离复跑 **10/10** 通过；未通过放宽断言掩盖。
+- **未完成边界**：本切片完成 P0.3 的最小普通聊天 Run scope 闭环，但尚未完成 P0.4 Team Step 精确权限与成员 Page lease 隔离，也未完成 P0.5 持久 `waiting_user`、登录/验证码/支付人工接管生命周期。Browser Worker 路线图主项仍不应整体勾选完成。
+- **下一任务**：先补 P0.3 的 Approval Center 真实协议端到端用例和 Grant 撤销/过期管理入口，再进入 P0.4 Team Step 权限与 lease 隔离；长对话虚拟化另建性能切片，不回退当前稳定滚动。
+
+## 本轮进度：2026-07-30 · Browser Worker P0.1/P0.2 完成
+
+- **当前结果**：聊天中的 `browser_open/click/type/read/screenshot` 已由 Runtime 直接调用 Browser Worker；Renderer `<webview>` 只保留 URL 预览和旧 Runtime 兼容桥，不再是真实执行者，也不再决定命令是否成功。
+- **Host**：系统 Edge/Chrome + 独立持久 Profile + Playwright CDP 已落地。一个 Profile 一个进程/Session，同 owner 复用 Page lease，不同 owner Page 隔离；同 Page 串行、跨 Page 并行；release/acquire 竞态已修复，Runtime stop 显式 shutdown。
+- **能力与边界**：navigate/click/fill/read/wait/screenshot 已实现；HTTP(S) origin 精确允许；BrowserContext route 阻断 popup 首请求，CDP Fetch 响应阶段阻断 3xx Location，真实 Edge smoke 已证明未授权目标请求计数为 0；输入/输出限幅、Profile/截图 realpath+junction 防越界、取消/fence/timeout/crash 稳定分类均有测试。
+- **持久意图**：浏览器启动前写入脱敏 `browser.command.started`。填入文字只记录长度，URL query/hash 不落审计；完整网页读取只回当前 Provider，durable `tool.completed` 成功时只留脱敏 URL、数量和截图引用，失败时只留固定摘要/错误码/failureClass，不留 Playwright 原始错误文本。
+- **数据目录**：默认 Profile 在 `dirname(sync-think.db)/browser-profiles`；`SYNC_THINK_BROWSER_EXECUTABLE` 可覆盖浏览器路径。使用 `playwright-core`，不下载浏览器内核。
+- **验证**：Browser 聚焦 15/15；本机 Edge CDP 真实 smoke 2/2；Workers 全量 67/67 + typecheck/lint/build；Runtime Browser 工具链 2/2、单 worker 全量 56 文件/354 项 + typecheck/lint/build；root Turbo test/typecheck **20/20**、lint **11/11**、build **11/11**；`git diff --check` 退出码 0。Desktop 兼容桥仍沿用上一轮 13/13 + typecheck/build，本次未改 Desktop 路径。
+- **未完成边界**：P0.3 的 durable command/origin grants、敏感动作审批、幂等恢复尚未实现；P0.4 Team Step browser tool 与成员 lease 隔离、P0.5 `waiting_user` 人工接管也未实现。当前成功 `browser_open` 只为该 owner 建立本 Runtime 生命周期内的临时 origin grant。
+- **下一任务**：按规格进入 P0.3，先做迁移与 command/origin grant store，再让 Runtime 在 Worker 前执行 scoped permission evaluation；完成前不勾选路线图 Browser Worker 主项。
+
+## 本轮进度：2026-07-29 · NewMax P2 Agent Skill 默认继承与小队自动装载完成
+
+- **默认规则**：Agent/Team 对话默认启用当前有效 owner 已装备的 SkillVersion；Agent 使用自身 allowlist，Team 使用 coordinator 或首成员。模型直聊固定 `0/8` 并禁用。用户不需要每条消息重新选择。
+- **兼容合同**：`skillVersionIds === undefined` 只供旧客户端继承 Agent allowlist；`[]` 明确表示本轮不加载；非空数组按 trim、首次出现去重后传递精确不可变版本 ID。
+- **懒加载与上下文**：列表打开前不请求 Skill；`skill.list` 只读 metadata，不读正文。Runtime 校验 allowlist 子集、存在/归档/审批后才按精确 ID 加载正文，并保证 Context、Provider、Manifest、fallback/rebind/retry/recovery 共用冻结选择。
+- **持久状态**：Run event/checkpoint 仅保存 Skill ID/fingerprint，不复制 `SKILL.md`。恢复按精确版本重新加载并核验完整性，后续 Agent 配置变化不会污染历史 Run。
+- **交互生命周期**：发送成功和失败都保持当前会话选择；切换 Agent/Team 或有效 owner 时恢复新 owner 默认值，切到模型时恢复 `0/8`，只切换模型 override 不清空。欢迎页首条消息透传临时覆盖，regenerate 显式发送 `[]`。目录等价刷新不会覆盖用户当前调整。
+- **小队自动执行**：每个 DAG Step 按自身精确 `agentVersionId` 自动加载、校验并注入该版本配置的 Skill；成员之间不串用，缺失、归档或未审批版本在 Provider 调用前失败，实际 ID 写入 Artifact metadata。小队运行时没有逐 Step Skill 配置动作。
+- **自动化证据**：默认继承相关 Desktop 聚焦 4 文件 / 47 项、Desktop 全量 97 文件 / 692 项、Runtime 自动 Step/冻结恢复聚焦 27/27、Runtime 单 worker 全量 54 文件 / 348 项通过；根 test 任务汇总 20/20，强制 typecheck 20/20、lint 11/11、build 11/11 均为 0 cache，`git diff --check` 通过。高负载下首次根 test 的单个租约时钟预设提前过期已由单文件 8/8 和串行全量排除，断言保持不变。
+- **复审与实窗**：唯一 P2 复审智能体最终未发现 P0/P1/P2 问题。最新版 Electron 在浅色 1440x900 与深色 1280x720 完成 Agent `1/8`、Team coordinator `1/8`、Team 切模型保持、模型直聊禁用 `0/8`、版本/说明/会话文案检查；页面和目标控件无溢出，alert、console warning/error、pageerror、请求失败及新 stderr 均为 0。临时 QA 小队已删除并恢复浅色 1440x900。
+- **当前状态**：NewMax P0（递归 Pane/文件编辑）、P1（内容搜索/受控终端）和 P2（Agent Skill 默认继承、会话覆盖、小队自动装载）均完成。Phase 3 下一候选仍是 Browser/UIA、完整数据备份、图像管线或安装分发；自动推荐、项目/任务临时 Skill 附件、脚本执行和 MCP 选择不在本切片范围。
+
+## 本轮进度：2026-07-28 · NewMax P1 内容搜索与终端 Pane 完成
+
+- **内容搜索**：文件 Dock 支持文件名/内容两种搜索；`rg --json` 与 Node fallback 共享 literal smart-case、取消、超时、结果上限、文件大小和排除目录语义。搜索结果可在焦点 Pane 打开文件并定位行列，定位状态不持久化。
+- **终端 Pane**：terminal 已纳入递归 Pane 资源模型；xterm 独立构建并懒加载，受控命令以 executable + argv、`shell:false` 执行，支持流式 stdout/stderr、停止、清空、历史、`Ctrl+C` 和项目根内相对 `cd`。
+- **生命周期**：Main 的原子注册表处理快速完成、并发启动、取消、Renderer 销毁和退出竞态；Worker 在 POSIX 终止进程组，在 Windows 等待进程树清理。终端异步迭代提前关闭也会 abort 并等待子进程结束。
+- **状态边界**：布局只保存 terminalId/cwd；输出、历史、运行状态和输入只活在 Renderer Session。Workspace 往返保留会话，应用重启只恢复空闲 Tab 与 cwd。
+- **审查结果**：独立 P0/P1 审查发现的问题均已修复；最终审查没有剩余阻断项。明确边界仍是“受控命令终端”，不是持久 PTY。
+- **自动化证据**：P1 Desktop 9 文件 / 71 项；Terminal Worker 8/8；Pane + Shell 42/42；全仓强制 test 20/20（0 cache）、typecheck 20/20（0 cache）、lint 11/11、build 11/11（0 cache）。
+- **Electron 实窗**：内容搜索路径/行/列/预览与 `12:14` 定位通过；双段流式、停止父子进程、历史、清空、cwd、Workspace 往返和冷重启恢复通过。浅色 1440×900 与深色 1280×720 均 `scrollWidth === clientWidth`、`scrollHeight === clientHeight`、alert=0，终端头/输出/命令栏无重叠，xterm 主题背景一致。
+- **当前状态**：NewMax P0（递归 Pane/文件编辑）与 P1（内容搜索/终端 Pane）均完成。Phase 3 下一候选仍是 Browser/UIA、Skill 本轮手选与懒加载、完整数据备份、图像管线或安装分发；其中任何新增重型依赖继续走技术选择门禁。
+
+## 本轮进度：2026-07-28 · NewMax P0 自动化门禁完成
+
+- **递归工作区**：横/纵 Pane 树、20%–80% 比例、Pane 内对话/文件 Tab、Workspace 快照、旧 Tab 迁移和最多 2 路 `ChatView` 已完成；深层布局和额外 Tab 不会因挂载上限被删除。
+- **流式链路**：Renderer text/reasoning frame 已使用 rAF 合批；failed/cancelled 会把已显示的部分 assistant 正文写入 Message Store，成功路径仍只落最终消息。
+- **文件编辑**：受项目目录约束的读/写/watch IPC、mtime+size 乐观并发、临时文件原子替换、外部冲突处理、`Ctrl+S`、内存草稿、关闭确认和文件 Tab 脏标记已接通。
+- **状态边界**：布局快照只保存资源与布局；未保存文件正文只在当前 Renderer 会话内保留，应用重启后重新读磁盘。工作区切换会保留内存草稿，且同名相对路径按 Workspace 隔离。
+- **自动化证据**：聚焦 70/70；脏状态集成 34/34；Desktop 633/633；Runtime 337/337；全仓强制 test 20/20 tasks（0 cache）、typecheck 20/20、build 11/11。
+- **测试环境说明**：首次多包并行强测使一个 2 秒 `cmd` shim 测试受资源竞争返回 failed；单项 1/1、Workers 全量 49/49 立即通过，随后全仓以 `--concurrency=1` 强制复跑 20/20。没有修改 Worker 代码或放宽断言。
+- **当时 Finish 遗留（已解除）**：P0 收尾时标准 `pnpm lint` 曾因 ESLint 9 flat config 与历史基线阻断；P1 已补齐配置并收敛基线，最新 `pnpm lint` 为 11/11。最终全绿结论以上方 P1 状态为准。
+- **Electron 实窗**：1440×900 浅色窗口完成文件树打开、未保存圆点、`Ctrl+S`、Tab/Workspace 草稿恢复、干净外改自动刷新、脏外改冲突、加载/覆盖磁盘版本、关闭取消/确认；横向双 Pane 以键盘从 50% 调到 55%，Workspace 往返和 Electron 重启后仍恢复 2 Pane/55%。最终已关闭新增 Pane 与一次性测试文件，`documentOverflow x=0 / y=0`、页面 alert 为 0。
+- **启动注意**：首次验收只 reload 了新 Renderer，但 11:30 的旧 Electron Main 尚未注册 write IPC，原始错误为 `No handler registered for desktop:write-project-file`；完整重启最新 Main 后所有保存/冲突路径通过。Main/Preload IPC 变更不能只刷新 Renderer。
+- **当时状态（已被上方 P1 状态取代）**：P0 功能已完成；当时下一步为内容搜索/终端、Skill 本轮手选与懒加载、完整数据备份。P1 内容搜索/终端现已完成，文件草稿仍不得写入布局偏好或 durable event。
+
 ## 本轮进度：2026-07-16 · 对话 Agent 身份 + 产品界面去验收化
 
 - **顶部语义**：原 `决策 / 记忆 / 上下文` 实际只是工作区、任务和对话版本的结构占位，现改为用户可理解的 **工作区 / 任务 / 对话**；真实 Continuum 证据仍保留决策、记忆、产物等语义。

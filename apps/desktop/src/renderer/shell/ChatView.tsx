@@ -26,7 +26,6 @@ import {
   LoaderCircle,
   MessageSquare,
   PenLine,
-  Puzzle,
   RefreshCw,
   SendHorizonal,
   Share2,
@@ -58,6 +57,7 @@ import type {
   WorkspaceSummary,
 } from '@sync-think/protocol';
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
+import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { RightDock } from './RightDock.js';
 import type { ModelOption } from './NewConversationDialog.js';
@@ -88,6 +88,11 @@ import {
   type SlashQuery,
   type SystemMessageTone,
 } from './compose-slash.js';
+import {
+  resolveAppendSkillVersionIds,
+  resolveConversationSkillOwner,
+  resolveDefaultComposeSkillVersionIds,
+} from './compose-skill-selection.js';
 import { compressImageDataUrl } from './image-compress.js';
 import {
   ContextRing,
@@ -101,6 +106,7 @@ import {
   type PermissionMode,
   type ReasoningEffort,
 } from './compose-toolbar.js';
+import { TurnSkillControl } from './TurnSkillControl.js';
 import {
   ExecutionProcessBlock,
   FileChangesCard,
@@ -120,15 +126,21 @@ import { executeBrowserCommand } from './browser-commands.js';
 import {
   applyConversationStreamOperations,
   collectConversationStreamBatch,
+  type ConversationStreamDraft,
 } from './chat-stream.js';
-import { applyTransientConversationFrame } from './chat-transient-stream.js';
+import { applyTransientConversationFrames } from './chat-transient-stream.js';
+import {
+  inferNativeScrollIntent,
+  resolveBottomPinState,
+  shouldRestorePrependAnchor,
+} from './message-window.js';
 import { updateRunProcessMap } from './run-process-state.js';
 import {
   readConversationModelOverride,
   writeConversationModelOverride,
 } from '../ui-preferences.js';
 
-interface ChatMessage {
+export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   text: string;
@@ -143,16 +155,25 @@ interface ChatMessage {
   sequence?: number;
   streaming?: boolean;
   runId?: string;
+  terminalState?: 'failed' | 'cancelled';
+  terminalError?: string;
   /** Bound global agent identity for this assistant turn. */
   globalAgentId?: string;
   globalAgentName?: string;
 }
 
 /** Convert a durable Message from the store into the UI ChatMessage shape. */
-function messageToChat(msg: Message): ChatMessage {
+export function messageToChat(msg: Message): ChatMessage {
   const textBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'text');
   const text = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
   const imageBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'image');
+  const terminalPayload = (
+    msg.blocks.find((block: MessageBlock) => block.type === 'error')?.payload ?? {}
+  ) as Record<string, unknown>;
+  const terminalState =
+    terminalPayload.terminalState === 'failed' || terminalPayload.terminalState === 'cancelled'
+      ? terminalPayload.terminalState
+      : undefined;
   const images: MessageImage[] | undefined =
     imageBlocks.length > 0
       ? imageBlocks.map((b: MessageBlock) => {
@@ -177,6 +198,11 @@ function messageToChat(msg: Message): ChatMessage {
     timestamp: msg.createdAt ?? '',
     sequence: msg.sequence,
     runId: msg.runId ? String(msg.runId) : undefined,
+    terminalState,
+    terminalError:
+      typeof terminalPayload.errorMessage === 'string'
+        ? terminalPayload.errorMessage
+        : undefined,
     // sequence carried via id ordering; globalAgent fields are not in the store Message model
     // but could be enriched later if needed.
   };
@@ -221,16 +247,20 @@ interface ChatViewProps {
   onTitleUpdated: (title: string) => void;
   /** Fired after permission mode is persisted so the shell can refresh the conversation list. */
   onConversationUpdated?: () => void;
+  /** One-shot selection carried from the welcome-page first send. */
+  initialSkillVersionIds?: readonly string[];
+  onInitialSkillSelectionConsumed?(conversationId: string): void;
   /**
    * Right-rail open state is owned by the stage tab strip so the duplicate
    * in-chat title bar can stay gone (NewMax: tabs are the only chrome).
    */
   railOpen?: boolean;
   onRailOpenChange?(open: boolean): void;
+  onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
 }
 
 function bridge() {
-  return (window as any).syncThink?.runtime;
+  return window.syncThink?.runtime;
 }
 
 const PERMISSION_LABELS: Record<PermissionMode, string> = {
@@ -254,9 +284,24 @@ export function ChatView({
   eventHistory,
   onTitleUpdated,
   onConversationUpdated,
+  initialSkillVersionIds,
+  onInitialSkillSelectionConsumed,
   railOpen: railOpenProp,
   onRailOpenChange,
+  onOpenFile,
 }: ChatViewProps) {
+  const skillOwner = useMemo(
+    () => resolveConversationSkillOwner(conversation, agents, teams),
+    [agents, conversation, teams],
+  );
+  const defaultSkillVersionIds = useMemo(
+    () => resolveDefaultComposeSkillVersionIds(conversation, agents, teams),
+    [agents, conversation, teams],
+  );
+  const skillSelectionScopeKey = `${String(conversation.id)}\0${conversation.track}\0${String(
+    conversation.targetRef,
+  )}\0${String(skillOwner?.id ?? '')}\0${defaultSkillVersionIds.join('\0')}`;
+  const skillSelectionScopeKeyRef = useRef(skillSelectionScopeKey);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -347,6 +392,9 @@ export function ChatView({
   const contextStatusLoadGenerationRef = useRef(0);
   /** Streaming message accumulated from the transient stream (durable delta is fallback only). */
   const [streamingMessage, setStreamingMessage] = useState<ChatMessage | null>(null);
+  const transientDraftRef = useRef<ConversationStreamDraft | null>(null);
+  const transientFrameQueueRef = useRef<ConversationTransientFrame[]>([]);
+  const transientFrameFlushRef = useRef<number | null>(null);
   /** Last durable event sequence consumed by the fallback streaming bridge. */
   const lastConsumedEventSequenceRef = useRef(0);
   /** Thread-local transient cursor, preserved across Runtime reconnects within this ChatView. */
@@ -365,6 +413,38 @@ export function ChatView({
   const messageLoadGenerationRef = useRef(0);
   const activeConversationIdRef = useRef(String(conversation.id));
   activeConversationIdRef.current = String(conversation.id);
+  const renderTransientDraft = useCallback(
+    (draft: ConversationStreamDraft | null, fallbackSequence: number) => {
+      transientDraftRef.current = draft;
+      setStreamingMessage(
+        draft
+          ? {
+              id: `streaming-${draft.runId ?? fallbackSequence}`,
+              role: 'assistant',
+              text: draft.text,
+              reasoningText: draft.reasoningText,
+              timestamp: draft.timestamp,
+              streaming: true,
+              runId: draft.runId,
+            }
+          : null,
+      );
+    },
+    [],
+  );
+  const flushTransientFrames = useCallback(() => {
+    transientFrameFlushRef.current = null;
+    const frames = transientFrameQueueRef.current.splice(0);
+    if (!threadId || frames.length === 0) return;
+    const next = applyTransientConversationFrames({
+      current: transientDraftRef.current,
+      frames,
+      threadId,
+      afterStreamSequence: lastTransientSequenceRef.current,
+    });
+    lastTransientSequenceRef.current = next.lastStreamSequence;
+    renderTransientDraft(next.draft, next.lastStreamSequence);
+  }, [renderTransientDraft, threadId]);
   /** Active @-mention query (null = picker closed). */
   const [mention, setMention] = useState<MentionQuery | null>(null);
   const [mentionFiles, setMentionFiles] = useState<
@@ -377,8 +457,17 @@ export function ChatView({
   const [slashIndex, setSlashIndex] = useState(0);
   /** Selected @-files / images shown as chips (NewMax style). */
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
+  /** Exact immutable Skill versions used by normal Composer sends in this conversation. */
+  const [selectedSkillVersionIds, setSelectedSkillVersionIds] = useState<string[]>(() =>
+    resolveAppendSkillVersionIds(
+      conversation.track,
+      initialSkillVersionIds ?? defaultSkillVersionIds,
+    ),
+  );
   /** Which compose menu is open (exclusive). */
-  const [menu, setMenu] = useState<'permission' | 'reasoning' | 'model' | 'identity' | null>(null);
+  const [menu, setMenu] = useState<
+    'permission' | 'reasoning' | 'skill' | 'model' | 'identity' | null
+  >(null);
   /** Click-to-preview lightbox for message / chip images. */
   const [lightbox, setLightbox] = useState<MessageImage | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -386,8 +475,19 @@ export function ChatView({
   const [compactNow, setCompactNow] = useState(() => Date.now());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
+  /** Prevent duplicate history-page requests while a top-edge load is pending. */
+  const loadingMoreRef = useRef(false);
+  /** Invalidates an async prepend anchor when the user keeps scrolling meanwhile. */
+  const userScrollRevisionRef = useRef(0);
+  /** Distinguishes native/user scroll direction, including scrollbar dragging. */
+  const lastObservedScrollTopRef = useRef(0);
+  /** Prevents our own one-shot scroll corrections from being treated as user input. */
+  const programmaticScrollTargetRef = useRef<number | null>(null);
   /** After switching conversations, jump to bottom instantly (no smooth scroll). */
   const stickToBottomRef = useRef(true);
+  /** Last explicit scroll direction; layout-driven scroll events leave it null. */
+  const bottomPinIntentRef = useRef<'toward-bottom' | 'away-from-bottom' | null>(null);
+  const lastTouchClientYRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const composeRef = useRef<HTMLDivElement>(null);
@@ -399,8 +499,24 @@ export function ChatView({
   const identityBtnRef = useRef<HTMLButtonElement>(null);
   const [mentionPopStyle, setMentionPopStyle] = useState<React.CSSProperties | null>(null);
   const [slashPopStyle, setSlashPopStyle] = useState<React.CSSProperties | null>(null);
+  useEffect(() => {
+    if (initialSkillVersionIds !== undefined) {
+      onInitialSkillSelectionConsumed?.(String(conversation.id));
+    }
+  }, [conversation.id, initialSkillVersionIds, onInitialSkillSelectionConsumed]);
+
+  useEffect(() => {
+    if (skillSelectionScopeKeyRef.current === skillSelectionScopeKey) return;
+    skillSelectionScopeKeyRef.current = skillSelectionScopeKey;
+    setSelectedSkillVersionIds(defaultSkillVersionIds);
+    setMenu(null);
+  }, [defaultSkillVersionIds, skillSelectionScopeKey]);
+
   // Reset local compose state when switching conversations.
   useEffect(() => {
+    userScrollRevisionRef.current = 0;
+    lastObservedScrollTopRef.current = 0;
+    programmaticScrollTargetRef.current = null;
     setInput('');
     setSending(false);
     setPendingUserMessages([]);
@@ -414,9 +530,16 @@ export function ChatView({
     setHasMore(false);
     setNextCursor(undefined);
     setLoadingMore(false);
+    loadingMoreRef.current = false;
     setInitialLoaded(false);
     contextStatusLoadGenerationRef.current += 1;
     setContextStatus(null);
+    transientDraftRef.current = null;
+    transientFrameQueueRef.current.length = 0;
+    if (transientFrameFlushRef.current !== null) {
+      window.cancelAnimationFrame(transientFrameFlushRef.current);
+      transientFrameFlushRef.current = null;
+    }
     setStreamingMessage(null);
     lastConsumedEventSequenceRef.current = 0;
     lastTransientSequenceRef.current = 0;
@@ -436,6 +559,8 @@ export function ChatView({
     setModelOverride(readConversationModelOverride(String(conversation.id)) ?? '');
     // Always land at the latest message when opening a chat — no animated scroll.
     stickToBottomRef.current = true;
+    bottomPinIntentRef.current = null;
+    lastTouchClientYRef.current = null;
     // Right-rail open state is owned by the stage; do not force-close it on switch.
   }, [clearRunProcessRetryState, conversation.id, conversation.executionMode]);
 
@@ -484,8 +609,16 @@ export function ChatView({
         cursor === undefined
           ? (messageLoadGenerationRef.current += 1)
           : messageLoadGenerationRef.current;
-      if (cursor === undefined) setLoadingMore(false);
-      else setLoadingMore(true);
+      if (cursor === undefined) {
+        setLoadingMore(false);
+      } else {
+        // Wheel events can arrive several times before React commits the
+        // loadingMore state update. Guard the imperative edge-trigger as well
+        // so one scroll gesture cannot start overlapping prepends.
+        if (loadingMoreRef.current) return false;
+        loadingMoreRef.current = true;
+        setLoadingMore(true);
+      }
       try {
         const res: ConversationListMessagesResponse = await api.listConversationMessages({
           conversationId: conversation.id,
@@ -529,7 +662,10 @@ export function ChatView({
           activeConversationIdRef.current === conversationId &&
           messageLoadGenerationRef.current === generation
         ) {
-          if (cursor !== undefined) setLoadingMore(false);
+          if (cursor !== undefined) {
+            loadingMoreRef.current = false;
+            setLoadingMore(false);
+          }
           else setInitialLoaded(true);
         }
       }
@@ -614,6 +750,7 @@ export function ChatView({
     if (!api?.subscribeConversationTransientStream) return;
 
     const generation = transientResetGenerationRef.current;
+    const frameQueue = transientFrameQueueRef.current;
     let disposed = false;
     transientStreamHealthyRef.current = true;
     const subscription = api.subscribeConversationTransientStream(
@@ -626,25 +763,27 @@ export function ChatView({
       }) => {
         if (disposed || transientResetGenerationRef.current !== generation) return;
         if (event.type === 'reset') {
+          frameQueue.length = 0;
+          if (transientFrameFlushRef.current !== null) {
+            window.cancelAnimationFrame(transientFrameFlushRef.current);
+            transientFrameFlushRef.current = null;
+          }
           const latestStreamSequence = event.latestStreamSequence ?? 0;
           lastTransientSequenceRef.current = latestStreamSequence;
           if (event.snapshot && event.snapshot.threadId === threadId) {
             transientFallbackOnlyRef.current = false;
             transientStreamHealthyRef.current = true;
             if (event.snapshot.process) updateRunProcess(event.snapshot.process);
-            setStreamingMessage({
-              id: `streaming-${event.snapshot.runId}`,
-              role: 'assistant',
+            renderTransientDraft({
+              runId: event.snapshot.runId,
               text: event.snapshot.text,
               reasoningText: event.snapshot.reasoningText,
               timestamp: event.snapshot.updatedAt,
-              streaming: true,
-              runId: event.snapshot.runId,
-            });
+            }, latestStreamSequence);
           } else {
             transientFallbackOnlyRef.current = false;
             transientStreamHealthyRef.current = true;
-            setStreamingMessage(null);
+            renderTransientDraft(null, latestStreamSequence);
             void loadMessages();
           }
           return;
@@ -682,34 +821,15 @@ export function ChatView({
             return next;
           });
         }
-        setStreamingMessage((previous) => {
-          const current = previous
-            ? {
-                runId: previous.runId,
-                text: previous.text,
-                reasoningText: previous.reasoningText,
-                timestamp: previous.timestamp,
-              }
-            : null;
-          const next = applyTransientConversationFrame({
-            current,
-            frame,
-            threadId,
-            afterStreamSequence: lastTransientSequenceRef.current,
-          });
-          lastTransientSequenceRef.current = next.lastStreamSequence;
-          return next.draft
-            ? {
-                id: `streaming-${next.draft.runId ?? next.lastStreamSequence}`,
-                role: 'assistant',
-                text: next.draft.text,
-                reasoningText: next.draft.reasoningText,
-                timestamp: next.draft.timestamp,
-                streaming: true,
-                runId: next.draft.runId,
-              }
-            : null;
-        });
+        frameQueue.push(frame);
+        if (frame.kind === 'process' || frame.kind === 'terminal') {
+          if (transientFrameFlushRef.current !== null) {
+            window.cancelAnimationFrame(transientFrameFlushRef.current);
+          }
+          flushTransientFrames();
+        } else if (transientFrameFlushRef.current === null) {
+          transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
+        }
         if (frame.kind === 'terminal') {
           void loadMessages();
           void refreshContextStatus();
@@ -727,9 +847,22 @@ export function ChatView({
 
     return () => {
       disposed = true;
+      frameQueue.length = 0;
+      if (transientFrameFlushRef.current !== null) {
+        window.cancelAnimationFrame(transientFrameFlushRef.current);
+        transientFrameFlushRef.current = null;
+      }
       void subscription.unsubscribe();
     };
-  }, [conversation.id, loadMessages, refreshContextStatus, threadId, updateRunProcess]);
+  }, [
+    conversation.id,
+    flushTransientFrames,
+    loadMessages,
+    refreshContextStatus,
+    renderTransientDraft,
+    threadId,
+    updateRunProcess,
+  ]);
 
   // Streaming via durable events is now a compatibility/failure fallback.
   // Terminal events are always consumed so final Message Store refresh remains
@@ -762,6 +895,7 @@ export function ChatView({
             }
           : null;
         const next = applyConversationStreamOperations(current, operations);
+        transientDraftRef.current = next;
         return next
           ? {
               id: `streaming-${next.runId ?? batch.maxSeenSequence}`,
@@ -882,7 +1016,12 @@ export function ChatView({
   );
 
   // Remove optimistic bubbles only after their durable message id arrives.
-  // Text matching is unsafe for repeated prompts and used to drop image previews.
+  // The send handler renames the pending bubble's temp id to the durable
+  // messageId returned by appendMessage, so once that durable copy enters
+  // loadedMessages with the same id the optimistic echo can be dropped by id
+  // equality. Text/timestamp matching is avoided: store timestamps differ
+  // from the client clock (they would never pair) and text matching would
+  // wrongly collapse distinct prompts that share the same words.
   useEffect(() => {
     if (pendingUserMessages.length === 0) return;
     const durableUserIds = new Set(
@@ -906,10 +1045,116 @@ export function ChatView({
   }, [pendingUserMessages.length, projected.streaming, sending, stopping]);
 
   const messages = useMemo(() => {
-    const base = [...loadedMessages];
-    if (streamingMessage) base.push(streamingMessage);
-    return [...base, ...pendingUserMessages, ...localErrors];
+    // Global sequence merge: the four sources (loadedMessages,
+    // pendingUserMessages, streamingMessage, localErrors) used to be
+    // concatenated in a hard-coded order, which let the streaming thought
+    // panel render above a just-sent user bubble whenever React state
+    // settled in the wrong order (run reused on an existing thread, or the
+    // optimistic pending bubble cleared a frame before the durable message
+    // arrived). Instead, merge by a monotonic sequence so every item finds
+    // its stable slot regardless of which state committed first.
+    //
+    // Durable messages carry a real store sequence. Transient items don't,
+    // so they are stamped with virtual sequences past the current durable
+    // tail, in the order they must visually appear:
+    //   pending user bubbles  → right after the tail (they precede the turn)
+    //   streaming assistant   → after the pending bubbles
+    //   local errors          → after the streaming turn
+    // Once those transients persist, loadMessages() returns them with real
+    // sequences and the virtual copies are cleared, so the list converges.
+    const maxDurableSeq = loadedMessages.reduce(
+      (max, m) =>
+        Number.isFinite(m.sequence) ? Math.max(max, (m.sequence as number) ?? max) : max,
+      Number.MIN_SAFE_INTEGER,
+    );
+    let nextVirtualSeq = maxDurableSeq === Number.MIN_SAFE_INTEGER ? 0 : maxDurableSeq + 1;
+
+    type SeqItem = { value: ChatMessage; seq: number; tie: number };
+    const stamped: SeqItem[] = [];
+
+    // Durable messages keep their real sequence; tie-break by array order.
+    for (let i = 0; i < loadedMessages.length; i++) {
+      const m = loadedMessages[i]!;
+      stamped.push({ value: m, seq: m.sequence ?? nextVirtualSeq, tie: i });
+    }
+
+    // Pending user bubbles: virtual sequence before the streaming turn so a
+    // just-sent prompt is always visually followed by the thinking panel.
+    for (let i = 0; i < pendingUserMessages.length; i++) {
+      stamped.push({
+        value: pendingUserMessages[i]!,
+        seq: nextVirtualSeq++,
+        tie: 10_000 + i,
+      });
+    }
+
+    // Streaming assistant turn: virtual sequence after the pending bubbles.
+    if (streamingMessage) {
+      // Keep the streaming slot's sequence stable across re-merges by hashing
+      // on its runId so older-arriving frames don't reshuffle it.
+      stamped.push({ value: streamingMessage, seq: nextVirtualSeq++, tie: 20_000 });
+    }
+
+    // Local errors last.
+    for (let i = 0; i < localErrors.length; i++) {
+      stamped.push({ value: localErrors[i]!, seq: nextVirtualSeq++, tie: 30_000 + i });
+    }
+
+    stamped.sort((a, b) => (a.seq !== b.seq ? a.seq - b.seq : a.tie - b.tie));
+    return stamped.map((s) => s.value);
   }, [localErrors, loadedMessages, pendingUserMessages, streamingMessage]);
+
+  // Keep every fetched durable message mounted. History is still paginated in
+  // 50-message pages, but native scrolling must not compete with virtual spacer
+  // refinement or persistent visual-anchor restoration.
+  const visibleDurableMessages = loadedMessages;
+  const liveMessages = useMemo(() => {
+    const result: ChatMessage[] = [];
+    result.push(...pendingUserMessages);
+    if (streamingMessage) result.push(streamingMessage);
+    result.push(...localErrors);
+    return result;
+  }, [localErrors, pendingUserMessages, streamingMessage]);
+
+  const capturePrependAnchor = useCallback((scroller: HTMLDivElement) => {
+    const viewportTop = scroller.getBoundingClientRect().top;
+    const nodes = scroller.querySelectorAll<HTMLElement>('[data-message-id]');
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect();
+      if (rect.bottom <= viewportTop) continue;
+      const id = node.dataset.messageId;
+      if (id) return { id, viewportOffset: rect.top - viewportTop };
+    }
+    return null;
+  }, []);
+
+  const restorePrependAnchor = useCallback(
+    (
+      scroller: HTMLDivElement,
+      anchor: { id: string; viewportOffset: number },
+      expectedUserScrollRevision: number,
+    ) => {
+      if (
+        !shouldRestorePrependAnchor({
+          capturedUserScrollRevision: expectedUserScrollRevision,
+          currentUserScrollRevision: userScrollRevisionRef.current,
+          hasAnchor: true,
+        })
+      ) return;
+      const nodes = scroller.querySelectorAll<HTMLElement>('[data-message-id]');
+      const node = Array.from(nodes).find((candidate) => candidate.dataset.messageId === anchor.id);
+      if (!node) return;
+      const nextViewportOffset =
+        node.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      const adjustment = nextViewportOffset - anchor.viewportOffset;
+      if (Math.abs(adjustment) > 0.5) {
+        programmaticScrollTargetRef.current = scroller.scrollTop + adjustment;
+        scroller.scrollTop += adjustment;
+      }
+      lastObservedScrollTopRef.current = scroller.scrollTop;
+    },
+    [],
+  );
 
   // Historical assistant bubbles load one already-projected process snapshot per run.
   useEffect(() => {
@@ -919,10 +1164,16 @@ export function ChatView({
     if (!api?.getConversationRunProcess) return;
     const generation = processLoadGenerationRef.current;
     const runIds = new Set(
-      loadedMessages
+      visibleDurableMessages
         .filter((message) => message.role === 'assistant' && Boolean(message.runId))
-        .map((message) => message.runId as string),
+        .map((message) => message.runId as RunId),
     );
+    for (const [runId, timer] of runProcessRetryTimersRef.current) {
+      if (runIds.has(runId as RunId)) continue;
+      window.clearTimeout(timer);
+      runProcessRetryTimersRef.current.delete(runId);
+      runProcessRetryAttemptsRef.current.delete(runId);
+    }
     for (const runId of runIds) {
       if (runProcessById.has(runId) || inFlightRunProcessesRef.current.has(runId)) continue;
       inFlightRunProcessesRef.current.add(runId);
@@ -966,21 +1217,42 @@ export function ChatView({
           runProcessRetryTimersRef.current.set(runId, timer);
         });
     }
-  }, [conversation.id, loadedMessages, runProcessById, runProcessRetryEpoch, updateRunProcess]);
+  }, [
+    conversation.id,
+    runProcessById,
+    runProcessRetryEpoch,
+    updateRunProcess,
+    visibleDurableMessages,
+  ]);
 
-  // Pin to bottom without a smooth animation. Smooth scroll on every switch
-  // felt like the list was "rolling down" each time you clicked a conversation.
+  // Pin to bottom without a smooth animation. Once the user scrolls upward,
+  // streaming/process updates must leave the historical viewport untouched.
   useLayoutEffect(() => {
     const scroller = messagesScrollRef.current;
-    if (!scroller) return;
-    if (!stickToBottomRef.current) return;
-    scroller.scrollTop = scroller.scrollHeight;
+    if (!scroller || !stickToBottomRef.current) return;
+    const target = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (Math.abs(scroller.scrollTop - target) > 1) {
+      programmaticScrollTargetRef.current = target;
+      scroller.scrollTop = target;
+    }
+    lastObservedScrollTopRef.current = scroller.scrollTop;
   }, [messages, sending, projected.streaming, conversation.id]);
 
   const sendUserText = useCallback(
-    async (text: string, images: MessageImage[] = []) => {
+    async (
+      text: string,
+      images: MessageImage[] = [],
+      options?: {
+        skillVersionIds?: readonly string[];
+      },
+    ) => {
       const api = bridge();
       if (!api || (!text.trim() && images.length === 0) || sending) return;
+      // Freeze before auto-compaction or any IPC so menu changes cannot alter this Run.
+      const skillVersionIds = resolveAppendSkillVersionIds(
+        conversation.track,
+        options?.skillVersionIds ?? selectedSkillVersionIds,
+      );
 
       // Auto-compact when context occupancy is near the window limit (~70%).
       // Failures are non-fatal — the user message still goes out.
@@ -1076,6 +1348,7 @@ export function ChatView({
           }),
           reasoningEffort: reasoningEffort === 'auto' ? undefined : reasoningEffort,
           networkEnabled: netEnabled || undefined,
+          skillVersionIds,
           images:
             images.length > 0
               ? images.map((img) => ({
@@ -1146,6 +1419,7 @@ export function ChatView({
       reasoningEffort,
       refreshContextStatus,
       scheduleCompactDismiss,
+      selectedSkillVersionIds,
       sending,
     ],
   );
@@ -1164,7 +1438,9 @@ export function ChatView({
         }
       }
       if (!userText.trim()) return;
-      await sendUserText(userText);
+      await sendUserText(userText, [], {
+        skillVersionIds: [],
+      });
     },
     [messages, sendUserText, sending],
   );
@@ -1271,6 +1547,7 @@ export function ChatView({
   const closeComposePickers = useCallback(() => {
     closeMention();
     closeSlash();
+    setMenu(null);
   }, [closeMention, closeSlash]);
 
   const slashCommands = useMemo(() => (slash ? filterSlashCommands(slash.query) : []), [slash]);
@@ -2093,6 +2370,13 @@ export function ChatView({
           track: option.track,
           targetRef,
         });
+        setSelectedSkillVersionIds(
+          resolveDefaultComposeSkillVersionIds(
+            { track: option.track, targetRef },
+            agents,
+            teams,
+          ),
+        );
         onConversationUpdated?.();
       } catch {
         // 换绑失败保持原状（无 toast 通道，静默即可，下次点击可重试）。
@@ -2103,68 +2387,14 @@ export function ChatView({
       conversation.track,
       conversation.targetRef,
       activeModelId,
+      agents,
       models,
       onConversationUpdated,
+      teams,
     ],
   );
   const showTyping = sending || projected.streaming;
   const canStop = Boolean(projected.activeRunId) && (sending || projected.streaming);
-
-  // 文件分屏（IDE 式）：右栏文件树点击文件 → 在聊天列旁打开只读代码面板。
-  const [splitFile, setSplitFile] = useState<{
-    path: string;
-    content: string | null;
-    error: string | null;
-    loading: boolean;
-  } | null>(null);
-  /**
-   * 文件分屏占行容器的宽度比例（0.2-0.7），由聊天列与面板之间的
-   * 分隔线拖拽调整；双击分隔线复位。
-   */
-  const [fileSplitRatio, setFileSplitRatio] = useState(0.46);
-  const fileSplitRowRef = useRef<HTMLDivElement | null>(null);
-  const fileSplitDragRef = useRef<{ startX: number; startRatio: number; width: number } | null>(
-    null,
-  );
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      const drag = fileSplitDragRef.current;
-      if (!drag || drag.width <= 0) return;
-      // 分隔线右移 → 聊天列变宽 → 文件面板占比变小。
-      const delta = (e.clientX - drag.startX) / drag.width;
-      setFileSplitRatio(Math.min(0.7, Math.max(0.2, drag.startRatio - delta)));
-    };
-    const onUp = () => {
-      if (!fileSplitDragRef.current) return;
-      fileSplitDragRef.current = null;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, []);
-  const openFileSplit = useCallback(
-    (path: string) => {
-      const api = bridge();
-      if (!projectFolder || !api?.readProjectFile) return;
-      setSplitFile({ path, content: null, error: null, loading: true });
-      void api
-        .readProjectFile({ root: projectFolder, path })
-        .then((result: { path: string; content: string | null; error: string | null }) =>
-          setSplitFile({ path, content: result.content, error: result.error, loading: false }),
-        )
-        .catch(() => setSplitFile({ path, content: null, error: '读取失败', loading: false }));
-    },
-    [projectFolder],
-  );
-  // 切换对话/项目时关闭文件分屏，避免跨项目残留。
-  useEffect(() => {
-    setSplitFile(null);
-  }, [conversation.id, projectFolder]);
 
   // AI browser_open 工具 → 打开右栏并把 URL 推给浏览器面板。
   // seq 递增保证同一 URL 重复打开也会重新导航。
@@ -2218,9 +2448,8 @@ export function ChatView({
     }
   }, [eventHistory, setRailOpen]);
 
-  // AI 浏览器命令桥：runtime 发 browser.command_requested（带 requestId）→
-  // 在右栏 BrowserPanel 的 webview 上执行 → submitBrowserResult 回传结果。
-  // 首轮只登记历史事件（不重放旧命令——runtime 侧等待早已超时）。
+  // 迁移期兼容桥：新 Runtime 已由 Browser Worker 执行真实命令，不再发此事件。
+  // 保留旧 Runtime 的 browser.command_requested 回传，历史事件仍只登记、不重放。
   const seenBrowserCommandIdsRef = useRef<Set<string>>(new Set());
   const browserCommandPrimedRef = useRef(false);
   useEffect(() => {
@@ -2293,7 +2522,7 @@ export function ChatView({
   );
 
   return (
-    <div ref={fileSplitRowRef} className="flex min-h-0 flex-1 overflow-hidden">
+    <div className="flex min-h-0 flex-1 overflow-hidden">
       {/* ─── Chat column ───────────────────────────────────────────── */}
       {/* min-w 从 360 降到 260：三栏（聊天列+文件分屏+右栏）同开时硬性下限
           之和必须小于中等窗口宽度，否则父容器 overflow:hidden 会裁掉行末的右栏。 */}
@@ -2308,22 +2537,98 @@ export function ChatView({
         {/* ─── Messages ───────────────────────────────────────────────── */}
         <div
           ref={messagesScrollRef}
-          className="shell-chat-content-wrap flex-1 overflow-y-auto py-6"
-          onScroll={() => {
-            const scroller = messagesScrollRef.current;
-            if (!scroller) return;
-            // If the user scrolls up, stop pinning; near-bottom re-enables pin.
-            const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-            stickToBottomRef.current = distance < 80;
-            // Load older messages when scrolled near top.
-            if (scroller.scrollTop < 50 && hasMore && !loadingMore) {
-              const prevHeight = scroller.scrollHeight;
+          className="shell-chat-content-wrap shell-chat-message-scroller flex-1 overflow-y-auto py-6"
+          onWheel={(event) => {
+            if (event.deltaY !== 0) {
+              userScrollRevisionRef.current += 1;
+              bottomPinIntentRef.current =
+                event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
+              // Release the pin during the gesture itself. Waiting for the
+              // native scroll event lets a streaming render run first and
+              // snap the viewport back to the bottom, perceived as jitter.
+              if (event.deltaY < 0) stickToBottomRef.current = false;
+            }
+          }}
+          onTouchStart={(event) => {
+            lastTouchClientYRef.current = event.touches[0]?.clientY ?? null;
+          }}
+          onTouchMove={(event) => {
+            const currentClientY = event.touches[0]?.clientY;
+            const previousClientY = lastTouchClientYRef.current;
+            if (currentClientY !== undefined && previousClientY !== null) {
+              userScrollRevisionRef.current += 1;
+              if (currentClientY < previousClientY) {
+                bottomPinIntentRef.current = 'toward-bottom';
+              } else if (currentClientY > previousClientY) {
+                bottomPinIntentRef.current = 'away-from-bottom';
+                stickToBottomRef.current = false;
+              }
+            }
+            lastTouchClientYRef.current = currentClientY ?? null;
+          }}
+          onTouchEnd={() => {
+            lastTouchClientYRef.current = null;
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End') {
+              userScrollRevisionRef.current += 1;
+              bottomPinIntentRef.current = 'toward-bottom';
+            } else if (
+              event.key === 'ArrowUp' ||
+              event.key === 'PageUp' ||
+              event.key === 'Home'
+            ) {
+              userScrollRevisionRef.current += 1;
+              bottomPinIntentRef.current = 'away-from-bottom';
+              stickToBottomRef.current = false;
+            }
+          }}
+          onScroll={(event) => {
+            const scroller = event.currentTarget;
+            const currentScrollTop = scroller.scrollTop;
+            const programmaticTarget = programmaticScrollTargetRef.current;
+            const isProgrammatic =
+              programmaticTarget !== null && Math.abs(currentScrollTop - programmaticTarget) <= 1;
+            if (isProgrammatic) {
+              programmaticScrollTargetRef.current = null;
+            } else {
+              const nativeIntent = inferNativeScrollIntent({
+                previousScrollTop: lastObservedScrollTopRef.current,
+                nextScrollTop: currentScrollTop,
+              });
+              // Native scrollbar dragging does not emit wheel events. Infer its
+              // direction from scrollTop so dragging upward always releases pinning.
+              if (nativeIntent === 'away-from-bottom') {
+                userScrollRevisionRef.current += 1;
+                bottomPinIntentRef.current = nativeIntent;
+                stickToBottomRef.current = false;
+              } else if (nativeIntent === 'toward-bottom' && bottomPinIntentRef.current === null) {
+                userScrollRevisionRef.current += 1;
+                bottomPinIntentRef.current = nativeIntent;
+              }
+            }
+            lastObservedScrollTopRef.current = currentScrollTop;
+
+            // Proximity may disable pinning, but only an explicit/native
+            // downward gesture may re-enable it after the user viewed history.
+            const distance = scroller.scrollHeight - currentScrollTop - scroller.clientHeight;
+            stickToBottomRef.current = resolveBottomPinState({
+              currentlyPinned: stickToBottomRef.current,
+              distanceFromBottom: distance,
+              userIntent: isProgrammatic ? null : bottomPinIntentRef.current,
+            });
+            bottomPinIntentRef.current = null;
+
+            // Load older messages when scrolled near top. Capture one real DOM
+            // row and restore it only if the user did not keep scrolling while
+            // the async history request was pending.
+            if (currentScrollTop < 50 && hasMore && !loadingMore && !loadingMoreRef.current) {
+              const anchor = capturePrependAnchor(scroller);
+              const expectedUserScrollRevision = userScrollRevisionRef.current;
               void loadMessages(nextCursor).then((applied) => {
-                if (!applied) return;
-                // Preserve scroll position after prepending older messages.
+                if (!applied || !anchor) return;
                 requestAnimationFrame(() => {
-                  const newHeight = scroller.scrollHeight;
-                  scroller.scrollTop = newHeight - prevHeight;
+                  restorePrependAnchor(scroller, anchor, expectedUserScrollRevision);
                 });
               });
             }
@@ -2337,26 +2642,46 @@ export function ChatView({
             </div>
           )}
           {/* Keep message column and compose at the same content width. */}
-          <div className="shell-chat-content mx-auto flex flex-col gap-6">
+          <div className="shell-chat-content mx-auto flex flex-col">
             {loadingMore && (
               <div className="flex items-center justify-center py-3">
                 <LoaderCircle className="h-4 w-4 animate-spin text-text-faint" />
                 <span className="ml-2 text-[12px] text-text-faint">加载更早消息…</span>
               </div>
             )}
-            {messages.map((msg) => (
-              <MessageBubble
+            {visibleDurableMessages.map((msg) => (
+              <div
                 key={msg.id}
-                message={msg}
-                processView={msg.runId ? runProcessById.get(msg.runId) : undefined}
-                models={models}
-                agents={agents}
-                regenerating={sending}
-                onRegenerate={handleRegenerate}
-                onOpenChange={openChangeInRail}
-                onExpandRail={expandRail}
-                onOpenImage={setLightbox}
-              />
+                data-message-id={msg.id}
+                className="pb-6"
+              >
+                <MessageBubble
+                  message={msg}
+                  processView={msg.runId ? runProcessById.get(msg.runId) : undefined}
+                  models={models}
+                  agents={agents}
+                  regenerating={sending}
+                  onRegenerate={handleRegenerate}
+                  onOpenChange={openChangeInRail}
+                  onExpandRail={expandRail}
+                  onOpenImage={setLightbox}
+                />
+              </div>
+            ))}
+            {liveMessages.map((msg) => (
+              <div key={msg.id} className="pb-6">
+                <MessageBubble
+                  message={msg}
+                  processView={msg.runId ? runProcessById.get(msg.runId) : undefined}
+                  models={models}
+                  agents={agents}
+                  regenerating={sending}
+                  onRegenerate={handleRegenerate}
+                  onOpenChange={openChangeInRail}
+                  onExpandRail={expandRail}
+                  onOpenImage={setLightbox}
+                />
+              </div>
             ))}
             {pendingApprovals.map((approval) => (
               <ToolApprovalCard
@@ -2655,15 +2980,13 @@ export function ChatView({
                     />
                   </div>
 
-                  {/* Skill placeholder */}
-                  <button
-                    type="button"
-                    className="shell-compose__tool"
-                    title="Skill（即将支持）"
-                    disabled
-                  >
-                    <Puzzle size={15} />
-                  </button>
+                  <TurnSkillControl
+                    owner={skillOwner}
+                    open={menu === 'skill'}
+                    selectedSkillVersionIds={selectedSkillVersionIds}
+                    onOpenChange={(open) => setMenu(open ? 'skill' : null)}
+                    onChange={setSelectedSkillVersionIds}
+                  />
                 </div>
 
                 <div className="shell-compose__bar-right">
@@ -2779,75 +3102,6 @@ export function ChatView({
       </div>
       {/* end chat column */}
 
-      {/* 文件分屏面板（IDE 式只读查看）：位于聊天列与右栏之间。
-          与聊天列之间有可拖拽分隔线，比例存 fileSplitRatio。 */}
-      {splitFile && (
-        <div
-          data-testid="file-split-divider"
-          className="shell-split-divider"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="拖拽调整文件分屏比例"
-          onMouseDown={(e) => {
-            const width = fileSplitRowRef.current?.getBoundingClientRect().width ?? 0;
-            if (width <= 0) return;
-            e.preventDefault();
-            fileSplitDragRef.current = { startX: e.clientX, startRatio: fileSplitRatio, width };
-            document.body.style.cursor = 'col-resize';
-            document.body.style.userSelect = 'none';
-          }}
-          onDoubleClick={() => setFileSplitRatio(0.46)}
-        />
-      )}
-      {splitFile && (
-        <section
-          className="shell-file-split flex min-w-0 flex-col overflow-hidden border-l border-border bg-surface"
-          style={{ flexBasis: `${fileSplitRatio * 100}%` }}
-          data-testid="file-split-pane"
-        >
-          <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
-            <FileCode2 size={13} className="shrink-0 text-accent" />
-            <span
-              className="min-w-0 flex-1 truncate text-[12px] font-medium text-text"
-              title={splitFile.path}
-            >
-              {splitFile.path}
-            </span>
-            <span className="shrink-0 text-[10.5px] text-text-faint">只读</span>
-            <button
-              type="button"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text"
-              title="关闭文件"
-              data-testid="file-split-close"
-              onClick={() => setSplitFile(null)}
-            >
-              <X size={13} />
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            {splitFile.loading ? (
-              <div className="flex items-center gap-2 px-4 py-4 text-[12px] text-text-faint">
-                <LoaderCircle size={13} className="animate-spin" /> 读取中…
-              </div>
-            ) : splitFile.error ? (
-              <div className="px-4 py-4 text-[12px] text-text-faint">{splitFile.error}</div>
-            ) : (
-              <table className="shell-file-split-code">
-                <tbody>
-                  {(splitFile.content ?? '').split('\n').map((line, index) => (
-                    // eslint-disable-next-line react/no-array-index-key
-                    <tr key={index}>
-                      <td className="shell-file-split-lineno">{index + 1}</td>
-                      <td className="shell-file-split-line">{line || ' '}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </section>
-      )}
-
       {/* 右栏：多面板 Dock（浏览器 / 文件 / 工作区）。带滑入动画。 */}
       {railOpen && (
         <aside
@@ -2858,8 +3112,7 @@ export function ChatView({
             projectFolder={projectFolder}
             browserUrl={aiBrowserNav?.url}
             browserNavSeq={aiBrowserNav?.seq}
-            onOpenFileSplit={openFileSplit}
-            splitFilePath={splitFile?.path ?? null}
+            onOpenFile={onOpenFile}
             onClose={() => setRailOpen(false)}
           />
         </aside>
@@ -3118,6 +3371,24 @@ const MessageBubble = memo(function MessageBubble({
           <MarkdownContent text={message.text} streaming={Boolean(message.streaming)} />
         ) : message.streaming && !message.reasoningText?.trim() ? (
           <TypingDots inline />
+        ) : null}
+        {message.terminalState ? (
+          <div
+            className="mt-2 flex items-center gap-1.5 text-[11.5px] text-text-faint"
+            data-testid={`assistant-terminal-${message.terminalState}`}
+            title={message.terminalError}
+          >
+            {message.terminalState === 'failed' ? (
+              <AlertCircle size={12} className="shrink-0 text-[var(--color-error)]" />
+            ) : (
+              <Square size={11} className="shrink-0" />
+            )}
+            <span>
+              {message.terminalState === 'failed'
+                ? '回复失败，已保留中断前内容'
+                : '已停止生成，以上内容已保留'}
+            </span>
+          </div>
         ) : null}
         {/* NewMax: the per-run file summary stays visible after the reply
             lands (outside the auto-collapsing process group) so「本轮改了
@@ -3392,19 +3663,28 @@ function ReasoningBlock({ text, streaming }: { text?: string; streaming?: boolea
   const content = (text ?? '').trim();
   const [open, setOpen] = useState(Boolean(streaming));
   const bodyRef = useRef<HTMLDivElement>(null);
+  const followTailRef = useRef(true);
+  const previousStreamingRef = useRef(Boolean(streaming));
 
   useEffect(() => {
     // Expanded while thinking, folded once the answer lands (P2). Without the
     // collapse the reasoning stayed open forever and dominated the transcript.
     setOpen(Boolean(streaming));
+    // A new streaming turn starts at the tail; preserve a user's manual
+    // position while that same turn continues to receive tokens.
+    if (streaming && !previousStreamingRef.current) followTailRef.current = true;
+    previousStreamingRef.current = Boolean(streaming);
   }, [streaming]);
 
   // NewMax-style live thinking: keep the newest reasoning line in view while
-  // tokens stream, so the panel reads like a rolling console.
+  // tokens stream, so the panel reads like a rolling console. Once the user
+  // wheels upward, stop forcing scrollTop so the text no longer jumps back.
   useEffect(() => {
-    if (!streaming || !open) return;
+    if (!streaming || !open || !followTailRef.current) return;
     const el = bodyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom <= 32) el.scrollTop = el.scrollHeight;
   }, [content, streaming, open]);
 
   if (!content && !streaming) return null;
@@ -3427,7 +3707,20 @@ function ReasoningBlock({ text, streaming }: { text?: string; streaming?: boolea
         </span>
       </button>
       {open ? (
-        <div ref={bodyRef} className="shell-reasoning__body">
+        <div
+          ref={bodyRef}
+          className="shell-reasoning__body"
+          onWheel={(event) => {
+            if (event.deltaY < 0) followTailRef.current = false;
+          }}
+          onScroll={() => {
+            const el = bodyRef.current;
+            if (!el) return;
+            const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+            if (distanceFromBottom > 32) followTailRef.current = false;
+            else if (streaming) followTailRef.current = true;
+          }}
+        >
           {content ? (
             <pre className="shell-reasoning__text">
               {content}

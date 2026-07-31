@@ -41,7 +41,7 @@ let _counter = 0;
 let _lastTimeMs = 0;
 
 function encodeTime(ms: number): string {
-  let t = Math.floor(ms);
+  const t = Math.floor(ms);
   let out = '';
   for (let i = 9; i >= 0; i--) {
     out = ENCODE[(t >> (i * 5)) & 0x1f] + out;

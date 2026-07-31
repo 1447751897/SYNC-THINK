@@ -104,7 +104,24 @@ export function parseListSkillsPayload(value: unknown): ListSkillsPayload {
   ) {
     throw new Error('Invalid list-skills payload');
   }
-  return { limit: value.limit as number | undefined };
+  let skillVersionIds: string[] | undefined;
+  if (value.skillVersionIds !== undefined) {
+    if (!Array.isArray(value.skillVersionIds) || value.skillVersionIds.length > 64) {
+      throw new Error('Invalid list-skills payload');
+    }
+    skillVersionIds = [];
+    const seen = new Set<string>();
+    for (const raw of value.skillVersionIds) {
+      if (typeof raw !== 'string' || raw.trim().length === 0 || raw.length > 256) {
+        throw new Error('Invalid list-skills payload');
+      }
+      const id = raw.trim();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      skillVersionIds.push(id);
+    }
+  }
+  return { limit: value.limit as number | undefined, skillVersionIds };
 }
 
 export function parseDeleteSkillPayload(value: unknown): DeleteSkillPayload {

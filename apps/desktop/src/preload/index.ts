@@ -186,6 +186,15 @@ import type {
   RendererUpdateProviderCredentialPayload,
 } from '../provider-payloads.js';
 import type { Event } from '@sync-think/shared';
+import type {
+  CancelProjectTerminalPayload,
+  CancelProjectTerminalResult,
+  ProjectTerminalEvent,
+  SearchProjectContentPayload,
+  SearchProjectContentResult,
+  StartProjectTerminalPayload,
+  StartProjectTerminalResult,
+} from '../workspace-tools-contract.js';
 import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
 
 const api = {
@@ -613,13 +622,101 @@ const api = {
         root: string;
         files: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;
       }>,
-    /** 右栏「文件」面板：读取项目内单个文本文件（只读）。 */
+    searchProjectContent: (payload: SearchProjectContentPayload) =>
+      ipcRenderer.invoke(
+        'desktop:search-project-content',
+        payload,
+      ) as Promise<SearchProjectContentResult>,
+    startProjectTerminal: (payload: StartProjectTerminalPayload) =>
+      ipcRenderer.invoke(
+        'desktop:start-project-terminal',
+        payload,
+      ) as Promise<StartProjectTerminalResult>,
+    cancelProjectTerminal: (payload: CancelProjectTerminalPayload) =>
+      ipcRenderer.invoke(
+        'desktop:cancel-project-terminal',
+        payload,
+      ) as Promise<CancelProjectTerminalResult>,
+    subscribeProjectTerminal: (listener: (event: ProjectTerminalEvent) => void) => {
+      const channel = 'desktop:project-terminal-event';
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        terminalEvent: ProjectTerminalEvent,
+      ) => listener(terminalEvent);
+      ipcRenderer.on(channel, handler);
+      return () => ipcRenderer.removeListener(channel, handler);
+    },
+    /** 文件 Pane：读取文本及乐观并发元数据。 */
     readProjectFile: (payload: { root: string; path: string }) =>
       ipcRenderer.invoke('desktop:read-project-file', payload) as Promise<{
         path: string;
         content: string | null;
         error: string | null;
+        errorCode: string | null;
+        mtimeMs: number | null;
+        size: number | null;
       }>,
+    writeProjectFile: (payload: {
+      root: string;
+      path: string;
+      content: string;
+      expectedMtimeMs: number | null;
+      expectedSize?: number | null;
+      force?: boolean;
+    }) =>
+      ipcRenderer.invoke('desktop:write-project-file', payload) as Promise<{
+        path: string;
+        ok: boolean;
+        conflict: boolean;
+        error: string | null;
+        errorCode: string | null;
+        mtimeMs: number | null;
+        size: number | null;
+      }>,
+    watchProjectFile: (
+      payload: { root: string; path: string },
+      listener: (change: {
+        path: string;
+        exists: boolean;
+        mtimeMs: number | null;
+        size: number | null;
+      }) => void,
+    ) => {
+      const subscriptionId = `renderer-file-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const channel = 'desktop:project-file-changed';
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        event: {
+          subscriptionId: string;
+          change: {
+            path: string;
+            exists: boolean;
+            mtimeMs: number | null;
+            size: number | null;
+          };
+        },
+      ) => {
+        if (event.subscriptionId === subscriptionId) listener(event.change);
+      };
+      ipcRenderer.on(channel, handler);
+      const ready = ipcRenderer.invoke('desktop:watch-project-file', {
+        ...payload,
+        subscriptionId,
+      }) as Promise<{ subscriptionId: string }>;
+      let closed = false;
+      return {
+        ready,
+        unsubscribe: async () => {
+          if (closed) return;
+          closed = true;
+          ipcRenderer.removeListener(channel, handler);
+          await ready.catch(() => undefined);
+          await ipcRenderer
+            .invoke('desktop:unwatch-project-file', { subscriptionId })
+            .catch(() => undefined);
+        },
+      };
+    },
     /** 右栏「文件」面板树形视图：列出项目内单层目录（懒加载展开）。 */
     listProjectDir: (payload: { root: string; dir?: string }) =>
       ipcRenderer.invoke('desktop:list-project-dir', payload) as Promise<{

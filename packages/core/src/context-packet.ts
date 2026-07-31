@@ -216,6 +216,7 @@ export interface AllowedSkillSnapshot {
   version: string;
   description: string;
   body: string;
+  contentFingerprint?: string;
   allowedTools?: readonly string[];
   hasScripts?: boolean;
 }
@@ -225,11 +226,11 @@ export interface ResolveAllowedSkillSourcesInput {
   skillVersionIds: readonly string[];
   /** Lookup by skillVersionId; return undefined when not in library. */
   getSkill: (skillVersionId: string) => AllowedSkillSnapshot | undefined;
-  /** Hard cap on how many skill definitions enter candidates (default 6). */
+  /** Hard cap on how many skill definitions enter candidates (default 8). */
   maxSkills?: number;
   /** Max characters of body counted toward tokenEstimate (default 2400). */
   bodyMaxChars?: number;
-  /** Max characters of body shown in Manifest summary (default 120). */
+  /** Max characters of metadata shown in Manifest summary (default 120). */
   summaryMaxChars?: number;
 }
 
@@ -240,6 +241,16 @@ export interface ResolveAllowedSkillSourcesResult {
   missingSkillVersionIds: string[];
   /** Ids successfully mapped into sources. */
   resolvedSkillVersionIds: string[];
+  /** Bounded exact content used to construct Provider prompt blocks. */
+  resolvedSkills: Array<{
+    sourceId: string;
+    skillVersionId: string;
+    name: string;
+    version: string;
+    body: string;
+    contentFingerprint: string;
+  }>;
+  truncations: ContextManifest['truncations'];
 }
 
 /**
@@ -250,7 +261,7 @@ export interface ResolveAllowedSkillSourcesResult {
 export function resolveAllowedSkillSources(
   input: ResolveAllowedSkillSourcesInput,
 ): ResolveAllowedSkillSourcesResult {
-  const maxSkills = Math.min(Math.max(input.maxSkills ?? 6, 0), 16);
+  const maxSkills = Math.min(Math.max(input.maxSkills ?? 8, 0), 16);
   const bodyMax = Math.min(Math.max(input.bodyMaxChars ?? 2400, 200), 12_000);
   const summaryMax = Math.min(Math.max(input.summaryMaxChars ?? 120, 32), 240);
 
@@ -267,6 +278,8 @@ export function resolveAllowedSkillSources(
   const summaries: Array<{ sourceId: string; summary: string }> = [];
   const missingSkillVersionIds: string[] = [];
   const resolvedSkillVersionIds: string[] = [];
+  const resolvedSkills: ResolveAllowedSkillSourcesResult['resolvedSkills'] = [];
+  const truncations: ContextManifest['truncations'] = [];
 
   for (const id of orderedIds) {
     if (sources.length >= maxSkills) break;
@@ -285,15 +298,10 @@ export function resolveAllowedSkillSources(
     const scriptHint = skill.hasScripts ? ' · 含脚本(不执行)' : '';
 
     const sourceId = `skill:${id}`;
-    const bodyPreview =
-      bodyForTokens.length > summaryMax
-        ? `${bodyForTokens.slice(0, summaryMax - 1)}…`
-        : bodyForTokens;
     const summaryCore = [
       `Skill · ${name}@${version}`,
       description ? description.slice(0, 48) : '',
       toolHint ? `tools: ${toolHint}` : '',
-      bodyPreview,
     ]
       .filter(Boolean)
       .join(' — ');
@@ -309,9 +317,32 @@ export function resolveAllowedSkillSources(
     sources.push({ id: sourceId, kind: 'skill-definition', tokenEstimate });
     summaries.push({ sourceId, summary });
     resolvedSkillVersionIds.push(id);
+    resolvedSkills.push({
+      sourceId,
+      skillVersionId: id,
+      name,
+      version,
+      body: bodyForTokens,
+      contentFingerprint: String(skill.contentFingerprint ?? ''),
+    });
+    if (bodyForTokens.length < body.length) {
+      truncations.push({
+        sourceId,
+        reason: 'skill-body-limit',
+        beforeTokens: Math.max(1, Math.ceil(body.length / 4)),
+        afterTokens: Math.max(1, Math.ceil(bodyForTokens.length / 4)),
+      });
+    }
   }
 
-  return { sources, summaries, missingSkillVersionIds, resolvedSkillVersionIds };
+  return {
+    sources,
+    summaries,
+    missingSkillVersionIds,
+    resolvedSkillVersionIds,
+    resolvedSkills,
+    truncations,
+  };
 }
 
 
@@ -716,4 +747,3 @@ export function buildContextManifest(
     evidenceRefsForMemory: extras?.evidenceRefsForMemory ?? [],
   };
 }
-

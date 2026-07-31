@@ -1,7 +1,7 @@
 // NewMax-style sidebar (shell constitution):
 // top actions · three tracks with real groups · bottom settings + account.
 // Collapsed = fully hidden (parent omits this component). Width is resizable.
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useDialog } from './Dialog.js';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
@@ -118,7 +118,7 @@ export function Sidebar(props: SidebarProps) {
     return { active: a, archived: ar };
   }, [props.conversations]);
 
-  const filterQ = (list: readonly Conversation[]) => {
+  const filterQ = useCallback((list: readonly Conversation[]) => {
     const q = query.trim().toLowerCase();
     if (!q) return [...list];
     return list.filter((c) => {
@@ -127,10 +127,10 @@ export function Sidebar(props: SidebarProps) {
       const ref = (c.targetRef || '').toLowerCase();
       return title.includes(q) || name.includes(q) || ref.includes(q);
     });
-  };
+  }, [query, resolveName]);
 
-  const filteredActive = useMemo(() => filterQ(active), [active, query, resolveName]);
-  const filteredArchived = useMemo(() => filterQ(archived), [archived, query, resolveName]);
+  const filteredActive = useMemo(() => filterQ(active), [active, filterQ]);
+  const filteredArchived = useMemo(() => filterQ(archived), [archived, filterQ]);
 
   const byTrack = useMemo(() => {
     const groups: Record<ConversationTrack, Conversation[]> = { model: [], agent: [], team: [] };

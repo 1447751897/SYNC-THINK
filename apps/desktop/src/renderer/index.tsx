@@ -1689,13 +1689,7 @@ function DesktopShell() {
     } finally {
       setProviderLoading(false);
     }
-  }, [
-    m1DogfoodFillBoard.level,
-    m1DogfoodFillBoard.draftDays,
-    m1DogfoodFillBoard.scaffoldDays,
-    m1DogfoodFillBoard.missingSlots.length,
-    m1DogfoodFillBoard.primaryCta.action,
-  ]);
+  }, []);
 
   const loadSkills = useCallback(async () => {
     const runtime = window.syncThink?.runtime;
@@ -3465,7 +3459,6 @@ function DesktopShell() {
       }
     };
     // Event subscription is mount-stable; reconnect does not rebind.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -3928,7 +3921,7 @@ function DesktopShell() {
   };
 
   /** Instant create under a project — no modal (product path). */
-  const createTask = async (
+  const createTask = useCallback(async (
     workspaceId: string,
     options?: { parentTaskId?: string; talkTrack?: TalkTrackId },
   ) => {
@@ -4000,7 +3993,7 @@ function DesktopShell() {
       const detail = error instanceof Error && error.message ? `：${error.message}` : '';
       setWorkspaceError(`${parentTaskId ? '创建子任务失败' : '创建任务失败'}${detail}`);
     }
-  };
+  }, [applySelection, loadWorkspaceCatalog, workspaces]);
 
   const switchComposeWorkspace = async (workspaceId: string) => {
     if (active?.workspaceId === workspaceId) return;
@@ -4241,7 +4234,7 @@ function DesktopShell() {
       return;
     }
     await createTask(targetWorkspace.workspaceId, { talkTrack: track });
-  }, [workspaces, active?.workspaceId]);
+  }, [active?.workspaceId, createTask, workspaces]);
 
   const toggleRecentConversationSection = useCallback((track: TalkTrackId) => {
     setRecentConversationSections((current) => {
@@ -5897,7 +5890,12 @@ function DesktopShell() {
         flashInstrument('[data-testid="compose-session-meta"], .st-demo-compose-wrap, .st-compose');
       }, 40);
     }
-  }, [conversationStreamReadiness.failureCtaAction, reconnectRuntime, navigateToInstrument]);
+  }, [
+    conversationStreamReadiness.failureCtaAction,
+    flashInstrument,
+    navigateToInstrument,
+    reconnectRuntime,
+  ]);
 
   const taskTitle = active?.title ?? '选择或创建一个任务';
   const folderPath = active?.folderPath ?? '未绑定文件夹';

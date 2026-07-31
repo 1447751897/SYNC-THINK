@@ -19,7 +19,7 @@
 
 ```text
 当前阶段：M1、M2 已完成；Phase 3 进行中
-阶段目标：在已交付 File/Terminal/Git 与模型工具循环的基础上，继续 Browser/UIA、生图和安装分发
+阶段目标：在已交付 File/Terminal/Git Worker、递归 Pane、文件编辑、内容搜索、受控终端 Pane 和每轮精确 Skill 上下文的基础上，继续 Browser/UIA、生图和安装分发
 开始日期：2026-07-12
 M2 完成日期：2026-07-15
 M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1）
@@ -45,6 +45,20 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
 1. File、Terminal、Git Worker 已有真实实现，包含 capability allowlist、审批、取消/超时、输出限幅及真实路径 symlink/junction 逃逸防护。
 2. Provider 工具循环已支持文件读/列/写、受限命令及 Git status/diff，并在审批后用持久检查点恢复。
 3. Browser Worker、Windows UIA Worker、图像生成完整管线、安装器、签名和自动更新仍未完成；不满足 Phase 3 退出标准。
+
+补充（2026-07-28）：
+
+1. NewMax P0 已交付递归 Pane、流式合批与受约束文件编辑；P1 已交付项目正文搜索与受控终端 Pane。
+2. 项目正文搜索使用 `rg --json` + Node fallback，不建立持久索引；终端复用既有 Worker 并懒加载 xterm，不引入 PTY 或持久 shell。
+3. P1 最终全仓 test/typecheck/lint/build 和浅深双尺寸 Electron QA 全部通过；Phase 3 仍不因该切片提前关闭。
+
+补充（2026-07-29）：
+
+1. NewMax P2 已交付 Agent Skill 默认继承与 Composer 会话级临时覆盖；Agent/Team 默认启用有效 owner 的装备列表，模型直聊为 `[]`，旧客户端仍保留继承 Agent allowlist 的兼容路径。
+2. Skill 列表使用 metadata-only SQL 并在菜单打开时懒请求；正文只由 Runtime 在校验 allowlist、归档和审批后按精确 ID 加载。
+3. Context、Provider、Manifest、fallback/rebind/retry/recovery 使用同一冻结 ID；durable Run 状态不复制 `SKILL.md` 正文。
+4. Composer 成功和失败都保持当前会话选择；切换有效 Agent/Team owner 时恢复新默认，只切换模型 override 不清空。欢迎页首条覆盖会交给新建对话，目录等价刷新不覆盖用户调整。
+5. 自动 DAG 的每个 Step 按自身冻结 AgentVersion 自动加载对应 Skill，成员间不串用，也不要求用户逐 Step 配置；P2 已通过最终门禁、独立复审与最新版浅深双尺寸实窗复验，仍不提前关闭 Phase 3。
 
 ## 3. Phase 0 - 技术验证
 
@@ -160,13 +174,22 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
 4. 诊断、崩溃恢复、安装包、签名、更新
 5. 视觉 polish、动效、无障碍、性能、闭测运营
 
-当前交付切片（2026-07-16）：
+当前交付切片（更新至 2026-07-30）：
 
 - [x] File Worker：读、列目录、原子写；删除禁用；路径和真实路径边界。
 - [x] Terminal Worker：命令 allowlist、无 Shell、受限 cwd、超时/取消、输出限幅。
 - [x] Git Worker：固定 argv 的 status/diff/log/branch，literal pathspec 和路径边界。
 - [x] 模型工具循环：Provider 工具协议、持久检查点、Scheduler 审批恢复、正文与轨迹 Artifact。
+- [x] 递归 Pane 与文件编辑：横/纵嵌套、Workspace 快照、乐观并发保存、外部冲突和草稿边界。
+- [x] 项目内容搜索：`rg --json` + Node fallback、取消/超时/限幅、行列定位与路径边界。
+- [x] 终端 Pane：lazy xterm、受控命令、流式输出、停止/清空/历史/cwd；明确不是持久 PTY。
+- [x] Agent Skill 默认继承：Agent Library 一次配置、Composer 会话级临时覆盖、metadata-only 懒加载；自动 Step 按成员 AgentVersion 隔离装载并冻结恢复。
 - [ ] Browser Worker 与网页授权执行。
+  - [x] P0.1：系统浏览器 Host、持久 Profile、CDP、Tab lease 与基础动作。
+  - [x] P0.2：聊天 `browser_*` 从 Renderer `<webview>` 迁到 Runtime Worker。
+  - [ ] P0.3：命令状态、站点授权、敏感动作审批与重启恢复。
+  - [ ] P0.4：Team Step 精确权限、Run/Step Tab lease 与成员隔离。
+  - [ ] P0.5：持久 `waiting_user`、继续/取消和人工接管生命周期。
 - [ ] Windows UI Automation Worker 与人工接管回退。
 - [ ] 图像生成完整管线与视觉审查闭环。
 - [ ] 安装器、代码签名、自动更新和闭测分发。
@@ -211,3 +234,5 @@ MVP 边界（闭测）：Windows 单机 local-first 多模型 Agent 工作台
 | 2026-07-13 | 允许 M1 dogfood 累计期间连续实施 M2 | 用户明确要求 M1/M2 连续完成，且不伪造日历证据                        |
 | 2026-07-15 | M2 完成；M1 保持 1/3 open           | M2 exit demo/QA 通过；M1 仅剩真实 dogfood 日期门槛                   |
 | 2026-07-16 | Phase 3 进入部分实施                | File/Terminal/Git 与模型工具循环已交付；Browser/UIA/安装分发仍待完成 |
+| 2026-07-28 | Phase 3 工作区 P0/P1 切片完成       | 递归 Pane、文件编辑、内容搜索与受控终端 Pane 已通过全仓及实窗门禁    |
+| 2026-07-29 | Phase 3 工作区 P2 切片完成          | 每轮 Skill 精确选择、懒上下文与冻结恢复已通过全仓及实窗门禁         |

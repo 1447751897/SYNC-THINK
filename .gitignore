@@ -27,6 +27,9 @@ apps/desktop/release
 /scripts/_*
 # tool / desktop-shell artifacts
 .claude/worktrees/
+# local Electron manual-test and user-data directories
+/.electron-*/
 /conversations/
+/Sync-Think/conversations/
 /_*.mjs
 .sync-think/

@@ -32,6 +32,8 @@
     "@sync-think/protocol": "workspace:*",
     "@sync-think/shared": "workspace:*",
     "@sync-think/ui-kit": "workspace:*",
+    "@sync-think/workers": "workspace:*",
+    "@xterm/xterm": "^5.5.0",
     "@tailwindcss/cli": "^4.3.3",
     "clsx": "^2.1.1",
     "highlight.js": "^11.11.1",

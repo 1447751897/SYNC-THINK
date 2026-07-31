@@ -181,7 +181,7 @@ export function formatM1HandtestPaste(input: M1HandtestPasteInput): M1HandtestPa
 export function handtestPasteLooksSecretFree(text: string): boolean {
   if (!text) return true;
   if (/sk-[A-Za-z0-9]{16,}/.test(text)) return false;
-  if (/api[_-]?key\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{12,}/i.test(text)) return false;
-  if (/Bearer\s+[A-Za-z0-9_\-\.]{16,}/i.test(text)) return false;
+  if (/api[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9_-]{12,}/i.test(text)) return false;
+  if (/Bearer\s+[A-Za-z0-9_.-]{16,}/i.test(text)) return false;
   return true;
 }

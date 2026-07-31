@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { connect, type Socket } from 'node:net';
@@ -25,6 +25,8 @@ import type { ConversationId, RunId, TaskId, ThreadId, WorkspaceId } from '@sync
 import {
   openDatabaseAsync,
   runMigrations,
+  DEFAULT_CONVERSATION_AGENT_ID,
+  SqliteAgentStore,
   SqliteConversationStore,
   SqliteEventCheckpointStore,
   SqliteGlobalAgentStore,
@@ -146,6 +148,7 @@ interface RuntimeHarness {
   inbox: FrameInbox;
   runtime: Runtime;
   socket: Socket;
+  skillStore: SqliteSkillStore;
   stateStore: SqliteEventCheckpointStore;
   taskId: TaskId;
   threadId: ThreadId;
@@ -168,6 +171,7 @@ async function createHarness(
   const stateStore = new SqliteEventCheckpointStore(connection.raw);
   const providerStore = new SqliteProviderStore(connection.raw);
   const globalAgentStore = new SqliteGlobalAgentStore(connection.raw);
+  const agentStore = new SqliteAgentStore(connection.raw);
   const conversationStore = new SqliteConversationStore(connection.raw);
   const workspaceStore = new SqliteWorkspaceStore(connection.raw);
   const memoryStore = new SqliteMemoryStore(connection.raw);
@@ -203,6 +207,14 @@ async function createHarness(
     sourceMd: `# Context Snapshot Auditor\n\n${SKILL_BODY}`,
     body: SKILL_BODY,
     contentFingerprint: `context-snapshot-${randomBytes(8).toString('hex')}`,
+  });
+  agentStore.ensureConversationAgent({ defaultModelId: model.id });
+  agentStore.updateBinding({
+    agentId: DEFAULT_CONVERSATION_AGENT_ID,
+    defaultModelId: model.id,
+    fallbackModelIds: [],
+    pauseOnFailure: true,
+    skillVersionIds: [skill.id],
   });
   const mcp = mcpStore.register({
     id: 'mcp-context-status',
@@ -281,6 +293,7 @@ async function createHarness(
     workspaceId,
     checkpointRunId: `runtime-${installId}` as RunId,
     providerStore,
+    agentStore,
     globalAgentStore,
     conversationStore,
     workspaceStore,
@@ -316,6 +329,7 @@ async function createHarness(
     inbox,
     runtime,
     socket,
+    skillStore,
     stateStore,
     taskId: task.taskId,
     threadId: task.threadId,
@@ -334,6 +348,7 @@ async function appendUserMessage(
   text: string,
   expectedTaskVersion: number,
   requestId: string,
+  skillVersionIds?: readonly string[],
 ): Promise<number> {
   const beforeCompleted = harness.stateStore
     .listEvents(harness.workspaceId, 0)
@@ -347,6 +362,7 @@ async function appendUserMessage(
       expectedTaskVersion,
       role: 'user',
       text,
+      ...(skillVersionIds === undefined ? {} : { skillVersionIds: [...skillVersionIds] }),
     },
   });
   expect(response.error).toBeUndefined();
@@ -422,6 +438,60 @@ function expectedSectionsFromProviderRequest(request: ProviderCallRequest) {
 }
 
 describe('conversation.getContextStatus runtime integration', () => {
+  it('does not load Skill bodies for status, peek, or compact maintenance paths', async () => {
+    const harness = await createHarness(200);
+    const getVersion = vi.spyOn(harness.skillStore, 'getVersion');
+    try {
+      const status = await getContextStatus(harness, 'maintenance-status');
+      expect(status.modelId).toBeDefined();
+      expect(getVersion).not.toHaveBeenCalled();
+
+      getVersion.mockClear();
+      const peek = await harness.inbox.send({
+        id: 'maintenance-peek',
+        kind: 'request',
+        type: 'context.packet.peek',
+        payload: { threadId: harness.threadId },
+      });
+      expect(peek.error).toBeUndefined();
+      expect((peek.payload as { skillVersionIds?: string[] }).skillVersionIds).toEqual([]);
+      expect(getVersion).not.toHaveBeenCalled();
+
+      let taskVersion = await appendUserMessage(
+        harness,
+        'maintenance-compact-one-' + 'x'.repeat(1_000),
+        0,
+        'maintenance-append-one',
+        [],
+      );
+      taskVersion = await appendUserMessage(
+        harness,
+        'maintenance-compact-two-' + 'y'.repeat(1_000),
+        taskVersion,
+        'maintenance-append-two',
+        [],
+      );
+      expect(taskVersion).toBe(2);
+
+      getVersion.mockClear();
+      const compact = await harness.inbox.send({
+        id: 'maintenance-compact',
+        kind: 'request',
+        type: 'conversation.compact',
+        payload: {
+          conversationId: harness.conversationId,
+          mode: 'manual',
+          keepRecent: 1,
+        },
+      });
+      expect(compact.error).toBeUndefined();
+      expect(getVersion).not.toHaveBeenCalled();
+    } finally {
+      getVersion.mockRestore();
+      await closeHarness(harness);
+    }
+  });
+
   it('builds status for a model conversation without a bound agent', async () => {
     const harness = await createHarness(128_000, { target: 'model' });
     try {
@@ -431,6 +501,34 @@ describe('conversation.getContextStatus runtime integration', () => {
       expect(status.sections.find((section) => section.type === 'agent')?.tokens).toBeGreaterThan(
         0,
       );
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
+  it('rebuilds cache-miss system, agent, project, and tools from the same provider context', async () => {
+    const harness = await createHarness(1_000_000);
+    try {
+      expect(harness.adapter.calls).toHaveLength(0);
+      const cacheMissStatus = await getContextStatus(harness, 'cache-miss-context-status');
+      expect(cacheMissStatus.sections.find((section) => section.type === 'tools')?.tokens).toBeGreaterThan(
+        0,
+      );
+
+      await appendUserMessage(
+        harness,
+        'First request after a cache-miss status rebuild.',
+        0,
+        'cache-miss-append',
+        [],
+      );
+      expect(harness.adapter.calls).toHaveLength(1);
+      const actualSections = expectedSectionsFromProviderRequest(harness.adapter.calls[0]!);
+      for (const type of ['system', 'agent', 'project', 'summary', 'tools'] as const) {
+        expect(cacheMissStatus.sections.find((section) => section.type === type)).toEqual(
+          actualSections.find((section) => section.type === type),
+        );
+      }
     } finally {
       await closeHarness(harness);
     }

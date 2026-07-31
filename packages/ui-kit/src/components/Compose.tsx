@@ -271,7 +271,7 @@ export function Compose(props: ComposeProps) {
     ? (props.selectedModelId ?? null)
     : internalModelId;
 
-  const agents = props.agents ?? [];
+  const agents = useMemo(() => props.agents ?? [], [props.agents]);
   const teams = props.teams ?? [];
   const talkTargetKind = props.talkTargetKind ?? 'agent';
   const showTalkTargetSwitch = Boolean(props.onTalkTargetKindChange);

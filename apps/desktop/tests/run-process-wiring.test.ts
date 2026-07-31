@@ -25,6 +25,13 @@ describe('run process renderer wiring', () => {
     );
   });
 
+  it('prefetches historical process views only for the visible message window', () => {
+    expect(chatViewSource).toContain('visibleDurableMessages');
+    expect(chatViewSource).toContain('const runIds = new Set(');
+    expect(chatViewSource).toContain('runProcessRetryTimersRef.current.delete(runId)');
+    expect(chatViewSource).not.toContain("loadedMessages\n        .filter((message) => message.role === 'assistant'");
+  });
+
   it('retries transient historical process query failures with bounded backoff', () => {
     expect(chatViewSource).toContain('runProcessRetryTimersRef');
     expect(chatViewSource).toContain('runProcessRetryAttemptsRef');
@@ -46,5 +53,12 @@ describe('run process renderer wiring', () => {
     expect(chatViewSource).toContain('onRegenerate={handleRegenerate}');
     expect(chatViewSource).toContain('onExpandRail={expandRail}');
     expect(chatViewSource).not.toContain('onRegenerate={() => void handleRegenerate(msg.id)}');
+  });
+
+  it('batches transient text and reasoning frames to one animation-frame commit', () => {
+    expect(chatViewSource).toContain('transientFrameQueueRef');
+    expect(chatViewSource).toContain('transientFrameFlushRef');
+    expect(chatViewSource).toContain('window.requestAnimationFrame(flushTransientFrames)');
+    expect(chatViewSource).toContain('applyTransientConversationFrames');
   });
 });

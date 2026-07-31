@@ -17,6 +17,8 @@ export interface TaskCreateDialogProps {
 }
 
 export function TaskCreateDialog(props: TaskCreateDialogProps) {
+  const open = props.open;
+  const onClose = props.onClose;
   const [title, setTitle] = useState('');
   const [goal, setGoal] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -24,7 +26,7 @@ export function TaskCreateDialog(props: TaskCreateDialogProps) {
   const isChild = Boolean(props.parentTaskTitle);
 
   useEffect(() => {
-    if (!props.open) return;
+    if (!open) return;
     setTitle(isChild ? '子任务' : '新任务');
     setGoal('');
     setValidationError(null);
@@ -33,18 +35,18 @@ export function TaskCreateDialog(props: TaskCreateDialogProps) {
       inputRef.current?.select();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [isChild, props.open]);
+  }, [isChild, open]);
 
   useEffect(() => {
-    if (!props.open) return;
+    if (!open) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
-      props.onClose();
+      onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [props.onClose, props.open]);
+  }, [onClose, open]);
 
   if (!props.open) return null;
 

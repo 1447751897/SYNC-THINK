@@ -179,6 +179,7 @@ import {
   type SqliteOrchestrationStore,
   type SqliteArtifactStore,
   type SqliteProductionExecutionStore,
+  type SqliteBrowserStore,
   type SqliteUnitOfWork,
   type SqliteGlobalAgentStore,
   type SqliteTeamStore,
@@ -188,6 +189,7 @@ import {
   type TeamRecord,
   type TeamRunRecord,
   type ConversationRecord,
+  type SkillVersionMetadataRecord,
   type SkillVersionRecord,
   type MemoryChangeRecord,
   type DurableMemoryEntry,
@@ -212,6 +214,7 @@ import {
   resolveModelBinding,
   resolveProviderPriorityFallback,
   resolveCredentialRef,
+  resolveRunSkillSelection,
   shouldAttemptFallback,
   suggestCapabilities,
   normalizeCapabilities,
@@ -240,6 +243,7 @@ import {
   createDemoRun,
   parseDemoRuns,
   projectAdapterEvent,
+  serializeDemoRun,
   serializeDemoRuns,
   type DemoProvider,
   type DemoRunState,
@@ -247,10 +251,7 @@ import {
 import {
   buildCompactSummaryUserPrompt,
   buildLocalCompactSummary,
-  BROWSER_COMMAND_RESULT_MAX_CHARS,
-  BROWSER_COMMAND_TIMEOUT_MS,
   CHAT_AGENT_TOOL_NAMES,
-  CHAT_BROWSER_COMMAND_TOOL_NAMES,
   CHAT_BROWSER_TOOL_NAMES,
   CHAT_PLAN_TOOL_NAMES,
   CHAT_SKILL_TOOL_NAMES,
@@ -266,7 +267,6 @@ import {
   mcpToolsToProviderSchemas,
   parseMcpProviderToolName,
   executeChatBuiltInTool,
-  executeChatBrowserTool,
   executeChatPlanTool,
   foldLongToolOutputsInMessages,
   foldToolOutputText,
@@ -276,7 +276,6 @@ import {
   splitHistoryForCompact,
   summarizeToolCallForApproval,
   toolsForExecutionMode,
-  validateChatBrowserCommand,
   wrapModelCompactSummary,
 } from './chat-tools.js';
 import { resolveAppendMessageImageDataUrl } from './chat-image-staging.js';
@@ -396,10 +395,13 @@ import type { StepExecutor } from './orchestration/step-executor.js';
 import {
   FakeMcpWorker,
   LocalStdioMcpWorker,
+  PersistentBrowserWorker,
   formatMcpPolicyLabel,
   normalizeMcpProcessPolicy,
   previewMcpOutput,
+  type BrowserHostLike,
 } from '@sync-think/workers';
+import { RuntimeBrowserController } from './browser/runtime-browser-controller.js';
 
 import {
   estimateUsageCost,
@@ -443,11 +445,17 @@ export interface RuntimeOptions {
   orchestrationStore?: SqliteOrchestrationStore;
   artifactStore?: SqliteArtifactStore;
   productionExecutionStore?: SqliteProductionExecutionStore;
+  browserStore?: SqliteBrowserStore;
   unitOfWork?: SqliteUnitOfWork;
   stepExecutor?: StepExecutor;
   skillStore?: SqliteSkillStore;
   mcpStore?: SqliteMcpStore;
   secureStore?: SecureStore;
+  /** Shared Browser Host. Persistent Runtime supplies the production CDP Host. */
+  browserHost?: BrowserHostLike;
+  browserProfileId?: string;
+  /** Existing local directory used for non-file browser actions without a bound Workspace. */
+  browserFallbackWorkingDir?: string;
   /** Server-owned plan readiness lookup; clients cannot assert plan approval. */
   hasApprovedPlan?: (taskId: TaskId) => boolean;
   /**
@@ -633,6 +641,8 @@ export class Runtime {
   private readonly skillStore?: SqliteSkillStore;
   private readonly mcpStore?: SqliteMcpStore;
   private readonly secureStore?: SecureStore;
+  private readonly browserHost?: BrowserHostLike;
+  private readonly browserController?: RuntimeBrowserController;
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
   private readonly discoveryAdapter?: DemoProvider;
@@ -659,22 +669,6 @@ export class Runtime {
       completedResults: Array<{ toolCallId: string; content: string }>;
       toolLoopRound: number;
       resolve: (decision: 'approve' | 'deny') => void;
-      createdAt: string;
-    }
-  >();
-  /**
-   * Interactive browser commands (browser_click / type / read / screenshot):
-   * the tool loop emits browser.command_requested and waits here until the
-   * desktop renderer replies via conversation.submitBrowserResult (or timeout).
-   */
-  private readonly pendingBrowserCommands = new Map<
-    string,
-    {
-      requestId: string;
-      runId: RunId;
-      threadId: string;
-      toolName: string;
-      resolve: (result: { ok: boolean; resultJson?: string; error?: string }) => void;
       createdAt: string;
     }
   >();
@@ -772,6 +766,15 @@ export class Runtime {
     this.skillStore = opts.skillStore;
     this.mcpStore = opts.mcpStore;
     this.secureStore = opts.secureStore;
+    this.browserHost = opts.browserHost;
+    this.browserController = opts.browserHost && opts.browserStore
+      ? new RuntimeBrowserController({
+          worker: new PersistentBrowserWorker(opts.browserHost),
+          store: opts.browserStore,
+          profileId: opts.browserProfileId,
+          fallbackWorkingDir: opts.browserFallbackWorkingDir ?? process.cwd(),
+        })
+      : undefined;
     this.hasApprovedPlan =
       opts.hasApprovedPlan ??
       ((taskId) => this.orchestrationStore?.hasApprovedPlan(taskId) === true);
@@ -6144,6 +6147,87 @@ export class Runtime {
     ].filter((value): value is string => Boolean(value));
   }
 
+  private formatSkillPromptBlock(skill: {
+    name: string;
+    version: string;
+    body: string;
+  }): string {
+    const heading = `### Skill: ${skill.name}${skill.version ? ` (${skill.version})` : ''}`;
+    return skill.body ? `${heading}\n${skill.body}` : heading;
+  }
+
+  /** Reload selected immutable Skill bodies after checkpoint/event recovery. */
+  private hydrateRunSkillContext(run: DemoRunState): void {
+    const skillVersionIds = run.skillVersionIds ?? [];
+    if (skillVersionIds.length === 0) {
+      run.skillPromptBlocks = undefined;
+      return;
+    }
+    if (!this.skillStore) {
+      throw new Error('Skill store is required to restore this Run');
+    }
+
+    const resolved = resolveAllowedSkillSources({
+      skillVersionIds,
+      maxSkills: 8,
+      getSkill: (skillVersionId) => {
+        const row = this.skillStore?.getVersion(skillVersionId);
+        if (!row || row.archivedAt) return undefined;
+        if (this.skillStore?.isPermissionApproved(row.id) !== true) {
+          throw new Error(`Skill version is not approved: ${skillVersionId}`);
+        }
+        return {
+          id: row.id,
+          name: row.name,
+          version: row.version,
+          description: row.description,
+          body: row.body,
+          contentFingerprint: row.contentFingerprint,
+          allowedTools: row.allowedTools,
+          hasScripts: row.hasScripts,
+        };
+      },
+    });
+    if (
+      resolved.missingSkillVersionIds.length > 0 ||
+      resolved.resolvedSkillVersionIds.length !== skillVersionIds.length
+    ) {
+      throw new Error(
+        `Skill version not found during Run recovery: ${resolved.missingSkillVersionIds[0] ?? 'unknown'}`,
+      );
+    }
+
+    const expectedFingerprints = new Map(
+      (run.skillSnapshots ?? []).map((snapshot) => [
+        snapshot.skillVersionId,
+        snapshot.contentFingerprint,
+      ]),
+    );
+    for (const skill of resolved.resolvedSkills) {
+      const expected = expectedFingerprints.get(skill.skillVersionId);
+      if (expected && expected !== skill.contentFingerprint) {
+        throw new Error(`Skill version integrity mismatch: ${skill.skillVersionId}`);
+      }
+    }
+    run.skillSnapshots = resolved.resolvedSkills.map((skill) => ({
+      skillVersionId: skill.skillVersionId,
+      contentFingerprint: skill.contentFingerprint,
+    }));
+    run.skillPromptBlocks = resolved.resolvedSkills.map((skill) =>
+      this.formatSkillPromptBlock(skill),
+    );
+    const promptBySourceId = new Map(
+      resolved.resolvedSkills.map(
+        (skill) => [skill.sourceId, this.formatSkillPromptBlock(skill)] as const,
+      ),
+    );
+    run.contextSources = run.contextSources?.map((source) =>
+      source.kind === 'skill-definition' && source.disposition === 'included'
+        ? { ...source, content: promptBySourceId.get(source.id) }
+        : source,
+    );
+  }
+
   private getOrBuildConversationContextSnapshot(input: {
     threadId: string;
     modelId?: string;
@@ -6160,30 +6244,20 @@ export class Runtime {
       modelId: input.modelId,
       globalAgentId: input.globalAgentId,
       teamId: input.teamId,
+      skillVersionIds: [],
     });
     const messages = this.buildChatProviderMessages(prepared.run);
-    const agentInstructions = this.buildRunAgentInstructions(prepared.run);
-    const sources = (prepared.run.contextSources ?? []).map((source) => {
-      if (source.disposition !== 'included') return source;
-      if ((source.section === 'messages' && !source.content) || source.section === 'tools') {
-        return { ...source, disposition: 'audit-only' as const, tokens: 0 };
-      }
-      if (source.section === 'agent' && source.kind === 'agent-instructions') {
-        return { ...source, content: agentInstructions[0] ?? 'You are' };
-      }
-      return source;
-    });
-    const snapshot = new ContextSnapshotBuilder().build({
-      modelId: prepared.run.modelId,
-      contextWindow: prepared.run.contextWindow ?? 128_000,
-      systemInstructions: ['SYNC-THINK conversation runtime'],
-      agentInstructions,
-      projectContext: prepared.run.projectContextPromptBlocks ?? [],
-      compactSummary: prepared.run.compactSummary,
+    const workspaceRoot = this.resolveChatWorkspaceRoot(input.threadId);
+    const executionMode = this.resolveChatExecutionMode(input.threadId);
+    const networkEnabled = prepared.run.networkEnabled === true;
+    const agentToolsEnabled = Boolean(this.globalAgentStore);
+    const toolsEnabled = Boolean(workspaceRoot) || networkEnabled || agentToolsEnabled;
+    const snapshot = this.buildDefaultProviderContextSnapshot(prepared.run, {
       messages,
-      tools: [],
-      sources,
-      compactedAt: prepared.run.compactedAt,
+      toolsEnabled,
+      workspaceRoot,
+      executionMode,
+      networkEnabled,
     });
     this.contextSnapshotByThread.set(input.threadId, snapshot);
     return snapshot;
@@ -6885,6 +6959,7 @@ export class Runtime {
         threadId: input.threadId,
         userText: '[compact]',
         modelId: input.modelId,
+        skillVersionIds: [],
       });
     } catch {
       return undefined;
@@ -7520,6 +7595,7 @@ export class Runtime {
           typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
         agentVersionId:
           typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
+        skillVersionIds: [],
       });
       const response: PeekContextPacketResponse = {
         threadId: payload.threadId,
@@ -8453,7 +8529,9 @@ export class Runtime {
     );
   }
 
-  private toSkillVersionSummary(record: SkillVersionRecord): SkillVersionSummary {
+  private toSkillVersionSummary(
+    record: SkillVersionRecord | SkillVersionMetadataRecord,
+  ): SkillVersionSummary {
     return {
       skillVersionId: record.id,
       skillId: record.skillId,
@@ -10875,6 +10953,43 @@ export class Runtime {
       }
     }
 
+    const boundConversation =
+      persistedTask && this.conversationStore
+        ? this.conversationStore.getByTaskId(persistedTask.id)
+        : undefined;
+    const conversationModelId =
+      boundConversation?.track === 'model' &&
+      typeof boundConversation.targetRef === 'string' &&
+      boundConversation.targetRef.trim()
+        ? boundConversation.targetRef.trim()
+        : undefined;
+    const globalAgentId =
+      boundConversation?.track === 'agent' &&
+      typeof boundConversation.targetRef === 'string' &&
+      boundConversation.targetRef.trim()
+        ? boundConversation.targetRef.trim()
+        : undefined;
+    const teamId =
+      boundConversation?.track === 'team' &&
+      typeof boundConversation.targetRef === 'string' &&
+      boundConversation.targetRef.trim()
+        ? boundConversation.targetRef.trim()
+        : undefined;
+    if (payload.role === 'user') {
+      try {
+        this.authorizeRunSkillSelection({
+          agentVersionId:
+            typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
+          globalAgentId,
+          teamId,
+          skillVersionIds: payload.skillVersionIds,
+        });
+      } catch (error) {
+        this.writeProviderCommandError(socket, frame, error);
+        return;
+      }
+    }
+
     const nextVersion = currentVersion + 1;
     const generatedTaskIdentity =
       persistedTask &&
@@ -10918,56 +11033,40 @@ export class Runtime {
     let demoRun: DemoRunState | undefined;
     if (this.stateStore && payload.role === 'user' && this.canStartModelRun()) {
       demoRunId = ulid() as RunId;
-      // Resolve bound conversation → global Agent (persona / default model).
-      const boundConversation =
-        persistedTask && this.conversationStore
-          ? this.conversationStore.getByTaskId(persistedTask.id)
-          : undefined;
-      const conversationModelId =
-        boundConversation?.track === 'model' &&
-        typeof boundConversation.targetRef === 'string' &&
-        boundConversation.targetRef.trim()
-          ? boundConversation.targetRef.trim()
-          : undefined;
-      const globalAgentId =
-        boundConversation?.track === 'agent' &&
-        typeof boundConversation.targetRef === 'string' &&
-        boundConversation.targetRef.trim()
-          ? boundConversation.targetRef.trim()
-          : undefined;
-      const teamId =
-        boundConversation?.track === 'team' &&
-        typeof boundConversation.targetRef === 'string' &&
-        boundConversation.targetRef.trim()
-          ? boundConversation.targetRef.trim()
-          : undefined;
       const explicitModelId =
         typeof payload.modelId === 'string' && payload.modelId.trim()
           ? payload.modelId.trim()
           : conversationModelId;
-      const prepared = this.prepareRunBinding({
-        runId: demoRunId,
-        threadId: payload.threadId,
-        userText: payload.text,
-        modelId: explicitModelId,
-        credentialRefId:
-          typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
-        agentVersionId:
-          typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
-        globalAgentId,
-        teamId,
-        reasoningEffort:
-          typeof payload.reasoningEffort === 'string' ? payload.reasoningEffort : undefined,
-        networkEnabled: payload.networkEnabled === true ? true : undefined,
-        images: Array.isArray(payload.images)
-          ? payload.images.map((raw) => ({
-              name: raw.name,
-              mimeType: raw.mimeType,
-              ...(typeof raw.stagingPath === 'string' ? { stagingPath: raw.stagingPath } : {}),
-              ...(typeof raw.dataUrl === 'string' ? { dataUrl: raw.dataUrl } : {}),
-            }))
-          : undefined,
-      });
+      let prepared: ReturnType<typeof this.prepareRunBinding>;
+      try {
+        prepared = this.prepareRunBinding({
+          runId: demoRunId,
+          threadId: payload.threadId,
+          userText: payload.text,
+          modelId: explicitModelId,
+          credentialRefId:
+            typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
+          agentVersionId:
+            typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
+          globalAgentId,
+          teamId,
+          skillVersionIds: payload.skillVersionIds,
+          reasoningEffort:
+            typeof payload.reasoningEffort === 'string' ? payload.reasoningEffort : undefined,
+          networkEnabled: payload.networkEnabled === true ? true : undefined,
+          images: Array.isArray(payload.images)
+            ? payload.images.map((raw) => ({
+                name: raw.name,
+                mimeType: raw.mimeType,
+                ...(typeof raw.stagingPath === 'string' ? { stagingPath: raw.stagingPath } : {}),
+                ...(typeof raw.dataUrl === 'string' ? { dataUrl: raw.dataUrl } : {}),
+              }))
+            : undefined,
+        });
+      } catch (error) {
+        this.writeProviderCommandError(socket, frame, error);
+        return;
+      }
       demoRun = prepared.run;
       projectedRuns.set(demoRunId, demoRun);
       eventDrafts.push({
@@ -10988,6 +11087,7 @@ export class Runtime {
           credentialResolutionSource: demoRun.credentialResolutionSource,
           agentVersionId: demoRun.agentVersionId,
           agentVersion: prepared.agentVersion,
+          requestedSkillVersionIds: prepared.requestedSkillVersionIds,
           skillVersionIds: prepared.skillVersionIds,
           mcpServerIds: prepared.mcpServerIds,
           policyId: prepared.policyId,
@@ -11023,7 +11123,7 @@ export class Runtime {
           protocol: demoRun.protocol,
           useFakeProvider: demoRun.useFakeProvider,
           idempotencyKey: demoRunId,
-          run: demoRun,
+          run: serializeDemoRun(demoRun),
         },
       });
     }
@@ -11220,6 +11320,7 @@ export class Runtime {
           },
           projectedRuns,
         );
+        this.persistAssistantTerminalMessage(payload.runId as RunId, run, 'cancelled');
         this.demoRuns.delete(payload.runId);
         this.publishEvent(event);
       } else {
@@ -11236,6 +11337,7 @@ export class Runtime {
           undefined,
           payload.runId as RunId,
         );
+        this.persistAssistantTerminalMessage(payload.runId as RunId, run, 'cancelled');
         this.publishEvent(event);
       }
     } catch {
@@ -11737,6 +11839,15 @@ export class Runtime {
               // without racing a later message-store write.
               if (projection.terminal && projection.type === 'run.completed') {
                 this.persistAssistantFinalMessage(runId, currentRun, projection.payload);
+              } else if (projection.terminal && projection.type === 'run.failed') {
+                this.persistAssistantTerminalMessage(
+                  runId,
+                  currentRun,
+                  'failed',
+                  typeof projection.payload.errorMessage === 'string'
+                    ? projection.payload.errorMessage
+                    : undefined,
+                );
               }
               this.publishEvent(event);
               if (projection.terminal) {
@@ -11787,9 +11898,47 @@ export class Runtime {
               const toolCall = pendingToolCalls[toolIndex]!;
               if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
 
-              // 「询问批准」：写/命令工具先挂起，等用户点批准/拒绝。
-              // create_agent 在非 full-access 模式下同样先挂起（不依赖项目文件夹）。
-              if (chatToolRequiresApproval(executionMode, toolCall.name)) {
+              let browserApproval: { approvalId: string } | undefined;
+              if (
+                CHAT_BROWSER_TOOL_NAMES.has(toolCall.name) &&
+                this.browserController &&
+                isChatToolAllowed(executionMode, toolCall.name, { networkEnabled })
+              ) {
+                const browserPermissionInput = {
+                  toolName: toolCall.name,
+                  argumentsJson: toolCall.argumentsJson || '{}',
+                  workspaceId: this.resolveEventWorkspaceId(currentRun.threadId),
+                  runId,
+                  ownerId: currentRun.threadId,
+                  idempotencyKey: `browser:${runId}:${toolCall.id}`,
+                  ...(workspaceRoot ? { workspaceRoot } : {}),
+                };
+                const permission = this.browserController.evaluatePermission(browserPermissionInput);
+                if (permission.decision === 'approval-required') {
+                  const approval = await this.requestChatToolApproval({
+                    runId,
+                    threadId: currentRun.threadId,
+                    workspaceRoot: workspaceRoot ?? '',
+                    executionMode,
+                    chatMessages,
+                    pendingToolCalls: [...pendingToolCalls],
+                    currentIndex: toolIndex,
+                    completedResults: [...completedResults],
+                    toolLoopRound,
+                    toolCall,
+                    signal: abort.signal,
+                  });
+                  if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+                  this.browserController.recordPermissionDecision(
+                    browserPermissionInput,
+                    approval.decision === 'approve' ? 'allow' : 'deny',
+                    approval.approvalId,
+                  );
+                  if (approval.decision === 'approve') {
+                    browserApproval = { approvalId: approval.approvalId };
+                  }
+                }
+              } else if (chatToolRequiresApproval(executionMode, toolCall.name)) {
                 const isAgentTool =
                   CHAT_AGENT_TOOL_NAMES.has(toolCall.name) ||
                   CHAT_SKILL_TOOL_NAMES.has(toolCall.name) ||
@@ -11807,7 +11956,7 @@ export class Runtime {
                   ];
                   continue;
                 }
-                const decision = await this.requestChatToolApproval({
+                const approval = await this.requestChatToolApproval({
                   runId,
                   threadId: currentRun.threadId,
                   workspaceRoot: workspaceRoot ?? '',
@@ -11821,7 +11970,7 @@ export class Runtime {
                   signal: abort.signal,
                 });
                 if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
-                if (decision === 'deny') {
+                if (approval.decision === 'deny') {
                   const deniedText = JSON.stringify({
                     ok: false,
                     error: chatToolDeniedMessage(executionMode, toolCall.name, 'denied'),
@@ -11863,17 +12012,15 @@ export class Runtime {
                 ).mcpToolDispatch?.get(toolCall.name) ?? parseMcpProviderToolName(toolCall.name);
               if (CHAT_PLAN_TOOL_NAMES.has(toolCall.name)) {
                 resultText = executeChatPlanTool(toolCall.argumentsJson);
-              } else if (CHAT_BROWSER_COMMAND_TOOL_NAMES.has(toolCall.name)) {
-                // Interactive browser commands round-trip through the desktop
-                // renderer (webview executor) with a 15s timeout.
-                resultText = await this.executeChatBrowserCommandTool({
+              } else if (CHAT_BROWSER_TOOL_NAMES.has(toolCall.name)) {
+                resultText = await this.executeChatBrowserWorkerTool({
                   runId,
                   threadId: currentRun.threadId,
                   toolCall,
+                  workspaceRoot,
                   signal: abort.signal,
+                  approval: browserApproval,
                 });
-              } else if (CHAT_BROWSER_TOOL_NAMES.has(toolCall.name)) {
-                resultText = executeChatBrowserTool(toolCall.argumentsJson);
               } else if (CHAT_AGENT_TOOL_NAMES.has(toolCall.name)) {
                 resultText = this.executeChatAgentTool({
                   run: currentRun,
@@ -11998,6 +12145,47 @@ export class Runtime {
 
   private canStartModelRun(): boolean {
     return Boolean(this.demoProvider) || this.canLiveStream();
+  }
+
+  /** Authoritative per-turn Skill check, independent of Run/provider availability. */
+  private authorizeRunSkillSelection(input: {
+    agentVersionId?: string;
+    globalAgentId?: string;
+    teamId?: string;
+    skillVersionIds?: readonly string[];
+  }): void {
+    let effectiveGlobalAgentId = input.globalAgentId;
+    if (input.teamId && this.teamStore) {
+      const team = this.teamStore.get(input.teamId as TeamId);
+      if (!team) throw new Error(`TEAM_NOT_FOUND: ${input.teamId}`);
+      effectiveGlobalAgentId ??= team.coordinatorAgentId ?? team.members[0]?.agentId;
+    }
+    const globalAgent =
+      effectiveGlobalAgentId && this.globalAgentStore
+        ? this.globalAgentStore.get(effectiveGlobalAgentId)
+        : undefined;
+    if (input.globalAgentId && !globalAgent) {
+      throw new Error(`AGENT_NOT_FOUND: ${input.globalAgentId}`);
+    }
+
+    const agent = this.resolveAgentModelBinding(input.agentVersionId);
+    const agentMeta = this.resolveAgentManifestMeta(agent.agentVersionId);
+    const allowlistedSkillVersionIds = globalAgent
+      ? [...globalAgent.skillIds]
+      : agentMeta.skillVersionIds;
+    resolveRunSkillSelection({
+      allowlistedSkillVersionIds,
+      selectedSkillVersionIds: input.skillVersionIds,
+      getSkill: (skillVersionId) => {
+        const row = this.skillStore?.getVersionMetadata(skillVersionId);
+        if (!row) return undefined;
+        return {
+          id: row.id,
+          archived: Boolean(row.archivedAt),
+          permissionApproved: this.skillStore?.isPermissionApproved(row.id) === true,
+        };
+      },
+    });
   }
 
   /** 搂10.3 鈥?Agent / Skill allowlist / policy ids for Manifest inspect. */
@@ -12242,6 +12430,20 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     // Allowed Skills only 鈥?install 鈮?available (搂9.1 / 搂10.2 skill-definition).
     let resolvedSkillVersionIds: string[] = [];
     let missingSkillVersionIds: string[] = [];
+    let resolvedSkills: Array<{
+      sourceId: string;
+      skillVersionId: string;
+      name: string;
+      version: string;
+      body: string;
+      contentFingerprint: string;
+    }> = [];
+    let skillTruncations: Array<{
+      sourceId: string;
+      reason: string;
+      beforeTokens: number;
+      afterTokens: number;
+    }> = [];
     if (this.skillStore && input.skillVersionIds && input.skillVersionIds.length > 0) {
       try {
         const skills = resolveAllowedSkillSources({
@@ -12249,18 +12451,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           getSkill: (id) => {
             const row = this.skillStore?.getVersion(id);
             if (!row) return undefined;
-            contentBySourceId.set(`skill:${id}`, row.body.trim());
             return {
               id: row.id,
               name: row.name,
               version: row.version,
               description: row.description,
               body: row.body,
+              contentFingerprint: row.contentFingerprint,
               allowedTools: row.allowedTools,
               hasScripts: row.hasScripts,
             };
           },
-          maxSkills: 6,
+          maxSkills: 8,
         });
         for (const source of skills.sources) {
           candidates.push(source);
@@ -12270,6 +12472,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         }
         resolvedSkillVersionIds = skills.resolvedSkillVersionIds;
         missingSkillVersionIds = skills.missingSkillVersionIds;
+        resolvedSkills = skills.resolvedSkills;
+        skillTruncations = skills.truncations;
+        for (const skill of resolvedSkills) {
+          contentBySourceId.set(skill.sourceId, skill.body);
+        }
         if (missingSkillVersionIds.length > 0) {
           console.warn('[runtime] allowlisted skills missing from library', missingSkillVersionIds);
         }
@@ -12341,7 +12548,6 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         'file-excerpt',
         'cross-task-ref',
         'project-memory',
-        'skill-definition',
         'tool-schema',
       ],
     });
@@ -12353,6 +12559,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       memoryEvidenceRefs,
       resolvedSkillVersionIds,
       missingSkillVersionIds,
+      resolvedSkills,
+      skillTruncations,
       resolvedMcpServerIds,
       missingMcpServerIds,
       toolSchemaCount,
@@ -12376,6 +12584,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     globalAgentId?: string;
     /** Bound team (team-track conversations) — coordinator drives the model. */
     teamId?: string;
+    /** Exact per-turn subset. Undefined preserves the older full-allowlist behavior. */
+    skillVersionIds?: readonly string[];
     reasoningEffort?: string;
     networkEnabled?: boolean;
     images?: Array<{
@@ -12402,6 +12612,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     crossTaskRefs: string[];
     evidenceRefsForMemory: string[];
     tokenEstimate: number;
+    requestedSkillVersionIds: string[];
     skillVersionIds: string[];
     mcpServerIds: string[];
     policyId?: string;
@@ -12485,7 +12696,22 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       : agent;
     const agentVersionId = effectiveAgentBinding.agentVersionId;
     const agentMeta = this.resolveAgentManifestMeta(agentVersionId);
-    const effectiveSkillIds = globalAgent ? [...globalAgent.skillIds] : agentMeta.skillVersionIds;
+    const agentSkillIds = globalAgent ? [...globalAgent.skillIds] : agentMeta.skillVersionIds;
+    const skillSelection = resolveRunSkillSelection({
+      allowlistedSkillVersionIds: agentSkillIds,
+      selectedSkillVersionIds: input.skillVersionIds,
+      getSkill: (skillVersionId) => {
+        const row = this.skillStore?.getVersionMetadata(skillVersionId);
+        if (!row) return undefined;
+        return {
+          id: row.id,
+          archived: Boolean(row.archivedAt),
+          permissionApproved: this.skillStore?.isPermissionApproved(row.id) === true,
+        };
+      },
+    });
+    const requestedSkillVersionIds = skillSelection.requestedSkillVersionIds;
+    const effectiveSkillIds = skillSelection.skillVersionIds;
     const effectiveMcpIds = globalAgent ? [...globalAgent.mcpServerIds] : agentMeta.mcpServerIds;
 
     const resolution = resolveModelBinding({
@@ -12537,6 +12763,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       crossTaskRefs: protectedCrossTaskRefs,
       memoryEvidenceRefs: protectedMemoryEvidenceRefs,
       contentBySourceId,
+      resolvedSkills,
+      skillTruncations,
     } = this.buildProtectedContextSelection({
       runId: input.runId,
       threadId: input.threadId,
@@ -12553,6 +12781,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       evidenceRefsForMemory: protectedMemoryEvidenceRefs,
     });
     const included = amended.included;
+    const includedSkillSourceIds = new Set(
+      included
+        .filter((contextSource) => contextSource.kind === 'skill-definition')
+        .map((contextSource) => contextSource.id),
+    );
+    const appliedSkills = resolvedSkills.filter((skill) =>
+      includedSkillSourceIds.has(skill.sourceId),
+    );
+    const appliedSkillVersionIds = appliedSkills.map((skill) => skill.skillVersionId);
     const built = buildContextPacket({
       packetId,
       taskId: (boundTask?.id ?? this.workspaceId) as unknown as TaskId,
@@ -12563,11 +12800,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       credentialRefId: credential?.id,
       included,
       excluded: amended.excluded,
-      truncations: selected.truncations,
+      truncations: [...skillTruncations, ...selected.truncations],
       summaries: amended.summaries,
       crossTaskRefs: protectedCrossTaskRefs,
       evidenceRefsForMemory: amended.evidenceRefsForMemory,
-      skillVersionIds: agentMeta.skillVersionIds as never,
+      skillVersionIds: appliedSkillVersionIds as never,
       policyVersion: agentMeta.policyVersion,
     });
 
@@ -12578,31 +12815,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ? globalAgent.reasoningEffort
         : undefined);
 
-    // Resolve skill bodies for system-prompt injection (not just Manifest IDs).
-    const skillPromptBlocks: string[] = [];
-    const skillPromptBySourceId = new Map<string, string>();
-    if (this.skillStore && effectiveSkillIds.length > 0) {
-      for (const skillId of effectiveSkillIds.slice(0, 8)) {
-        let row = this.skillStore.getVersion(skillId);
-        // global agent may store skillId / name rather than skillVersionId
-        if (!row) {
-          const byName = this.skillStore.findLatestByName(skillId);
-          if (byName) row = byName;
-        }
-        if (!row) {
-          // last resort: scan recent versions for matching skill_id
-          const match = this.skillStore
-            .listVersions(200)
-            .find((v) => v.id === skillId || v.skillId === skillId);
-          if (match) row = match;
-        }
-        if (row?.body?.trim()) {
-          const block = `### Skill: ${row.name}${row.version ? ` (${row.version})` : ''}\n${row.body.trim()}`;
-          skillPromptBlocks.push(block);
-          skillPromptBySourceId.set(`skill:${skillId}`, row.body.trim());
-        }
-      }
-    }
+    const skillPromptBlocks = appliedSkills.map((skill) => this.formatSkillPromptBlock(skill));
+    const skillPromptBySourceId = new Map(
+      appliedSkills.map(
+        (skill) => [skill.sourceId, this.formatSkillPromptBlock(skill)] as const,
+      ),
+    );
 
     let contextWindow = 128_000;
     if (modelRecord?.limitsJson) {
@@ -12686,7 +12904,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       teamPromptBlock,
       fallbackModelIds: effectiveAgentBinding.fallbackModelIds.map(String),
       skillPromptBlocks,
-      skillVersionIds: effectiveSkillIds,
+      requestedSkillVersionIds,
+      skillVersionIds: appliedSkillVersionIds,
+      skillSnapshots: appliedSkills.map((skill) => ({
+        skillVersionId: skill.skillVersionId,
+        contentFingerprint: skill.contentFingerprint,
+      })),
       mcpServerIds: effectiveMcpIds,
       contextWindow,
       projectContextPromptBlocks,
@@ -12728,7 +12951,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       crossTaskRefs: [...built.packet.crossTaskRefs],
       evidenceRefsForMemory: [...(built.manifest.evidenceRefsForMemory ?? [])],
       tokenEstimate: built.packet.tokenEstimate,
-      skillVersionIds: [...effectiveSkillIds],
+      requestedSkillVersionIds: [...requestedSkillVersionIds],
+      skillVersionIds: [...appliedSkillVersionIds],
       mcpServerIds: [...effectiveMcpIds],
       policyId: agentMeta.policyId,
       agentVersion: agentMeta.agentVersion,
@@ -12864,7 +13088,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             agentVersionId: nextRun.agentVersionId,
             packetId: nextRun.packetId,
             previousPacketId: run.packetId,
-            run: nextRun,
+            run: serializeDemoRun(nextRun),
           },
         },
         projectedRuns,
@@ -12878,8 +13102,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         runId,
         threadId: nextRun.threadId,
         userText: nextRun.userText,
-        skillVersionIds: fallbackAgentMeta.skillVersionIds,
-        mcpServerIds: fallbackAgentMeta.mcpServerIds,
+        skillVersionIds: nextRun.skillVersionIds ?? [],
+        mcpServerIds: nextRun.mcpServerIds ?? [],
       });
       const fallbackForce =
         this.threadContextAmendments.get(nextRun.threadId)?.excludeSourceIds ?? [];
@@ -12910,8 +13134,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             agentVersionId: nextRun.agentVersionId,
             fallbackIndex: details.fallbackIndex,
             agentVersion: fallbackAgentMeta.agentVersion,
-            skillVersionIds: fallbackAgentMeta.skillVersionIds,
-            mcpServerIds: fallbackAgentMeta.mcpServerIds,
+            requestedSkillVersionIds: nextRun.requestedSkillVersionIds ?? [],
+            skillVersionIds: nextRun.skillVersionIds ?? [],
+            mcpServerIds: nextRun.mcpServerIds ?? [],
             policyId: fallbackAgentMeta.policyId,
             includedSourceIds: fallbackAmended.included.map((s) => s.id),
             excludedSourceIds: fallbackAmended.excluded.map((s) => s.id),
@@ -12926,7 +13151,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               tokenEstimate: s.tokenEstimate,
             })),
             summaries: fallbackAmended.summaries,
-            truncations: fallbackContextSelection.selected.truncations.map((tr) => ({
+            truncations: [
+              ...fallbackContextSelection.skillTruncations,
+              ...fallbackContextSelection.selected.truncations,
+            ].map((tr) => ({
               sourceId: tr.sourceId,
               reason: tr.reason,
               beforeTokens: tr.beforeTokens,
@@ -12982,12 +13210,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       summaries: protectedSummaries,
       crossTaskRefs: protectedCrossTaskRefs,
       memoryEvidenceRefs: protectedMemoryEvidenceRefs,
+      skillTruncations,
     } = this.buildProtectedContextSelection({
       runId: run.runId,
       threadId: run.threadId,
       userText: run.userText,
-      skillVersionIds: this.resolveAgentManifestMeta(String(run.agentVersionId)).skillVersionIds,
-      mcpServerIds: this.resolveAgentManifestMeta(String(run.agentVersionId)).mcpServerIds,
+      skillVersionIds: run.skillVersionIds ?? [],
+      mcpServerIds: run.mcpServerIds ?? [],
     });
     const rebindAgentMeta = this.resolveAgentManifestMeta(String(run.agentVersionId));
     const included = selected.included;
@@ -13001,11 +13230,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       credentialRefId: credential?.id as CredentialRefId | undefined,
       included,
       excluded: selected.excluded,
-      truncations: selected.truncations,
+      truncations: [...skillTruncations, ...selected.truncations],
       summaries: protectedSummaries,
       crossTaskRefs: protectedCrossTaskRefs,
       evidenceRefsForMemory: protectedMemoryEvidenceRefs,
-      skillVersionIds: rebindAgentMeta.skillVersionIds as never,
+      skillVersionIds: (run.skillVersionIds ?? []) as never,
       policyVersion: rebindAgentMeta.policyVersion,
     });
 
@@ -13363,6 +13592,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     } catch {
       failed = /<tool_use_error>|tool execution failed/i.test(resultText);
     }
+    const persistedResult = CHAT_BROWSER_TOOL_NAMES.has(toolCall.name)
+      ? this.sanitizeBrowserResultForPersistence(resultText)
+      : resultText;
+    const persistedErrorSummary = errorSummary
+      ? CHAT_BROWSER_TOOL_NAMES.has(toolCall.name)
+        ? this.browserFailureSummaryFromPersistedResult(persistedResult)
+        : this.scrubDiagnosticMessage(errorSummary)
+      : undefined;
     const completedEvent = this.persistProjectedEvent(
       {
         id: ulid() as Event['id'],
@@ -13375,14 +13612,75 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           threadId,
           toolCallId: toolCall.id,
           toolName: toolCall.name,
-          result: resultText,
+          result: persistedResult,
           ...(failed ? { failed: true } : {}),
-          ...(errorSummary ? { errorSummary: this.scrubDiagnosticMessage(errorSummary) } : {}),
+          ...(persistedErrorSummary ? { errorSummary: persistedErrorSummary } : {}),
         },
       },
       new Map(this.demoRuns),
     );
     this.publishEvent(completedEvent);
+  }
+
+  private sanitizeBrowserResultForPersistence(resultText: string): string {
+    try {
+      const parsed = JSON.parse(resultText) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return JSON.stringify({ ok: false, error: 'Malformed Browser Worker result.' });
+      }
+      const result = parsed as Record<string, unknown>;
+      const sanitized: Record<string, unknown> = { ok: result.ok === true };
+      for (const key of [
+        'code',
+        'failureClass',
+        'profileId',
+        'leaseId',
+        'pageId',
+        'matched',
+        'relativePath',
+        'absolutePath',
+        'embedUrl',
+      ]) {
+        if (typeof result[key] === 'string' || typeof result[key] === 'boolean') {
+          sanitized[key] = result[key];
+        }
+      }
+      if (result.ok === true && typeof result.message === 'string') {
+        sanitized.message = result.message;
+      } else if (result.ok !== true) {
+        sanitized.error = browserFailureMessage(result.code, result.failureClass);
+      }
+      if (typeof result.url === 'string') {
+        try {
+          const url = new URL(result.url);
+          if (url.protocol === 'http:' || url.protocol === 'https:') {
+            url.username = '';
+            url.password = '';
+            url.search = '';
+            url.hash = '';
+            sanitized.url = url.toString();
+          }
+        } catch {
+          // Malformed or internal URLs are omitted from durable browser events.
+        }
+      }
+      if (typeof result.text === 'string') sanitized.textChars = result.text.length;
+      if (Array.isArray(result.links)) sanitized.linkCount = result.links.length;
+      if (Array.isArray(result.buttons)) sanitized.buttonCount = result.buttons.length;
+      if (Array.isArray(result.inputs)) sanitized.inputCount = result.inputs.length;
+      return JSON.stringify(sanitized);
+    } catch {
+      return JSON.stringify({ ok: false, error: 'Malformed Browser Worker result.' });
+    }
+  }
+
+  private browserFailureSummaryFromPersistedResult(resultText: string): string {
+    try {
+      const parsed = JSON.parse(resultText) as { error?: unknown };
+      return typeof parsed.error === 'string' ? parsed.error : 'Browser action failed.';
+    } catch {
+      return 'Browser action failed.';
+    }
   }
 
   /**
@@ -14353,6 +14651,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     threadId: string;
     workspaceRoot: string;
     executionMode: string;
+    approvalId?: string;
     chatMessages: import('@sync-think/adapters').ProviderMessage[];
     pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[];
     currentIndex: number;
@@ -14360,8 +14659,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     toolLoopRound: number;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
     signal: AbortSignal;
-  }): Promise<'approve' | 'deny'> {
-    const approvalId = `tappr-${ulid()}`;
+  }): Promise<{ decision: 'approve' | 'deny'; approvalId: string }> {
+    const approvalId = input.approvalId ?? `tappr-${ulid()}`;
     const summary = summarizeToolCallForApproval(
       input.toolCall.name,
       input.toolCall.argumentsJson || '{}',
@@ -14399,7 +14698,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
     this.publishEvent(event);
 
-    return new Promise<'approve' | 'deny'>((resolve) => {
+    return new Promise<{ decision: 'approve' | 'deny'; approvalId: string }>((resolve) => {
       const onAbort = () => {
         // Only emit decided if the pending entry is still ours — run.cancel
         // already removed + emitted for its own runs.
@@ -14414,7 +14713,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             toolName: input.toolCall.name,
           });
         }
-        resolve('deny');
+        resolve({ decision: 'deny', approvalId });
       };
       if (input.signal.aborted) {
         this.emitToolApprovalDecided({
@@ -14426,7 +14725,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           toolCallId: input.toolCall.id,
           toolName: input.toolCall.name,
         });
-        resolve('deny');
+        resolve({ decision: 'deny', approvalId });
         return;
       }
       input.signal.addEventListener('abort', onAbort, { once: true });
@@ -14443,7 +14742,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         toolLoopRound: input.toolLoopRound,
         resolve: (decision) => {
           input.signal.removeEventListener('abort', onAbort);
-          resolve(decision);
+          resolve({ decision, approvalId });
         },
         createdAt: new Date().toISOString(),
       });
@@ -14571,140 +14870,95 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
   }
 
-  /**
-   * Execute an interactive browser tool (browser_click / browser_type /
-   * browser_read / browser_screenshot) by round-tripping through the desktop
-   * renderer: emit browser.command_requested with a requestId, wait for
-   * conversation.submitBrowserResult (same reverse channel pattern as the
-   * approval cards), resolve with the renderer's JSON result. 15s timeout —
-   * covers "panel not open / webview not ready" with a clear recovery hint.
-   */
-  private async executeChatBrowserCommandTool(input: {
+  /** Runtime-owned Browser Worker path. Renderer receives only completed URLs for preview. */
+  private async executeChatBrowserWorkerTool(input: {
     runId: RunId;
     threadId: string;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
+    workspaceRoot?: string;
     signal: AbortSignal;
+    approval?: { approvalId: string };
   }): Promise<string> {
-    const validated = validateChatBrowserCommand(
-      input.toolCall.name,
-      input.toolCall.argumentsJson || '{}',
-    );
-    if (!validated.ok) {
-      return JSON.stringify({ ok: false, error: validated.error });
+    if (!this.browserController) {
+      return JSON.stringify({
+        ok: false,
+        code: 'browser.worker-unavailable',
+        error: 'Browser Worker is not configured on this Runtime.',
+        failureClass: 'unknown',
+      });
     }
-
     const requestId = `brw-${ulid()}`;
-    const event = this.persistProjectedEvent(
-      {
-        id: ulid() as Event['id'],
-        workspaceId: this.resolveEventWorkspaceId(input.threadId),
-        runId: input.runId,
-        category: 'tool',
-        type: 'browser.command_requested',
-        occurredAt: new Date().toISOString(),
-        payload: {
-          requestId,
-          threadId: input.threadId,
-          runId: input.runId,
-          toolCallId: input.toolCall.id,
-          toolName: input.toolCall.name,
-          action: validated.command.action,
-          args: validated.command.args,
-        },
+    return this.browserController.execute({
+      toolName: input.toolCall.name,
+      argumentsJson: input.toolCall.argumentsJson || '{}',
+      workspaceId: this.resolveEventWorkspaceId(input.threadId),
+      runId: input.runId,
+      ownerId: input.threadId,
+      idempotencyKey: `browser:${input.runId}:${input.toolCall.id}`,
+      capabilityToken: `browser:${input.runId}:${input.toolCall.id}`,
+      workspaceRoot: input.workspaceRoot,
+      signal: input.signal,
+      approval: input.approval,
+      beforeStart: () => !input.signal.aborted && this.demoRuns.has(input.runId),
+      beforeExecute: (intent) => {
+        const event = this.persistProjectedEvent(
+          {
+            id: ulid() as Event['id'],
+            workspaceId: this.resolveEventWorkspaceId(input.threadId),
+            runId: input.runId,
+            category: 'tool',
+            type: 'browser.command.started',
+            occurredAt: new Date().toISOString(),
+            payload: {
+              requestId,
+              threadId: input.threadId,
+              runId: input.runId,
+              toolCallId: input.toolCall.id,
+              toolName: input.toolCall.name,
+              profileId: intent.profileId,
+              ownerId: intent.ownerId,
+              action: intent.action.kind,
+              args: intent.auditArgs,
+              allowedOrigins: intent.allowedOrigins,
+            },
+          },
+          new Map(this.demoRuns),
+        );
+        this.publishEvent(event);
       },
-      new Map(this.demoRuns),
-    );
-    this.publishEvent(event);
-
-    const outcome = await new Promise<{ ok: boolean; resultJson?: string; error?: string }>(
-      (resolve) => {
-        const finish = (result: { ok: boolean; resultJson?: string; error?: string }) => {
-          if (!this.pendingBrowserCommands.delete(requestId)) return;
-          clearTimeout(timer);
-          input.signal.removeEventListener('abort', onAbort);
-          resolve(result);
-        };
-        const onAbort = () => finish({ ok: false, error: '运行已中止。' });
-        const timer = setTimeout(() => {
-          finish({
-            ok: false,
-            error:
-              `浏览器面板 ${BROWSER_COMMAND_TIMEOUT_MS / 1000} 秒内没有响应。` +
-              '右栏浏览器可能未打开或页面尚未加载完成——请先用 browser_open 打开目标页面，等待加载后重试。',
-          });
-        }, BROWSER_COMMAND_TIMEOUT_MS);
-        this.pendingBrowserCommands.set(requestId, {
-          requestId,
-          runId: input.runId,
-          threadId: input.threadId,
-          toolName: input.toolCall.name,
-          resolve: finish,
-          createdAt: new Date().toISOString(),
-        });
-        if (input.signal.aborted) onAbort();
-        else input.signal.addEventListener('abort', onAbort, { once: true });
-      },
-    );
-
-    if (!outcome.ok) {
-      return JSON.stringify({ ok: false, error: outcome.error ?? 'Browser command failed.' });
-    }
-    // Renderer already sends JSON; re-wrap defensively and cap the size.
-    let raw = outcome.resultJson ?? '{}';
-    if (raw.length > BROWSER_COMMAND_RESULT_MAX_CHARS) {
-      raw = raw.slice(0, BROWSER_COMMAND_RESULT_MAX_CHARS);
-    }
-    try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      return JSON.stringify({ ok: true, ...parsed });
-    } catch {
-      return JSON.stringify({ ok: true, result: raw });
-    }
+    });
   }
 
-  /** Renderer reverse channel: deliver a browser command result to the waiting tool loop. */
+  /** Legacy Renderer reverse channel retained during migration; no real command waits here. */
   private handleConversationSubmitBrowserResult(socket: Socket, frame: Frame): void {
     const payload = parseConversationSubmitBrowserResultPayload(frame.payload);
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
       return;
     }
-    const pending = this.pendingBrowserCommands.get(payload.requestId);
-    if (pending) {
-      pending.resolve({
-        ok: payload.ok,
-        resultJson: payload.resultJson,
-        error: payload.error,
-      });
-    }
     socket.write(
       encodeFrame({
         id: frame.id,
         kind: 'response',
         type: 'conversation.submitBrowserResult',
-        payload: { requestId: payload.requestId, accepted: Boolean(pending) },
+        payload: { requestId: payload.requestId, accepted: false },
       }),
     );
   }
 
-  private async openProviderStream(
+  private buildDefaultProviderContextSnapshot(
     run: DemoRunState,
     options: {
-      messages?: import('@sync-think/adapters').ProviderMessage[];
-      toolsEnabled?: boolean;
+      messages: import('@sync-think/adapters').ProviderMessage[];
+      toolsEnabled: boolean;
       workspaceRoot?: string;
       executionMode?: string;
       networkEnabled?: boolean;
-      signal?: AbortSignal;
-      /** When set, replaces the default coding/chat system prompt (used by compact). */
-      systemPromptOverride?: string;
-    } = {},
-  ): Promise<AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined> {
-    const signal = options.signal ?? new AbortController().signal;
+    },
+  ): ContextSnapshot {
     const executionMode = normalizeChatExecutionMode(options.executionMode);
     const networkEnabled = options.networkEnabled === true || run.networkEnabled === true;
     const hasProjectTools = Boolean(options.toolsEnabled && options.workspaceRoot);
-    // MCP tools bound on the run — expose schemas to the provider when tools are on.
     const mcpExtra = (() => {
       if (!options.toolsEnabled || !this.mcpStore || !run.mcpServerIds?.length) {
         return {
@@ -14715,14 +14969,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       const servers = run.mcpServerIds
         .map((id) => this.mcpStore?.get(id))
         .filter((row): row is NonNullable<typeof row> => Boolean(row))
-        .map((row) => ({
-          id: row.id,
-          name: row.name,
-          tools: row.tools,
-        }));
+        .map((row) => ({ id: row.id, name: row.name, tools: row.tools }));
       return mcpToolsToProviderSchemas(servers, { maxTools: 16 });
     })();
-    // Stash dispatch on the run for the tool loop (in-memory only).
     if (mcpExtra.dispatch.size > 0) {
       (
         run as DemoRunState & {
@@ -14734,14 +14983,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const tools =
       options.toolsEnabled &&
       (hasProjectTools || networkEnabled || agentToolsEnabled || mcpExtra.tools.length > 0)
-        ? [
-            ...toolsForExecutionMode(executionMode, {
-              networkEnabled,
-              includeProjectTools: hasProjectTools,
-              includeAgentTools: agentToolsEnabled,
-              extraTools: mcpExtra.tools,
-            }),
-          ]
+        ? toolsForExecutionMode(executionMode, {
+            networkEnabled,
+            includeProjectTools: hasProjectTools,
+            includeAgentTools: agentToolsEnabled,
+            extraTools: mcpExtra.tools,
+          })
         : undefined;
     const networkPrompt = networkEnabled
       ? [
@@ -14815,7 +15062,89 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           'If the user asks about local project files, tell them to open/select a project folder first.',
           ...(run.projectContextPromptBlocks ?? []),
         ];
+    const actualSources = (run.contextSources ?? []).map((source) => {
+      if (source.disposition !== 'included') return source;
+      if (
+        source.section === 'tools' &&
+        (!tools || !source.toolName || !tools.some((tool) => tool.name === source.toolName))
+      ) {
+        return { ...source, disposition: 'audit-only' as const, tokens: 0 };
+      }
+      if (source.section === 'agent' && source.kind === 'agent-instructions') {
+        return { ...source, content: agentInstructions[0] ?? 'You are' };
+      }
+      return source;
+    });
+    return new ContextSnapshotBuilder().build({
+      modelId: run.modelId,
+      contextWindow: run.contextWindow ?? 128_000,
+      systemInstructions: [productBoundaryPrompt, networkPrompt],
+      agentInstructions,
+      projectContext,
+      compactSummary: run.compactSummary,
+      messages: options.messages,
+      tools,
+      sources: actualSources,
+      compactedAt: run.compactedAt,
+    });
+  }
 
+  private async openProviderStream(
+    run: DemoRunState,
+    options: {
+      messages?: import('@sync-think/adapters').ProviderMessage[];
+      toolsEnabled?: boolean;
+      workspaceRoot?: string;
+      executionMode?: string;
+      networkEnabled?: boolean;
+      signal?: AbortSignal;
+      /** When set, replaces the default coding/chat system prompt (used by compact). */
+      systemPromptOverride?: string;
+    } = {},
+  ): Promise<AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined> {
+    const signal = options.signal ?? new AbortController().signal;
+    const executionMode = normalizeChatExecutionMode(options.executionMode);
+    const networkEnabled = options.networkEnabled === true || run.networkEnabled === true;
+    const hasProjectTools = Boolean(options.toolsEnabled && options.workspaceRoot);
+    // MCP tools bound on the run — expose schemas to the provider when tools are on.
+    const mcpExtra = (() => {
+      if (!options.toolsEnabled || !this.mcpStore || !run.mcpServerIds?.length) {
+        return {
+          tools: [] as import('@sync-think/adapters').ProviderToolSchema[],
+          dispatch: new Map<string, { mcpServerId: string; toolName: string }>(),
+        };
+      }
+      const servers = run.mcpServerIds
+        .map((id) => this.mcpStore?.get(id))
+        .filter((row): row is NonNullable<typeof row> => Boolean(row))
+        .map((row) => ({
+          id: row.id,
+          name: row.name,
+          tools: row.tools,
+        }));
+      return mcpToolsToProviderSchemas(servers, { maxTools: 16 });
+    })();
+    // Stash dispatch on the run for the tool loop (in-memory only).
+    if (mcpExtra.dispatch.size > 0) {
+      (
+        run as DemoRunState & {
+          mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+        }
+      ).mcpToolDispatch = mcpExtra.dispatch;
+    }
+    const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
+    const tools =
+      options.toolsEnabled &&
+      (hasProjectTools || networkEnabled || agentToolsEnabled || mcpExtra.tools.length > 0)
+        ? [
+            ...toolsForExecutionMode(executionMode, {
+              networkEnabled,
+              includeProjectTools: hasProjectTools,
+              includeAgentTools: agentToolsEnabled,
+              extraTools: mcpExtra.tools,
+            }),
+          ]
+        : undefined;
     let requestExtras: {
       messages?: import('@sync-think/adapters').ProviderMessage[];
       tools?: import('@sync-think/adapters').ProviderToolSchema[];
@@ -14828,30 +15157,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         systemPrompt: options.systemPromptOverride.trim(),
       };
     } else {
-      const actualSources = (run.contextSources ?? []).map((source) => {
-        if (source.disposition !== 'included') return source;
-        if (
-          source.section === 'tools' &&
-          (!tools || !source.toolName || !tools.some((tool) => tool.name === source.toolName))
-        ) {
-          return { ...source, disposition: 'audit-only' as const, tokens: 0 };
-        }
-        if (source.section === 'agent' && source.kind === 'agent-instructions') {
-          return { ...source, content: agentInstructions[0] ?? 'You are' };
-        }
-        return source;
-      });
-      const snapshot = new ContextSnapshotBuilder().build({
-        modelId: run.modelId,
-        contextWindow: run.contextWindow ?? 128_000,
-        systemInstructions: [productBoundaryPrompt, networkPrompt],
-        agentInstructions,
-        projectContext,
-        compactSummary: run.compactSummary,
+      this.hydrateRunSkillContext(run);
+      const snapshot = this.buildDefaultProviderContextSnapshot(run, {
         messages: options.messages ?? [{ role: 'user', content: run.userText }],
-        tools,
-        sources: actualSources,
-        compactedAt: run.compactedAt,
+        toolsEnabled: options.toolsEnabled === true,
+        workspaceRoot: options.workspaceRoot,
+        executionMode,
+        networkEnabled,
       });
       run.contextSnapshot = snapshot;
       this.contextSnapshotByThread.set(run.threadId, snapshot);
@@ -14945,6 +15257,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         },
         projectedRuns,
       );
+      this.persistAssistantTerminalMessage(runId, run, 'failed', scrubbedMessage);
       this.demoRuns.delete(runId);
       this.publishEvent(event);
       this.recordRunDiagnostic(runId, run, {
@@ -15067,6 +15380,37 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       threadId: run.threadId as ThreadId,
       role: 'assistant',
       text: assistantText,
+      runId,
+      modelId: run.modelId ? (run.modelId as ModelId) : undefined,
+      credentialRefId: run.credentialRefId ? (run.credentialRefId as CredentialRefId) : undefined,
+      agentVersionId: run.agentVersionId ? (run.agentVersionId as AgentVersionId) : undefined,
+    });
+  }
+
+  private persistAssistantTerminalMessage(
+    runId: RunId,
+    run: DemoRunState,
+    terminalState: 'failed' | 'cancelled',
+    errorMessage?: string,
+  ): void {
+    const assistantText = typeof run.assistantText === 'string' ? run.assistantText : '';
+    if (!assistantText.trim()) return;
+    const scrubbedMessage = this.scrubDiagnosticMessage(errorMessage);
+    this.persistFinalChatMessage({
+      id: `asst-${runId}` as MessageId,
+      threadId: run.threadId as ThreadId,
+      role: 'assistant',
+      text: assistantText,
+      blocks: [
+        { type: 'text', text: assistantText },
+        {
+          type: 'error',
+          payload: {
+            terminalState,
+            ...(scrubbedMessage ? { errorMessage: scrubbedMessage } : {}),
+          },
+        },
+      ],
       runId,
       modelId: run.modelId ? (run.modelId as ModelId) : undefined,
       credentialRefId: run.credentialRefId ? (run.credentialRefId as CredentialRefId) : undefined,
@@ -15211,7 +15555,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     out = out.replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]');
     out = out.replace(/Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, 'Bearer [REDACTED]');
     out = out.replace(/plaintext-secret/gi, '[REDACTED]');
-    out = out.replace(/api[_-]?key["'\s:=]+[A-Za-z0-9._\-]{8,}/gi, 'api_key=[REDACTED]');
+    out = out.replace(/api[_-]?key["'\s:=]+[A-Za-z0-9._-]{8,}/gi, 'api_key=[REDACTED]');
     if (out.length > 240) out = out.slice(0, 240);
     return out;
   }
@@ -15569,5 +15913,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
     await this.scheduler?.shutdown();
     await Promise.allSettled([...this.backgroundTasks]);
+    await this.browserHost?.shutdown();
   }
+}
+
+function browserFailureMessage(code: unknown, failureClass: unknown): string {
+  if (code === 'browser.origin-denied') return 'Browser origin was denied.';
+  if (code === 'browser.profile-path-invalid') return 'Browser Profile path was rejected.';
+  if (failureClass === 'timeout') return 'Browser action timed out.';
+  if (failureClass === 'crashed') return 'Browser page or session crashed.';
+  if (failureClass === 'permission') return 'Browser action was blocked by policy.';
+  if (failureClass === 'acceptance') return 'Browser action was not accepted.';
+  return 'Browser action failed.';
 }

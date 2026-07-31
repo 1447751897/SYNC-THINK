@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@sync-think/shared": "workspace:*",
-    "@sync-think/protocol": "workspace:*"
+    "@sync-think/protocol": "workspace:*",
+    "playwright-core": "^1.62.0"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",

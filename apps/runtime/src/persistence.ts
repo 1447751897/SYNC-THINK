@@ -1,6 +1,6 @@
 ﻿import { mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import {
   openDatabaseAsync,
@@ -22,6 +22,7 @@ import {
   SqliteOrchestrationStore,
   SqliteArtifactStore,
   SqliteProductionExecutionStore,
+  SqliteBrowserStore,
   SqliteUnitOfWork,
   SqliteAppSettingStore,
 } from '@sync-think/storage';
@@ -34,9 +35,10 @@ import {
 } from '@sync-think/secure-store';
 import { Runtime, type RuntimeOptions } from './runtime.js';
 import { createProductionStepExecutor } from './orchestration/production-step-executor.js';
+import { BrowserHost, type BrowserHostLike } from '@sync-think/workers';
 
 export interface OpenPersistentRuntimeOptions
-  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'globalAgentStore' | 'teamStore' | 'conversationStore' | 'messageStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'unitOfWork' | 'secureStore' | 'appSettingStore' | 'queryUsageSummary'> {
+  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'globalAgentStore' | 'teamStore' | 'conversationStore' | 'messageStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'browserStore' | 'unitOfWork' | 'secureStore' | 'appSettingStore' | 'queryUsageSummary'> {
   dbPath: string;
   secureStoreBackend?: SecureStoreBackend;
   secureStoreKeyPath?: string;
@@ -111,6 +113,11 @@ export async function openPersistentRuntime(
 
   const secureStore = createRuntimeSecureStore({ secureStoreBackend, secureStoreKeyPath });
 
+  const runtimeDataRoot =
+    databasePath === ':memory:'
+      ? join(tmpdir(), 'sync-think-runtime', options.installId)
+      : dirname(databasePath);
+  let browserHost: BrowserHostLike | undefined = runtimeOptions.browserHost;
   let runtime: Runtime;
   try {
     const unitOfWork = new SqliteUnitOfWork(connection.raw);
@@ -123,6 +130,8 @@ export async function openPersistentRuntime(
     const orchestrationStore = new SqliteOrchestrationStore(connection.raw);
     const artifactStore = new SqliteArtifactStore(connection.raw);
     const productionExecutionStore = new SqliteProductionExecutionStore(connection.raw);
+    const browserStore = new SqliteBrowserStore(connection.raw);
+    const skillStore = new SqliteSkillStore(connection.raw);
     const appSettingStore = new SqliteAppSettingStore(connection.raw);
     // 0026+: rebuild NewMax-style usage views from durable provider/run/tool events.
     const queryUsageSummary = (sinceIso?: string) => {
@@ -426,10 +435,15 @@ export async function openPersistentRuntime(
         workspaceStore,
         orchestrationStore,
         executionStore: productionExecutionStore,
+        skillStore,
         secureStore,
         adaptersByProtocol: runtimeOptions.discoveryByProtocol,
         fallbackAdapter: runtimeOptions.discoveryAdapter,
       });
+    browserHost ??= new BrowserHost({
+      profileRoot: join(runtimeDataRoot, 'browser-profiles'),
+      executablePath: process.env.SYNC_THINK_BROWSER_EXECUTABLE,
+    });
     runtime = new Runtime({
       ...runtimeOptions,
       stateStore: new SqliteEventCheckpointStore(connection.raw),
@@ -441,7 +455,7 @@ export async function openPersistentRuntime(
       conversationStore,
       messageStore: new SqliteMessageStore(connection.raw),
       memoryStore: new SqliteMemoryStore(connection.raw),
-      skillStore: new SqliteSkillStore(connection.raw),
+      skillStore,
       mcpStore: new SqliteMcpStore(connection.raw),
       approvalStore: new SqliteApprovalStore(connection.raw),
       policyStore: new SqlitePolicyStore(connection.raw),
@@ -449,13 +463,17 @@ export async function openPersistentRuntime(
       orchestrationStore,
       artifactStore,
       productionExecutionStore,
+      browserStore,
       unitOfWork,
       secureStore,
       stepExecutor,
       appSettingStore,
       queryUsageSummary,
+      browserHost,
+      browserFallbackWorkingDir: runtimeOptions.browserFallbackWorkingDir ?? runtimeDataRoot,
     });
   } catch (error) {
+    if (!runtimeOptions.browserHost) await browserHost?.shutdown();
     connection.raw.close();
     throw error;
   }
@@ -473,4 +491,3 @@ export async function openPersistentRuntime(
     },
   };
 }
-

@@ -38,6 +38,12 @@ export {
   type ResolveAllowedMcpToolSourcesResult,
 } from './context-packet.js';
 export {
+  resolveRunSkillSelection,
+  type ResolveRunSkillSelectionInput,
+  type ResolvedRunSkillSelection,
+  type RunSkillRecordSnapshot,
+} from './run-skill-selection.js';
+export {
   CAPABILITY_TAGS,
   normalizeCapabilities,
   mergeCapabilitySuggestions,

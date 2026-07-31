@@ -68,6 +68,64 @@ describe('SqliteSkillStore', () => {
     }
   });
 
+  it('lists picker metadata without selecting full source or body fields', async () => {
+    const { skillStore, close } = await openStores();
+    try {
+      const skill = skillStore.importVersion({
+        name: 'metadata-only',
+        description: 'Picker row',
+        version: '1.0.0',
+        sourceMd: 'FULL_SOURCE_MUST_STAY_LAZY',
+        body: 'FULL_BODY_MUST_STAY_LAZY',
+        contentFingerprint: 'metadata-fingerprint',
+      });
+      const rows = skillStore.listVersionMetadata();
+      expect(rows).toEqual([
+        expect.objectContaining({ id: skill.id, contentFingerprint: 'metadata-fingerprint' }),
+      ]);
+      expect('sourceMd' in rows[0]!).toBe(false);
+      expect('body' in rows[0]!).toBe(false);
+      expect(JSON.stringify(rows)).not.toContain('FULL_BODY_MUST_STAY_LAZY');
+    } finally {
+      close();
+    }
+  });
+
+  it('loads exact equipped metadata even when a version falls outside the catalog limit', async () => {
+    const { skillStore, close } = await openStores();
+    try {
+      const equipped = skillStore.importVersion({
+        name: 'equipped-old-version',
+        description: 'Pinned by an Agent',
+        version: '1.0.0',
+        sourceMd: 'EQUIPPED_SOURCE_STAYS_LAZY',
+        body: 'EQUIPPED_BODY_STAYS_LAZY',
+        contentFingerprint: 'equipped-old-fingerprint',
+        now: '2026-07-28T00:00:00.000Z',
+      });
+      for (let index = 0; index < 500; index += 1) {
+        skillStore.importVersion({
+          name: `newer-${index}`,
+          description: 'Newer catalog entry',
+          version: '1.0.0',
+          sourceMd: `source-${index}`,
+          body: `body-${index}`,
+          contentFingerprint: `newer-fingerprint-${index}`,
+          now: `2026-07-29T00:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+        });
+      }
+
+      expect(skillStore.listVersionMetadata(500).some((row) => row.id === equipped.id)).toBe(
+        false,
+      );
+      const exact = skillStore.listVersionMetadataByIds([equipped.id]);
+      expect(exact.map((row) => row.id)).toEqual([equipped.id]);
+      expect(JSON.stringify(exact)).not.toContain('EQUIPPED_BODY_STAYS_LAZY');
+    } finally {
+      close();
+    }
+  });
+
   it('is content-addressed (same fingerprint returns existing row)', async () => {
     const { skillStore, close } = await openStores();
     try {

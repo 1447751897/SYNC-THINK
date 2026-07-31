@@ -411,7 +411,7 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
     if (!props.defaultPolicyScope) return;
     setPolicyScopeType(props.defaultPolicyScope.scopeType);
     setPolicyScopeId(props.defaultPolicyScope.scopeId);
-  }, [props.defaultPolicyScope?.scopeId, props.defaultPolicyScope?.scopeType]);
+  }, [props.defaultPolicyScope]);
 
   useEffect(() => {
     if (!latestScopedPolicy) {
@@ -428,7 +428,7 @@ export function ApprovalCenterPanel(props: ApprovalCenterPanelProps) {
     setPolicyRuleMode(rule?.approvalMode ?? 'request');
     setPolicyRuleDelegateId(rule?.delegateAgentVersionId ?? '');
     setPolicyRuleTail(latestScopedPolicy.rules.slice(1).map((item) => ({ ...item })));
-  }, [latestScopedPolicy?.id]);
+  }, [latestScopedPolicy]);
 
   const humanOnlyActions = props.humanOnlyActions?.length
     ? props.humanOnlyActions

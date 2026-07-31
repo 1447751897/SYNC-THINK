@@ -1,5 +1,25 @@
 // team-conversation command payload parsers (extracted from command-validation.ts).
-import type { AppendMessagePayload, CreateTeamPayload, UpdateTeamPayload, DeleteTeamPayload, StartTeamRunPayload, SetTeamRunStatusPayload, ListConversationsPayload, ConversationListMessagesPayload, ConversationGetRunProcessPayload, CreateConversationPayload, RenameConversationPayload, SetConversationPinnedPayload, SetConversationArchivedPayload, SetConversationExecutionModePayload, UpgradeConversationTrackPayload, DeleteConversationPayload, ConversationCompactPayload, ConversationSubmitBrowserResultPayload } from '@sync-think/protocol';
+import {
+  normalizeSelectedSkillVersionIds,
+  type AppendMessagePayload,
+  type CreateTeamPayload,
+  type UpdateTeamPayload,
+  type DeleteTeamPayload,
+  type StartTeamRunPayload,
+  type SetTeamRunStatusPayload,
+  type ListConversationsPayload,
+  type ConversationListMessagesPayload,
+  type ConversationGetRunProcessPayload,
+  type CreateConversationPayload,
+  type RenameConversationPayload,
+  type SetConversationPinnedPayload,
+  type SetConversationArchivedPayload,
+  type SetConversationExecutionModePayload,
+  type UpgradeConversationTrackPayload,
+  type DeleteConversationPayload,
+  type ConversationCompactPayload,
+  type ConversationSubmitBrowserResultPayload,
+} from '@sync-think/protocol';
 import { MESSAGE_ROLES, hasOnlyKeys, isRecord, boundedAgentText, CONVERSATION_TRACKS, CONVERSATION_UPGRADE_TRACKS, TEAM_RUN_STATUSES, TEAM_KEYS, validTeamFields } from './shared.js';
 
 export function parseAppendMessagePayload(value: unknown): AppendMessagePayload | undefined {
@@ -71,7 +91,16 @@ export function parseAppendMessagePayload(value: unknown): AppendMessagePayload 
       if (image.stagingPath !== undefined && typeof image.stagingPath !== 'string') return undefined;
     }
   }
-  return value as unknown as AppendMessagePayload;
+  let skillVersionIds: string[] | undefined;
+  try {
+    skillVersionIds = normalizeSelectedSkillVersionIds(value.skillVersionIds);
+  } catch {
+    return undefined;
+  }
+  return {
+    ...value,
+    ...(skillVersionIds === undefined ? {} : { skillVersionIds }),
+  } as unknown as AppendMessagePayload;
 }
 
 export function parseListTeamsPayload(value: unknown): Record<string, never> | undefined {

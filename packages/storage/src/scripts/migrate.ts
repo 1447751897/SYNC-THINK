@@ -126,7 +126,107 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0029_event_global_cursor',
     sql: eventGlobalCursorDdlSql(),
   },
+  {
+    name: '0030_browser_persistence_permissions',
+    sql: browserPersistencePermissionsDdlSql(),
+  },
 ];
+
+function browserPersistencePermissionsDdlSql(): string {
+  return `
+CREATE TABLE browser_command (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  workspace_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  lease_id TEXT,
+  page_id TEXT,
+  tool_name TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_origin TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  sanitized_args_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  result_json TEXT,
+  error_code TEXT,
+  failure_class TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  approved_at TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  CONSTRAINT browser_command_state_check CHECK (
+    state IN ('requested', 'approved', 'running', 'completed', 'failed', 'waiting_user')
+  ),
+  CONSTRAINT browser_command_request_digest_check CHECK (
+    length(request_digest) = 64 AND request_digest NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT browser_command_args_json_check CHECK (json_valid(sanitized_args_json)),
+  CONSTRAINT browser_command_result_json_check CHECK (result_json IS NULL OR json_valid(result_json)),
+  CONSTRAINT browser_command_terminal_check CHECK (
+    (state = 'completed' AND result_json IS NOT NULL AND completed_at IS NOT NULL) OR
+    (state = 'failed' AND error_code IS NOT NULL AND completed_at IS NOT NULL) OR
+    state IN ('requested', 'approved', 'running', 'waiting_user')
+  )
+);
+CREATE INDEX browser_command_owner_idx
+  ON browser_command(workspace_id, owner_id, profile_id, updated_at);
+CREATE INDEX browser_command_state_idx ON browser_command(state, updated_at);
+CREATE TRIGGER browser_command_identity_guard
+BEFORE UPDATE ON browser_command
+WHEN OLD.id <> NEW.id
+  OR OLD.idempotency_key <> NEW.idempotency_key
+  OR OLD.workspace_id <> NEW.workspace_id
+  OR OLD.run_id <> NEW.run_id
+  OR OLD.owner_id <> NEW.owner_id
+  OR OLD.profile_id <> NEW.profile_id
+  OR COALESCE(OLD.lease_id, '') <> COALESCE(NEW.lease_id, '')
+     AND NEW.state <> 'completed'
+  OR COALESCE(OLD.page_id, '') <> COALESCE(NEW.page_id, '')
+     AND NEW.state <> 'completed'
+  OR OLD.tool_name <> NEW.tool_name
+  OR OLD.action <> NEW.action
+  OR OLD.target_origin <> NEW.target_origin
+  OR OLD.request_digest <> NEW.request_digest
+  OR OLD.sanitized_args_json <> NEW.sanitized_args_json
+  OR OLD.created_at <> NEW.created_at
+  OR OLD.state IN ('completed', 'failed')
+BEGIN
+  SELECT RAISE(ABORT, 'browser.command_immutable');
+END;
+CREATE TRIGGER browser_command_delete_guard
+BEFORE DELETE ON browser_command
+BEGIN
+  SELECT RAISE(ABORT, 'browser.command_immutable');
+END;
+
+CREATE TABLE browser_origin_grant (
+  id TEXT PRIMARY KEY,
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  action TEXT NOT NULL DEFAULT '*',
+  decision TEXT NOT NULL,
+  approval_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT,
+  revoked_at TEXT,
+  CONSTRAINT browser_origin_grant_scope_uidx UNIQUE (scope_type, scope_id, origin, action),
+  CONSTRAINT browser_origin_grant_scope_check CHECK (
+    scope_type IN ('user', 'workspace', 'agent-version', 'workflow', 'run')
+  ),
+  CONSTRAINT browser_origin_grant_decision_check CHECK (decision IN ('allow', 'deny')),
+  CONSTRAINT browser_origin_grant_origin_check CHECK (
+    origin GLOB 'http://*' OR origin GLOB 'https://*'
+  )
+);
+CREATE INDEX browser_origin_grant_lookup_idx
+  ON browser_origin_grant(origin, scope_type, scope_id, action);
+`;
+}
 
 function eventGlobalCursorDdlSql(): string {
   return `

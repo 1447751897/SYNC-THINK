@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { basename, delimiter, dirname, extname, join, resolve } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import type { WorkerToken } from './types.js';
 import { isPathInside } from './types.js';
 
@@ -17,6 +18,11 @@ export interface BoundedProcessResult {
   truncated: boolean;
   shell: false;
   spawnError?: string;
+}
+
+export interface BoundedProcessListeners {
+  onStdout?(text: string): void;
+  onStderr?(text: string): void;
 }
 
 export function startRefusal(token: WorkerToken): 'aborted' | 'fence-rejected' | undefined {
@@ -85,6 +91,7 @@ export async function runBoundedProcess(
   args: readonly string[],
   cwd: string,
   token: WorkerToken,
+  listeners?: BoundedProcessListeners,
 ): Promise<BoundedProcessResult> {
   const maxBytes = Math.max(
     1,
@@ -99,6 +106,8 @@ export async function runBoundedProcess(
   let exitCode: number | null = null;
   let exitSignal: string | null = null;
   let spawnError: string | undefined;
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
 
   let spawnCommand = command;
   let spawnArgs = [...args];
@@ -122,6 +131,7 @@ export async function runBoundedProcess(
   try {
     child = spawn(spawnCommand, spawnArgs, {
       cwd,
+      detached: process.platform !== 'win32',
       shell: false,
       windowsVerbatimArguments,
       windowsHide: true,
@@ -135,43 +145,37 @@ export async function runBoundedProcess(
   const append = (
     current: Buffer<ArrayBufferLike>,
     chunk: Buffer<ArrayBufferLike>,
-  ): Buffer<ArrayBufferLike> => {
+  ): { value: Buffer<ArrayBufferLike>; kept: Buffer<ArrayBufferLike> } => {
     const remaining = maxBytes - keptBytes;
     if (remaining <= 0) {
       truncated = true;
-      return current;
+      return { value: current, kept: Buffer.alloc(0) };
     }
     const kept = chunk.subarray(0, remaining);
     keptBytes += kept.length;
     if (kept.length < chunk.length) truncated = true;
-    return Buffer.concat([current, kept]);
+    return { value: Buffer.concat([current, kept]), kept };
   };
   child.stdout.on('data', (chunk: Buffer) => {
-    stdout = append(stdout, chunk);
+    const appended = append(stdout, chunk);
+    stdout = appended.value;
+    if (appended.kept.length > 0) {
+      const text = stdoutDecoder.write(appended.kept);
+      if (text) listeners?.onStdout?.(text);
+    }
   });
   child.stderr.on('data', (chunk: Buffer) => {
-    stderr = append(stderr, chunk);
+    const appended = append(stderr, chunk);
+    stderr = appended.value;
+    if (appended.kept.length > 0) {
+      const text = stderrDecoder.write(appended.kept);
+      if (text) listeners?.onStderr?.(text);
+    }
   });
 
+  let terminationPromise: Promise<void> | undefined;
   const terminate = () => {
-    try {
-      if (process.platform === 'win32' && child.pid) {
-        const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
-          shell: false,
-          windowsHide: true,
-          stdio: 'ignore',
-        });
-        killer.unref();
-      } else {
-        child.kill('SIGKILL');
-      }
-    } catch {
-      try {
-        child.kill();
-      } catch {
-        // Process is already gone.
-      }
-    }
+    terminationPromise ??= terminateProcessTree(child);
   };
 
   const timeoutMs = Math.max(1, Math.min(token.timeoutMs, 10 * 60_000));
@@ -203,8 +207,13 @@ export async function runBoundedProcess(
       finish();
     });
   });
+  await terminationPromise;
   clearTimeout(timer);
   token.signal?.removeEventListener('abort', onAbort);
+  const finalStdout = stdoutDecoder.end();
+  if (finalStdout) listeners?.onStdout?.(finalStdout);
+  const finalStderr = stderrDecoder.end();
+  if (finalStderr) listeners?.onStderr?.(finalStderr);
 
   return {
     stdout: stdout.toString('utf8'),
@@ -217,6 +226,59 @@ export async function runBoundedProcess(
     shell: false,
     ...(spawnError ? { spawnError: `${basename(command)}: ${spawnError}` } : {}),
   };
+}
+
+async function terminateProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const killDirectChild = () => {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // Process is already gone.
+    }
+  };
+  if (process.platform !== 'win32') {
+    try {
+      if (child.pid) process.kill(-child.pid, 'SIGKILL');
+      else killDirectChild();
+    } catch {
+      killDirectChild();
+    }
+    return;
+  }
+  if (!child.pid) {
+    killDirectChild();
+    return;
+  }
+  await new Promise<void>((resolveTermination) => {
+    let settled = false;
+    let killer: ReturnType<typeof spawn> | undefined;
+    const finish = (treeKilled: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (!treeKilled) killDirectChild();
+      resolveTermination();
+    };
+    const timer = setTimeout(() => {
+      try {
+        killer?.kill('SIGKILL');
+      } catch {
+        // The taskkill helper already exited.
+      }
+      finish(false);
+    }, 5_000);
+    try {
+      killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+        shell: false,
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      killer.once('error', () => finish(false));
+      killer.once('close', (code) => finish(code === 0));
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 function spawnFailure(message: string): BoundedProcessResult {
@@ -247,7 +309,7 @@ function resolveWindowsExecutable(command: string): string {
 
 function buildSafeCmdShimCommand(command: string, args: readonly string[]): string | undefined {
   const values = [command, ...args];
-  if (values.some((value) => /["%\^!&|<>\r\n]/.test(value))) return undefined;
+  if (values.some((value) => /["%^!&|<>\r\n]/.test(value))) return undefined;
   const commandLine = [
     `"${command}"`,
     ...args.map((value) => (/\s/.test(value) ? `"${value}"` : value)),

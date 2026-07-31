@@ -1,4 +1,5 @@
 // Pure helpers for Compose slash-command menu (NewMax-style / menu).
+import type { ModelId } from '@sync-think/shared';
 
 export type SlashCommandKind = 'action' | 'prefix' | 'coming-soon';
 
@@ -173,9 +174,9 @@ export function resolveSendModelId(input: {
   track?: string | null;
   targetRef?: string | null;
   catalogModelIds?: readonly string[];
-}): string | undefined {
+}): ModelId | undefined {
   const override = typeof input.modelOverride === 'string' ? input.modelOverride.trim() : '';
-  if (override) return override;
+  if (override) return override as ModelId;
 
   const track = input.track ?? 'model';
   if (track === 'agent' || track === 'team') return undefined;
@@ -185,8 +186,8 @@ export function resolveSendModelId(input: {
 
   const catalog = input.catalogModelIds ?? [];
   if (catalog.length > 0) {
-    return catalog.includes(target) ? target : undefined;
+    return catalog.includes(target) ? (target as ModelId) : undefined;
   }
   // No catalog available (tests / early boot): allow model-track targetRef.
-  return track === 'model' || !track ? target : undefined;
+  return track === 'model' || !track ? (target as ModelId) : undefined;
 }

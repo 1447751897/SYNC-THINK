@@ -79,6 +79,7 @@ export type Feature =
   | 'conversation.decideToolApproval'
   | 'skill.import'
   | 'skill.list'
+  | 'skill.get'
   | 'skill.delete'
   | 'mcp.register'
   | 'mcp.list'
@@ -166,6 +167,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'conversation.delete',
   'skill.import',
   'skill.list',
+  'skill.get',
   'skill.delete',
   'mcp.register',
   'mcp.list',

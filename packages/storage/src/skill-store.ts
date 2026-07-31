@@ -18,6 +18,8 @@ export interface SkillVersionRecord {
   createdAt: string;
 }
 
+export type SkillVersionMetadataRecord = Omit<SkillVersionRecord, 'sourceMd' | 'body'>;
+
 export interface ImportSkillVersionInput {
   name: string;
   description: string;
@@ -60,6 +62,8 @@ interface SkillVersionRow {
   created_at: string;
 }
 
+type SkillVersionMetadataRow = Omit<SkillVersionRow, 'source_md' | 'body'>;
+
 function parseJsonArray(raw: string): string[] {
   try {
     const value = JSON.parse(raw) as unknown;
@@ -79,6 +83,22 @@ function mapRow(row: SkillVersionRow): SkillVersionRecord {
     version: row.version,
     sourceMd: row.source_md,
     body: row.body,
+    allowedTools: parseJsonArray(row.allowed_tools_json),
+    contentFingerprint: row.content_fingerprint,
+    hasScripts: row.has_scripts === 1,
+    warnings: parseJsonArray(row.warnings_json),
+    archivedAt: row.archived_at ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function mapMetadataRow(row: SkillVersionMetadataRow): SkillVersionMetadataRecord {
+  return {
+    id: row.id as SkillVersionId,
+    skillId: row.skill_id as SkillId,
+    name: row.name,
+    description: row.description,
+    version: row.version,
     allowedTools: parseJsonArray(row.allowed_tools_json),
     contentFingerprint: row.content_fingerprint,
     hasScripts: row.has_scripts === 1,
@@ -114,6 +134,18 @@ export class SqliteSkillStore {
       )
       .get(String(id)) as SkillVersionRow | undefined;
     return row ? mapRow(row) : undefined;
+  }
+
+  getVersionMetadata(id: SkillVersionId | string): SkillVersionMetadataRecord | undefined {
+    const row = this.raw
+      .prepare(
+        `SELECT id, skill_id, name, description, version,
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                archived_at, created_at
+         FROM skill_version WHERE id = ?`,
+      )
+      .get(String(id)) as SkillVersionMetadataRow | undefined;
+    return row ? mapMetadataRow(row) : undefined;
   }
 
   findByFingerprint(fingerprint: string): SkillVersionRecord | undefined {
@@ -174,6 +206,52 @@ export class SqliteSkillStore {
       )
       .all(Math.max(1, Math.min(500, limit))) as SkillVersionRow[];
     return rows.map(mapRow);
+  }
+
+  /** Metadata-only catalog query used by pickers; full SKILL.md stays lazy. */
+  listVersionMetadata(limit = 100): SkillVersionMetadataRecord[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT id, skill_id, name, description, version,
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                archived_at, created_at
+         FROM skill_version
+         WHERE archived_at IS NULL
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(Math.max(1, Math.min(500, limit))) as SkillVersionMetadataRow[];
+    return rows.map(mapMetadataRow);
+  }
+
+  /** Metadata-only exact lookup for small immutable Agent allowlists. */
+  listVersionMetadataByIds(
+    skillVersionIds: readonly (SkillVersionId | string)[],
+  ): SkillVersionMetadataRecord[] {
+    const orderedIds: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of skillVersionIds) {
+      const id = String(raw ?? '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      orderedIds.push(id);
+      if (orderedIds.length === 500) break;
+    }
+    if (orderedIds.length === 0) return [];
+    const placeholders = orderedIds.map(() => '?').join(', ');
+    const rows = this.raw
+      .prepare(
+        `SELECT id, skill_id, name, description, version,
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                archived_at, created_at
+         FROM skill_version
+         WHERE archived_at IS NULL AND id IN (${placeholders})`,
+      )
+      .all(...orderedIds) as SkillVersionMetadataRow[];
+    const byId = new Map(rows.map((row) => [row.id, mapMetadataRow(row)] as const));
+    return orderedIds
+      .map((id) => byId.get(id))
+      .filter((row): row is SkillVersionMetadataRecord => Boolean(row));
   }
 
   hasPendingPermissionApproval(skillVersionId: SkillVersionId | string): boolean {

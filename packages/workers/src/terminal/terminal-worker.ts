@@ -87,45 +87,82 @@ export class TerminalProcessWorker implements TerminalWorker {
       return;
     }
 
-    const result = await runBoundedProcess(command, args, cwd, token);
-    if (result.stdout) yield { type: 'stdout', text: result.stdout };
-    if (result.stderr) yield { type: 'stderr', text: result.stderr };
-    if (result.aborted) {
-      yield startFailure('aborted');
-      return;
-    }
-    if (result.timedOut) {
-      yield {
-        type: 'failed',
-        failureClass: 'timeout',
-        error: { code: 'worker.timeout', message: 'Terminal command timed out' },
-      };
-      return;
-    }
-    if (result.spawnError) {
-      yield {
-        type: 'failed',
-        failureClass: 'unknown',
-        error: { code: 'worker.spawn-failed', message: result.spawnError },
-      };
-      return;
-    }
-    yield {
-      type: 'completed',
-      output: {
-        ok: result.exitCode === 0,
-        message:
-          result.exitCode === 0
-            ? 'Terminal command completed'
-            : `Terminal command exited with code ${String(result.exitCode)}`,
-        exitCode: result.exitCode ?? undefined,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        truncated: result.truncated,
-        timedOut: false,
-        shell: false,
-      },
+    const queued: WorkerEvent[] = [];
+    let wake: (() => void) | undefined;
+    let finished = false;
+    const executionController = new AbortController();
+    const forwardAbort = () => executionController.abort();
+    token.signal?.addEventListener('abort', forwardAbort, { once: true });
+    if (token.signal?.aborted) executionController.abort();
+    const enqueue = (event: WorkerEvent) => {
+      queued.push(event);
+      wake?.();
+      wake = undefined;
     };
+    const completion = runBoundedProcess(command, args, cwd, {
+      ...token,
+      signal: executionController.signal,
+    }, {
+      onStdout: (text) => enqueue({ type: 'stdout', text }),
+      onStderr: (text) => enqueue({ type: 'stderr', text }),
+    }).finally(() => {
+      finished = true;
+      wake?.();
+      wake = undefined;
+    });
+    try {
+      while (!finished || queued.length > 0) {
+        if (queued.length === 0) {
+          await new Promise<void>((resolveWake) => {
+            wake = resolveWake;
+          });
+        }
+        while (queued.length > 0) {
+          yield queued.shift()!;
+        }
+      }
+      const result = await completion;
+      if (result.aborted) {
+        yield startFailure('aborted');
+        return;
+      }
+      if (result.timedOut) {
+        yield {
+          type: 'failed',
+          failureClass: 'timeout',
+          error: { code: 'worker.timeout', message: 'Terminal command timed out' },
+        };
+        return;
+      }
+      if (result.spawnError) {
+        yield {
+          type: 'failed',
+          failureClass: 'unknown',
+          error: { code: 'worker.spawn-failed', message: result.spawnError },
+        };
+        return;
+      }
+      yield {
+        type: 'completed',
+        output: {
+          ok: result.exitCode === 0,
+          message:
+            result.exitCode === 0
+              ? 'Terminal command completed'
+              : `Terminal command exited with code ${String(result.exitCode)}`,
+          exitCode: result.exitCode ?? undefined,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          truncated: result.truncated,
+          timedOut: false,
+          shell: false,
+        },
+      };
+    } finally {
+      token.signal?.removeEventListener('abort', forwardAbort);
+      if (!finished) executionController.abort();
+      await completion.catch(() => undefined);
+    }
   }
 }
 

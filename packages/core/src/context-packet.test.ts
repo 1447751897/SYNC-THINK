@@ -425,6 +425,7 @@ describe('resolveAllowedSkillSources — allowlist only (§9.1 / §10.2)', () =>
     expect(result.missingSkillVersionIds).toEqual([]);
     expect(result.summaries[0]?.summary).toMatch(/minimal@0\.1\.0/);
     expect(result.summaries[1]?.summary).toMatch(/脚本|scripts|shell/i);
+    expect(JSON.stringify(result.summaries)).not.toContain('structured guidance for the agent');
   });
 
   it('skips missing library entries and reports them', () => {
@@ -445,6 +446,35 @@ describe('resolveAllowedSkillSources — allowlist only (§9.1 / §10.2)', () =>
     });
     expect(result.sources).toHaveLength(1);
     expect(result.resolvedSkillVersionIds).toEqual(['skv-alpha']);
+  });
+
+  it('returns the same bounded exact content used for Provider prompt assembly', () => {
+    const body = 'B'.repeat(500);
+    const result = resolveAllowedSkillSources({
+      skillVersionIds: ['skv-bounded'],
+      getSkill: () => ({
+        id: 'skv-bounded',
+        name: 'bounded',
+        version: '2.0.0',
+        description: 'bounded prompt',
+        body,
+        contentFingerprint: 'fingerprint-bounded',
+      }),
+      bodyMaxChars: 200,
+    });
+    expect(result.resolvedSkills).toEqual([
+      {
+        sourceId: 'skill:skv-bounded',
+        skillVersionId: 'skv-bounded',
+        name: 'bounded',
+        version: '2.0.0',
+        body: 'B'.repeat(200),
+        contentFingerprint: 'fingerprint-bounded',
+      },
+    ]);
+    expect(result.truncations).toEqual([
+      expect.objectContaining({ sourceId: 'skill:skv-bounded', reason: 'skill-body-limit' }),
+    ]);
   });
 
   it('returns empty when allowlist is empty (install ≠ available)', () => {
@@ -625,4 +655,3 @@ describe('resolveAllowedMcpToolSources — allowlist only (§9.3 / §10.2)', () 
     ).toBe(true);
   });
 });
-

@@ -64,7 +64,7 @@ function roleLabel(role: string): string {
 }
 
 function bridge() {
-  return (window as any).syncThink?.runtime;
+  return window.syncThink?.runtime;
 }
 
 function AgentAvatar({ agent, size = 28 }: { agent: GlobalAgent; size?: number }) {

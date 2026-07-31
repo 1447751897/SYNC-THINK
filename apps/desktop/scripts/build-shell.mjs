@@ -29,6 +29,21 @@ await esbuild.build({
   },
 });
 
+// Keep xterm out of the first-viewport shell bundle. TerminalPane injects this
+// script and its generated CSS only when a terminal tab is mounted.
+await esbuild.build({
+  entryPoints: [join(shellSrc, 'xterm-vendor.ts')],
+  outfile: join(outdir, 'xterm-vendor.js'),
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  sourcemap: true,
+  loader: { '.ts': 'ts', '.css': 'css' },
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'development'),
+  },
+});
+
 // Tailwind v4 CLI scans the shell sources referenced from shell.css.
 const require = createRequire(import.meta.url);
 const cliPkgJson = require.resolve('@tailwindcss/cli/package.json');

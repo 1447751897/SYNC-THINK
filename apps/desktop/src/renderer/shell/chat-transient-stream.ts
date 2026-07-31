@@ -65,3 +65,32 @@ export function applyTransientConversationFrame(input: {
     terminal: frame.kind === 'terminal',
   };
 }
+
+/**
+ * Reduce all transient frames observed during one paint interval. The caller can
+ * commit the resulting draft once, while cursor dedupe still happens per frame.
+ */
+export function applyTransientConversationFrames(input: {
+  current: ConversationStreamDraft | null;
+  frames: readonly ConversationTransientFrame[];
+  threadId: string;
+  afterStreamSequence: number;
+}): TransientDraftState {
+  let draft = input.current;
+  let lastStreamSequence = input.afterStreamSequence;
+  let terminal = false;
+
+  for (const frame of input.frames) {
+    const next = applyTransientConversationFrame({
+      current: draft,
+      frame,
+      threadId: input.threadId,
+      afterStreamSequence: lastStreamSequence,
+    });
+    draft = next.draft;
+    lastStreamSequence = next.lastStreamSequence;
+    terminal ||= next.terminal;
+  }
+
+  return { draft, lastStreamSequence, terminal };
+}

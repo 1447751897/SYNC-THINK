@@ -82,10 +82,6 @@ export interface LocalStdioMcpWorkerOutput extends WorkerJobOutput {
   toolCount?: number;
 }
 
-export interface LocalStdioMcpWorker extends Worker<LocalStdioMcpWorkerInput> {
-  readonly kind: 'mcp';
-}
-
 const DEFAULT_TOKEN_TIMEOUT = 30_000;
 
 /** Split a simple command line without shell metacharacters. */
@@ -248,7 +244,7 @@ function startRefusal(token: WorkerToken): string | undefined {
   return undefined;
 }
 
-export class LocalStdioMcpWorker implements LocalStdioMcpWorker {
+export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
   readonly kind = 'mcp' as const;
 
   async *exec(input: LocalStdioMcpWorkerInput, token: WorkerToken): AsyncIterable<WorkerEvent> {

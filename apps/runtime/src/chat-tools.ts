@@ -425,20 +425,15 @@ export const CHAT_PLAN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
 export const CHAT_PLAN_TOOL_NAMES = new Set(CHAT_PLAN_TOOL_SCHEMAS.map((tool) => tool.name));
 
 /**
- * Browser tools — drive the desktop's built-in browser panel.
- * browser_open is a pure UI signal (validate URL, renderer navigates).
- * browser_click / browser_type / browser_read / browser_screenshot are
- * request-response commands: the runtime emits a browser.command_requested
- * event with a requestId and waits for the renderer to execute against the
- * <webview> and reply via conversation.submitBrowserResult (15s timeout).
- * All of them ride on the Compose 联网 switch and are never approval-gated:
- * the page is operated in front of the user, visible and stoppable.
+ * Browser tools drive a visible system Edge/Chrome through the Runtime-owned
+ * Browser Worker. The Renderer webview only mirrors browser_open URLs as a
+ * preview; it is not part of the automation authority path.
  */
 export const CHAT_BROWSER_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'browser_open',
     description:
-      'Open a URL in the built-in browser panel beside the chat so the user can SEE the page. Use when the user asks to open/show a website, or to present a page you found. This only displays the page; to READ page content use web_fetch or browser_read. http(s) URLs only.',
+      'Open an http(s) URL in the visible Sync-Think system-browser Profile. This also supplies the URL to the right-side preview. Use browser_read to inspect the live page and browser_click/browser_type to operate it.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -451,7 +446,7 @@ export const CHAT_BROWSER_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'browser_click',
     description:
-      'Click an element on the page currently shown in the built-in browser panel. Provide a CSS selector (preferred) OR x/y viewport coordinates. The page must already be open via browser_open. Runs in front of the user (visible, stoppable), so it is not approval-gated. After clicking, use browser_read to verify the result.',
+      'Click an element on the current system-browser Page. Provide a CSS selector (preferred) OR x/y viewport coordinates. The Page must already be opened with browser_open. Use browser_read afterwards to verify the result.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -468,7 +463,7 @@ export const CHAT_BROWSER_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'browser_type',
     description:
-      'Focus an input / textarea / contentEditable element in the built-in browser panel and type text into it. React-controlled inputs are handled via the native value setter + input event. The page must already be open via browser_open. Not approval-gated (visible to the user).',
+      'Fill an input, textarea, or contentEditable element on the current system-browser Page. The Page must already be opened with browser_open.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -482,7 +477,7 @@ export const CHAT_BROWSER_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'browser_read',
     description:
-      'Read the page currently shown in the built-in browser panel so YOU can understand it: returns title, URL, visible text (truncated to ~8KB) and a summary of links/buttons. Optional CSS selector narrows the text to one element. Use after browser_open / browser_click to inspect the live page state (web_fetch cannot see logged-in or JS-rendered state).',
+      'Read the current system-browser Page: returns title, URL, bounded visible text, and link/button/input summaries. Optional CSS selector narrows the result. This sees persistent logged-in and JavaScript-rendered state.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -497,7 +492,7 @@ export const CHAT_BROWSER_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   {
     name: 'browser_screenshot',
     description:
-      'Capture a PNG screenshot of the page in the built-in browser panel. The file is saved under the bound project folder (.sync-think/screenshots/) and the result includes an embedUrl — embed it in your markdown reply as ![截图](embedUrl), e.g. when writing a review report with screenshots. Requires a bound project folder and an open page.',
+      'Capture a PNG of the current system-browser Page under the bound project .sync-think/screenshots directory. Returns an embedUrl for markdown. Requires a bound project folder and an open Page.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
 ];
@@ -506,7 +501,7 @@ export const CHAT_BROWSER_TOOL_NAMES = new Set(
   CHAT_BROWSER_TOOL_SCHEMAS.map((tool) => tool.name),
 );
 
-/** Interactive browser tools that need the renderer round-trip (not browser_open). */
+/** Browser command tools that operate an already-open Page (not browser_open). */
 export const CHAT_BROWSER_COMMAND_TOOL_NAMES = new Set([
   'browser_click',
   'browser_type',
@@ -514,11 +509,11 @@ export const CHAT_BROWSER_COMMAND_TOOL_NAMES = new Set([
   'browser_screenshot',
 ]);
 
-/** Renderer reply for a browser command is capped to this many chars (~64KB). */
+/** Browser Worker result retained for the Provider is capped to roughly 64KB. */
 export const BROWSER_COMMAND_RESULT_MAX_CHARS = 64_000;
 
-/** How long the runtime waits for the renderer to execute a browser command. */
-export const BROWSER_COMMAND_TIMEOUT_MS = 15_000;
+/** Hard timeout for one Browser Worker action. */
+export const BROWSER_COMMAND_TIMEOUT_MS = 30_000;
 
 export interface ChatBrowserCommand {
   action: 'browser_click' | 'browser_type' | 'browser_read' | 'browser_screenshot';
@@ -526,8 +521,7 @@ export interface ChatBrowserCommand {
 }
 
 /**
- * Validate arguments for the interactive browser tools BEFORE emitting the
- * renderer command event. Pure function so tests can cover every branch.
+ * Validate arguments for commands that operate an already-open Browser Page.
  */
 export function validateChatBrowserCommand(
   toolName: string,
@@ -601,28 +595,41 @@ export function validateChatBrowserCommand(
   return { ok: true, command: { action: 'browser_screenshot', args: {} } };
 }
 
-/** Execute browser_open: validate the URL; the renderer reacts via events. */
-export function executeChatBrowserTool(argumentsJson: string): string {
+export function validateChatBrowserOpen(
+  argumentsJson: string,
+): { ok: true; url: string } | { ok: false; error: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(argumentsJson || '{}');
   } catch {
-    return JSON.stringify({ ok: false, error: 'browser_open: invalid JSON arguments.' });
+    return { ok: false, error: 'browser_open: invalid JSON arguments.' };
   }
   const url = String((parsed as { url?: unknown })?.url ?? '').trim();
   if (!/^https?:\/\//i.test(url)) {
-    return JSON.stringify({
-      ok: false,
-      error: 'browser_open: only absolute http(s) URLs are allowed.',
-    });
+    return { ok: false, error: 'browser_open: only absolute http(s) URLs are allowed.' };
   }
   if (url.length > 2048) {
-    return JSON.stringify({ ok: false, error: 'browser_open: URL too long (max 2048 chars).' });
+    return { ok: false, error: 'browser_open: URL too long (max 2048 chars).' };
   }
+  try {
+    const parsedUrl = new URL(url);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      return { ok: false, error: 'browser_open: only absolute http(s) URLs are allowed.' };
+    }
+  } catch {
+    return { ok: false, error: 'browser_open: invalid URL.' };
+  }
+  return { ok: true, url };
+}
+
+/** Compatibility wrapper used by existing validation tests and callers. */
+export function executeChatBrowserTool(argumentsJson: string): string {
+  const validated = validateChatBrowserOpen(argumentsJson);
+  if (!validated.ok) return JSON.stringify({ ok: false, error: validated.error });
   return JSON.stringify({
     ok: true,
-    url,
-    note: 'Opened in the built-in browser panel. Use browser_read to inspect the live page, browser_click / browser_type to operate it, or web_fetch for static text.',
+    url: validated.url,
+    note: 'Validated for the Runtime Browser Worker.',
   });
 }
 

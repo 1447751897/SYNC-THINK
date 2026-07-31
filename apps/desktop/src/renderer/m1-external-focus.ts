@@ -434,9 +434,9 @@ export function formatM1ExternalFocusRunSheet(
 
 export function externalFocusLooksSecretFree(text: string): boolean {
   if (!text) return true;
-  if (/\bsk-[A-Za-z0-9_\-]{16,}\b/.test(text)) return false;
-  if (/\bBearer\s+[A-Za-z0-9_\-\.]{20,}/i.test(text)) return false;
-  if (/api[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9_\-]{12,}/i.test(text)) return false;
+  if (/\bsk-[A-Za-z0-9_-]{16,}\b/.test(text)) return false;
+  if (/\bBearer\s+[A-Za-z0-9_.-]{20,}/i.test(text)) return false;
+  if (/api[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9_-]{12,}/i.test(text)) return false;
   return true;
 }
 

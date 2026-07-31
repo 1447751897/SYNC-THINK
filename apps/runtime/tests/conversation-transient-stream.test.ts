@@ -15,8 +15,9 @@ import {
   openDatabaseAsync,
   runMigrations,
   SqliteEventCheckpointStore,
+  SqliteMessageStore,
 } from '@sync-think/storage';
-import type { RunId, WorkspaceId } from '@sync-think/shared';
+import type { Message, RunId, WorkspaceId } from '@sync-think/shared';
 import { Runtime } from '../src/runtime.js';
 
 const tempDirs: string[] = [];
@@ -44,6 +45,30 @@ class ScriptedProvider implements ProviderAdapter {
         await new Promise((resolve) => setTimeout(resolve, this.tickMs));
       }
     }
+  }
+}
+
+class PartialTerminalProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  emitted = false;
+
+  constructor(private readonly terminal: 'failed' | 'cancelled') {}
+
+  async discoverModels(): Promise<string[]> {
+    return ['fake-mini'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    yield { type: 'text-delta', text: 'partial answer' };
+    this.emitted = true;
+    if (this.terminal === 'failed') {
+      yield { type: 'error', failureClass: 'acceptance', message: 'fixture failure' };
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      if (request.signal.aborted) resolve();
+      else request.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
   }
 }
 
@@ -133,6 +158,34 @@ async function createFixture(events: () => AdapterEvent[], tickMs: number = 1) {
   return { connection, installId, runtime, store, workspaceId };
 }
 
+async function createPartialMessageFixture(terminal: 'failed' | 'cancelled') {
+  const dir = mkdtempSync(join(tmpdir(), `sync-think-partial-${terminal}-`));
+  tempDirs.push(dir);
+  const dbPath = join(dir, 'sync-think.db');
+  const installId = `partial-${terminal}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const workspaceId = `workspace-partial-${terminal}` as WorkspaceId;
+  const threadId = `thread-partial-${terminal}`;
+  await runMigrations(dbPath);
+  const connection = await openDatabaseAsync({ path: dbPath });
+  connection.raw
+    .prepare('INSERT INTO thread (id, task_id, created_at) VALUES (?, ?, ?)')
+    .run(threadId, `task-partial-${terminal}`, '2026-07-28T00:00:00.000Z');
+  const store = new SqliteEventCheckpointStore(connection.raw);
+  const messageStore = new SqliteMessageStore(connection.raw);
+  const provider = new PartialTerminalProvider(terminal);
+  const runtime = new Runtime({
+    installId,
+    allowNoToken: true,
+    stateStore: store,
+    messageStore,
+    workspaceId,
+    checkpointRunId: `runtime-${installId}` as RunId,
+    demoProvider: provider,
+  });
+  await runtime.start();
+  return { connection, installId, messageStore, provider, runtime, store, threadId, workspaceId };
+}
+
 function transientFrames(inbox: ReturnType<typeof createInbox>): ConversationTransientFrame[] {
   return inbox.queued
     .filter((frame) => frame.kind === 'event' && frame.type === 'conversation.transientFrame')
@@ -143,6 +196,63 @@ function transientFrames(inbox: ReturnType<typeof createInbox>): ConversationTra
 }
 
 describe('conversation transient shadow stream', () => {
+  it.each(['failed', 'cancelled'] as const)(
+    'persists partial assistant text when a run is %s',
+    async (terminal) => {
+      const fixture = await createPartialMessageFixture(terminal);
+      const socket = await connectRuntime(fixture.installId);
+      const inbox = createInbox(socket);
+      try {
+        await hello(inbox, fixture.installId, `hello-partial-${terminal}`);
+        const append = await inbox.send({
+          id: `append-partial-${terminal}`,
+          kind: 'request',
+          type: 'task.appendMessage',
+          payload: {
+            threadId: fixture.threadId,
+            expectedTaskVersion: 0,
+            role: 'user',
+            text: `start ${terminal} run`,
+          },
+        });
+        expect(append.error).toBeUndefined();
+        const runId = String((append.payload as { streamId?: string }).streamId ?? '');
+        expect(await waitFor(() => fixture.provider.emitted)).toBe(true);
+        if (terminal === 'cancelled') {
+          const cancelled = await inbox.send({
+            id: 'cancel-partial-run',
+            kind: 'request',
+            type: 'run.cancel',
+            payload: { runId },
+          });
+          expect(cancelled.error).toBeUndefined();
+        }
+        expect(
+          await waitFor(() =>
+            fixture.store
+              .listEvents(fixture.workspaceId, 0)
+              .some((event) => event.type === `run.${terminal}`),
+          ),
+        ).toBe(true);
+
+        const assistant = fixture.messageStore
+          .listMessages(fixture.threadId as never)
+          .messages.find((message: Message) => message.role === 'assistant');
+        expect(assistant?.blocks).toEqual([
+          { type: 'text', text: 'partial answer' },
+          expect.objectContaining({
+            type: 'error',
+            payload: expect.objectContaining({ terminalState: terminal }),
+          }),
+        ]);
+      } finally {
+        socket.destroy();
+        await fixture.runtime.stop();
+        fixture.connection.raw.close();
+      }
+    },
+  );
+
   it('delivers process, text, reasoning, and terminal frames without persisting delta events', async () => {
     const fixture = await createFixture(() => [
       { type: 'reasoning-delta', text: 'think' },

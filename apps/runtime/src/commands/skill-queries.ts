@@ -72,8 +72,11 @@ export function handleListSkills(ctx: SkillQueryContext, socket: Socket, frame: 
     return;
   }
   try {
-    const skills = ctx.skillStore
-      .listVersions(payload.limit ?? 100)
+    const records =
+      payload.skillVersionIds === undefined
+        ? ctx.skillStore.listVersionMetadata(payload.limit ?? 100)
+        : ctx.skillStore.listVersionMetadataByIds(payload.skillVersionIds);
+    const skills = records
       .map((r) => ctx.toSkillVersionSummary(r));
     const response: ListSkillsResponse = { skills };
     socket.write(

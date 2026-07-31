@@ -233,7 +233,7 @@ export function AgentWorkspace(inputProps: AgentWorkspaceProps) {
 
   useEffect(() => {
     setDefinitionDraft(props.definition ?? null);
-  }, [props.definition?.agentVersionId]);
+  }, [props.definition]);
 
   useEffect(() => {
     if (props.selectedAgentId) {

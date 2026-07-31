@@ -27,4 +27,5 @@ export * from './authorization-store.js';
 export * from './orchestration-store.js';
 export * from './artifact-store.js';
 export * from './production-execution-store.js';
+export * from './browser-store.js';
 export * from './cc-switch-db.js';

@@ -12,6 +12,7 @@
   "references": [
     { "path": "../../packages/shared" },
     { "path": "../../packages/protocol" },
-    { "path": "../../packages/ui-kit" }
+    { "path": "../../packages/ui-kit" },
+    { "path": "../../packages/workers" }
   ]
 }

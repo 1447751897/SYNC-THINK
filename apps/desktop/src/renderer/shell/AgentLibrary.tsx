@@ -4,7 +4,7 @@
 import { Bot, ChevronRight, ImagePlus, Plus, Trash2, X, Wrench, Sparkles } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import type { GlobalAgent } from '@sync-think/shared';
+import type { GlobalAgent, ModelId } from '@sync-think/shared';
 import type { ModelOption } from './NewConversationDialog.js';
 import { useDialog } from './Dialog.js';
 import { AgentAvatarView, isImageAvatar, readAvatarImage } from './AgentAvatarView.js';
@@ -67,7 +67,7 @@ const REASONING_OPTIONS = [
 ];
 
 function bridge() {
-  return (window as any).syncThink?.runtime;
+  return window.syncThink?.runtime;
 }
 
 function toggleId(list: string[], id: string): string[] {
@@ -235,8 +235,8 @@ export function AgentLibrary({
       avatar: draft.avatar,
       description: draft.description,
       persona: draft.persona,
-      defaultModelId: draft.defaultModelId,
-      fallbackModelIds,
+      defaultModelId: draft.defaultModelId as ModelId,
+      fallbackModelIds: fallbackModelIds.map((id) => id as ModelId),
       skillIds: draft.skillIds,
       mcpServerIds: draft.mcpServerIds,
       reasoningEffort: draft.reasoningEffort,
