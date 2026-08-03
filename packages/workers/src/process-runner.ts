@@ -25,6 +25,10 @@ export interface BoundedProcessListeners {
   onStderr?(text: string): void;
 }
 
+export interface BoundedProcessOptions {
+  stdin?: string;
+}
+
 export function startRefusal(token: WorkerToken): 'aborted' | 'fence-rejected' | undefined {
   if (token.signal?.aborted) return 'aborted';
   if (token.beforeStart) {
@@ -92,6 +96,7 @@ export async function runBoundedProcess(
   cwd: string,
   token: WorkerToken,
   listeners?: BoundedProcessListeners,
+  options?: BoundedProcessOptions,
 ): Promise<BoundedProcessResult> {
   const maxBytes = Math.max(
     1,
@@ -140,7 +145,7 @@ export async function runBoundedProcess(
   } catch (error) {
     return spawnFailure(error instanceof Error ? error.message : 'process spawn failed');
   }
-  child.stdin.end();
+  child.stdin.end(options?.stdin);
 
   const append = (
     current: Buffer<ArrayBufferLike>,

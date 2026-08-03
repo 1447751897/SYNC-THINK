@@ -11,6 +11,7 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../../packages/shared" },
+    { "path": "../../packages/secure-store" },
     { "path": "../../packages/protocol" },
     { "path": "../../packages/ui-kit" },
     { "path": "../../packages/workers" }

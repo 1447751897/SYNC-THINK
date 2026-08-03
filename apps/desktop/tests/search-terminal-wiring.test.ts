@@ -17,7 +17,7 @@ describe('workspace search and terminal wiring', () => {
     expect(mainSource).toContain("from './project-content-search.js'");
     expect(mainSource).toContain("ipcMain.handle('desktop:search-project-content'");
     expect(preloadSource).toContain('searchProjectContent:');
-    expect(globalSource).toContain('searchProjectContent(payload:');
+    expect(globalSource).toMatch(/searchProjectContent\s*\(\s*payload:/);
     expect(dockSource).toContain("'content'");
     expect(dockSource).toContain('result.line');
   });
@@ -26,7 +26,7 @@ describe('workspace search and terminal wiring', () => {
     expect(mainSource).toContain("ipcMain.handle('desktop:start-project-terminal'");
     expect(mainSource).toContain("ipcMain.handle('desktop:cancel-project-terminal'");
     expect(preloadSource).toContain('subscribeProjectTerminal');
-    expect(globalSource).toContain('startProjectTerminal(payload:');
+    expect(globalSource).toMatch(/startProjectTerminal\s*\(\s*payload:/);
     expect(shellSource).toContain("from './TerminalPane.js'");
     expect(shellSource).toContain('<TerminalPane');
     expect(shellSource).toContain('openTerminalInPane');

@@ -6,6 +6,18 @@ import type {
 } from '@sync-think/adapters';
 import type { Event } from '@sync-think/shared';
 import {
+  CHAT_DESKTOP_MUTATING_TOOL_NAMES,
+  CHAT_DESKTOP_TOOL_NAMES,
+  CHAT_DESKTOP_TOOL_SCHEMAS,
+} from './desktop-chat-tools.js';
+
+export {
+  CHAT_DESKTOP_MUTATING_TOOL_NAMES,
+  CHAT_DESKTOP_TOOL_NAMES,
+  CHAT_DESKTOP_TOOL_SCHEMAS,
+  executeChatDesktopTool,
+} from './desktop-chat-tools.js';
+import {
   FileSystemWorker,
   GitProcessWorker,
   TerminalProcessWorker,
@@ -774,6 +786,8 @@ export function toolsForExecutionMode(
     includeProjectTools?: boolean;
     /** Agent-management tools (create_agent / list_agent_resources). */
     includeAgentTools?: boolean;
+    /** Built-in Computer Use tools backed by Windows UI Automation. */
+    includeDesktopTools?: boolean;
     /** Extra provider tools (e.g. MCP schemas) appended after built-ins. */
     extraTools?: readonly ProviderToolSchema[];
   } = {},
@@ -792,6 +806,9 @@ export function toolsForExecutionMode(
     tools.push(...CHAT_AGENT_TOOL_SCHEMAS);
     tools.push(...CHAT_SKILL_TOOL_SCHEMAS);
     tools.push(...CHAT_TEAM_TOOL_SCHEMAS);
+  }
+  if (options.includeDesktopTools) {
+    tools.push(...CHAT_DESKTOP_TOOL_SCHEMAS);
   }
   if (options.extraTools && options.extraTools.length > 0) {
     const seen = new Set(tools.map((t) => t.name));
@@ -884,16 +901,18 @@ export function parseMcpProviderToolName(
   return { mcpServerId, toolName };
 }
 
-/** Mutating tools under「询问批准」需要用户点批准后才执行。 */
+/** Mutating desktop/workspace tools in ask mode require explicit approval. */
 export function chatToolRequiresApproval(
   mode: string | undefined | null,
   toolName: string,
 ): boolean {
   const normalized = normalizeChatExecutionMode(mode);
   if (CHAT_AGENT_MUTATING_TOOL_NAMES.has(toolName)) {
-    // create_agent / update_agent / archive_agent:
-    // only full-access executes without a human approval card.
+    // Agent Library mutations require approval outside full-access.
     return normalized !== 'full-access';
+  }
+  if (CHAT_DESKTOP_MUTATING_TOOL_NAMES.has(toolName)) {
+    return normalized === 'ask';
   }
   return normalized === 'ask' && CHAT_MUTATING_TOOL_NAMES.has(toolName);
 }
@@ -902,7 +921,7 @@ export function chatToolRequiresApproval(
 export function isChatToolAllowed(
   mode: string | undefined | null,
   toolName: string,
-  options: { networkEnabled?: boolean } = {},
+  options: { networkEnabled?: boolean; desktopEnabled?: boolean } = {},
 ): boolean {
   // All built-in project tools are allowed once the user has approved (ask)
   // or when mode is workspace/full-access.
@@ -920,6 +939,8 @@ export function isChatToolAllowed(
   if (CHAT_PLAN_TOOL_NAMES.has(toolName)) return true;
   // Browser panel tool: gated by the same 联网 switch as web tools.
   if (options.networkEnabled && CHAT_BROWSER_TOOL_NAMES.has(toolName)) return true;
+  // Desktop tools exist only while the built-in Computer Use plugin is enabled.
+  if (options.desktopEnabled && CHAT_DESKTOP_TOOL_NAMES.has(toolName)) return true;
   // MCP tools exposed as mcp__server__tool are allowed when bound on the run.
   if (parseMcpProviderToolName(toolName)) return true;
   return false;
@@ -931,6 +952,17 @@ export function chatToolDeniedMessage(
   reason: 'denied' | 'blocked' = 'denied',
 ): string {
   const normalized = normalizeChatExecutionMode(mode);
+  if (CHAT_DESKTOP_MUTATING_TOOL_NAMES.has(toolName)) {
+    const action =
+      toolName === 'desktop_set_value'
+        ? '修改桌面控件内容'
+        : toolName === 'desktop_invoke_element'
+          ? '触发桌面控件'
+          : '聚焦桌面控件';
+    return reason === 'denied'
+      ? `用户拒绝了${action}。不要重试同一动作；说明原计划并等待用户指示。`
+      : `当前权限为「询问批准」，${action}需要用户确认后才能执行。`;
+  }
   if (CHAT_AGENT_MUTATING_TOOL_NAMES.has(toolName)) {
     const action =
       toolName === 'update_agent'

@@ -13,6 +13,7 @@ import type {
 } from '@sync-think/shared';
 import { openDatabaseAsync, type BetterSQLite3Raw } from './connection.js';
 import { runMigrations } from './scripts/migrate.js';
+import { SqliteArtifactStore } from './artifact-store.js';
 import { SqliteOrchestrationStore, type StoredStep } from './orchestration-store.js';
 
 const dirs: string[] = [];
@@ -192,6 +193,35 @@ function completeTarget(f: Awaited<ReturnType<typeof fixture>>): ArtifactVersion
   }).outputVersions[0]!;
 }
 
+function completeImageCandidates(
+  f: Awaited<ReturnType<typeof fixture>>,
+  count: number,
+): ArtifactVersion[] {
+  const target = claim(
+    f.store,
+    f.graph.run.id,
+    'target-step' as StepId,
+    'owner-image-target',
+    '2026-07-14T00:00:03.000Z',
+  );
+  return f.store.completeStep({
+    runId: f.graph.run.id,
+    stepId: target.id,
+    idempotencyKey: target.idempotencyKey!,
+    ownerId: 'owner-image-target',
+    executionAttempt: target.executionAttempt,
+    outputVersions: Array.from({ length: count }, (_, index) => ({
+      artifactName: 'generated-images',
+      artifactGroupKey: 'generated-image-candidates',
+      contentRef: join('D:\\runtime-images', `candidate-${index + 1}.png`),
+      contentHash: String(index + 1).repeat(64),
+      mimeType: 'image/png',
+      status: 'candidate' as const,
+    })),
+    now: '2026-07-14T00:00:04.000Z',
+  }).outputVersions;
+}
+
 function reviewerStep(f: Awaited<ReturnType<typeof fixture>>, iteration: number): StoredStep {
   const graph = f.store.getGraph(f.graph.run.id)!;
   const step = graph.steps.find((candidate) => {
@@ -233,6 +263,132 @@ function rejectInitialReview(f: Awaited<ReturnType<typeof fixture>>): {
 }
 
 describe('SqliteOrchestrationStore reviewer/rework', () => {
+  it('pauses before claiming a multi-candidate image Reviewer until one assigned version is selected', async () => {
+    const f = await fixture();
+    try {
+      const versions = completeImageCandidates(f, 2);
+      const step = reviewerStep(f, 0);
+
+      const prepared = f.store.prepareReviewStepForExecution(
+        f.graph.run.id,
+        step.id,
+        '2026-07-14T00:00:05.000Z',
+      );
+
+      expect(prepared).toMatchObject({
+        status: 'image-selection-required',
+        artifactIds: [versions[0]!.artifactId],
+      });
+      expect(prepared.graph.run.state).toBe('paused');
+      expect(prepared.graph.steps.find((candidate) => candidate.id === step.id)?.state).toBe(
+        'ready',
+      );
+      const context = f.store.getReviewStepContext(f.graph.run.id, step.id);
+      expect(context?.kind).toBe('reviewer');
+      if (context?.kind !== 'reviewer') throw new Error('Reviewer context missing');
+      expect(context.reviewedArtifactVersions.map((version) => version.id)).toHaveLength(2);
+      expect(context.reviewedArtifactVersions.map((version) => version.id)).toEqual(
+        expect.arrayContaining(versions.map((version) => version.id)),
+      );
+      expect(
+        f.raw
+          .prepare(
+            "SELECT COUNT(*) AS count FROM event WHERE type = 'review.image-selection-required'",
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+    } finally {
+      f.raw.close();
+    }
+  });
+
+  it('freezes the durable selected image version and ignores later selection changes for that Reviewer', async () => {
+    const f = await fixture();
+    try {
+      const versions = completeImageCandidates(f, 2);
+      const step = reviewerStep(f, 0);
+      const artifacts = new SqliteArtifactStore(f.raw);
+      artifacts.selectVersion({
+        operationId: 'select-review-image-1',
+        artifactId: versions[0]!.artifactId,
+        versionId: versions[0]!.id,
+        expectedTaskVersion: 0,
+        resultingTaskVersion: 1,
+        now: '2026-07-14T00:00:05.000Z',
+      });
+
+      const prepared = f.store.prepareReviewStepForExecution(
+        f.graph.run.id,
+        step.id,
+        '2026-07-14T00:00:06.000Z',
+      );
+      expect(prepared.status).toBe('ready');
+      expect(f.store.getReviewStepContext(f.graph.run.id, step.id)).toMatchObject({
+        kind: 'reviewer',
+        reviewedArtifactVersions: [{ id: versions[0]!.id }],
+      });
+      expect(() =>
+        f.raw
+          .prepare(
+            `UPDATE review_step_artifact_selection SET selected_version_id = ?
+             WHERE run_id = ? AND reviewer_step_id = ?`,
+          )
+          .run(versions[1]!.id, f.graph.run.id, step.id),
+      ).toThrow('review.image_selection_immutable');
+      expect(() =>
+        f.raw
+          .prepare(
+            `DELETE FROM review_step_artifact_selection
+             WHERE run_id = ? AND reviewer_step_id = ?`,
+          )
+          .run(f.graph.run.id, step.id),
+      ).toThrow('review.image_selection_immutable');
+
+      artifacts.selectVersion({
+        operationId: 'select-review-image-2',
+        artifactId: versions[1]!.artifactId,
+        versionId: versions[1]!.id,
+        expectedTaskVersion: 1,
+        resultingTaskVersion: 2,
+        now: '2026-07-14T00:00:07.000Z',
+      });
+      expect(f.store.getReviewStepContext(f.graph.run.id, step.id)).toMatchObject({
+        kind: 'reviewer',
+        reviewedArtifactVersions: [{ id: versions[0]!.id }],
+      });
+      expect(
+        f.raw
+          .prepare(
+            "SELECT COUNT(*) AS count FROM event WHERE type = 'review.image-selection-frozen'",
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+    } finally {
+      f.raw.close();
+    }
+  });
+
+  it('lets a single image candidate proceed without an explicit selection', async () => {
+    const f = await fixture();
+    try {
+      const [version] = completeImageCandidates(f, 1);
+      const step = reviewerStep(f, 0);
+      const prepared = f.store.prepareReviewStepForExecution(
+        f.graph.run.id,
+        step.id,
+        '2026-07-14T00:00:05.000Z',
+      );
+
+      expect(prepared.status).toBe('ready');
+      expect(prepared.graph.run.state).toBe('reviewing');
+      expect(f.store.getReviewStepContext(f.graph.run.id, step.id)).toMatchObject({
+        kind: 'reviewer',
+        reviewedArtifactVersions: [{ id: version!.id }],
+      });
+    } finally {
+      f.raw.close();
+    }
+  });
   it('rejects reviewer completion at the persisted lease expiry without evidence or transitions', async () => {
     const f = await fixture();
     try {
@@ -417,13 +573,9 @@ describe('SqliteOrchestrationStore reviewer/rework', () => {
         DROP TRIGGER acceptance_gate_identity_guard;
         DROP TRIGGER IF EXISTS acceptance_gate_max_iterations_update_guard;
       `);
-      f.raw
-        .prepare('UPDATE acceptance_gate SET max_iterations = 101 WHERE id = ?')
-        .run(f.gate.id);
+      f.raw.prepare('UPDATE acceptance_gate SET max_iterations = 101 WHERE id = ?').run(f.gate.id);
 
-      expect(() => f.store.getAcceptanceGate(f.gate.id)).toThrow(
-        'review.max_iterations_invalid',
-      );
+      expect(() => f.store.getAcceptanceGate(f.gate.id)).toThrow('review.max_iterations_invalid');
       expect(() => f.store.getReviewStepContext(f.graph.run.id, reviewerStepId)).toThrow(
         'review.max_iterations_invalid',
       );
@@ -484,9 +636,9 @@ describe('SqliteOrchestrationStore reviewer/rework', () => {
         }),
       ).toThrow('review.iteration_invalid');
       expect(f.store.listReviewEvidence(f.gate.id)).toEqual(evidenceBefore);
-      expect(f.store.getGraph(f.graph.run.id)?.steps.find((step) => step.id === reviewer.id)).toMatchObject(
-        { state: 'running' },
-      );
+      expect(
+        f.store.getGraph(f.graph.run.id)?.steps.find((step) => step.id === reviewer.id),
+      ).toMatchObject({ state: 'running' });
       expect(f.store.getAcceptanceGate(f.gate.id)).toMatchObject({ state: 'active' });
     } finally {
       f.raw.close();
@@ -529,9 +681,9 @@ describe('SqliteOrchestrationStore reviewer/rework', () => {
           })),
         ),
       ).toThrow('acceptance_criteria.too_many');
-      expect(() =>
-        create([{ id: 'oversized', description: 'x'.repeat(4_001) }]),
-      ).toThrow('acceptance_criteria.item_too_large');
+      expect(() => create([{ id: 'oversized', description: 'x'.repeat(4_001) }])).toThrow(
+        'acceptance_criteria.item_too_large',
+      );
       expect(() =>
         create(
           Array.from({ length: 17 }, (_, index) => ({

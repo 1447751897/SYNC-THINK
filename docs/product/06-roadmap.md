@@ -1,4 +1,37 @@
-﻿# Roadmap
+## 2026-08-02 路线图检查点：本地工程任务收口，外部验收待补
+
+- [x] Settings Diagnostics UI、脱敏导出、崩溃/恢复证据与隐私边界。
+- [x] First-launch onboarding、长线程性能预算、视觉与 accessibility 本地门禁。
+- [x] Windows release signing/timestamp fail-closed、独立 signer/publisher pin、installer manifest v3、blockmap 配对与 Generic feed policy。
+- [x] Generic feed 对 blockmap 执行 gzip、JSON 与最小 schema 的 fail-closed 校验；仅显式 `allowLegacyFullDownload` 允许旧完整下载 fixture。
+- [x] 隔离 unsigned fixture 覆盖真实 NSIS `0.0.1 → 0.0.2` 安装、blockmap 请求、Range/206 差分传输字节、重启与 install identity 连续性。
+- [x] Updater bounded recovery evidence、当前版本保留与撤回/重试 runbook。
+- [x] Database Governance P0.4：Event payload sidecar/backfill/rollback/GC、retention/archive、incremental vacuum 与 offline `VACUUM INTO` compaction 均完成 fixture-only 门禁。
+- [x] 确定性 Electron 7-case 视觉证据及 `selftest:phase3` 聚合门禁。
+- [ ] 使用正式 Authenticode 证书与真实 RFC 3161 timestamp provider 完成签名安装升级验收。
+- [ ] 在真实私有 HTTPS feed 完成授权、cohort/rollout enforcement、CDN cache invalidation 与撤回演练。
+- [ ] 使用真实图片 Provider 凭证完成生成、预览、Reviewer、返工与重启恢复验收。
+- [ ] 完成 5–20 位邀请用户 Windows 闭测。
+- [ ] 自动 binary rollback 作为独立后续能力；当前恢复语义仍是保留旧版本、撤回 feed、重试、发布更高修复版本或人工恢复。
+
+# Roadmap
+
+## 2026-08-02 增量：Database Governance P0
+
+- [x] **P0.1 只读诊断与 dry-run**：新增 versioned database report、PRAGMA/表计数、Event/Checkpoint 比例、4096 条有界类型样本、备份预算、protected/candidate 维护计划和 readonly query_only CLI；真实 16.87GB 库约 6 秒完成 quick 诊断。
+- [x] **Codex 数据治理对比**：完成官方行为与本机实现分层记录，采用正文/投影分离、archive 生命周期、关注点拆库、migration/backfill、逻辑清理与物理压缩分离等原则。
+- [x] **P0.2 写入放大修复**：Checkpoint 改为每 128 个 durable Event 写入，四种终态强制落点；非终态 Run 投影支持稀疏 Checkpoint 后的 Event replay；fallback/context 同事务提交并以 `modelId + packetId` fence 阻止重复 continuation。Runtime 63 files / 431 tests 全量通过。
+- [x] **P0.3 可回滚执行器**：已实现 exact hashed manifest、stale fingerprint fence、verified recovery backup、显式维护窗口与 token、分批事务、durable audit/Ctrl+C 取消恢复，以及历史备份 quarantine；默认 CLI 仍只读，真实 16.87 GB 主库未执行。
+- [x] **P0.4 投影与长期 retention**：完成 Event payload/Context Packet 外置、projection backfill、归档预算、incremental vacuum 与离线物理压缩策略。
+  - [x] 第一切片：V1 content-addressed gzip sidecar、SQLite envelope/projection、自动 hydrate、完整性校验与默认内联兼容；保持 opt-in，尚未接入 Runtime。
+  - [x] 第二切片 A：sidecar-aware exact manifest、ordered reference hash、唯一 blob 清单、portable SQLite + sidecar recovery set、staging 发布、失败清理与 completed/resume 重验证。
+  - [x] 第二切片 B：离线 Event payload backfill 执行与回滚门禁。
+    - [x] B1 exact dry-run：固定 selector/projection builder、精确 Event/reference 清单、容量估算、plan hash 与 stale fence；只写计划 JSON，不修改 SQLite、sidecar、WAL 或备份。
+    - [x] B2 durable batch cursor/cancel-resume：固定 plan/source fence、批次事务、批次边界取消与 crash-safe 幂等恢复。
+    - [x] B3 rollback：基于 portable SQLite + sidecar recovery set 的精确离线恢复与验证。
+    - [x] B4 orphan mark/sweep：先标记引用集合，再按 fence 清理无引用 blob。
+  - [x] 第三切片 A：对白名单 `context.packet.built` 启用 Runtime 显式 opt-in 外置写入，默认 64 KiB，projection 固定 `context-packet-query-v1@1`。
+  - [x] 第三切片 B：实现 fully-global low-value Event retention/archive、精确 portable recovery segment、durable execute/rollback、cancel/resume、崩溃窗口对账、incremental vacuum 与 offline `VACUUM INTO` 压缩验收。
 
 本文档记录 SYNC-THINK 阶段路线图、里程碑和验收标准。  
 产品边界与 Locked 决策以 `docs/superpowers/specs/2026-07-11-sync-think-product-design.md` 为准。
@@ -59,6 +92,21 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
 3. Context、Provider、Manifest、fallback/rebind/retry/recovery 使用同一冻结 ID；durable Run 状态不复制 `SKILL.md` 正文。
 4. Composer 成功和失败都保持当前会话选择；切换有效 Agent/Team owner 时恢复新默认，只切换模型 override 不清空。欢迎页首条覆盖会交给新建对话，目录等价刷新不覆盖用户调整。
 5. 自动 DAG 的每个 Step 按自身冻结 AgentVersion 自动加载对应 Skill，成员间不串用，也不要求用户逐 Step 配置；P2 已通过最终门禁、独立复审与最新版浅深双尺寸实窗复验，仍不提前关闭 Phase 3。
+
+补充（2026-07-31）：
+
+1. Windows UIA Worker P0.1-P0.4 已完成短生命周期 Host、真实 UIA COM、窗口发现、bounded inspect、exact selector 和最小 read/focus/invoke/set-value 语义动作。
+2. P0.5 已完成默认关闭的内置 Computer Use 插件、Runtime capability gate、七个聊天工具和设置页开关。插件决定是否有能力，`execution_mode` 决定启用后的审批；完全访问不自动启用插件。
+3. P0.6 已完成 durable Desktop command/intent、重启后未知 in-flight 转 `waiting_user` 和用户输入中断 fence；命令结果可重放，未知副作用不自动重试。
+4. P0.7 已完成持久 `waiting_user` 的 Storage/Runtime 安全查询、Desktop IPC 与 Renderer 只读等待卡片。
+5. P0.8 已完成 Continue/Cancel 持久 resolution、`expectedUpdatedAt` 乐观并发栅栏、Desktop 双按钮交互和 lifecycle 重查；Continue 只确认人工处理，不重放原 UIA 动作。
+6. P0.9 已完成 observe/display/sensitive/human-only/prohibited 风险分级、Runtime 二次审批强制、密码字段识别和审批/lifecycle 安全投影。full-access 只免除可信 display 审批，sensitive/human-only 仍需审批。
+7. P0.10 已完成仓库内真实 WPF fixture、真实 UIA SetValue、GetLastInputInfo 用户输入中断、Desktop/Runtime 冷重启等待卡恢复、Continue/Cancel 和动作/Provider 不重放验收。Windows UI Automation Worker 与人工接管回退主项已完成。
+8. Image P0.1-P0.3 已完成：OpenAI-compatible Images typed Adapter、Runtime 受控落盘、opaque 预览、严格 size/quality/count、多候选 durable 选择、冻结视觉 Reviewer assignment 与有界图片返工闭环均已接通。
+9. Run fallback 跨层循环已通过 durable `attemptedModelIds` fence 收口；Provider priority 与 Agent fallback 统一跳过本 Run 已尝试模型，候选耗尽后有界暂停。既有异常数据库清理作为独立数据修复任务。
+10. Image P0.3 自动化闭环已覆盖“候选 → 选择 → vision review → rework → 再选择 → 达限暂停”；下一步只保留真实凭证人工验收与失败体验优化，不再阻塞 Phase 3 的安装分发主线。Phase 3 继续保持进行中。
+11. Windows Distribution P0.1-P0.2 已完成：自包含 portable、packaged identity、per-user NSIS installer，以及 clean / overlay / 真实版本升级 / uninstall / reinstall 自动 smoke 均已通过；卸载默认保留身份密文和数据库。
+12. Windows Distribution P0.3 的 installer 压缩、品牌图标、production deploy、updater 手动控制面和 loopback Generic feed 版本/SHA-512 E2E 已完成：更新默认关闭、秘密留在 Main、安装前受控退出；真实私有 HTTPS feed + 真实 NSIS 重启安装、Authenticode、differential package、失败回滚与闭测清单仍未完成，Phase 3 继续保持进行中。
 
 ## 3. Phase 0 - 技术验证
 
@@ -174,7 +222,7 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
 4. 诊断、崩溃恢复、安装包、签名、更新
 5. 视觉 polish、动效、无障碍、性能、闭测运营
 
-当前交付切片（更新至 2026-07-30）：
+当前交付切片（更新至 2026-08-01）：
 
 - [x] File Worker：读、列目录、原子写；删除禁用；路径和真实路径边界。
 - [x] Terminal Worker：命令 allowlist、无 Shell、受限 cwd、超时/取消、输出限幅。
@@ -184,15 +232,42 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
 - [x] 项目内容搜索：`rg --json` + Node fallback、取消/超时/限幅、行列定位与路径边界。
 - [x] 终端 Pane：lazy xterm、受控命令、流式输出、停止/清空/历史/cwd；明确不是持久 PTY。
 - [x] Agent Skill 默认继承：Agent Library 一次配置、Composer 会话级临时覆盖、metadata-only 懒加载；自动 Step 按成员 AgentVersion 隔离装载并冻结恢复。
-- [ ] Browser Worker 与网页授权执行。
+- [x] Browser Worker 与网页授权执行。
   - [x] P0.1：系统浏览器 Host、持久 Profile、CDP、Tab lease 与基础动作。
   - [x] P0.2：聊天 `browser_*` 从 Renderer `<webview>` 迁到 Runtime Worker。
-  - [ ] P0.3：命令状态、站点授权、敏感动作审批与重启恢复。
-  - [ ] P0.4：Team Step 精确权限、Run/Step Tab lease 与成员隔离。
-  - [ ] P0.5：持久 `waiting_user`、继续/取消和人工接管生命周期。
-- [ ] Windows UI Automation Worker 与人工接管回退。
-- [ ] 图像生成完整管线与视觉审查闭环。
+  - [x] P0.3：命令状态、站点授权、敏感动作审批与重启恢复。
+  - [x] P0.4：Team Step 精确权限、Run/Step Tab lease 与成员隔离。
+  - [x] P0.5：持久 `waiting_user`、继续/取消和人工接管生命周期。
+    - 正式 Desktop/Runtime 冷重启 E2E 的 Continue、Cancel close-page、Cancel keep-open 三路径均通过；Provider 与 `browser_open` 不重放，解析后浏览器与 metadata 完整清理。
+- [x] Windows UI Automation Worker 与人工接管回退。
+  - [x] 技术 Spike 与 P0 边界：Koffi COM、.NET sidecar、Microsoft WinAppCLI 三方案完成真实 Windows fixture 验证。
+  - [x] 用户确认短生命周期 Node Host + Koffi UIA COM，并更新 TD-007。
+  - [x] P0.1-P0.4：DesktopWorker Host、bounded inspect、exact selector 与最小 read/focus/invoke/set-value 语义动作。
+  - [x] P0.5：默认关闭的内置 Computer Use 插件、Runtime capability gate、七个聊天工具、设置页开关与普通审批语义。
+  - [x] P0.6：durable Desktop command/intent、幂等结果重放、未知 in-flight 恢复和用户输入中断至 `waiting_user`。
+  - [x] P0.7：持久 `waiting_user` 的 Storage/Runtime 安全投影、Desktop IPC 与 Renderer 只读等待卡片。
+  - [x] P0.8：Continue/Cancel 持久 resolution、`expectedUpdatedAt` 乐观并发栅栏、Desktop 交互与 durable lifecycle 重查。
+  - [x] P0.9：动作风险分级、full-access 边界、密码字段 human-only、Runtime 二次审批强制与安全事件投影。
+  - [x] P0.10：真实 WPF fixture + 用户输入中断 + Runtime/Desktop 冷重启 + waiting card 恢复 + Continue/Cancel E2E；原 UIA 动作和 Provider 请求均不重放。
+- [x] 图像生成完整管线与视觉审查闭环。
+  - [x] Image P0.1：OpenAI-compatible Images Adapter、base64-only durable output、Runtime 受控落盘、`contentRef/contentHash`、candidate ArtifactVersion 与重启幂等 replay。
+  - [x] Image P0.2：Renderer 图片 Artifact 卡片、安全协议预览与任务/Run 过程视图检查。
+  - [x] Image P0.3：严格 size/quality/count、多候选 durable 选择、冻结 vision Reviewer、原 Artifact 图片返工与达限暂停。
 - [ ] 安装器、代码签名、自动更新和闭测分发。
+  - [x] Windows Distribution P0.1：unsigned portable staging、受控发布目录、Node 20/Runtime 自包含布局、敏感文件 preflight、SHA-256 manifest 与隔离冷启动 smoke。
+  - [x] Windows Distribution P0.2：packaged install identity / pipe credential 持久化、Windows 安装器，以及干净安装/升级/卸载 smoke。
+    - [x] packaged install identity、safeStorage secret、Runtime child env 同源投影与双冷启动复用验收。
+    - [x] Windows 安装器封装，以及干净安装、覆盖升级、卸载和用户数据保留 smoke。
+  - [ ] Windows Distribution P0.3：代码签名、自动更新、失败回滚和闭测分发清单。
+    - [x] installer normal 压缩、确定性品牌图标、portable EXE icon group 与现代 production deploy。
+    - [ ] Authenticode 与证书流程：本地 fail-closed 配置和 verifier 已完成，仍待正式证书与真实 RFC 3161 timestamp 验收。
+    - [x] electron-updater 本地发布链：私有 feed 契约、下载校验、版本/channel 策略、blockmap differential package、受控退出与真实 `quitAndInstall` fixture。
+      - [x] Main-only feed/token 配置、手动检查/下载/安装、Renderer 安全状态投影、安装前 Runtime 受控退出与 updater cache bootstrap。
+      - [x] Generic feed fixture、Bearer header、metadata 解析、版本/channel 矩阵、installer SHA-512 与 blockmap gzip/JSON/schema fail-closed E2E。
+      - [x] 隔离 unsigned NSIS `0.0.1 → 0.0.2` 真实重启安装：Range/HTTP 206 差分传输、identity/secret/SQLite 连续性与当前版本安装前保留均通过。
+    - [ ] 在真实 private origin/CDN 完成授权、cohort/rollout、cache invalidation、撤回与正式签名升级演练。
+    - [ ] 自动 binary rollback；作为独立后续能力，不与当前保留旧版本、撤回 feed、重试和人工恢复语义混淆。
+    - [ ] 闭测分发、诊断收集与发布清单。
 
 不包含（Later）：
 
@@ -227,12 +302,37 @@ MVP 边界（闭测）：Windows 单机 local-first 多模型 Agent 工作台
 
 ## 9. 变更记录
 
-| 日期       | 变更                                | 原因                                                                 |
-| ---------- | ----------------------------------- | -------------------------------------------------------------------- |
-| 2026-07-11 | 按已批准产品设计初始化路线图        | `/zno-init` 文档落盘                                                 |
-| 2026-07-11 | 文档确认；前端升格可获奖级原创标准  | 用户确认 V3 IA + 设计主导授权                                        |
-| 2026-07-13 | 允许 M1 dogfood 累计期间连续实施 M2 | 用户明确要求 M1/M2 连续完成，且不伪造日历证据                        |
-| 2026-07-15 | M2 完成；M1 保持 1/3 open           | M2 exit demo/QA 通过；M1 仅剩真实 dogfood 日期门槛                   |
-| 2026-07-16 | Phase 3 进入部分实施                | File/Terminal/Git 与模型工具循环已交付；Browser/UIA/安装分发仍待完成 |
-| 2026-07-28 | Phase 3 工作区 P0/P1 切片完成       | 递归 Pane、文件编辑、内容搜索与受控终端 Pane 已通过全仓及实窗门禁    |
-| 2026-07-29 | Phase 3 工作区 P2 切片完成          | 每轮 Skill 精确选择、懒上下文与冻结恢复已通过全仓及实窗门禁         |
+| 日期       | 变更                                             | 原因                                                                                                                           |
+| ---------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-07-11 | 按已批准产品设计初始化路线图                     | `/zno-init` 文档落盘                                                                                                           |
+| 2026-07-11 | 文档确认；前端升格可获奖级原创标准               | 用户确认 V3 IA + 设计主导授权                                                                                                  |
+| 2026-07-13 | 允许 M1 dogfood 累计期间连续实施 M2              | 用户明确要求 M1/M2 连续完成，且不伪造日历证据                                                                                  |
+| 2026-07-15 | M2 完成；M1 保持 1/3 open                        | M2 exit demo/QA 通过；M1 仅剩真实 dogfood 日期门槛                                                                             |
+| 2026-07-16 | Phase 3 进入部分实施                             | File/Terminal/Git 与模型工具循环已交付；Browser/UIA/安装分发仍待完成                                                           |
+| 2026-07-28 | Phase 3 工作区 P0/P1 切片完成                    | 递归 Pane、文件编辑、内容搜索与受控终端 Pane 已通过全仓及实窗门禁                                                              |
+| 2026-07-29 | Phase 3 工作区 P2 切片完成                       | 每轮 Skill 精确选择、懒上下文与冻结恢复已通过全仓及实窗门禁                                                                    |
+| 2026-07-31 | Phase 3 Browser Worker P0 完成                   | P0.1-P0.5 已通过系统浏览器 Host、持久权限、Team 隔离与三路径真实重启 handoff E2E                                               |
+| 2026-07-31 | Windows UIA Worker 技术 Spike 完成               | 三方案真实 fixture 验证完成；推荐 Koffi 独立 Worker，等待用户确认后进入实现                                                    |
+| 2026-07-31 | DesktopWorker P0.1-P0.6 完成                     | 已接线 UIA/Computer Use、durable command 与输入中断；Continue/Cancel 闭环仍待完成                                              |
+| 2026-08-01 | DesktopWorker P0.7 完成                          | 持久等待态安全查询与只读卡片已接线；Continue/Cancel 与真实恢复仍待完成                                                         |
+| 2026-08-01 | DesktopWorker P0.8 完成                          | Continue/Cancel 与并发栅栏已接线；下一步为动作风险分级和真实冷重启 E2E                                                         |
+| 2026-08-01 | DesktopWorker P0.9 完成                          | 五级动作风险与 Runtime 审批策略已收紧；下一步为真实 WPF 冷重启人工接管 E2E                                                     |
+| 2026-08-01 | DesktopWorker P0.10 / P0 收口                    | 真实 WPF 中断、冷重启恢复、Continue/Cancel 与不重放正式 E2E 2/2 通过                                                           |
+| 2026-08-01 | Image P0.1 durable 管线完成                      | 专用 Images Adapter、受控落盘、引用 Artifact 与重启幂等完成；下一步 Renderer 展示                                              |
+| 2026-08-01 | Image P0.3 视觉审查闭环完成                      | 冻结选择、Runtime-only vision、多候选图片返工与达限暂停已形成有界闭环                                                          |
+| 2026-08-01 | Windows Distribution P0.2 identity 完成          | packaged 身份、safeStorage pipe secret 与两轮冷启动复用通过；安装器 smoke 仍待完成                                             |
+| 2026-08-02 | Windows Distribution P0.2 / P0.3 发布基线更新    | NSIS lifecycle smoke、normal 压缩、品牌图标与现代 production deploy 已通过；剩余签名、更新、回滚和闭测清单                     |
+| 2026-08-02 | Windows Distribution P0.3 updater 控制面完成     | Main-only 私有 feed、手动检查/下载/安装、安全投影与受控退出已接线；真实 feed、签名、差分与回滚仍待完成                         |
+| 2026-08-02 | Windows Distribution P0.3.2 loopback feed E2E    | 真实 Electron driver 已通过版本矩阵、Bearer 请求和完整 installer SHA-512 成功/失败验收；真实 HTTPS installer 安装仍待完成      |
+| 2026-08-02 | Windows Distribution P0.3.3 HTTPS/真实 NSIS 下载 | updater E2E 已切换受控 HTTPS，并通过 107,893,840 bytes 真实 installer 下载与缓存 SHA-512；下一步为真实 quitAndInstall 重启安装 |
+| 2026-08-02 | Windows Distribution P0.3.4 差分安装 E2E    | unsigned fixture 已通过真实 `quitAndInstall`、Range/206 差分传输与 Runtime/identity/SQLite 连续性；仅剩正式签名与真实 private feed 演练 |
+
+### Image P0.3（2026-08-01 更新）
+
+- [x] 图片生成结果安全落盘与 opaque 预览。
+- [x] 严格 size/quality/count 配置从 Plan 冻结到 Provider，并支持单次 1-4 个候选。
+- [x] 多候选归入单一 Artifact，并列展示且 durable 选择。
+- [x] Reviewer assignment 使用独立不可变投影冻结当前轮所选版本；未选择时 Run 可恢复暂停且零 Provider reservation。
+- [x] Runtime-only 读取所选图片并发送 vision 多模态请求；本地 contentRef/path 不进入 Provider 或 Renderer。
+- [x] reject 后图片返工归回原 Artifact、保留 parent lineage、支持再次多候选选择，并在 maxIterations 达限后暂停。
+- [ ] 使用真实图片 Provider 凭证完成最终人工交互验收，并继续优化错误提示与恢复体验。

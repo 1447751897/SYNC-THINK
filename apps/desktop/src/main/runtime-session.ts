@@ -7,6 +7,7 @@ import type {
 import type { Event, EventCategory } from '@sync-think/shared';
 import { mergeEventHistory } from '../event-history.js';
 import type { RuntimeConnectResult, RuntimeHealth } from '../runtime-bridge-contract.js';
+import { RuntimeResponseError } from './runtime-client.js';
 
 const REDACTED = '[REDACTED]';
 const SAFE_SECRET_METADATA_KEYS = new Set([
@@ -105,6 +106,7 @@ export interface RuntimeSessionClient {
 export interface RuntimeActivityCursorStore {
   load(): EventReplayCursor;
   save(cursor: EventReplayCursor): void;
+  reset?(): void;
 }
 
 const EMPTY_ACTIVITY_CURSOR_STORE: RuntimeActivityCursorStore = {
@@ -164,12 +166,7 @@ export class RuntimeSession {
         typeof persistedCursor.eventId === 'string'
           ? persistedCursor
           : { sequence: 0, eventId: '' };
-      subscription = this.client.subscribeEvents(
-        afterCursor,
-        (event) => this.recordEvent(event),
-        ACTIVITY_EVENT_CATEGORIES,
-        (cursor) => this.saveActivityCursor(cursor),
-      );
+      subscription = this.subscribeToActivityStream(afterCursor);
       this.runtimeSubscription = subscription;
     }
     try {
@@ -177,6 +174,41 @@ export class RuntimeSession {
     } catch (error) {
       if (this.runtimeSubscription === subscription) this.runtimeSubscription = null;
       throw error;
+    }
+  }
+
+  private async subscribeToActivityStream(
+    afterCursor: EventReplayCursor,
+  ): Promise<() => Promise<void>> {
+    try {
+      return await this.client.subscribeEvents(
+        afterCursor,
+        (event) => this.recordEvent(event),
+        ACTIVITY_EVENT_CATEGORIES,
+        (cursor) => this.saveActivityCursor(cursor),
+      );
+    } catch (error) {
+      const cursorIsAhead =
+        error instanceof RuntimeResponseError &&
+        error.code === 'protocol.unexpected_request' &&
+        error.message === 'Subscription cursor is ahead of the Runtime';
+      if (!cursorIsAhead || (afterCursor.sequence === 0 && afterCursor.eventId === '')) {
+        throw error;
+      }
+
+      this.eventHistory = [];
+      this.seenEventIds.clear();
+      try {
+        this.activityCursorStore.reset?.();
+      } catch {
+        console.warn('[desktop] runtime activity cursor reset failed');
+      }
+      return this.client.subscribeEvents(
+        { sequence: 0, eventId: '' },
+        (event) => this.recordEvent(event),
+        ACTIVITY_EVENT_CATEGORIES,
+        (cursor) => this.saveActivityCursor(cursor),
+      );
     }
   }
 

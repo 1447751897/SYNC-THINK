@@ -13,6 +13,10 @@
     "./conversation-context-status": {
       "types": "./dist/conversation-context-status.d.ts",
       "default": "./dist/conversation-context-status.js"
+    },
+    "./plugins": {
+      "types": "./dist/plugins.d.ts",
+      "default": "./dist/plugins.js"
     }
   },
   "scripts": {

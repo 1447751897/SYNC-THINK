@@ -30,9 +30,16 @@ function createProfileRoot(): string {
   return join(root, 'profiles');
 }
 
+let nextFakePageId = 1;
+
 class FakePage implements BrowserDriverPage {
+  readonly pageId: string;
   closed = false;
   currentUrl = 'about:blank';
+  constructor(pageId = `page-${nextFakePageId++}`) {
+    this.pageId = pageId;
+  }
+
   executeImpl: (
     action: BrowserAction,
     options: BrowserPageExecutionOptions,
@@ -235,6 +242,24 @@ describe('BrowserHost Profile sessions and Page leases', () => {
     await host.shutdown();
   });
 
+  it('inspects an active lease for ownership revalidation and rejects a closed Page', async () => {
+    const pages: FakePage[] = [];
+    const host = new BrowserHost({
+      profileRoot: createProfileRoot(),
+      sessionFactory: fakeSessionFactory({ pages }),
+    });
+    const lease = await host.acquireLease({ profileId: 'work', ownerId: 'step:2' });
+
+    await expect(host.inspectLease(lease.leaseId)).resolves.toEqual(lease);
+
+    pages[0]!.closed = true;
+    await expect(host.inspectLease(lease.leaseId)).rejects.toMatchObject({
+      code: 'browser.lease-not-found',
+      failureClass: 'crashed',
+    });
+    await host.shutdown();
+  });
+
   it('releases Pages explicitly and rejects commands for an old lease', async () => {
     const pages: FakePage[] = [];
     const host = new BrowserHost({
@@ -355,6 +380,108 @@ describe('BrowserHost Profile sessions and Page leases', () => {
     ).rejects.toMatchObject({ code: 'browser.profile-path-invalid', failureClass: 'permission' });
     expect(launches).toEqual([]);
     await host.shutdown();
+  });
+
+  it('preserves a live Page on shutdown and recovers the exact durable lease in a new Host', async () => {
+    const profileRoot = createProfileRoot();
+    const pages: FakePage[] = [];
+    const closes: Array<{ preserve?: boolean } | undefined> = [];
+    const recoverOnlyCalls: Array<boolean | undefined> = [];
+    const factory: BrowserSessionFactory = async (input) => ({
+      browserKind: 'edge',
+      executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+      profileDirectory: input.profileDirectory,
+      cdpEndpoint: 'http://127.0.0.1:43123',
+      isConnected: () => true,
+      newPage: async () => {
+        const page = new FakePage('target-page-1');
+        pages.push(page);
+        return page;
+      },
+      findPage: async (pageId) => pages.find((page) => page.pageId === pageId && !page.closed),
+      close: vi.fn(async (options) => {
+        closes.push(options);
+      }),
+    });
+
+    const firstHost = new BrowserHost({ profileRoot, sessionFactory: factory });
+    const checkpoint = await firstHost.acquireLease({
+      profileId: 'work',
+      ownerId: 'conversation:1',
+    });
+    expect(checkpoint.pageId).toBe('target-page-1');
+    await firstHost.shutdown({ preserveSessions: true });
+    expect(pages[0]?.closed).toBe(false);
+    expect(closes).toEqual([{ preserve: true }]);
+
+    const secondHost = new BrowserHost({
+      profileRoot,
+      sessionFactory: async (input) => {
+        recoverOnlyCalls.push(input.recoverOnly);
+        return factory(input);
+      },
+    });
+    const [firstRecovery, concurrentRecovery] = await Promise.all([
+      secondHost.recoverLease(checkpoint),
+      secondHost.recoverLease(checkpoint),
+    ]);
+    expect(firstRecovery).toEqual(checkpoint);
+    expect(concurrentRecovery).toEqual(checkpoint);
+    await expect(secondHost.inspectLease(checkpoint.leaseId)).resolves.toEqual(checkpoint);
+    expect(recoverOnlyCalls).toEqual([true]);
+
+    await secondHost.shutdown();
+    expect(pages[0]?.closed).toBe(true);
+    expect(closes).toEqual([{ preserve: true }, { preserve: false }]);
+  });
+
+  it('refuses recovery when the exact target Page is missing or identity conflicts', async () => {
+    const host = new BrowserHost({
+      profileRoot: createProfileRoot(),
+      sessionFactory: async (input) => ({
+        browserKind: 'edge',
+        executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+        profileDirectory: input.profileDirectory,
+        cdpEndpoint: 'http://127.0.0.1:43123',
+        isConnected: () => true,
+        newPage: async () => new FakePage(),
+        findPage: async () => undefined,
+        close: vi.fn(async () => undefined),
+      }),
+    });
+    const missing = {
+      leaseId: 'lease-persisted',
+      pageId: 'target-missing',
+      profileId: 'work',
+      ownerId: 'conversation:1',
+    };
+    await expect(host.recoverLease(missing)).rejects.toMatchObject({
+      code: 'browser.lease-not-found',
+    });
+    await host.shutdown();
+
+    const page = new FakePage('target-existing');
+    const conflictingHost = new BrowserHost({
+      profileRoot: createProfileRoot(),
+      sessionFactory: async (input) => ({
+        browserKind: 'edge',
+        executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+        profileDirectory: input.profileDirectory,
+        cdpEndpoint: 'http://127.0.0.1:43123',
+        isConnected: () => true,
+        newPage: async () => page,
+        findPage: async () => page,
+        close: vi.fn(async () => undefined),
+      }),
+    });
+    await conflictingHost.recoverLease({ ...missing, pageId: page.pageId });
+    await expect(
+      conflictingHost.recoverLease({ ...missing, pageId: page.pageId, ownerId: 'conversation:2' }),
+    ).rejects.toMatchObject({ code: 'browser.lease-identity-mismatch' });
+    await expect(
+      conflictingHost.recoverLease({ ...missing, leaseId: 'lease-other', pageId: page.pageId }),
+    ).rejects.toMatchObject({ code: 'browser.lease-identity-mismatch' });
+    await conflictingHost.shutdown();
   });
 
   it('bounds action inputs and classifies timeout and Page crash errors', async () => {

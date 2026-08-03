@@ -5,4 +5,5 @@ export * from './commands.js';
 export * from './skill-selection.js';
 export * from './conversation-context-status.js';
 export * from './events.js';
+export * from './plugins.js';
 export * from './pipe.js';

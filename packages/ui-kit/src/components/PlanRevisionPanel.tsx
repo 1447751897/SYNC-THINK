@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { PlanRevision, PlanStepDraft } from '@sync-think/shared';
+import {
+  DEFAULT_IMAGE_GENERATION_CONFIG,
+  IMAGE_GENERATION_COUNTS,
+  IMAGE_GENERATION_QUALITIES,
+  IMAGE_GENERATION_SIZES,
+  type PlanRevision,
+  type PlanStepDraft,
+} from '@sync-think/shared';
 import { Check, ChevronRight, Clock3, GitCompareArrows, Plus, Save, Trash2 } from 'lucide-react';
 
 export interface PlanReviseInput {
@@ -31,7 +38,11 @@ const STATE_LABEL: Record<PlanRevision['state'], string> = {
 };
 
 function cloneSteps(steps: readonly PlanStepDraft[]): PlanStepDraft[] {
-  return steps.map((step) => ({ ...step, dependsOn: [...step.dependsOn] }));
+  return steps.map((step) => ({
+    ...step,
+    ...(step.imageGeneration ? { imageGeneration: { ...step.imageGeneration } } : {}),
+    dependsOn: [...step.dependsOn],
+  }));
 }
 
 function nextStepId(steps: readonly PlanStepDraft[]): string {
@@ -49,6 +60,7 @@ function normalizedSteps(steps: readonly PlanStepDraft[]) {
     instructions: step.instructions,
     agentVersionId: String(step.agentVersionId),
     modelOverrideId: step.modelOverrideId ? String(step.modelOverrideId) : null,
+    imageGeneration: step.imageGeneration ? { ...step.imageGeneration } : null,
     dependsOn: step.dependsOn.map(String),
   }));
 }
@@ -92,13 +104,21 @@ export function PlanRevisionPanel({
         String(step.agentVersionId).trim().length > 0 &&
         dependencies.every((dependency) => dependency !== id && stepIds.has(dependency)) &&
         new Set(dependencies).size === dependencies.length &&
-        ((step.kind ?? 'execution') !== 'merge' || dependencies.length >= 2)
+        ((step.kind ?? 'execution') !== 'merge' ||
+          (dependencies.length >= 2 && step.imageGeneration === undefined))
       );
     });
 
   const updateStep = (index: number, patch: Partial<PlanStepDraft>) => {
     setSteps((current) =>
-      current.map((step, stepIndex) => (stepIndex === index ? { ...step, ...patch } : step)),
+      current.map((step, stepIndex) => {
+        if (stepIndex !== index) return step;
+        const updated = { ...step, ...patch };
+        if ('imageGeneration' in patch && patch.imageGeneration === undefined) {
+          delete updated.imageGeneration;
+        }
+        return updated;
+      }),
     );
   };
 
@@ -234,6 +254,7 @@ export function PlanRevisionPanel({
                       onChange={(event) =>
                         updateStep(index, {
                           kind: event.target.value as NonNullable<PlanStepDraft['kind']>,
+                          ...(event.target.value === 'merge' ? { imageGeneration: undefined } : {}),
                         })
                       }
                     >
@@ -241,6 +262,93 @@ export function PlanRevisionPanel({
                       <option value="merge">合并</option>
                     </select>
                   </label>
+                  {(step.kind ?? 'execution') === 'execution' ? (
+                    <>
+                      <label className="st-plan__field">
+                        <span>图片生成</span>
+                        <select
+                          aria-label={`步骤 ${index + 1} 图片生成`}
+                          value={step.imageGeneration ? 'enabled' : 'disabled'}
+                          disabled={!editable || busy}
+                          onChange={(event) =>
+                            updateStep(index, {
+                              imageGeneration:
+                                event.target.value === 'enabled'
+                                  ? { ...DEFAULT_IMAGE_GENERATION_CONFIG }
+                                  : undefined,
+                            })
+                          }
+                        >
+                          <option value="disabled">关闭</option>
+                          <option value="enabled">启用</option>
+                        </select>
+                      </label>
+                      {step.imageGeneration ? (
+                        <>
+                          <label className="st-plan__field">
+                            <span>图片尺寸</span>
+                            <select
+                              aria-label={`步骤 ${index + 1} 图片尺寸`}
+                              value={step.imageGeneration.size}
+                              disabled={!editable || busy}
+                              onChange={(event) =>
+                                updateStep(index, {
+                                  imageGeneration: {
+                                    ...step.imageGeneration!,
+                                    size: event.target.value as typeof step.imageGeneration.size,
+                                  },
+                                })
+                              }
+                            >
+                              {IMAGE_GENERATION_SIZES.map((size) => (
+                                <option key={size} value={size}>{size}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="st-plan__field">
+                            <span>图片质量</span>
+                            <select
+                              aria-label={`步骤 ${index + 1} 图片质量`}
+                              value={step.imageGeneration.quality}
+                              disabled={!editable || busy}
+                              onChange={(event) =>
+                                updateStep(index, {
+                                  imageGeneration: {
+                                    ...step.imageGeneration!,
+                                    quality: event.target.value as typeof step.imageGeneration.quality,
+                                  },
+                                })
+                              }
+                            >
+                              {IMAGE_GENERATION_QUALITIES.map((quality) => (
+                                <option key={quality} value={quality}>{quality}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="st-plan__field">
+                            <span>候选数量</span>
+                            <select
+                              aria-label={`步骤 ${index + 1} 候选数量`}
+                              value={step.imageGeneration.count}
+                              disabled={!editable || busy}
+                              onChange={(event) =>
+                                updateStep(index, {
+                                  imageGeneration: {
+                                    ...step.imageGeneration!,
+                                    count: Number(event.target.value) as typeof step.imageGeneration.count,
+                                  },
+                                })
+                              }
+                            >
+                              {IMAGE_GENERATION_COUNTS.map((count) => (
+                                <option key={count} value={count}>{count}</option>
+                              ))}
+                            </select>
+                          </label>
+                        </>
+                      ) : null}
+                    </>
+                  ) : null}
                   <label className="st-plan__field st-plan__field--wide">
                     <span>指令</span>
                     <textarea

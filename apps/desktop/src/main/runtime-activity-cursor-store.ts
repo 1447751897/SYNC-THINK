@@ -52,9 +52,17 @@ export class FileRuntimeActivityCursorStore implements RuntimeActivityCursorStor
     if (!next) return;
     const current = this.load();
     if (compareCursors(next, current) <= 0) return;
+    this.persist(next);
+  }
+
+  reset(): void {
+    this.persist({ sequence: 0, eventId: '' });
+  }
+
+  private persist(cursor: EventReplayCursor): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
     const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
-    const serialized = JSON.stringify(next);
+    const serialized = JSON.stringify(cursor);
     writeFileSync(temporaryPath, serialized, 'utf8');
     try {
       renameSync(temporaryPath, this.filePath);
@@ -62,6 +70,6 @@ export class FileRuntimeActivityCursorStore implements RuntimeActivityCursorStor
       writeFileSync(this.filePath, serialized, 'utf8');
       rmSync(temporaryPath, { force: true });
     }
-    this.cursor = next;
+    this.cursor = cursor;
   }
 }

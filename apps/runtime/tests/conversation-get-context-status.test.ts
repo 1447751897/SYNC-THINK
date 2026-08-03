@@ -438,6 +438,54 @@ function expectedSectionsFromProviderRequest(request: ProviderCallRequest) {
 }
 
 describe('conversation.getContextStatus runtime integration', () => {
+  it('uses task-indexed history for context status and compact maintenance', async () => {
+    const harness = await createHarness(200);
+    const listTaskEvents = vi.spyOn(harness.stateStore, 'listEventsByTask');
+    const listAllEvents = vi
+      .spyOn(harness.stateStore, 'listAllEvents')
+      .mockImplementation(() => {
+        throw new Error('global event history must not be materialized');
+      });
+    try {
+      const status = await getContextStatus(harness, 'task-indexed-status');
+      expect(status.modelId).toBeDefined();
+
+      let taskVersion = await appendUserMessage(
+        harness,
+        'task-indexed-compact-one-' + 'x'.repeat(1_000),
+        0,
+        'task-indexed-append-one',
+        [],
+      );
+      taskVersion = await appendUserMessage(
+        harness,
+        'task-indexed-compact-two-' + 'y'.repeat(1_000),
+        taskVersion,
+        'task-indexed-append-two',
+        [],
+      );
+      expect(taskVersion).toBe(2);
+
+      const compact = await harness.inbox.send({
+        id: 'task-indexed-compact',
+        kind: 'request',
+        type: 'conversation.compact',
+        payload: {
+          conversationId: harness.conversationId,
+          mode: 'manual',
+          keepRecent: 1,
+        },
+      });
+      expect(compact.error).toBeUndefined();
+      expect(listTaskEvents).toHaveBeenCalledWith(harness.taskId);
+      expect(listAllEvents).not.toHaveBeenCalled();
+    } finally {
+      listTaskEvents.mockRestore();
+      listAllEvents.mockRestore();
+      await closeHarness(harness);
+    }
+  });
+
   it('does not load Skill bodies for status, peek, or compact maintenance paths', async () => {
     const harness = await createHarness(200);
     const getVersion = vi.spyOn(harness.skillStore, 'getVersion');

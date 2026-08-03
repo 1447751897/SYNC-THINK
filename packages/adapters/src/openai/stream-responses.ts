@@ -212,15 +212,38 @@ function extractToolCalls(response: unknown): ProviderToolCall[] {
   return calls;
 }
 
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 function usageEvent(response: unknown): AdapterEvent | undefined {
   if (!response || typeof response !== 'object') return undefined;
   const usage = (response as { usage?: unknown }).usage;
   if (!usage || typeof usage !== 'object') return undefined;
-  const typed = usage as { input_tokens?: unknown; output_tokens?: unknown };
+  const typed = usage as {
+    input_tokens?: unknown;
+    output_tokens?: unknown;
+    total_tokens?: unknown;
+    input_tokens_details?: {
+      cached_tokens?: unknown;
+      cache_write_tokens?: unknown;
+    };
+    output_tokens_details?: { reasoning_tokens?: unknown };
+  };
+  const cachedTokensHit = nonNegativeNumber(typed.input_tokens_details?.cached_tokens);
+  const cachedTokensCreated = nonNegativeNumber(
+    typed.input_tokens_details?.cache_write_tokens,
+  );
+  const reasoningTokens = nonNegativeNumber(typed.output_tokens_details?.reasoning_tokens);
+  const totalTokens = nonNegativeNumber(typed.total_tokens);
   return {
     type: 'usage',
-    tokensIn: typeof typed.input_tokens === 'number' ? typed.input_tokens : 0,
-    tokensOut: typeof typed.output_tokens === 'number' ? typed.output_tokens : 0,
+    tokensIn: nonNegativeNumber(typed.input_tokens) ?? 0,
+    tokensOut: nonNegativeNumber(typed.output_tokens) ?? 0,
+    ...(cachedTokensHit !== undefined ? { cachedTokensHit } : {}),
+    ...(cachedTokensCreated !== undefined ? { cachedTokensCreated } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
   };
 }
 
@@ -412,6 +435,8 @@ export async function* streamOpenAIResponses(
   if (instructions) body.instructions = instructions;
   if (request.maxOutputTokens !== undefined) body.max_output_tokens = request.maxOutputTokens;
   if (request.temperature !== undefined) body.temperature = request.temperature;
+  if (request.promptCache?.key?.trim()) body.prompt_cache_key = request.promptCache.key.trim();
+  if (request.promptCache?.retention) body.prompt_cache_retention = request.promptCache.retention;
   // Responses API uses nested `reasoning` config (o-series / gpt-5); the flat
   // chat-completions style `reasoning_effort` / `enable_thinking` is rejected.
   {

@@ -52,6 +52,8 @@ import type {
   ConversationGetRunProcessResponse,
   ConversationListMessagesResponse,
   ConversationTransientFrame,
+  BrowserHandoffSummary,
+  DesktopWaitingCommandSummary,
   ConversationTransientSnapshot,
   RunProcessView,
   WorkspaceSummary,
@@ -59,6 +61,8 @@ import type {
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
+import { BrowserHandoffCard, BrowserHandoffQueryError } from './BrowserHandoffCard.js';
+import { DesktopWaitingCard, DesktopWaitingQueryError } from './DesktopWaitingCard.js';
 import { RightDock } from './RightDock.js';
 import type { ModelOption } from './NewConversationDialog.js';
 import {
@@ -126,6 +130,9 @@ import { executeBrowserCommand } from './browser-commands.js';
 import {
   applyConversationStreamOperations,
   collectConversationStreamBatch,
+  isRunTerminalEventType,
+  projectConversationRunActivity,
+  selectLatestRunPauseNotice,
   type ConversationStreamDraft,
 } from './chat-stream.js';
 import { applyTransientConversationFrames } from './chat-transient-stream.js';
@@ -167,9 +174,8 @@ export function messageToChat(msg: Message): ChatMessage {
   const textBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'text');
   const text = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
   const imageBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'image');
-  const terminalPayload = (
-    msg.blocks.find((block: MessageBlock) => block.type === 'error')?.payload ?? {}
-  ) as Record<string, unknown>;
+  const terminalPayload = (msg.blocks.find((block: MessageBlock) => block.type === 'error')
+    ?.payload ?? {}) as Record<string, unknown>;
   const terminalState =
     terminalPayload.terminalState === 'failed' || terminalPayload.terminalState === 'cancelled'
       ? terminalPayload.terminalState
@@ -200,9 +206,7 @@ export function messageToChat(msg: Message): ChatMessage {
     runId: msg.runId ? String(msg.runId) : undefined,
     terminalState,
     terminalError:
-      typeof terminalPayload.errorMessage === 'string'
-        ? terminalPayload.errorMessage
-        : undefined,
+      typeof terminalPayload.errorMessage === 'string' ? terminalPayload.errorMessage : undefined,
     // sequence carried via id ordering; globalAgent fields are not in the store Message model
     // but could be enriched later if needed.
   };
@@ -244,6 +248,8 @@ interface ChatViewProps {
   workspaces?: readonly WorkspaceSummary[];
   /** Shell-level durable event history (connect snapshot + live events). */
   eventHistory: readonly Event[];
+  /** Increments after every Runtime connect/reconnect so durable UI state is re-queried. */
+  runtimeConnectionRevision?: number;
   onTitleUpdated: (title: string) => void;
   /** Fired after permission mode is persisted so the shell can refresh the conversation list. */
   onConversationUpdated?: () => void;
@@ -282,6 +288,7 @@ export function ChatView({
   teams = [],
   workspaces = [],
   eventHistory,
+  runtimeConnectionRevision = 0,
   onTitleUpdated,
   onConversationUpdated,
   initialSkillVersionIds,
@@ -521,6 +528,16 @@ export function ChatView({
     setSending(false);
     setPendingUserMessages([]);
     setLocalErrors([]);
+    browserHandoffLoadGenerationRef.current += 1;
+    setBrowserHandoffs([]);
+    setBrowserHandoffStatus('idle');
+    setBrowserHandoffError(undefined);
+    setBusyBrowserHandoffId(undefined);
+    desktopWaitingLoadGenerationRef.current += 1;
+    setDesktopWaitingCommands([]);
+    setDesktopWaitingStatus('idle');
+    setDesktopWaitingError(undefined);
+    setBusyDesktopCommandId(undefined);
     setLoadedMessages([]);
     setRunProcessById(new Map());
     inFlightRunProcessesRef.current.clear();
@@ -665,8 +682,7 @@ export function ChatView({
           if (cursor !== undefined) {
             loadingMoreRef.current = false;
             setLoadingMore(false);
-          }
-          else setInitialLoaded(true);
+          } else setInitialLoaded(true);
         }
       }
     },
@@ -702,44 +718,231 @@ export function ChatView({
 
   // Lightweight streaming/activeRunId detection from eventHistory.
   // This only scans run lifecycle events (O(n) but no message text building).
-  const projected = useMemo(() => {
-    if (!threadId) {
-      return { streaming: false, activeRunId: undefined as string | undefined };
-    }
-    const startedRuns = new Set<string>();
-    const endedRuns = new Set<string>();
+  const [browserHandoffs, setBrowserHandoffs] = useState<BrowserHandoffSummary[]>([]);
+  const [browserHandoffStatus, setBrowserHandoffStatus] = useState<
+    'idle' | 'loading' | 'ready' | 'error'
+  >('idle');
+  const [browserHandoffError, setBrowserHandoffError] = useState<string | undefined>();
+  const [busyBrowserHandoffId, setBusyBrowserHandoffId] = useState<string | undefined>();
+  const browserHandoffLoadGenerationRef = useRef(0);
+  const [desktopWaitingCommands, setDesktopWaitingCommands] = useState<
+    DesktopWaitingCommandSummary[]
+  >([]);
+  const [desktopWaitingStatus, setDesktopWaitingStatus] = useState<
+    'idle' | 'loading' | 'ready' | 'error'
+  >('idle');
+  const [desktopWaitingError, setDesktopWaitingError] = useState<string | undefined>();
+  const [busyDesktopCommandId, setBusyDesktopCommandId] = useState<string | undefined>();
+  const desktopWaitingLoadGenerationRef = useRef(0);
+
+  const projected = useMemo(
+    () =>
+      threadId
+        ? projectConversationRunActivity({
+            events: eventHistory,
+            threadId,
+            taskId: conversation.taskId ? String(conversation.taskId) : undefined,
+          })
+        : { streaming: false, activeRunId: undefined },
+    [conversation.taskId, eventHistory, threadId],
+  );
+
+  const pausedRunNotice = useMemo(
+    () =>
+      threadId
+        ? selectLatestRunPauseNotice({
+            events: eventHistory,
+            threadId,
+            taskId: conversation.taskId ? String(conversation.taskId) : undefined,
+          })
+        : undefined,
+    [conversation.taskId, eventHistory, threadId],
+  );
+
+  const browserHandoffLifecycleRevision = useMemo(() => {
+    let revision = 0;
     for (const event of eventHistory) {
-      const eventThread =
-        typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
-      if (eventThread && eventThread !== threadId) continue;
+      if (conversation.workspaceId && event.workspaceId !== conversation.workspaceId) continue;
+      if (projected.activeRunId && event.runId && event.runId !== projected.activeRunId) continue;
+      const isLifecycleEvent =
+        event.type === 'browser.handoff.continued' || event.type === 'browser.handoff.cancelled';
+      const isExplicitWaitingEvent =
+        event.type === 'approval.requested' && event.payload.action === 'browser.handoff';
+      const isOrchestrationWaitingEvent =
+        event.type === 'step.awaitingApproval' || event.type === 'run.awaitingToolApproval';
+      if (isLifecycleEvent || isExplicitWaitingEvent || isOrchestrationWaitingEvent) {
+        revision = Math.max(revision, event.sequence);
+      }
+    }
+    return revision;
+  }, [conversation.workspaceId, eventHistory, projected.activeRunId]);
+
+  const desktopWaitingLifecycleRevision = useMemo(() => {
+    let revision = 0;
+    for (const event of eventHistory) {
       if (
-        !eventThread &&
-        conversation.taskId &&
-        event.taskId &&
-        event.taskId !== conversation.taskId
+        event.type !== 'desktop.command.waiting_user' &&
+        event.type !== 'desktop.command.continued' &&
+        event.type !== 'desktop.command.cancelled'
       ) {
         continue;
       }
-      if (event.type === 'run.started' && event.runId) {
-        startedRuns.add(event.runId);
-      } else if (
-        (event.type === 'run.completed' ||
-          event.type === 'run.failed' ||
-          event.type === 'run.cancelled') &&
-        event.runId
-      ) {
-        endedRuns.add(event.runId);
-      }
+      if (conversation.workspaceId && event.workspaceId !== conversation.workspaceId) continue;
+      if (projected.activeRunId && event.runId && event.runId !== projected.activeRunId) continue;
+      revision = Math.max(revision, event.sequence);
     }
-    // Active run = started but not ended.
-    let activeRunId: string | undefined;
-    for (const rid of startedRuns) {
-      if (!endedRuns.has(rid)) {
-        activeRunId = rid;
-      }
+    return revision;
+  }, [conversation.workspaceId, eventHistory, projected.activeRunId]);
+
+  const refreshDesktopWaitingCommands = useCallback(async (showLoading = true) => {
+    const api = bridge();
+    const workspaceId = conversation.workspaceId;
+    const taskId = conversation.taskId;
+    const runId = projected.activeRunId;
+    if (!api?.listWaitingDesktopCommands || !workspaceId || !taskId || !threadId) {
+      desktopWaitingLoadGenerationRef.current += 1;
+      setDesktopWaitingCommands([]);
+      setDesktopWaitingStatus('idle');
+      setDesktopWaitingError(undefined);
+      return;
     }
-    return { streaming: Boolean(activeRunId), activeRunId };
-  }, [conversation.taskId, eventHistory, threadId]);
+    const generation = (desktopWaitingLoadGenerationRef.current += 1);
+    if (showLoading) setDesktopWaitingStatus('loading');
+    setDesktopWaitingError(undefined);
+    try {
+      const response = await api.listWaitingDesktopCommands({
+        workspaceId,
+        ...(runId ? { runId: runId as RunId } : {}),
+      });
+      if (desktopWaitingLoadGenerationRef.current !== generation) return;
+      setDesktopWaitingCommands(
+        response.commands.filter(
+          (command) =>
+            command.workspaceId === workspaceId &&
+            command.taskId === taskId &&
+            (!runId || command.runId === runId),
+        ),
+      );
+      setDesktopWaitingStatus('ready');
+    } catch {
+      if (desktopWaitingLoadGenerationRef.current !== generation) return;
+      setDesktopWaitingStatus('error');
+    }
+  }, [conversation.taskId, conversation.workspaceId, projected.activeRunId, threadId]);
+
+  useEffect(() => {
+    void refreshDesktopWaitingCommands();
+  }, [desktopWaitingLifecycleRevision, refreshDesktopWaitingCommands, runtimeConnectionRevision]);
+
+  const decideDesktopCommand = useCallback(
+    async (command: DesktopWaitingCommandSummary, decision: 'continue' | 'cancel') => {
+      const api = bridge();
+      if (busyDesktopCommandId || !api?.continueDesktopCommand || !api.cancelDesktopCommand) {
+        return;
+      }
+      setBusyDesktopCommandId(command.commandId);
+      setDesktopWaitingError(undefined);
+      try {
+        if (decision === 'continue') {
+          await api.continueDesktopCommand({
+            commandId: command.commandId,
+            expectedUpdatedAt: command.updatedAt,
+          });
+        } else {
+          await api.cancelDesktopCommand({
+            commandId: command.commandId,
+            expectedUpdatedAt: command.updatedAt,
+          });
+        }
+        await refreshDesktopWaitingCommands(false);
+      } catch {
+        await refreshDesktopWaitingCommands(false);
+        setDesktopWaitingError(
+          '操作未生效，桌面等待状态可能已在其他窗口改变。请刷新状态后重试。',
+        );
+      } finally {
+        setBusyDesktopCommandId(undefined);
+      }
+    },
+    [busyDesktopCommandId, refreshDesktopWaitingCommands],
+  );
+
+  const refreshBrowserHandoffs = useCallback(
+    async (showLoading = true) => {
+      const api = bridge();
+      const workspaceId = conversation.workspaceId;
+      const taskId = conversation.taskId;
+      const runId = projected.activeRunId;
+      if (!api?.listWaitingBrowserHandoffs || !workspaceId || !taskId || !threadId) {
+        browserHandoffLoadGenerationRef.current += 1;
+        setBrowserHandoffs([]);
+        setBrowserHandoffStatus('idle');
+        setBrowserHandoffError(undefined);
+        return;
+      }
+      const generation = (browserHandoffLoadGenerationRef.current += 1);
+      if (showLoading) setBrowserHandoffStatus('loading');
+      setBrowserHandoffError(undefined);
+      try {
+        const response = await api.listWaitingBrowserHandoffs({
+          workspaceId,
+          ...(runId ? { runId: runId as RunId } : {}),
+        });
+        if (browserHandoffLoadGenerationRef.current !== generation) return;
+        setBrowserHandoffs(
+          response.handoffs.filter(
+            (handoff) =>
+              handoff.workspaceId === workspaceId &&
+              handoff.taskId === taskId &&
+              (!runId || handoff.runId === runId),
+          ),
+        );
+        setBrowserHandoffStatus('ready');
+      } catch {
+        if (browserHandoffLoadGenerationRef.current !== generation) return;
+        setBrowserHandoffStatus('error');
+      }
+    },
+    [conversation.taskId, conversation.workspaceId, projected.activeRunId, threadId],
+  );
+
+  useEffect(() => {
+    void refreshBrowserHandoffs();
+  }, [browserHandoffLifecycleRevision, refreshBrowserHandoffs, runtimeConnectionRevision]);
+
+  const decideBrowserHandoff = useCallback(
+    async (handoff: BrowserHandoffSummary, decision: 'continue' | 'cancel') => {
+      const api = bridge();
+      if (busyBrowserHandoffId || !api?.continueBrowserHandoff || !api.cancelBrowserHandoff) {
+        return;
+      }
+      setBusyBrowserHandoffId(handoff.handoffId);
+      setBrowserHandoffError(undefined);
+      try {
+        if (decision === 'continue') {
+          await api.continueBrowserHandoff({
+            handoffId: handoff.handoffId,
+            expectedRevision: handoff.revision,
+          });
+        } else {
+          await api.cancelBrowserHandoff({
+            handoffId: handoff.handoffId,
+            expectedRevision: handoff.revision,
+            leaseDisposition: handoff.onCancel === 'close-page' ? 'release' : 'preserve',
+          });
+        }
+        await refreshBrowserHandoffs(false);
+      } catch {
+        await refreshBrowserHandoffs(false);
+        setBrowserHandoffError(
+          '\u64cd\u4f5c\u672a\u751f\u6548\uff0c\u63a5\u7ba1\u72b6\u6001\u53ef\u80fd\u5df2\u5728\u5176\u4ed6\u7a97\u53e3\u6539\u53d8\u3002\u8bf7\u5237\u65b0\u72b6\u6001\u540e\u91cd\u8bd5\u3002',
+        );
+      } finally {
+        setBusyBrowserHandoffId(undefined);
+      }
+    },
+    [busyBrowserHandoffId, refreshBrowserHandoffs],
+  );
 
   // Primary S2 streaming path: subscribe only to the currently opened thread.
   // Replay/live frames use a thread-local cursor and never enter global eventHistory.
@@ -774,12 +977,15 @@ export function ChatView({
             transientFallbackOnlyRef.current = false;
             transientStreamHealthyRef.current = true;
             if (event.snapshot.process) updateRunProcess(event.snapshot.process);
-            renderTransientDraft({
-              runId: event.snapshot.runId,
-              text: event.snapshot.text,
-              reasoningText: event.snapshot.reasoningText,
-              timestamp: event.snapshot.updatedAt,
-            }, latestStreamSequence);
+            renderTransientDraft(
+              {
+                runId: event.snapshot.runId,
+                text: event.snapshot.text,
+                reasoningText: event.snapshot.reasoningText,
+                timestamp: event.snapshot.updatedAt,
+              },
+              latestStreamSequence,
+            );
           } else {
             transientFallbackOnlyRef.current = false;
             transientStreamHealthyRef.current = true;
@@ -964,11 +1170,7 @@ export function ChatView({
               ? event.payload.decision
               : existing.decided;
         }
-      } else if (
-        event.type === 'run.cancelled' ||
-        event.type === 'run.failed' ||
-        event.type === 'run.completed'
-      ) {
+      } else if (isRunTerminalEventType(event.type)) {
         if (event.runId) endedRuns.add(event.runId);
       }
     }
@@ -1095,14 +1297,28 @@ export function ChatView({
       stamped.push({ value: streamingMessage, seq: nextVirtualSeq++, tie: 20_000 });
     }
 
-    // Local errors last.
+    // Local errors and the latest durable pause notice render after the live turn.
     for (let i = 0; i < localErrors.length; i++) {
       stamped.push({ value: localErrors[i]!, seq: nextVirtualSeq++, tie: 30_000 + i });
+    }
+    if (pausedRunNotice) {
+      stamped.push({
+        value: {
+          id: pausedRunNotice.id,
+          role: 'system',
+          tone: pausedRunNotice.tone,
+          text: pausedRunNotice.text,
+          timestamp: pausedRunNotice.timestamp,
+          runId: pausedRunNotice.runId,
+        },
+        seq: nextVirtualSeq++,
+        tie: 40_000,
+      });
     }
 
     stamped.sort((a, b) => (a.seq !== b.seq ? a.seq - b.seq : a.tie - b.tie));
     return stamped.map((s) => s.value);
-  }, [localErrors, loadedMessages, pendingUserMessages, streamingMessage]);
+  }, [localErrors, loadedMessages, pausedRunNotice, pendingUserMessages, streamingMessage]);
 
   // Keep every fetched durable message mounted. History is still paginated in
   // 50-message pages, but native scrolling must not compete with virtual spacer
@@ -1113,8 +1329,18 @@ export function ChatView({
     result.push(...pendingUserMessages);
     if (streamingMessage) result.push(streamingMessage);
     result.push(...localErrors);
+    if (pausedRunNotice) {
+      result.push({
+        id: pausedRunNotice.id,
+        role: 'system',
+        tone: pausedRunNotice.tone,
+        text: pausedRunNotice.text,
+        timestamp: pausedRunNotice.timestamp,
+        runId: pausedRunNotice.runId,
+      });
+    }
     return result;
-  }, [localErrors, pendingUserMessages, streamingMessage]);
+  }, [localErrors, pausedRunNotice, pendingUserMessages, streamingMessage]);
 
   const capturePrependAnchor = useCallback((scroller: HTMLDivElement) => {
     const viewportTop = scroller.getBoundingClientRect().top;
@@ -1140,7 +1366,8 @@ export function ChatView({
           currentUserScrollRevision: userScrollRevisionRef.current,
           hasAnchor: true,
         })
-      ) return;
+      )
+        return;
       const nodes = scroller.querySelectorAll<HTMLElement>('[data-message-id]');
       const node = Array.from(nodes).find((candidate) => candidate.dataset.messageId === anchor.id);
       if (!node) return;
@@ -2168,7 +2395,8 @@ export function ChatView({
     for (const event of ordered) {
       if (
         event.type !== 'run.started' &&
-        event.type !== 'run.completed' &&
+        event.type !== 'run.fallback.selected' &&
+        !isRunTerminalEventType(event.type) &&
         event.type !== 'provider.usage'
       ) {
         continue;
@@ -2299,12 +2527,7 @@ export function ChatView({
           firstStart = firstStart === undefined ? t : Math.min(firstStart, t);
         }
       }
-      if (
-        event.type === 'run.completed' ||
-        event.type === 'run.failed' ||
-        event.type === 'run.cancelled' ||
-        event.type === 'provider.usage'
-      ) {
+      if (isRunTerminalEventType(event.type) || event.type === 'provider.usage') {
         const t = Date.parse(event.occurredAt);
         if (Number.isFinite(t)) {
           lastEnd = lastEnd === undefined ? t : Math.max(lastEnd, t);
@@ -2371,11 +2594,7 @@ export function ChatView({
           targetRef,
         });
         setSelectedSkillVersionIds(
-          resolveDefaultComposeSkillVersionIds(
-            { track: option.track, targetRef },
-            agents,
-            teams,
-          ),
+          resolveDefaultComposeSkillVersionIds({ track: option.track, targetRef }, agents, teams),
         );
         onConversationUpdated?.();
       } catch {
@@ -2541,8 +2760,7 @@ export function ChatView({
           onWheel={(event) => {
             if (event.deltaY !== 0) {
               userScrollRevisionRef.current += 1;
-              bottomPinIntentRef.current =
-                event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
+              bottomPinIntentRef.current = event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
               // Release the pin during the gesture itself. Waiting for the
               // native scroll event lets a streaming render run first and
               // snap the viewport back to the bottom, perceived as jitter.
@@ -2573,11 +2791,7 @@ export function ChatView({
             if (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End') {
               userScrollRevisionRef.current += 1;
               bottomPinIntentRef.current = 'toward-bottom';
-            } else if (
-              event.key === 'ArrowUp' ||
-              event.key === 'PageUp' ||
-              event.key === 'Home'
-            ) {
+            } else if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
               userScrollRevisionRef.current += 1;
               bottomPinIntentRef.current = 'away-from-bottom';
               stickToBottomRef.current = false;
@@ -2653,7 +2867,7 @@ export function ChatView({
               <div
                 key={msg.id}
                 data-message-id={msg.id}
-                className="pb-6"
+                className="shell-message-window-item pb-6"
               >
                 <MessageBubble
                   message={msg}
@@ -2702,6 +2916,46 @@ export function ChatView({
         {/* ─── Compose (NewMax-style) ─────────────────────────────────── */}
         <div className="shell-chat-content-wrap shrink-0 pb-4 pt-2">
           <div className="shell-chat-content mx-auto">
+            {desktopWaitingStatus === 'error' && desktopWaitingCommands.length === 0 ? (
+              <DesktopWaitingQueryError
+                busy={false}
+                onRetry={() => void refreshDesktopWaitingCommands()}
+              />
+            ) : null}
+            {desktopWaitingCommands.map((command) => (
+              <DesktopWaitingCard
+                key={command.commandId}
+                command={command}
+                busy={busyDesktopCommandId === command.commandId}
+                error={
+                  desktopWaitingError && busyDesktopCommandId === undefined
+                    ? desktopWaitingError
+                    : undefined
+                }
+                onContinue={() => void decideDesktopCommand(command, 'continue')}
+                onCancel={() => void decideDesktopCommand(command, 'cancel')}
+              />
+            ))}
+            {browserHandoffStatus === 'error' && browserHandoffs.length === 0 ? (
+              <BrowserHandoffQueryError
+                busy={false}
+                onRetry={() => void refreshBrowserHandoffs()}
+              />
+            ) : null}
+            {browserHandoffs.map((handoff) => (
+              <BrowserHandoffCard
+                key={handoff.handoffId}
+                handoff={handoff}
+                busy={busyBrowserHandoffId === handoff.handoffId}
+                error={
+                  browserHandoffError && busyBrowserHandoffId === undefined
+                    ? browserHandoffError
+                    : undefined
+                }
+                onContinue={() => void decideBrowserHandoff(handoff, 'continue')}
+                onCancel={() => void decideBrowserHandoff(handoff, 'cancel')}
+              />
+            ))}
             {showTaskCapsule && liveTaskView ? <RunTaskCapsule view={liveTaskView} /> : null}
             {compactProgress ? (
               <div

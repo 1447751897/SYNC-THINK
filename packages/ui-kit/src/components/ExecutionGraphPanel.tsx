@@ -18,6 +18,7 @@ export interface ExecutionGraphStepView {
   retries: number;
   reviewIteration?: number;
   currentArtifactVersion?: number;
+  artifactImagePreview?: { version: number; url: string; mimeType: string; status: string };
 }
 
 export interface ExecutionGraphView {
@@ -142,12 +143,10 @@ export function ExecutionGraphPanel({
       ) : (
         <div className="st-graph__canvas" data-layers={layers.length}>
           {layers.map((layer, layerIndex) => (
-            <div
-              key={`layer-${layerIndex}`}
-              className="st-graph__layer"
-              data-layer={layerIndex}
-            >
-              <span className="st-graph__layer-label">{String(layerIndex + 1).padStart(2, '0')}</span>
+            <div key={`layer-${layerIndex}`} className="st-graph__layer" data-layer={layerIndex}>
+              <span className="st-graph__layer-label">
+                {String(layerIndex + 1).padStart(2, '0')}
+              </span>
               <div className="st-graph__lane">
                 {layer.map((step) => (
                   <article
@@ -177,9 +176,26 @@ export function ExecutionGraphPanel({
                       </div>
                       <div>
                         <dt>依赖</dt>
-                        <dd>{step.dependsOn.length > 0 ? step.dependsOn.join(', ') : '无 · 可并行'}</dd>
+                        <dd>
+                          {step.dependsOn.length > 0 ? step.dependsOn.join(', ') : '无 · 可并行'}
+                        </dd>
                       </div>
                     </dl>
+                    {step.artifactImagePreview &&
+                    /^sync-think-image:\/\/artifact\/[A-Za-z0-9_-]{16,128}$/.test(
+                      step.artifactImagePreview.url,
+                    ) ? (
+                      <figure className="st-graph__artifact-image">
+                        <img
+                          src={step.artifactImagePreview.url}
+                          alt={`${step.title} 图片 v${step.artifactImagePreview.version}`}
+                        />
+                        <figcaption>
+                          v{step.artifactImagePreview.version} ·{' '}
+                          {step.artifactImagePreview.mimeType} · {step.artifactImagePreview.status}
+                        </figcaption>
+                      </figure>
+                    ) : null}
                     <footer>
                       <span>
                         <RotateCcw aria-hidden="true" size={11} />

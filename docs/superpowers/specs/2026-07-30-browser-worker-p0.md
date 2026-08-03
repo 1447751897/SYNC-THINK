@@ -1,6 +1,6 @@
 # Browser Worker P0: System Browser Host, Runtime Execution, Permissions, and Handoff
 
-Status: P0.1/P0.2 verified; P0.3 minimal persistent chat-Run permission loop implemented; P0.4/P0.5 pending
+Status: P0.1-P0.5 implemented and automated-verified; system-browser manual smoke pending
 Date: 2026-07-30
 User confirmation: "可以"
 
@@ -158,3 +158,29 @@ P0.1 can be rolled back by removing BrowserHost and `playwright-core`; dedicated
 - Completed commands replay their persisted result for the same idempotency key and input. Mismatched reuse is rejected. Commands left in `running` across restart become `browser.command-inspection-required` and are not blindly re-executed.
 - Verification: Storage full 22 files / 248 tests; P0.3 migration/Artifact/Store focused 69/69; Runtime Browser Controller/tool loop 8/8; repository typecheck 20/20, lint 11/11, and build 11/11.
 - Deliberate remaining boundary: P0.4 Team Step exact grants and member Page-lease isolation, plus P0.5 durable `waiting_user` human takeover, remain pending. The full Browser Worker roadmap item is not complete yet.
+
+## 13. P0.4 Team Automation Verification (2026-07-31)
+
+- Production Step schemas now include `browser_open`, `browser_click`, `browser_type`, `browser_read`, and `browser_screenshot` when the acting frozen AgentVersion permits browser origins and the Step is otherwise tool-capable.
+- Team Step permission resolution uses only the exact `agent-version` grant scope and independently checks the frozen AgentVersion origin snapshot. Coordinator Run/Workspace grants cannot authorize a member outside that snapshot.
+- Step Browser owners are stable as `step:<runId>:<stepId>:<agentVersionId>`. The BrowserHost may reuse one Profile process, while exact owners receive separate Page leases. Browser tool arguments reject extra `leaseId` fields and never expose a lease-addressing input.
+- Browser command results and durable Artifact/Tool Trace metadata record the acting AgentVersion, Step, owner, Profile, lease, page, target origin, and durable command ID.
+- Production approval details are sanitized before the external side effect: navigation omits query/hash, and fill/type records only selector, text length, and SHA-256.
+- Persistent Runtime injects a RuntimeBrowserController into its default Production Step executor using the same BrowserHost and SQLite Browser store as the chat path.
+- Verification: focused Browser Controller + Production executor 33/33; Runtime full 56 files / 360 tests; repository typecheck 20/20 tasks, lint 11/11, build 11/11, test 20/20; `git diff --check` passed.
+- Deliberate remaining boundary: P0.5 durable `waiting_user`, Continue/Cancel, system-browser human takeover, ownership revalidation, and checkpoint resume across UI restart remain pending.
+
+## 14. P0.5 Human Handoff Verification (2026-07-31)
+
+- Browser handoffs persist a revision-bound `waiting_user` checkpoint for the Browser command and owning Run/Step, including a safe site summary, reason, requested outcome, and explicit lease disposition.
+- Runtime exposes `browser.handoff.listWaiting`, `browser.handoff.continue`, and `browser.handoff.cancel`. Continue/Cancel require the current revision and revalidate the durable binding before changing state.
+- Runtime cold restart recovers waiting handoffs. Continue resumes the same Production Step checkpoint and does not replay the completed `browser_open`; Cancel fails the Run/Step and preserves or releases the Page lease according to policy.
+- Desktop Main/Preload/Renderer use durable queries as the UI source of truth. Runtime events only trigger refresh; reconnect and Desktop restart reload pending handoffs. Query retry, shared action busy state, and action error persistence are covered. If the persisted Desktop activity cursor is ahead after Runtime history rollback, Desktop atomically resets it, clears stale activity state, and resubscribes from zero.
+- Renderer-visible summaries exclude internal lease/page/profile/owner identifiers, Cookie data, and page secrets.
+- Automated evidence: Desktop handoff 4 files / 21 tests; activity cursor recovery 2 files / 11 tests; Desktop full 101 files / 716 tests; Runtime handoff 4 files / 42 tests; Runtime full 57 files / 367 tests; Storage full 23 files / 251 tests; repository typecheck/lint/build passed; sequential full-workspace tests passed; `git diff --check` passed.
+- Parallel Turbo `pnpm test` remains susceptible to secure-store/storage resource contention; isolated and sequential package runs pass without relaxing assertions.
+- A real system-browser Host smoke subsequently exposed and closed the process-local lease gap: Chromium targetId is now the durable pageId, Profile-local loopback CDP metadata supports reattachment, waiting handoffs select preserve shutdown, and Continue/close-page Cancel recover the exact lease before validation. The visible Edge/Chrome Host smoke passes 3/3, including Host reconstruction and same-target continuation.
+- Final Runtime/Desktop acceptance is complete through `pnpm selftest:browser-handoff`: Continue, Cancel close-page, and Cancel keep-open all pass across actual Desktop/Runtime cold restarts with one scripted local Provider and an installed system Edge/Chrome.
+- The E2E asserts one initial Provider request and one `/login` navigation, no replay after restart, exact persisted handoff state, expected page disposition while Desktop is alive, and final CDP/process/metadata cleanup after the resolved handoff shuts down.
+- The keep-open cancellation scenario exposed and fixed one last recovery gap: Cancel now recovers and validates a persisted lease even when it preserves the page during the active Runtime session, ensuring final BrowserHost shutdown still owns cleanup.
+- Final regression evidence: Workers 70 passed / 3 skipped; Desktop 721 passed; Runtime 369 passed; Protocol 53 passed; Storage 251 passed; Shared 21 passed; relevant build/typecheck/lint, Prettier, and `git diff --check` passed. P0.5 and the full Browser Worker P0 roadmap item are complete.

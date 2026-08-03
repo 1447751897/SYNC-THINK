@@ -1,3 +1,394 @@
+## 2026-08-02：全部本地工程任务最终收口
+
+- 完整通过 `pnpm selftest:phase3`：Desktop contracts 12 files / 86 tests、release/visual contracts 29 tests、Desktop typecheck/build、Generic feed Electron HTTPS E2E、image provider build 与 7-case Electron 视觉矩阵；无真实图片凭证时 live acceptance 显式 skipped，聚合状态为 `passed-with-external-evidence-pending`。
+- 完整复跑根仓 `pnpm test`、`pnpm typecheck`、`pnpm build`、`pnpm lint` 和 `git diff --check`：Turbo 任务分别 20/20、20/20、11/11、11/11；Desktop 123 files / 836 tests、Runtime 63 files / 436 tests、Storage 36 files / 374 tests。
+- 修复 `diagnostics-export-wiring.test.ts` 的格式脆弱字符串断言，并为 Generic feed Electron E2E 的所有场景生成、复制和显式传入最小有效 gzip blockmap，使 fixture 与生产 blockmap fail-closed 规则保持一致。
+- 用全新 install id、SQLite 与 secure-store 路径启动可见 Desktop：隔离目录 `.data/manual-phase3-20260802-015614`，Electron PID `9296`、managed Runtime PID `50712`；pipe/database/hello 正常，stderr 为空，默认 `16873340928` bytes 数据库未触碰。
+- 当前分支 `feature/newmax-shell-rewrite` 的累计修改仍未提交、未推送；剩余项依赖正式证书/timestamp、真实 private feed/CDN、真实图片凭证和邀请用户，自动 binary rollback 保持独立后续范围。
+## 2026-08-02 · Phase 3 本地发布链与 Database Governance P0.4 收口
+
+### Added
+
+- Windows portable release 增加完整 publisher DN bootstrap；正式 installer 增加独立 expected signer SHA-1 与 publisher trust pin。
+- Generic feed 增加 blockmap gzip 解压、JSON 解析和最小 schema fail-closed 校验；旧完整下载仅保留显式 `allowLegacyFullDownload` fixture 模式。
+- 隔离 unsigned update-install E2E 记录 blockmap 请求、installer Range、HTTP 206、served/saved bytes、真实 NSIS 重启和 install identity 连续性。
+- Database Governance P0.4 完成 fully-global low-value Event retention/archive、portable recovery segment、durable execute/rollback、cancel/resume、crash-window reconciliation、incremental vacuum 与 offline `VACUUM INTO` compaction。
+
+### Changed
+
+- `resources/app-update.yml` 改为 signing-mode 精确内容：正式 release 只允许 cache identity + 完整 publisherName，unsigned fixture 只允许 cache identity；verifier 使用字节级比较拒绝额外 provider、URL、Authorization 或 token。
+- Authenticode 离线验证不再把 installer manifest 当作信任根；外部 signer/publisher pin 缺失、选择证书与 signer pin 不一致、SignerCertificate.Subject 非完整精确匹配都会失败。
+- Database Governance 文档从“待实现 retention/compaction”更新为已完成 fixture-only 门禁；执行器继续不接 Runtime startup，默认约 16.87 GB 主库和历史备份保持只读。
+
+### Verification
+
+- Windows 发布脚本：portable/installer 22 tests 与 Generic feed 9 tests 通过；真实 unsigned portable/installer/blockmap fixture build + verify 通过。
+- `pnpm test:update-install:win` 通过真实 `0.0.1 → 0.0.2` NSIS 安装复验：2 个 blockmap 请求、7 个 installer Range/HTTP 206、`135491101` bytes 完整包仅传输 `504941` bytes，节省 `134986160` bytes，且没有完整 installer HTTP 200 回退。证据位于 `.data/update-install-e2e-20260802T174113/smoke-result.json`。
+- Database Governance 定向 5 files / 51 tests 通过，覆盖 archive round trip、rollback、cancel/resume、drift/tamper/path fence、incremental vacuum 与 offline compaction。
+- 全仓测试、Phase 3 selftest 与最终隔离 Desktop 重启在本轮后续门禁中重新执行。
+
+## 2026-08-02 · Database Governance P0.4 B4
+
+### Added
+
+- Event payload sidecar exact orphan mark manifest 与 quarantine sweep executor。
+- 精确 confirmation token、maintenance window、durable audit、batch cursor、cancel/resume 与 crash-window recovery。
+- 空计划、新增未标记 orphan、late junction、live/reference/blob drift、manifest/audit tamper 等负向覆盖。
+
+### Changed
+
+- Sidecar GC 复核全部已存在目录祖先，拒绝 symlink/junction/reparse point；audit bytes、状态和时间戳必须与 manifest cursor 精确一致。
+- Governance CLI 增加 `--prepare-sidecar-gc` 与 `--execute-sidecar-gc`，sweep 只移动精确文件到 quarantine，不执行永久删除。
+
+## 2026-08-02 · Database Governance P0.4 B2/B3
+
+- 新增 durable Event payload backfill executor：blob-first、SQLite compare-and-swap、audit-last、portable SQLite + sidecar recovery set、批次边界 cancel/resume 与 crash-window 对账。
+- 新增 recovery-backed exact rollback CLI 与 durable rollback audit；rollback 不直接删除 backfill blob，回滚后 orphan 交由 B4 exact mark/quarantine 处理。
+
+## 2026-08-02 — Database Governance P0.4 第二切片 B1：Exact Event payload backfill dry-run
+
+### 新增
+
+- 新增 `event-payload-backfill.ts`：在单个 SQLite 只读事务快照中生成 V1 exact plan，固化 selector/projection builder、Database Maintenance fingerprint、精确 Event/reference 列表、sidecar manifest、容量估算与完整 plan hash。
+- 新增 `context-packet-query-v1@1` projection builder；当前只允许 `context.packet.built`，默认阈值 64 KiB，仅保留固定 query-safe 标量字段。
+- 新增 plan integrity/freshness 校验、JSON read/write，以及纯内存 `planEventPayloadSidecarWrite()`，确保 dry-run 与未来真实写入复用同一 hash/gzip/path/envelope 逻辑。
+- 治理 CLI 新增 `--prepare-backfill-plan <plan.json>`、`--minimum-payload-bytes` 和必填 `--event-payload-sidecar`；与 `--prepare-manifest`、`--execute-manifest` 互斥。
+
+### 安全边界
+
+- 本子项只写计划 JSON；不更新 Event、不创建 sidecar 目录、不触碰 WAL/SHM、备份或真实 Runtime。
+- freshness fence 会拒绝 Event 原地修改、新增匹配 Event、sidecar 引用集合漂移、destination reference 漂移、Database Maintenance fingerprint 变化与计划字段篡改。
+- 第二切片 B 仍未完成；下一项为 durable batch cursor/cancel-resume，之后是 rollback 与 orphan mark/sweep。
+
+### 验证
+
+- 专项：6 files / 37 tests passed。
+- Storage：typecheck、lint 通过；31 files / 315 tests passed。
+- 临时 CLI fixture：1 个候选，SQLite 逻辑减量 6855 bytes、预计新增 sidecar 111 bytes，且未创建 sidecar 目录；fixture 已精确清理。
+- 根级 typecheck 20/20、build 11/11、`git diff --check` 通过，仅有既存 CRLF→LF 提示。
+- 最新隔离 Desktop：install ID `dev-governance-p04-backfill-plan-20260802-202443`，Launcher `43820`、Electron `54812`、Runtime `34924`；窗口响应，pipe/database/hello ready，stderr 为空。
+
+## 2026-08-02 — Database Governance P0.4 第二切片 A：portable recovery set
+
+### 新增
+
+- 新增 `event-payload-backup.ts`：按 Event ID 排序捕获 sidecar 引用，生成 reference hash、唯一 blob 精确清单、引用计数和 portable `event-payload-sidecars.manifest.json`。
+- recovery set 同时保存 native SQLite backup 与独立 `.sidecars` 目录；恢复验证会在 readonly SQLite 上执行 `quick_check(1)`、逻辑 fingerprint 比对，并从恢复数据库重扫引用、逐 blob hydrate、校验 hash 与长度。
+- 治理 CLI 的只读 `--prepare-manifest` 支持可选 `--event-payload-sidecar <path>`。
+
+### 变更
+
+- Database Maintenance manifest/audit 升级到 V2，audit 记录 portable sidecar verification descriptor。
+- 恢复集先在唯一 staging DB/目录中完整验证，再 rename 到固定路径；中途失败仅清理经过 path fence 的精确 staging/final 路径并写 failed audit。
+- cancelled/failed resume 与 completed fast-return 前都会重新验证 SQLite + sidecar 恢复集；恢复点损坏不再被既有 audit 状态掩盖。
+- Runtime 仍未启用 sidecar；真实主库和历史备份未修改。
+
+### 验证
+
+- 专项：3 files / 21 tests passed；Storage typecheck passed。
+- Storage 全量：30 files / 308 tests；Storage lint/typecheck 通过。
+- 根级 typecheck 20/20、build 11/11、`git diff --check` 通过，仅有既存 CRLF→LF 提示。
+- 最新隔离 Desktop：install ID `dev-governance-p04-recovery-set-20260802-193044`，Launcher `17896`、Electron `25288`、Runtime `104628`；窗口响应，pipe/database/hello ready，stderr 为空。
+
+## 2026-08-02 — Database Governance P0.4 第一切片：Event payload sidecar 协议
+
+### 新增
+
+- 新增 `packages/storage/src/event-payload-sidecar.ts`：V1 envelope、content-addressed gzip blob、SHA-256 去重、临时文件 + fsync + rename 写入，以及严格 hydrate 校验。
+- 新增 Storage 测试覆盖默认内联兼容、大 payload 外置与 projection、内容去重、缺少 sidecar fail-closed、文件损坏检测。
+
+### 变更
+
+- `SqliteEventCheckpointStore` 可选接收 `sidecar/minimumBytes/shouldExternalize/project`；写入命中策略时在 `payload_json` 保存引用，所有 Event 列表 API 读取时还原完整 payload。
+- `$syncThinkPayload` 设为 payload 保留字段；V1 复用现有 `payload_json`，未增加数据库 migration。
+- 默认行为保持内联，Runtime 尚未激活外置写入；真实主库与备份未修改。
+
+### 验证
+
+- Storage Prettier、typecheck、lint 通过。
+- Storage 全量：29 files / 299 tests passed。
+- 根级 typecheck 20/20、build 11/11、`git diff --check` 通过。
+- 最新隔离 Desktop 已启动：Launcher `98756`、Electron `17896`、Runtime `72624`；窗口响应，pipe/database/hello ready，stderr 为空。
+
+## 2026-08-02 · Database Governance P0.3：精确 manifest、可恢复执行与备份 quarantine
+
+- 新增 `database-maintenance-executor.ts`：从 P0.1 的共享候选语义生成 versioned exact manifest，记录 source fingerprint、稳定 `schemaHash`、完整 Event IDs、备份 name/size/mtime、protected 摘要、inspection hash、manifest SHA-256 与精确 confirmation token。
+- 执行前依次校验 manifest 完整性、非截断候选、显式离线维护窗口、精确 token、writable connection、stale fingerprint 与 `quick_check(1)`；任何条件不满足均在恢复备份/DELETE 前停止。
+- 使用 `better-sqlite3 backup()` 创建一致性 recovery backup，再通过只读连接验证 `quick_check`、schema hash、Event/Checkpoint count 与 max sequence。没有把物理 page count 或 backup 目标 schema cookie 误当作逻辑等价条件。
+- Event 默认每 500 条、最大 5000 条单独事务删除；每个 exact ID 在 DELETE 时再次套用 candidate selector。候选后续变成受保护 Event 时 fail-closed，已删除 ID 在 crash resume 中按 already-absent 幂等处理。
+- durable audit 在每批提交后原子写入，记录 recovery backup、游标、删除/缺失与 quarantine 计数；首次 Ctrl+C 只请求批次边界取消，cancelled/failed audit 可恢复，并拒绝 post-manifest 新 Event 或 protected schema/Checkpoint 变化。
+- 历史备份不删除，按 manifest 精确身份移动到 `<backups>/quarantine/<planId>/`；源/目标 name、size、mtime 变化或状态歧义均停止执行。
+- `pnpm db:governance` 默认继续 readonly + query_only；新增 `--prepare-manifest` 只读准备模式，以及必须同时提供 `--execute-manifest`、精确 `--confirm`、`--maintenance-window` 才可进入的执行模式，另支持 `--batch-size`、`--audit` 与 `--json`。
+- 验证通过：专项 3 files / 16 tests；Storage 全量 28 files / 294 tests；Storage typecheck；根级 typecheck 20/20、build 11/11。隔离 CLI fixture 实际完成 1 条 telemetry 删除、verified recovery backup 与 completed audit。
+- 当前约 16.87 GB 主库和 76 个历史备份保持原状；P0.3 尚未在真实数据上执行，也没有把维护动作接入 Runtime 启动路径。
+- 最终根级门禁在最新源码上复跑通过：typecheck `20/20`、build `11/11`、`git diff --check` 无错误；最新构建已使用独立数据库重启，隔离身份 `dev-governance-p03-final-20260802-181957`，Electron PID `26856`、Runtime PID `103748`，窗口响应且日志 stderr 为空。
+
+## 2026-08-02 · Database Governance P0.2：Checkpoint cadence、原子 fallback 与可恢复 replay
+
+- Runtime 新增集中式 Checkpoint policy：默认每 128 个 durable Event 创建一次 Checkpoint；`run.completed`、`run.failed`、`run.cancelled`、`run.paused` 四种终态始终强制写入，恢复后从最近 Checkpoint 的真实 sequence 继续 cadence。
+- 稀疏 Checkpoint 不再依赖逐事件快照保存执行游标；推进 Run 的非终态 durable Event 会携带精简 `payload.run` 投影，Event replay 可恢复 `nextAdapterEventIndex` 等状态，同时继续移除 Skill 正文、Context Snapshot、图片 data URL 与 MCP dispatch。
+- fallback continuation 现在把 `run.fallback.selected` 与对应 `context.packet.built` 放进同一个 SQLite transaction；只有提交成功后才更新内存投影和发布事件。
+- continuation 增加当前 projected Run 的 `modelId + packetId` fence；相同 fallback 已落库时直接复用 continuation，不再重复追加 Event。
+- SQLite 回归确认单次 fallback 只生成 1 条 `run.fallback.selected`，Context Packet 总计 2 条（初始 + fallback），两条 fallback transition Event sequence 相邻，短 Run 只在终态生成 1 个 Checkpoint。
+- 验证通过：Checkpoint policy 8/8；核心专项 4 files / 22 tests；Runtime 全量 63 files / 431 tests；根级 typecheck 20/20、build 11/11 与 `git diff --check`。P0.2 不删除、迁移、压缩或 VACUUM 当前约 16.87 GB 主库及 76 个历史备份。
+- 最新构建已重启供人工测试：Electron main PID `13804`，managed Runtime PID `52428`；pipe/database/hello ready，窗口可见且响应，stderr 为空；日志位于 `.desktop-governance-p02.out.log` / `.desktop-governance-p02.err.log`。
+
+## 2026-08-02 · Database Governance P0.1：只读诊断、Codex 分层参考与安全 dry-run
+
+- 新增 `database-governance.ts`：输出 v1 数据库报告、文件/WAL/page/freelist、表行数、Event/Checkpoint 范围、备份预算、findings 和 v1 dry-run maintenance plan。
+- quick 模式通过 `event_task_idx`、`event_ws_seq_idx`、`checkpoint_run_seq_idx` 做窄索引统计，并以最多 4096 个均匀 rowid 采样定位主导事件类型；不读取/解析 `payload_json`。
+- deep 模式把 category/type/scope/payload bytes 合并为一次 SQL 聚合；物理 `dbstat` 额外受 `--physical` 控制，避免 411 万页数据库的页枚举进入默认路径。
+- dry-run 只把完全无作用域的低价值 telemetry/diagnostic 列为候选；所有 durable Event、Checkpoint 和最新迁移备份保持 protected。P0.1 没有 DELETE、UPDATE、VACUUM、文件移动或备份删除代码。
+- 新增根命令 `pnpm db:governance`，默认打开 readonly + query_only 连接；支持 `--db`、`--backups`、`--deep`、`--physical`、`--json`、`--backup-keep` 与 `--backup-max-bytes`。
+- 真实开发库 quick 结果：Event 1,986,942、taskless 1,986,820、Checkpoint 1,986,492、备份 76/100.93 GiB；4096 样本中 `context.packet.built` 与 `run.fallback.selected` 各约 49.1%。
+- Codex 本机只读观察确认：thread SQLite 是小型查询投影，完整上下文位于按日期分区的 rollout JSONL；归档物理移动文件；logs/goals/memories 拆库；WAL、migration、backfill、partial index 与 logical cleanup/physical compaction 分离。
+- 新增 4 项专项测试，覆盖 candidate/protected 分类、dry-run 零写入、quick 无 payload/dbstat 扫描、readonly query_only 和 Checkpoint 真源保护。
+- 收尾验证通过：Storage 26 files / 282 tests、数据库治理专项 4/4、根级 typecheck 20/20、根级 build 11/11；Desktop 最新构建冷重启后 pipe/database/hello ready，真实 quick 复核仍为 Event 1,986,942、Checkpoint 1,986,492、备份 76，且未执行任何数据或文件变更。
+
+## 2026-08-02 · Windows Distribution P0.3.4：differential update 与 publisher trust pin
+
+- `pnpm test:update-install:win` 使用真实 packaged Desktop、electron-updater 与 NSIS 完成隔离 `0.0.1 → 0.0.2` 安装，并验证 blockmap/Range/206、served bytes 小于完整 installer、重启后的 package/registry version 与 install identity/SQLite 连续性。
+- 正式 portable 与 installer 发布要求完整 publisherName；installer 额外要求独立 expected signer SHA-1，构建时证书选择器与离线 trust pin 职责分离。
+- unsigned fixture 显式忽略机器中残留的正式签名环境变量，避免本地/CI fixture 被外部环境污染。
+
+## 2026-08-02 · Windows Distribution P0.3.3：HTTPS 真实 NSIS 下载 E2E 与更新控制台重设计
+
+- `设置 → 关于` 的 updater 区域重设计为“桌面发布通道”控制台：清晰呈现当前/目标版本、channel、SHA-512、检查/下载时间、三阶段流程、下载进度和稳定错误提示；当前唯一可执行动作保持唯一主按钮。
+- 更新控制台新增 idle、available、downloading、downloaded、disabled 与 checksum mismatch 共 6 项 Renderer 测试，并补齐窄窗口响应式与 reduced-motion 行为；feed URL、token、header 与本地下载路径仍不进入 Renderer。
+- updater driver E2E 从 loopback HTTP 升级为受控 HTTPS。测试启动时生成短期自签证书，只在 electron-updater 专用 session 中接受 `127.0.0.1 + 精确证书`；其他证书判断继续拒绝，不使用全局 TLS 降级环境变量。
+- 新增真实 NSIS 下载场景：通过 HTTPS + Bearer 请求下载现有 `107893840` bytes installer，验证 progress、downloaded、缓存大小与 SHA-512；原 7 个版本/channel/hash 场景继续保留，当前为 8/8。
+- 本切片关闭“受控 HTTPS + 真实 installer 下载”门禁；下一步仍是隔离安装根上的真实 `quitAndInstall()`、应用重启后版本/身份/数据库连续性，以及 Authenticode、失败回滚与闭测发布清单。
+
+## 2026-08-02 · Windows Distribution P0.3.2：Generic feed E2E、版本矩阵与 SHA-512 验收
+
+- 新增确定性的 Windows Generic feed metadata 生成/校验模块，固定输出 channel `.yml`、单一 NSIS `.exe`、size、SHA-512、legacy path/hash 和 release date，并拒绝非法 SemVer、channel 与越界 artifact path。
+- 新增真实 Electron loopback E2E：当前 Desktop updater driver 携带 Main-only Bearer header 请求 feed，覆盖同版、低版、高版、非法版本和 channel mismatch。
+- 正确 SHA-512 的完整 installer fixture 可产生 progress/downloaded 并落入隔离 updater cache；篡改 SHA-512 的下载被 `ERR_CHECKSUM_MISMATCH` 拒绝。
+- Controller 将 channel metadata 缺失、无效 metadata/version 和 checksum mismatch 映射为稳定、无秘密的 Renderer 错误码，不暴露 URL、header、下载路径或 Provider 原始错误。
+- 新增 `pnpm test:update-feed:win`；专项验证为 Desktop 13/13、feed 4/4、Electron E2E 7/7。真实 HTTPS feed、真实 NSIS 重启安装、Authenticode、差分更新和自动回滚仍未关闭。
+
+## 2026-08-02 · Windows Distribution P0.3：私有 updater 控制面与安全投影
+
+- 引入 `electron-updater@6.8.9`，新增 Main-only 私有 feed 配置解析、Generic provider driver、手动检查/下载/安装控制器和稳定状态机；未配置 feed 时默认不访问网络。
+- feed 只接受 HTTPS 或 loopback HTTP，禁止 URL 内凭据、query/fragment；channel 和 token 做长度/字符/CRLF/空白校验，Bearer token 不进入 Renderer、日志、发布 manifest 或 updater bootstrap 文件。
+- 新增 `desktop:update-*` Main/Preload IPC 与安全状态订阅，所有 invoke handler 继续执行 trusted renderer source assertion；Renderer 仅获得 bounded `DesktopUpdateSnapshot`。
+- `设置 → 关于` 新增当前版本、通道、检查更新、下载进度与“重启并安装”入口，移除硬编码开发版本；错误只显示稳定本地化文案。
+- 安装前等待 managed Runtime 与 Desktop 服务受控退出；关闭自动下载、退出自动安装、降级、Web installer 和 differential download，真实 feed E2E 完成前保持完整 installer 下载。
+- portable staging 生成只含 `updaterCacheDirName` 的 `resources/app-update.yml`，发布 verifier 对缺失配置 fail-closed；新增 controller、UI、source wiring 和 portable release 回归测试。
+- 真实 Desktop 重启捕获并修复 electron-updater CommonJS/NodeNext ESM named export 兼容问题，driver 改用 default import；隔离 Desktop 与 managed Runtime 已通过 pipe/database/hello 冷启动。
+- 本切片只关闭 updater 控制面与安全投影子项；Authenticode、真实私有 feed/下载校验 E2E、版本兼容、差分包、自动失败回滚和闭测清单继续保持 open。
+
+## 2026-08-02 · Windows Distribution P0.3：品牌图标与 production deploy 稳定性
+
+- 新增确定性 Windows 品牌资产管线：以 `apps/desktop/build/icon.svg` 为真源，生成 512px PNG 与包含 16-256px 九档尺寸的 ICO，并提供 `release:assets:win`、`release:verify:assets:win`、`test:brand:win`。
+- Desktop `BrowserWindow`、portable `SYNC-THINK.exe`、NSIS installer/uninstaller 与快捷方式统一使用同一品牌资产；portable EXE 通过 `resedit` 写入真实 icon group。
+- `release:stage:win` 增加品牌资产生成/校验，portable layout 与 installer verifier 同步校验 packaged `build/icon.ico` 和 `build/icon.png`，electron-builder 显式配置 `win.icon`、`installerIcon` 与 `uninstallerIcon`。
+- production deploy 从 pnpm legacy deploy 切换为 `node-linker=hoisted + inject-workspace-packages=true` 的现代 deploy，并要求经过 release child fence 的绝对目标，消除 Runtime package 旁的嵌套 `.bin` sidecar 与后续 smoke 的 `EPERM`。
+- 正式 installer 更新为 `107893840` bytes，SHA-256 `02091882666B30D5B69EC50ADF250A2C9264D50F788C8BC348F28CD019CBF942`；品牌 4/4、portable 6/6、installer 7/7、root build 11/11、双 verifier 与完整 lifecycle smoke 均通过。
+- Windows Distribution P0.3 已完成压缩、品牌图标与 production deploy 子项；剩余 Authenticode、私有 updater feed、differential package、失败回滚和闭测发布清单。
+
+## 2026-08-02 · Windows Distribution P0.3：installer 压缩与 artifact 体积优化
+
+- installer build CLI 新增严格 `--compression store|normal|maximum`，默认值读取 electron-builder 配置；非法模式使用稳定 `installer.compression_invalid` 错误拒绝。
+- `installer-manifest.json` 升级为 schema v2，新增 compression、portable source bytes、build duration 与 artifact reduction 指标；verifier 会拒绝旧 schema、非法压缩模式、无效源体积/耗时和被篡改的 size metrics。
+- 在独立 release 子目录实测 `normal` 与 `maximum`：两者均把约 519 MB portable 压缩为约 107.18 MB installer，输出只差 1 byte，因此正式配置从 `store` 切换到 `normal`，保持较低复杂度且不牺牲实测体积。
+- 正式 unsigned artifact 更新为 `107177118` bytes，SHA-256 `FE30B55FC4FF49300511A658B19E1E6041CA20784E14F89405A4D43F80D40985`；相对上一 `521182347` bytes artifact 减少约 `79.436%`。
+- 新压缩包已通过 portable 6/6、installer 7/7、root build 11/11、manifest verify，以及 clean / overlay / 真实版本 upgrade / uninstall / reinstall 完整 smoke。
+- P0.3 体积/压缩子项关闭；Authenticode、品牌图标、私有 updater feed、差分包和闭测发布清单继续保持 open。
+
+## 2026-08-01 · Windows Distribution P0.2：NSIS installer 与安装生命周期验收
+
+- 引入 `electron-builder@26.15.3` 和固定 NSIS 配置：`appId=com.syncthink.desktop`、per-user assisted、可选安装目录、桌面/开始菜单快捷方式；卸载默认保留 userData、Install ID、safeStorage 密文和 SQLite 数据。
+- 新增 installer build/verify manifest 与 6 项脚本测试；正式 unsigned artifact 为 `SYNC-THINK-Setup-0.0.1-x64.exe`，大小 `521182347` bytes，SHA-256 `2D34A128F1F21DEE0130D95BF12F54D329A7902D404C780D97D30289F09F5469`。
+- portable staging 新增严格 `--version` 覆盖并同步 payload package version，用真正的 `0.0.2-smoke` 应用验证升级；Windows direct Node invocation 使用受控 `cmd.exe /d /s /c pnpm.cmd` fallback。
+- 修复 owned release 递归打包：production deploy 后剪除自有 package 的 `release` 与 `scripts`，forbidden scan 同步拒绝，避免旧 installer/portable 被再次打进 staging。
+- 新增 `scripts/windows-installer-smoke.ps1` 与根命令 `release:smoke:installer:win`；每次使用唯一隔离根，自动执行 clean、overlay、upgrade、uninstall、reinstall，并输出结构化 `smoke-result.json`。
+- 真实自动 smoke 全通过：`0.0.1 → 0.0.2-smoke` 的 package/registry version 正确，身份、密文和数据库持续一致；卸载移除 executable 并保留用户数据，重装恢复同一身份。
+- smoke 脚本兼容 Windows PowerShell 5.1，并处理空日志、运行态 SQLite 文件锁和启动阶段失败的精确进程清理，不递归删除已有 smoke 根目录。
+- 验证通过：release 6/6、installer 6/6、Desktop focused 10/10、Desktop typecheck、build 11/11、portable/installer verify、全仓串行 20/20 tasks 与 diff check。Windows Distribution P0.2 关闭，后续进入签名、品牌图标、私有更新 feed、差分包和体积优化。
+
+## 2026-08-01 · Windows Distribution P0.2：packaged install identity 与 pipe credential
+
+- 新增 packaged install identity：首次启动生成稳定 install ID 与高熵 pipe secret，metadata 使用 lock、临时文件和原子 rename 落盘，并发初始化只产生一份身份。
+- pipe secret 通过 Electron `safeStorage` 与现有 SecureStore 加密保存；metadata、日志、Renderer、SQLite 与 release manifest 都不包含明文 secret。
+- Desktop Runtime client 与 managed Runtime child 统一使用同一内存 identity；packaged 强制 token authentication，development 保留显式环境变量覆盖与 `dev-0001` no-token 默认值。
+- metadata 损坏或 secret 解密失败使用稳定错误码并 fail-closed，不自动生成新 secret，避免身份静默轮换与 Runtime 认证漂移。
+- 两轮真实 packaged 冷启动通过：install ID、secret handle、metadata/ciphertext SHA-256 全部稳定复用；pipe/database/hello 正常，无认证、解密、EADDRINUSE 或 secret 日志泄漏。
+- 验证通过：Desktop 111 files / 776 tests，identity/supervisor/release targeted 15 项，Desktop typecheck，release tests 4/4，root build 11/11，release verify 与 `git diff --check`。
+- P0.2 仍保持 open；下一切片是 Windows 安装器封装，以及干净安装、覆盖升级、卸载和用户数据保留 smoke。
+
+## 2026-08-01 · Windows Distribution P0.1：unsigned portable staging 与 preflight
+
+- 新增 `scripts/windows-portable-release.mjs` 与根命令 `release:stage:win` / `release:verify:win`，把 Windows Electron distribution、Desktop production 依赖、Runtime production 依赖和 managed Node 20.20.2 组装为自包含 `win-unpacked`。
+- staging 输出严格限制在 `apps/desktop/release/<child>`；release 根、Desktop dist 与逃逸路径会被拒绝。自有源码、测试、脚本和 Turbo/TypeScript 开发内容在发布树中清除。
+- 发布 preflight 校验 Desktop executable/main/preload/renderer、Runtime launcher/main、Node 20、`better_sqlite3.node` 与 `koffi.node`，并扫描 `.env*`、SQLite 数据文件及自有源码/测试目录。
+- 生成 `release-manifest.json`，当前记录 11 个关键文件的大小与 SHA-256。新增 4 项 release script 单测，覆盖输出路径 fence、敏感/开发文件扫描、manifest 和缺失布局诊断。
+- 真实隔离冷启动通过：`SYNC-THINK.exe` 使用发布目录内 `resources/runtime/main.js` 与 `resources/node/node.exe`，pipe/database/带 secret hello 均正常，窗口可见且响应，未发现原生模块 ABI 错误。
+- 新增 `docs/operations/08-deployment.md` 并补充本地开发命令。当前仍是 unsigned portable staging；下一切片为 packaged identity / pipe credential 持久化和 Windows 安装器。
+
+## 2026-08-01 · Image P0.3：视觉 Reviewer、选择冻结与有界图片返工
+
+- migration `0035_review_image_selection_freeze` 新增不可变选择投影；原始 Reviewer assignment 继续保存完整候选集合。多候选未选择时 Scheduler 暂停 Run、保持 Reviewer ready，并在任何 Provider reservation 前返回选择要求。
+- Runtime 新增安全 vision 读取：仅允许受控 generated-images 根内的 PNG/JPEG/WebP 普通文件，执行 realpath、扩展名、MIME、魔数、1..25 MiB 和 SHA-256 双重校验；图片 data URL 仅存在于 Provider 请求内存。
+- vision Reviewer 使用 text + image 多模态 message；`contentRef`、generated-image root 和本机路径不会进入 Provider prompt。非 vision Reviewer或文件替换/hash 漂移均零 Provider 调用并以 acceptance failure 收口。
+- reject 后的图片 rework 继承原目标 Step 的冻结 `imageGeneration`，输出归回原 Artifact 并记录 parent version；严格图片返工允许生成多个新候选，随后再次走 durable selection gate。
+- 新增端到端闭环：首次两候选 → 选择 → Reviewer reject → 两个返工候选 → 再选择 → 再次 reject → `maxIterations=1` 达限暂停；验证 image/reviewer Provider 调用均有界且不派生额外 rework。
+- 最终验证：Runtime 目标回归 82/82、Storage 相关回归 75/75、GeneratedImageStore 10/10、Storage 全量 268/268、MCP 单独回归 10/10；根仓 test 20/20 tasks（Runtime 62 文件 / 421 项）、typecheck 20/20、lint 11/11、design tokens、build 11/11 与 `git diff --check` 全部通过。根仓测试使用 `pnpm pretest` 与 `pnpm exec turbo run test --concurrency=1`。
+- 最新构建已用隔离 Install ID `dev-p03-vision-0802-001027` 重启：Electron PID `101384`、managed Runtime PID `94480`，窗口可见且响应；pipe `\\.\pipe\sync-think-dev-p03-vision-0802-001027`、数据库 `C:\Users\ZHUZHE~1\AppData\Local\Temp\sync-think-dev-p03-vision-0802-001027\sync-think.db` 与 hello handshake 正常。
+
+## 2026-08-01 · Image P0.3 第一切片：严格结构化生成参数
+
+- Shared 新增严格 `ImageGenerationConfig`：尺寸限定为 `auto / 1024x1024 / 1024x1536 / 1536x1024`，质量限定为 `auto / low / medium / high`，候选数量限定为整数 `1-4`，并提供统一默认值与运行时守卫。
+- 图片参数已贯通 Plan revision、严格 Desktop IPC、SQLite migration `0033_image_generation_config`、approved Step/Rework Step、Production Runtime 与 OpenAI-compatible Images Adapter；merge Step 携带图片配置会被拒绝。
+- approved Plan 冻结参数后，Runtime 按冻结的 size/quality/count 调用 Provider。旧数据或未配置 Step 继续兼容 `auto / auto / 1`；Adapter 在发出网络请求前再次拒绝非法配置。
+- 多候选执行会把每张图片分别落盘并创建独立 `ArtifactVersion(candidate)`，metadata 记录尺寸、质量、请求数量、实际数量和图片序号；completed reservation replay 不重复调用 Provider 或写文件。
+- Plan 编辑器增加图片生成开关、尺寸、质量和候选数量控件；切换为 merge 时真正删除图片配置，read-only/busy 状态禁用全部相关控件。
+- 验证已通过：根仓测试 20/20 tasks（Runtime 62 文件 / 408 项、Storage 24 文件 / 263 项、Desktop 109 文件 / 766 项、UI Kit 21 文件 / 234 项）、typecheck 20/20、lint 11/11、design tokens、build 11/11 与 diff check。首次根仓并发测试中 Storage 进程异常退出，Storage 单独全量 263 项通过，随后根仓完整复跑通过。
+- 使用全新独立 SQLite 隐藏控制台重启成功：Electron PID `64660`，窗口 `SYNC-THINK` 可见且响应；managed Runtime PID `77124` 使用 Node `20.20.2`，pipe/database/hello 正常且 stderr 为空。数据库为 `D:\tmp\sync-think-image-p03-20260801-191713\sync-think.db`，日志为 `D:\tmp\sync-think-image-p03-restart-20260801-191713`。
+- 下一切片为 Image P0.3 第二切片：多候选比较与选择；随后接入视觉 Reviewer 和有界返工。
+
+## 2026-08-01 · Image P0.2：Renderer Artifact 卡片与安全预览
+
+- 新增 Main 内图片 preview registry：只接受 Runtime-owned generated-images 根目录中的绝对路径，realpath 后校验目录边界、扩展名、MIME、魔数、25 MiB 上限与 SHA-256，并在每次协议读取时重新验证。
+- Main 通过严格 `runtime:artifact-image-preview` IPC 按 ArtifactVersion 查询并签发随机不透明 grant；Renderer 只收到 `sync-think-image://artifact/<token>`、MIME、字节和 hash，不接触 `contentRef`。token 默认 5 分钟 TTL、256 项容量，超限淘汰最旧。
+- `sync-think-image://` 增加 `artifact` host，拒绝空 token、带路径分隔的 token 和未知 host；图片响应使用 `Cache-Control: private, no-store` 与 `X-Content-Type-Options: nosniff`，原 message media 路径继续限定在 `media` host。
+- Renderer 为合法 PNG/JPEG/WebP ArtifactVersion 并发请求 preview，投影 loading/ready/error，使用 scope generation gate 防止 Task/Run 切换后的陈旧响应覆盖。Artifact 卡展示图片、MIME、字节和自然尺寸，Execution Graph Step 展示最新 ready candidate 缩略图。
+- 新增 registry、payload、Main/Preload/Renderer wiring、Run 图投影与 UI 状态测试。根仓测试 20/20 tasks（Desktop 758、Runtime 408、UI Kit 231）、typecheck 20/20、lint 11/11、design tokens、build 11/11 与 diff check 通过。
+- Image P0.2 完成；下一切片为 P0.3 结构化生成参数、视觉 Reviewer、多候选比较和有界返工。
+
+## 2026-08-01 · Runtime：Provider/Agent fallback 跨层循环修复
+
+- `DemoRunState` 新增 durable `attemptedModelIds`，Run 创建、模型 rebind、checkpoint 序列化与恢复均保持有序去重的已尝试模型集合；旧 checkpoint 从当前 `modelId` 兼容初始化。
+- Provider priority fallback 与 Agent fallback 统一跳过本 Run 已尝试模型；候选耗尽时持久化 `run.paused / fallback_exhausted`，continuation 入口额外拒绝重复目标。
+- 保留既有绑定语义：非 Agent default/chain 模型不擅自进入 Agent fallback，空 fallback 配置仍返回 `no_fallback_configured`。
+- 新增跨层循环回归：`alpha → beta → gamma` 后 Agent fallback 指回 `alpha`，验证每个模型最多调用一次、最终暂停且不会继续写第三次 fallback transition。
+- 验证：Core model-binding 18 项、Runtime demo-run fallback 2 项、fallback-walk 6 项；Runtime 62 文件 / 408 项、Core 17 文件 / 167 项、Desktop 107 文件 / 750 项及根仓串行 20/20 tasks 通过；typecheck、lint、design tokens、build 与 diff check 门禁通过。
+- 既有约 16.8 GB 开发数据库不在本切片处理；启动验收改用独立 SQLite。下一产品切片仍为 Image P0.2 Renderer 图片 Artifact 卡片与安全预览。
+- 隐藏启动验收通过：Electron PID `98252` 可见且响应；managed Runtime PID `83416` 使用 Node `20.20.2`，pipe/database/hello 正常、stderr 为空；独立数据库与日志位于 `D:\tmp\sync-think-fallback-fence-20260801-173753`、`D:\tmp\sync-think-restart-20260801-173753`。
+
+## 2026-08-01 · Image P0.1：OpenAI-compatible 生图 durable 管线
+
+- Provider Adapter 新增 typed `generateImages()`；`OpenAIImagesAdapter` 调用 `POST /images/generations`，携带 Bearer 凭证与 `Idempotency-Key`，强制请求 `b64_json`，并完成 401/403、429、timeout、5xx/network 与 protocol 错误分类。
+- Images 响应只接受可持久化 base64；支持 PNG/JPEG/WebP 魔数，限制 prompt、图片数量、单图和总大小，仅远程 URL 的响应直接失败。错误与 revised prompt 经过 secret scrub。
+- Runtime 新增 `GeneratedImageStore`：图片写入受控 `artifacts/generated-images` 根目录，scope 与文件名均由 SHA-256 派生，使用临时文件 + rename，并验证路径边界、已存在文件内容及幂等复用。
+- Production execution output 扩展为 inline `content` 与本地 `contentRef + contentHash` 严格二选一；引用只允许本地绝对路径、安全 file URL 或内部 artifact URL，引用图片必须携带小写 SHA-256。
+- `ProductionStepExecutor` 已为 `openai-images` 接入 durable reserve、typed Provider 调用、Runtime 落盘、complete/replay 和 Scheduler candidate ArtifactVersion；已完成 reservation 的 Step 重启后不会再次调用 Provider。
+- Runtime 注册改为将 `openai-images` 绑定到专用 Images Adapter，并向 production executor 注入 Runtime-owned image store；API Key、base64、完整 prompt、远程 URL 和原始 Provider 响应不持久化。
+- 验证：Adapter 14 项、Image Store 5 项、Execution Store 9 项、Production Executor 27 项定向通过；Adapters 68 项、Runtime 405 项、Desktop 750 项、Core 164 项及根仓串行 20/20 tasks 通过；typecheck、lint、design tokens、build 与 diff check 门禁通过。
+- 下一切片为 Image P0.2 Renderer 图片 Artifact 卡片/安全预览；P0.3 再实现视觉 Reviewer、多候选比较和有界返工。Phase 3 保持进行中。
+
+## 2026-08-01 · DesktopWorker P0.10：真实 WPF 冷重启人工接管 E2E 收口
+
+- 新增仓库内 WPF fixture 与正式命令 `pnpm selftest:desktop-handoff`，支持 Continue、Cancel 和两路径串行验收；fixture 通过独立临时 artifacts 构建，不在仓库生成 `bin/obj`。
+- E2E 从真实聊天 UI 触发 Provider 的 list/inspect/resolve/set-value 工具链，并对 `InputText` 执行真实 UIA `ValuePattern.SetValue`。
+- WPF mutation handler 在执行期间阻塞，测试通过 User32 键盘事件改变 `GetLastInputInfo`，验证 mutating action 被中断并持久化为 `waiting_user / desktop.user-input-detected`。
+- Desktop 与 managed Runtime 冷重启后，Renderer 从同一 SQLite 恢复等待卡片；Continue 终结为 `completed / user-confirmed`，Cancel 终结为 `failed / desktop.command-cancelled / acceptance`。
+- 两条路径均验证原 UIA 动作只发生一次，Provider 请求不因冷重启或用户决定重放；lifecycle event 和等待卡片继续遵守敏感字段安全投影。
+- 新增 selector trust 冷重启单测：同一 SQLite 上的新 Runtime Controller 不继承旧进程解析元数据，旧 target 重新按 sensitive 要求审批，审批前不 reserve command。
+- 验证：`pnpm selftest:desktop-handoff` 2/2；Workers 100 passed / 3 skipped；Runtime 398 tests；Desktop 750 tests；根仓串行测试 20/20；typecheck、lint、build 11/11、WPF Release build 与 diff check 全部通过。
+- 启动验收：隐藏控制台重启后 Electron `SYNC-THINK` 可见且响应，managed Runtime Node 20.20.2 的 pipe/database/hello 正常、stderr 为空；日志位于 `D:\tmp\sync-think-restart-20260801-162722`。
+- DesktopWorker P0.1-P0.10 至此完成；下一阶段任务转向图像生成完整管线与视觉审查闭环。
+
+## 2026-08-01 · DesktopWorker P0.9：动作风险分级与 Runtime 审批策略
+
+- Desktop 动作统一分类为 `observe`、`display`、`sensitive`、`human-only`、`prohibited`，分类上下文不足时 fail-closed。
+- 最终审批矩阵：observe 在 ask/workspace/full-access 自动执行；display 仅 ask 审批；sensitive 与 human-only 在所有模式都审批；prohibited 始终阻止。full-access 只免除可信、已解析普通 display 动作的审批。
+- Runtime 在 `desktop_resolve_selector` 成功后维护最多 512 项的短生命周期 `DesktopElementTarget → DesktopElementSnapshot` 元数据缓存。冷重启后缓存失效；未解析 invoke/set-value 继续按 sensitive 审批。
+- UIA `CurrentIsPassword` 已进入元素快照和 accessibility revision。密码字段 read/set-value 归类为 `human-only / access-or-create-secret`；删除、支付、发布、外发、权限变更和越界导出等高风险语义映射为对应 human-only action。
+- `RuntimeDesktopController` 在 durable command reserve 和 Worker 执行前二次强制风险与审批检查。缺少审批时不 reserve command、不调用 Worker；deny 路径保持零 Worker 调用和零 command 增量。
+- `tool.approval_requested` 与 `desktop.command.started` 使用安全投影，不包含明文 value、valueDigest、nativeWindowHandle、snapshot/accessibility revision、elementIndex、targetIdentity 或 ownerId。
+- Runtime 集成测试覆盖 full-access 下未解析 sensitive 的 deny、密码字段 human-only 的 approve、普通已解析 display 自动执行，以及审批后用户输入中断 fence。Runtime 定向 4 文件 / 72 项、Workers 定向 2 文件 / 18 项、Workers 全量 100 passed / 3 skipped、Runtime 全量和 Desktop 107 文件 / 750 项均通过；typecheck、lint、根仓 build 11/11 与 diff check 通过。
+- 启动验收：已隐藏控制台重启 Desktop 与 managed Runtime；pipe/database/hello 正常、stderr 为空、Electron 窗口可响应，日志位于 `D:\tmp\sync-think-restart-20260801-153021`。
+- 后续：真实 WPF fixture 的用户输入中断、Runtime/Desktop 冷重启、waiting card 恢复及 Continue/Cancel E2E。
+
+## 2026-08-01 · DesktopWorker P0.8：waiting_user Continue/Cancel resolution
+
+- Protocol 新增 `desktop.command.continue` / `desktop.command.cancel` 命令、类型与 Feature negotiation；等待摘要增加 `canContinue/canCancel`。
+- Storage 新增持久 resolution：Continue 将 `waiting_user` 终结为 `completed` 并记录 `resolution: user-confirmed`，只确认用户已人工处理，不重新执行原 UIA 动作；Cancel 将其终结为 `failed`，错误为 `desktop.command-cancelled`、分类为 `acceptance`。
+- Continue/Cancel 都要求 `expectedUpdatedAt` 乐观并发栅栏；记录已变化时稳定返回 `desktop.command-conflict`，成功请求支持幂等重放，时间戳保持单调。
+- Runtime 增加严格 payload 校验、命令路由和 durable `desktop.command.continued/cancelled` 事件；事件仍只携带安全投影，不泄漏正文、digest、native handle、target identity、owner 或 revision/index。
+- Desktop Main/Preload/Renderer 已接通两种动作。等待卡片提交时同时锁定按钮；Renderer 成功或失败都重新查询 durable waiting list，生命周期事件只触发重查，SQLite/Runtime 投影继续是真源。
+- 自动化验证覆盖真实 Runtime 管道、Continue/Cancel 状态转移、重放、stale fence、严格校验、事件脱敏，以及 Renderer 提交/锁定/冲突刷新。Storage、Protocol、Runtime、Desktop 全量测试通过，Desktop 为 107 文件 / 750 项；相关 build/typecheck/lint 通过，根仓 `pnpm build` 11/11 成功且 `git diff --check` 通过。
+- 启动验收：隐藏控制台重启后 Runtime pipe/database/hello 正常，两侧 stderr 为空，无 orchestration recovery 异常，Electron 窗口可响应；日志位于 `D:\tmp\sync-think-restart-20260801-143907`。
+- 后续：Desktop 动作风险分级，以及真实 WPF fixture + Runtime/Desktop 冷重启后的用户输入中断、Continue/Cancel 恢复 E2E。
+
+## 2026-08-01 · DesktopWorker P0.7：持久等待态只读投影与恢复迁移修复
+
+- 修复 Runtime 启动恢复期间的 `step.execution_fence invalid`：新增 migration `0032_scheduler_fencing_repair`，允许 `failed/completed` Step 保留最终 `execution_owner_id/execution_attempt` 诊断信息，同时继续强制清除终态 lease，避免历史 Run 恢复时报 `[runtime] orchestration recovery failed`。
+- Storage 新增按 workspace/run 查询持久 `waiting_user` Desktop command；Runtime 新增 `desktop.command.listWaiting`，只返回窗口标题/appId/PID、动作、原因、状态和时间等安全摘要，不投影输入值、native handle、target identity、owner、digest 或 revision/elementIndex。
+- 用户输入中断持久化完成后发布 durable `desktop.command.waiting_user` 事件。该事件只触发 Renderer 重查，界面数据始终来自 Runtime 的持久安全投影。
+- Desktop Main/Preload 新增只读 list-waiting IPC；Renderer 在当前 task/run 下显示等待卡片，支持 reconnect、事件触发刷新、请求 generation fence 和查询失败重试，reload 或 Desktop 重启后仍可恢复显示。
+- 本切片刻意不暴露 Continue/Cancel；等待卡片明确提示系统没有自动重放未知桌面副作用。下一切片继续实现 Continue/Cancel、高风险动作分级和真实端到端恢复。
+- 验证：Storage 24 文件 / 256 项、Protocol 8 文件 / 55 项、Runtime 全量测试/typecheck/lint、Desktop 107 文件 / 742 项与 typecheck 均通过；根仓 `pnpm build` 11/11 成功，`git diff --check` 通过；正式重启后 migration `0032_scheduler_fencing_repair` 已应用，Runtime pipe/database/hello 正常，日志未再出现 `orchestration recovery failed`。
+
+## 2026-08-01 · Provider fallback：`run.paused` 终态与文本回退过滤
+
+- Desktop 流式状态新增 `run.paused` 终态处理：`fallback_exhausted` 后会清理 `activeRunId`、停止 streaming、移除残留 draft，并在聊天区显示可理解的暂停提示，不再停留在“准备中 / 深度思考中”。
+- 暂停提示会带出模型、错误类型和 Provider 失败摘要；例如 `grok-4.5` 连续 HTTP 503 后提示用户稍后重试或切换模型。
+- Core/Runtime 新增文本回退兼容过滤：同 Provider priority fallback 与 Agent `fallbackModelIds` 都会跳过图片、视频、embedding、TTS/语音等非文本模型；Provider discovery 不再把所有模型硬标为 `text`。
+- 新增覆盖：Core capability probe、Desktop chat stream、Runtime fallback walk；确认 `grok-imagine-*` 即便历史能力标签错误包含 `text`，也不会进入文本 fallback 调用链。
+- 验证：Core typecheck/test/build 通过（17 文件 / 164 项）；Runtime typecheck/lint/test/build 通过（60 文件 / 387 项，fallback 定向 5/5）；Desktop typecheck/test/build 通过（103 文件 / 728 项）；`git diff --check` 通过。
+
+## 2026-07-31 · DesktopWorker P0.6：durable command 与用户输入中断 fence
+
+- 新增 SQLite migration `0031_desktop_command` 与 `SqliteDesktopStore`。Desktop 工具在 Worker 副作用前持久化 command/intent，支持 request digest、幂等键冲突检测、approved/running/completed/failed/waiting_user 状态和结果重放。
+- Runtime 新增 `RuntimeDesktopController`：Computer Use capability 在 reserve 前 fail-closed；已完成命令直接重放，失败命令不自动重试，旧的非终态命令转为 `waiting_user` + `desktop.command-inspection-required`，避免重启后盲目重复桌面副作用。
+- focus/invoke/set-value 等可变更动作执行前采样 Windows `GetLastInputInfo`，执行中每 40ms 检查用户键鼠输入；检测到变化会 abort 并终止短生命周期 Host，command 持久化为 `waiting_user`，稳定返回 `desktop.user-input-detected`。观察/读取工具不启用该监控。
+- `GetLastInputInfo` 仅作为 Runtime/Workers 内的窄范围只读 User32 边界，不模拟输入，也不改变“UIA COM 只能位于独立 Desktop Host”的架构约束；非 Windows 或监控不可用时以 `desktop.input-monitor-unavailable` fail-closed。
+- `desktop_set_value` 的正文仍只经 Host stdin 传输；durable command/event 仅保存长度和 SHA-256 digest，不保存明文。Worker 与 User32 reader 均延迟创建，插件关闭时不会加载或启动。
+- 验证：Storage migration/store 55 passed；Workers Desktop 定向 30 passed；Runtime Desktop/chat 定向 62 passed；Shared/Storage/Workers/Runtime/Desktop typecheck、Shared/Storage/Workers/Runtime lint、Runtime/Desktop build 与 `git diff --check` 通过。
+- 下一切片：把持久 `waiting_user` 投影到 Runtime/Desktop/Renderer，增加 Continue/Cancel，再完成敏感/高风险动作分级和真实人工接管闭环。
+
+## 2026-07-31 · DesktopWorker P0.5：内置 Computer Use 插件与 Runtime capability gate
+
+- 新增内置 `computer-use` 插件注册表，复用现有 `app_setting` 保存 `plugin.computer-use = { enabled }`，默认关闭；未启用时 Runtime 不向 Provider 暴露 `desktop_*` schema、不加入 Computer Use prompt，也不会实例化 Worker 或启动 Desktop Host。
+- 插件启用后，聊天工具循环提供 `desktop_list_windows`、`desktop_inspect_window`、`desktop_resolve_selector`、`desktop_read_element`、`desktop_focus_element`、`desktop_invoke_element`、`desktop_set_value` 七个 UIA 工具，并继续沿用 exact window、双 revision、element index 与 bounded inspect fence。
+- 插件开关与权限模式保持独立：插件决定“有没有桌面能力”；`execution_mode` 决定“启用后是否审批”。`ask` 只审批 focus/invoke/set-value，观察/读取自动执行；`workspace` 与 `full-access` 下普通桌面动作自动执行。`full-access` 不会自动启用插件。
+- Runtime 在 schema 生成、工具 allowlist 和实际 dispatch 前重复读取 capability；模型生成工具调用后若用户关闭插件，稳定返回 `desktop.capability-disabled`，且不会先弹审批或启动 Host。Desktop 工具不依赖项目目录，因此可在无 workspace 的对话中使用。
+- 设置页“插件”分区已上线 Computer Use 开关，支持持久状态加载、保存失败回滚和权限语义说明。Renderer 通过 browser-safe `@sync-think/protocol/plugins` 子路径导入插件常量，避免浏览器 bundle 跟进 Protocol barrel 的 Node built-ins。
+- 验证：Protocol 55 passed；Runtime Desktop/chat/plugin 定向 54 passed；Desktop SettingsPage 4 passed；Shared/Protocol/Workers/Runtime/Desktop typecheck、Runtime/Desktop lint、Runtime/Desktop build 均通过。
+- 当前切片只完成可选能力暴露与普通审批语义，不等于 durable Desktop command / 人工接管闭环。下一切片是持久 command/intent、用户输入中断 fence、`waiting_user`、Continue/Cancel 与敏感/高风险动作分类。
+
+## 2026-07-31 · Windows UI Automation Worker P0.1：独立 Host 与真实 UIA Root probe
+
+- 用户确认采用“独立短生命周期 Node DesktopWorker Host + Koffi 3.1.4 + Windows UIA COM”，.NET sidecar 作为 ABI/COM/打包成本过高时的触发式降级，WinAppCLI 只作开发期 oracle。
+- 新增版本化 Desktop contract 和独立 JSONL/stdio Host：包含 ready/response 握手、父 PID 监控、beforeStart fence、realpath capability root、AbortSignal、硬超时/进程树终止、输出限幅、原生错误清洗与稳定失败分类。
+- 首版 schema 已加入 exact Window identity、snapshot/accessibility revision 和短生命周期 element index；probe/list/inspect/read/focus/invoke/set-value 均有输入约束，但当前真实驱动只实现 probe，未实现动作明确返回 `desktop.action-unsupported`。
+- 固定生产依赖 `koffi@3.1.4`，真实 Host 完成 `CoInitializeEx -> CoCreateInstance(CUIAutomation) -> GetRootElement -> Release -> CoUninitialize`；编译产物在项目 managed Node 20.20.2/N-API 9 上真实 smoke 返回 `rootAvailable=true`，系统 Node 24.14.1/N-API 10 也通过。SetValue 正文将通过 stdin 进入 Host，不暴露在命令行。
+- 新增 `IsolatedDesktopWorker` 并保留 Fake 回退；Desktop 定向 20/20、Workers 全量 82 passed / 3 skipped，typecheck、lint、build、Prettier 和 `git diff --check` 通过。
+- 当前只完成 P0.1 Host/probe。下一切片是可见顶层窗口发现、bounded UIA inspect 和 revision 生成；OCR、通用截图定位、任意坐标点击/拖拽不进入 P0。
+- 技术证据与选型记录：`docs/superpowers/specs/2026-07-31-windows-uia-worker-spike.md`。
+
+## 2026-07-31 · Browser Worker P0/P0.5：真实 Desktop/Runtime 重启接管验收完成
+
+- 新增正式验收命令 `pnpm selftest:browser-handoff`（等价于 `node scripts/selftest-browser-handoff-e2e.mjs all`），使用隔离临时数据库、Electron user-data、脚本化本地 OpenAI-compatible Provider 与系统 Edge/Chrome，串行执行 Continue、Cancel close-page、Cancel keep-open 三条路径。
+- 三条路径均验证真实 Desktop/Runtime 冷重启：等待接管期间同一 CDP target 保留；重启后 durable 卡片恢复；Provider 首轮请求与 `browser_open` 不重放；Continue 从同一 Step checkpoint 完成；两种 Cancel 都以 `browser.handoff-cancelled` 失败 Run/Step，并分别关闭或暂时保留页面。
+- Continue 或 Cancel 解析后，第二次 Desktop 退出会关闭已接管的系统浏览器并删除 Profile-local CDP metadata。`cancel-keep-open` 实测暴露冷启动 BrowserHost 未恢复 lease 的缺口；Runtime 现会在所有带 lease 的 Cancel 路径先恢复并校验 lease，使页面在 Runtime 存活期间保持打开、最终 shutdown 仍能完整清理。
+- Desktop 管理 Runtime 退出改为 IPC 优雅关闭，等待 `session.close()` 完成后再退出 Electron；超时仅终止 Runtime 自身，不再通过进程树误杀需要跨重启保留的系统浏览器。系统 Edge/Chrome 以 detached/unref 方式启动，但无等待接管时仍由 BrowserHost 通过 CDP 显式关闭。
+- 真实 E2E 结果：`PASS continue`、`PASS cancel-close-page`、`PASS cancel-keep-open`。完整回归：Workers 70 passed / 3 skipped，Desktop 721 passed，Runtime 369 passed，Protocol 53 passed，Storage 251 passed，Shared 21 passed；相关 package build、typecheck、lint、Prettier 与 `git diff --check` 全部通过。
+- 已知测试现象：Playwright Electron 首次 `app.close()` 偶尔返回 Windows `0xC0000005`，但 Runtime 已进入优雅退出、handoff 浏览器正确保留、第二次启动可恢复且最终进程/metadata 均清理；当前记录为调试关闭噪声，不阻塞 P0.5 验收。
+- 结论：Browser Worker P0.1-P0.5 已完成，Phase 3 下一主项转入 Windows UI Automation Worker 与人工接管回退。
+
+## 2026-07-31 · Browser Worker P0.5：Durable Human Handoff 与 Desktop Continue/Cancel
+
+- Browser handoff 已持久化为 revision-bound `waiting_user` 状态；登录、验证码、支付、设备确认等人工检查点可在 Runtime/Desktop 重启后继续查询，不再受 Renderer 固定超时影响。
+- Runtime 新增 `browser.handoff.listWaiting/continue/cancel`。Continue 重新校验 Page/Profile/lease owner 后从同一 Step checkpoint 恢复，不重放 `browser_open`；Cancel 失败 Run/Step，并按 `keep-page` 或 `close-page` 生命周期策略处置 lease。
+- Desktop Main/Preload/Renderer 已接入 handoff IPC，并新增 durable 接管卡片、查询失败 Retry、Runtime 重连恢复、Continue/Cancel 共享 busy lock 与操作失败提示。
+- Renderer 只接收安全摘要，不显示或保存 lease/page/profile/owner、Cookie 与页面秘密；事件仅作为刷新信号，durable query 才是 UI 真源。
+- 修复 Windows 临时目录 8.3/长路径差异导致的 Terminal 测试不稳定；实机冷重启发现持久 activity cursor 可能领先于回滚后的 Runtime 事件历史，Desktop 现会原子归零游标、清空旧活动快照并从 0 重新订阅，避免持续 `protocol.unexpected_request`。
+- 验证：Desktop handoff 4 文件 / 21 项、activity cursor 2 文件 / 11 项、Desktop 全量 101 文件 / 716 项；Runtime handoff 4 文件 / 42 项；Runtime 全量 57 文件 / 367 项，Storage 全量 23 文件 / 251 项；根仓 typecheck/lint/build、顺序全仓测试与 `git diff --check` 均通过。
+- 边界：真实系统 Edge/Chrome 人工端到端 smoke 仍待执行，因此 P0.5 和 Browser Worker 路线图主项暂不关闭。
+
+## 2026-07-31 · Browser Worker P0.4：Team Step 精确权限、Page lease 隔离与审计元数据
+
+- Production Step 已按冻结 `AgentVersion.permissions.browser` 动态暴露并执行 `browser_open/click/type/read/screenshot`；默认持久化 Runtime 已把 Browser Controller 接入 Production executor。
+- Team Step 的站点授权只使用精确 `agent-version` scope，并同时受冻结 origin 快照约束；Run/Workspace coordinator grant 不再能替成员越权。
+- 每个 Step 使用稳定 owner `step:<runId>:<stepId>:<agentVersionId>`。同一 Team 可共享 Profile 登录态，但不同成员/Step 使用独立 Page lease；Provider 参数中没有 `leaseId` 寻址能力。
+- Browser 成功结果、普通输出 Artifact、Tool Trace Artifact 与单次 trace metadata 均携带 acting AgentVersion、Step、owner、Profile、lease、page、origin 和 command ID。
+- Browser 审批载荷已脱敏：导航仅保留 origin/path，输入仅保留 selector、字符数和 SHA-256，不把 URL query/hash 或输入正文写入审批详情。
+- 验证：定向测试 33/33，Runtime 56 文件 / 360 项；根仓 typecheck 20/20、lint 11/11、build 11/11、test 20/20，`git diff --check` 通过。
+- 边界：P0.5 durable `waiting_user` 与人工接管仍待实现，因此 Browser Worker 路线图主项继续保持未完成。
+
 ## 2026-07-30 · Browser Worker P0.1/P0.2：系统浏览器 Host 与 Runtime 真执行链
 
 - **系统浏览器 Host**：新增 `BrowserHost`，发现显式浏览器路径或系统 Edge/Chrome，以 loopback 动态 CDP 端口启动可见外部进程，并通过 `playwright-core.connectOverCDP` 接管独立持久 Profile；不下载或打包 Playwright Chromium。
@@ -1897,3 +2288,67 @@ Desktop typecheck/build：passed
 - Storage：`listTasks` 同时间排序 tie-break 从随机 ULID 改为插入 `rowid`。
 - 测试：根级 707 tests、typecheck、build、M1 quick soft、Electron 真实截图全部通过。
 - 边界：**M1 仍 open**；外网手测 0/18、dogfood 0/3；不启动 M2。
+
+## 2026-07-31：DesktopWorker P0.2 窗口发现与 bounded UIA inspect
+
+- 新增 Win32 顶层窗口发现：`EnumWindows + IsWindowVisible + GetWindowTextW + GetWindowThreadProcessId + DWMWA_CLOAKED`。
+- `DesktopWindowListResult` 新增强制 `truncated` 字段，最多返回 256 个窗口。
+- 新增 exact window fence：inspect 前后校验 HWND/PID/可选 title，稳定错误码为 `desktop.window-stale`。
+- 新增真实 UIA Control View 遍历，支持深度、节点数和 UTF-8 文本字节上限，并正确释放 COM/BSTR 引用。
+- 元素快照新增真实 Name、AutomationId、ControlType、ProcessId、Enabled、Offscreen、Bounds 与 Invoke/Value Pattern 探测结果。
+- 新增确定性 `desktop-a11y-v1:<sha256>` 与 `desktop-snapshot-v1:<sha256>` revision。
+- 新增 driver backend 注入测试、window-list response schema 测试和真实 Node 20 compiled Host smoke。
+- 验证：Workers `86 passed / 3 skipped`，typecheck、lint、build、Prettier 与 `git diff --check` 通过。
+
+## 2026-07-31：DesktopWorker P0.3 exact selector resolution
+
+- Desktop Host contract 新增 `resolve-selector`、`DesktopSnapshotTarget` 与 `element-resolved` result。
+- selector 采用两种互斥的精确策略：`automationId` 优先（可选 `controlType`），否则必须提供 `name + controlType`；不做 fuzzy match 或隐式 fallback。
+- resolution 会按请求中的 tree limits 重新 bounded inspect exact window，并在匹配前校验 `snapshotRevision + accessibilityRevision`。
+- 新增稳定错误码：`desktop.snapshot-stale`、`desktop.selector-not-found`、`desktop.selector-ambiguous`。
+- 唯一匹配返回 exact window、双 revision、`elementIndex` 与对应元素快照，为后续 read/focus/Invoke/SetValue 提供短生命周期引用。
+- 新增 contract 与 driver 测试，覆盖 automationId、name+controlType、not-found、ambiguous 和 stale revision。
+- 真实 WPF fixture compiled Host smoke 通过：12 个节点中 `ApplyButton` 唯一解析为 `elementIndex=4`，Invoke Pattern 可见。
+- 验证：Workers `92 passed / 3 skipped`，Shared/Workers typecheck、Workers lint/build、Prettier 与 `git diff --check` 通过。
+
+## 2026-07-31：DesktopWorker P0.4 最小 UIA 语义动作
+
+- 新增 `read-element`、`focus-element`、`invoke-element`、`set-value` Host contract，并为四类动作统一接入 bounded tree limits 与严格 schema 校验。
+- 每次动作针对 exact window 重新 bounded inspect，在同一 COM apartment 中保留短生命周期 element lease；Driver 校验双 revision 和 `elementIndex` 后才允许执行 UIA 方法。
+- `read-element` 使用 Value Pattern 或 fenced Name/Text；Focus 使用 `SetFocus`，Invoke 只使用 Invoke Pattern，SetValue 检查只读后使用 Value Pattern，正文继续通过 Host stdin JSONL 传输。
+- 新增稳定错误码覆盖元素不存在、disabled、offscreen、Pattern 不支持、Value 只读和原生动作失败；不引入坐标、SendInput、剪贴板、OCR 或模糊回退。
+- lease 结束后释放目标 Element、Pattern、Walker、Automation、BSTR 和 COM apartment，避免跨请求保存原生元素指针。
+- 真实 WPF compiled Host smoke 通过：读取 `initial`、Focus、写入并读回 `p04-smoke`、Invoke `ApplyButton`，最终读取 `ResultText=applied:p04-smoke`。
+- 验证：Workers `97 passed / 3 skipped`，Shared/Workers typecheck、Workers lint/build、目标文件 Prettier 与 `git diff --check` 通过。
+- 当前只完成 DesktopWorker Host 最小语义动作；下一切片是 Runtime durable command、审批/用户中断 fence、`waiting_user` 人工接管和 Continue / Cancel 恢复接线。
+
+## 2026-08-01 — Image P0.3 第二切片：多候选并列比较与 durable 选择
+
+- 图片生成多输出现在归入一个 Artifact 的多个 immutable ArtifactVersion，而不是创建多个独立 Artifact。
+- Artifact list 安全投影候选序号、总数、尺寸、质量和字节数；完整 metadata 与本地路径仍留在 Runtime/Main。
+- Desktop 图片候选画廊支持“选择此候选 / 当前候选 / 未采用”，并隐藏不适用的文本 diff、左右 picker 与 merge。
+- Provider reservation replay 会重新派生临时分组键，避免重复 Provider 调用并保持相同物化语义。
+
+### 2026-08-01 · Agent Thread / Context Epoch、Provider Cache 与 Token Usage
+
+- Scheduler 为 execution/rework/reviewer workstream 分配稳定且隔离的 AgentContextThread；retry 复用，Reviewer 不继承前端 Agent transcript，rework 回到目标执行线程。
+- Production Executor 按 provider/model/context window 管理 ContextEpoch，并使用 provider/model/thread/epoch 构造稳定 prompt cache identity。
+- OpenAI/Anthropic usage 统一持久化 input/output、cache hit/cache write、reasoning 和 total token；Runtime 可按 request/thread/epoch/purpose 汇总，缓存内容不落本地数据库。
+- Reviewer reject 只持久传递结构化 ReviewDecision；完整 transcript 与 Artifact parent lineage 不混作上下文真源。
+
+## 2026-08-02：大数据库 Task-scoped 上下文边界读取与真实启动验证
+
+- 默认 16.87GB 开发数据库的第三个启动阻塞点定位为上下文 compact boundary 的全局 Event 扫描：未完成对话恢复会在 Runtime pipe 就绪后读取约 198 万条 Event 及其 payload，导致 V8 heap OOM 和 Runtime exit code 134。
+- Storage 新增 `listEventsByTask(taskId)`，SQL 强制使用 `event_task_idx`，只按稳定顺序读取当前 Task 的 durable Event，不包含全局 telemetry 或其他 Task。
+- Runtime 的上下文状态恢复与手动 `conversation.compact` 均优先走 Task-scoped 索引查询；仅为 legacy/test store 保留旧的全局回退。
+- 新增 Storage 查询计划测试与 Runtime 集成测试，确保大库维护路径不会调用 `listAllEvents`。
+- 使用真实 `.data/SYNC-THINK/sync-think.db` 验证：约 5 秒完成 Runtime/Database/Hello 启动链路；35 秒采样 Runtime 工作集仅增长 0.4MB；Electron 主窗口响应并显示任务列表与聊天工作台；日志无 pipe timeout/OOM；备份数保持 76。
+- 证据日志：`.data/manual-task-indexed-context-20260802-160502/desktop.stdout.log` 与 `desktop.stderr.log`。
+
+## 2026-08-02 · Runtime Event payload sidecar allowlist
+
+- Runtime 新增默认关闭的 Event payload sidecar 选项与环境变量入口。
+- 仅对达到 64 KiB 的 `context.packet.built` 使用 `context-packet-query-v1@1` 外置；其他 Event 和小 payload 保持内联。
+- 默认 sidecar 目录绑定 database path 与 install ID；重启 hydrate，missing/corrupt blob fail-closed。
+- Runtime 启动不触发 backfill、rollback、GC、quarantine 或其他数据库治理动作。
+- 新增默认关闭、白名单、阈值、projection、身份隔离、legacy inline、startup no-governance、restart hydrate 与 blob 故障测试。

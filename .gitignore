@@ -33,3 +33,4 @@ apps/desktop/release
 /Sync-Think/conversations/
 /_*.mjs
 .sync-think/
+.session-runtime-events.tsv

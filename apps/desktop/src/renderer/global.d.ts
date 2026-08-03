@@ -1,4 +1,8 @@
-﻿import type {
+import type {
+  ExportDesktopDiagnosticsPayload,
+  ExportDesktopDiagnosticsResponse,
+} from '../diagnostics-export-contract.js';
+import type {
   AppendMessagePayload,
   AppendMessageResponse,
   BindWorkspaceFolderPayload,
@@ -94,6 +98,18 @@
   EnqueueApprovalResponse,
   DecideApprovalPayload,
   DecideApprovalResponse,
+  ListWaitingBrowserHandoffsPayload,
+  ListWaitingBrowserHandoffsResponse,
+  ListWaitingDesktopCommandsPayload,
+  ListWaitingDesktopCommandsResponse,
+  ContinueDesktopCommandPayload,
+  ContinueDesktopCommandResponse,
+  CancelDesktopCommandPayload,
+  CancelDesktopCommandResponse,
+  ContinueBrowserHandoffPayload,
+  ContinueBrowserHandoffResponse,
+  CancelBrowserHandoffPayload,
+  CancelBrowserHandoffResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -116,6 +132,7 @@
   SavePolicyResponse,
   ListPoliciesPayload,
   ListPoliciesResponse,
+  GetArtifactVersionPayload,
   ListArtifactsPayload,
   ListArtifactsResponse,
   CompareArtifactVersionsPayload,
@@ -147,7 +164,12 @@ import type {
   RendererUpdateProviderCredentialPayload,
 } from '../provider-payloads.js';
 import type { Event } from '@sync-think/shared';
+import type { ArtifactImagePreviewResponse } from '../artifact-image-preview-contract.js';
 import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
+import type {
+  DesktopUpdateActionResult,
+  DesktopUpdateSnapshot,
+} from '../desktop-update-contract.js';
 import type {
   CancelProjectTerminalPayload,
   CancelProjectTerminalResult,
@@ -201,6 +223,9 @@ declare global {
         ): Promise<OrchestrationRunMutationResponse>;
         savePolicy(payload: SavePolicyPayload): Promise<SavePolicyResponse>;
         listPolicies(payload: ListPoliciesPayload): Promise<ListPoliciesResponse>;
+        getArtifactImagePreview(
+          payload: GetArtifactVersionPayload,
+        ): Promise<ArtifactImagePreviewResponse>;
         listArtifacts(payload: ListArtifactsPayload): Promise<ListArtifactsResponse>;
         compareArtifactVersions(
           payload: CompareArtifactVersionsPayload,
@@ -231,9 +256,10 @@ declare global {
           payload: ConfirmCapabilitiesPayload,
         ): Promise<ConfirmCapabilitiesResponse>;
         reorderProviders(payload: ReorderProvidersPayload): Promise<ReorderProvidersResponse>;
-        addProviderCredential(
-          payload: { providerId: string; label?: string },
-        ): Promise<AddProviderCredentialResponse>;
+        addProviderCredential(payload: {
+          providerId: string;
+          label?: string;
+        }): Promise<AddProviderCredentialResponse>;
         removeProviderCredential(
           payload: RemoveProviderCredentialPayload,
         ): Promise<RemoveProviderCredentialResponse>;
@@ -243,9 +269,7 @@ declare global {
         updateProviderCredential(
           payload: RendererUpdateProviderCredentialPayload,
         ): Promise<import('@sync-think/protocol').UpdateProviderCredentialResponse>;
-        setModelPriorities(
-          payload: SetModelPrioritiesPayload,
-        ): Promise<SetModelPrioritiesResponse>;
+        setModelPriorities(payload: SetModelPrioritiesPayload): Promise<SetModelPrioritiesResponse>;
         updateModel(payload: UpdateModelPayload): Promise<UpdateModelResponse>;
         removeProviderModel(payload: RemoveModelPayload): Promise<RemoveModelResponse>;
         getSettings(payload?: GetSettingsPayload): Promise<GetSettingsResponse>;
@@ -299,13 +323,15 @@ declare global {
         ): Promise<import('@sync-think/protocol').ConversationGetRunProcessResponse>;
         subscribeConversationTransientStream(
           payload: { threadId: string; afterStreamSequence?: number },
-          listener: (event:
-            | { type: 'frame'; frame: ConversationTransientFrame }
-            | {
-                type: 'reset';
-                latestStreamSequence: number;
-                snapshot?: ConversationTransientSnapshot;
-              }) => void,
+          listener: (
+            event:
+              | { type: 'frame'; frame: ConversationTransientFrame }
+              | {
+                  type: 'reset';
+                  latestStreamSequence: number;
+                  snapshot?: ConversationTransientSnapshot;
+                },
+          ) => void,
         ): {
           ready: Promise<{ subscriptionId: string }>;
           unsubscribe(): Promise<void>;
@@ -368,6 +394,24 @@ declare global {
         probeMcpSpawn(payload?: ProbeMcpSpawnPayload): Promise<ProbeMcpSpawnResponse>;
         callMcpTool(payload: CallMcpToolPayload): Promise<CallMcpToolResponse>;
         refreshMcpTools(payload: RefreshMcpToolsPayload): Promise<RefreshMcpToolsResponse>;
+        listWaitingDesktopCommands(
+          payload?: ListWaitingDesktopCommandsPayload,
+        ): Promise<ListWaitingDesktopCommandsResponse>;
+        continueDesktopCommand(
+          payload: ContinueDesktopCommandPayload,
+        ): Promise<ContinueDesktopCommandResponse>;
+        cancelDesktopCommand(
+          payload: CancelDesktopCommandPayload,
+        ): Promise<CancelDesktopCommandResponse>;
+        listWaitingBrowserHandoffs(
+          payload?: ListWaitingBrowserHandoffsPayload,
+        ): Promise<ListWaitingBrowserHandoffsResponse>;
+        continueBrowserHandoff(
+          payload: ContinueBrowserHandoffPayload,
+        ): Promise<ContinueBrowserHandoffResponse>;
+        cancelBrowserHandoff(
+          payload: CancelBrowserHandoffPayload,
+        ): Promise<CancelBrowserHandoffResponse>;
         listApprovals(payload?: ListApprovalsPayload): Promise<ListApprovalsResponse>;
         evaluateApproval(payload: EvaluateApprovalPayload): Promise<EvaluateApprovalResponse>;
         enqueueApproval(payload: EnqueueApprovalPayload): Promise<EnqueueApprovalResponse>;
@@ -378,19 +422,22 @@ declare global {
         peekContextPacket(payload: PeekContextPacketPayload): Promise<PeekContextPacketResponse>;
         amendContextPacket(payload: AmendContextPacketPayload): Promise<AmendContextPacketResponse>;
         listDiagnostics(payload?: ListDiagnosticsPayload): Promise<ListDiagnosticsResponse>;
+        exportDiagnostics(
+          payload?: ExportDesktopDiagnosticsPayload,
+        ): Promise<ExportDesktopDiagnosticsResponse>;
         pickFolder(): Promise<{ canceled: boolean; path: string | null }>;
         /** Push the renderer theme preference onto the native frame/title bar. */
         setTheme(theme: 'light' | 'dark' | 'system'): Promise<{ dark: boolean }>;
-        listProjectFiles(payload: {
-          root: string;
-          query?: string;
-          maxEntries?: number;
-        }): Promise<{
+        listProjectFiles(payload: { root: string; query?: string; maxEntries?: number }): Promise<{
           root: string;
           files: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;
         }>;
-        searchProjectContent(payload: SearchProjectContentPayload): Promise<SearchProjectContentResult>;
-        startProjectTerminal(payload: StartProjectTerminalPayload): Promise<StartProjectTerminalResult>;
+        searchProjectContent(
+          payload: SearchProjectContentPayload,
+        ): Promise<SearchProjectContentResult>;
+        startProjectTerminal(
+          payload: StartProjectTerminalPayload,
+        ): Promise<StartProjectTerminalResult>;
         cancelProjectTerminal(
           payload: CancelProjectTerminalPayload,
         ): Promise<CancelProjectTerminalResult>;
@@ -490,6 +537,13 @@ declare global {
         onEvent(listener: (event: Event) => void): () => void;
         onOpenConversation(listener: (conversationId: string) => void): () => void;
         notifyRendererReady(): void;
+      };
+      updates: {
+        getState(): Promise<DesktopUpdateSnapshot>;
+        checkForUpdates(): Promise<DesktopUpdateActionResult>;
+        downloadUpdate(): Promise<DesktopUpdateActionResult>;
+        installUpdate(): Promise<DesktopUpdateActionResult>;
+        subscribeState(listener: (snapshot: DesktopUpdateSnapshot) => void): () => void;
       };
       platform: 'win32';
     };

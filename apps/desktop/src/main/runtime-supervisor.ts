@@ -6,16 +6,18 @@
 // keep serving a stale process that already holds the named pipe.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-// mkdirSync already imported above
 import { connect } from 'node:net';
 import { pipePathPortable } from '@sync-think/protocol';
+import { stopRuntimeChild } from './runtime-child-shutdown.js';
+import type { DesktopRuntimeIdentity } from './packaged-install-identity.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let child: ChildProcess | null = null;
+let childInstallId: string | null = null;
 let starting: Promise<void> | null = null;
 /** Only force-restart once per Desktop process lifetime. */
 let didForceRestartThisSession = false;
@@ -207,7 +209,39 @@ function defaultDataRoot(): string {
   return join(dataRoot, 'SYNC-THINK');
 }
 
-function spawnRuntime(entry: string, installId: string, nodeBin: string): ChildProcess {
+export function resolveManagedRuntimeDatabasePath(): string {
+  return resolve(process.env.SYNC_THINK_DB_PATH ?? join(defaultDataRoot(), 'sync-think.db'));
+}
+
+export function buildManagedRuntimeEnvironment(
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+  baseEnvironment: Readonly<NodeJS.ProcessEnv> = process.env,
+  dataRoot: string = defaultDataRoot(),
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    ...baseEnvironment,
+    SYNC_THINK_INSTALL_ID: identity.installId,
+    SYNC_THINK_DEV_NO_TOKEN: identity.allowNoToken ? '1' : '0',
+    // Keep DB + image staging on a drive with free space (dev machines often fill C:).
+    SYNC_THINK_DB_PATH: resolve(baseEnvironment.SYNC_THINK_DB_PATH ?? join(dataRoot, 'sync-think.db')),
+    SYNC_THINK_CHAT_IMAGE_STAGING:
+      baseEnvironment.SYNC_THINK_CHAT_IMAGE_STAGING ?? join(dataRoot, 'chat-image-staging'),
+    SYNC_THINK_CHAT_MESSAGE_IMAGES:
+      baseEnvironment.SYNC_THINK_CHAT_MESSAGE_IMAGES ?? join(dataRoot, 'message-images'),
+  };
+  if (identity.pipeSecret) environment.SYNC_THINK_PIPE_SECRET = identity.pipeSecret;
+  else delete environment.SYNC_THINK_PIPE_SECRET;
+  // Never pass ELECTRON_RUN_AS_NODE when spawning system Node — it can confuse
+  // some environments if inherited from the parent Electron process.
+  delete environment.ELECTRON_RUN_AS_NODE;
+  return environment;
+}
+
+function spawnRuntime(
+  entry: string,
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+  nodeBin: string,
+): ChildProcess {
   const dataRoot = defaultDataRoot();
   try {
     mkdirSync(dataRoot, { recursive: true });
@@ -216,33 +250,19 @@ function spawnRuntime(entry: string, installId: string, nodeBin: string): ChildP
   } catch {
     /* ignore */
   }
-  const env = {
-    ...process.env,
-    SYNC_THINK_INSTALL_ID: installId,
-    // Match desktop dev default: no HMAC unless a secret is configured.
-    SYNC_THINK_DEV_NO_TOKEN:
-      process.env.SYNC_THINK_DEV_NO_TOKEN ?? (process.env.SYNC_THINK_PIPE_SECRET ? '0' : '1'),
-    // Keep DB + image staging on a drive with free space (dev machines often fill C:).
-    SYNC_THINK_DB_PATH: process.env.SYNC_THINK_DB_PATH ?? join(dataRoot, 'sync-think.db'),
-    SYNC_THINK_CHAT_IMAGE_STAGING:
-      process.env.SYNC_THINK_CHAT_IMAGE_STAGING ?? join(dataRoot, 'chat-image-staging'),
-    SYNC_THINK_CHAT_MESSAGE_IMAGES:
-      process.env.SYNC_THINK_CHAT_MESSAGE_IMAGES ?? join(dataRoot, 'message-images'),
-  };
-  // Never pass ELECTRON_RUN_AS_NODE when spawning system Node — it can confuse
-  // some environments if inherited from the parent Electron process.
-  delete (env as { ELECTRON_RUN_AS_NODE?: string }).ELECTRON_RUN_AS_NODE;
+  const env = buildManagedRuntimeEnvironment(identity, process.env, dataRoot);
 
   const childProcess = spawn(nodeBin, [entry], {
     env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     windowsHide: true,
     detached: false,
     shell: false,
   });
 
   if (typeof childProcess.pid === 'number') {
-    writePidFile(installId, childProcess.pid);
+    childInstallId = identity.installId;
+    writePidFile(identity.installId, childProcess.pid);
   }
 
   childProcess.stdout?.on('data', (chunk: Buffer) => {
@@ -255,13 +275,19 @@ function spawnRuntime(entry: string, installId: string, nodeBin: string): ChildP
   });
   childProcess.on('exit', (code, signal) => {
     console.warn('[desktop] runtime process exited', { code, signal });
-    if (child === childProcess) child = null;
-    clearPidFile(installId);
+    if (child === childProcess) {
+      child = null;
+      childInstallId = null;
+    }
+    clearPidFile(identity.installId);
   });
   childProcess.on('error', (error) => {
     console.error('[desktop] runtime process failed to start', error);
-    if (child === childProcess) child = null;
-    clearPidFile(installId);
+    if (child === childProcess) {
+      child = null;
+      childInstallId = null;
+    }
+    clearPidFile(identity.installId);
   });
 
   return childProcess;
@@ -371,8 +397,9 @@ async function stopExistingRuntime(installId: string): Promise<void> {
  * causes EADDRINUSE followed by renderer-visible runtime.unavailable errors.
  */
 export async function ensureRuntimeProcess(
-  installId: string = process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001',
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
 ): Promise<{ ready: boolean; spawned: boolean; error?: string }> {
+  const installId = identity.installId;
   const forceRestart =
     process.env.SYNC_THINK_RUNTIME_FORCE_RESTART === '1' && !didForceRestartThisSession;
 
@@ -412,7 +439,7 @@ export async function ensureRuntimeProcess(
 
     if (!child || child.killed || child.exitCode !== null) {
       console.log('[desktop] starting managed runtime', { entry, nodeBin });
-      child = spawnRuntime(entry, installId, nodeBin);
+      child = spawnRuntime(entry, identity, nodeBin);
     }
     const ok = await waitForPipe(installId);
     if (!ok) {
@@ -431,13 +458,22 @@ export async function ensureRuntimeProcess(
   };
 }
 
-export function stopManagedRuntime(): void {
+export async function stopManagedRuntime(timeoutMs = 12_000): Promise<void> {
   const proc = child;
+  const installId = childInstallId;
   child = null;
-  if (!proc || proc.killed) return;
-  try {
-    proc.kill();
-  } catch {
-    /* ignore */
+  childInstallId = null;
+  if (!proc) {
+    if (installId) clearPidFile(installId);
+    return;
   }
+
+  const result = await stopRuntimeChild(proc, { timeoutMs });
+  if (result.forced) {
+    console.warn('[desktop] runtime graceful shutdown timed out; terminated runtime process');
+  }
+  if (!result.exited) {
+    console.warn('[desktop] runtime process did not report exit after termination');
+  }
+  if (installId) clearPidFile(installId);
 }

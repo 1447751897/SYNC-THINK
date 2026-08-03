@@ -6,6 +6,7 @@ import type {
   StepId,
   TaskId,
 } from './ids.js';
+import type { ImageGenerationConfig } from '../image-generation.js';
 
 export type PlanStepKind = 'execution' | 'merge';
 
@@ -20,6 +21,8 @@ export interface PlanStepDraft {
   agentVersionId: AgentVersionId;
   /** Optional exact per-Step model override. */
   modelOverrideId?: ModelId;
+  /** Frozen image generation parameters; absent means the legacy defaults. */
+  imageGeneration?: ImageGenerationConfig;
   dependsOn: StepId[];
 }
 
@@ -29,6 +32,7 @@ export type PlanStepChangedField =
   | 'instructions'
   | 'agentVersionId'
   | 'modelOverrideId'
+  | 'imageGeneration'
   | 'dependsOn'
   | 'planOrder';
 

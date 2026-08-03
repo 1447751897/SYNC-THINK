@@ -343,6 +343,49 @@ export async function* streamAnthropicMessages(
   }
 }
 
+type AnthropicUsage = {
+  input_tokens?: unknown;
+  output_tokens?: unknown;
+  cache_read_input_tokens?: unknown;
+  cache_creation_input_tokens?: unknown;
+};
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function mergeAnthropicUsage(
+  previous: AnthropicUsage | undefined,
+  next: AnthropicUsage,
+): AnthropicUsage {
+  const merged: AnthropicUsage = { ...(previous ?? {}) };
+  for (const key of [
+    'input_tokens',
+    'output_tokens',
+    'cache_read_input_tokens',
+    'cache_creation_input_tokens',
+  ] as const) {
+    const value = nonNegativeNumber(next[key]);
+    if (value !== undefined) merged[key] = value;
+  }
+  return merged;
+}
+
+function toUsageEvent(usage: AnthropicUsage): AdapterEvent {
+  const tokensIn = nonNegativeNumber(usage.input_tokens) ?? 0;
+  const tokensOut = nonNegativeNumber(usage.output_tokens) ?? 0;
+  const cachedTokensHit = nonNegativeNumber(usage.cache_read_input_tokens);
+  const cachedTokensCreated = nonNegativeNumber(usage.cache_creation_input_tokens);
+  return {
+    type: 'usage',
+    tokensIn,
+    tokensOut,
+    ...(cachedTokensHit !== undefined ? { cachedTokensHit } : {}),
+    ...(cachedTokensCreated !== undefined ? { cachedTokensCreated } : {}),
+    totalTokens: tokensIn + tokensOut,
+  };
+}
+
 interface AnthropicToolBlock {
   id: string;
   name: string;
@@ -354,6 +397,7 @@ interface AnthropicParseState {
   toolBlocks: Map<number, AnthropicToolBlock>;
   emittedToolIds: Set<string>;
   stopReason?: string;
+  usage?: AnthropicUsage;
   finished: boolean;
 }
 
@@ -393,10 +437,10 @@ function parseAnthropicStreamEvent(
     };
     message?: {
       content?: Array<{ type?: string; text?: string }>;
-      usage?: { input_tokens?: number; output_tokens?: number };
+      usage?: AnthropicUsage;
       stop_reason?: string | null;
     };
-    usage?: { input_tokens?: number; output_tokens?: number };
+    usage?: AnthropicUsage;
     content_block?: {
       type?: string;
       text?: string;
@@ -478,14 +522,10 @@ function parseAnthropicStreamEvent(
 
   if (root.type === 'message_delta') {
     if (root.delta?.stop_reason) state.stopReason = root.delta.stop_reason;
-    if (root.usage) {
-      return [
-        {
-          type: 'usage',
-          tokensIn: root.usage.input_tokens ?? 0,
-          tokensOut: root.usage.output_tokens ?? 0,
-        },
-      ];
+    const deltaUsage = root.usage ?? (root.message?.usage as AnthropicUsage | undefined);
+    if (deltaUsage) {
+      state.usage = mergeAnthropicUsage(state.usage, deltaUsage);
+      return [toUsageEvent(state.usage)];
     }
     // stop_reason arrives on message_delta; finished is emitted on message_stop.
     return [];
@@ -501,8 +541,9 @@ function parseAnthropicStreamEvent(
     return [];
   }
 
-  if (root.usage && root.type === 'message_start') {
-    // ignore partial usage
+  if (root.type === 'message_start') {
+    const startUsage = root.usage ?? root.message?.usage;
+    if (startUsage) state.usage = mergeAnthropicUsage(state.usage, startUsage);
     return [];
   }
 
@@ -574,7 +615,7 @@ async function* emitFromJsonMessage(text: string, apiKey: string): AsyncIterable
       name?: string;
       input?: unknown;
     }>;
-    usage?: { input_tokens?: number; output_tokens?: number };
+    usage?: AnthropicUsage;
     stop_reason?: string | null;
   };
   if (root.error) {
@@ -586,11 +627,7 @@ async function* emitFromJsonMessage(text: string, apiKey: string): AsyncIterable
     return;
   }
   if (root.usage) {
-    yield {
-      type: 'usage',
-      tokensIn: root.usage.input_tokens ?? 0,
-      tokensOut: root.usage.output_tokens ?? 0,
-    };
+    yield toUsageEvent(root.usage);
   }
   const textParts = (root.content ?? [])
     .filter((c) => c.type === 'text' && typeof c.text === 'string')

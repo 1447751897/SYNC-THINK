@@ -1383,11 +1383,10 @@ describe('Plan/Run/Graph pipe protocol', () => {
       const connection = await openDatabaseAsync({ path: fixture.dbPath });
       try {
         const stateStore = new SqliteEventCheckpointStore(connection.raw);
+        expect(lastEventSequence).toBeLessThan(128);
         expect(
           stateStore.loadLatestCheckpoint(`runtime-${fixture.installId}` as never),
-        ).toMatchObject({
-          lastEventSequence,
-        });
+        ).toBeUndefined();
         expect(
           (connection.raw.prepare('SELECT COUNT(*) AS count FROM run').get() as { count: number })
             .count,

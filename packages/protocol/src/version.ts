@@ -77,6 +77,10 @@ export type Feature =
   | 'conversation.upgradeTrack'
   | 'conversation.delete'
   | 'conversation.decideToolApproval'
+  | 'browser.handoff'
+  | 'desktop.command.listWaiting'
+  | 'desktop.command.continue'
+  | 'desktop.command.cancel'
   | 'skill.import'
   | 'skill.list'
   | 'skill.get'
@@ -165,6 +169,10 @@ export const DEFAULT_FEATURES: Feature[] = [
   'conversation.setExecutionMode',
   'conversation.upgradeTrack',
   'conversation.delete',
+  'browser.handoff',
+  'desktop.command.listWaiting',
+  'desktop.command.continue',
+  'desktop.command.cancel',
   'skill.import',
   'skill.list',
   'skill.get',

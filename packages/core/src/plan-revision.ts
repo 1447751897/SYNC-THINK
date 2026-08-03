@@ -1,9 +1,10 @@
-import type {
-  PlanDiff,
-  PlanStepChange,
-  PlanStepChangedField,
-  PlanStepDraft,
-  StepId,
+import {
+  isImageGenerationConfig,
+  type PlanDiff,
+  type PlanStepChange,
+  type PlanStepChangedField,
+  type PlanStepDraft,
+  type StepId,
 } from '@sync-think/shared';
 
 export type PlanValidationFailureReason =
@@ -13,6 +14,8 @@ export type PlanValidationFailureReason =
   | 'duplicate-dependency'
   | 'missing-dependency'
   | 'self-dependency'
+  | 'invalid-image-generation-config'
+  | 'merge-image-generation-config'
   | 'cycle';
 
 export type PlanValidationResult =
@@ -25,7 +28,11 @@ export type PlanValidationResult =
     };
 
 function cloneStep(step: PlanStepDraft): PlanStepDraft {
-  return { ...step, dependsOn: [...step.dependsOn] };
+  return {
+    ...step,
+    ...(step.imageGeneration ? { imageGeneration: { ...step.imageGeneration } } : {}),
+    dependsOn: [...step.dependsOn],
+  };
 }
 
 function sameDependencies(left: readonly StepId[], right: readonly StepId[]): boolean {
@@ -35,6 +42,13 @@ function sameDependencies(left: readonly StepId[], right: readonly StepId[]): bo
   return sortedLeft.every((id, index) => id === sortedRight[index]);
 }
 
+function sameImageGeneration(
+  left: PlanStepDraft['imageGeneration'],
+  right: PlanStepDraft['imageGeneration'],
+): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
 function changedFields(
   before: PlanStepDraft,
   after: PlanStepDraft,
@@ -42,10 +56,14 @@ function changedFields(
   afterPlanOrder: number,
 ): PlanStepChangedField[] {
   const fields: PlanStepChangedField[] = [];
+  if ((before.kind ?? 'execution') !== (after.kind ?? 'execution')) fields.push('kind');
   if (before.title !== after.title) fields.push('title');
   if (before.instructions !== after.instructions) fields.push('instructions');
   if (before.agentVersionId !== after.agentVersionId) fields.push('agentVersionId');
   if (before.modelOverrideId !== after.modelOverrideId) fields.push('modelOverrideId');
+  if (!sameImageGeneration(before.imageGeneration, after.imageGeneration)) {
+    fields.push('imageGeneration');
+  }
   if (!sameDependencies(before.dependsOn, after.dependsOn)) fields.push('dependsOn');
   if (beforePlanOrder !== afterPlanOrder) fields.push('planOrder');
   return fields;
@@ -90,6 +108,12 @@ export function validatePlanSteps(steps: readonly PlanStepDraft[]): PlanValidati
     if (!String(step.id).trim()) return { ok: false, reason: 'invalid-step-id' };
     if (!String(step.agentVersionId).trim()) {
       return { ok: false, reason: 'missing-agent-version', stepId: step.id };
+    }
+    if (step.imageGeneration !== undefined && !isImageGenerationConfig(step.imageGeneration)) {
+      return { ok: false, reason: 'invalid-image-generation-config', stepId: step.id };
+    }
+    if ((step.kind ?? 'execution') === 'merge' && step.imageGeneration !== undefined) {
+      return { ok: false, reason: 'merge-image-generation-config', stepId: step.id };
     }
     if (ids.has(step.id)) {
       return { ok: false, reason: 'duplicate-step-id', stepId: step.id };

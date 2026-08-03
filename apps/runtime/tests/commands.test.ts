@@ -1013,10 +1013,9 @@ describe('runtime commands', () => {
         expect(secondStore.listEvents(workspaceId, 0).map((event) => event.sequence)).toEqual([
           1, 2,
         ]);
-        expect(secondStore.loadLatestCheckpoint(checkpointRunId)).toMatchObject({
-          lastEventSequence: 2,
-          state: { threadVersions: [['thread-durable-1', 2]] },
-        });
+        // Two non-terminal events stay below the sparse-checkpoint cadence;
+        // the successful restart above proves Event replay reconstructs the version.
+        expect(secondStore.loadLatestCheckpoint(checkpointRunId)).toBeUndefined();
       } finally {
         secondSocket.destroy();
         await secondRuntime.stop();

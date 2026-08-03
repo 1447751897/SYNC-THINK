@@ -99,6 +99,40 @@ describe('streamAnthropicMessages', () => {
     expect(bodyJson.messages[0]).toMatchObject({ role: 'user', content: 'hello anthropic stream' });
   });
 
+  it('merges message_start input/cache usage with later message_delta output usage', async () => {
+    const body = sseStream([
+      'event: message_start\n',
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":31,"cache_read_input_tokens":13,"cache_creation_input_tokens":4}}}\n\n',
+      'event: content_block_delta\n',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Complete"}}\n\n',
+      'event: message_delta\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}\n\n',
+      'event: message_stop\n',
+      'data: {"type":"message_stop"}\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamAnthropicMessages(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+    expect(textFromEvents(events)).toBe('Complete');
+    expect(events).toContainEqual({
+      type: 'usage',
+      tokensIn: 31,
+      tokensOut: 9,
+      cachedTokensHit: 13,
+      cachedTokensCreated: 4,
+      totalTokens: 40,
+    });
+    expect(events.at(-1)).toMatchObject({ type: 'finished', reason: 'stop' });
+  });
+
   it('serializes tool history and assembles Anthropic tool_use input deltas', async () => {
     const body = sseStream([
       'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"git_status","input":{}}}\n\n',
@@ -206,7 +240,12 @@ describe('streamAnthropicMessages', () => {
         JSON.stringify({
           content: [{ type: 'text', text: 'solid claude reply' }],
           stop_reason: 'end_turn',
-          usage: { input_tokens: 3, output_tokens: 2 },
+          usage: {
+            input_tokens: 17,
+            output_tokens: 4,
+            cache_read_input_tokens: 9,
+            cache_creation_input_tokens: 5,
+          },
         }),
     } as unknown as Response);
 
@@ -214,7 +253,14 @@ describe('streamAnthropicMessages', () => {
       streamAnthropicMessages(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
     );
     expect(textFromEvents(events)).toContain('solid claude reply');
-    expect(events.some((e) => e.type === 'usage')).toBe(true);
+    expect(events).toContainEqual({
+      type: 'usage',
+      tokensIn: 17,
+      tokensOut: 4,
+      cachedTokensHit: 9,
+      cachedTokensCreated: 5,
+      totalTokens: 21,
+    });
     expect(events[events.length - 1]).toMatchObject({ type: 'finished' });
   });
 

@@ -145,4 +145,99 @@ describe('ArtifactVersionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '解决冲突' }));
     expect(resolve).toHaveBeenLastCalledWith('conflict-1', 'manual', 'manual result');
   });
+  it('renders only opaque artifact preview URLs with loading, metadata and dimensions', () => {
+    const imageArtifact = {
+      ...artifact,
+      versions: [
+        {
+          ...artifact.versions[0],
+          mimeType: 'image/png',
+          hasContentRef: true,
+          preview: {
+            status: 'ready' as const,
+            previewUrl: 'sync-think-image://artifact/abcdefghijklmnop',
+            mimeType: 'image/png',
+            byteLength: 2048,
+            contentHash: 'a'.repeat(64),
+          },
+        },
+      ],
+    };
+    const { rerender } = render(<ArtifactVersionsPanel artifact={imageArtifact} />);
+    const image = screen.getByRole('img', { name: 'Artifact v1 图片预览' });
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 1024 });
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 768 });
+    fireEvent.load(image);
+    expect(screen.getByTestId('artifact-version-artifact-version-1').textContent).toContain(
+      '2.0 KiB',
+    );
+    expect(screen.getByTestId('artifact-version-artifact-version-1').textContent).toContain(
+      '1024 × 768',
+    );
+
+    rerender(
+      <ArtifactVersionsPanel
+        artifact={{
+          ...imageArtifact,
+          versions: [{ ...imageArtifact.versions[0], preview: { status: 'loading' as const } }],
+        }}
+      />,
+    );
+    expect(screen.getByRole('status').textContent).toContain('图片预览加载中');
+
+    rerender(
+      <ArtifactVersionsPanel
+        artifact={{
+          ...imageArtifact,
+          versions: [
+            {
+              ...imageArtifact.versions[0],
+              preview: { ...imageArtifact.versions[0].preview, previewUrl: 'file:///secret.png' },
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('图片预览地址无效');
+  });
+
+  it('renders image candidates as a selection gallery without text comparison controls', () => {
+    const select = vi.fn();
+    const versions = [1, 2, 3].map((candidateIndex) => ({
+      ...artifact.versions[0],
+      id: `image-version-${candidateIndex}`,
+      version: candidateIndex,
+      mimeType: 'image/png',
+      hasContentRef: true,
+      imageGeneration: {
+        candidateIndex,
+        candidateCount: 3,
+        size: '1536x1024',
+        quality: 'high',
+        byteLength: 2048 * candidateIndex,
+      },
+      preview: {
+        status: 'ready' as const,
+        previewUrl: `sync-think-image://artifact/abcdefghijklmn0${candidateIndex}`,
+        mimeType: 'image/png',
+        byteLength: 2048 * candidateIndex,
+        contentHash: String(candidateIndex).repeat(64),
+      },
+    }));
+    render(
+      <ArtifactVersionsPanel
+        artifact={{ id: 'image-artifact', name: 'Generated image', versions }}
+        onSelect={select}
+      />,
+    );
+
+    expect(screen.getByText('3 个图片候选')).toBeTruthy();
+    expect(screen.getAllByText(/候选 [123]/)).toHaveLength(3);
+    expect(screen.queryByTestId('artifact-comparison')).toBeNull();
+    expect(screen.queryByRole('button', { name: /比较版本/ })).toBeNull();
+    expect(screen.queryByText('左侧')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '选择候选 2' }));
+    expect(select).toHaveBeenCalledWith('image-artifact', 'image-version-2');
+  });
 });

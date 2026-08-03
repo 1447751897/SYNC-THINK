@@ -3,6 +3,7 @@ import {
   FakeProvider,
   OpenAIChatAdapter,
   OpenAIResponsesAdapter,
+  OpenAIImagesAdapter,
   AnthropicMessagesAdapter,
   createProxyAwareFetch,
   resolveOutboundProxy,
@@ -23,17 +24,17 @@ function buildDiscoveryByProtocol() {
   const adapterOpts = { fetchImpl };
   const openAiCompatible = new OpenAIChatAdapter(adapterOpts);
   const responses = new OpenAIResponsesAdapter(adapterOpts);
+  const images = new OpenAIImagesAdapter(adapterOpts);
   const anthropic = new AnthropicMessagesAdapter(adapterOpts);
   return {
     'openai-chat': openAiCompatible,
     'openai-responses': responses,
-    // Images gateways commonly share the same /models list endpoint.
-    'openai-images': openAiCompatible,
+    'openai-images': images,
     'anthropic-messages': anthropic,
   } satisfies Partial<
     Record<
       ProtocolFamily,
-      OpenAIChatAdapter | OpenAIResponsesAdapter | AnthropicMessagesAdapter
+      OpenAIChatAdapter | OpenAIResponsesAdapter | OpenAIImagesAdapter | AnthropicMessagesAdapter
     >
   >;
 }
@@ -44,11 +45,21 @@ async function main() {
   // Allow no-token hello unless a pipe secret is configured, or DEV_NO_TOKEN=1.
   const allowNoToken =
     process.env.SYNC_THINK_DEV_NO_TOKEN === '1' || !process.env.SYNC_THINK_PIPE_SECRET;
+  const eventPayloadSidecar =
+    process.env.SYNC_THINK_EVENT_PAYLOAD_SIDECAR === '1'
+      ? {
+          enabled: true as const,
+          ...(process.env.SYNC_THINK_EVENT_PAYLOAD_SIDECAR_ROOT
+            ? { rootDirectory: process.env.SYNC_THINK_EVENT_PAYLOAD_SIDECAR_ROOT }
+            : {}),
+        }
+      : undefined;
   const session = await openPersistentRuntime({
     dbPath: resolveRuntimeDatabasePath(),
     installId,
     allowNoToken,
     helloSecret: process.env.SYNC_THINK_PIPE_SECRET,
+    ...(eventPayloadSidecar ? { eventPayloadSidecar } : {}),
     demoProvider:
       process.env.SYNC_THINK_DISABLE_DEMO_PROVIDER === '1'
         ? undefined
@@ -59,18 +70,34 @@ async function main() {
   console.log('[runtime] started. installId=', installId, 'pid=', process.pid);
   console.log('[runtime] database ready', session.databasePath);
   console.log('[runtime] discovery: openai-compatible GET /models enabled');
-  console.log('[runtime] streaming: openai-chat + anthropic-messages live call via registered providers; fake fallback when no catalog');
+  console.log(
+    '[runtime] streaming: openai-chat + anthropic-messages live call via registered providers; fake fallback when no catalog',
+  );
 
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[runtime] shutting down');
-    await session.close();
-    process.exit(0);
+    try {
+      await session.close();
+      process.exit(0);
+    } catch (error) {
+      console.error('[runtime] shutdown failed', error);
+      process.exit(1);
+    }
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  process.on('message', (message: unknown) => {
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      (message as { type?: unknown }).type === 'sync-think.runtime.shutdown'
+    ) {
+      void shutdown();
+    }
+  });
 }
 
 main().catch((e) => {

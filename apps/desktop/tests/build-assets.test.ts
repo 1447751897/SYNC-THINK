@@ -71,7 +71,8 @@ describe('desktop renderer build assets', () => {
     expect(main).toContain('!app.isPackaged && devServerUrl');
     expect(main).toContain('handleRendererLoadFailure');
     expect(main).toContain('.catch(handleDesktopStartupFailure)');
-    expect(main).not.toContain('safeStorage');
+    expect(main).toContain('safeStorage.encryptString');
+    expect(main).toContain('safeStorage.decryptString');
     expect(main).not.toContain('secure-store:');
     expect(preload).not.toContain('secureStore');
     expect(preload).not.toContain('secure-store:');

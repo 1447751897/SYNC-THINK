@@ -41,6 +41,7 @@ import { TeamLibrary } from './TeamLibrary.js';
 import { AbilitiesPage } from './AbilitiesPage.js';
 import { BrowserStage } from './BrowserStage.js';
 import { SettingsPage } from './SettingsPage.js';
+import { FirstLaunchGuide } from './FirstLaunchGuide.js';
 import {
   ContextRing,
   estimateContextWindow,
@@ -207,6 +208,7 @@ function ShellAppInner() {
   const [data, setData] = useState<ShellData>(EMPTY);
   const [skillCatalogRevision, setSkillCatalogRevision] = useState(0);
   const [eventHistory, setEventHistory] = useState<readonly Event[]>([]);
+  const [runtimeConnectionRevision, setRuntimeConnectionRevision] = useState(0);
   const [pickerTrack, setPickerTrack] = useState<ConversationTrack | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | undefined>(() =>
@@ -707,6 +709,7 @@ function ShellAppInner() {
       onConnected: (result) => {
         if (cancelled) return;
         setEventHistory((prev) => mergeEventHistory(prev, result.snapshot));
+        setRuntimeConnectionRevision((revision) => revision + 1);
         void refresh()
           .then(() => {
             if (!cancelled) {
@@ -1719,6 +1722,7 @@ function ShellAppInner() {
                             teams={data.teams}
                             workspaces={data.workspaces}
                             eventHistory={eventHistory}
+                            runtimeConnectionRevision={runtimeConnectionRevision}
                             initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
                               String(conversation.id),
                             )}
@@ -2059,6 +2063,12 @@ export function EmptyTalk(props: {
               : '在顶栏打开文件夹或新建工作区后即可对话'}
           </p>
         </div>
+
+        <FirstLaunchGuide
+          hasWorkspace={props.hasWorkspace}
+          onOpenWorkspaceMenu={props.onOpenWorkspaceMenu}
+          onPickTrack={props.onPickTrack}
+        />
 
         {props.hasWorkspace ? (
           <div className="flex flex-wrap justify-center gap-2">

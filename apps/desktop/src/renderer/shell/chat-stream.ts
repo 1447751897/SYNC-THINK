@@ -27,15 +27,62 @@ export interface ConversationStreamBatch {
   operations: ConversationStreamOperation[];
 }
 
-function belongsToConversation(
-  event: Event,
-  threadId: string,
-  taskId?: string,
-): boolean {
+const RUN_TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'run.paused',
+]);
+
+export function isRunTerminalEventType(type: string): boolean {
+  return RUN_TERMINAL_EVENT_TYPES.has(type);
+}
+
+export interface RunPauseNotice {
+  id: string;
+  runId?: string;
+  text: string;
+  timestamp: string;
+  tone: 'warning' | 'error';
+}
+
+export interface ConversationRunActivity {
+  streaming: boolean;
+  activeRunId?: string;
+}
+
+export function belongsToConversation(event: Event, threadId: string, taskId?: string): boolean {
   const eventThread =
     typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
   if (eventThread) return eventThread === threadId;
   return !(taskId && event.taskId && event.taskId !== taskId);
+}
+
+export function projectConversationRunActivity(input: {
+  events: readonly Event[];
+  threadId: string;
+  taskId?: string;
+}): ConversationRunActivity {
+  const startedRuns = new Map<string, number>();
+  const endedRuns = new Set<string>();
+  for (const event of input.events) {
+    if (!belongsToConversation(event, input.threadId, input.taskId) || !event.runId) continue;
+    if (event.type === 'run.started') {
+      startedRuns.set(event.runId, event.sequence);
+    } else if (isRunTerminalEventType(event.type)) {
+      endedRuns.add(event.runId);
+    }
+  }
+
+  let activeRunId: string | undefined;
+  let activeSequence = Number.NEGATIVE_INFINITY;
+  for (const [runId, sequence] of startedRuns) {
+    if (!endedRuns.has(runId) && sequence > activeSequence) {
+      activeRunId = runId;
+      activeSequence = sequence;
+    }
+  }
+  return { streaming: Boolean(activeRunId), activeRunId };
 }
 
 /**
@@ -99,11 +146,7 @@ export function collectConversationStreamBatch(input: {
       continue;
     }
 
-    if (
-      event.type === 'run.completed' ||
-      event.type === 'run.failed' ||
-      event.type === 'run.cancelled'
-    ) {
+    if (isRunTerminalEventType(event.type)) {
       sawTerminalEvent = true;
       operations.push({
         type: 'run.terminal',
@@ -125,10 +168,7 @@ export function applyConversationStreamOperations(
 
   for (const operation of operations) {
     if (operation.type === 'run.terminal') {
-      if (
-        draft &&
-        (!operation.runId || !draft.runId || operation.runId === draft.runId)
-      ) {
+      if (draft && (!operation.runId || !draft.runId || operation.runId === draft.runId)) {
         draft = null;
       }
       continue;
@@ -156,4 +196,58 @@ export function applyConversationStreamOperations(
   }
 
   return draft;
+}
+
+function formatRunPauseNotice(event: Event): RunPauseNotice {
+  const reason = typeof event.payload.reason === 'string' ? event.payload.reason : 'paused';
+  const failureClass =
+    typeof event.payload.failureClass === 'string' ? event.payload.failureClass : undefined;
+  const errorMessage =
+    typeof event.payload.errorMessage === 'string' ? event.payload.errorMessage.trim() : '';
+  const providerModelId =
+    typeof event.payload.providerModelId === 'string' ? event.payload.providerModelId.trim() : '';
+
+  const headline =
+    reason === 'fallback_exhausted'
+      ? '???????????????????????'
+      : reason === 'no_fallback_configured'
+        ? '??????????????????????????'
+        : `????????${reason}??`;
+  const details = [
+    providerModelId ? `???${providerModelId}` : '',
+    failureClass ? `?????${failureClass}` : '',
+    errorMessage ? `???${errorMessage}` : '',
+  ].filter(Boolean);
+  const retryHint =
+    reason === 'fallback_exhausted' || reason === 'no_fallback_configured' ? '???????????' : '';
+
+  return {
+    id: `run-paused-${String(event.id)}`,
+    runId: event.runId,
+    text: [headline, details.join('?'), retryHint].filter(Boolean).join(' '),
+    timestamp: event.occurredAt,
+    tone: failureClass || errorMessage ? 'error' : 'warning',
+  };
+}
+
+/** Return a notice only while the latest run lifecycle event is run.paused. */
+export function selectLatestRunPauseNotice(input: {
+  events: readonly Event[];
+  threadId: string;
+  taskId?: string;
+}): RunPauseNotice | undefined {
+  let latestLifecycle: Event | undefined;
+  for (const event of input.events) {
+    if (!belongsToConversation(event, input.threadId, input.taskId)) continue;
+    if (event.type !== 'run.started' && !isRunTerminalEventType(event.type)) continue;
+    if (
+      !latestLifecycle ||
+      event.sequence > latestLifecycle.sequence ||
+      (event.sequence === latestLifecycle.sequence &&
+        event.id.localeCompare(latestLifecycle.id) > 0)
+    ) {
+      latestLifecycle = event;
+    }
+  }
+  return latestLifecycle?.type === 'run.paused' ? formatRunPauseNotice(latestLifecycle) : undefined;
 }

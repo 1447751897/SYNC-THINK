@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { TaskId, ThreadId, WorkspaceId } from '@sync-think/shared';
 import { ulid, type Event } from '@sync-think/shared';
-import { openDatabaseAsync } from './connection.js';
+import { openDatabaseAsync, type BetterSQLite3Raw } from './connection.js';
 import { SqliteEventCheckpointStore } from './runtime-state-store.js';
 import { runMigrations } from './scripts/migrate.js';
 import { SqliteWorkspaceStore } from './workspace-store.js';
@@ -21,6 +21,22 @@ function makeDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), 'sync-think-workspace-store-'));
   tempDirs.push(dir);
   return join(dir, 'sync-think.db');
+}
+
+function insertMessage(raw: BetterSQLite3Raw, threadId: ThreadId, sequence: number): void {
+  raw
+    .prepare(
+      `INSERT INTO message (
+        id, thread_id, role, agent_version_id, model_id, credential_ref_id,
+        run_id, step_id, sequence, blocks_json, created_at
+      ) VALUES (?, ?, 'user', NULL, NULL, NULL, NULL, NULL, ?, '[]', ?)`,
+    )
+    .run(
+      `message-${threadId}-${sequence}`,
+      threadId,
+      sequence,
+      `2026-08-02T08:00:${String(sequence).padStart(2, '0')}.000Z`,
+    );
 }
 
 async function openStore(dbPath = makeDbPath()) {
@@ -549,6 +565,157 @@ describe('SqliteWorkspaceStore task version source of truth', () => {
         store.reconcileTaskVersionsFromMessageEvents('2026-07-13T06:12:00.000Z'),
       ).toBe(0);
       expect(store.getTask(task.taskId)?.version).toBe(20);
+    } finally {
+      close();
+    }
+  });
+
+  it('raises task versions from task-indexed legacy events without lowering newer rows', async () => {
+    const { store, raw, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Indexed event floor project' });
+      const first = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Lagging indexed task',
+        goal: 'Recover an event-only version',
+      });
+      const second = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Newer indexed task',
+        goal: 'Keep its newer durable version',
+      });
+      const events = new SqliteEventCheckpointStore(raw);
+      events.commitTransition({
+        events: [
+          {
+            id: ulid() as Event['id'],
+            workspaceId: workspace.id,
+            taskId: first.taskId,
+            category: 'system',
+            type: 'task.participation-mode.changed',
+            occurredAt: '2026-08-02T08:05:00.000Z',
+            payload: { taskId: first.taskId, taskVersion: 6 },
+          },
+          {
+            id: ulid() as Event['id'],
+            workspaceId: workspace.id,
+            taskId: second.taskId,
+            messageId: ulid() as Event['messageId'],
+            category: 'message',
+            type: 'message.appended',
+            occurredAt: '2026-08-02T08:06:00.000Z',
+            payload: { threadId: second.threadId, taskVersion: 4 },
+          },
+        ],
+      });
+      raw.prepare('UPDATE task SET version = 9 WHERE id = ?').run(second.taskId);
+
+      expect(
+        store.reconcileTaskVersionFloorsFromTaskEvents('2026-08-02T08:07:00.000Z'),
+      ).toBe(1);
+      expect(store.getTask(first.taskId)?.version).toBe(6);
+      expect(store.getTask(second.taskId)?.version).toBe(9);
+    } finally {
+      close();
+    }
+  });
+
+  it('raises a task version to its latest durable message sequence', async () => {
+    const { store, raw, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Message floor project' });
+      const task = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Lagging task',
+        goal: 'Recover its durable message floor',
+      });
+      insertMessage(raw, task.threadId, 3);
+      insertMessage(raw, task.threadId, 8);
+      raw.prepare('UPDATE task SET version = 1 WHERE id = ?').run(task.taskId);
+
+      expect(
+        store.reconcileTaskVersionFloorsFromMessages('2026-08-02T08:10:00.000Z'),
+      ).toBe(1);
+      expect(store.getTask(task.taskId)).toMatchObject({
+        version: 8,
+        updatedAt: '2026-08-02T08:10:00.000Z',
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it('does not lower a task version that is newer than its message floor', async () => {
+    const { store, raw, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Newer version project' });
+      const task = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Newer task',
+        goal: 'Keep non-message version advances',
+        now: '2026-08-02T08:20:00.000Z',
+      });
+      insertMessage(raw, task.threadId, 4);
+      raw.prepare('UPDATE task SET version = 9 WHERE id = ?').run(task.taskId);
+
+      expect(
+        store.reconcileTaskVersionFloorsFromMessages('2026-08-02T08:21:00.000Z'),
+      ).toBe(0);
+      expect(store.getTask(task.taskId)).toMatchObject({
+        version: 9,
+        updatedAt: '2026-08-02T08:20:00.000Z',
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it('leaves tasks without durable messages unchanged', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Empty thread project' });
+      const task = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Empty task',
+        goal: 'Remain at its current version',
+        now: '2026-08-02T08:30:00.000Z',
+      });
+
+      expect(
+        store.reconcileTaskVersionFloorsFromMessages('2026-08-02T08:31:00.000Z'),
+      ).toBe(0);
+      expect(store.getTask(task.taskId)).toMatchObject({
+        version: 0,
+        updatedAt: '2026-08-02T08:30:00.000Z',
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it('isolates message floors per task without reading the event table', async () => {
+    const { store, raw, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Isolated floors project' });
+      const first = store.createTask({
+        workspaceId: workspace.id,
+        title: 'First task',
+        goal: 'Recover independently',
+      });
+      const second = store.createTask({
+        workspaceId: workspace.id,
+        title: 'Second task',
+        goal: 'Recover independently',
+      });
+      insertMessage(raw, first.threadId, 5);
+      insertMessage(raw, second.threadId, 11);
+      raw.exec('DROP TABLE event');
+
+      expect(
+        store.reconcileTaskVersionFloorsFromMessages('2026-08-02T08:40:00.000Z'),
+      ).toBe(2);
+      expect(store.getTask(first.taskId)?.version).toBe(5);
+      expect(store.getTask(second.taskId)?.version).toBe(11);
     } finally {
       close();
     }

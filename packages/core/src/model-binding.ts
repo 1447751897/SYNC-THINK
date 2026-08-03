@@ -42,6 +42,8 @@ export interface ResolveModelBindingInput {
    */
   failedModelId?: ModelId;
   failureClass?: FailureClass;
+  /** Durable per-Run fence: models already attempted by any fallback layer. */
+  attemptedModelIds?: readonly ModelId[];
 }
 
 export type ModelBindingResolution =
@@ -77,7 +79,14 @@ function hasModelId(value: ModelId | undefined): value is ModelId {
  * Pure function ? no I/O, no silent swaps.
  */
 export function resolveModelBinding(input: ResolveModelBindingInput): ModelBindingResolution {
-  const { agent, runModelId, workflowNodeModelId, failedModelId, failureClass } = input;
+  const {
+    agent,
+    runModelId,
+    workflowNodeModelId,
+    failedModelId,
+    failureClass,
+    attemptedModelIds = [],
+  } = input;
 
   // Fresh resolution (no prior failure): strict precedence.
   if (!hasModelId(failedModelId)) {
@@ -143,23 +152,18 @@ export function resolveModelBinding(input: ResolveModelBindingInput): ModelBindi
     };
   }
 
-  // If default failed, start at first fallback.
-  if (failedModelId === agent.defaultModelId) {
-    const next = chain[0]!;
-    return {
-      status: 'resolved',
-      modelId: next,
-      source: 'agentFallback',
-      fallbackIndex: 0,
-      agentVersionId: agent.agentVersionId,
-      credentialGroupId: agent.defaultCredentialGroupId,
-      pinnedCredentialRefId: agent.pinnedCredentialRefId,
-    };
-  }
-
+  const attempted = new Set(attemptedModelIds.filter(hasModelId));
+  attempted.add(failedModelId);
+  const failedAtDefault = failedModelId === agent.defaultModelId;
   const failedIndex = chain.indexOf(failedModelId);
-  if (failedIndex >= 0 && failedIndex + 1 < chain.length) {
-    const nextIndex = failedIndex + 1;
+  const startIndex = failedAtDefault ? -1 : failedIndex;
+  const nextIndex =
+    failedAtDefault || failedIndex >= 0
+      ? chain.findIndex(
+          (modelId, index) => index > startIndex && !attempted.has(modelId),
+        )
+      : -1;
+  if (nextIndex >= 0) {
     return {
       status: 'resolved',
       modelId: chain[nextIndex]!,
@@ -208,6 +212,8 @@ export function resolveProviderPriorityFallback(input: {
   /** Ordered model ids for one provider; index 0 is primary. */
   orderedModelIds: readonly ModelId[];
   failedModelId: ModelId;
+  /** Durable per-Run fence shared with Agent fallback selection. */
+  attemptedModelIds?: readonly ModelId[];
 }): { modelId: ModelId; fallbackIndex: number } | null {
   const chain = input.orderedModelIds.filter(
     (id): id is ModelId => typeof id === 'string' && id.trim().length > 0,
@@ -215,7 +221,11 @@ export function resolveProviderPriorityFallback(input: {
   if (chain.length === 0) return null;
   const failedIndex = chain.indexOf(input.failedModelId);
   if (failedIndex < 0) return null;
-  const nextIndex = failedIndex + 1;
-  if (nextIndex >= chain.length) return null;
+  const attempted = new Set((input.attemptedModelIds ?? []).filter(hasModelId));
+  attempted.add(input.failedModelId);
+  const nextIndex = chain.findIndex(
+    (modelId, index) => index > failedIndex && !attempted.has(modelId),
+  );
+  if (nextIndex < 0) return null;
   return { modelId: chain[nextIndex]!, fallbackIndex: nextIndex };
 }

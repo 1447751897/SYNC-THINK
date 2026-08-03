@@ -1,5 +1,6 @@
 import type {
   CompareArtifactVersionsPayload,
+  GetArtifactVersionPayload,
   ListArtifactMergeConflictsPayload,
   ListArtifactsPayload,
   ListPoliciesPayload,
@@ -23,6 +24,7 @@ import { MAX_ARTIFACT_LIST_LIMIT } from '@sync-think/protocol';
 import {
   MAX_INLINE_ARTIFACT_CONTENT_BYTES,
   MAX_REVIEW_ITERATIONS,
+  isImageGenerationConfig,
   type PlanStepDraft,
 } from '@sync-think/shared';
 
@@ -108,6 +110,7 @@ function parseSteps(value: unknown, payloadName: string): PlanStepDraft[] {
         'instructions',
         'agentVersionId',
         'modelOverrideId',
+        'imageGeneration',
         'dependsOn',
       ]) ||
       !boundedText(candidate.id) ||
@@ -119,6 +122,9 @@ function parseSteps(value: unknown, payloadName: string): PlanStepDraft[] {
       !boundedText(candidate.instructions, MAX_INSTRUCTIONS) ||
       !boundedText(candidate.agentVersionId) ||
       (candidate.modelOverrideId !== undefined && !boundedText(candidate.modelOverrideId)) ||
+      (candidate.imageGeneration !== undefined &&
+        !isImageGenerationConfig(candidate.imageGeneration)) ||
+      (candidate.kind === 'merge' && candidate.imageGeneration !== undefined) ||
       !Array.isArray(candidate.dependsOn) ||
       candidate.dependsOn.length > MAX_STEPS ||
       !candidate.dependsOn.every((dependency) => boundedText(dependency))
@@ -134,6 +140,9 @@ function parseSteps(value: unknown, payloadName: string): PlanStepDraft[] {
       agentVersionId: candidate.agentVersionId as PlanStepDraft['agentVersionId'],
       ...(candidate.modelOverrideId
         ? { modelOverrideId: candidate.modelOverrideId as PlanStepDraft['modelOverrideId'] }
+        : {}),
+      ...(candidate.imageGeneration
+        ? { imageGeneration: { ...candidate.imageGeneration } }
         : {}),
       dependsOn: [...candidate.dependsOn] as PlanStepDraft['dependsOn'],
     });
@@ -273,6 +282,19 @@ export function parseArtifactListPayload(value: unknown): ListArtifactsPayload {
     return invalid('artifact-list');
   }
   return value as unknown as ListArtifactsPayload;
+}
+
+export function parseArtifactImagePreviewPayload(value: unknown): GetArtifactVersionPayload {
+  assertRendererSafeOrchestrationPayload(value);
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['workspaceId', 'taskId', 'runId', 'artifactVersionId']) ||
+    !artifactScope(value) ||
+    !artifactId(value.artifactVersionId)
+  ) {
+    return invalid('artifact-image-preview');
+  }
+  return value as unknown as GetArtifactVersionPayload;
 }
 
 export function parseArtifactComparePayload(value: unknown): CompareArtifactVersionsPayload {

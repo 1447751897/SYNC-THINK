@@ -31,6 +31,33 @@ export function joinChatCompletionsUrl(baseUrl: string): string {
   return `${root}/chat/completions`;
 }
 
+
+type ChatUsage = {
+  prompt_tokens?: unknown;
+  completion_tokens?: unknown;
+  total_tokens?: unknown;
+  prompt_tokens_details?: { cached_tokens?: unknown };
+  completion_tokens_details?: { reasoning_tokens?: unknown };
+};
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function toUsageEvent(usage: ChatUsage): AdapterEvent {
+  const cachedTokensHit = nonNegativeNumber(usage.prompt_tokens_details?.cached_tokens);
+  const reasoningTokens = nonNegativeNumber(usage.completion_tokens_details?.reasoning_tokens);
+  const totalTokens = nonNegativeNumber(usage.total_tokens);
+  return {
+    type: 'usage',
+    tokensIn: nonNegativeNumber(usage.prompt_tokens) ?? 0,
+    tokensOut: nonNegativeNumber(usage.completion_tokens) ?? 0,
+    ...(cachedTokensHit !== undefined ? { cachedTokensHit } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+  };
+}
+
 function toOpenAIMessages(request: ProviderCallRequest): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   if (request.systemPrompt && request.systemPrompt.trim().length > 0) {
@@ -363,7 +390,7 @@ function parseCompletionChunk(
       };
       finish_reason?: string | null;
     }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: ChatUsage;
   };
 
   if (root.error) {
@@ -373,13 +400,7 @@ function parseCompletionChunk(
   }
 
   if (root.usage) {
-    return [
-      {
-        type: 'usage',
-        tokensIn: root.usage.prompt_tokens ?? 0,
-        tokensOut: root.usage.completion_tokens ?? 0,
-      },
-    ];
+    return [toUsageEvent(root.usage)];
   }
 
   const choice = root.choices?.[0];
@@ -505,7 +526,7 @@ async function* emitFromJsonCompletion(text: string, apiKey: string): AsyncItera
       };
       finish_reason?: string;
     }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: ChatUsage;
   };
   if (root.error) {
     yield {
@@ -516,11 +537,7 @@ async function* emitFromJsonCompletion(text: string, apiKey: string): AsyncItera
     return;
   }
   if (root.usage) {
-    yield {
-      type: 'usage',
-      tokensIn: root.usage.prompt_tokens ?? 0,
-      tokensOut: root.usage.completion_tokens ?? 0,
-    };
+    yield toUsageEvent(root.usage);
   }
   const content = root.choices?.[0]?.message?.content;
   if (typeof content === 'string' && content.length > 0) {

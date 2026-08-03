@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { lstat, mkdir, realpath } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
 import { basename, dirname, extname, join, resolve } from 'node:path';
@@ -77,6 +77,7 @@ export interface BrowserPageExecutionOptions {
 }
 
 export interface BrowserDriverPage {
+  readonly pageId?: string;
   isClosed(): boolean;
   execute(
     action: BrowserAction,
@@ -92,7 +93,8 @@ export interface BrowserDriverSession {
   cdpEndpoint: string;
   isConnected(): boolean;
   newPage(): Promise<BrowserDriverPage>;
-  close(): Promise<void>;
+  findPage?(pageId: string): Promise<BrowserDriverPage | undefined>;
+  close(options?: { preserve?: boolean }): Promise<void>;
 }
 
 export interface BrowserSessionFactoryInput {
@@ -101,6 +103,7 @@ export interface BrowserSessionFactoryInput {
   profileDirectory: string;
   executablePath?: string;
   connectTimeoutMs: number;
+  recoverOnly?: boolean;
 }
 
 export type BrowserSessionFactory = (
@@ -134,9 +137,11 @@ export interface BrowserHostExecuteInput {
 
 export interface BrowserHostLike {
   acquireLease(input: { profileId: string; ownerId: string }): Promise<BrowserLeaseInfo>;
+  inspectLease(leaseId: string): Promise<BrowserLeaseInfo>;
+  recoverLease?(input: BrowserLeaseInfo): Promise<BrowserLeaseInfo>;
   execute(input: BrowserHostExecuteInput): Promise<BrowserCommandResult>;
   releaseLease(leaseId: string, options?: { closePage?: boolean }): Promise<void>;
-  shutdown(): Promise<void>;
+  shutdown(options?: { preserveSessions?: boolean }): Promise<void>;
 }
 
 export class BrowserHostError extends Error {
@@ -180,6 +185,7 @@ export class BrowserHost implements BrowserHostLike {
   private readonly sessions = new Map<string, Promise<ManagedSession>>();
   private readonly leases = new Map<string, ManagedLease>();
   private readonly ownerLeases = new Map<string, Promise<ManagedLease>>();
+  private readonly recoveringLeases = new Map<string, Promise<ManagedLease>>();
   private shuttingDown = false;
 
   constructor(options: BrowserHostOptions) {
@@ -230,6 +236,55 @@ export class BrowserHost implements BrowserHostLike {
       } catch (error) {
         if (this.ownerLeases.get(ownerKey) === pending) this.ownerLeases.delete(ownerKey);
         throw error;
+      }
+    }
+  }
+
+  async inspectLease(leaseId: string): Promise<BrowserLeaseInfo> {
+    const lease = this.leases.get(leaseId);
+    if (!lease || lease.page.isClosed()) {
+      throw new BrowserHostError(
+        'browser.lease-not-found',
+        'Browser Page lease is missing or closed',
+        'crashed',
+      );
+    }
+    const session = await this.sessions.get(lease.profileId)?.catch(() => undefined);
+    if (
+      !session ||
+      !session.driver.isConnected() ||
+      this.leases.get(leaseId) !== lease ||
+      lease.page.isClosed()
+    ) {
+      throw new BrowserHostError(
+        'browser.lease-not-found',
+        'Browser Page lease is missing or closed',
+        'crashed',
+      );
+    }
+    return leaseInfo(lease);
+  }
+
+  async recoverLease(input: BrowserLeaseInfo): Promise<BrowserLeaseInfo> {
+    const expected = normalizeLeaseInfo(input);
+    const existing = this.leases.get(expected.leaseId);
+    if (existing) {
+      assertLeaseIdentity(existing, expected);
+      return this.inspectLease(expected.leaseId);
+    }
+    const pendingExisting = this.recoveringLeases.get(expected.leaseId);
+    if (pendingExisting) return leaseInfo(await pendingExisting);
+    if (this.shuttingDown) {
+      throw new BrowserHostError('browser.host-shutting-down', 'Browser Host is shutting down');
+    }
+
+    const pending = this.recoverLeaseInternal(expected);
+    this.recoveringLeases.set(expected.leaseId, pending);
+    try {
+      return leaseInfo(await pending);
+    } finally {
+      if (this.recoveringLeases.get(expected.leaseId) === pending) {
+        this.recoveringLeases.delete(expected.leaseId);
       }
     }
   }
@@ -313,18 +368,78 @@ export class BrowserHost implements BrowserHostLike {
     if (options?.closePage !== false && !lease.page.isClosed()) await lease.page.close();
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(options: { preserveSessions?: boolean } = {}): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
-    await Promise.allSettled([...this.ownerLeases.values()]);
-    const leaseIds = [...this.leases.keys()];
-    await Promise.allSettled(leaseIds.map((leaseId) => this.releaseLease(leaseId)));
+    await Promise.allSettled([
+      ...this.ownerLeases.values(),
+      ...this.recoveringLeases.values(),
+    ]);
+    const preserveSessions = options.preserveSessions === true;
+    if (preserveSessions) {
+      await Promise.allSettled([...this.leases.values()].map((lease) => lease.tail));
+      this.leases.clear();
+    } else {
+      const leaseIds = [...this.leases.keys()];
+      await Promise.allSettled(leaseIds.map((leaseId) => this.releaseLease(leaseId)));
+    }
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     this.ownerLeases.clear();
+    this.recoveringLeases.clear();
     await Promise.allSettled(
-      sessions.map(async (sessionPromise) => (await sessionPromise).driver.close()),
+      sessions.map(async (sessionPromise) =>
+        (await sessionPromise).driver.close({ preserve: preserveSessions }),
+      ),
     );
+  }
+
+  private async recoverLeaseInternal(expected: BrowserLeaseInfo): Promise<ManagedLease> {
+    const ownerKey = `${expected.profileId}\0${expected.ownerId}`;
+    const ownerPromise = this.ownerLeases.get(ownerKey);
+    if (ownerPromise) {
+      const ownerLease = await ownerPromise;
+      assertLeaseIdentity(ownerLease, expected);
+      return ownerLease;
+    }
+    for (const lease of this.leases.values()) {
+      if (lease.pageId === expected.pageId) {
+        assertLeaseIdentity(lease, expected);
+        return lease;
+      }
+    }
+
+    const session = await this.getSession(expected.profileId, { recoverOnly: true });
+    if (!session.driver.findPage) {
+      throw new BrowserHostError(
+        'browser.lease-recovery-unsupported',
+        'Browser driver cannot recover an existing Page lease',
+        'crashed',
+      );
+    }
+    const page = await session.driver.findPage(expected.pageId);
+    if (!page || page.isClosed()) {
+      throw new BrowserHostError(
+        'browser.lease-not-found',
+        'Persisted Browser Page is missing or closed',
+        'crashed',
+      );
+    }
+    if (page.pageId !== undefined && page.pageId !== expected.pageId) {
+      throw new BrowserHostError(
+        'browser.lease-identity-mismatch',
+        'Recovered Browser Page identity does not match the persisted lease',
+        'crashed',
+      );
+    }
+    if (this.shuttingDown) {
+      throw new BrowserHostError('browser.host-shutting-down', 'Browser Host is shutting down');
+    }
+    const lease: ManagedLease = { ...expected, page, tail: Promise.resolve() };
+    session.leases.add(lease.leaseId);
+    this.leases.set(lease.leaseId, lease);
+    this.ownerLeases.set(ownerKey, Promise.resolve(lease));
+    return lease;
   }
 
   private async createLease(profileId: string, ownerId: string): Promise<ManagedLease> {
@@ -336,7 +451,7 @@ export class BrowserHost implements BrowserHostLike {
     }
     const lease: ManagedLease = {
       leaseId: randomUUID(),
-      pageId: randomUUID(),
+      pageId: page.pageId ?? randomUUID(),
       profileId,
       ownerId,
       page,
@@ -347,7 +462,10 @@ export class BrowserHost implements BrowserHostLike {
     return lease;
   }
 
-  private async getSession(profileId: string): Promise<ManagedSession> {
+  private async getSession(
+    profileId: string,
+    options: { recoverOnly?: boolean } = {},
+  ): Promise<ManagedSession> {
     const existingPromise = this.sessions.get(profileId);
     if (existingPromise) {
       const session = await existingPromise;
@@ -368,6 +486,7 @@ export class BrowserHost implements BrowserHostLike {
         profileRoot: this.profileRoot,
         profileDirectory,
         connectTimeoutMs: this.connectTimeoutMs,
+        recoverOnly: options.recoverOnly,
       });
       return { driver, leases: new Set<string>() };
     })();
@@ -541,6 +660,30 @@ function leaseInfo(lease: ManagedLease): BrowserLeaseInfo {
     profileId: lease.profileId,
     ownerId: lease.ownerId,
   };
+}
+
+function normalizeLeaseInfo(input: BrowserLeaseInfo): BrowserLeaseInfo {
+  return {
+    leaseId: normalizeIdentifier(input.leaseId, 'leaseId'),
+    pageId: normalizeIdentifier(input.pageId, 'pageId'),
+    profileId: normalizeIdentifier(input.profileId, 'profileId'),
+    ownerId: normalizeOwnerId(input.ownerId),
+  };
+}
+
+function assertLeaseIdentity(actual: BrowserLeaseInfo, expected: BrowserLeaseInfo): void {
+  if (
+    actual.leaseId !== expected.leaseId ||
+    actual.pageId !== expected.pageId ||
+    actual.profileId !== expected.profileId ||
+    actual.ownerId !== expected.ownerId
+  ) {
+    throw new BrowserHostError(
+      'browser.lease-identity-mismatch',
+      'Browser Page lease identity does not match the persisted checkpoint',
+      'crashed',
+    );
+  }
 }
 
 function normalizeIdentifier(value: string, field: string): string {
@@ -773,10 +916,19 @@ function browserCandidates(
   return candidates;
 }
 
+const BROWSER_SESSION_METADATA_FILE = '.sync-think-cdp-session.json';
+
+interface BrowserSessionMetadata {
+  version: 1;
+  profileId: string;
+  browserKind: SystemBrowserKind;
+  executablePath: string;
+  cdpEndpoint: string;
+}
+
 async function launchPlaywrightCdpSession(
   input: BrowserSessionFactoryInput,
 ): Promise<BrowserDriverSession> {
-  const installation = discoverSystemBrowser({ executablePath: input.executablePath });
   const safeProfileDirectory = await ensureSafeBrowserProfileDirectory(
     input.profileRoot,
     input.profileId,
@@ -788,6 +940,24 @@ async function launchPlaywrightCdpSession(
       'permission',
     );
   }
+  const metadataPath = join(input.profileDirectory, BROWSER_SESSION_METADATA_FILE);
+  const metadata = await readBrowserSessionMetadata(metadataPath, input.profileId);
+  if (metadata) {
+    try {
+      return await connectPlaywrightCdpSession(metadata, input.profileDirectory, metadataPath, input.connectTimeoutMs);
+    } catch {
+      await unlink(metadataPath).catch(() => undefined);
+    }
+  }
+  if (input.recoverOnly) {
+    throw new BrowserHostError(
+      'browser.session-not-found',
+      'Persisted system browser session is unavailable',
+      'crashed',
+    );
+  }
+
+  const installation = discoverSystemBrowser({ executablePath: input.executablePath });
   const port = await reserveLoopbackPort();
   const endpoint = `http://127.0.0.1:${port}`;
   const child = spawn(
@@ -802,17 +972,20 @@ async function launchPlaywrightCdpSession(
       'about:blank',
     ],
     {
-      detached: false,
+      // The system browser must survive a Runtime process restart while a durable
+      // browser handoff is waiting. BrowserHost still closes it explicitly when
+      // no session preservation is requested.
+      detached: true,
       stdio: 'ignore',
       windowsHide: false,
     },
   );
+  child.unref();
   try {
     await waitForCdp(endpoint, child, input.connectTimeoutMs);
     const browser = await chromium.connectOverCDP(endpoint, { timeout: input.connectTimeoutMs });
     const context = browser.contexts()[0];
     if (!context) {
-      await browser.close();
       throw new BrowserHostError(
         'browser.context-missing',
         'System browser exposed no default CDP context',
@@ -823,15 +996,108 @@ async function launchPlaywrightCdpSession(
       installation,
       input.profileDirectory,
       endpoint,
+      metadataPath,
       child,
       browser,
       context,
     );
     await session.initialize();
+    await writeBrowserSessionMetadata(metadataPath, {
+      version: 1,
+      profileId: input.profileId,
+      browserKind: installation.kind,
+      executablePath: installation.executablePath,
+      cdpEndpoint: endpoint,
+    });
     return session;
   } catch (error) {
+    await unlink(metadataPath).catch(() => undefined);
     terminateOwnedBrowser(child);
     throw error;
+  }
+}
+
+async function connectPlaywrightCdpSession(
+  metadata: BrowserSessionMetadata,
+  profileDirectory: string,
+  metadataPath: string,
+  connectTimeoutMs: number,
+): Promise<BrowserDriverSession> {
+  const browser = await chromium.connectOverCDP(metadata.cdpEndpoint, { timeout: connectTimeoutMs });
+  const context = browser.contexts()[0];
+  if (!context) {
+    throw new BrowserHostError(
+      'browser.context-missing',
+      'Persisted system browser exposed no default CDP context',
+      'crashed',
+    );
+  }
+  const session = new PlaywrightCdpSession(
+    { kind: metadata.browserKind, executablePath: metadata.executablePath },
+    profileDirectory,
+    metadata.cdpEndpoint,
+    metadataPath,
+    undefined,
+    browser,
+    context,
+  );
+  await session.initialize();
+  return session;
+}
+
+async function readBrowserSessionMetadata(
+  metadataPath: string,
+  expectedProfileId: string,
+): Promise<BrowserSessionMetadata | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(metadataPath, 'utf8')) as Partial<BrowserSessionMetadata>;
+    if (
+      parsed.version !== 1 ||
+      parsed.profileId !== expectedProfileId ||
+      (parsed.browserKind !== 'edge' && parsed.browserKind !== 'chrome') ||
+      typeof parsed.executablePath !== 'string' ||
+      !isLoopbackCdpEndpoint(parsed.cdpEndpoint)
+    ) {
+      await unlink(metadataPath).catch(() => undefined);
+      return undefined;
+    }
+    return parsed as BrowserSessionMetadata;
+  } catch {
+    await unlink(metadataPath).catch(() => undefined);
+    return undefined;
+  }
+}
+
+async function writeBrowserSessionMetadata(
+  metadataPath: string,
+  metadata: BrowserSessionMetadata,
+): Promise<void> {
+  const temporaryPath = `${metadataPath}.${randomUUID()}.tmp`;
+  await writeFile(temporaryPath, JSON.stringify(metadata), { encoding: 'utf8', mode: 0o600 });
+  try {
+    await rename(temporaryPath, metadataPath);
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+function isLoopbackCdpEndpoint(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    const endpoint = new URL(value);
+    return (
+      endpoint.protocol === 'http:' &&
+      endpoint.hostname === '127.0.0.1' &&
+      endpoint.pathname === '/' &&
+      endpoint.search === '' &&
+      endpoint.hash === '' &&
+      Number.isInteger(Number(endpoint.port)) &&
+      Number(endpoint.port) >= 1 &&
+      Number(endpoint.port) <= 65_535
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -852,7 +1118,8 @@ class PlaywrightCdpSession implements BrowserDriverSession {
     installation: SystemBrowserInstallation,
     profileDirectory: string,
     cdpEndpoint: string,
-    private readonly child: ChildProcess,
+    private readonly metadataPath: string,
+    private readonly child: ChildProcess | undefined,
     private readonly browser: Browser,
     private readonly context: BrowserContext,
   ) {
@@ -878,6 +1145,49 @@ class PlaywrightCdpSession implements BrowserDriverSession {
       throw new BrowserHostError('browser.disconnected', 'System browser is disconnected', 'crashed');
     }
     const page = await this.context.newPage();
+    return this.managePage(page);
+  }
+
+  async findPage(pageId: string): Promise<BrowserDriverPage | undefined> {
+    if (!this.isConnected()) return undefined;
+    for (const [page, managed] of this.pages) {
+      if (!page.isClosed() && managed.pageId === pageId) return managed;
+    }
+    for (const page of this.context.pages()) {
+      if (page.isClosed() || this.pages.has(page)) continue;
+      if ((await playwrightPageId(page)) === pageId) return this.managePage(page);
+    }
+    return undefined;
+  }
+
+  async close(options: { preserve?: boolean } = {}): Promise<void> {
+    if (this.closed) {
+      if (!options.preserve) {
+        await unlink(this.metadataPath).catch(() => undefined);
+        if (this.child) terminateOwnedBrowser(this.child);
+      }
+      return;
+    }
+    this.closed = true;
+    await this.context.unroute('**/*', this.routeHandler).catch(() => undefined);
+    if (options.preserve) {
+      await Promise.allSettled([...this.pages.values()].map((page) => page.detach()));
+      this.pages.clear();
+      this.activePages.clear();
+      return;
+    }
+    const browserSession = await this.browser.newBrowserCDPSession().catch(() => undefined);
+    await browserSession?.send('Browser.close').catch(() => undefined);
+    await browserSession?.detach().catch(() => undefined);
+    await this.browser.close().catch(() => undefined);
+    if (this.child) terminateOwnedBrowser(this.child);
+    await waitForCdpShutdown(this.cdpEndpoint, 5_000);
+    await unlink(this.metadataPath).catch(() => undefined);
+  }
+
+  private async managePage(page: Page): Promise<PlaywrightDriverPage> {
+    const existing = this.pages.get(page);
+    if (existing) return existing;
     const driver = await PlaywrightDriverPage.create(
       page,
       () => this.pages.delete(page),
@@ -886,17 +1196,6 @@ class PlaywrightCdpSession implements BrowserDriverSession {
     );
     this.pages.set(page, driver);
     return driver;
-  }
-
-  async close(): Promise<void> {
-    if (this.closed) {
-      terminateOwnedBrowser(this.child);
-      return;
-    }
-    this.closed = true;
-    await this.context.unroute('**/*', this.routeHandler).catch(() => undefined);
-    await this.browser.close().catch(() => undefined);
-    terminateOwnedBrowser(this.child);
   }
 
   private async routeNavigation(route: Route): Promise<void> {
@@ -944,6 +1243,20 @@ class PlaywrightCdpSession implements BrowserDriverSession {
   }
 }
 
+
+async function playwrightPageId(page: Page): Promise<string | undefined> {
+  const session = await page.context().newCDPSession(page).catch(() => undefined);
+  if (!session) return undefined;
+  try {
+    const { targetInfo } = await session.send('Target.getTargetInfo');
+    return targetInfo.targetId;
+  } catch {
+    return undefined;
+  } finally {
+    await session.detach().catch(() => undefined);
+  }
+}
+
 class PlaywrightDriverPage implements BrowserDriverPage {
   private allowedOrigins: ReadonlySet<string> = new Set();
   private navigationViolation: BrowserHostError | undefined;
@@ -952,6 +1265,7 @@ class PlaywrightDriverPage implements BrowserDriverPage {
   private constructor(
     private readonly page: Page,
     private readonly cdpSession: CDPSession,
+    readonly pageId: string,
     private readonly mainFrameId: string,
     private readonly onCommandStart: () => void,
     private readonly onCommandEnd: () => void,
@@ -965,10 +1279,14 @@ class PlaywrightDriverPage implements BrowserDriverPage {
   ): Promise<PlaywrightDriverPage> {
     const cdpSession = await page.context().newCDPSession(page);
     await cdpSession.send('Page.enable');
-    const frameTree = await cdpSession.send('Page.getFrameTree');
+    const [frameTree, targetInfo] = await Promise.all([
+      cdpSession.send('Page.getFrameTree'),
+      cdpSession.send('Target.getTargetInfo'),
+    ]);
     const driver = new PlaywrightDriverPage(
       page,
       cdpSession,
+      targetInfo.targetInfo.targetId,
       frameTree.frameTree.frame.id,
       onCommandStart,
       onCommandEnd,
@@ -1020,6 +1338,11 @@ class PlaywrightDriverPage implements BrowserDriverPage {
 
   async close(): Promise<void> {
     if (!this.page.isClosed()) await this.page.close();
+    await this.detach();
+  }
+
+  async detach(): Promise<void> {
+    await this.cdpSession.send('Fetch.disable').catch(() => undefined);
     await this.cdpSession.detach().catch(() => undefined);
   }
 
@@ -1317,6 +1640,17 @@ async function waitForCdp(endpoint: string, child: ChildProcess, timeoutMs: numb
     `System browser CDP endpoint did not become ready within ${timeoutMs}ms`,
     'timeout',
   );
+}
+
+async function waitForCdpShutdown(endpoint: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await probeCdp(`${endpoint}/json/version`))) {
+      await delay(200);
+      return;
+    }
+    await delay(100);
+  }
 }
 
 async function probeCdp(url: string): Promise<boolean> {

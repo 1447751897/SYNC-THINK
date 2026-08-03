@@ -5,7 +5,9 @@ import type {
   ProviderAdapter,
   ProviderCallRequest,
   ProviderContentPart,
+  ProviderImageGenerationResult,
   ProviderMessage,
+  ProviderUsage,
   ProviderToolCall,
   ProviderToolSchema,
 } from '@sync-think/adapters';
@@ -18,6 +20,7 @@ import {
   type AgentModelBinding,
 } from '@sync-think/core';
 import {
+  DEFAULT_IMAGE_GENERATION_CONFIG,
   MAX_INLINE_ARTIFACT_CONTENT_BYTES,
   isReviewOutcomeConsistent,
   type ArtifactVersionStatus,
@@ -25,11 +28,13 @@ import {
   type JsonValue,
   type ModelId,
   type ProtocolFamily,
+  type ProviderRequestUsage,
   type ReviewOutcome,
 } from '@sync-think/shared';
 import type { SecureStore } from '@sync-think/secure-store';
 import type {
   SqliteAgentStore,
+  SqliteAgentContextStore,
   SqliteOrchestrationStore,
   ProductionExecutionResult,
   SqliteProductionExecutionStore,
@@ -55,6 +60,14 @@ import {
   type StepExecutionResult,
   type StepExecutor,
 } from './step-executor.js';
+import {
+  CHAT_BROWSER_TOOL_NAMES,
+  CHAT_BROWSER_TOOL_SCHEMAS,
+  validateChatBrowserCommand,
+  validateChatBrowserOpen,
+} from '../chat-tools.js';
+import type { RuntimeBrowserController } from '../browser/runtime-browser-controller.js';
+import type { GeneratedImageStore } from './generated-image-store.js';
 
 export interface ProductionStepExecutorOptions {
   agentStore: SqliteAgentStore;
@@ -66,6 +79,10 @@ export interface ProductionStepExecutorOptions {
   secureStore: SecureStore;
   adaptersByProtocol?: Partial<Record<ProtocolFamily, ProviderAdapter>>;
   fallbackAdapter?: ProviderAdapter;
+  browserController?: Pick<RuntimeBrowserController, 'execute' | 'requestHandoff'>;
+  generatedImageStore?: Pick<GeneratedImageStore, 'store'> &
+    Partial<Pick<GeneratedImageStore, 'readForVision'>>;
+  agentContextStore?: SqliteAgentContextStore;
 }
 
 const ABORTED = Symbol('step-execution-aborted');
@@ -79,14 +96,20 @@ interface ToolTraceEntry {
   name: string;
   arguments: Record<string, JsonValue>;
   result: string;
+  metadata?: Record<string, JsonValue>;
 }
 
 interface PendingToolExecution {
   toolCall: ProviderToolCall;
   arguments: Record<string, JsonValue>;
   request: StepActionRequest;
-  state: 'awaiting-approval' | 'started';
+  state: 'awaiting-approval' | 'waiting-user' | 'started';
   actionDigest?: string;
+}
+
+interface ProviderTurnUsage {
+  requestId: string;
+  usage: ProviderUsage;
 }
 
 interface ToolLoopCheckpoint {
@@ -94,12 +117,14 @@ interface ToolLoopCheckpoint {
   providerTurns: number;
   messages: ProviderMessage[];
   trace: ToolTraceEntry[];
+  providerUsages: ProviderTurnUsage[];
   pending?: PendingToolExecution;
 }
 
 interface ProviderTurn {
   text: string;
   toolCalls: ProviderToolCall[];
+  usage?: ProviderUsage;
   finishedReason: 'stop' | 'length' | 'tool-requests' | 'image';
 }
 
@@ -166,12 +191,35 @@ const BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   },
 ];
 
+const PRODUCTION_BROWSER_HANDOFF_TOOL_SCHEMA: ProviderToolSchema = {
+  name: 'browser_handoff',
+  description:
+    'Pause this Step and ask the user to complete a login, CAPTCHA, payment, device confirmation, or other manual operation in the active system browser Page.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['reason', 'requestedOutcome', 'onCancel'],
+    properties: {
+      reason: {
+        type: 'string',
+        enum: ['login', 'captcha', 'payment', 'device-confirmation', 'manual'],
+      },
+      requestedOutcome: { type: 'string', minLength: 1, maxLength: 1_000 },
+      onCancel: { type: 'string', enum: ['keep-open', 'close-page'] },
+    },
+  },
+};
+
 export function createProductionStepExecutor(options: ProductionStepExecutorOptions): StepExecutor {
   return {
     async execute(context) {
       try {
         return await executeProviderStep(options, context);
       } catch (error) {
+        if (error instanceof StepAwaitingApprovalError) {
+          releaseProviderExecutionReservation(options.executionStore, context);
+          throw error;
+        }
         if (context.signal.aborted) {
           releaseApprovalReservation(options.executionStore, context);
           return {};
@@ -214,9 +262,7 @@ async function executeProviderStep(
     workflowNodeModelId: context.step.modelOverrideId,
   });
   if (modelResolution.status === 'unresolved') {
-    throw unavailable(
-      `AgentVersion has no default model: ${context.step.agentVersionId}`,
-    );
+    throw unavailable(`AgentVersion has no default model: ${context.step.agentVersionId}`);
   }
   if (modelResolution.status === 'paused') {
     throw new StepExecutionError(
@@ -256,15 +302,38 @@ async function executeProviderStep(
       continue;
     }
 
+    const contextEpoch =
+      options.agentContextStore && context.agentContextThreadId
+        ? options.agentContextStore.getOrCreateEpoch({
+            agentContextThreadId: context.agentContextThreadId,
+            providerId: model.providerId,
+            modelId,
+            contextWindow: parseModelContextWindow(model.limitsJson),
+          })
+        : undefined;
+    const promptCacheKey =
+      context.agentContextThreadId && contextEpoch
+        ? `${model.providerId}:${modelId}:${context.agentContextThreadId}:${contextEpoch.id}`
+        : undefined;
+
     const adapter =
       options.adaptersByProtocol?.[model.protocol] ??
-      (options.fallbackAdapter?.protocol === model.protocol
-        ? options.fallbackAdapter
-        : undefined);
-    if (!adapter) {
-      lastError = unavailable(
-        `No production adapter is configured for protocol ${model.protocol}`,
+      (options.fallbackAdapter?.protocol === model.protocol ? options.fallbackAdapter : undefined);
+
+    // An explicitly configured image Step must never silently fall through to
+    // the ordinary text/tool loop when the resolved Agent model is text-only.
+    // Treat this as a configuration acceptance failure before reserving an
+    // external Provider execution, so the Run pauses with an actionable error
+    // instead of producing a misleading text Artifact.
+    if (context.step.imageGeneration !== undefined && model.protocol !== 'openai-images') {
+      throw new StepExecutionError(
+        'Image generation Steps require a model with the openai-images protocol',
+        'acceptance',
       );
+    }
+
+    if (!adapter) {
+      lastError = unavailable(`No production adapter is configured for protocol ${model.protocol}`);
       modelResolution = advanceModelBindingAfterFailure(
         agentBinding,
         modelId,
@@ -273,6 +342,15 @@ async function executeProviderStep(
       );
       continue;
     }
+
+    const reviewerImages = reviewerImageArtifactVersions(context);
+    if (reviewerImages.length > 0 && !model.capabilities.includes('vision')) {
+      throw new StepExecutionError(
+        'Image Reviewer Steps require a model with the vision capability',
+        'acceptance',
+      );
+    }
+    const messages = await buildStepMessages(options, context);
 
     const credential = resolveCredentialRef({
       pinnedCredentialRefId: agent.pinnedCredentialRefId,
@@ -341,12 +419,68 @@ async function executeProviderStep(
       reservationCheckpoint = reservation.checkpoint;
     }
 
+    if (model.protocol === 'openai-images') {
+      try {
+        const candidateResult = await executeImageGeneration({
+          options,
+          context,
+          adapter,
+          apiKey,
+          baseUrl: provider.baseUrl,
+          providerModelId: model.providerModelId,
+          modelId,
+          providerId: model.providerId,
+          modelResolutionSource: modelResolution.source,
+          skillVersionIds: stepSkills.skillVersionIds,
+        });
+        const validatedResult = materializeExecutionResult(context, candidateResult);
+        assertNotAborted(context.signal);
+        options.executionStore.completeProviderExecution({
+          ...fence,
+          idempotencyKey: context.idempotencyKey,
+          result: candidateResult,
+        });
+        return validatedResult;
+      } catch (error) {
+        if (error instanceof ProviderSecretEchoError) throw error;
+        if (error instanceof Error && error.message.includes(apiKey))
+          throw providerSecretEchoError();
+        if (context.signal.aborted) throw error;
+        const failureClass = failureClassOf(error);
+        lastError =
+          error instanceof StepExecutionError
+            ? error
+            : new StepExecutionError(
+                error instanceof Error ? error.message : 'Production image generation failed',
+                failureClass,
+              );
+        modelResolution = advanceModelBindingAfterFailure(
+          agentBinding,
+          modelId,
+          failureClass,
+          context.step.modelOverrideId,
+        );
+        reservationCheckpoint = undefined;
+        continue;
+      }
+    }
+
     const workspaceRoot = resolveWorkspaceRoot(options, context);
+    const browserPermissionSnapshot = [...agent.permissions.browser];
+    const browserToolsEnabled =
+      options.browserController !== undefined && browserPermissionSnapshot.length > 0;
     const toolsEnabled =
       context.reviewContext === undefined &&
       workspaceRoot !== undefined &&
       model.capabilities.includes('tool-calling');
-    let execution: { output: string; trace: ToolTraceEntry[] } | typeof ABORTED;
+    const toolSchemas = [
+      ...BUILT_IN_TOOL_SCHEMAS,
+      ...(browserToolsEnabled
+        ? [...CHAT_BROWSER_TOOL_SCHEMAS, PRODUCTION_BROWSER_HANDOFF_TOOL_SCHEMA]
+        : []),
+    ];
+    let execution:
+      { output: string; trace: ToolTraceEntry[]; usages: ProviderTurnUsage[] } | typeof ABORTED;
     try {
       execution = await executeProviderToolLoop({
         options,
@@ -360,13 +494,20 @@ async function executeProviderStep(
           idempotencyKey: context.idempotencyKey,
           signal: context.signal,
           systemPrompt: buildSystemPrompt(agent, stepSkills.resolvedSkills),
-          messages: [{ role: 'user', content: buildStepPrompt(context) }],
-          ...(toolsEnabled ? { tools: [...BUILT_IN_TOOL_SCHEMAS] } : {}),
+          messages,
+          ...(contextEpoch?.reasoningEffort
+            ? { reasoningEffort: contextEpoch.reasoningEffort }
+            : {}),
+          ...(promptCacheKey
+            ? { promptCache: { key: promptCacheKey, retention: '24h' as const } }
+            : {}),
+          ...(toolsEnabled ? { tools: toolSchemas } : {}),
           stream: true,
         },
         reservationCheckpoint,
         workspaceRoot,
         toolsEnabled,
+        browserPermissionSnapshot,
       });
     } catch (error) {
       // Secret echo is a non-retryable safety failure: the inner tool loop
@@ -404,6 +545,32 @@ async function executeProviderStep(
       return {};
     }
     const { output, trace } = execution;
+    const run = options.orchestrationStore.getRun(context.runId);
+    if (!run) throw unavailable(`Run is unavailable: ${context.runId}`);
+    const purpose = providerUsagePurpose(context);
+    const providerUsages: ProviderRequestUsage[] = execution.usages.map(({ requestId, usage }) => ({
+      requestId,
+      taskId: run.taskId,
+      runId: context.runId,
+      stepId: context.step.id,
+      providerId: model.providerId,
+      modelId,
+      providerModelId: model.providerModelId,
+      ...(context.agentContextThreadId
+        ? { agentContextThreadId: context.agentContextThreadId }
+        : {}),
+      ...(contextEpoch ? { contextEpochId: contextEpoch.id } : {}),
+      ...(contextEpoch?.reasoningEffort ? { reasoningEffort: contextEpoch.reasoningEffort } : {}),
+      purpose,
+      tokensIn: usage.tokensIn,
+      tokensOut: usage.tokensOut,
+      ...(usage.cachedTokensHit !== undefined ? { cachedTokensHit: usage.cachedTokensHit } : {}),
+      ...(usage.cachedTokensCreated !== undefined
+        ? { cachedTokensCreated: usage.cachedTokensCreated }
+        : {}),
+      ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
+      totalTokens: usage.totalTokens ?? usage.tokensIn + usage.tokensOut,
+    }));
     if (!output.trim()) {
       lastError = new StepExecutionError(
         'Production adapter returned no persistable Step output',
@@ -426,6 +593,9 @@ async function executeProviderStep(
       );
     }
 
+    const browserCommands = trace.flatMap((entry) =>
+      entry.metadata?.kind === 'browser-command' ? [entry.metadata] : [],
+    );
     const outputVersions: ProductionExecutionResult['outputVersions'] = [
       {
         artifactName:
@@ -444,6 +614,7 @@ async function executeProviderStep(
           skillVersionIds: [...stepSkills.skillVersionIds],
           toolCallCount: trace.length,
           toolNames: trace.map((entry) => entry.name),
+          ...(browserCommands.length > 0 ? { browserCommands } : {}),
         },
       },
     ];
@@ -461,10 +632,11 @@ async function executeProviderStep(
           executionKind: 'tool-trace',
           skillVersionIds: [...stepSkills.skillVersionIds],
           toolCallCount: trace.length,
+          ...(browserCommands.length > 0 ? { browserCommands } : {}),
         },
       });
     }
-    const candidateResult: ProductionExecutionResult = { outputVersions };
+    const candidateResult: ProductionExecutionResult = { outputVersions, providerUsages };
     const validatedResult = materializeExecutionResult(context, candidateResult);
     assertNotAborted(context.signal);
     options.executionStore.completeProviderExecution({
@@ -486,6 +658,130 @@ async function executeProviderStep(
     throw new StepExecutionError(lastError.message, failureClassOf(lastError));
   }
   throw unavailable(`Unable to resolve a model for AgentVersion ${context.step.agentVersionId}`);
+}
+
+async function executeImageGeneration(input: {
+  options: ProductionStepExecutorOptions;
+  context: StepExecutionContext;
+  adapter: ProviderAdapter;
+  apiKey: string;
+  baseUrl: string;
+  providerModelId: string;
+  modelId: ModelId;
+  providerId: string;
+  modelResolutionSource: string;
+  skillVersionIds: readonly string[];
+}): Promise<ProductionExecutionResult> {
+  if (input.context.reviewContext?.kind === 'reviewer') {
+    throw new StepExecutionError(
+      'Image generation models cannot execute Reviewer Steps',
+      'acceptance',
+    );
+  }
+  if (!input.adapter.generateImages || !input.options.generatedImageStore) {
+    throw new StepExecutionError(
+      'No production image artifact adapter is configured',
+      'acceptance',
+    );
+  }
+  const imageGeneration = input.context.step.imageGeneration ?? DEFAULT_IMAGE_GENERATION_CONFIG;
+  const generated: ProviderImageGenerationResult = await input.adapter.generateImages({
+    protocol: 'openai-images',
+    baseUrl: input.baseUrl,
+    modelId: input.providerModelId,
+    apiKey: input.apiKey,
+    idempotencyKey: input.context.idempotencyKey,
+    signal: input.context.signal,
+    prompt: buildImagePrompt(input.context),
+    size: imageGeneration.size,
+    quality: imageGeneration.quality,
+    count: imageGeneration.count,
+  });
+  assertNotAborted(input.context.signal);
+  if (generated.images.length < 1 || generated.images.length > 4) {
+    throw new StepExecutionError(
+      'Production image adapter returned an invalid image count',
+      'protocol',
+    );
+  }
+  if (generated.images.some((image) => image.revisedPrompt?.includes(input.apiKey))) {
+    throw providerSecretEchoError();
+  }
+  const stored = await input.options.generatedImageStore.store({
+    runId: input.context.runId,
+    stepId: input.context.step.id,
+    idempotencyKey: input.context.idempotencyKey,
+    images: generated.images,
+  });
+  assertNotAborted(input.context.signal);
+  if (stored.length !== generated.images.length) {
+    throw new StepExecutionError(
+      'Generated image store returned an invalid output count',
+      'acceptance',
+    );
+  }
+  const imageCount = stored.length;
+  return {
+    outputVersions: stored.map((image, index) => ({
+      artifactName: `Generated image ${input.context.step.id}`,
+      artifactGroupKey: `image-generation:${input.context.step.id}`,
+      contentRef: image.contentRef,
+      contentHash: image.contentHash,
+      mimeType: image.mimeType,
+      status: 'candidate',
+      metadata: {
+        agentVersionId: input.context.step.agentVersionId,
+        modelId: input.modelId,
+        modelResolutionSource: input.modelResolutionSource,
+        providerId: input.providerId,
+        executionKind: 'image-generation',
+        generationKind: 'image',
+        imageIndex: index,
+        imageCount,
+        imageSize: imageGeneration.size,
+        imageQuality: imageGeneration.quality,
+        requestedImageCount: imageGeneration.count,
+        byteLength: image.byteLength,
+        skillVersionIds: [...input.skillVersionIds],
+      },
+    })),
+  };
+}
+
+function parseModelContextWindow(limitsJson: string | undefined): number | undefined {
+  if (!limitsJson) return undefined;
+  try {
+    const parsed = JSON.parse(limitsJson) as { contextWindow?: unknown; maxInputTokens?: unknown };
+    const value = parsed.maxInputTokens ?? parsed.contextWindow;
+    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildImagePrompt(context: StepExecutionContext): string {
+  const parts = [`Step: ${context.step.title}`, context.step.instructions];
+  if (context.reviewContext?.kind === 'rework') {
+    parts.push(
+      'Apply the persisted structured review decision below while preserving all accepted qualities.',
+      JSON.stringify(
+        {
+          type: 'review-decision',
+          decision: 'rework',
+          targetStepId: context.reviewContext.targetStepId,
+          iteration: context.reviewContext.iteration,
+          explanation: context.reviewContext.evidence.explanation,
+          criteria: context.reviewContext.evidence.criteria,
+          reviewedArtifactVersionIds: context.reviewContext.evidence.reviewedArtifactVersionIds,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+  return parts.filter(Boolean).join('\n\n');
 }
 
 function toAgentModelBinding(
@@ -605,6 +901,42 @@ function buildSystemPrompt(
     .join('\n\n');
 }
 
+async function buildStepMessages(
+  options: ProductionStepExecutorOptions,
+  context: StepExecutionContext,
+): Promise<ProviderMessage[]> {
+  const prompt = buildStepPrompt(context);
+  const imageVersions = reviewerImageArtifactVersions(context);
+  if (imageVersions.length === 0) return [{ role: 'user', content: prompt }];
+  if (!options.generatedImageStore?.readForVision) {
+    throw new StepExecutionError('Runtime generated image storage is unavailable', 'acceptance');
+  }
+
+  const content: ProviderContentPart[] = [{ type: 'text', text: prompt }];
+  for (const version of imageVersions) {
+    try {
+      const image = await options.generatedImageStore.readForVision({
+        artifactVersionId: version.id,
+        contentRef: version.contentRef,
+        contentHash: version.contentHash,
+        mimeType: version.mimeType,
+      });
+      content.push({ type: 'image', imageUrl: image.dataUrl });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'generated_image.read_failed';
+      throw new StepExecutionError(`Reviewer image input rejected: ${code}`, 'acceptance');
+    }
+  }
+  return [{ role: 'user', content }];
+}
+
+function reviewerImageArtifactVersions(context: StepExecutionContext) {
+  if (context.reviewContext?.kind !== 'reviewer') return [];
+  return context.reviewContext.reviewedArtifactVersions.filter((version) =>
+    version.mimeType.startsWith('image/'),
+  );
+}
+
 function buildStepPrompt(context: StepExecutionContext): string {
   if (context.reviewContext?.kind === 'reviewer') {
     const assignment = {
@@ -621,7 +953,6 @@ function buildStepPrompt(context: StepExecutionContext): string {
         version: version.version,
         mimeType: version.mimeType,
         content: version.content ?? null,
-        contentRef: version.contentRef ?? null,
       })),
     };
     return [
@@ -641,8 +972,8 @@ function buildStepPrompt(context: StepExecutionContext): string {
           artifactVersionId: versionId,
           artifactId: version?.artifactId ?? null,
           version: version?.version ?? null,
+          mimeType: version?.mimeType ?? null,
           content: version?.content ?? null,
-          contentRef: version?.contentRef ?? null,
         };
       },
     );
@@ -654,9 +985,24 @@ function buildStepPrompt(context: StepExecutionContext): string {
             '{"revisions":[{"parentArtifactVersionId":"exact assigned id","content":"complete revised content","mimeType":"optional","status":"candidate","metadata":{}}]}',
             'Include only artifacts that require revision; omitted assigned artifacts remain unchanged.',
           ].join('\n');
+    const reviewDecision = {
+      type: 'review-decision',
+      decision: context.reviewContext.evidence.verdict === 'reject' ? 'rework' : 'accept',
+      targetStepId: context.reviewContext.targetStepId,
+      iteration: context.reviewContext.iteration,
+      criteria: context.reviewContext.evidence.criteria,
+      evidence: {
+        evidenceId: context.reviewContext.evidence.id,
+        reviewerAgentVersionId: context.reviewContext.evidence.reviewerAgentVersionId,
+        explanation: context.reviewContext.evidence.explanation,
+        reviewedArtifactVersionIds: context.reviewContext.evidence.reviewedArtifactVersionIds,
+      },
+    };
     return [
       `Step: ${context.step.title}`,
       context.step.instructions,
+      'Structured ReviewDecision from the reviewer (do not assume reviewer transcript is present):',
+      JSON.stringify(reviewDecision, null, 2),
       'Immutable ReviewEvidence:',
       JSON.stringify(context.reviewContext.evidence, null, 2),
       'Exact artifact versions to revise:',
@@ -700,7 +1046,10 @@ async function executeProviderToolLoop(input: {
   reservationCheckpoint: JsonValue | undefined;
   workspaceRoot: string | undefined;
   toolsEnabled: boolean;
-}): Promise<{ output: string; trace: ToolTraceEntry[] } | typeof ABORTED> {
+  browserPermissionSnapshot: readonly string[];
+}): Promise<
+  { output: string; trace: ToolTraceEntry[]; usages: ProviderTurnUsage[] } | typeof ABORTED
+> {
   const checkpoint = input.reservationCheckpoint
     ? parseToolLoopCheckpoint(input.reservationCheckpoint)
     : {
@@ -708,6 +1057,7 @@ async function executeProviderToolLoop(input: {
         providerTurns: 0,
         messages: structuredClone(input.request.messages),
         trace: [],
+        providerUsages: [],
       };
 
   if (checkpoint.pending) {
@@ -718,13 +1068,14 @@ async function executeProviderToolLoop(input: {
   while (checkpoint.providerTurns < MAX_TOOL_TURNS) {
     assertNotAborted(input.context.signal);
     const providerTurn = checkpoint.providerTurns;
+    const requestId = providerTurnIdempotencyKey(input.context.idempotencyKey, providerTurn);
     let turn: ProviderTurn | typeof ABORTED;
     try {
       turn = await collectProviderTurn(
         input.adapter.call({
           ...input.request,
           messages: structuredClone(checkpoint.messages),
-          idempotencyKey: providerTurnIdempotencyKey(input.context.idempotencyKey, providerTurn),
+          idempotencyKey: requestId,
         }),
         input.context.signal,
       );
@@ -736,6 +1087,7 @@ async function executeProviderToolLoop(input: {
     }
     if (turn === ABORTED) return ABORTED;
     checkpoint.providerTurns += 1;
+    if (turn.usage) checkpoint.providerUsages.push({ requestId, usage: turn.usage });
     if (turn.text.includes(input.request.apiKey)) throw providerSecretEchoError();
 
     if (turn.toolCalls.length === 0) {
@@ -745,7 +1097,11 @@ async function executeProviderToolLoop(input: {
           'protocol',
         );
       }
-      return { output: turn.text.trim(), trace: checkpoint.trace };
+      return {
+        output: turn.text.trim(),
+        trace: checkpoint.trace,
+        usages: checkpoint.providerUsages,
+      };
     }
     if (!input.toolsEnabled || !input.workspaceRoot) {
       throw new StepExecutionError(
@@ -795,6 +1151,7 @@ async function executePendingTool(
     context: StepExecutionContext;
     request: ProviderCallRequest;
     workspaceRoot: string | undefined;
+    browserPermissionSnapshot: readonly string[];
   },
   checkpoint: ToolLoopCheckpoint,
 ): Promise<void | typeof ABORTED> {
@@ -809,31 +1166,45 @@ async function executePendingTool(
       'acceptance',
     );
   }
-  if (!input.context.gateAction) {
-    throw new StepExecutionError(
-      'Runtime action gate is unavailable for tool execution',
-      'permission',
+
+  let result: string;
+  if (pending.toolCall.name === 'browser_handoff') {
+    result = await executePendingBrowserHandoff(input, checkpoint, pending);
+  } else {
+    if (pending.state === 'waiting-user') {
+      throw new StepExecutionError('Only browser_handoff may wait for the user', 'acceptance');
+    }
+    if (!input.context.gateAction) {
+      throw new StepExecutionError(
+        'Runtime action gate is unavailable for tool execution',
+        'permission',
+      );
+    }
+    const gate = await input.context.gateAction(structuredClone(pending.request));
+    if (!gate.allowed || input.context.signal.aborted) return ABORTED;
+    pending.state = 'started';
+    pending.actionDigest = gate.actionDigest;
+    persistToolCheckpoint(input, checkpoint);
+
+    result = await executeBuiltInTool(
+      input.options,
+      input.context,
+      input.workspaceRoot,
+      pending.toolCall.id,
+      pending.toolCall.name,
+      pending.arguments,
+      input.browserPermissionSnapshot,
+      pending.actionDigest,
     );
   }
-  const gate = await input.context.gateAction(structuredClone(pending.request));
-  if (!gate.allowed || input.context.signal.aborted) return ABORTED;
-  pending.state = 'started';
-  pending.actionDigest = gate.actionDigest;
-  persistToolCheckpoint(input, checkpoint);
-
-  const result = await executeBuiltInTool(
-    input.options,
-    input.context,
-    input.workspaceRoot,
-    pending.toolCall.name,
-    pending.arguments,
-  );
   if (result.includes(input.request.apiKey)) throw providerSecretEchoError();
+  const metadata = browserTraceMetadata(input.context, pending.toolCall.name, result);
   checkpoint.trace.push({
     id: pending.toolCall.id,
     name: pending.toolCall.name,
     arguments: structuredClone(pending.arguments),
     result,
+    ...(metadata ? { metadata } : {}),
   });
   checkpoint.messages.push({
     role: 'tool',
@@ -842,6 +1213,68 @@ async function executePendingTool(
   });
   delete checkpoint.pending;
   persistToolCheckpoint(input, checkpoint);
+}
+
+async function executePendingBrowserHandoff(
+  input: {
+    options: ProductionStepExecutorOptions;
+    context: StepExecutionContext;
+    workspaceRoot: string | undefined;
+    browserPermissionSnapshot: readonly string[];
+  },
+  checkpoint: ToolLoopCheckpoint,
+  pending: PendingToolExecution,
+): Promise<string> {
+  if (!input.options.browserController || input.browserPermissionSnapshot.length === 0) {
+    throw new StepExecutionError(
+      'Browser Worker is unavailable for this AgentVersion',
+      'permission',
+    );
+  }
+  const run = input.options.orchestrationStore.getRun(input.context.runId);
+  if (!run) throw unavailable(`Run is unavailable: ${input.context.runId}`);
+  const task = input.options.workspaceStore.getTask(run.taskId);
+  if (!task) throw unavailable(`Task is unavailable: ${run.taskId}`);
+
+  const reason = pending.arguments.reason as
+    'login' | 'captcha' | 'payment' | 'device-confirmation' | 'manual';
+  const requestedOutcome = String(pending.arguments.requestedOutcome);
+  const onCancel = pending.arguments.onCancel as 'keep-open' | 'close-page';
+  const response = await input.options.browserController.requestHandoff({
+    workspaceId: task.workspaceId,
+    runId: input.context.runId,
+    ownerId: productionBrowserOwner(input.context),
+    idempotencyKey: `browser:${input.context.runId}:${input.context.step.id}:${pending.toolCall.id}`,
+    reason,
+    requestedOutcome,
+    onCancel,
+    agentVersionId: input.context.step.agentVersionId,
+    stepId: input.context.step.id,
+  });
+
+  if (response.status === 'cancelled') {
+    throw new StepExecutionError('The user cancelled the Browser handoff.', 'acceptance');
+  }
+  if (response.status === 'continued') {
+    return JSON.stringify(response.result);
+  }
+
+  pending.state = 'waiting-user';
+  pending.request = {
+    kind: 'human-only',
+    action: 'browser.handoff',
+    summary: `Complete the requested ${reason} operation in the system browser`,
+    details: {
+      handoffId: response.handoff.handoffId,
+      revision: response.handoff.revision,
+      siteOrigin: response.handoff.siteOrigin,
+      reason,
+      requestedOutcome,
+      onCancel,
+    },
+  };
+  persistToolCheckpoint(input, checkpoint);
+  throw new StepAwaitingApprovalError(structuredClone(pending.request));
 }
 
 function persistToolCheckpoint(
@@ -870,6 +1303,7 @@ function parseToolLoopCheckpoint(value: JsonValue): ToolLoopCheckpoint {
   const providerTurns = value.providerTurns;
   const messages = value.messages;
   const trace = value.trace;
+  const providerUsages = value.providerUsages ?? [];
   if (
     !Number.isSafeInteger(providerTurns) ||
     Number(providerTurns) < 0 ||
@@ -879,7 +1313,10 @@ function parseToolLoopCheckpoint(value: JsonValue): ToolLoopCheckpoint {
     !messages.every(isProviderMessage) ||
     !Array.isArray(trace) ||
     trace.length > MAX_TOOL_TURNS ||
-    !trace.every(isToolTraceEntry)
+    !trace.every(isToolTraceEntry) ||
+    !Array.isArray(providerUsages) ||
+    providerUsages.length > MAX_TOOL_TURNS ||
+    !providerUsages.every(isProviderTurnUsage)
   ) {
     throw new StepExecutionError('Provider tool checkpoint is invalid', 'acceptance');
   }
@@ -892,10 +1329,34 @@ function parseToolLoopCheckpoint(value: JsonValue): ToolLoopCheckpoint {
     providerTurns: Number(providerTurns),
     messages: structuredClone(messages) as unknown as ProviderMessage[],
     trace: structuredClone(trace) as unknown as ToolTraceEntry[],
+    providerUsages: structuredClone(providerUsages) as unknown as ProviderTurnUsage[],
     ...(pending === undefined
       ? {}
       : { pending: structuredClone(pending) as unknown as PendingToolExecution }),
   };
+}
+
+function isProviderTurnUsage(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.requestId !== 'string' || !isRecord(value.usage)) {
+    return false;
+  }
+  const usage = value.usage;
+  return (
+    isNonNegativeFiniteNumber(usage.tokensIn) &&
+    isNonNegativeFiniteNumber(usage.tokensOut) &&
+    optionalNonNegativeFiniteNumber(usage.cachedTokensHit) &&
+    optionalNonNegativeFiniteNumber(usage.cachedTokensCreated) &&
+    optionalNonNegativeFiniteNumber(usage.reasoningTokens) &&
+    optionalNonNegativeFiniteNumber(usage.totalTokens)
+  );
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function optionalNonNegativeFiniteNumber(value: unknown): boolean {
+  return value === undefined || isNonNegativeFiniteNumber(value);
 }
 
 function isProviderMessage(value: unknown): boolean {
@@ -917,7 +1378,8 @@ function isToolTraceEntry(value: unknown): boolean {
     typeof value.id === 'string' &&
     typeof value.name === 'string' &&
     isRecord(value.arguments) &&
-    typeof value.result === 'string'
+    typeof value.result === 'string' &&
+    (value.metadata === undefined || isRecord(value.metadata))
   );
 }
 
@@ -931,7 +1393,9 @@ function isPendingToolExecution(value: unknown): boolean {
     isRecord(value.arguments) &&
     isRecord(value.request) &&
     typeof value.request.action === 'string' &&
-    (value.state === 'awaiting-approval' || value.state === 'started') &&
+    (value.state === 'awaiting-approval' ||
+      value.state === 'waiting-user' ||
+      value.state === 'started') &&
     (value.actionDigest === undefined || typeof value.actionDigest === 'string')
   );
 }
@@ -1041,6 +1505,48 @@ function validateToolArguments(name: string, args: Record<string, JsonValue>): v
         invalidToolArguments(name);
       }
       return;
+    case 'browser_handoff': {
+      if (
+        !only('reason', 'requestedOutcome', 'onCancel') ||
+        !['login', 'captcha', 'payment', 'device-confirmation', 'manual'].includes(
+          String(args.reason),
+        ) ||
+        typeof args.requestedOutcome !== 'string' ||
+        !args.requestedOutcome.trim() ||
+        args.requestedOutcome.length > 1_000 ||
+        (args.onCancel !== 'keep-open' && args.onCancel !== 'close-page')
+      ) {
+        invalidToolArguments(name);
+      }
+      return;
+    }
+    case 'browser_open': {
+      if (!only('url') || !validateChatBrowserOpen(JSON.stringify(args)).ok) {
+        invalidToolArguments(name);
+      }
+      return;
+    }
+    case 'browser_click':
+    case 'browser_type':
+    case 'browser_read':
+    case 'browser_screenshot': {
+      const allowedKeys =
+        name === 'browser_click'
+          ? ['selector', 'x', 'y']
+          : name === 'browser_type'
+            ? ['selector', 'text']
+            : name === 'browser_read'
+              ? ['selector']
+              : [];
+      if (
+        !CHAT_BROWSER_TOOL_NAMES.has(name) ||
+        !only(...allowedKeys) ||
+        !validateChatBrowserCommand(name, JSON.stringify(args)).ok
+      ) {
+        invalidToolArguments(name);
+      }
+      return;
+    }
     default:
       throw new StepExecutionError(`Provider requested unsupported tool: ${name}`, 'permission');
   }
@@ -1060,6 +1566,23 @@ function toolActionRequest(
       path: args.path,
       bytes: Buffer.byteLength(args.content, 'utf8'),
       contentSha256: createHash('sha256').update(args.content).digest('hex'),
+    };
+  } else if (toolCall.name === 'browser_open' && typeof args.url === 'string') {
+    const url = new URL(args.url);
+    details = { url: `${url.origin}${url.pathname}` };
+  } else if (toolCall.name === 'browser_type' && typeof args.text === 'string') {
+    details = {
+      selector: args.selector,
+      textLength: args.text.length,
+      textSha256: createHash('sha256').update(args.text).digest('hex'),
+    };
+  }
+  if (toolCall.name === 'browser_handoff') {
+    return {
+      kind: 'human-only',
+      action: 'browser.handoff',
+      summary: toolSummary(toolCall.name, args),
+      details,
     };
   }
   return {
@@ -1084,17 +1607,73 @@ function toolSummary(name: string, args: Record<string, JsonValue>): string {
       return 'Read Git status';
     case 'git_diff':
       return `Read ${args.staged ? 'staged ' : ''}Git diff${args.path ? ` for ${String(args.path)}` : ''}`;
+    case 'browser_handoff':
+      return `Request user Browser handoff for ${String(args.reason)}`;
+    case 'browser_open': {
+      const url = new URL(String(args.url));
+      return `Open browser ${url.origin}${url.pathname}`;
+    }
+    case 'browser_click':
+      return typeof args.selector === 'string'
+        ? `Click browser selector ${args.selector}`
+        : 'Click browser coordinates';
+    case 'browser_type':
+      return `Fill browser selector ${String(args.selector)}`;
+    case 'browser_read':
+      return args.selector ? `Read browser selector ${String(args.selector)}` : 'Read browser page';
+    case 'browser_screenshot':
+      return 'Capture browser screenshot';
     default:
       return `Run tool ${name}`;
   }
+}
+
+function productionBrowserOwner(context: StepExecutionContext): string {
+  return `step:${context.runId}:${context.step.id}:${context.step.agentVersionId}`;
+}
+
+function browserTraceMetadata(
+  context: StepExecutionContext,
+  toolName: string,
+  result: string,
+): Record<string, JsonValue> | undefined {
+  if (!CHAT_BROWSER_TOOL_NAMES.has(toolName)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || parsed.ok !== true) return undefined;
+
+  const metadata: Record<string, JsonValue> = {
+    kind: 'browser-command',
+    agentVersionId: context.step.agentVersionId,
+    stepId: context.step.id,
+  };
+  const fields = [
+    ['ownerId', 'ownerId'],
+    ['profileId', 'profileId'],
+    ['leaseId', 'leaseId'],
+    ['pageId', 'pageId'],
+    ['targetOrigin', 'origin'],
+    ['commandId', 'commandId'],
+  ] as const;
+  for (const [source, target] of fields) {
+    if (typeof parsed[source] === 'string') metadata[target] = parsed[source];
+  }
+  return metadata;
 }
 
 async function executeBuiltInTool(
   options: ProductionStepExecutorOptions,
   context: StepExecutionContext,
   workspaceRoot: string,
+  toolCallId: string,
   name: string,
   args: Record<string, JsonValue>,
+  browserPermissionSnapshot: readonly string[],
+  approvalId?: string,
 ): Promise<string> {
   const token: WorkerToken = {
     token: randomUUID(),
@@ -1172,6 +1751,38 @@ async function executeBuiltInTool(
         token,
       );
       break;
+    case 'browser_open':
+    case 'browser_click':
+    case 'browser_type':
+    case 'browser_read':
+    case 'browser_screenshot': {
+      if (!options.browserController || browserPermissionSnapshot.length === 0) {
+        throw new StepExecutionError(
+          'Browser Worker is unavailable for this AgentVersion',
+          'permission',
+        );
+      }
+      const run = options.orchestrationStore.getRun(context.runId);
+      if (!run) throw unavailable(`Run is unavailable: ${context.runId}`);
+      const task = options.workspaceStore.getTask(run.taskId);
+      if (!task) throw unavailable(`Task is unavailable: ${run.taskId}`);
+      return options.browserController.execute({
+        toolName: name,
+        argumentsJson: JSON.stringify(args),
+        workspaceId: task.workspaceId,
+        runId: context.runId,
+        ownerId: productionBrowserOwner(context),
+        agentVersionId: context.step.agentVersionId,
+        stepId: context.step.id,
+        allowedOrigins: browserPermissionSnapshot,
+        idempotencyKey: `browser:${context.runId}:${context.step.id}:${toolCallId}`,
+        capabilityToken: `browser:${context.runId}:${context.step.id}:${toolCallId}`,
+        workspaceRoot,
+        signal: context.signal,
+        ...(approvalId ? { approval: { approvalId: `step-action:${approvalId}` } } : {}),
+        beforeStart: () => isExecutionFenceCurrent(options, context),
+      });
+    }
     default:
       throw new StepExecutionError(`Unsupported built-in tool: ${name}`, 'permission');
   }
@@ -1238,18 +1849,102 @@ function materializeExecutionResult(
         'acceptance',
       );
     }
-    return { reviewOutcome: parseReviewOutcome(output.content, context) };
+    if (typeof output.content !== 'string') {
+      throw new StepExecutionError(
+        'Production reviewer returned a referenced artifact',
+        'acceptance',
+      );
+    }
+    return {
+      reviewOutcome: parseReviewOutcome(output.content, context),
+      ...(result.providerUsages ? { providerUsages: result.providerUsages } : {}),
+    };
   }
   if (context.reviewContext?.kind === 'rework') {
+    const imageOutputs = result.outputVersions.filter(isGeneratedImageOutput);
+    if (imageOutputs.length > 0) {
+      if (imageOutputs.length !== result.outputVersions.length) {
+        throw new StepExecutionError(
+          'Production image rework returned mixed artifact types',
+          'acceptance',
+        );
+      }
+      return {
+        outputVersions: materializeImageReworkOutputs(context, imageOutputs),
+        ...(result.providerUsages ? { providerUsages: result.providerUsages } : {}),
+      };
+    }
     if (result.outputVersions.length !== 1) {
       throw new StepExecutionError(
         'Production rework returned unexpected tool artifacts',
         'acceptance',
       );
     }
-    return { outputVersions: materializeReworkOutputs(context, output) };
+    return {
+      outputVersions: materializeReworkOutputs(context, output),
+      ...(result.providerUsages ? { providerUsages: result.providerUsages } : {}),
+    };
   }
-  return { outputVersions: result.outputVersions };
+  return {
+    outputVersions: result.outputVersions.map((candidate) =>
+      candidate.metadata?.executionKind === 'image-generation' &&
+      candidate.metadata?.generationKind === 'image'
+        ? {
+            ...candidate,
+            artifactGroupKey: `image-generation:${context.step.id}`,
+          }
+        : candidate,
+    ),
+    ...(result.providerUsages ? { providerUsages: result.providerUsages } : {}),
+  };
+}
+
+function isGeneratedImageOutput(
+  output: ProductionExecutionResult['outputVersions'][number],
+): boolean {
+  return (
+    output.metadata?.executionKind === 'image-generation' &&
+    output.metadata?.generationKind === 'image' &&
+    typeof output.contentRef === 'string' &&
+    typeof output.contentHash === 'string' &&
+    output.mimeType.startsWith('image/')
+  );
+}
+
+function materializeImageReworkOutputs(
+  context: StepExecutionContext,
+  outputs: readonly ProductionExecutionResult['outputVersions'][number][],
+): readonly StepArtifactVersionOutput[] {
+  if (context.reviewContext?.kind !== 'rework') {
+    throw new StepExecutionError('Persisted rework context is unavailable', 'acceptance');
+  }
+  const reviewed = context.reviewContext.evidence.reviewedArtifactVersionIds.map((versionId) => {
+    const version = context.artifactVersions.find((candidate) => candidate.id === versionId);
+    if (!version) {
+      throw new StepExecutionError(
+        'Exact reviewed ArtifactVersion is unavailable to production image rework',
+        'acceptance',
+      );
+    }
+    return version;
+  });
+  const artifactIds = new Set(reviewed.map((version) => version.artifactId));
+  if (reviewed.length !== 1 || artifactIds.size !== 1) {
+    throw new StepExecutionError(
+      'Production image rework requires exactly one selected image ArtifactVersion',
+      'acceptance',
+    );
+  }
+  const parent = reviewed[0]!;
+  return outputs.map((output) => ({
+    artifactId: parent.artifactId,
+    contentRef: output.contentRef!,
+    contentHash: output.contentHash!,
+    mimeType: output.mimeType,
+    status: output.status,
+    parentVersionIds: [parent.id],
+    ...(output.metadata ? { metadata: output.metadata } : {}),
+  }));
 }
 
 function materializeReworkOutputs(
@@ -1260,6 +1955,9 @@ function materializeReworkOutputs(
     throw new StepExecutionError('Persisted rework context is unavailable', 'acceptance');
   }
   const reviewedIds = context.reviewContext.evidence.reviewedArtifactVersionIds;
+  if (typeof output.content !== 'string') {
+    throw new StepExecutionError('Production rework returned a referenced artifact', 'acceptance');
+  }
   const structured = parseStructuredReworkRevisions(output.content, context, output.metadata);
   if (structured) return structured;
   if (reviewedIds.length !== 1) {
@@ -1551,6 +2249,7 @@ async function collectProviderTurn(
   const iterator = stream[Symbol.asyncIterator]();
   let output = '';
   const toolCalls: ProviderToolCall[] = [];
+  let usage: ProviderUsage | undefined;
   let finishedReason: ProviderTurn['finishedReason'] | undefined;
   try {
     while (true) {
@@ -1583,6 +2282,8 @@ async function collectProviderTurn(
           'Production provider returned an image but no Step image artifact adapter is configured',
           'acceptance',
         );
+      } else if (event.type === 'usage') {
+        usage = mergeProviderUsage(usage, event);
       } else if (event.type === 'finished') {
         finishedReason = event.reason;
         break;
@@ -1594,7 +2295,44 @@ async function collectProviderTurn(
   if (!finishedReason) {
     throw new StepExecutionError('Production adapter stream ended without completion', 'protocol');
   }
-  return { text: output.trim(), toolCalls, finishedReason };
+  return {
+    text: output.trim(),
+    toolCalls,
+    ...(usage ? { usage } : {}),
+    finishedReason,
+  };
+}
+
+function mergeProviderUsage(
+  current: ProviderUsage | undefined,
+  next: ProviderUsage,
+): ProviderUsage {
+  const maxOptional = (left: number | undefined, right: number | undefined) =>
+    left === undefined ? right : right === undefined ? left : Math.max(left, right);
+  return {
+    tokensIn: Math.max(current?.tokensIn ?? 0, next.tokensIn),
+    tokensOut: Math.max(current?.tokensOut ?? 0, next.tokensOut),
+    ...(maxOptional(current?.cachedTokensHit, next.cachedTokensHit) !== undefined
+      ? { cachedTokensHit: maxOptional(current?.cachedTokensHit, next.cachedTokensHit)! }
+      : {}),
+    ...(maxOptional(current?.cachedTokensCreated, next.cachedTokensCreated) !== undefined
+      ? {
+          cachedTokensCreated: maxOptional(current?.cachedTokensCreated, next.cachedTokensCreated)!,
+        }
+      : {}),
+    ...(maxOptional(current?.reasoningTokens, next.reasoningTokens) !== undefined
+      ? { reasoningTokens: maxOptional(current?.reasoningTokens, next.reasoningTokens)! }
+      : {}),
+    ...(maxOptional(current?.totalTokens, next.totalTokens) !== undefined
+      ? { totalTokens: maxOptional(current?.totalTokens, next.totalTokens)! }
+      : {}),
+  };
+}
+
+function providerUsagePurpose(context: StepExecutionContext): ProviderRequestUsage['purpose'] {
+  if (context.reviewContext?.kind === 'reviewer') return 'review';
+  if (context.reviewContext?.kind === 'rework') return 'revision';
+  return 'normal';
 }
 
 async function nextWithAbort(
@@ -1645,6 +2383,20 @@ function executionFence(context: StepExecutionContext) {
     ownerId: context.step.executionOwnerId,
     executionAttempt: context.step.executionAttempt,
   };
+}
+
+function releaseProviderExecutionReservation(
+  store: SqliteProductionExecutionStore,
+  context: StepExecutionContext,
+): void {
+  try {
+    store.releaseProviderExecution({
+      ...executionFence(context),
+      idempotencyKey: context.idempotencyKey,
+    });
+  } catch {
+    // A concurrent completion/cancel keeps the durable record authoritative.
+  }
 }
 
 function releaseApprovalReservation(

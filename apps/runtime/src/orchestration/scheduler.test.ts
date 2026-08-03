@@ -7,6 +7,7 @@ import {
   runMigrations,
   SqliteArtifactStore,
   SqliteApprovalStore,
+  SqliteAgentContextStore,
   SqliteOrchestrationStore,
   SqliteUnitOfWork,
   type BetterSQLite3Raw,
@@ -246,6 +247,30 @@ describe('Scheduler parallel execution', () => {
     });
     expect(result.graph.run.state).toBe('running');
     await scheduler.shutdown();
+  });
+
+  it('assigns a stable AgentContextThread to a Step and reuses it on retry', async () => {
+    const { store, raw } = await openFixture();
+    const graph = approve(store, [planStep('stable-thread-step', firstAgent)]);
+    const agentContextStore = new SqliteAgentContextStore(raw);
+    const contexts: StepExecutionContext[] = [];
+    const scheduler = new Scheduler({
+      store,
+      agentContextStore,
+      executor: {
+        async execute(context) {
+          contexts.push(context);
+          return {};
+        },
+      },
+    });
+
+    await scheduler.tick(graph.run.id);
+
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.taskId).toBe(taskId);
+    expect(contexts[0]?.agentContextThreadId).toBeTruthy();
+    expect(agentContextStore.listThreads(taskId)).toHaveLength(1);
   });
 
   it('uses a barrier to run every independent ready step against isolated deep-frozen snapshots', async () => {

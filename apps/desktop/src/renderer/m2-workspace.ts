@@ -235,6 +235,7 @@ export function projectM2ExecutionGraph(
   events: readonly Event[],
   artifacts: readonly ArtifactListItem[],
   agentVersions: ReadonlyMap<string, { defaultModelId: string }> = new Map(),
+  imagePreviews: Readonly<Record<string, { status: string; previewUrl?: string; mimeType?: string }>> = {},
 ): ExecutionGraphView {
   const runId = String(graph.run.id);
   return {
@@ -259,10 +260,25 @@ export function projectM2ExecutionGraph(
       }
 
       let currentArtifactVersion: number | undefined;
+      let currentArtifactImage: { version: number; url: string; mimeType: string; status: string } | undefined;
       for (const item of artifacts) {
         for (const version of item.versions) {
           if (String(version.sourceStepId) !== String(step.id)) continue;
           currentArtifactVersion = Math.max(currentArtifactVersion ?? 0, version.version);
+          const preview = imagePreviews[String(version.id)];
+          if (
+            /^image\/(?:png|jpeg|webp)$/.test(version.mimeType) &&
+            preview?.status === 'ready' &&
+            preview.previewUrl &&
+            (!currentArtifactImage || version.version > currentArtifactImage.version)
+          ) {
+            currentArtifactImage = {
+              version: version.version,
+              url: preview.previewUrl,
+              mimeType: preview.mimeType ?? version.mimeType,
+              status: version.status,
+            };
+          }
         }
       }
 
@@ -281,6 +297,7 @@ export function projectM2ExecutionGraph(
         retries: step.retries,
         ...(reviewIteration === undefined ? {} : { reviewIteration }),
         ...(currentArtifactVersion === undefined ? {} : { currentArtifactVersion }),
+        ...(currentArtifactImage ? { artifactImagePreview: currentArtifactImage } : {}),
       };
     }),
   };

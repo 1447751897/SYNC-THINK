@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import type {
   AgentVersionId,
   ArtifactVersionStatus,
   JsonValue,
+  ProviderRequestUsage,
   RunId,
   StepId,
 } from '@sync-think/shared';
@@ -11,16 +13,22 @@ const MAX_RESULT_BYTES = 256 * 1024;
 const ID_RE = /^\S{1,256}$/;
 const DIGEST_RE = /^[a-f0-9]{64}$/;
 
-export interface ProductionArtifactOutput {
+interface ProductionArtifactOutputBase {
   artifactName: string;
-  content: string;
   mimeType: string;
   status: ArtifactVersionStatus;
   metadata?: Record<string, JsonValue>;
 }
 
+export type ProductionArtifactOutput = ProductionArtifactOutputBase &
+  (
+    | { content: string; contentRef?: never; contentHash?: string }
+    | { content?: never; contentRef: string; contentHash: string }
+  );
+
 export interface ProductionExecutionResult {
   outputVersions: ProductionArtifactOutput[];
+  providerUsages?: ProviderRequestUsage[];
 }
 
 export interface ProductionExecutionFence {
@@ -504,7 +512,13 @@ function normalizeMcpInput<T extends ProductionExecutionFence & { actionDigest: 
 }
 
 function normalizeResult(value: ProductionExecutionResult): ProductionExecutionResult {
-  if (!value || !Array.isArray(value.outputVersions) || value.outputVersions.length > 16) {
+  if (
+    !value ||
+    !Array.isArray(value.outputVersions) ||
+    value.outputVersions.length > 16 ||
+    (value.providerUsages !== undefined &&
+      (!Array.isArray(value.providerUsages) || value.providerUsages.length > 32))
+  ) {
     throw new Error('provider.execution_result_invalid');
   }
   return {
@@ -514,22 +528,107 @@ function normalizeResult(value: ProductionExecutionResult): ProductionExecutionR
         typeof output.artifactName !== 'string' ||
         !output.artifactName.trim() ||
         output.artifactName.length > 512 ||
-        typeof output.content !== 'string' ||
         typeof output.mimeType !== 'string' ||
         !output.mimeType.includes('/') ||
         !['candidate', 'selected', 'merged'].includes(output.status)
       ) {
         throw new Error('provider.execution_result_invalid');
       }
+      const hasContent = typeof output.content === 'string';
+      const hasContentRef = typeof output.contentRef === 'string';
+      if (hasContent === hasContentRef) throw new Error('provider.execution_result_invalid');
+      if (hasContent) {
+        if (
+          output.contentHash !== undefined &&
+          (!DIGEST_RE.test(output.contentHash) ||
+            createHash('sha256').update(output.content!, 'utf8').digest('hex') !== output.contentHash)
+        ) {
+          throw new Error('provider.execution_result_invalid');
+        }
+        return {
+          artifactName: output.artifactName,
+          content: output.content!,
+          ...(output.contentHash === undefined ? {} : { contentHash: output.contentHash }),
+          mimeType: output.mimeType,
+          status: output.status,
+          ...(output.metadata === undefined ? {} : { metadata: output.metadata }),
+        };
+      }
+      if (!isLocalContentRef(output.contentRef!) || !DIGEST_RE.test(output.contentHash ?? '')) {
+        throw new Error('provider.execution_result_invalid');
+      }
       return {
         artifactName: output.artifactName,
-        content: output.content,
+        contentRef: output.contentRef!,
+        contentHash: output.contentHash!,
         mimeType: output.mimeType,
         status: output.status,
         ...(output.metadata === undefined ? {} : { metadata: output.metadata }),
       };
     }),
+    ...(value.providerUsages === undefined
+      ? {}
+      : {
+          providerUsages: value.providerUsages.map((usage) => normalizeProviderRequestUsage(usage)),
+        }),
   };
+}
+
+function normalizeProviderRequestUsage(usage: ProviderRequestUsage): ProviderRequestUsage {
+  if (
+    !usage ||
+    !ID_RE.test(usage.requestId) ||
+    typeof usage.taskId !== 'string' ||
+    !usage.taskId ||
+    typeof usage.providerId !== 'string' ||
+    !usage.providerId ||
+    typeof usage.modelId !== 'string' ||
+    !usage.modelId ||
+    !['normal', 'compaction', 'delegation', 'review', 'revision', 'summary'].includes(
+      usage.purpose,
+    ) ||
+    !isUsageNumber(usage.tokensIn) ||
+    !isUsageNumber(usage.tokensOut) ||
+    !isUsageNumber(usage.totalTokens) ||
+    !isOptionalUsageNumber(usage.cachedTokensHit) ||
+    !isOptionalUsageNumber(usage.cachedTokensCreated) ||
+    !isOptionalUsageNumber(usage.reasoningTokens)
+  ) {
+    throw new Error('provider.execution_result_invalid');
+  }
+  return structuredClone(usage);
+}
+
+function isUsageNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isOptionalUsageNumber(value: unknown): boolean {
+  return value === undefined || isUsageNumber(value);
+}
+
+function isLocalContentRef(value: string): boolean {
+  if (
+    !value ||
+    value.trim() !== value ||
+    value.length > 4096 ||
+    [...value].some((character) => {
+      const codePoint = character.charCodeAt(0);
+      return codePoint <= 0x1f || codePoint === 0x7f;
+    })
+  ) {
+    return false;
+  }
+  if (/^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(value)) return true;
+  if (value.startsWith('/') && !value.startsWith('//')) return true;
+  if (/^artifact:\/\/[A-Za-z0-9][A-Za-z0-9._~!function mapProviderRow(row: ProviderRow): ProviderExecutionReservation {'()*+,;=:@%/-]*$/.test(value)) return true;
+  if (!value.toLowerCase().startsWith('file://')) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'file:' && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+  } catch {
+    return false;
+  }
 }
 
 function mapProviderRow(row: ProviderRow): ProviderExecutionReservation {

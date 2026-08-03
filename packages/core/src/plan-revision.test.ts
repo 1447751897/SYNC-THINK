@@ -1,20 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentVersionId, ModelId, StepId } from '@sync-think/shared';
+import type { AgentVersionId, ModelId, PlanStepDraft, StepId } from '@sync-think/shared';
 import { diffPlanSteps, validatePlanSteps } from './plan-revision.js';
-
-interface TestPlanStep {
-  id: StepId;
-  title: string;
-  instructions: string;
-  agentVersionId: AgentVersionId;
-  modelOverrideId?: ModelId;
-  dependsOn: StepId[];
-}
 
 function step(
   id: string,
-  overrides: Partial<TestPlanStep> = {},
-): TestPlanStep {
+  overrides: Partial<PlanStepDraft> = {},
+): PlanStepDraft {
   return {
     id: id as StepId,
     title: `Step ${id}`,
@@ -26,6 +17,54 @@ function step(
 }
 
 describe('immutable plan revision helpers', () => {
+  it('diffs frozen image generation settings and deep-clones the snapshots', () => {
+    const previous = [step('image')];
+    const next = [
+      step('image', { imageGeneration: { size: '1536x1024', quality: 'high', count: 3 } }),
+    ];
+
+    const diff = diffPlanSteps(previous, next);
+
+    expect(diff.changed[0]?.changedFields).toEqual(['imageGeneration']);
+    expect(diff.changed[0]?.after.imageGeneration).toEqual({
+      size: '1536x1024',
+      quality: 'high',
+      count: 3,
+    });
+    next[0]!.imageGeneration!.count = 1;
+    expect(diff.changed[0]?.after.imageGeneration?.count).toBe(3);
+  });
+
+  it.each([
+    {
+      reason: 'invalid-image-generation-config',
+      candidate: { size: '2048x2048', quality: 'high', count: 1 },
+    },
+    {
+      reason: 'invalid-image-generation-config',
+      candidate: { size: 'auto', quality: 'ultra', count: 1 },
+    },
+    {
+      reason: 'invalid-image-generation-config',
+      candidate: { size: 'auto', quality: 'high', count: 5 },
+    },
+  ])('rejects malformed image generation settings: $candidate', ({ reason, candidate }) => {
+    expect(
+      validatePlanSteps([step('image', { imageGeneration: candidate as never })]),
+    ).toMatchObject({ ok: false, reason });
+  });
+
+  it('rejects image generation settings on merge steps', () => {
+    expect(
+      validatePlanSteps([
+        step('merge', {
+          kind: 'merge',
+          imageGeneration: { size: 'auto', quality: 'auto', count: 1 },
+        }),
+      ]),
+    ).toMatchObject({ ok: false, reason: 'merge-image-generation-config' });
+  });
+
   it('diffs added, removed, and changed steps by stable Step id', () => {
     const previous = [step('research'), step('draft', { dependsOn: ['research' as StepId] }), step('remove')];
     const next = [

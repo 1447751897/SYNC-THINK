@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   MAX_REVIEW_ITERATIONS,
+  isImageGenerationConfig,
   isReviewOutcomeConsistent,
   nextReviewAction,
   normalizeAcceptanceCriteria,
@@ -15,6 +16,7 @@ import {
   type ArtifactVersionStatus,
   type Event,
   type FailureClass,
+  type ImageGenerationConfig,
   type JsonValue,
   type ModelId,
   type PlanDiff,
@@ -105,6 +107,15 @@ export interface ClaimReadyStepsResult {
   artifactVersionsByStep: ReadonlyMap<StepId, ArtifactVersion[]>;
 }
 
+export type PrepareReviewStepForExecutionResult =
+  | { status: 'ready'; graph: RunGraph; context?: ReviewStepExecutionContext }
+  | {
+      status: 'image-selection-required';
+      graph: RunGraph;
+      artifactIds: ArtifactId[];
+      candidateVersionIds: ArtifactVersionId[];
+    };
+
 export const MAX_STEP_SNAPSHOT_VERSIONS = 32;
 export const MAX_STEP_SNAPSHOT_INLINE_BYTES = 256 * 1024;
 const LEGACY_TERMINAL_EXECUTION_OWNER = 'migration:0014:legacy-terminal';
@@ -126,6 +137,8 @@ interface StepArtifactVersionOutputBase {
   status: ArtifactVersionStatus;
   parentVersionIds?: readonly import('@sync-think/shared').ArtifactVersionId[];
   metadata?: Record<string, JsonValue>;
+  /** Groups multiple outputs into immutable versions of one newly-created Artifact. */
+  artifactGroupKey?: string;
 }
 
 export type StepArtifactVersionOutput = StepArtifactVersionOutputBase &
@@ -255,6 +268,7 @@ interface StepDbRow {
   instructions: string;
   agent_version_id: string;
   model_override_id: string | null;
+  image_generation_config_json: string | null;
   state: string;
   retries: number;
   retry_of_step_id: string | null;
@@ -315,7 +329,7 @@ const RUN_COLUMNS = `
 
 const STEP_COLUMNS = `
   id, run_id, kind, plan_order, title, instructions, agent_version_id, model_override_id,
-  state, retries, retry_of_step_id, idempotency_key, execution_owner_id,
+  image_generation_config_json, state, retries, retry_of_step_id, idempotency_key, execution_owner_id,
   lease_expires_at, execution_attempt, created_at, updated_at
 `;
 
@@ -326,6 +340,7 @@ export type OrchestrationDataErrorCode =
   | 'plan.invalid_revision_state'
   | 'run.invalid_state'
   | 'step.invalid_state'
+  | 'step.invalid_image_generation_config'
   | 'step.invalid_idempotency_key';
 
 export class OrchestrationDataError extends Error {
@@ -394,10 +409,12 @@ export function isStepFenceMismatchError(error: unknown): error is StepFenceMism
 }
 
 const PLAN_STEP_CHANGED_FIELDS = new Set<PlanStepChangedField>([
+  'kind',
   'title',
   'instructions',
   'agentVersionId',
   'modelOverrideId',
+  'imageGeneration',
   'dependsOn',
   'planOrder',
 ]);
@@ -441,7 +458,11 @@ function requireRevision(value: number, field: string): number {
 }
 
 function cloneStep(step: PlanStepDraft): PlanStepDraft {
-  return { ...step, dependsOn: [...step.dependsOn] };
+  return {
+    ...step,
+    ...(step.imageGeneration ? { imageGeneration: { ...step.imageGeneration } } : {}),
+    dependsOn: [...step.dependsOn],
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -580,6 +601,17 @@ function persistedPlanOrder(
   return value as number;
 }
 
+function decodeImageGenerationConfig(
+  value: unknown,
+  code: OrchestrationDataErrorCode,
+  path: string,
+): ImageGenerationConfig {
+  if (!isImageGenerationConfig(value)) {
+    throw new OrchestrationDataError(code, path, 'expected exact size, quality, and count fields');
+  }
+  return { ...value };
+}
+
 function decodePlanStep(
   value: unknown,
   code: OrchestrationDataErrorCode,
@@ -596,6 +628,17 @@ function decodePlanStep(
   if (kind !== 'execution' && kind !== 'merge') {
     throw new OrchestrationDataError(code, `${path}.kind`, 'expected execution or merge');
   }
+  const imageGeneration =
+    value.imageGeneration === undefined
+      ? undefined
+      : decodeImageGenerationConfig(value.imageGeneration, code, `${path}.imageGeneration`);
+  if (kind === 'merge' && imageGeneration) {
+    throw new OrchestrationDataError(
+      code,
+      `${path}.imageGeneration`,
+      'merge steps cannot generate images',
+    );
+  }
   if (!Array.isArray(value.dependsOn)) {
     throw new OrchestrationDataError(code, `${path}.dependsOn`, 'expected array');
   }
@@ -610,6 +653,7 @@ function decodePlanStep(
       `${path}.agentVersionId`,
     ) as AgentVersionId,
     ...(modelOverrideId ? { modelOverrideId } : {}),
+    ...(imageGeneration ? { imageGeneration } : {}),
     dependsOn: value.dependsOn.map(
       (dependencyId, index) =>
         persistedString(dependencyId, code, `${path}.dependsOn[${index}]`) as StepId,
@@ -722,6 +766,11 @@ function getChangedFields(
   if (before.instructions !== after.instructions) fields.push('instructions');
   if (before.agentVersionId !== after.agentVersionId) fields.push('agentVersionId');
   if (before.modelOverrideId !== after.modelOverrideId) fields.push('modelOverrideId');
+  if (
+    JSON.stringify(before.imageGeneration ?? null) !== JSON.stringify(after.imageGeneration ?? null)
+  ) {
+    fields.push('imageGeneration');
+  }
   if (!sameDependencies(before.dependsOn, after.dependsOn)) fields.push('dependsOn');
   if (beforePlanOrder !== afterPlanOrder) fields.push('planOrder');
   return fields;
@@ -910,6 +959,24 @@ function mapStep(row: StepDbRow, dependsOn: StepId[]): StoredStep {
   if (row.kind !== 'execution' && row.kind !== 'merge') {
     throw new OrchestrationDataError('step.invalid_state', 'step.kind', 'unknown Step kind');
   }
+  const imageGeneration = row.image_generation_config_json
+    ? decodeImageGenerationConfig(
+        parseJson(
+          row.image_generation_config_json,
+          'step.invalid_image_generation_config',
+          'step.imageGeneration',
+        ),
+        'step.invalid_image_generation_config',
+        'step.imageGeneration',
+      )
+    : undefined;
+  if (row.kind === 'merge' && imageGeneration) {
+    throw new OrchestrationDataError(
+      'step.invalid_image_generation_config',
+      'step.imageGeneration',
+      'merge steps cannot generate images',
+    );
+  }
   return {
     id: row.id as StepId,
     runId: row.run_id as RunId,
@@ -919,6 +986,7 @@ function mapStep(row: StepDbRow, dependsOn: StepId[]): StoredStep {
     instructions: row.instructions,
     agentVersionId: row.agent_version_id as AgentVersionId,
     modelOverrideId: (row.model_override_id as ModelId | null) ?? undefined,
+    ...(imageGeneration ? { imageGeneration } : {}),
     retryOfStepId: (row.retry_of_step_id as StepId | null) ?? undefined,
     dependsOn,
     state: asStepState(row.state),
@@ -930,6 +998,10 @@ function mapStep(row: StepDbRow, dependsOn: StepId[]): StoredStep {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function isReviewableImageMimeType(value: string): boolean {
+  return value === 'image/png' || value === 'image/jpeg' || value === 'image/webp';
 }
 
 export class SqliteOrchestrationStore {
@@ -1092,8 +1164,8 @@ export class SqliteOrchestrationStore {
       const insertStep = this.raw.prepare(
         `INSERT INTO step (
            id, run_id, kind, plan_order, title, instructions, agent_version_id,
-           model_override_id, state, retries, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
+           model_override_id, image_generation_config_json, state, retries, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
       );
       for (const [planOrder, step] of steps.entries()) {
         insertStep.run(
@@ -1105,6 +1177,7 @@ export class SqliteOrchestrationStore {
           step.instructions,
           step.agentVersionId,
           step.modelOverrideId ?? null,
+          step.imageGeneration ? JSON.stringify(step.imageGeneration) : null,
           now,
           now,
         );
@@ -1422,21 +1495,222 @@ export class SqliteOrchestrationStore {
     return mapAcceptanceGate(row, this.listAcceptanceCriteria(gateId));
   }
 
+  prepareReviewStepForExecution(
+    runId: RunId,
+    stepId: StepId,
+    now: string = new Date().toISOString(),
+  ): PrepareReviewStepForExecutionResult {
+    return this.raw
+      .transaction((): PrepareReviewStepForExecutionResult => {
+        const graph = this.getRequiredGraph(runId);
+        const mapping = this.getReviewStepMapping(runId, stepId);
+        if (!mapping || mapping.role !== 'reviewer') {
+          return { status: 'ready', graph, context: this.readReviewStepContext(runId, stepId) };
+        }
+
+        const rows = this.raw
+          .prepare(
+            `SELECT assigned.artifact_version_id, version_row.artifact_id, version_row.mime_type
+             FROM review_step_artifact AS assigned
+             JOIN artifact_version AS version_row ON version_row.id = assigned.artifact_version_id
+             WHERE assigned.gate_id = ? AND assigned.run_id = ? AND assigned.reviewer_step_id = ?
+             ORDER BY version_row.artifact_id ASC, assigned.artifact_version_id ASC`,
+          )
+          .all(mapping.gate_id, runId, stepId) as Array<{
+          artifact_version_id: string;
+          artifact_id: string;
+          mime_type: string;
+        }>;
+        const byArtifact = new Map<ArtifactId, typeof rows>();
+        for (const row of rows) {
+          const artifactId = row.artifact_id as ArtifactId;
+          const group = byArtifact.get(artifactId) ?? [];
+          group.push(row);
+          byArtifact.set(artifactId, group);
+        }
+
+        const selectionsToFreeze: Array<{
+          artifactId: ArtifactId;
+          selectedVersionId: ArtifactVersionId;
+          candidateVersionIds: ArtifactVersionId[];
+        }> = [];
+        const selectionRequired: Array<{
+          artifactId: ArtifactId;
+          candidateVersionIds: ArtifactVersionId[];
+        }> = [];
+        for (const [artifactId, group] of byArtifact) {
+          if (
+            group.length <= 1 ||
+            !group.every((row) => isReviewableImageMimeType(row.mime_type))
+          ) {
+            continue;
+          }
+          const candidateVersionIds = group.map(
+            (row) => row.artifact_version_id as ArtifactVersionId,
+          );
+          const existingFreeze = this.raw
+            .prepare(
+              `SELECT selected_version_id FROM review_step_artifact_selection
+               WHERE gate_id = ? AND run_id = ? AND reviewer_step_id = ? AND artifact_id = ?`,
+            )
+            .get(mapping.gate_id, runId, stepId, artifactId) as
+            { selected_version_id: string } | undefined;
+          if (existingFreeze) {
+            if (
+              !candidateVersionIds.includes(existingFreeze.selected_version_id as ArtifactVersionId)
+            ) {
+              throw new Error(`review.image_selection_corrupt: ${stepId}/${artifactId}`);
+            }
+            continue;
+          }
+          const latestSelection = this.artifactStore.listSelections(artifactId).at(-1);
+          if (
+            !latestSelection ||
+            !candidateVersionIds.includes(latestSelection.selectedVersionId)
+          ) {
+            selectionRequired.push({ artifactId, candidateVersionIds });
+            continue;
+          }
+          selectionsToFreeze.push({
+            artifactId,
+            selectedVersionId: latestSelection.selectedVersionId,
+            candidateVersionIds,
+          });
+        }
+
+        const scope = this.getRunScope(runId);
+        if (selectionRequired.length > 0) {
+          if (
+            graph.run.state !== 'paused' &&
+            graph.run.state !== 'completed' &&
+            graph.run.state !== 'failed' &&
+            graph.run.state !== 'cancelled'
+          ) {
+            const paused = this.raw
+              .prepare(
+                `UPDATE run SET state = 'paused', updated_at = ?
+                 WHERE id = ? AND state NOT IN ('paused', 'completed', 'failed', 'cancelled')`,
+              )
+              .run(now, runId);
+            if (paused.changes !== 1)
+              throw new Error(`review.image_selection_pause_conflict: ${runId}`);
+            const artifactIds = selectionRequired.map((entry) => entry.artifactId);
+            const candidateVersionIds = selectionRequired.flatMap(
+              (entry) => entry.candidateVersionIds,
+            );
+            const pausedGraph = this.commitGraphTransition(
+              runId,
+              [
+                this.createTransitionEvent(
+                  scope,
+                  runId,
+                  'review',
+                  'review.image-selection-required',
+                  now,
+                  {
+                    gateId: mapping.gate_id,
+                    reviewerStepId: stepId,
+                    artifactIds,
+                    candidateVersionIds,
+                  },
+                  stepId,
+                ),
+                this.createTransitionEvent(scope, runId, 'run', 'run.paused', now, {
+                  from: graph.run.state,
+                  to: 'paused',
+                  reason: 'review-image-selection-required',
+                  gateId: mapping.gate_id,
+                  reviewerStepId: stepId,
+                  artifactIds,
+                }),
+              ],
+              now,
+            );
+            return {
+              status: 'image-selection-required',
+              graph: pausedGraph,
+              artifactIds,
+              candidateVersionIds,
+            };
+          }
+          return {
+            status: 'image-selection-required',
+            graph,
+            artifactIds: selectionRequired.map((entry) => entry.artifactId),
+            candidateVersionIds: selectionRequired.flatMap((entry) => entry.candidateVersionIds),
+          };
+        }
+
+        if (selectionsToFreeze.length > 0) {
+          const insertFreeze = this.raw.prepare(
+            `INSERT INTO review_step_artifact_selection (
+               gate_id, run_id, reviewer_step_id, artifact_id, selected_version_id, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?)`,
+          );
+          for (const frozen of selectionsToFreeze) {
+            insertFreeze.run(
+              mapping.gate_id,
+              runId,
+              stepId,
+              frozen.artifactId,
+              frozen.selectedVersionId,
+              now,
+            );
+          }
+          const frozenGraph = this.commitGraphTransition(
+            runId,
+            [
+              this.createTransitionEvent(
+                scope,
+                runId,
+                'review',
+                'review.image-selection-frozen',
+                now,
+                {
+                  gateId: mapping.gate_id,
+                  reviewerStepId: stepId,
+                  selections: selectionsToFreeze.map((entry) => ({
+                    artifactId: entry.artifactId,
+                    selectedVersionId: entry.selectedVersionId,
+                    candidateVersionIds: entry.candidateVersionIds,
+                  })),
+                },
+                stepId,
+              ),
+            ],
+            now,
+          );
+          return {
+            status: 'ready',
+            graph: frozenGraph,
+            context: this.readReviewStepContext(runId, stepId),
+          };
+        }
+
+        return { status: 'ready', graph, context: this.readReviewStepContext(runId, stepId) };
+      })
+      .immediate();
+  }
+
   getReviewStepContext(runId: RunId, stepId: StepId): ReviewStepExecutionContext | undefined {
+    return this.readReviewStepContext(runId, stepId);
+  }
+
+  private readReviewStepContext(
+    runId: RunId,
+    stepId: StepId,
+  ): ReviewStepExecutionContext | undefined {
     const mapping = this.getReviewStepMapping(runId, stepId);
     if (!mapping) return undefined;
     const gate = this.getRequiredAcceptanceGate(mapping.gate_id as AcceptanceGateId);
     if (mapping.role === 'reviewer') {
-      const rows = this.raw
-        .prepare(
-          `SELECT artifact_version_id FROM review_step_artifact
-           WHERE gate_id = ? AND run_id = ? AND reviewer_step_id = ?
-           ORDER BY artifact_version_id ASC`,
-        )
-        .all(mapping.gate_id, runId, stepId) as Array<{ artifact_version_id: string }>;
-      const reviewedArtifactVersions = rows.map((row) => {
-        const version = this.artifactStore.getVersion(row.artifact_version_id as ArtifactVersionId);
-        if (!version) throw new Error(`ArtifactVersion not found: ${row.artifact_version_id}`);
+      const reviewedArtifactVersions = this.listEffectiveReviewerArtifactVersionIds(
+        mapping.gate_id,
+        runId,
+        stepId,
+      ).map((artifactVersionId) => {
+        const version = this.artifactStore.getVersion(artifactVersionId);
+        if (!version) throw new Error(`ArtifactVersion not found: ${artifactVersionId}`);
         return version;
       });
       return {
@@ -1809,8 +2083,12 @@ export class SqliteOrchestrationStore {
           .run(now, input.runId, input.stepId, idempotencyKey, ownerId, attempt, now);
         if (update.changes !== 1) throw new StepFenceMismatchError(input.stepId);
 
-        const outputVersions = (input.outputVersions ?? []).map((output) =>
-          this.createStepOutputVersion(input.runId, input.stepId, output, undefined, now),
+        const outputVersions = this.createStepOutputVersions(
+          input.runId,
+          input.stepId,
+          input.outputVersions ?? [],
+          undefined,
+          now,
         );
         this.mapStepOutputVersions(
           input.runId,
@@ -1959,7 +2237,8 @@ export class SqliteOrchestrationStore {
              WHERE run_id = ? AND id = ? AND kind = 'merge' AND state = 'ready'`,
           )
           .run(now, input.runId, input.stepId);
-        if (update.changes !== 1) throw new Error(`step.merge_completion_conflict: ${input.stepId}`);
+        if (update.changes !== 1)
+          throw new Error(`step.merge_completion_conflict: ${input.stepId}`);
         const scope = this.getRunScope(input.runId);
         const events: EventDraft[] = [
           this.createTransitionEvent(
@@ -1992,7 +2271,8 @@ export class SqliteOrchestrationStore {
                WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled', 'paused')`,
             )
             .run(now, input.runId);
-          if (runUpdate.changes !== 1) throw new Error(`run.merge_completion_conflict: ${input.runId}`);
+          if (runUpdate.changes !== 1)
+            throw new Error(`run.merge_completion_conflict: ${input.runId}`);
           events.push(
             this.createTransitionEvent(scope, input.runId, 'run', 'run.completed', now, {
               from: afterReady.run.state,
@@ -2261,8 +2541,12 @@ export class SqliteOrchestrationStore {
           .run(now, input.runId, input.stepId, idempotencyKey, ownerId, attempt, now);
         if (update.changes !== 1) throw new StepFenceMismatchError(input.stepId);
 
-        const partialOutputVersions = (input.partialOutputVersions ?? []).map((output) =>
-          this.createStepOutputVersion(input.runId, input.stepId, output, 'incomplete', now),
+        const partialOutputVersions = this.createStepOutputVersions(
+          input.runId,
+          input.stepId,
+          input.partialOutputVersions ?? [],
+          'incomplete',
+          now,
         );
         this.mapStepOutputVersions(
           input.runId,
@@ -2831,14 +3115,12 @@ export class SqliteOrchestrationStore {
   }
 
   private listAcceptanceCriteria(gateId: AcceptanceGateId): AcceptanceCriterion[] {
-    const rows = (
-      this.raw
-        .prepare(
-          `SELECT id, description, plan_order FROM acceptance_criterion
+    const rows = this.raw
+      .prepare(
+        `SELECT id, description, plan_order FROM acceptance_criterion
            WHERE gate_id = ? ORDER BY plan_order ASC`,
-        )
-        .all(gateId) as Array<{ id: string; description: string; plan_order: number }>
-    );
+      )
+      .all(gateId) as Array<{ id: string; description: string; plan_order: number }>;
     const descriptions = normalizeAcceptanceCriteria(
       rows.map((row) => row.description),
       { requireNonEmpty: true },
@@ -2901,8 +3183,7 @@ export class SqliteOrchestrationStore {
          FROM review_evidence WHERE id = ?`,
       )
       .get(mapping.source_evidence_id) as
-      | { gate_id: string; run_id: string; iteration: number; verdict: string }
-      | undefined;
+      { gate_id: string; run_id: string; iteration: number; verdict: string } | undefined;
     const expectedIteration =
       mapping.derivation === 'reassign' ? mapping.iteration : mapping.iteration - 1;
     if (
@@ -3032,17 +3313,11 @@ export class SqliteOrchestrationStore {
     if (new Set(requestedIds).size !== requestedIds.length) {
       throw new OrchestrationDomainError('review.artifact_scope_mismatch');
     }
-    const assignedIds = (
-      this.raw
-        .prepare(
-          `SELECT artifact_version_id FROM review_step_artifact
-           WHERE gate_id = ? AND run_id = ? AND reviewer_step_id = ?
-           ORDER BY artifact_version_id ASC`,
-        )
-        .all(mapping.gate_id, mapping.run_id, mapping.step_id) as Array<{
-        artifact_version_id: string;
-      }>
-    ).map((row) => row.artifact_version_id as ArtifactVersionId);
+    const assignedIds = this.listEffectiveReviewerArtifactVersionIds(
+      mapping.gate_id,
+      mapping.run_id as RunId,
+      mapping.step_id as StepId,
+    );
     if (
       assignedIds.length === 0 ||
       assignedIds.length !== requestedIds.length ||
@@ -3098,7 +3373,12 @@ export class SqliteOrchestrationStore {
         throw new Error('review.rework_output_scope_mismatch');
       }
       const parents = reviewedByArtifact.get(output.artifactId);
-      if (!parents || outputArtifacts.has(output.artifactId)) {
+      const generatedImageCandidate =
+        'contentRef' in output &&
+        output.mimeType.startsWith('image/') &&
+        output.metadata?.executionKind === 'image-generation' &&
+        output.metadata?.generationKind === 'image';
+      if (!parents || (outputArtifacts.has(output.artifactId) && !generatedImageCandidate)) {
         throw new Error('review.rework_output_scope_mismatch');
       }
       if (
@@ -3233,8 +3513,8 @@ export class SqliteOrchestrationStore {
       .prepare(
         `INSERT INTO step (
            id, run_id, plan_order, title, instructions, agent_version_id,
-           state, retries, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 0, ?, ?)`,
+           image_generation_config_json, state, retries, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 0, ?, ?)`,
       )
       .run(
         stepId,
@@ -3243,6 +3523,7 @@ export class SqliteOrchestrationStore {
         `Review iteration ${input.iteration}`,
         'Evaluate the assigned artifact versions against the persisted acceptance criteria.',
         reviewerAgentVersionId,
+        null,
         input.now,
         input.now,
       );
@@ -3326,8 +3607,8 @@ export class SqliteOrchestrationStore {
       .prepare(
         `INSERT INTO step (
            id, run_id, plan_order, title, instructions, agent_version_id,
-           state, retries, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 0, ?, ?)`,
+           image_generation_config_json, state, retries, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 0, ?, ?)`,
       )
       .run(
         stepId,
@@ -3336,6 +3617,7 @@ export class SqliteOrchestrationStore {
         `Rework iteration ${input.iteration}`,
         'Produce a new artifact version that addresses the persisted review evidence.',
         target.agentVersionId,
+        target.imageGeneration ? JSON.stringify(target.imageGeneration) : null,
         input.now,
         input.now,
       );
@@ -3891,6 +4173,52 @@ export class SqliteOrchestrationStore {
     }
   }
 
+  private createStepOutputVersions(
+    runId: RunId,
+    stepId: StepId,
+    outputs: readonly StepArtifactVersionOutput[],
+    forcedStatus: ArtifactVersionStatus | undefined,
+    now: string,
+  ): ArtifactVersion[] {
+    const groupedArtifacts = new Map<string, { artifactId: ArtifactId; artifactName: string }>();
+    return outputs.map((output) => {
+      const groupKey = output.artifactGroupKey;
+      if (groupKey === undefined) {
+        return this.createStepOutputVersion(runId, stepId, output, forcedStatus, now);
+      }
+      if ('artifactId' in output && output.artifactId !== undefined) {
+        throw new Error('artifact.group_existing_artifact_forbidden');
+      }
+      const normalizedGroupKey = requireText(groupKey, 'artifactGroupKey');
+      const existing = groupedArtifacts.get(normalizedGroupKey);
+      if (existing && existing.artifactName !== output.artifactName) {
+        throw new Error('artifact.group_name_mismatch');
+      }
+      const groupedOutput: StepArtifactVersionOutput = existing
+        ? {
+            artifactId: existing.artifactId,
+            ...(output.content === undefined ? {} : { content: output.content }),
+            ...(output.contentRef === undefined ? {} : { contentRef: output.contentRef }),
+            ...(output.contentHash === undefined ? {} : { contentHash: output.contentHash }),
+            mimeType: output.mimeType,
+            status: output.status,
+            ...(output.parentVersionIds === undefined
+              ? {}
+              : { parentVersionIds: output.parentVersionIds }),
+            ...(output.metadata === undefined ? {} : { metadata: output.metadata }),
+          }
+        : output;
+      const version = this.createStepOutputVersion(runId, stepId, groupedOutput, forcedStatus, now);
+      if (!existing) {
+        groupedArtifacts.set(normalizedGroupKey, {
+          artifactId: version.artifactId,
+          artifactName: output.artifactName,
+        });
+      }
+      return version;
+    });
+  }
+
   private createStepOutputVersion(
     runId: RunId,
     stepId: StepId,
@@ -3941,22 +4269,42 @@ export class SqliteOrchestrationStore {
     }
   }
 
+  private listEffectiveReviewerArtifactVersionIds(
+    gateId: string,
+    runId: RunId,
+    reviewerStepId: StepId,
+  ): ArtifactVersionId[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT assignment.artifact_version_id
+         FROM review_step_artifact AS assignment
+         JOIN artifact_version AS version_row ON version_row.id = assignment.artifact_version_id
+         LEFT JOIN review_step_artifact_selection AS frozen
+           ON frozen.gate_id = assignment.gate_id
+          AND frozen.run_id = assignment.run_id
+          AND frozen.reviewer_step_id = assignment.reviewer_step_id
+          AND frozen.artifact_id = version_row.artifact_id
+         WHERE assignment.gate_id = ?
+           AND assignment.run_id = ?
+           AND assignment.reviewer_step_id = ?
+           AND (frozen.selected_version_id IS NULL
+             OR frozen.selected_version_id = assignment.artifact_version_id)
+         ORDER BY assignment.artifact_version_id ASC`,
+      )
+      .all(gateId, runId, reviewerStepId) as Array<{ artifact_version_id: string }>;
+    return rows.map((row) => row.artifact_version_id as ArtifactVersionId);
+  }
+
   private listStepSnapshotVersions(graph: RunGraph, step: StoredStep): ArtifactVersion[] {
     const reviewMapping = this.getReviewStepMapping(graph.run.id, step.id);
     if (reviewMapping) {
       const assignedVersionIds =
         reviewMapping.role === 'reviewer'
-          ? (
-              this.raw
-                .prepare(
-                  `SELECT artifact_version_id FROM review_step_artifact
-                   WHERE gate_id = ? AND run_id = ? AND reviewer_step_id = ?
-                   ORDER BY artifact_version_id ASC`,
-                )
-                .all(reviewMapping.gate_id, graph.run.id, step.id) as Array<{
-                artifact_version_id: string;
-              }>
-            ).map((row) => row.artifact_version_id as ArtifactVersionId)
+          ? this.listEffectiveReviewerArtifactVersionIds(
+              reviewMapping.gate_id,
+              graph.run.id,
+              step.id,
+            )
           : reviewMapping.source_evidence_id
             ? this.getRequiredReviewEvidence(reviewMapping.source_evidence_id)
                 .reviewedArtifactVersionIds

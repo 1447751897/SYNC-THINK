@@ -67,9 +67,18 @@ class RecordingBrowserHost implements BrowserHostLike {
   readonly executions: BrowserHostExecuteInput[] = [];
   shutdownCalled = false;
   executeFailure?: BrowserHostError;
+  private lease?: BrowserLeaseInfo;
 
   async acquireLease(input: { profileId: string; ownerId: string }): Promise<BrowserLeaseInfo> {
-    return { ...input, leaseId: 'lease-1', pageId: 'page-1' };
+    this.lease = { ...input, leaseId: 'lease-1', pageId: 'page-1' };
+    return this.lease;
+  }
+
+  async inspectLease(leaseId: string): Promise<BrowserLeaseInfo> {
+    if (!this.lease || this.lease.leaseId !== leaseId) {
+      throw new BrowserHostError('browser.lease_not_found', 'lease not found');
+    }
+    return this.lease;
   }
 
   async execute(input: BrowserHostExecuteInput): Promise<BrowserCommandResult> {

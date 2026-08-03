@@ -12,6 +12,7 @@ import type {
   EventReplayCursor,
 } from '@sync-think/protocol';
 import type { RuntimeHealth } from '../src/runtime-bridge-contract.js';
+import { RuntimeResponseError } from '../src/main/runtime-client.js';
 
 function eventAt(sequence: number): Event {
   return {
@@ -30,6 +31,8 @@ class FakeRuntimeClient implements RuntimeSessionClient {
   connectCount = 0;
   subscribeCount = 0;
   requestCount = 0;
+  readonly subscribeFailures: Error[] = [];
+  readonly subscribedAfterCursors: EventReplayCursor[] = [];
   subscribedAfterCursor: EventReplayCursor | undefined;
   subscribedCategories: readonly string[] | undefined;
   private listener: ((event: Event) => void) | undefined;
@@ -61,8 +64,11 @@ class FakeRuntimeClient implements RuntimeSessionClient {
     cursorListener?: (cursor: EventReplayCursor) => void,
   ) {
     this.subscribedAfterCursor = afterCursor;
+    this.subscribedAfterCursors.push(afterCursor);
     this.subscribedCategories = categories;
     this.subscribeCount++;
+    const failure = this.subscribeFailures.shift();
+    if (failure) return Promise.reject(failure);
     this.listener = listener;
     this.cursorListener = cursorListener;
     return this.replayFinished;
@@ -137,6 +143,32 @@ describe('desktop main RuntimeSession', () => {
 
     client.advanceCursor({ sequence: 57, eventId: 'event-57' });
     expect(saved).toEqual([{ sequence: 57, eventId: 'event-57' }]);
+    client.completeReplay();
+  });
+
+  it('resets an ahead persisted cursor and retries activity replay from zero', async () => {
+    const client = new FakeRuntimeClient();
+    client.subscribeFailures.push(
+      new RuntimeResponseError(
+        'protocol.unexpected_request',
+        'Subscription cursor is ahead of the Runtime',
+      ),
+    );
+    const resets: number[] = [];
+    const cursorStore: RuntimeActivityCursorStore = {
+      load: () => ({ sequence: 33_907, eventId: 'event-from-rolled-back-runtime' }),
+      save: () => undefined,
+      reset: () => resets.push(1),
+    };
+    const session = new RuntimeSession(client, () => {}, cursorStore);
+
+    await session.connect();
+    await expect.poll(() => client.subscribeCount).toBe(2);
+    expect(client.subscribedAfterCursors).toEqual([
+      { sequence: 33_907, eventId: 'event-from-rolled-back-runtime' },
+      { sequence: 0, eventId: '' },
+    ]);
+    expect(resets).toEqual([1]);
     client.completeReplay();
   });
 

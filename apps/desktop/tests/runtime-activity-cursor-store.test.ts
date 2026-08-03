@@ -46,6 +46,20 @@ describe('FileRuntimeActivityCursorStore', () => {
     });
   });
 
+  it('resets a persisted cursor after Runtime history rolls back', () => {
+    const path = cursorPath();
+    const store = new FileRuntimeActivityCursorStore(path);
+    store.save({ sequence: 41, eventId: 'event-b' });
+
+    store.reset();
+
+    expect(store.load()).toEqual({ sequence: 0, eventId: '' });
+    expect(new FileRuntimeActivityCursorStore(path).load()).toEqual({
+      sequence: 0,
+      eventId: '',
+    });
+  });
+
   it('advances within the same sequence by event id', () => {
     const path = cursorPath();
     const store = new FileRuntimeActivityCursorStore(path);

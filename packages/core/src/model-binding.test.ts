@@ -85,6 +85,41 @@ describe('resolveModelBinding precedence ?5.3', () => {
     });
   });
 
+  it('skips agent fallbacks already attempted by another fallback layer', () => {
+    const result = resolveModelBinding({
+      agent: agent(),
+      failedModelId: 'model-default' as ModelId,
+      failureClass: 'timeout',
+      attemptedModelIds: [
+        'model-default' as ModelId,
+        'model-fb-1' as ModelId,
+      ],
+    });
+    expect(result).toMatchObject({
+      status: 'resolved',
+      modelId: 'model-fb-2',
+      source: 'agentFallback',
+      fallbackIndex: 1,
+    });
+  });
+
+  it('pauses when every configured agent fallback was already attempted', () => {
+    const result = resolveModelBinding({
+      agent: agent(),
+      failedModelId: 'model-default' as ModelId,
+      failureClass: 'timeout',
+      attemptedModelIds: [
+        'model-default' as ModelId,
+        'model-fb-1' as ModelId,
+        'model-fb-2' as ModelId,
+      ],
+    });
+    expect(result).toMatchObject({
+      status: 'paused',
+      reason: 'fallback_exhausted',
+    });
+  });
+
   it('pauses when fallback exhausted', () => {
     const result = resolveModelBinding({
       agent: agent(),
@@ -157,6 +192,16 @@ describe('resolveProviderPriorityFallback', () => {
       resolveProviderPriorityFallback({
         orderedModelIds: chain,
         failedModelId: 'model-5.5' as ModelId,
+      }),
+    ).toEqual({ modelId: 'model-5.4', fallbackIndex: 2 });
+  });
+
+  it('skips provider-priority models already attempted by another fallback layer', () => {
+    expect(
+      resolveProviderPriorityFallback({
+        orderedModelIds: chain,
+        failedModelId: 'model-5.6' as ModelId,
+        attemptedModelIds: ['model-5.6' as ModelId, 'model-5.5' as ModelId],
       }),
     ).toEqual({ modelId: 'model-5.4', fallbackIndex: 2 });
   });

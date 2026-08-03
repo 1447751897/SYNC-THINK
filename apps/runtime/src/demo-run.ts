@@ -51,6 +51,8 @@ export interface DemoRunState {
    * Used on failure instead of re-reading a possibly-mutated legacy agent.
    */
   fallbackModelIds?: string[];
+  /** Durable de-duplicated model attempt order across all fallback layers. */
+  attemptedModelIds: string[];
   /** Skill bodies injected into system prompt for this run. */
   skillPromptBlocks?: string[];
   /** Per-turn request before Context budget/amendment filtering. */
@@ -116,6 +118,7 @@ export interface CreateDemoRunInput {
   teamName?: string;
   teamPromptBlock?: string;
   fallbackModelIds?: string[];
+  attemptedModelIds?: string[];
   skillPromptBlocks?: string[];
   requestedSkillVersionIds?: string[];
   skillVersionIds?: string[];
@@ -163,6 +166,7 @@ export function createDemoRun(
       extras.fallbackModelIds && extras.fallbackModelIds.length > 0
         ? [...extras.fallbackModelIds]
         : undefined,
+    attemptedModelIds: Array.from(new Set([...(extras.attemptedModelIds ?? []), modelId])),
     skillPromptBlocks:
       extras.skillPromptBlocks && extras.skillPromptBlocks.length > 0
         ? [...extras.skillPromptBlocks]
@@ -290,6 +294,18 @@ export function projectAdapterEvent(
       payload: {
         tokensIn: adapterEvent.tokensIn,
         tokensOut: adapterEvent.tokensOut,
+        ...(adapterEvent.cachedTokensHit !== undefined
+          ? { cachedTokensHit: adapterEvent.cachedTokensHit }
+          : {}),
+        ...(adapterEvent.cachedTokensCreated !== undefined
+          ? { cachedTokensCreated: adapterEvent.cachedTokensCreated }
+          : {}),
+        ...(adapterEvent.reasoningTokens !== undefined
+          ? { reasoningTokens: adapterEvent.reasoningTokens }
+          : {}),
+        ...(adapterEvent.totalTokens !== undefined
+          ? { totalTokens: adapterEvent.totalTokens }
+          : {}),
         adapterEventIndex: run.nextAdapterEventIndex,
         modelId: run.modelId,
         packetId: run.packetId,
@@ -435,6 +451,8 @@ function parseDemoRun(value: unknown): DemoRunState {
     }
     return input.map((item) => String(item));
   };
+  const attemptedModelIds = stringArray(run.attemptedModelIds, 256) ?? [];
+  if (!attemptedModelIds.includes(modelId)) attemptedModelIds.push(modelId);
   const skillSnapshots = (() => {
     if (run.skillSnapshots === undefined) return undefined;
     if (!Array.isArray(run.skillSnapshots) || run.skillSnapshots.length > 8) {
@@ -506,6 +524,7 @@ function parseDemoRun(value: unknown): DemoRunState {
     teamName: typeof run.teamName === 'string' ? run.teamName : undefined,
     teamPromptBlock: typeof run.teamPromptBlock === 'string' ? run.teamPromptBlock : undefined,
     fallbackModelIds: stringArray(run.fallbackModelIds),
+    attemptedModelIds: Array.from(new Set(attemptedModelIds)),
     requestedSkillVersionIds: stringArray(run.requestedSkillVersionIds, 8),
     skillVersionIds: stringArray(run.skillVersionIds, 8),
     skillSnapshots,

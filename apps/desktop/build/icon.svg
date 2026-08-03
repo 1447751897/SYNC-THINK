@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">SYNC-THINK</title>
+  <desc id="desc">SYNC-THINK continuum ST monogram</desc>
+  <rect width="512" height="512" rx="112" fill="#141816"/>
+  <rect x="42" y="42" width="428" height="428" rx="84" fill="none" stroke="#29b982" stroke-width="12"/>
+  <path d="M144 128 C260 128 252 384 368 384" fill="none" stroke="#29b982" stroke-width="18" stroke-linecap="round" opacity="0.72"/>
+  <circle cx="124" cy="128" r="22" fill="#29b982"/>
+  <circle cx="388" cy="384" r="22" fill="#29b982"/>
+  <text x="256" y="305" text-anchor="middle" font-family="Segoe UI Variable Display, Segoe UI, Arial, sans-serif" font-size="176" font-weight="750" letter-spacing="-10" fill="#edf1ed">ST</text>
+</svg>

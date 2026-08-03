@@ -1,0 +1,38 @@
+{
+  "appId": "com.syncthink.desktop",
+  "productName": "SYNC-THINK",
+  "electronVersion": "33.2.1",
+  "compression": "normal",
+  "directories": {
+    "output": "apps/desktop/release/installer"
+  },
+  "win": {
+    "icon": "apps/desktop/build/icon.ico",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "executableName": "SYNC-THINK",
+    "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+    "verifyUpdateCodeSignature": true,
+    "signtoolOptions": {
+      "publisherName": null,
+      "signingHashAlgorithms": ["sha256"]
+    }
+  },
+  "nsis": {
+    "installerIcon": "apps/desktop/build/icon.ico",
+    "uninstallerIcon": "apps/desktop/build/icon.ico",
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "SYNC-THINK",
+    "deleteAppDataOnUninstall": false,
+    "differentialPackage": true,
+    "include": "apps/desktop/build/installer.nsh"
+  }
+}

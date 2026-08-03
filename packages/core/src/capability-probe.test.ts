@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CAPABILITY_TAGS,
+  isTextFallbackCompatibleModel,
   mergeCapabilitySuggestions,
   normalizeCapabilities,
   suggestCapabilities,
@@ -57,6 +58,15 @@ describe('suggestCapabilities (product §7.2)', () => {
     expect(result.capabilities).not.toContain('tool-calling');
   });
 
+  it.each(['grok-imagine-image', 'grok-imagine-video-1.5-preview'])(
+    'classifies generated media model %s as non-text',
+    (providerModelId) => {
+      const result = suggestCapabilities({ providerModelId, protocol: 'openai-responses' });
+      expect(result.capabilities).toContain('image-generation');
+      expect(result.capabilities).not.toContain('text');
+    },
+  );
+
   it('does not treat probe results as confirmed facts', () => {
     const result = suggestCapabilities({
       providerModelId: 'claude-3-opus',
@@ -105,5 +115,42 @@ describe('normalizeCapabilities / mergeCapabilitySuggestions', () => {
     };
     const result = suggestCapabilities(input);
     expect(result.modelId).toBe('m1');
+  });
+});
+
+describe('isTextFallbackCompatibleModel', () => {
+  it('keeps compatible chat models in the fallback walk', () => {
+    expect(
+      isTextFallbackCompatibleModel({
+        providerModelId: 'grok-4.5',
+        protocol: 'openai-responses',
+        capabilities: ['text', 'tool-calling'],
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    'grok-imagine-image',
+    'grok-imagine-video-1.5-preview',
+    'text-embedding-3-large',
+    'voice-tts-1',
+  ])('rejects non-text model %s even when stale catalog tags include text', (providerModelId) => {
+    expect(
+      isTextFallbackCompatibleModel({
+        providerModelId,
+        protocol: 'openai-responses',
+        capabilities: ['text'],
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects explicit non-text capabilities', () => {
+    expect(
+      isTextFallbackCompatibleModel({
+        providerModelId: 'custom-generator',
+        protocol: 'openai-chat',
+        capabilities: ['image-generation'],
+      }),
+    ).toBe(false);
   });
 });

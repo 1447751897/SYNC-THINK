@@ -1,6 +1,10 @@
-﻿// Preload runs in the renderer with contextIsolation: true. Bridge exposes a
+// Preload runs in the renderer with contextIsolation: true. Bridge exposes a
 // narrow window.api so the renderer never touches Node directly (搂19).
 import { contextBridge, ipcRenderer } from 'electron';
+import type {
+  ExportDesktopDiagnosticsPayload,
+  ExportDesktopDiagnosticsResponse,
+} from '../diagnostics-export-contract.js';
 import type {
   AppendMessagePayload,
   AppendMessageResponse,
@@ -102,6 +106,18 @@ import type {
   EnqueueApprovalResponse,
   DecideApprovalPayload,
   DecideApprovalResponse,
+  ListWaitingBrowserHandoffsPayload,
+  ListWaitingBrowserHandoffsResponse,
+  ListWaitingDesktopCommandsPayload,
+  ListWaitingDesktopCommandsResponse,
+  ContinueDesktopCommandPayload,
+  ContinueDesktopCommandResponse,
+  CancelDesktopCommandPayload,
+  CancelDesktopCommandResponse,
+  ContinueBrowserHandoffPayload,
+  ContinueBrowserHandoffResponse,
+  CancelBrowserHandoffPayload,
+  CancelBrowserHandoffResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -124,6 +140,7 @@ import type {
   SavePolicyResponse,
   ListPoliciesPayload,
   ListPoliciesResponse,
+  GetArtifactVersionPayload,
   ListArtifactsPayload,
   ListArtifactsResponse,
   CompareArtifactVersionsPayload,
@@ -180,6 +197,7 @@ import type {
   ConversationDecideToolApprovalPayload,
   ConversationDecideToolApprovalResponse,
 } from '@sync-think/protocol';
+import type { ArtifactImagePreviewResponse } from '../artifact-image-preview-contract.js';
 import type {
   RendererCreateProviderPayload,
   RendererUpdateProviderPayload,
@@ -196,6 +214,10 @@ import type {
   StartProjectTerminalResult,
 } from '../workspace-tools-contract.js';
 import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
+import type {
+  DesktopUpdateActionResult,
+  DesktopUpdateSnapshot,
+} from '../desktop-update-contract.js';
 
 const api = {
   runtime: {
@@ -273,6 +295,11 @@ const api = {
       ipcRenderer.invoke('runtime:policy-save', payload) as Promise<SavePolicyResponse>,
     listPolicies: (payload: ListPoliciesPayload) =>
       ipcRenderer.invoke('runtime:policy-list', payload) as Promise<ListPoliciesResponse>,
+    getArtifactImagePreview: (payload: GetArtifactVersionPayload) =>
+      ipcRenderer.invoke(
+        'runtime:artifact-image-preview',
+        payload,
+      ) as Promise<ArtifactImagePreviewResponse>,
     listArtifacts: (payload: ListArtifactsPayload) =>
       ipcRenderer.invoke('runtime:artifact-list', payload) as Promise<ListArtifactsResponse>,
     compareArtifactVersions: (payload: CompareArtifactVersionsPayload) =>
@@ -331,10 +358,7 @@ const api = {
         payload,
       ) as Promise<ConfirmCapabilitiesResponse>,
     reorderProviders: (payload: ReorderProvidersPayload) =>
-      ipcRenderer.invoke(
-        'runtime:provider-reorder',
-        payload,
-      ) as Promise<ReorderProvidersResponse>,
+      ipcRenderer.invoke('runtime:provider-reorder', payload) as Promise<ReorderProvidersResponse>,
     addProviderCredential: (payload: { providerId: string; label?: string }) =>
       ipcRenderer.invoke(
         'runtime:provider-add-credential',
@@ -363,10 +387,7 @@ const api = {
     updateModel: (payload: UpdateModelPayload) =>
       ipcRenderer.invoke('runtime:provider-update-model', payload) as Promise<UpdateModelResponse>,
     removeProviderModel: (payload: RemoveModelPayload) =>
-      ipcRenderer.invoke(
-        'runtime:provider-remove-model',
-        payload,
-      ) as Promise<RemoveModelResponse>,
+      ipcRenderer.invoke('runtime:provider-remove-model', payload) as Promise<RemoveModelResponse>,
     getSettings: (payload: GetSettingsPayload = {}) =>
       ipcRenderer.invoke('runtime:settings-get', payload) as Promise<GetSettingsResponse>,
     setSetting: (payload: SetSettingPayload) =>
@@ -436,26 +457,28 @@ const api = {
       ) as Promise<ConversationGetRunProcessResponse>,
     subscribeConversationTransientStream: (
       payload: { threadId: string; afterStreamSequence?: number },
-      listener: (event:
-        | { type: 'frame'; frame: ConversationTransientFrame }
-        | {
-            type: 'reset';
-            latestStreamSequence: number;
-            snapshot?: ConversationTransientSnapshot;
-          }) => void,
+      listener: (
+        event:
+          | { type: 'frame'; frame: ConversationTransientFrame }
+          | {
+              type: 'reset';
+              latestStreamSequence: number;
+              snapshot?: ConversationTransientSnapshot;
+            },
+      ) => void,
     ) => {
       const subscriptionId = `renderer-transient-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const channel = 'runtime:conversation-transient';
       const handler = (
         _event: Electron.IpcRendererEvent,
-        event: ({ subscriptionId: string } & (
+        event: { subscriptionId: string } & (
           | { type: 'frame'; frame: ConversationTransientFrame }
           | {
               type: 'reset';
               latestStreamSequence: number;
               snapshot?: ConversationTransientSnapshot;
             }
-        )),
+        ),
       ) => {
         if (event.subscriptionId !== subscriptionId) return;
         if (event.type === 'frame') listener({ type: 'frame', frame: event.frame });
@@ -542,11 +565,12 @@ const api = {
         payload,
       ) as Promise<ConversationResponse>,
     deleteConversation: (payload: DeleteConversationPayload) =>
-      ipcRenderer.invoke(
-        'runtime:conversation-delete',
-        payload,
-      ) as Promise<Record<string, never>>,
-    sendConversationMessage: (payload: { conversationId: string; text: string; modelId?: string }) =>
+      ipcRenderer.invoke('runtime:conversation-delete', payload) as Promise<Record<string, never>>,
+    sendConversationMessage: (payload: {
+      conversationId: string;
+      text: string;
+      modelId?: string;
+    }) =>
       ipcRenderer.invoke('runtime:conversation-send-message', payload) as Promise<{
         messageId: string;
         threadId: string;
@@ -554,13 +578,10 @@ const api = {
         streamId?: string;
         conversationTitle?: string;
       }>,
-    compactConversation: (
-      payload: import('@sync-think/protocol').ConversationCompactPayload,
-    ) =>
-      ipcRenderer.invoke(
-        'runtime:conversation-compact',
-        payload,
-      ) as Promise<import('@sync-think/protocol').ConversationCompactResponse>,
+    compactConversation: (payload: import('@sync-think/protocol').ConversationCompactPayload) =>
+      ipcRenderer.invoke('runtime:conversation-compact', payload) as Promise<
+        import('@sync-think/protocol').ConversationCompactResponse
+      >,
     importSkill: (payload: ImportSkillPayload) =>
       ipcRenderer.invoke('runtime:skill-import', payload) as Promise<ImportSkillResponse>,
     listSkills: (payload: ListSkillsPayload = {}) =>
@@ -583,6 +604,36 @@ const api = {
       ipcRenderer.invoke('runtime:mcp-tool-call', payload) as Promise<CallMcpToolResponse>,
     refreshMcpTools: (payload: RefreshMcpToolsPayload) =>
       ipcRenderer.invoke('runtime:mcp-tools-refresh', payload) as Promise<RefreshMcpToolsResponse>,
+    listWaitingDesktopCommands: (payload: ListWaitingDesktopCommandsPayload = {}) =>
+      ipcRenderer.invoke(
+        'runtime:desktop-command-list-waiting',
+        payload,
+      ) as Promise<ListWaitingDesktopCommandsResponse>,
+    continueDesktopCommand: (payload: ContinueDesktopCommandPayload) =>
+      ipcRenderer.invoke(
+        'runtime:desktop-command-continue',
+        payload,
+      ) as Promise<ContinueDesktopCommandResponse>,
+    cancelDesktopCommand: (payload: CancelDesktopCommandPayload) =>
+      ipcRenderer.invoke(
+        'runtime:desktop-command-cancel',
+        payload,
+      ) as Promise<CancelDesktopCommandResponse>,
+    listWaitingBrowserHandoffs: (payload: ListWaitingBrowserHandoffsPayload = {}) =>
+      ipcRenderer.invoke(
+        'runtime:browser-handoff-list-waiting',
+        payload,
+      ) as Promise<ListWaitingBrowserHandoffsResponse>,
+    continueBrowserHandoff: (payload: ContinueBrowserHandoffPayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-handoff-continue',
+        payload,
+      ) as Promise<ContinueBrowserHandoffResponse>,
+    cancelBrowserHandoff: (payload: CancelBrowserHandoffPayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-handoff-cancel',
+        payload,
+      ) as Promise<CancelBrowserHandoffResponse>,
     listApprovals: (payload: ListApprovalsPayload = {}) =>
       ipcRenderer.invoke('runtime:approval-list', payload) as Promise<ListApprovalsResponse>,
     evaluateApproval: (payload: EvaluateApprovalPayload) =>
@@ -609,6 +660,11 @@ const api = {
       ) as Promise<AmendContextPacketResponse>,
     listDiagnostics: (payload: ListDiagnosticsPayload = {}) =>
       ipcRenderer.invoke('runtime:diagnostics-list', payload) as Promise<ListDiagnosticsResponse>,
+    exportDiagnostics: (payload: ExportDesktopDiagnosticsPayload = {}) =>
+      ipcRenderer.invoke(
+        'desktop:diagnostics-export',
+        payload,
+      ) as Promise<ExportDesktopDiagnosticsResponse>,
     pickFolder: () =>
       ipcRenderer.invoke('desktop:pick-folder') as Promise<{
         canceled: boolean;
@@ -639,10 +695,8 @@ const api = {
       ) as Promise<CancelProjectTerminalResult>,
     subscribeProjectTerminal: (listener: (event: ProjectTerminalEvent) => void) => {
       const channel = 'desktop:project-terminal-event';
-      const handler = (
-        _event: Electron.IpcRendererEvent,
-        terminalEvent: ProjectTerminalEvent,
-      ) => listener(terminalEvent);
+      const handler = (_event: Electron.IpcRendererEvent, terminalEvent: ProjectTerminalEvent) =>
+        listener(terminalEvent);
       ipcRenderer.on(channel, handler);
       return () => ipcRenderer.removeListener(channel, handler);
     },
@@ -733,7 +787,11 @@ const api = {
         isRepo: boolean;
       }>,
     /** 右栏「工作区」面板：切换分支（脏工作区需显式 stash/force 策略）。 */
-    gitCheckout: (payload: { root: string; branch: string; strategy?: 'check' | 'stash' | 'force' }) =>
+    gitCheckout: (payload: {
+      root: string;
+      branch: string;
+      strategy?: 'check' | 'stash' | 'force';
+    }) =>
       ipcRenderer.invoke('desktop:git-checkout', payload) as Promise<{
         ok: boolean;
         dirty: boolean;
@@ -793,18 +851,31 @@ const api = {
       ipcRenderer.on('runtime:event', handler);
       return () => ipcRenderer.removeListener('runtime:event', handler);
     },
-    onOpenConversation: (
-      listener: (conversationId: string) => void,
-    ): (() => void) => {
-      const handler = (
-        _event: Electron.IpcRendererEvent,
-        payload: { conversationId: string },
-      ) => listener(payload.conversationId);
+    onOpenConversation: (listener: (conversationId: string) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { conversationId: string }) =>
+        listener(payload.conversationId);
       ipcRenderer.on('desktop:open-conversation', handler);
       return () => ipcRenderer.removeListener('desktop:open-conversation', handler);
     },
     notifyRendererReady: () => {
       ipcRenderer.send('desktop:renderer-ready');
+    },
+  },
+  updates: {
+    getState: () =>
+      ipcRenderer.invoke('desktop:update-get-state') as Promise<DesktopUpdateSnapshot>,
+    checkForUpdates: () =>
+      ipcRenderer.invoke('desktop:update-check') as Promise<DesktopUpdateActionResult>,
+    downloadUpdate: () =>
+      ipcRenderer.invoke('desktop:update-download') as Promise<DesktopUpdateActionResult>,
+    installUpdate: () =>
+      ipcRenderer.invoke('desktop:update-install') as Promise<DesktopUpdateActionResult>,
+    subscribeState: (listener: (snapshot: DesktopUpdateSnapshot) => void) => {
+      const channel = 'desktop:update-state';
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: DesktopUpdateSnapshot) =>
+        listener(snapshot);
+      ipcRenderer.on(channel, handler);
+      return () => ipcRenderer.removeListener(channel, handler);
     },
   },
   platform: 'win32' as const,

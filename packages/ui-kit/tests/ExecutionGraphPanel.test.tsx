@@ -101,4 +101,30 @@ describe('ExecutionGraphPanel', () => {
     expect(document.activeElement).toBe(selected);
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' });
   });
+  it('renders an opaque image artifact thumbnail on its producing Step', () => {
+    render(
+      <ExecutionGraphPanel
+        graph={{
+          ...parallelGraph,
+          steps: parallelGraph.steps.map((step) =>
+            step.id === 'image'
+              ? {
+                  ...step,
+                  artifactImagePreview: {
+                    version: 2,
+                    url: 'sync-think-image://artifact/abcdefghijklmnop',
+                    mimeType: 'image/png',
+                    status: 'candidate',
+                  },
+                }
+              : step,
+          ),
+        }}
+      />,
+    );
+    expect(screen.getByRole('img', { name: 'Image 图片 v2' }).getAttribute('src')).toBe(
+      'sync-think-image://artifact/abcdefghijklmnop',
+    );
+    expect(screen.getByTestId('step-image').textContent).toContain('image/png');
+  });
 });

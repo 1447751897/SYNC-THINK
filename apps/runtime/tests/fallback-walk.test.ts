@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach } from 'vitest';
 import { connect, type Socket } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeFrames, encodeFrame, pipePathPortable, type Frame } from '@sync-think/protocol';
 import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
+import { openDatabaseAsync } from '@sync-think/storage';
 import { openPersistentRuntime } from '../src/persistence.js';
 
 const tempDirs: string[] = [];
@@ -47,13 +48,10 @@ function createFrameReader(sock: Socket): {
   let pending = Buffer.alloc(0);
   let closed = false;
 
-  const unwrap = (
-    frame: Frame,
-  ): { type: string; payload: Record<string, unknown> } | undefined => {
+  const unwrap = (frame: Frame): { type: string; payload: Record<string, unknown> } | undefined => {
     if (frame.kind !== 'event') return undefined;
     const outer = frame.payload as
-      | { event?: { type?: string; payload?: Record<string, unknown> } }
-      | undefined;
+      { event?: { type?: string; payload?: Record<string, unknown> } } | undefined;
     const nested = outer?.event;
     if (nested && typeof nested.type === 'string') {
       return {
@@ -205,7 +203,8 @@ class FallbackChainProvider implements ProviderAdapter {
   readonly calls: string[] = [];
   constructor(
     private readonly failProviderModelId: string,
-    private readonly failureClass: 'timeout' | 'rate-limit' | 'auth' | 'acceptance' | 'permission' = 'timeout',
+    private readonly failureClass:
+      'timeout' | 'rate-limit' | 'auth' | 'acceptance' | 'permission' = 'timeout',
   ) {}
 
   async discoverModels(): Promise<string[]> {
@@ -223,7 +222,13 @@ class FallbackChainProvider implements ProviderAdapter {
       return;
     }
     yield { type: 'text-delta', text: `ok-from:${request.modelId}:` };
-    yield { type: 'text-delta', text: request.messages[0] && typeof request.messages[0].content === 'string' ? request.messages[0].content : '' };
+    yield {
+      type: 'text-delta',
+      text:
+        request.messages[0] && typeof request.messages[0].content === 'string'
+          ? request.messages[0].content
+          : '',
+    };
     yield { type: 'finished', reason: 'stop' };
   }
 }
@@ -244,6 +249,30 @@ class AlwaysFailProvider implements ProviderAdapter {
       type: 'error',
       failureClass: this.failureClass,
       message: `always-fail ${this.failureClass} on ${request.modelId}`,
+    };
+  }
+}
+
+/** Emits a retryable failure once per model, then terminates a pre-fix cycle safely. */
+class RepeatGuardFailProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  readonly calls: string[] = [];
+  private readonly seen = new Set<string>();
+
+  async discoverModels(): Promise<string[]> {
+    return ['alpha-model', 'beta-model', 'gamma-model'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    this.calls.push(request.modelId);
+    const repeated = this.seen.has(request.modelId);
+    this.seen.add(request.modelId);
+    yield {
+      type: 'error',
+      failureClass: repeated ? 'acceptance' : 'timeout',
+      message: repeated
+        ? `cycle guard repeated ${request.modelId}`
+        : `retryable failure on ${request.modelId}`,
     };
   }
 }
@@ -283,7 +312,8 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       },
     });
     expect(created.error).toBeUndefined();
-    const providerId = (created.payload as { provider: { providerId: string } }).provider.providerId;
+    const providerId = (created.payload as { provider: { providerId: string } }).provider
+      .providerId;
 
     const add = await writeAndRead(sock, reader, {
       id: 'add-1',
@@ -299,7 +329,8 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         ],
       },
     });
-    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> }).models;
+    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> })
+      .models;
     const alpha = models.find((m) => m.providerModelId === 'alpha-model')!;
     const beta = models.find((m) => m.providerModelId === 'beta-model')!;
     const gamma = models.find((m) => m.providerModelId === 'gamma-model')!;
@@ -373,8 +404,291 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     expect(adapter.calls[1]).toBe('beta-model');
     if (fallbackSelected) {
       const fbBlob = JSON.stringify(fallbackSelected);
-      expect(fbBlob.includes('agentFallback') || fbBlob.includes('run.fallback.selected')).toBe(true);
+      expect(fbBlob.includes('agentFallback') || fbBlob.includes('run.fallback.selected')).toBe(
+        true,
+      );
     }
+
+    reader.close();
+    sock.destroy();
+    await session.close();
+
+    const audit = await openDatabaseAsync({ path: dbPath });
+    try {
+      const durableEvents = audit.raw
+        .prepare(
+          `SELECT type, sequence
+           FROM event
+           WHERE type IN ('run.fallback.selected', 'context.packet.built')
+           ORDER BY sequence ASC`,
+        )
+        .all() as Array<{ type: string; sequence: number }>;
+      const fallbackEvents = durableEvents.filter((event) => event.type === 'run.fallback.selected');
+      const contextEvents = durableEvents.filter((event) => event.type === 'context.packet.built');
+      const fallbackIndex = durableEvents.findIndex(
+        (event) => event.type === 'run.fallback.selected',
+      );
+      const eventCount = (
+        audit.raw.prepare('SELECT COUNT(*) AS count FROM event').get() as { count: number }
+      ).count;
+      const checkpointCount = (
+        audit.raw.prepare('SELECT COUNT(*) AS count FROM checkpoint').get() as { count: number }
+      ).count;
+
+      expect(fallbackEvents).toHaveLength(1);
+      expect(contextEvents).toHaveLength(2);
+      expect(durableEvents[fallbackIndex + 1]?.type).toBe('context.packet.built');
+      expect(durableEvents[fallbackIndex + 1]?.sequence).toBe(
+        durableEvents[fallbackIndex]!.sequence + 1,
+      );
+      expect(eventCount).toBeGreaterThan(1);
+      expect(checkpointCount).toBe(1);
+    } finally {
+      audit.raw.close();
+    }
+  }, 30_000);
+
+  it('skips generated-media models in the same-provider text fallback chain', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-fb-text-only-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    const secureKey = join(dir, 'secure', 'key.bin');
+    const installId = `test-fb-text-only-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    const adapter = new FallbackChainProvider('alpha-model', 'timeout');
+    const session = await openPersistentRuntime({
+      installId,
+      dbPath,
+      secureStoreKeyPath: secureKey,
+      allowNoToken: true,
+      demoProvider: adapter,
+    });
+    await session.runtime.start();
+
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    await hello(sock, reader, installId);
+
+    const created = await writeAndRead(sock, reader, {
+      id: 'prov-text-only',
+      kind: 'request',
+      type: 'provider.create',
+      payload: {
+        name: 'Text-only fallback Gateway',
+        baseUrl: 'https://text-only.example/v1',
+        protocol: 'openai-chat',
+        apiKey: 'sk-text-only-test-key-not-real',
+        supportsDiscovery: false,
+      },
+    });
+    const providerId = (created.payload as { provider: { providerId: string } }).provider
+      .providerId;
+    const add = await writeAndRead(sock, reader, {
+      id: 'add-text-only',
+      kind: 'request',
+      type: 'provider.addModels',
+      payload: {
+        providerId,
+        protocol: 'openai-chat',
+        models: [
+          { providerModelId: 'alpha-model', displayName: 'Alpha', capabilities: ['text'] },
+          {
+            providerModelId: 'grok-imagine-video-1.5-preview',
+            displayName: 'Imagine Video',
+            capabilities: ['text'],
+          },
+          {
+            providerModelId: 'grok-imagine-image-quality',
+            displayName: 'Imagine Image',
+            capabilities: ['text'],
+          },
+          { providerModelId: 'beta-model', displayName: 'Beta', capabilities: ['text'] },
+        ],
+      },
+    });
+    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> })
+      .models;
+    const alpha = models.find((model) => model.providerModelId === 'alpha-model')!;
+
+    await writeAndRead(sock, reader, {
+      id: 'agent-text-only',
+      kind: 'request',
+      type: 'agent.updateBinding',
+      payload: { defaultModelId: alpha.modelId, fallbackModelIds: [], pauseOnFailure: true },
+    });
+    const workspace = await writeAndRead(sock, reader, {
+      id: 'workspace-text-only',
+      kind: 'request',
+      type: 'workspace.create',
+      payload: { folderPath: join(dir, 'workspace'), name: 'Text-only fallback WS' },
+    });
+    const workspaceId = (workspace.payload as { workspaceId: string }).workspaceId;
+    const task = await writeAndRead(sock, reader, {
+      id: 'task-text-only',
+      kind: 'request',
+      type: 'task.create',
+      payload: { workspaceId, title: 'Text-only fallback task', goal: 'skip media models' },
+    });
+    const taskPayload = task.payload as { threadId: string; taskVersion: number };
+
+    await writeAndRead(sock, reader, {
+      id: 'sub-text-only',
+      kind: 'request',
+      type: 'runtime.subscribeEvents',
+      payload: { afterCursor: 0 },
+    });
+    await writeAndRead(sock, reader, {
+      id: 'message-text-only',
+      kind: 'request',
+      type: 'task.appendMessage',
+      payload: {
+        threadId: taskPayload.threadId,
+        expectedTaskVersion: taskPayload.taskVersion,
+        role: 'user',
+        text: 'skip non-text fallback candidates',
+      },
+    });
+
+    const fallbackSelected = await reader.waitForEvent(
+      (type) => type === 'run.fallback.selected',
+      6_000,
+    );
+    const completed = await reader.waitForEvent((type) => type === 'run.completed', 8_000);
+
+    expect(fallbackSelected).toBeDefined();
+    expect(eventInner(fallbackSelected!).toProviderModelId).toBe('beta-model');
+    expect(completed).toBeDefined();
+    expect(adapter.calls).toEqual(['alpha-model', 'beta-model']);
+
+    reader.close();
+    sock.destroy();
+    await session.close();
+  }, 30_000);
+
+  it('does not cycle from provider fallbacks back into an already-attempted agent fallback', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-fb-cycle-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    const secureKey = join(dir, 'secure', 'key.bin');
+    const installId = `test-fb-cycle-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    const adapter = new RepeatGuardFailProvider();
+    const session = await openPersistentRuntime({
+      installId,
+      dbPath,
+      secureStoreKeyPath: secureKey,
+      allowNoToken: true,
+      demoProvider: adapter,
+    });
+    await session.runtime.start();
+
+    const sock = await connectRuntime(installId);
+    const reader = createFrameReader(sock);
+    await hello(sock, reader, installId);
+
+    const created = await writeAndRead(sock, reader, {
+      id: 'prov-cycle',
+      kind: 'request',
+      type: 'provider.create',
+      payload: {
+        name: 'Cycle Gateway',
+        baseUrl: 'https://cycle.example/v1',
+        protocol: 'openai-chat',
+        apiKey: 'sk-cycle-test-key-not-real',
+        supportsDiscovery: false,
+      },
+    });
+    const providerId = (created.payload as { provider: { providerId: string } }).provider
+      .providerId;
+    const add = await writeAndRead(sock, reader, {
+      id: 'add-cycle',
+      kind: 'request',
+      type: 'provider.addModels',
+      payload: {
+        providerId,
+        protocol: 'openai-chat',
+        models: [
+          { providerModelId: 'alpha-model', displayName: 'Alpha' },
+          { providerModelId: 'beta-model', displayName: 'Beta' },
+          { providerModelId: 'gamma-model', displayName: 'Gamma' },
+        ],
+      },
+    });
+    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> })
+      .models;
+    const alpha = models.find((model) => model.providerModelId === 'alpha-model')!;
+    const gamma = models.find((model) => model.providerModelId === 'gamma-model')!;
+
+    const updated = await writeAndRead(sock, reader, {
+      id: 'agent-cycle',
+      kind: 'request',
+      type: 'agent.updateBinding',
+      payload: {
+        defaultModelId: gamma.modelId,
+        fallbackModelIds: [alpha.modelId],
+        pauseOnFailure: true,
+      },
+    });
+    expect(updated.error).toBeUndefined();
+
+    const workspace = await writeAndRead(sock, reader, {
+      id: 'ws-cycle',
+      kind: 'request',
+      type: 'workspace.create',
+      payload: { folderPath: join(dir, 'workspace'), name: 'Cycle WS' },
+    });
+    const workspaceId = (workspace.payload as { workspaceId: string }).workspaceId;
+    const task = await writeAndRead(sock, reader, {
+      id: 'task-cycle',
+      kind: 'request',
+      type: 'task.create',
+      payload: { workspaceId, title: 'Cycle task', goal: 'bound fallback transitions' },
+    });
+    const taskPayload = task.payload as { threadId: string; taskVersion: number };
+
+    await writeAndRead(sock, reader, {
+      id: 'sub-cycle',
+      kind: 'request',
+      type: 'runtime.subscribeEvents',
+      payload: { afterCursor: 0 },
+    });
+    const append = await writeAndRead(sock, reader, {
+      id: 'message-cycle',
+      kind: 'request',
+      type: 'task.appendMessage',
+      payload: {
+        threadId: taskPayload.threadId,
+        expectedTaskVersion: taskPayload.taskVersion,
+        role: 'user',
+        text: 'provider chain must not cycle through agent fallback',
+        modelId: alpha.modelId,
+      },
+    });
+    expect(append.error).toBeUndefined();
+
+    const firstFallback = await reader.waitForEvent(
+      (type) => type === 'run.fallback.selected',
+      6_000,
+    );
+    const secondFallback = await reader.waitForEvent(
+      (type) => type === 'run.fallback.selected',
+      6_000,
+    );
+    const terminal = await reader.waitForEvent(
+      (type) => type === 'run.paused' || type === 'run.failed',
+      8_000,
+    );
+    const unexpectedFallback = await reader.waitForEvent(
+      (type) => type === 'run.fallback.selected',
+      100,
+    );
+
+    expect(eventInner(firstFallback!).toProviderModelId).toBe('beta-model');
+    expect(eventInner(secondFallback!).toProviderModelId).toBe('gamma-model');
+    expect(eventType(terminal!)).toBe('run.paused');
+    expect(eventInner(terminal!).reason).toBe('fallback_exhausted');
+    expect(unexpectedFallback).toBeUndefined();
+    expect(adapter.calls).toEqual(['alpha-model', 'beta-model', 'gamma-model']);
 
     reader.close();
     sock.destroy();
@@ -414,7 +728,8 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         supportsDiscovery: false,
       },
     });
-    const providerId = (created.payload as { provider: { providerId: string } }).provider.providerId;
+    const providerId = (created.payload as { provider: { providerId: string } }).provider
+      .providerId;
     const add = await writeAndRead(sock, reader, {
       id: 'add-1',
       kind: 'request',
@@ -428,7 +743,8 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         ],
       },
     });
-    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> }).models;
+    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> })
+      .models;
     const alpha = models.find((m) => m.providerModelId === 'alpha-model')!;
     const beta = models.find((m) => m.providerModelId === 'beta-model')!;
 
@@ -523,7 +839,8 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         supportsDiscovery: false,
       },
     });
-    const providerId = (created.payload as { provider: { providerId: string } }).provider.providerId;
+    const providerId = (created.payload as { provider: { providerId: string } }).provider
+      .providerId;
     const add = await writeAndRead(sock, reader, {
       id: 'add-1',
       kind: 'request',
@@ -537,7 +854,8 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         ],
       },
     });
-    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> }).models;
+    const models = (add.payload as { models: Array<{ modelId: string; providerModelId: string }> })
+      .models;
     const alpha = models.find((m) => m.providerModelId === 'alpha-model')!;
     const beta = models.find((m) => m.providerModelId === 'beta-model')!;
 
@@ -682,8 +1000,12 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         models: [{ providerModelId: 'm3', displayName: 'M3' }],
       },
     });
-    const modelsA = (addA.payload as { models: Array<{ modelId: string; providerModelId: string }> }).models;
-    const modelsB = (addB.payload as { models: Array<{ modelId: string; providerModelId: string }> }).models;
+    const modelsA = (
+      addA.payload as { models: Array<{ modelId: string; providerModelId: string }> }
+    ).models;
+    const modelsB = (
+      addB.payload as { models: Array<{ modelId: string; providerModelId: string }> }
+    ).models;
     const m1 = modelsA.find((m) => m.providerModelId === 'm1')!;
     const m2 = modelsA.find((m) => m.providerModelId === 'm2')!;
     const m3 = modelsB.find((m) => m.providerModelId === 'm3')!;
@@ -725,7 +1047,8 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         },
       });
       expect(append.error).toBeUndefined();
-      taskVersion = ((append.payload as { taskVersion?: number }).taskVersion ?? taskVersion + 1) as number;
+      taskVersion = ((append.payload as { taskVersion?: number }).taskVersion ??
+        taskVersion + 1) as number;
 
       const done = await reader.waitForEvent((t) => t === 'run.completed', 8_000);
       expect(done).toBeDefined();

@@ -46,10 +46,7 @@ export const planRevision = sqliteTable(
     approvedAt: text('approved_at'),
   },
   (t) => ({
-    byPlanRevision: uniqueIndex('plan_revision_plan_revision_uidx').on(
-      t.planId,
-      t.revision,
-    ),
+    byPlanRevision: uniqueIndex('plan_revision_plan_revision_uidx').on(t.planId, t.revision),
     byPlanState: index('plan_revision_plan_state_idx').on(t.planId, t.state),
     stateCheck: check(
       'plan_revision_state_check',
@@ -102,6 +99,7 @@ export const step = sqliteTable(
       .notNull()
       .references(() => agentVersion.id, { onDelete: 'restrict' }),
     modelOverrideId: text('model_override_id'),
+    imageGenerationConfigJson: text('image_generation_config_json'),
     state: text('state').notNull().default('pending'),
     retries: integer('retries').notNull().default(0),
     retryOfStepId: text('retry_of_step_id'),
@@ -155,10 +153,7 @@ export const stepDependency = sqliteTable(
       columns: [t.runId, t.dependsOnStepId],
       foreignColumns: [step.runId, step.id],
     }).onDelete('restrict'),
-    byDependency: index('step_dependency_run_dependency_idx').on(
-      t.runId,
-      t.dependsOnStepId,
-    ),
+    byDependency: index('step_dependency_run_dependency_idx').on(t.runId, t.dependsOnStepId),
   }),
 );
 
@@ -269,9 +264,7 @@ export const stepOutputArtifact = sqliteTable(
       columns: [t.runId, t.stepId],
       foreignColumns: [step.runId, step.id],
     }).onDelete('restrict'),
-    artifactVersionUnique: uniqueIndex('step_output_artifact_version_uidx').on(
-      t.artifactVersionId,
-    ),
+    artifactVersionUnique: uniqueIndex('step_output_artifact_version_uidx').on(t.artifactVersionId),
     byTransition: index('step_output_artifact_transition_idx').on(
       t.runId,
       t.stepId,
@@ -322,10 +315,7 @@ export const acceptanceGate = sqliteTable(
       'acceptance_gate_state_check',
       sql`${t.state} IN ('active', 'accepted', 'limit-reached')`,
     ),
-    reassignedCheck: check(
-      'acceptance_gate_reassigned_check',
-      sql`${t.reassigned} IN (0, 1)`,
-    ),
+    reassignedCheck: check('acceptance_gate_reassigned_check', sql`${t.reassigned} IN (0, 1)`),
   }),
 );
 
@@ -363,10 +353,7 @@ export const reviewEvidence = sqliteTable(
     createdAt: text('created_at').notNull(),
   },
   (t) => ({
-    byReviewerStep: uniqueIndex('review_evidence_reviewer_step_uidx').on(
-      t.runId,
-      t.reviewerStepId,
-    ),
+    byReviewerStep: uniqueIndex('review_evidence_reviewer_step_uidx').on(t.runId, t.reviewerStepId),
     identity: uniqueIndex('review_evidence_identity_uidx').on(t.id, t.gateId),
     gateForeignKey: foreignKey({
       columns: [t.gateId, t.runId, t.targetStepId],
@@ -377,10 +364,7 @@ export const reviewEvidence = sqliteTable(
       foreignColumns: [step.runId, step.id],
     }).onDelete('restrict'),
     iterationCheck: check('review_evidence_iteration_check', sql`${t.iteration} >= 0`),
-    verdictCheck: check(
-      'review_evidence_verdict_check',
-      sql`${t.verdict} IN ('accept', 'reject')`,
-    ),
+    verdictCheck: check('review_evidence_verdict_check', sql`${t.verdict} IN ('accept', 'reject')`),
   }),
 );
 
@@ -476,7 +460,38 @@ export const reviewStepArtifact = sqliteTable(
     primaryKey: primaryKey({ columns: [t.runId, t.reviewerStepId, t.artifactVersionId] }),
     reviewerForeignKey: foreignKey({
       columns: [t.gateId, t.runId, t.reviewerStepId],
-      foreignColumns: [acceptanceGateStep.gateId, acceptanceGateStep.runId, acceptanceGateStep.stepId],
+      foreignColumns: [
+        acceptanceGateStep.gateId,
+        acceptanceGateStep.runId,
+        acceptanceGateStep.stepId,
+      ],
+    }).onDelete('restrict'),
+  }),
+);
+
+export const reviewStepArtifactSelection = sqliteTable(
+  'review_step_artifact_selection',
+  {
+    gateId: text('gate_id').notNull(),
+    runId: text('run_id').notNull(),
+    reviewerStepId: text('reviewer_step_id').notNull(),
+    artifactId: text('artifact_id')
+      .notNull()
+      .references(() => artifact.id, { onDelete: 'restrict' }),
+    selectedVersionId: text('selected_version_id')
+      .notNull()
+      .references(() => artifactVersion.id, { onDelete: 'restrict' }),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => ({
+    primaryKey: primaryKey({ columns: [t.runId, t.reviewerStepId, t.artifactId] }),
+    reviewerForeignKey: foreignKey({
+      columns: [t.gateId, t.runId, t.reviewerStepId],
+      foreignColumns: [
+        acceptanceGateStep.gateId,
+        acceptanceGateStep.runId,
+        acceptanceGateStep.stepId,
+      ],
     }).onDelete('restrict'),
   }),
 );
@@ -538,10 +553,7 @@ export const artifactMergeConflict = sqliteTable(
       columns: [t.runId, t.sourceStepId],
       foreignColumns: [step.runId, step.id],
     }).onDelete('restrict'),
-    statusCheck: check(
-      'artifact_merge_conflict_status_check',
-      sql`${t.status} = 'open'`,
-    ),
+    statusCheck: check('artifact_merge_conflict_status_check', sql`${t.status} = 'open'`),
     summaryJsonCheck: check(
       'artifact_merge_conflict_summary_json_check',
       sql`json_valid(${t.summaryJson})`,
@@ -595,6 +607,7 @@ export type ReviewEvidenceCriterionRow = typeof reviewEvidenceCriterion.$inferSe
 export type ReviewEvidenceArtifactRow = typeof reviewEvidenceArtifact.$inferSelect;
 export type AcceptanceGateStepRow = typeof acceptanceGateStep.$inferSelect;
 export type ReviewStepArtifactRow = typeof reviewStepArtifact.$inferSelect;
+export type ReviewStepArtifactSelectionRow = typeof reviewStepArtifactSelection.$inferSelect;
 export type ArtifactSelectionRow = typeof artifactSelection.$inferSelect;
 export type ArtifactMergeConflictRow = typeof artifactMergeConflict.$inferSelect;
 export type ArtifactMergeConflictResolutionRow =

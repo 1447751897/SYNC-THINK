@@ -92,7 +92,14 @@ describe('M2 desktop workspace projection', () => {
         artifact: { id: 'artifact-1', name: 'design.md' },
         versions: [
           { id: 'artifact-version-1', sourceStepId: 'step-design', version: 1 },
-          { id: 'artifact-version-2', sourceStepId: 'step-design', version: 2 },
+          {
+            id: 'artifact-version-2',
+            sourceStepId: 'step-design',
+            version: 2,
+            mimeType: 'image/png',
+            status: 'candidate',
+            hasContentRef: true,
+          },
         ],
       },
     ] as unknown as ArtifactListItem[];
@@ -106,13 +113,22 @@ describe('M2 desktop workspace projection', () => {
       }),
     ];
 
-    expect(projectM2ExecutionGraph(graph, events, artifacts).steps[0]).toMatchObject({
+    expect(
+      projectM2ExecutionGraph(graph, events, artifacts, new Map(), {
+        'artifact-version-2': {
+          status: 'ready',
+          previewUrl: 'sync-think-image://artifact/abcdefghijklmnop',
+          mimeType: 'image/png',
+        },
+      }).steps[0],
+    ).toMatchObject({
       id: 'step-design',
       agentVersionId: 'agent-version-2',
       modelOverrideId: 'model-design',
       retries: 1,
       reviewIteration: 1,
       currentArtifactVersion: 2,
+      artifactImagePreview: { version: 2, mimeType: 'image/png' },
     });
 
     const withoutOverride = {

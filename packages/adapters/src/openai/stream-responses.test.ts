@@ -62,7 +62,7 @@ describe('streamOpenAIResponses', () => {
         'event: response.output_text.delta\n',
         'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
         'data: {"type":"response.output_text.delta","delta":" world"}\n\n',
-        'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":2}}}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":19,"input_tokens_details":{"cached_tokens":11,"cache_write_tokens":3},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":26}}}\n\n',
       ]),
       text: async () => '',
     } as unknown as Response);
@@ -71,7 +71,15 @@ describe('streamOpenAIResponses', () => {
       streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
     );
     expect(textFromEvents(events)).toBe('Hello world');
-    expect(events).toContainEqual({ type: 'usage', tokensIn: 7, tokensOut: 2 });
+    expect(events).toContainEqual({
+      type: 'usage',
+      tokensIn: 19,
+      tokensOut: 7,
+      cachedTokensHit: 11,
+      cachedTokensCreated: 3,
+      reasoningTokens: 5,
+      totalTokens: 26,
+    });
     expect(events.at(-1)).toEqual({ type: 'finished', reason: 'stop' });
 
     const [url, init] = fetchMock.mock.calls[0]!;
@@ -82,6 +90,34 @@ describe('streamOpenAIResponses', () => {
     const body = JSON.parse((init as { body: string }).body);
     expect(body).toMatchObject({ model: 'gpt-5-mini', stream: true, instructions: 'Be concise.' });
     expect(body.input[0]).toMatchObject({ role: 'user', content: 'hello responses' });
+  });
+
+  it('forwards provider-managed prompt cache identity and retention', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ status: 'completed', output: [] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIResponses(
+        req({
+          promptCache: {
+            key: 'openai:gpt-5-mini:thread-123:epoch-456',
+            retention: '24h',
+          },
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body).toMatchObject({
+      prompt_cache_key: 'openai:gpt-5-mini:thread-123:epoch-456',
+      prompt_cache_retention: '24h',
+    });
   });
 
   it('serializes prior function calls and their local outputs for the next Responses turn', async () => {

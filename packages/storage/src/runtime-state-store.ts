@@ -10,6 +10,7 @@ import type {
   WorkspaceId,
 } from '@sync-think/shared';
 import type { BetterSQLite3Raw } from './connection.js';
+import { EventPayloadSidecarStore, parseStoredEventPayload } from './event-payload-sidecar.js';
 
 export type EventDraft = Omit<Event, 'sequence'>;
 export type CheckpointDraft = Omit<Checkpoint, 'lastEventSequence'>;
@@ -36,6 +37,13 @@ export interface ListEventPageInput {
   throughSequence: number;
   throughId?: string;
   limit: number;
+}
+
+export interface EventPayloadExternalizationOptions {
+  sidecar: EventPayloadSidecarStore;
+  minimumBytes?: number;
+  shouldExternalize?: (event: Event) => boolean;
+  project?: (event: Event) => Record<string, unknown>;
 }
 
 interface EventDatabaseRow {
@@ -68,7 +76,7 @@ function parseRecord(json: string, field: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-function mapEventRow(row: EventDatabaseRow): Event {
+function mapEventRow(row: EventDatabaseRow, sidecar?: EventPayloadSidecarStore): Event {
   return {
     id: row.id as EventId,
     workspaceId: row.workspaceId as WorkspaceId,
@@ -80,12 +88,28 @@ function mapEventRow(row: EventDatabaseRow): Event {
     type: row.type,
     sequence: row.sequence,
     occurredAt: row.occurredAt,
-    payload: parseRecord(row.payloadJson, 'event.payload_json'),
+    payload: sidecar
+      ? parseStoredEventPayload(row.payloadJson, sidecar)
+      : parseStoredEventPayload(row.payloadJson),
   };
 }
 
 export class SqliteEventCheckpointStore {
-  constructor(private readonly raw: BetterSQLite3Raw) {}
+  constructor(
+    private readonly raw: BetterSQLite3Raw,
+    private readonly payloadExternalization?: EventPayloadExternalizationOptions,
+  ) {}
+
+  private serializeEventPayload(event: Event): string {
+    const payloadJson = JSON.stringify(event.payload);
+    const policy = this.payloadExternalization;
+    if (!policy) return payloadJson;
+    const minimumBytes = Math.max(1, Math.trunc(policy.minimumBytes ?? 64 * 1024));
+    if (Buffer.byteLength(payloadJson, 'utf8') < minimumBytes) return payloadJson;
+    if (policy.shouldExternalize && !policy.shouldExternalize(event)) return payloadJson;
+    const projection = policy.project?.(event) ?? {};
+    return JSON.stringify(policy.sidecar.writePayloadJson(payloadJson, projection));
+  }
 
   commitTransition(input: CommitTransitionInput): CommittedTransition {
     if (input.events.length === 0) throw new Error('A transition requires at least one event');
@@ -119,7 +143,7 @@ export class SqliteEventCheckpointStore {
           event.type,
           event.sequence,
           event.occurredAt,
-          JSON.stringify(event.payload),
+          this.serializeEventPayload(event),
         );
       }
 
@@ -169,7 +193,7 @@ export class SqliteEventCheckpointStore {
       )
       .all(workspaceId, afterSequence) as EventDatabaseRow[];
 
-    return rows.map(mapEventRow);
+    return rows.map((row) => mapEventRow(row, this.payloadExternalization?.sidecar));
   }
 
   listEventsByRun(runId: RunId): Event[] {
@@ -193,7 +217,35 @@ export class SqliteEventCheckpointStore {
       )
       .all(runId) as EventDatabaseRow[];
 
-    return rows.map(mapEventRow);
+    return rows.map((row) => mapEventRow(row, this.payloadExternalization?.sidecar));
+  }
+
+  /**
+   * Reads the durable stream for one Task through event_task_idx. This keeps
+   * task-local maintenance paths from materializing the global Event log.
+   */
+  listEventsByTask(taskId: TaskId): Event[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT
+          id,
+          workspace_id AS workspaceId,
+          task_id AS taskId,
+          run_id AS runId,
+          step_id AS stepId,
+          message_id AS messageId,
+          category,
+          type,
+          sequence,
+          occurred_at AS occurredAt,
+          payload_json AS payloadJson
+        FROM event INDEXED BY event_task_idx
+        WHERE task_id = ?
+        ORDER BY sequence ASC, id ASC`,
+      )
+      .all(taskId) as EventDatabaseRow[];
+
+    return rows.map((row) => mapEventRow(row, this.payloadExternalization?.sidecar));
   }
 
   getLatestEventSequence(): number {
@@ -253,7 +305,7 @@ export class SqliteEventCheckpointStore {
         throughId,
         limit,
       ) as EventDatabaseRow[];
-    return rows.map(mapEventRow);
+    return rows.map((row) => mapEventRow(row, this.payloadExternalization?.sidecar));
   }
 
   /**
@@ -280,7 +332,7 @@ export class SqliteEventCheckpointStore {
         ORDER BY sequence ASC, id ASC`,
       )
       .all(afterSequence) as EventDatabaseRow[];
-    return rows.map(mapEventRow);
+    return rows.map((row) => mapEventRow(row, this.payloadExternalization?.sidecar));
   }
 
   loadLatestCheckpoint(runId: RunId): Checkpoint | undefined {

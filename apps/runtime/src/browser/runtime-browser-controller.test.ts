@@ -8,6 +8,8 @@ import {
   SqliteBrowserStore,
 } from '@sync-think/storage';
 import type {
+  BrowserHostLike,
+  BrowserLeaseInfo,
   BrowserWorker,
   BrowserWorkerInput,
   WorkerEvent,
@@ -16,8 +18,41 @@ import type {
 import {
   RuntimeBrowserController,
   type RuntimeBrowserExecuteInput,
+  type RuntimeBrowserHandoffRequest,
   type RuntimeBrowserPermissionInput,
 } from './runtime-browser-controller.js';
+
+class RecordingLeaseHost
+  implements Pick<BrowserHostLike, 'inspectLease' | 'recoverLease' | 'releaseLease'>
+{
+  lease: BrowserLeaseInfo = {
+    leaseId: 'lease-1',
+    pageId: 'page-1',
+    profileId: 'default',
+    ownerId: 'conversation:1',
+  };
+  readonly releases: Array<{ leaseId: string; closePage: boolean | undefined }> = [];
+  readonly recoveries: BrowserLeaseInfo[] = [];
+  missingUntilRecovered = false;
+
+  async inspectLease(): Promise<BrowserLeaseInfo> {
+    if (this.missingUntilRecovered) {
+      throw Object.assign(new Error('lease missing'), { code: 'browser.lease-not-found' });
+    }
+    return { ...this.lease };
+  }
+
+  async recoverLease(input: BrowserLeaseInfo): Promise<BrowserLeaseInfo> {
+    this.recoveries.push({ ...input });
+    this.lease = { ...input };
+    this.missingUntilRecovered = false;
+    return { ...this.lease };
+  }
+
+  async releaseLease(leaseId: string, options?: { closePage?: boolean }): Promise<void> {
+    this.releases.push({ leaseId, closePage: options?.closePage });
+  }
+}
 
 class RecordingBrowserWorker implements BrowserWorker {
   readonly kind = 'browser' as const;
@@ -52,7 +87,10 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function createHarness(worker = new RecordingBrowserWorker()) {
+async function createHarnessWithWorker<T extends BrowserWorker>(
+  worker: T,
+  leaseHost?: Pick<BrowserHostLike, 'inspectLease' | 'recoverLease' | 'releaseLease'>,
+) {
   const root = mkdtempSync(join(tmpdir(), 'sync-think-browser-controller-'));
   tempDirs.push(root);
   const databasePath = join(root, 'sync-think.db');
@@ -65,8 +103,13 @@ async function createHarness(worker = new RecordingBrowserWorker()) {
     store,
     profileId: 'default',
     fallbackWorkingDir: 'D:/runtime-data',
+    leaseHost,
   });
-  return { controller, store, worker, connection };
+  return { controller, store, worker, connection, leaseHost };
+}
+
+async function createHarness() {
+  return createHarnessWithWorker(new RecordingBrowserWorker());
 }
 
 function permissionInput(overrides: Partial<RuntimeBrowserPermissionInput> = {}): RuntimeBrowserPermissionInput {
@@ -88,6 +131,21 @@ function executeInput(
     ...permissionInput(),
     capabilityToken: 'browser:run-1:call-1',
     signal: new AbortController().signal,
+    ...overrides,
+  };
+}
+
+function handoffInput(
+  overrides: Partial<RuntimeBrowserHandoffRequest> = {},
+): RuntimeBrowserHandoffRequest {
+  return {
+    workspaceId: 'workspace-1',
+    runId: 'run-1',
+    ownerId: 'conversation:1',
+    idempotencyKey: 'browser:run-1:handoff-1',
+    reason: 'login',
+    requestedOutcome: 'Complete sign-in and return to the dashboard.',
+    onCancel: 'keep-open',
     ...overrides,
   };
 }
@@ -202,6 +260,274 @@ describe('RuntimeBrowserController durable permissions', () => {
     });
     expect(controller.evaluatePermission(otherRun)).toMatchObject({ decision: 'approval-required' });
     expect(worker.calls).toHaveLength(2);
+  });
+
+
+
+  it('isolates Team Step grants by exact AgentVersion and rejects origins outside the frozen permission snapshot', async () => {
+    const { controller, store } = await createHarness();
+    const memberA = permissionInput({
+      ownerId: 'step:run-1:step-a:agent-version-a',
+      agentVersionId: 'agent-version-a',
+      stepId: 'step-a',
+      allowedOrigins: ['https://example.test'],
+    });
+    const memberB = permissionInput({
+      ownerId: 'step:run-1:step-b:agent-version-b',
+      agentVersionId: 'agent-version-b',
+      stepId: 'step-b',
+      allowedOrigins: ['https://example.test'],
+      idempotencyKey: 'browser:run-1:step-b:call-1',
+    });
+
+    controller.recordPermissionDecision(memberA, 'allow', 'approval-agent-a');
+    expect(controller.evaluatePermission(memberA)).toMatchObject({ decision: 'allow' });
+    expect(controller.evaluatePermission(memberB)).toMatchObject({ decision: 'approval-required' });
+    expect(
+      store.resolveOriginDecision({
+        scopes: [{ scopeType: 'agent-version', scopeId: 'agent-version-a' }],
+        origin: 'https://example.test',
+        action: 'navigate',
+      }),
+    ).toMatchObject({ decision: 'allow' });
+
+    store.upsertOriginGrant({
+      scopeType: 'run',
+      scopeId: 'run-1',
+      origin: 'https://blocked.example',
+      action: 'navigate',
+      decision: 'allow',
+      approvalId: 'coordinator-run-grant',
+    });
+    expect(
+      controller.evaluatePermission(
+        permissionInput({
+          argumentsJson: JSON.stringify({ url: 'https://blocked.example/private' }),
+          ownerId: 'step:run-1:step-a:agent-version-a',
+          agentVersionId: 'agent-version-a',
+          stepId: 'step-a',
+          allowedOrigins: ['https://example.test'],
+          idempotencyKey: 'browser:run-1:step-a:blocked',
+        }),
+      ),
+    ).toMatchObject({ decision: 'deny', code: 'browser.agent-origin-denied' });
+  });
+
+  it('shares a Profile while keeping each Team Step on a distinct owner lease', async () => {
+    const calls: Array<{ input: BrowserWorkerInput; token: WorkerToken }> = [];
+    const worker: BrowserWorker = {
+      kind: 'browser',
+      async *exec(input, token): AsyncIterable<WorkerEvent> {
+        calls.push({ input, token });
+        yield {
+          type: 'completed',
+          output: {
+            ok: true,
+            message: 'Browser action completed',
+            profileId: input.profileId,
+            leaseId: `lease:${input.ownerId}`,
+            pageId: `page:${input.ownerId}`,
+            url: 'https://example.test/dashboard',
+          },
+        };
+      },
+    };
+    const { controller } = await createHarnessWithWorker(worker);
+    const memberA = permissionInput({
+      ownerId: 'step:run-1:step-a:agent-version-a',
+      agentVersionId: 'agent-version-a',
+      stepId: 'step-a',
+      allowedOrigins: ['https://example.test'],
+      idempotencyKey: 'browser:run-1:step-a:call-1',
+    });
+    const memberB = permissionInput({
+      ownerId: 'step:run-1:step-b:agent-version-b',
+      agentVersionId: 'agent-version-b',
+      stepId: 'step-b',
+      allowedOrigins: ['https://example.test'],
+      idempotencyKey: 'browser:run-1:step-b:call-1',
+    });
+    controller.recordPermissionDecision(memberA, 'allow', 'approval-agent-a');
+    controller.recordPermissionDecision(memberB, 'allow', 'approval-agent-b');
+
+    const resultA = JSON.parse(
+      await controller.execute(
+        executeInput({ ...memberA, capabilityToken: 'browser:run-1:step-a:call-1' }),
+      ),
+    ) as Record<string, unknown>;
+    const resultB = JSON.parse(
+      await controller.execute(
+        executeInput({ ...memberB, capabilityToken: 'browser:run-1:step-b:call-1' }),
+      ),
+    ) as Record<string, unknown>;
+
+    expect(calls.map((call) => call.input.profileId)).toEqual(['default', 'default']);
+    expect(calls[0]?.input.ownerId).not.toBe(calls[1]?.input.ownerId);
+    expect(calls[0]?.input).not.toHaveProperty('leaseId');
+    expect(calls[1]?.input).not.toHaveProperty('leaseId');
+    expect(resultA.leaseId).toBe('lease:step:run-1:step-a:agent-version-a');
+    expect(resultB.leaseId).toBe('lease:step:run-1:step-b:agent-version-b');
+    expect(resultA.leaseId).not.toBe(resultB.leaseId);
+  });
+
+  it('returns and persists Team Step audit identity without accepting caller lease identifiers', async () => {
+    const { controller, store, worker } = await createHarness();
+    const input = permissionInput({
+      ownerId: 'step:run-1:step-a:agent-version-a',
+      agentVersionId: 'agent-version-a',
+      stepId: 'step-a',
+      allowedOrigins: ['https://example.test'],
+    });
+    controller.recordPermissionDecision(input, 'allow', 'approval-agent-a');
+
+    const result = JSON.parse(
+      await controller.execute(
+        executeInput({
+          ...input,
+          capabilityToken: 'browser:run-1:step-a:call-1',
+        }),
+      ),
+    ) as Record<string, unknown>;
+
+    expect(worker.calls[0]?.input).toMatchObject({
+      ownerId: 'step:run-1:step-a:agent-version-a',
+      profileId: 'default',
+    });
+    expect(result).toMatchObject({
+      commandId: expect.any(String),
+      ownerId: 'step:run-1:step-a:agent-version-a',
+      agentVersionId: 'agent-version-a',
+      stepId: 'step-a',
+      profileId: 'default',
+      leaseId: 'lease-1',
+      pageId: 'page-1',
+      targetOrigin: 'https://example.test',
+    });
+    expect(store.getCommandByIdempotencyKey(input.idempotencyKey)?.result?.output).toMatchObject({
+      commandId: result.commandId,
+      ownerId: 'step:run-1:step-a:agent-version-a',
+      agentVersionId: 'agent-version-a',
+      stepId: 'step-a',
+      profileId: 'default',
+      leaseId: 'lease-1',
+      targetOrigin: 'https://example.test',
+    });
+  });
+
+  it('persists a durable waiting handoff against the exact active Page lease', async () => {
+    const leaseHost = new RecordingLeaseHost();
+    const { controller, store } = await createHarnessWithWorker(new RecordingBrowserWorker(), leaseHost);
+    const browserInput = permissionInput();
+    controller.recordPermissionDecision(browserInput, 'allow', 'approval-1');
+    await controller.execute(executeInput());
+
+    const result = await controller.requestHandoff(handoffInput());
+    expect(result.status).toBe('waiting_user');
+    if (result.status !== 'waiting_user') throw new Error('expected waiting handoff');
+
+    expect(result).toMatchObject({
+      status: 'waiting_user',
+      handoff: {
+        revision: 1,
+        workspaceId: 'workspace-1',
+        runId: 'run-1',
+        siteOrigin: 'https://example.test',
+        reason: 'login',
+        requestedOutcome: 'Complete sign-in and return to the dashboard.',
+        status: 'waiting_user',
+      },
+    });
+    expect(result.handoff).not.toHaveProperty('leaseId');
+    expect(result.handoff).not.toHaveProperty('ownerId');
+    expect(store.getCommand(result.handoff.handoffId)).toMatchObject({
+      toolName: 'browser_handoff',
+      state: 'waiting_user',
+      leaseId: 'lease-1',
+      pageId: 'page-1',
+      errorCode: 'browser.handoff-required',
+    });
+    expect(controller.listWaitingHandoffs({ workspaceId: 'workspace-1' })).toEqual([
+      result.handoff,
+    ]);
+  });
+
+  it('revalidates lease ownership before Continue and completes from the same handoff checkpoint', async () => {
+    const leaseHost = new RecordingLeaseHost();
+    const { controller } = await createHarnessWithWorker(new RecordingBrowserWorker(), leaseHost);
+    const browserInput = permissionInput();
+    controller.recordPermissionDecision(browserInput, 'allow', 'approval-1');
+    await controller.execute(executeInput());
+    const waiting = await controller.requestHandoff(handoffInput());
+    if (waiting.status !== 'waiting_user') throw new Error('expected waiting handoff');
+
+    leaseHost.lease = { ...leaseHost.lease, ownerId: 'conversation:other' };
+    await expect(
+      controller.continueHandoff({ handoffId: waiting.handoff.handoffId, expectedRevision: 1 }),
+    ).rejects.toMatchObject({ code: 'browser.handoff-ownership-mismatch' });
+
+    leaseHost.lease = { ...leaseHost.lease, ownerId: 'conversation:1' };
+    await expect(
+      controller.continueHandoff({ handoffId: waiting.handoff.handoffId, expectedRevision: 1 }),
+    ).resolves.toMatchObject({ status: 'continued' });
+    await expect(controller.requestHandoff(handoffInput())).resolves.toMatchObject({
+      status: 'continued',
+      replayed: false,
+    });
+    await expect(controller.requestHandoff(handoffInput())).resolves.toMatchObject({
+      status: 'continued',
+      replayed: true,
+    });
+  });
+
+  it('recovers a missing in-memory lease from the durable handoff checkpoint before Continue', async () => {
+    const leaseHost = new RecordingLeaseHost();
+    const { controller } = await createHarnessWithWorker(new RecordingBrowserWorker(), leaseHost);
+    const browserInput = permissionInput();
+    controller.recordPermissionDecision(browserInput, 'allow', 'approval-1');
+    await controller.execute(executeInput());
+    const waiting = await controller.requestHandoff(handoffInput());
+    if (waiting.status !== 'waiting_user') throw new Error('expected waiting handoff');
+
+    leaseHost.missingUntilRecovered = true;
+    await expect(
+      controller.continueHandoff({ handoffId: waiting.handoff.handoffId, expectedRevision: 1 }),
+    ).resolves.toMatchObject({ status: 'continued', replayed: false });
+    expect(leaseHost.recoveries).toEqual([
+      {
+        leaseId: 'lease-1',
+        pageId: 'page-1',
+        profileId: 'default',
+        ownerId: 'conversation:1',
+      },
+    ]);
+  });
+
+  it('cancels idempotently and only closes the Page for the explicit close-page lifecycle', async () => {
+    const leaseHost = new RecordingLeaseHost();
+    const { controller } = await createHarnessWithWorker(new RecordingBrowserWorker(), leaseHost);
+    const browserInput = permissionInput();
+    controller.recordPermissionDecision(browserInput, 'allow', 'approval-1');
+    await controller.execute(executeInput());
+    const waiting = await controller.requestHandoff(
+      handoffInput({ onCancel: 'close-page' }),
+    );
+    if (waiting.status !== 'waiting_user') throw new Error('expected waiting handoff');
+    leaseHost.missingUntilRecovered = true;
+
+    await expect(
+      controller.cancelHandoff({
+        handoffId: waiting.handoff.handoffId,
+        expectedRevision: 1,
+      }),
+    ).resolves.toMatchObject({ status: 'cancelled', replayed: false });
+    await expect(
+      controller.cancelHandoff({
+        handoffId: waiting.handoff.handoffId,
+        expectedRevision: 1,
+      }),
+    ).resolves.toMatchObject({ status: 'cancelled', replayed: true });
+    expect(leaseHost.recoveries).toEqual([leaseHost.lease]);
+    expect(leaseHost.releases).toEqual([{ leaseId: 'lease-1', closePage: true }]);
   });
 
   it('marks unknown running commands for inspection when a controller restarts', async () => {

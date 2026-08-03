@@ -30,6 +30,8 @@ export type PolicyId = Brand<string, 'Policy'>;
 export type WorkflowVersionId = Brand<string, 'WorkflowVersion'>;
 export type AcceptanceGateId = Brand<string, 'AcceptanceGate'>;
 export type ApprovalRequestId = Brand<string, 'ApprovalRequest'>;
+export type AgentContextThreadId = Brand<string, 'AgentContextThread'>;
+export type ContextEpochId = Brand<string, 'ContextEpoch'>;
 
 // ULID (Crockford base32, 26 chars, time-ordered + collision-safe).
 // Single point of ID generation so IDs remain sortable and stable across Run

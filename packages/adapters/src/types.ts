@@ -1,4 +1,10 @@
-import type { ProtocolFamily, FailureClass } from '@sync-think/shared';
+import type {
+  FailureClass,
+  ImageGenerationCount,
+  ImageGenerationQuality,
+  ImageGenerationSize,
+  ProtocolFamily,
+} from '@sync-think/shared';
 
 // Re-export so adapters can narrow FailureClass values without importing shared.
 export type { FailureClass };
@@ -31,6 +37,11 @@ export interface ProviderCallRequest {
    * Adapters omit the field when auto/off/undefined.
    */
   reasoningEffort?: string;
+  /** Provider-managed prompt cache identity. The application keeps the prompt prefix stable; cache bytes remain provider-side. */
+  promptCache?: {
+    key?: string;
+    retention?: 'in_memory' | '24h';
+  };
   stream: boolean;
 }
 
@@ -62,6 +73,47 @@ export interface ProviderToolCall {
   argumentsJson: string;
 }
 
+export interface ProviderImageGenerationRequest {
+  protocol: 'openai-images';
+  baseUrl: string;
+  modelId: string;
+  /** Plaintext secret fetched from secure store; remains only in adapter scope. */
+  apiKey: string;
+  /** Stable scheduler key forwarded through compatible provider headers. */
+  idempotencyKey: string;
+  signal: AbortSignal;
+  prompt: string;
+  count?: ImageGenerationCount;
+  size?: ImageGenerationSize;
+  quality?: ImageGenerationQuality;
+  outputFormat?: 'png' | 'jpeg' | 'webp';
+  background?: 'auto' | 'transparent' | 'opaque';
+}
+
+export interface ProviderUsage {
+  /** Total input tokens reported by the provider, including cache reads/writes when applicable. */
+  tokensIn: number;
+  tokensOut: number;
+  /** Input-prefix tokens served from the provider prompt cache. */
+  cachedTokensHit?: number;
+  /** Input-prefix tokens newly written to the provider prompt cache. */
+  cachedTokensCreated?: number;
+  /** Hidden/internal reasoning tokens when the provider reports them separately. */
+  reasoningTokens?: number;
+  /** Provider-reported total; normally tokensIn + tokensOut. */
+  totalTokens?: number;
+}
+
+export interface ProviderGeneratedImage {
+  bytes: Uint8Array;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  revisedPrompt?: string;
+}
+
+export interface ProviderImageGenerationResult {
+  images: ProviderGeneratedImage[];
+}
+
 // Unified adapter event stream. Adapters translate SSE/proprietary formats
 // into events emitted on the AsyncIterable<AdapterEvent>.
 export type AdapterEvent =
@@ -71,7 +123,7 @@ export type AdapterEvent =
   | { type: 'tool-call'; toolCall: ProviderToolCall }
   | { type: 'tool-result'; toolCallId: string; result: string }
   | { type: 'image-ready'; imageRef: string; mimeType: string }
-  | { type: 'usage'; tokensIn: number; tokensOut: number }
+  | ({ type: 'usage' } & ProviderUsage)
   | { type: 'finished'; reason: 'stop' | 'length' | 'tool-requests' | 'image' }
   | { type: 'error'; failureClass: FailureClass; message: string; diagnosticRefId?: string };
 
@@ -87,6 +139,8 @@ export interface ProviderAdapter {
   discoverModels(apiKey: string, baseUrl: string): Promise<string[]>;
   /** Streams events back; for non-streaming calls the adapter synthesizes events. */
   call(request: ProviderCallRequest): AsyncIterable<AdapterEvent>;
+  /** Typed image generation path for protocols that produce binary artifacts. */
+  generateImages?(request: ProviderImageGenerationRequest): Promise<ProviderImageGenerationResult>;
 }
 
 // Error scrubbing rule: plaintext secret never leaves the adapter in diagnostics.

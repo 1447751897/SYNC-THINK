@@ -188,23 +188,47 @@ async function expectAtomic0020Failure(path: string, code: string): Promise<void
 
 describe('0017_reviewer_rework migration', () => {
   it('is appended after the frozen 0016 migration', () => {
-    expect(MIGRATIONS.slice(-15).map((migration) => migration.name)).toEqual([
+    const names = MIGRATIONS.map((migration) => migration.name);
+    const frozenIndex = names.indexOf('0016_production_execution');
+    const reviewerReworkIndex = names.indexOf('0017_reviewer_rework');
+    const latestIndex = names.indexOf('0035_review_image_selection_freeze');
+
+    expect(frozenIndex).toBeGreaterThanOrEqual(0);
+    expect(reviewerReworkIndex).toBe(frozenIndex + 1);
+    expect(latestIndex).toBe(names.length - 1);
+    expect(names.slice(frozenIndex, reviewerReworkIndex + 2)).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',
       '0018_complete_agent_version',
-      '0019_review_source_evidence_integrity',
-      '0020_review_bounds_integrity',
-      '0021_merge_step_conflict_resolution',
-      '0022_optional_project_folder',
-      '0023_provider_execution_checkpoint',
-      '0024_mutable_agent_team_conversation',
-      '0025_conversation_task_binding',
-      '0026_provider_source_config',
-      '0027_skill_archive',
-      '0028_message_pagination',
-      '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
     ]);
+  });
+
+  it('creates the immutable image selection freeze projection and its guards', async () => {
+    const path = dbPath();
+    await runMigrations(path);
+    const { raw } = await openDatabaseAsync({ path });
+    try {
+      expect(
+        raw
+          .prepare(
+            `SELECT type, name FROM sqlite_master
+             WHERE name IN (
+               'review_step_artifact_selection',
+               'review_step_artifact_selection_insert_guard',
+               'review_step_artifact_selection_update_guard',
+               'review_step_artifact_selection_delete_guard'
+             ) ORDER BY name`,
+          )
+          .all(),
+      ).toEqual([
+        { type: 'table', name: 'review_step_artifact_selection' },
+        { type: 'trigger', name: 'review_step_artifact_selection_delete_guard' },
+        { type: 'trigger', name: 'review_step_artifact_selection_insert_guard' },
+        { type: 'trigger', name: 'review_step_artifact_selection_update_guard' },
+      ]);
+    } finally {
+      raw.close();
+    }
   });
 
   it('guards future direct criterion inserts by shared UTF-8 bounds', async () => {

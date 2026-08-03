@@ -2,13 +2,14 @@
 // Strictly follows the NewMax settings information architecture shown in the
 // product reference screenshots: searchable left navigation, compact rows,
 // page-local tabs, and a fixed completion action.
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
   Bot,
   Check,
   CircleUserRound,
   Database,
+  Download,
   Info,
   Keyboard,
   Mic2,
@@ -25,7 +26,12 @@ import {
   WalletCards,
 } from 'lucide-react';
 import clsx from 'clsx';
+import {
+  COMPUTER_USE_PLUGIN_SETTING_KEY,
+  normalizeComputerUsePluginSetting,
+} from '@sync-think/protocol/plugins';
 import { ModelSettings, type ModelSettingsHandle } from './ModelSettings.js';
+import { DesktopUpdatePanel } from './DesktopUpdatePanel.js';
 import { decideSettingsPageAction } from './settings-unsaved.js';
 import {
   readDefaultPermission,
@@ -96,8 +102,20 @@ const SECTIONS: Array<{
   { id: 'insights', label: '每日回顾', icon: BarChart3, ready: false },
   { id: 'connection', label: '连接', icon: Plug, ready: false },
   { id: 'security', label: '安全查杀', icon: ShieldCheck, ready: false },
-  { id: 'plugins', label: '插件', icon: Sparkles, ready: false },
-  { id: 'data', label: '数据', icon: Database, ready: false },
+  {
+    id: 'plugins',
+    label: '插件',
+    icon: Sparkles,
+    ready: true,
+    keywords: 'Computer Use 桌面 UIA 自动化',
+  },
+  {
+    id: 'data',
+    label: '数据',
+    icon: Database,
+    ready: true,
+    keywords: '诊断 导出 隐私 崩溃 恢复 日志',
+  },
   { id: 'about', label: '关于', icon: Info, ready: true },
 ];
 
@@ -212,6 +230,8 @@ export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: Settin
               onDirtyChange={reportDirty}
             />
           )}
+          {section === 'plugins' && <ComputerUsePluginSection />}
+          {section === 'data' && <DataDiagnosticsSection />}
           {section === 'about' && <AboutSection />}
           {!current.ready && <ComingSoonSection label={current.label} />}
         </div>
@@ -433,6 +453,236 @@ function PersonalizationPanel() {
   );
 }
 
+function ComputerUsePluginSection() {
+  const [enabled, setEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    let disposed = false;
+    const runtime = window.syncThink?.runtime;
+    if (!runtime) {
+      setError('Runtime 连接不可用，无法读取插件状态。');
+      setLoading(false);
+      return () => {
+        disposed = true;
+      };
+    }
+    void runtime
+      .getSettings({ keys: [COMPUTER_USE_PLUGIN_SETTING_KEY] })
+      .then((response) => {
+        if (disposed) return;
+        setEnabled(
+          normalizeComputerUsePluginSetting(
+            response.settings[COMPUTER_USE_PLUGIN_SETTING_KEY],
+          ).enabled,
+        );
+        setError(undefined);
+      })
+      .catch((reason: unknown) => {
+        if (disposed) return;
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : '无法读取 Computer Use 插件状态。',
+        );
+      })
+      .finally(() => {
+        if (!disposed) setLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const handleEnabledChange = async (next: boolean) => {
+    const previous = enabled;
+    setEnabled(next);
+    setSaving(true);
+    setError(undefined);
+    try {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime) throw new Error('Runtime 连接不可用。');
+      await runtime.setSetting({
+        key: COMPUTER_USE_PLUGIN_SETTING_KEY,
+        value: { enabled: next },
+      });
+    } catch (reason) {
+      setEnabled(previous);
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : '保存 Computer Use 插件状态失败。',
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="settings-scroll settings-standard-pane">
+      <div className="settings-rows">
+        <SettingRow
+          title="Computer Use"
+          description="使用 Windows UI Automation 检查并操作桌面应用。插件默认关闭。"
+          control={
+            <Toggle
+              checked={enabled}
+              disabled={loading || saving}
+              label="启用 Computer Use 插件"
+              onChange={(next) => void handleEnabledChange(next)}
+            />
+          }
+        />
+      </div>
+      <p className="settings-note">
+        {loading
+          ? '正在读取插件状态…'
+          : enabled
+            ? '已启用：新的对话轮次可以使用桌面工具。'
+            : '已停用：Runtime 不会暴露桌面工具，也不会启动 Desktop Host。'}
+      </p>
+      <p className="settings-note">
+        插件开关决定是否具有桌面能力；权限模式决定启用后的动作是否需要批准。「完全访问」不会自动启用插件。
+      </p>
+      {error ? (
+        <p className="settings-note" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+type DiagnosticsExportState =
+  | { kind: 'idle' }
+  | { kind: 'exporting' }
+  | {
+      kind: 'saved';
+      path: string;
+      diagnosticCount: number;
+      crashReportCount: number;
+    }
+  | {
+      kind: 'cancelled';
+      diagnosticCount: number;
+      crashReportCount: number;
+    }
+  | { kind: 'error'; message: string };
+
+export function DataDiagnosticsSection() {
+  const [exportState, setExportState] = useState<DiagnosticsExportState>({ kind: 'idle' });
+
+  const handleExport = async () => {
+    if (exportState.kind === 'exporting') return;
+    setExportState({ kind: 'exporting' });
+    try {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.exportDiagnostics) throw new Error('诊断导出服务尚未就绪。');
+      const result = await runtime.exportDiagnostics({});
+      if (result.status === 'saved') {
+        setExportState({
+          kind: 'saved',
+          path: result.path,
+          diagnosticCount: result.diagnosticCount,
+          crashReportCount: result.crashReportCount,
+        });
+        return;
+      }
+      setExportState({
+        kind: 'cancelled',
+        diagnosticCount: result.diagnosticCount,
+        crashReportCount: result.crashReportCount,
+      });
+    } catch (reason) {
+      setExportState({
+        kind: 'error',
+        message: reason instanceof Error ? reason.message : '诊断导出失败。',
+      });
+    }
+  };
+
+  const status = (() => {
+    switch (exportState.kind) {
+      case 'exporting':
+        return { role: 'status' as const, text: '正在收集并脱敏诊断信息…' };
+      case 'saved':
+        return {
+          role: 'status' as const,
+          text: `已保存 ${exportState.diagnosticCount} 条诊断与 ${exportState.crashReportCount} 条崩溃记录：${exportState.path}`,
+        };
+      case 'cancelled':
+        return {
+          role: 'status' as const,
+          text: `已取消保存。已准备 ${exportState.diagnosticCount} 条诊断与 ${exportState.crashReportCount} 条崩溃记录。`,
+        };
+      case 'error':
+        return { role: 'alert' as const, text: exportState.message };
+      default:
+        return null;
+    }
+  })();
+
+  return (
+    <div className="settings-scroll settings-standard-pane settings-diagnostics-export">
+      <section className="settings-diagnostics-export__hero" aria-labelledby="diagnostics-title">
+        <div className="settings-diagnostics-export__eyebrow">LOCAL SUPPORT BUNDLE</div>
+        <div className="settings-diagnostics-export__heading">
+          <div>
+            <h2 id="diagnostics-title">导出脱敏诊断</h2>
+            <p>生成一份可人工检查和共享的本地 JSON，用于定位 Runtime、更新器与桌面进程问题。</p>
+          </div>
+          <button
+            type="button"
+            className="settings-diagnostics-export__button"
+            disabled={exportState.kind === 'exporting'}
+            aria-describedby="diagnostics-privacy diagnostics-status"
+            onClick={() => void handleExport()}
+          >
+            <Download size={15} aria-hidden="true" />
+            {exportState.kind === 'exporting' ? '正在导出' : '导出诊断 JSON'}
+          </button>
+        </div>
+      </section>
+
+      <div className="settings-diagnostics-export__ledger" aria-label="诊断导出隐私范围">
+        <div>
+          <span>INCLUDED</span>
+          <strong>运行状态、更新器证据、脱敏事件</strong>
+          <p>仅保留故障定位所需的结构化元数据。</p>
+        </div>
+        <div>
+          <span>EXCLUDED</span>
+          <strong>API Key、原始提示词、原始消息内容</strong>
+          <p>敏感字段与用户目录会在写盘前清理。</p>
+        </div>
+        <div>
+          <span>RETENTION</span>
+          <strong>最多 20 条 / 14 天</strong>
+          <p>崩溃记录只保存在本机，并按期限自动清理。</p>
+        </div>
+      </div>
+
+      <p id="diagnostics-privacy" className="settings-note">
+        诊断包不会自动上传。保存前可选择路径，保存后可用文本编辑器检查全部内容。
+      </p>
+      <div
+        id="diagnostics-status"
+        className={clsx(
+          'settings-diagnostics-export__status',
+          exportState.kind === 'error' && 'is-error',
+          exportState.kind === 'saved' && 'is-saved',
+        )}
+        role={status?.role}
+        aria-live="polite"
+      >
+        {status?.text ?? '尚未创建诊断包。'}
+      </div>
+    </div>
+  );
+}
+
 function AboutSection() {
   return (
     <div className="settings-scroll settings-standard-pane">
@@ -441,9 +691,10 @@ function AboutSection() {
         <div>
           <h2>Sync-Think</h2>
           <p>AI 工作助手 · 多智能体编排工作台</p>
-          <span>版本 0.1.0-dev</span>
+          <span>桌面端发布与更新控制面</span>
         </div>
       </div>
+      <DesktopUpdatePanel />
       <div className="settings-rows">
         <SettingRow title="运行环境" description="Electron + Node.js" />
         <SettingRow title="界面框架" description="React + Tailwind v4" />

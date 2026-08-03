@@ -1,5 +1,4 @@
-﻿// Electron main entry. UI lifecycle is decoupled from the Runtime by design 闁?
-// the Runtime runs as a separate process and survives UI restarts (閹?6).
+// Electron main entry. UI lifecycle is decoupled from the Runtime by design — the Runtime runs as a separate process and survives UI restarts (ADR-006).
 // The main process owns the safe-storage-based credential broker (TD-005).
 //
 // Phase 0: this file is type-only; the binary itself is blocked on installing
@@ -14,6 +13,8 @@ import {
   ipcMain,
   nativeTheme,
   protocol,
+  safeStorage,
+  session,
   shell,
 } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
@@ -21,6 +22,17 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import {
+  createDesktopDiagnosticsBundle,
+  DEFAULT_KNOWN_LIMITATIONS,
+  DEFAULT_RECOVERY_INSTRUCTIONS,
+  DesktopCrashJournal,
+  writeDesktopDiagnosticsBundle,
+} from './diagnostics-export.js';
+import {
+  parseExportDesktopDiagnosticsPayload,
+  type ExportDesktopDiagnosticsResponse,
+} from '../diagnostics-export-contract.js';
 import { FileRuntimeActivityCursorStore } from './runtime-activity-cursor-store.js';
 import {
   isAllowedM1OpenDocId,
@@ -30,14 +42,8 @@ import {
   type M1OpenDocId,
 } from './m1-open-doc.js';
 import { listProjectFiles } from './project-files.js';
-import {
-  ProjectContentSearchRegistry,
-  searchProjectContent,
-} from './project-content-search.js';
-import {
-  parseProjectTerminalCommand,
-  resolveProjectTerminalCwd,
-} from './project-terminal.js';
+import { ProjectContentSearchRegistry, searchProjectContent } from './project-content-search.js';
+import { parseProjectTerminalCommand, resolveProjectTerminalCwd } from './project-terminal.js';
 import {
   ProjectTerminalRegistry,
   type ProjectTerminalReservation,
@@ -64,6 +70,7 @@ import type {
   AppendMessageResponse,
   CancelRunPayload,
   Frame,
+  GetArtifactVersionResponse,
 } from '@sync-think/protocol';
 import {
   parseArchiveTaskPayload,
@@ -132,11 +139,22 @@ import {
   parseDecideApprovalPayload,
 } from '../approval-payloads.js';
 import {
+  parseCancelBrowserHandoffPayload,
+  parseContinueBrowserHandoffPayload,
+  parseListWaitingBrowserHandoffsPayload,
+} from '../browser-handoff-payloads.js';
+import {
+  parseCancelDesktopCommandPayload,
+  parseContinueDesktopCommandPayload,
+  parseListWaitingDesktopCommandsPayload,
+} from '../desktop-command-payloads.js';
+import {
   parsePeekContextPacketPayload,
   parseAmendContextPacketPayload,
 } from '../context-payloads.js';
 import {
   parseArtifactComparePayload,
+  parseArtifactImagePreviewPayload,
   parseArtifactConflictListPayload,
   parseArtifactConflictResolutionPayload,
   parseArtifactListPayload,
@@ -185,6 +203,7 @@ import {
   parseConversationSubmitBrowserResultPayload,
 } from '../team-payloads.js';
 import type { Event } from '@sync-think/shared';
+import { ElectronSafeStorageBackend, SecureStore } from '@sync-think/secure-store';
 import {
   assertTrustedRendererIpcSource,
   installNavigationGuards,
@@ -193,9 +212,35 @@ import {
   trustedFileLocation,
 } from './renderer-security.js';
 import type { TrustedRendererLocation } from './renderer-security.js';
+import {
+  DesktopUpdateController,
+  resolveDesktopUpdateConfiguration,
+  type DesktopUpdateConfiguration,
+} from './desktop-updater.js';
+import { createElectronUpdaterDriver } from './electron-updater-driver.js';
+import {
+  DesktopUpdateRollbackCoordinator,
+  resolveDesktopUpdateRecoveryRoot,
+} from './desktop-update-rollback-coordinator.js';
+import {
+  desktopUpdateInstallProbeHandoffPath,
+  resolveDesktopUpdateInstallProbeBootstrap,
+  runDesktopUpdateInstallProbe,
+  writeDesktopUpdateInstallProbeHandoff,
+} from './desktop-update-install-probe.js';
 import { classifyRuntimeConnectError, RuntimePipeClient } from './runtime-client.js';
 import { RuntimeSession } from './runtime-session.js';
-import { ensureRuntimeProcess, stopManagedRuntime } from './runtime-supervisor.js';
+import {
+  ensureRuntimeProcess,
+  resolveManagedRuntimeDatabasePath,
+  stopManagedRuntime,
+} from './runtime-supervisor.js';
+import { ArtifactImagePreviewRegistry } from './artifact-image-preview.js';
+import {
+  describeDesktopRuntimeIdentity,
+  resolveDesktopRuntimeIdentity,
+  type DesktopRuntimeIdentity,
+} from './packaged-install-identity.js';
 import { stageChatImageDataUrl } from './image-staging.js';
 import { messageImageUrl, persistMessageImages, readMessageImage } from './message-images.js';
 import type { RuntimeConnectOutcome, RuntimeConnectResult } from '../runtime-bridge-contract.js';
@@ -215,22 +260,97 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-const INSTALL_ID = process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001';
+const defaultDesktopUserDataPath = app.getPath('userData');
+const desktopUpdateInstallProbeHandoff = desktopUpdateInstallProbeHandoffPath(
+  defaultDesktopUserDataPath,
+);
+const desktopUpdateInstallProbeBootstrap = resolveDesktopUpdateInstallProbeBootstrap({
+  rawConfiguration: process.env.SYNC_THINK_UPDATE_INSTALL_E2E_CONFIG,
+  handoffPath: desktopUpdateInstallProbeHandoff,
+  executablePath: process.execPath,
+});
+for (const [key, value] of Object.entries(desktopUpdateInstallProbeBootstrap?.environment ?? {})) {
+  process.env[key] = value;
+}
+const desktopUpdateInstallProbeConfiguration =
+  desktopUpdateInstallProbeBootstrap?.configuration ?? null;
+if (desktopUpdateInstallProbeConfiguration) {
+  app.setPath('userData', desktopUpdateInstallProbeConfiguration.userDataPath);
+}
+const artifactImagePreviewRegistry = new ArtifactImagePreviewRegistry(
+  path.join(path.dirname(resolveManagedRuntimeDatabasePath()), 'artifacts', 'generated-images'),
+);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const desktopCrashJournal = new DesktopCrashJournal({
+  root: path.join(app.getPath('userData'), 'diagnostics', 'crashes'),
+  homeDirectory: app.getPath('home'),
+});
 
 let mainWindow: BrowserWindow | null = null;
 let trustedRendererLocation: TrustedRendererLocation | null = null;
 let runtimeClient: RuntimePipeClient | null = null;
+let desktopRuntimeIdentity: DesktopRuntimeIdentity | null = null;
+let shutdownStarted = false;
+let runtimeShutdownComplete = false;
 let runtimeSession: RuntimeSession | null = null;
+let desktopUpdateController: DesktopUpdateController | null = null;
+let desktopUpdateRollbackCoordinator: DesktopUpdateRollbackCoordinator | null = null;
+let desktopUpdateRollbackHealthPromise: Promise<void> | null = null;
+let desktopShutdownPromise: Promise<void> | null = null;
 const transientCleanupRegisteredSenders = new Set<number>();
 const projectFileWatchCleanupRegisteredSenders = new Set<number>();
-const projectFileWatchSubscriptions = new Map<
-  string,
-  { senderId: number; dispose: () => void }
->();
+const projectFileWatchSubscriptions = new Map<string, { senderId: number; dispose: () => void }>();
 const projectTerminalCleanupRegisteredSenders = new Set<number>();
 const projectContentSearchCleanupRegisteredSenders = new Set<number>();
 const projectContentSearchRegistry = new ProjectContentSearchRegistry();
+
+function recordDesktopCrashEvidence(input: {
+  source: 'main' | 'renderer' | 'runtime' | 'worker' | 'updater';
+  kind: string;
+  summary: string;
+  detail?: Record<string, unknown>;
+}): void {
+  void desktopCrashJournal
+    .append({
+      source: input.source,
+      kind: input.kind,
+      summary: input.summary,
+      detail: input.detail ?? {},
+    })
+    .catch((error: unknown) => {
+      console.warn('[desktop] crash evidence append failed', errorMessage(error));
+    });
+}
+
+process.on('uncaughtExceptionMonitor', (error, origin) => {
+  recordDesktopCrashEvidence({
+    source: 'main',
+    kind: 'uncaught-exception',
+    summary: error.message,
+    detail: { name: error.name, stack: error.stack, origin },
+  });
+});
+process.on('unhandledRejection', (reason) => {
+  recordDesktopCrashEvidence({
+    source: 'main',
+    kind: 'unhandled-rejection',
+    summary: errorMessage(reason),
+    detail: reason instanceof Error ? { name: reason.name, stack: reason.stack } : { reason },
+  });
+});
+app.on('child-process-gone', (_event, details) => {
+  recordDesktopCrashEvidence({
+    source: details.type === 'Utility' ? 'worker' : 'runtime',
+    kind: 'child-process-gone',
+    summary: `${details.type} process ended: ${details.reason}`,
+    detail: {
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      name: details.name,
+    },
+  });
+});
 
 interface ActiveProjectTerminalCommand {
   senderId: number;
@@ -243,6 +363,131 @@ interface ActiveProjectTerminalCommand {
 }
 
 const projectTerminalRegistry = new ProjectTerminalRegistry<ActiveProjectTerminalCommand>();
+
+function initializeDesktopUpdater(): void {
+  const recoveryRoot = app.isPackaged ? resolveDesktopUpdateRecoveryRoot(process.env) : null;
+  if (recoveryRoot) {
+    const unsignedFixture =
+      desktopUpdateInstallProbeConfiguration !== null &&
+      process.env.SYNC_THINK_UPDATE_ROLLBACK_ALLOW_UNSIGNED_FIXTURE === '1';
+    const fixtureTimeout = Number(process.env.SYNC_THINK_UPDATE_ROLLBACK_HEALTH_TIMEOUT_MS);
+    desktopUpdateRollbackCoordinator = new DesktopUpdateRollbackCoordinator({
+      recoveryRoot,
+      currentVersion: app.getVersion(),
+      allowUnsignedFixture: unsignedFixture,
+      expectedSignerThumbprint: process.env.SYNC_THINK_WINDOWS_EXPECTED_SIGNER_SHA1 ?? null,
+      ...(unsignedFixture && Number.isInteger(fixtureTimeout)
+        ? { healthDeadlineMs: fixtureTimeout }
+        : {}),
+    });
+  }
+
+  const resolved = resolveDesktopUpdateConfiguration(process.env, {
+    isPackaged: app.isPackaged,
+  });
+  let configuration: DesktopUpdateConfiguration = resolved;
+  let driver = null;
+  if (resolved.enabled) {
+    try {
+      driver = createElectronUpdaterDriver(resolved);
+    } catch {
+      configuration = {
+        enabled: false,
+        channel: resolved.channel,
+        errorCode: 'desktop.update.initialization-failed',
+      };
+    }
+  }
+  desktopUpdateController = new DesktopUpdateController({
+    currentVersion: app.getVersion(),
+    configuration,
+    driver,
+    beforeInstall: async (context) => {
+      await desktopUpdateRollbackCoordinator?.prepareInstall({
+        targetVersion: context.targetVersion,
+        downloadedFile: context.downloadedFile,
+      });
+      await shutdownDesktopServices();
+    },
+    installSilently: desktopUpdateInstallProbeConfiguration !== null,
+  });
+  desktopUpdateController.subscribe((snapshot) => {
+    const target = mainWindow?.webContents;
+    if (target && !target.isDestroyed()) target.send('desktop:update-state', snapshot);
+  });
+}
+
+function normalizeDesktopUpdateProbeCertificateData(value: string): string {
+  return value.replace(/\s+/g, '');
+}
+
+function prepareDesktopUpdateInstallProbeCertificate(): void {
+  const configuration = desktopUpdateInstallProbeConfiguration;
+  if (
+    desktopUpdateInstallProbeBootstrap?.source !== 'environment' ||
+    !configuration?.trustedCertificateData
+  ) {
+    return;
+  }
+  const feedUrl = process.env.SYNC_THINK_UPDATE_FEED_URL;
+  if (!feedUrl) throw new Error('desktop.update.probe-feed-missing');
+  const trustedHostname = new URL(feedUrl).hostname;
+  const trustedCertificateData = normalizeDesktopUpdateProbeCertificateData(
+    configuration.trustedCertificateData,
+  );
+  const updaterSession = session.fromPartition('electron-updater', { cache: false });
+  updaterSession.setCertificateVerifyProc((request, callback) => {
+    const accepted =
+      request.hostname === trustedHostname &&
+      normalizeDesktopUpdateProbeCertificateData(request.certificate?.data ?? '') ===
+        trustedCertificateData;
+    callback(accepted ? 0 : -2);
+  });
+}
+
+async function maybeRunDesktopUpdateInstallProbe(): Promise<void> {
+  const configuration = desktopUpdateInstallProbeConfiguration;
+  if (!configuration) return;
+  const controller = getDesktopUpdateController();
+  await runDesktopUpdateInstallProbe({
+    configuration,
+    currentVersion: app.getVersion(),
+    controller,
+    ensureRuntimeReady: async () => {
+      await ensureRuntimeConnection();
+    },
+    createMarker: async (name) => {
+      const created = await getRuntimeClient().request<{ workspaceId: string }>(
+        'workspace.create',
+        {
+          name,
+        },
+      );
+      return created.workspaceId;
+    },
+    markerExists: async (name, markerId) => {
+      const listed = await getRuntimeClient().request<{
+        workspaces: Array<{ workspaceId: string; name: string }>;
+      }>('workspace.list', {});
+      return listed.workspaces.some(
+        (workspace) => workspace.name === name && (!markerId || workspace.workspaceId === markerId),
+      );
+    },
+    prepareInstallRelaunch: async () => {
+      await writeDesktopUpdateInstallProbeHandoff({
+        handoffPath: desktopUpdateInstallProbeHandoff,
+        executablePath: process.execPath,
+        configuration,
+        environment: process.env,
+      });
+    },
+  });
+}
+
+function getDesktopUpdateController(): DesktopUpdateController {
+  if (!desktopUpdateController) throw new Error('desktop.update.not-initialized');
+  return desktopUpdateController;
+}
 
 function createWindow(): void {
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -264,6 +509,7 @@ function createWindow(): void {
     width: 1440,
     height: 900,
     minWidth: 1280,
+    icon: path.join(__dirname, '../../build/icon.png'),
     show: false,
     autoHideMenuBar: true,
     // Match resolved OS theme so light mode does not flash a dark frame.
@@ -275,15 +521,14 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: false,
-      // 内置浏览器面板（右栏）使用 <webview> 承载公网页面；guest 权限在
-      // will-attach-webview 中强制收紧（无 node、无 preload、强制沙箱）。
+      // Embedded browser guests never receive Node.js or a preload bridge.
       webviewTag: true,
     },
   });
   mainWindow = window;
   trustedRendererLocation = nextTrustedRendererLocation;
   installNavigationGuards(window.webContents, nextTrustedRendererLocation);
-  // 内置浏览器 guest 安全闸门：剥离任何提权配置，只允许 http(s) 页面。
+  // Harden every embedded webview before Electron creates its guest contents.
   window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
     delete (webPreferences as { preload?: string }).preload;
     webPreferences.nodeIntegration = false;
@@ -299,6 +544,20 @@ function createWindow(): void {
   });
   window.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
     console.error('[desktop] renderer load failed', errorCode, errorDescription);
+    recordDesktopCrashEvidence({
+      source: 'renderer',
+      kind: 'load-failed',
+      summary: errorDescription,
+      detail: { errorCode },
+    });
+  });
+  window.webContents.on('render-process-gone', (_event, details) => {
+    recordDesktopCrashEvidence({
+      source: 'renderer',
+      kind: 'render-process-gone',
+      summary: `Renderer process ended: ${details.reason}`,
+      detail: { reason: details.reason, exitCode: details.exitCode },
+    });
   });
   window.once('ready-to-show', () => window.show());
   const load = parsedDevServerUrl
@@ -321,15 +580,56 @@ function handleRendererLoadFailure(window: BrowserWindow, error: unknown): void 
 }
 
 function handleDesktopStartupFailure(error: unknown): void {
-  console.error('[desktop] startup failed', errorMessage(error));
+  const message = errorMessage(error);
+  const code =
+    error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : 'DESKTOP_STARTUP_FAILED';
+  console.error('[desktop] startup failed', { code, message });
+  if (app.isReady()) dialog.showErrorBox('SYNC-THINK 启动失败', `${message}\n\n错误代码：${code}`);
   app.quit();
 }
 
+function getDesktopRuntimeIdentity(): DesktopRuntimeIdentity {
+  if (!desktopRuntimeIdentity) {
+    throw Object.assign(new Error('Desktop Runtime identity has not been initialized'), {
+      code: 'DESKTOP_RUNTIME_IDENTITY_NOT_READY',
+    });
+  }
+  return desktopRuntimeIdentity;
+}
+
+async function initializeDesktopRuntimeIdentity(): Promise<void> {
+  const userDataPath = app.getPath('userData');
+  const secretStore = app.isPackaged
+    ? new SecureStore(
+        new ElectronSafeStorageBackend(
+          {
+            encrypt: (plaintext) => safeStorage.encryptString(plaintext).toString('base64'),
+            decrypt: (ciphertext) => safeStorage.decryptString(Buffer.from(ciphertext, 'base64')),
+          },
+          path.join(userDataPath, 'secure-store', 'runtime-identity'),
+        ),
+      )
+    : undefined;
+  desktopRuntimeIdentity = await resolveDesktopRuntimeIdentity({
+    isPackaged: app.isPackaged,
+    userDataPath,
+    environment: process.env,
+    secretStore,
+  });
+  console.log(
+    '[desktop] runtime identity ready',
+    describeDesktopRuntimeIdentity(desktopRuntimeIdentity),
+  );
+}
+
 function getRuntimeClient(): RuntimePipeClient {
+  const identity = getDesktopRuntimeIdentity();
   runtimeClient ??= new RuntimePipeClient({
-    installId: INSTALL_ID,
+    installId: identity.installId,
     appVersion: app.getVersion(),
-    helloSecret: process.env.SYNC_THINK_PIPE_SECRET,
+    helloSecret: identity.pipeSecret,
   });
   return runtimeClient;
 }
@@ -516,7 +816,7 @@ async function streamProjectTerminalCommand(
   }
 }
 
-// ─── Deep links (syncthink://conversation/{id}) ───────────────────────────
+// ─── Deep links (syncthink://conversation/{id}) ───
 // A conversation id that arrives before the renderer is ready (cold start) or
 // before the trusted renderer URL is registered is queued here and flushed
 // once the window reports it is ready.
@@ -560,15 +860,37 @@ function getRuntimeSession(): RuntimeSession {
 async function ensureRuntimeConnection(): Promise<RuntimeConnectResult> {
   // Every IPC path that needs Runtime must tolerate cold start without a
   // pre-launched `pnpm dev:runtime`.
-  await ensureRuntimeProcess(INSTALL_ID);
-  return getRuntimeSession().connect();
+  await ensureRuntimeProcess(getDesktopRuntimeIdentity());
+  const result = await getRuntimeSession().connect();
+  markDesktopUpdateRollbackHealthy();
+  return result;
+}
+
+function markDesktopUpdateRollbackHealthy(): void {
+  if (!desktopUpdateRollbackCoordinator || desktopUpdateRollbackHealthPromise) return;
+  if (
+    desktopUpdateInstallProbeConfiguration !== null &&
+    process.env.SYNC_THINK_UPDATE_ROLLBACK_FAIL_VERSION === app.getVersion()
+  ) {
+    console.log('[desktop] update rollback health intentionally suppressed', app.getVersion());
+    return;
+  }
+  desktopUpdateRollbackHealthPromise = desktopUpdateRollbackCoordinator
+    .markRuntimeHealthy()
+    .then((status) => {
+      console.log('[desktop] update rollback health', status);
+    })
+    .catch((error: unknown) => {
+      desktopUpdateRollbackHealthPromise = null;
+      console.error('[desktop] update rollback health failed', errorMessage(error));
+    });
 }
 
 async function connectRendererToRuntime(): Promise<RuntimeConnectOutcome> {
   try {
     // Auto-start the local Runtime pipe process when missing (dev + future release).
-    // Without this, cold start shows「加载中…」forever if `pnpm dev:runtime` wasn't launched.
-    const supervised = await ensureRuntimeProcess(INSTALL_ID);
+    // Without this, cold start shows「加载中…」forever if pnpm dev:runtime wasn't launched.
+    const supervised = await ensureRuntimeProcess(getDesktopRuntimeIdentity());
     if (!supervised.ready) {
       return {
         ok: false,
@@ -582,7 +904,7 @@ async function connectRendererToRuntime(): Promise<RuntimeConnectOutcome> {
   } catch (error) {
     // One more ensure+retry: race where pipe appears mid-handshake.
     try {
-      await ensureRuntimeProcess(INSTALL_ID);
+      await ensureRuntimeProcess(getDesktopRuntimeIdentity());
       return { ok: true, result: await ensureRuntimeConnection() };
     } catch {
       return { ok: false, error: classifyRuntimeConnectError(error) };
@@ -729,6 +1051,23 @@ function assertRuntimeIpcSource(event: IpcMainInvokeEvent): void {
 }
 
 function setupRuntimeBridge(): void {
+  ipcMain.handle('desktop:update-get-state', (event) => {
+    assertRuntimeIpcSource(event);
+    return getDesktopUpdateController().getSnapshot();
+  });
+  ipcMain.handle('desktop:update-check', async (event) => {
+    assertRuntimeIpcSource(event);
+    return getDesktopUpdateController().checkForUpdates();
+  });
+  ipcMain.handle('desktop:update-download', async (event) => {
+    assertRuntimeIpcSource(event);
+    return getDesktopUpdateController().downloadUpdate();
+  });
+  ipcMain.handle('desktop:update-install', async (event) => {
+    assertRuntimeIpcSource(event);
+    return getDesktopUpdateController().installUpdate();
+  });
+
   ipcMain.handle('runtime:connect', (event) => {
     assertRuntimeIpcSource(event);
     return connectRendererToRuntime();
@@ -880,6 +1219,21 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('artifact.list', parseArtifactListPayload(value));
+  });
+  ipcMain.handle('runtime:artifact-image-preview', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    const payload = parseArtifactImagePreviewPayload(value);
+    const response = await getRuntimeClient().request<GetArtifactVersionResponse>(
+      'artifact.getVersion',
+      payload,
+    );
+    return artifactImagePreviewRegistry.register({
+      artifactVersionId: String(response.version.id),
+      contentRef: response.version.contentRef,
+      contentHash: response.version.contentHash,
+      mimeType: response.version.mimeType,
+    });
   });
   ipcMain.handle('runtime:artifact-compare', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -1260,7 +1614,7 @@ function setupRuntimeBridge(): void {
       parseConversationDecideToolApprovalPayload(value),
     );
   });
-  // AI 浏览器命令（browser_click/type/read/screenshot）的渲染层结果回传通道。
+  // Renderer-to-Runtime result channel for browser commands.
   ipcMain.handle('runtime:conversation-submit-browser-result', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -1269,8 +1623,8 @@ function setupRuntimeBridge(): void {
       parseConversationSubmitBrowserResultPayload(value),
     );
   });
-  // AI browser_screenshot：主进程对 webview guest capturePage 并把 PNG 写入
-  // 项目文件夹 .sync-think/screenshots/（仅项目内、带时间戳文件名）。
+  // AI browser_screenshot：主进程对 webview guest 执行 capturePage，并把 PNG 写入
+  // Capture the current embedded browser page into the project screenshot directory.
   ipcMain.handle('desktop:save-browser-screenshot', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -1285,31 +1639,31 @@ function setupRuntimeBridge(): void {
     }
     const root = path.resolve(payload.root);
     if (!fs.existsSync(root)) {
-      return { ok: false, error: '项目文件夹不存在。' };
+      return { ok: false, error: '项目文件夹不存在' };
     }
     const { webContents: webContentsModule } = await import('electron');
     const guest = webContentsModule.fromId(payload.webContentsId);
     if (!guest || guest.isDestroyed()) {
-      return { ok: false, error: '浏览器页面不可用（webview 已销毁或未加载）。' };
+      return { ok: false, error: '浏览器页面不存在或已关闭' };
     }
-    // 只允许截取本窗口挂载的 <webview> guest（http/https 页面），拒绝任意 id。
+    // Only capture a live http(s) webview guest owned by this BrowserWindow.
     const guestUrl = guest.getURL();
     if (guest.getType() !== 'webview' || !/^https?:\/\//i.test(guestUrl)) {
-      return { ok: false, error: '目标不是内置浏览器页面，已拒绝截图。' };
+      return { ok: false, error: '仅支持当前 http(s) WebView 页面截图' };
     }
     try {
       const image = await guest.capturePage();
       if (image.isEmpty()) {
-        return { ok: false, error: '截图为空：页面尚未渲染完成。' };
+        return { ok: false, error: '截图内容为空' };
       }
       const dir = path.join(root, '.sync-think', 'screenshots');
       fs.mkdirSync(dir, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
       const fileName = `browser-${stamp}-${Math.random().toString(36).slice(2, 6)}.png`;
       const absolute = path.join(dir, fileName);
-      // Escape guard（防御性——dir 由本进程拼接，仍然校验一次）。
+      // Defense in depth: the generated path must remain inside the project root.
       if (!absolute.startsWith(root + path.sep)) {
-        return { ok: false, error: '截图路径越界，已拒绝。' };
+        return { ok: false, error: '截图路径超出项目目录' };
       }
       fs.writeFileSync(absolute, image.toPNG());
       const relativePath = path.relative(root, absolute).split(path.sep).join('/');
@@ -1438,6 +1792,55 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request('memory.decide', parseDecideMemoryPayload(value));
   });
 
+  ipcMain.handle('runtime:desktop-command-list-waiting', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'desktop.command.listWaiting',
+      parseListWaitingDesktopCommandsPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:desktop-command-continue', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'desktop.command.continue',
+      parseContinueDesktopCommandPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:desktop-command-cancel', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'desktop.command.cancel',
+      parseCancelDesktopCommandPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-handoff-list-waiting', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.handoff.listWaiting',
+      parseListWaitingBrowserHandoffsPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-handoff-continue', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.handoff.continue',
+      parseContinueBrowserHandoffPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-handoff-cancel', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.handoff.cancel',
+      parseCancelBrowserHandoffPayload(value),
+    );
+  });
+
   ipcMain.handle('runtime:approval-list', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -1481,6 +1884,86 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('diagnostics.list', parseListDiagnosticsPayload(value));
   });
+  ipcMain.handle(
+    'desktop:diagnostics-export',
+    async (event, value: unknown): Promise<ExportDesktopDiagnosticsResponse> => {
+      assertRuntimeIpcSource(event);
+      const payload = parseExportDesktopDiagnosticsPayload(value);
+      let runtime: Record<string, unknown> | null = null;
+      let diagnostics: unknown[] = [];
+      try {
+        await ensureRuntimeConnection();
+        const client = getRuntimeClient();
+        const health = await client.request<Record<string, unknown>>('runtime.healthcheck', {});
+        const listed = await client.request<{ diagnostics?: unknown[] }>(
+          'diagnostics.list',
+          parseListDiagnosticsPayload({ taskId: payload.taskId, runId: payload.runId, limit: 200 }),
+        );
+        runtime = { available: true, ...health };
+        diagnostics = Array.isArray(listed.diagnostics) ? listed.diagnostics : [];
+      } catch (error) {
+        runtime = {
+          available: false,
+          failure: classifyRuntimeConnectError(error),
+          message: errorMessage(error),
+        };
+      }
+
+      const crashReports = await desktopCrashJournal.list();
+      const updater = desktopUpdateController
+        ? {
+            state: desktopUpdateController.getSnapshot(),
+            recoveryEvidence: desktopUpdateController.getRecoveryEvidence(),
+          }
+        : null;
+      const bundle = createDesktopDiagnosticsBundle({
+        homeDirectory: app.getPath('home'),
+        application: {
+          name: app.getName(),
+          version: app.getVersion(),
+          packaged: app.isPackaged,
+          platform: process.platform,
+          architecture: process.arch,
+          locale: app.getLocale(),
+          installId: process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001',
+        },
+        runtime,
+        updater,
+        diagnostics,
+        crashReports,
+        knownLimitations: DEFAULT_KNOWN_LIMITATIONS,
+        recoveryInstructions: DEFAULT_RECOVERY_INSTRUCTIONS,
+      });
+      const stamp = bundle.generatedAt.replace(/[:.]/g, '-');
+      const options = {
+        title: '导出脱敏诊断',
+        defaultPath: path.join(app.getPath('downloads'), `sync-think-diagnostics-${stamp}.json`),
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+        properties: ['createDirectory', 'showOverwriteConfirmation'] as Array<
+          'createDirectory' | 'showOverwriteConfirmation'
+        >,
+      };
+      const selected = mainWindow
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options);
+      if (selected.canceled || !selected.filePath) {
+        return {
+          status: 'cancelled',
+          diagnosticCount: diagnostics.length,
+          crashReportCount: crashReports.length,
+          generatedAt: bundle.generatedAt,
+        };
+      }
+      await writeDesktopDiagnosticsBundle(selected.filePath, bundle);
+      return {
+        status: 'saved',
+        path: selected.filePath,
+        diagnosticCount: diagnostics.length,
+        crashReportCount: crashReports.length,
+        generatedAt: bundle.generatedAt,
+      };
+    },
+  );
   ipcMain.handle('desktop:m1-exit-evidence', async (event) => {
     assertRuntimeIpcSource(event);
     // Resolve repo docs/ from packaged or monorepo layouts (never follow arbitrary paths).
@@ -1518,7 +2001,7 @@ function setupRuntimeBridge(): void {
         dogfoodFileCount: 0,
         dogfoodRealDays: 0,
         dualAutomatedOk: true,
-        loadNote: '未找到 docs/development（手测清单/dogfood）',
+        loadNote: '未找到 docs/development，无法读取 handtest/dogfood 证据',
       };
     }
 
@@ -1669,8 +2152,7 @@ function setupRuntimeBridge(): void {
     return { canceled: false as const, path: result.filePaths[0]! };
   });
 
-  // 能力中心：从公网 URL 下载 SKILL.md 文本（renderer CSP 禁止直连外网）。
-  // 只取文本、限制大小；导入校验仍在 Runtime（skill.import 只解析不执行）。
+  // Fetch a bounded public SKILL.md document; Runtime still validates imports.
   ipcMain.handle('desktop:fetch-skill-md', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -1689,7 +2171,7 @@ function setupRuntimeBridge(): void {
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
       throw new Error('仅支持 http(s) 链接');
     }
-    // GitHub blob 页面自动换成 raw 内容地址，方便直接粘贴网页链接。
+    // Convert GitHub blob URLs to raw content URLs.
     if (parsed.hostname === 'github.com') {
       const m = /^\/([^/]+)\/([^/]+)\/blob\/(.+)$/.exec(parsed.pathname);
       if (m) {
@@ -1823,11 +2305,7 @@ function setupRuntimeBridge(): void {
       const parsed = parseProjectTerminalCommand(payload.commandLine);
       const commandId = randomUUID();
       if (parsed.kind === 'cd') {
-        const resolved = await resolveProjectTerminalCwd(
-          payload.root,
-          cwdInput,
-          parsed.path,
-        );
+        const resolved = await resolveProjectTerminalCwd(payload.root, cwdInput, parsed.path);
         if (event.sender.isDestroyed() || reservation.controller.signal.aborted) {
           throw new Error('Terminal start was cancelled during validation');
         }
@@ -1894,7 +2372,7 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request('run.cancel', parseCancelRunPayload(value));
   });
 
-  // 文件 Pane：读取文本及乐观并发元数据；真实路径边界由服务统一校验。
+  // Read a project file through the canonical project-root boundary.
   ipcMain.handle('desktop:read-project-file', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -1978,9 +2456,8 @@ function setupRuntimeBridge(): void {
     const key = projectFileWatchKey(event.sender.id, subscriptionId);
     projectFileWatchSubscriptions.get(key)?.dispose();
     projectFileWatchSubscriptions.delete(key);
-    const dispose = await watchProjectFile(
-      { root: payload.root, path: payload.path },
-      (change) => sendProjectFileChangeToRenderer(event.sender, subscriptionId, change),
+    const dispose = await watchProjectFile({ root: payload.root, path: payload.path }, (change) =>
+      sendProjectFileChangeToRenderer(event.sender, subscriptionId, change),
     );
     if (event.sender.isDestroyed()) {
       dispose();
@@ -2012,7 +2489,7 @@ function setupRuntimeBridge(): void {
     return { subscriptionId: payload.subscriptionId.trim() };
   });
 
-  // 右栏「文件」面板树形视图：列出项目内单层目录（懒加载展开，防目录穿越）。
+  // Lazily enumerate one project directory level without following escapes.
   ipcMain.handle('desktop:list-project-dir', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -2074,8 +2551,7 @@ function setupRuntimeBridge(): void {
     }
   });
 
-  // 右栏「工作区」面板：切换分支。未提交更改必须显式选择处理方式——
-  // strategy: 'check'（仅探测，脏则拒绝）| 'stash'（git stash -u 后切换）| 'force'（仍带走更改直接切换）。
+  // Switch branches only after the Renderer explicitly selects dirty-worktree handling.
   ipcMain.handle('desktop:git-checkout', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -2106,7 +2582,7 @@ function setupRuntimeBridge(): void {
       payload.strategy === 'stash' || payload.strategy === 'force' ? payload.strategy : 'check';
     const root = path.resolve(payload.root);
     if (!fs.existsSync(root)) {
-      return { ok: false, error: '项目目录不存在', dirty: false, changes: [] };
+      return { ok: false, error: '项目文件夹不存在', dirty: false, changes: [] };
     }
     const { execFile } = await import('node:child_process');
     const run = (args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> =>
@@ -2126,7 +2602,7 @@ function setupRuntimeBridge(): void {
       .slice(0, 100)
       .map((line) => ({ status: line.slice(0, 2).trim(), path: line.slice(3).trim() }));
     if (changes.length > 0 && strategy === 'check') {
-      // Dirty worktree → UI must ask the user first (stash or carry over).
+      // Dirty worktree: UI must ask the user first (stash or carry over).
       return { ok: false, dirty: true, changes, error: null };
     }
     if (changes.length > 0 && strategy === 'stash') {
@@ -2136,19 +2612,19 @@ function setupRuntimeBridge(): void {
           ok: false,
           dirty: true,
           changes,
-          error: `暂存失败：${stash.stderr.trim() || '未知错误'}`,
+          error: `保存 stash 失败：${stash.stderr.trim() || '未知错误'}`,
         };
       }
     }
     const checkout = await run(['checkout', branch]);
     if (!checkout.ok) {
-      // Stash already happened (if requested) — surface the stash so the user can recover.
+      // Stash already happened (if requested); surface it so the user can recover.
       const detail = checkout.stderr.trim() || checkout.stdout.trim() || '未知错误';
       return {
         ok: false,
         dirty: false,
         changes: [],
-        error: `切换失败：${detail}${strategy === 'stash' && changes.length > 0 ? '（你的更改已存入 git stash，可用 git stash pop 恢复）' : ''}`,
+        error: `切换分支失败：${detail}${strategy === 'stash' && changes.length > 0 ? '；更改已保存到 stash，可用 git stash pop 恢复' : ''}`,
       };
     }
     return {
@@ -2160,7 +2636,7 @@ function setupRuntimeBridge(): void {
     };
   });
 
-  // 右栏「工作区」面板：git 分支 / 状态摘要（只读命令，无 shell）。
+  // Read-only Git branch, status, and recent-commit summary for the workspace panel.
   ipcMain.handle('desktop:git-info', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -2213,12 +2689,14 @@ function setupRuntimeBridge(): void {
 
 void app
   .whenReady()
-  .then(() => {
-    protocol.handle('sync-think-image', (request) => {
+  .then(async () => {
+    await initializeDesktopRuntimeIdentity();
+    prepareDesktopUpdateInstallProbeCertificate();
+    initializeDesktopUpdater();
+    protocol.handle('sync-think-image', async (request) => {
       try {
         const url = new URL(request.url);
-        // AI browser_screenshot 产物：只允许读取任意项目下
-        // .sync-think/screenshots/ 目录内的 PNG（路径在 URL 中带全路径）。
+        // Serve only PNG screenshots stored under a project .sync-think/screenshots directory.
         if (url.hostname === 'screenshot') {
           const raw = decodeURIComponent(url.pathname.replace(/^\//, ''));
           const absolute = path.resolve(raw);
@@ -2236,6 +2714,24 @@ void app
               'Cache-Control': 'private, max-age=31536000, immutable',
             },
           });
+        }
+        if (url.hostname === 'artifact') {
+          const token = decodeURIComponent(url.pathname.replace(/^\//, ''));
+          if (!token || token.includes('/')) {
+            return new Response('Not found', { status: 404 });
+          }
+          const image = await artifactImagePreviewRegistry.read(token);
+          if (!image) return new Response('Not found', { status: 404 });
+          return new Response(new Uint8Array(image.data), {
+            headers: {
+              'Content-Type': image.mimeType,
+              'Cache-Control': 'private, no-store',
+              'X-Content-Type-Options': 'nosniff',
+            },
+          });
+        }
+        if (url.hostname !== 'media') {
+          return new Response('Not found', { status: 404 });
         }
         const storageRef = decodeURIComponent(url.pathname.replace(/^\//, ''));
         const image = readMessageImage(storageRef);
@@ -2255,6 +2751,12 @@ void app
     app.setAsDefaultProtocolClient('syncthink');
     setupRuntimeBridge();
     createWindow();
+    void maybeRunDesktopUpdateInstallProbe().catch((error: unknown) => {
+      console.error(
+        '[desktop] update install probe failed',
+        error instanceof Error ? error.message : 'desktop.update.probe-failed',
+      );
+    });
 
     // macOS: the OS passes a clicked syncthink:// URL here, including from a
     // second process launch while the first is running.
@@ -2304,13 +2806,32 @@ if (!gotLock) {
   }
 }
 
-app.on('before-quit', () => {
+function shutdownDesktopServices(): Promise<void> {
+  if (desktopShutdownPromise) return desktopShutdownPromise;
+  shutdownStarted = true;
   projectContentSearchRegistry.abortAll();
   abortAllProjectTerminals();
   for (const subscription of projectFileWatchSubscriptions.values()) subscription.dispose();
   projectFileWatchSubscriptions.clear();
   runtimeClient?.disconnect();
-  stopManagedRuntime();
+  runtimeClient = null;
+
+  desktopShutdownPromise = Promise.allSettled([
+    desktopUpdateController?.flushRecoveryEvidence() ?? Promise.resolve(),
+    stopManagedRuntime(),
+  ]).then((results) => {
+    runtimeShutdownComplete = true;
+    const runtimeResult = results[1];
+    if (runtimeResult?.status === 'rejected') throw runtimeResult.reason;
+  });
+  return desktopShutdownPromise;
+}
+
+app.on('before-quit', (event) => {
+  if (runtimeShutdownComplete) return;
+  event.preventDefault();
+  if (shutdownStarted) return;
+  void shutdownDesktopServices().finally(() => app.quit());
 });
 
 app.on('window-all-closed', () => {

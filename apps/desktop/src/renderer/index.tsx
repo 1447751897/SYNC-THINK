@@ -296,6 +296,16 @@ interface ConversationAgentIdentity {
 }
 
 type RightRailTab = 'overview' | 'trace' | 'graph' | 'approvals' | 'artifacts';
+type ArtifactImagePreviewState =
+  | { status: 'loading' }
+  | {
+      status: 'ready';
+      previewUrl: string;
+      mimeType: string;
+      byteLength: number;
+      contentHash: string;
+    }
+  | { status: 'error'; message: string };
 
 function taskStatusLabel(status: string): string {
   if (status === 'active') return '进行中';
@@ -606,9 +616,9 @@ function DesktopShell() {
   const leftToolButtonRefs = useRef<Partial<Record<LeftInstrumentId, HTMLButtonElement | null>>>(
     {},
   );
-  const primaryNavButtonRefs = useRef<Partial<Record<ProductPrimaryNavId, HTMLButtonElement | null>>>(
-    {},
-  );
+  const primaryNavButtonRefs = useRef<
+    Partial<Record<ProductPrimaryNavId, HTMLButtonElement | null>>
+  >({});
   const m1ObsLayout = useMemo(() => projectM1ObsLayout({ softCraftRound: 65 }), []);
   const [m1OpenDocFeedback, setM1OpenDocFeedback] = useState<{
     level: 'ok' | 'warn' | 'error';
@@ -759,6 +769,9 @@ function DesktopShell() {
   const [graphBusy, setGraphBusy] = useState(false);
   const [graphError, setGraphError] = useState<string | null>(null);
   const [artifactItems, setArtifactItems] = useState<ArtifactListItem[]>([]);
+  const [artifactImagePreviews, setArtifactImagePreviews] = useState<
+    Record<string, ArtifactImagePreviewState>
+  >({});
   const [artifactConflicts, setArtifactConflicts] = useState<ArtifactMergeConflictListItem[]>([]);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [artifactComparison, setArtifactComparison] = useState<ArtifactComparisonView | null>(null);
@@ -865,6 +878,7 @@ function DesktopShell() {
     setSelectedGraphStepId(null);
     setGraphError(null);
     setArtifactItems([]);
+    setArtifactImagePreviews({});
     setArtifactConflicts([]);
     setSelectedArtifactId(null);
     setArtifactComparison(null);
@@ -1531,10 +1545,7 @@ function DesktopShell() {
       }),
     [productShellNav.primary, agents.length, skills.length, approvalPendingCount],
   );
-  const productMainStage = useMemo(
-    () => projectMainStage(productShellNav),
-    [productShellNav],
-  );
+  const productMainStage = useMemo(() => projectMainStage(productShellNav), [productShellNav]);
 
   const leftInstrumentSwitch = useMemo(
     () =>
@@ -3010,6 +3021,7 @@ function DesktopShell() {
     ) {
       if (artifactLoadGateRef.current.isCurrent(requestToken)) {
         setArtifactItems([]);
+        setArtifactImagePreviews({});
         setArtifactConflicts([]);
         setSelectedArtifactId(null);
       }
@@ -3030,6 +3042,37 @@ function DesktopShell() {
       if (!artifactLoadGateRef.current.isCurrent(requestToken)) return;
       setArtifactItems(result.artifacts);
       setArtifactConflicts(conflictResult.conflicts);
+      const imageVersions = result.artifacts.flatMap((item) =>
+        item.versions.filter(
+          (version) => version.hasContentRef && /^image\/(?:png|jpeg|webp)$/.test(version.mimeType),
+        ),
+      );
+      setArtifactImagePreviews(
+        Object.fromEntries(
+          imageVersions.map((version) => [String(version.id), { status: 'loading' }]),
+        ),
+      );
+      const previews = await Promise.all(
+        imageVersions.map(async (version) => {
+          try {
+            const preview = await runtime.getArtifactImagePreview({
+              ...scope,
+              artifactVersionId: version.id,
+            });
+            return [String(version.id), { status: 'ready', ...preview }] as const;
+          } catch (error) {
+            return [
+              String(version.id),
+              {
+                status: 'error',
+                message: error instanceof Error ? error.message : '图片预览加载失败',
+              },
+            ] as const;
+          }
+        }),
+      );
+      if (!artifactLoadGateRef.current.isCurrent(requestToken)) return;
+      setArtifactImagePreviews(Object.fromEntries(previews));
       setSelectedArtifactId((current) =>
         result.artifacts.some((item) => String(item.artifact.id) === current)
           ? current
@@ -3921,79 +3964,79 @@ function DesktopShell() {
   };
 
   /** Instant create under a project — no modal (product path). */
-  const createTask = useCallback(async (
-    workspaceId: string,
-    options?: { parentTaskId?: string; talkTrack?: TalkTrackId },
-  ) => {
-    const runtime = window.syncThink?.runtime;
-    const parentTaskId = options?.parentTaskId;
-    const talkTrack = options?.talkTrack ?? pendingConversationTrackRef.current;
-    pendingConversationTrackRef.current = null;
-    const title = parentTaskId ? '子任务' : '新任务';
-    const goal = title;
-    setWorkspaceError(null);
+  const createTask = useCallback(
+    async (workspaceId: string, options?: { parentTaskId?: string; talkTrack?: TalkTrackId }) => {
+      const runtime = window.syncThink?.runtime;
+      const parentTaskId = options?.parentTaskId;
+      const talkTrack = options?.talkTrack ?? pendingConversationTrackRef.current;
+      pendingConversationTrackRef.current = null;
+      const title = parentTaskId ? '子任务' : '新任务';
+      const goal = title;
+      setWorkspaceError(null);
 
-    const rememberConversationTrack = (taskId: string) => {
-      if (!talkTrack || parentTaskId) return;
-      setConversationTracks((current) => {
-        const next = { ...current, [taskId]: talkTrack };
-        writeConversationTrackPreferences(next);
-        return next;
-      });
-    };
-
-    if (!runtime?.createTask) {
-      const now = new Date().toISOString();
-      const previewTask: TaskSummary = {
-        taskId: `preview-task-${Date.now()}` as never,
-        workspaceId: workspaceId as never,
-        parentTaskId: parentTaskId as TaskSummary['parentTaskId'],
-        title,
-        goal,
-        status: 'active',
-        participationMode: 'conversation',
-        taskVersion: 0,
-        threadId: `thread-preview-${Date.now()}` as never,
-        createdAt: now,
-        updatedAt: now,
+      const rememberConversationTrack = (taskId: string) => {
+        if (!talkTrack || parentTaskId) return;
+        setConversationTracks((current) => {
+          const next = { ...current, [taskId]: talkTrack };
+          writeConversationTrackPreferences(next);
+          return next;
+        });
       };
-      rememberConversationTrack(previewTask.taskId);
-      setTasksByWorkspace((prev) => upsertTaskInMap(prev, previewTask));
-      const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
-      if (workspace) {
-        applySelection({
-          taskId: previewTask.taskId,
-          workspaceId: previewTask.workspaceId,
-          threadId: previewTask.threadId,
-          title: previewTask.title,
-          goal: previewTask.goal,
-          folderPath: workspace.folderPath,
-          workspaceName: workspace.name,
-          taskVersion: 0,
+
+      if (!runtime?.createTask) {
+        const now = new Date().toISOString();
+        const previewTask: TaskSummary = {
+          taskId: `preview-task-${Date.now()}` as never,
+          workspaceId: workspaceId as never,
+          parentTaskId: parentTaskId as TaskSummary['parentTaskId'],
+          title,
+          goal,
           status: 'active',
           participationMode: 'conversation',
-        });
+          taskVersion: 0,
+          threadId: `thread-preview-${Date.now()}` as never,
+          createdAt: now,
+          updatedAt: now,
+        };
+        rememberConversationTrack(previewTask.taskId);
+        setTasksByWorkspace((prev) => upsertTaskInMap(prev, previewTask));
+        const workspace = workspaces.find((item) => item.workspaceId === workspaceId);
+        if (workspace) {
+          applySelection({
+            taskId: previewTask.taskId,
+            workspaceId: previewTask.workspaceId,
+            threadId: previewTask.threadId,
+            title: previewTask.title,
+            goal: previewTask.goal,
+            folderPath: workspace.folderPath,
+            workspaceName: workspace.name,
+            taskVersion: 0,
+            status: 'active',
+            participationMode: 'conversation',
+          });
+        }
+        return;
       }
-      return;
-    }
 
-    try {
-      const created = await runtime.createTask({
-        workspaceId: workspaceId as never,
-        title,
-        goal,
-        parentTaskId: parentTaskId as TaskSummary['parentTaskId'],
-      });
-      rememberConversationTrack(String(created.taskId));
-      if (runtime.openTask) {
-        await runtime.openTask({ taskId: created.taskId });
+      try {
+        const created = await runtime.createTask({
+          workspaceId: workspaceId as never,
+          title,
+          goal,
+          parentTaskId: parentTaskId as TaskSummary['parentTaskId'],
+        });
+        rememberConversationTrack(String(created.taskId));
+        if (runtime.openTask) {
+          await runtime.openTask({ taskId: created.taskId });
+        }
+        await loadWorkspaceCatalog(created.taskId);
+      } catch (error) {
+        const detail = error instanceof Error && error.message ? `：${error.message}` : '';
+        setWorkspaceError(`${parentTaskId ? '创建子任务失败' : '创建任务失败'}${detail}`);
       }
-      await loadWorkspaceCatalog(created.taskId);
-    } catch (error) {
-      const detail = error instanceof Error && error.message ? `：${error.message}` : '';
-      setWorkspaceError(`${parentTaskId ? '创建子任务失败' : '创建任务失败'}${detail}`);
-    }
-  }, [applySelection, loadWorkspaceCatalog, workspaces]);
+    },
+    [applySelection, loadWorkspaceCatalog, workspaces],
+  );
 
   const switchComposeWorkspace = async (workspaceId: string) => {
     if (active?.workspaceId === workspaceId) return;
@@ -4206,13 +4249,7 @@ function DesktopShell() {
       }
     }
     return items;
-  }, [
-    tasksByWorkspace,
-    workspaces,
-    showArchivedTasks,
-    pinnedConversationIds,
-    conversationTracks,
-  ]);
+  }, [tasksByWorkspace, workspaces, showArchivedTasks, pinnedConversationIds, conversationTracks]);
 
   const recentConversations = useMemo(
     () =>
@@ -4223,18 +4260,21 @@ function DesktopShell() {
     [recentConversationItems, navQuery],
   );
 
-  const createConversationInTrack = useCallback(async (track: TalkTrackId) => {
-    setProductShellNav((prev) => resolveTalkTrack(prev, track));
-    setLeftDrawerOpen(false);
-    const targetWorkspace =
-      workspaces.find((item) => item.workspaceId === active?.workspaceId) ?? workspaces[0];
-    if (!targetWorkspace) {
-      pendingConversationTrackRef.current = track;
-      openProjectCreateDialog();
-      return;
-    }
-    await createTask(targetWorkspace.workspaceId, { talkTrack: track });
-  }, [active?.workspaceId, createTask, workspaces]);
+  const createConversationInTrack = useCallback(
+    async (track: TalkTrackId) => {
+      setProductShellNav((prev) => resolveTalkTrack(prev, track));
+      setLeftDrawerOpen(false);
+      const targetWorkspace =
+        workspaces.find((item) => item.workspaceId === active?.workspaceId) ?? workspaces[0];
+      if (!targetWorkspace) {
+        pendingConversationTrackRef.current = track;
+        openProjectCreateDialog();
+        return;
+      }
+      await createTask(targetWorkspace.workspaceId, { talkTrack: track });
+    },
+    [active?.workspaceId, createTask, workspaces],
+  );
 
   const toggleRecentConversationSection = useCallback((track: TalkTrackId) => {
     setRecentConversationSections((current) => {
@@ -5908,9 +5948,10 @@ function DesktopShell() {
             runtimeView.eventHistory,
             artifactItems,
             agentVersionById,
+            artifactImagePreviews,
           )
         : null,
-    [runGraph, runtimeView.eventHistory, artifactItems, agentVersionById],
+    [runGraph, runtimeView.eventHistory, artifactItems, agentVersionById, artifactImagePreviews],
   );
   const selectedArtifactItem = useMemo(
     () =>
@@ -5938,10 +5979,13 @@ function DesktopShell() {
               mimeType: version.mimeType,
               parentVersionIds: version.parentVersionIds.map(String),
               createdAt: version.createdAt,
+              hasContentRef: version.hasContentRef,
+              ...(version.imageGeneration ? { imageGeneration: version.imageGeneration } : {}),
+              preview: artifactImagePreviews[String(version.id)],
             })),
           }
         : null,
-    [selectedArtifactItem],
+    [selectedArtifactItem, artifactImagePreviews],
   );
   const artifactMergeSteps: ArtifactMergeStepView[] = useMemo(
     () =>
@@ -6233,7 +6277,10 @@ function DesktopShell() {
                   )}
                   <span>{item.label}</span>
                   {item.badge ? (
-                    <em className="st-product-nav__badge" data-testid={`product-nav-badge-${item.id}`}>
+                    <em
+                      className="st-product-nav__badge"
+                      data-testid={`product-nav-badge-${item.id}`}
+                    >
                       {item.badge}
                     </em>
                   ) : null}
@@ -6292,9 +6339,7 @@ function DesktopShell() {
                               strokeWidth={1.8}
                             />
                             <span>{section.label}</span>
-                            {section.totalCount > 0 ? (
-                              <em>{section.totalCount}</em>
-                            ) : null}
+                            {section.totalCount > 0 ? <em>{section.totalCount}</em> : null}
                           </button>
                           <button
                             type="button"
@@ -6439,10 +6484,10 @@ function DesktopShell() {
               data-stage="teams"
             >
               <h2>小队</h2>
-              <p>
-                全局小队模板将在这里管理。小队由多个智能体组成，可分配到项目中分工执行。
+              <p>全局小队模板将在这里管理。小队由多个智能体组成，可分配到项目中分工执行。</p>
+              <p className="st-shell-stage-panel__muted">
+                当前尚无小队模板 · 可在对话中让 AI 帮你创建
               </p>
-              <p className="st-shell-stage-panel__muted">当前尚无小队模板 · 可在对话中让 AI 帮你创建</p>
             </div>
           ) : null}
           {productShellNav.primary === 'agents' && !leftDrawerOpen ? (

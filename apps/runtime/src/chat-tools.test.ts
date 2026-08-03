@@ -5,6 +5,7 @@ import {
   buildCompactSummaryUserPrompt,
   buildLocalCompactSummary,
   collectThreadChatHistory,
+  chatToolRequiresApproval,
   evaluateToolLoopGuard,
   foldLongToolOutputsInMessages,
   foldToolOutputText,
@@ -915,5 +916,58 @@ describe('team tools (team library)', () => {
     expect(chatToolDeniedMessage('workspace', 'update_team', 'denied')).toContain('修改小队');
     expect(chatToolDeniedMessage('workspace', 'delete_team', 'denied')).toContain('删除小队');
     expect(chatToolDeniedMessage('workspace', 'create_team', 'blocked')).toContain('需要用户先批准');
+  });
+});
+
+
+describe('Computer Use desktop tool gating', () => {
+  const desktopTools = [
+    'desktop_list_windows',
+    'desktop_inspect_window',
+    'desktop_resolve_selector',
+    'desktop_read_element',
+    'desktop_focus_element',
+    'desktop_invoke_element',
+    'desktop_set_value',
+  ];
+
+  it('exposes desktop tools only when the plugin capability is enabled', () => {
+    const disabled = toolsForExecutionMode('workspace', { includeProjectTools: false });
+    expect(disabled.map((tool) => tool.name)).not.toContain('desktop_list_windows');
+
+    const enabled = toolsForExecutionMode('workspace', {
+      includeProjectTools: false,
+      includeDesktopTools: true,
+    });
+    const names = enabled.map((tool) => tool.name);
+    for (const toolName of desktopTools) expect(names).toContain(toolName);
+  });
+
+  it('requires approval only for mutating desktop actions in ask mode', () => {
+    for (const toolName of [
+      'desktop_focus_element',
+      'desktop_invoke_element',
+      'desktop_set_value',
+    ]) {
+      expect(chatToolRequiresApproval('ask', toolName)).toBe(true);
+      expect(chatToolRequiresApproval('workspace', toolName)).toBe(false);
+      expect(chatToolRequiresApproval('full-access', toolName)).toBe(false);
+    }
+
+    for (const toolName of [
+      'desktop_list_windows',
+      'desktop_inspect_window',
+      'desktop_resolve_selector',
+      'desktop_read_element',
+    ]) {
+      expect(chatToolRequiresApproval('ask', toolName)).toBe(false);
+    }
+  });
+
+  it('hard-blocks desktop tools when the plugin capability is disabled', () => {
+    for (const toolName of desktopTools) {
+      expect(isChatToolAllowed('full-access', toolName, { desktopEnabled: false })).toBe(false);
+      expect(isChatToolAllowed('workspace', toolName, { desktopEnabled: true })).toBe(true);
+    }
   });
 });

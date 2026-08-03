@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+﻿import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -45,6 +45,11 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -248,6 +253,11 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -428,15 +438,15 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
 
 describe('migration planner (pure)', () => {
   it('keeps message pagination, the event cursor, and Browser persistence ordered last', () => {
-    expect(MIGRATIONS.at(-9)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-8)?.name).toBe('0023_provider_execution_checkpoint');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0024_mutable_agent_team_conversation');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0025_conversation_task_binding');
-    expect(MIGRATIONS.at(-5)?.name).toBe('0026_provider_source_config');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0027_skill_archive');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0028_message_pagination');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0029_event_global_cursor');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0030_browser_persistence_permissions');
+    expect(MIGRATIONS.at(-14)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-13)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.at(-12)?.name).toBe('0024_mutable_agent_team_conversation');
+    expect(MIGRATIONS.at(-11)?.name).toBe('0025_conversation_task_binding');
+    expect(MIGRATIONS.at(-10)?.name).toBe('0026_provider_source_config');
+    expect(MIGRATIONS.at(-9)?.name).toBe('0027_skill_archive');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-7)?.name).toBe('0029_event_global_cursor');
+    expect(MIGRATIONS.at(-6)?.name).toBe('0030_browser_persistence_permissions');
   });
 
   it.runIf(canOpenNativeSqlite())(
@@ -445,7 +455,9 @@ describe('migration planner (pure)', () => {
       const dir = mkdtempSync(join(tmpdir(), 'sync-think-project-folder-migration-'));
       const dbPath = join(dir, 'sync-think.db');
       try {
-        const trailing = MIGRATIONS.splice(-9);
+        const trailing = MIGRATIONS.splice(
+          MIGRATIONS.findIndex((migration) => migration.name === '0022_optional_project_folder'),
+        );
         try {
           await runMigrations(dbPath);
         } finally {
@@ -492,7 +504,12 @@ describe('migration planner (pure)', () => {
           '0027_skill_archive',
           '0028_message_pagination',
           '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+          '0030_browser_persistence_permissions',
+          '0031_desktop_command',
+          '0032_scheduler_fencing_repair',
+          '0033_image_generation_config',
+          '0034_agent_context_usage',
+          '0035_review_image_selection_freeze',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -548,40 +565,40 @@ describe('migration planner (pure)', () => {
   );
 
   it('appends the complete AgentVersion migration after reviewer/rework', () => {
-    expect(MIGRATIONS.at(-14)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-13)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-12)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-11)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-10)?.name).toBe('0021_merge_step_conflict_resolution');
-    expect(MIGRATIONS.at(-9)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-8)?.name).toBe('0023_provider_execution_checkpoint');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0024_mutable_agent_team_conversation');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0025_conversation_task_binding');
-    expect(MIGRATIONS.at(-5)?.name).toBe('0026_provider_source_config');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0027_skill_archive');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0028_message_pagination');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0029_event_global_cursor');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0030_browser_persistence_permissions');
+    expect(MIGRATIONS.at(-19)?.name).toBe('0017_reviewer_rework');
+    expect(MIGRATIONS.at(-18)?.name).toBe('0018_complete_agent_version');
+    expect(MIGRATIONS.at(-17)?.name).toBe('0019_review_source_evidence_integrity');
+    expect(MIGRATIONS.at(-16)?.name).toBe('0020_review_bounds_integrity');
+    expect(MIGRATIONS.at(-15)?.name).toBe('0021_merge_step_conflict_resolution');
+    expect(MIGRATIONS.at(-14)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-13)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.at(-12)?.name).toBe('0024_mutable_agent_team_conversation');
+    expect(MIGRATIONS.at(-11)?.name).toBe('0025_conversation_task_binding');
+    expect(MIGRATIONS.at(-10)?.name).toBe('0026_provider_source_config');
+    expect(MIGRATIONS.at(-9)?.name).toBe('0027_skill_archive');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-7)?.name).toBe('0029_event_global_cursor');
+    expect(MIGRATIONS.at(-6)?.name).toBe('0030_browser_persistence_permissions');
   });
 
   it('reserves 0016 for production execution fencing after frozen 0015', () => {
-    expect(MIGRATIONS.at(-16)?.name).toBe('0015_capability_authorization');
-    expect(MIGRATIONS.at(-15)?.name).toBe('0016_production_execution');
-    expect(MIGRATIONS.at(-14)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-13)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-12)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-11)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-10)?.name).toBe('0021_merge_step_conflict_resolution');
-    expect(MIGRATIONS.at(-9)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-8)?.name).toBe('0023_provider_execution_checkpoint');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0024_mutable_agent_team_conversation');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0025_conversation_task_binding');
-    expect(MIGRATIONS.at(-5)?.name).toBe('0026_provider_source_config');
-    expect(MIGRATIONS.at(-4)?.name).toBe('0027_skill_archive');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0028_message_pagination');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0029_event_global_cursor');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0030_browser_persistence_permissions');
-    const through0015 = MIGRATIONS.slice(0, -15).map((migration) => migration.name);
+    expect(MIGRATIONS.at(-21)?.name).toBe('0015_capability_authorization');
+    expect(MIGRATIONS.at(-20)?.name).toBe('0016_production_execution');
+    expect(MIGRATIONS.at(-19)?.name).toBe('0017_reviewer_rework');
+    expect(MIGRATIONS.at(-18)?.name).toBe('0018_complete_agent_version');
+    expect(MIGRATIONS.at(-17)?.name).toBe('0019_review_source_evidence_integrity');
+    expect(MIGRATIONS.at(-16)?.name).toBe('0020_review_bounds_integrity');
+    expect(MIGRATIONS.at(-15)?.name).toBe('0021_merge_step_conflict_resolution');
+    expect(MIGRATIONS.at(-14)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-13)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.at(-12)?.name).toBe('0024_mutable_agent_team_conversation');
+    expect(MIGRATIONS.at(-11)?.name).toBe('0025_conversation_task_binding');
+    expect(MIGRATIONS.at(-10)?.name).toBe('0026_provider_source_config');
+    expect(MIGRATIONS.at(-9)?.name).toBe('0027_skill_archive');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-7)?.name).toBe('0029_event_global_cursor');
+    expect(MIGRATIONS.at(-6)?.name).toBe('0030_browser_persistence_permissions');
+    const through0015 = MIGRATIONS.slice(0, -20).map((migration) => migration.name);
     expect(planMigrations(through0015).applied).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',
@@ -598,13 +615,18 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
   });
 
   it('appends capability authorization after the frozen 0014 migration', () => {
-    expect(MIGRATIONS.at(-17)?.name).toBe('0014_scheduler_fencing');
-    expect(MIGRATIONS.at(-16)?.name).toBe('0015_capability_authorization');
-    const through0014 = MIGRATIONS.slice(0, -16).map((migration) => migration.name);
+    expect(MIGRATIONS.at(-22)?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS.at(-21)?.name).toBe('0015_capability_authorization');
+    const through0014 = MIGRATIONS.slice(0, -21).map((migration) => migration.name);
     expect(planMigrations(through0014).applied).toEqual([
       '0015_capability_authorization',
       '0016_production_execution',
@@ -622,6 +644,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
   });
 
@@ -655,6 +682,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
   });
 
@@ -681,6 +713,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
   });
 
@@ -706,6 +743,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
   });
 
@@ -748,6 +790,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -783,6 +830,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -821,6 +873,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -863,6 +920,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -906,6 +968,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -950,6 +1017,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -995,6 +1067,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1042,6 +1119,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1081,6 +1163,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1117,6 +1204,11 @@ describe('migration planner (pure)', () => {
       '0028_message_pagination',
       '0029_event_global_cursor',
       '0030_browser_persistence_permissions',
+      '0031_desktop_command',
+      '0032_scheduler_fencing_repair',
+      '0033_image_generation_config',
+      '0034_agent_context_usage',
+      '0035_review_image_selection_freeze',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1156,6 +1248,80 @@ describe('Drizzle schema shape (no native bind required)', () => {
 });
 
 describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
+  it('skips backup creation for a fresh database and a no-op rerun', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-storage-noop-backup-'));
+    const dbPath = join(dir, 'sync-think.db');
+    const backupDir = join(dir, 'backups');
+    try {
+      const initial = await runMigrations(dbPath);
+      expect(initial.backupPath).toBeUndefined();
+      expect(existsSync(backupDir)).toBe(false);
+
+      const rerun = await runMigrations(dbPath);
+      expect(rerun.applied).toEqual([]);
+      expect(rerun.skipped).toEqual(MIGRATIONS.map((migration) => migration.name));
+      expect(rerun.backupPath).toBeUndefined();
+      expect(existsSync(backupDir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates exactly one backup before applying a pending migration to an existing database', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-storage-pending-backup-'));
+    const dbPath = join(dir, 'sync-think.db');
+    const backupDir = join(dir, 'backups');
+    const pendingMigration = {
+      name: '9998_test_pending_backup',
+      sql: 'CREATE TABLE pending_backup_evidence (id TEXT PRIMARY KEY);',
+    };
+    try {
+      await runMigrations(dbPath);
+      MIGRATIONS.push(pendingMigration);
+      try {
+        const result = await runMigrations(dbPath);
+        expect(result.applied).toEqual([pendingMigration.name]);
+        expect(result.backupPath).toBeDefined();
+        expect(existsSync(result.backupPath!)).toBe(true);
+        expect(readdirSync(backupDir)).toHaveLength(1);
+      } finally {
+        expect(MIGRATIONS.pop()).toBe(pendingMigration);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the pre-migration backup when a pending migration fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-storage-failed-backup-'));
+    const dbPath = join(dir, 'sync-think.db');
+    const backupDir = join(dir, 'backups');
+    const failingMigration = {
+      name: '9999_test_failed_backup',
+      sql: 'THIS IS NOT VALID SQL;',
+    };
+    try {
+      await runMigrations(dbPath);
+      MIGRATIONS.push(failingMigration);
+      try {
+        await expect(runMigrations(dbPath)).rejects.toThrow(
+          `migration ${failingMigration.name} failed`,
+        );
+        expect(readdirSync(backupDir)).toHaveLength(1);
+      } finally {
+        expect(MIGRATIONS.pop()).toBe(failingMigration);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never creates a backup for an in-memory database', async () => {
+    const result = await runMigrations(':memory:');
+    expect(result.applied).toEqual(MIGRATIONS.map((migration) => migration.name));
+    expect(result.backupPath).toBeUndefined();
+  });
+
   it('applies baseline tables and FTS triggers to a real sqlite file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-storage-'));
     const dbPath = join(dir, 'sync-think.db');
@@ -1244,12 +1410,20 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   it('upgrades a complete 0017 AgentVersion without rewriting history and uses safe defaults', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-agent-version-upgrade-'));
     const dbPath = join(dir, 'sync-think.db');
-    const browserPersistenceMigration =
-      MIGRATIONS.at(-1)?.name === '0030_browser_persistence_permissions' ? MIGRATIONS.pop() : undefined;
-    const eventGlobalCursorMigration =
-      MIGRATIONS.at(-1)?.name === '0029_event_global_cursor' ? MIGRATIONS.pop() : undefined;
-    const messagePaginationMigration =
-      MIGRATIONS.at(-1)?.name === '0028_message_pagination' ? MIGRATIONS.pop() : undefined;
+    const removeMigration = (name: string) => {
+      const index = MIGRATIONS.findIndex((migration) => migration.name === name);
+      return index >= 0 ? MIGRATIONS.splice(index, 1)[0] : undefined;
+    };
+    const reviewImageSelectionFreezeMigration = removeMigration(
+      '0035_review_image_selection_freeze',
+    );
+    const agentContextUsageMigration = removeMigration('0034_agent_context_usage');
+    const imageGenerationConfigMigration = removeMigration('0033_image_generation_config');
+    const schedulerFencingRepairMigration = removeMigration('0032_scheduler_fencing_repair');
+    const desktopCommandMigration = removeMigration('0031_desktop_command');
+    const browserPersistenceMigration = removeMigration('0030_browser_persistence_permissions');
+    const eventGlobalCursorMigration = removeMigration('0029_event_global_cursor');
+    const messagePaginationMigration = removeMigration('0028_message_pagination');
     const skillArchiveMigration =
       MIGRATIONS.at(-1)?.name === '0027_skill_archive' ? MIGRATIONS.pop() : undefined;
     const providerSourceConfigMigration =
@@ -1315,6 +1489,13 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       if (messagePaginationMigration) MIGRATIONS.push(messagePaginationMigration);
       if (eventGlobalCursorMigration) MIGRATIONS.push(eventGlobalCursorMigration);
       if (browserPersistenceMigration) MIGRATIONS.push(browserPersistenceMigration);
+      if (desktopCommandMigration) MIGRATIONS.push(desktopCommandMigration);
+      if (schedulerFencingRepairMigration) MIGRATIONS.push(schedulerFencingRepairMigration);
+      if (imageGenerationConfigMigration) MIGRATIONS.push(imageGenerationConfigMigration);
+      if (agentContextUsageMigration) MIGRATIONS.push(agentContextUsageMigration);
+      if (reviewImageSelectionFreezeMigration) {
+        MIGRATIONS.push(reviewImageSelectionFreezeMigration);
+      }
       expect((await runMigrations(dbPath)).applied).toEqual([
         '0018_complete_agent_version',
         '0019_review_source_evidence_integrity',
@@ -1328,7 +1509,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1371,6 +1557,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         messagePaginationMigration,
         eventGlobalCursorMigration,
         browserPersistenceMigration,
+        desktopCommandMigration,
+        schedulerFencingRepairMigration,
       ]) {
         if (migration && !MIGRATIONS.includes(migration)) MIGRATIONS.push(migration);
       }
@@ -1438,7 +1626,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1489,7 +1682,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1502,7 +1700,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         upgraded.raw.close();
       }
     } finally {
-      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0030_browser_persistence_permissions') {
+      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0035_review_image_selection_freeze') {
         MIGRATIONS.push(...trailingMigrations);
       }
       rmSync(dir, { recursive: true, force: true });
@@ -1628,7 +1826,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   });
 
   it('appends 0014 scheduler fencing and exact Step output mapping', async () => {
-    expect(MIGRATIONS.at(-17)?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS.at(-22)?.name).toBe('0014_scheduler_fencing');
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduler-fencing-migration-'));
     const dbPath = join(dir, 'sync-think.db');
     try {
@@ -1649,6 +1847,100 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       } finally {
         raw.close();
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs legacy strict scheduler fencing without clearing terminal execution identity', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduler-fencing-repair-'));
+    const dbPath = join(dir, 'sync-think.db');
+    try {
+      await runMigrations(dbPath);
+      const legacy = await openDatabaseAsync({ path: dbPath });
+      try {
+        legacy.raw.exec(`
+          DELETE FROM migration_record WHERE name = '0032_scheduler_fencing_repair';
+          DROP TRIGGER IF EXISTS step_execution_insert_guard;
+          DROP TRIGGER IF EXISTS step_execution_update_guard;
+          CREATE TRIGGER step_execution_insert_guard
+          BEFORE INSERT ON step
+          WHEN NEW.execution_attempt < 0
+            OR (NEW.execution_owner_id IS NULL) <> (NEW.lease_expires_at IS NULL)
+            OR (NEW.state = 'running' AND NEW.execution_owner_id IS NULL)
+            OR (NEW.state <> 'running' AND NEW.execution_owner_id IS NOT NULL)
+          BEGIN
+            SELECT RAISE(ABORT, 'step.execution_fence invalid');
+          END;
+          CREATE TRIGGER step_execution_update_guard
+          BEFORE UPDATE OF state, execution_owner_id, lease_expires_at, execution_attempt ON step
+          WHEN NEW.execution_attempt < 0
+            OR (NEW.execution_owner_id IS NULL) <> (NEW.lease_expires_at IS NULL)
+            OR (NEW.state = 'running' AND NEW.execution_owner_id IS NULL)
+            OR (NEW.state <> 'running' AND NEW.execution_owner_id IS NOT NULL)
+          BEGIN
+            SELECT RAISE(ABORT, 'step.execution_fence invalid');
+          END;
+          PRAGMA foreign_keys = OFF;
+          INSERT INTO step (
+            id, run_id, plan_order, title, instructions, agent_version_id, state,
+            retries, idempotency_key, created_at, updated_at, execution_owner_id,
+            lease_expires_at, execution_attempt
+          ) VALUES (
+            'step-repair', 'run-repair', 0, 'Repair', 'Repair fencing',
+            'agent-version-repair', 'running', 0, '${'a'.repeat(64)}', 't0', 't0',
+            'runtime-repair', '2099-01-01T00:00:00.000Z', 7
+          );
+          PRAGMA foreign_keys = ON;
+        `);
+        expect(() =>
+          legacy.raw
+            .prepare(
+              `UPDATE step SET state = 'failed', lease_expires_at = NULL
+               WHERE run_id = 'run-repair' AND id = 'step-repair'`,
+            )
+            .run(),
+        ).toThrow('step.execution_fence invalid');
+      } finally {
+        legacy.raw.close();
+      }
+
+      expect((await runMigrations(dbPath)).applied).toEqual(['0032_scheduler_fencing_repair']);
+      const repaired = await openDatabaseAsync({ path: dbPath });
+      try {
+        const triggerSql = repaired.raw
+          .prepare(
+            `SELECT sql FROM sqlite_master
+             WHERE type = 'trigger' AND name = 'step_execution_update_guard'`,
+          )
+          .get() as { sql: string };
+        expect(triggerSql.sql).toContain("NEW.state IN ('pending', 'ready', 'awaitingApproval'");
+        expect(triggerSql.sql).not.toContain(
+          '(NEW.execution_owner_id IS NULL) <> (NEW.lease_expires_at IS NULL)',
+        );
+        repaired.raw
+          .prepare(
+            `UPDATE step SET state = 'failed', lease_expires_at = NULL
+             WHERE run_id = 'run-repair' AND id = 'step-repair'`,
+          )
+          .run();
+        expect(
+          repaired.raw
+            .prepare(
+              `SELECT state, execution_owner_id, lease_expires_at, execution_attempt
+               FROM step WHERE run_id = 'run-repair' AND id = 'step-repair'`,
+            )
+            .get(),
+        ).toEqual({
+          state: 'failed',
+          execution_owner_id: 'runtime-repair',
+          lease_expires_at: null,
+          execution_attempt: 7,
+        });
+      } finally {
+        repaired.raw.close();
+      }
+      expect((await runMigrations(dbPath)).applied).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1765,7 +2057,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1829,7 +2126,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1868,7 +2170,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -1906,7 +2213,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -1951,7 +2263,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2064,7 +2381,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2128,7 +2450,12 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0027_skill_archive',
         '0028_message_pagination',
         '0029_event_global_cursor',
-      '0030_browser_persistence_permissions',
+        '0030_browser_persistence_permissions',
+        '0031_desktop_command',
+        '0032_scheduler_fencing_repair',
+        '0033_image_generation_config',
+        '0034_agent_context_usage',
+        '0035_review_image_selection_freeze',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2157,12 +2484,20 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   it('fails 0028 atomically instead of rewriting duplicate legacy sequences', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-message-pagination-upgrade-'));
     const dbPath = join(dir, 'sync-think.db');
-    const browserPersistenceMigration =
-      MIGRATIONS.at(-1)?.name === '0030_browser_persistence_permissions' ? MIGRATIONS.pop() : undefined;
-    const eventGlobalCursorMigration =
-      MIGRATIONS.at(-1)?.name === '0029_event_global_cursor' ? MIGRATIONS.pop() : undefined;
-    const messagePaginationMigration =
-      MIGRATIONS.at(-1)?.name === '0028_message_pagination' ? MIGRATIONS.pop() : undefined;
+    const removeMigration = (name: string) => {
+      const index = MIGRATIONS.findIndex((migration) => migration.name === name);
+      return index >= 0 ? MIGRATIONS.splice(index, 1)[0] : undefined;
+    };
+    const reviewImageSelectionFreezeMigration = removeMigration(
+      '0035_review_image_selection_freeze',
+    );
+    const agentContextUsageMigration = removeMigration('0034_agent_context_usage');
+    const imageGenerationConfigMigration = removeMigration('0033_image_generation_config');
+    const schedulerFencingRepairMigration = removeMigration('0032_scheduler_fencing_repair');
+    const desktopCommandMigration = removeMigration('0031_desktop_command');
+    const browserPersistenceMigration = removeMigration('0030_browser_persistence_permissions');
+    const eventGlobalCursorMigration = removeMigration('0029_event_global_cursor');
+    const messagePaginationMigration = removeMigration('0028_message_pagination');
     expect(messagePaginationMigration?.name).toBe('0028_message_pagination');
     try {
       await runMigrations(dbPath);
@@ -2226,6 +2561,27 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       }
       if (browserPersistenceMigration && !MIGRATIONS.includes(browserPersistenceMigration)) {
         MIGRATIONS.push(browserPersistenceMigration);
+      }
+      if (desktopCommandMigration && !MIGRATIONS.includes(desktopCommandMigration)) {
+        MIGRATIONS.push(desktopCommandMigration);
+      }
+      if (
+        schedulerFencingRepairMigration &&
+        !MIGRATIONS.includes(schedulerFencingRepairMigration)
+      ) {
+        MIGRATIONS.push(schedulerFencingRepairMigration);
+      }
+      if (imageGenerationConfigMigration && !MIGRATIONS.includes(imageGenerationConfigMigration)) {
+        MIGRATIONS.push(imageGenerationConfigMigration);
+      }
+      if (agentContextUsageMigration && !MIGRATIONS.includes(agentContextUsageMigration)) {
+        MIGRATIONS.push(agentContextUsageMigration);
+      }
+      if (
+        reviewImageSelectionFreezeMigration &&
+        !MIGRATIONS.includes(reviewImageSelectionFreezeMigration)
+      ) {
+        MIGRATIONS.push(reviewImageSelectionFreezeMigration);
       }
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2298,4 +2654,98 @@ describe('0029 event global cursor migration', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe('0033 image generation config migration', () => {
+  it('is ordered after scheduler fencing repair', () => {
+    expect(MIGRATIONS.at(-4)?.name).toBe('0032_scheduler_fencing_repair');
+    expect(MIGRATIONS.at(-3)?.name).toBe('0033_image_generation_config');
+    expect(MIGRATIONS.at(-2)?.name).toBe('0034_agent_context_usage');
+    expect(MIGRATIONS.at(-1)?.name).toBe('0035_review_image_selection_freeze');
+  });
+
+  it.runIf(canOpenNativeSqlite())(
+    'adds a nullable checked Step column and remains idempotent',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'sync-think-image-generation-migration-'));
+      const dbPath = join(dir, 'sync-think.db');
+      try {
+        await runMigrations(dbPath);
+        expect((await runMigrations(dbPath)).applied).toEqual([]);
+
+        const { raw } = await openDatabaseAsync({ path: dbPath });
+        try {
+          const column = (
+            raw.prepare("PRAGMA table_info('step')").all() as Array<{
+              name: string;
+              notnull: number;
+              dflt_value: string | null;
+            }>
+          ).find((candidate) => candidate.name === 'image_generation_config_json');
+          expect(column).toMatchObject({
+            name: 'image_generation_config_json',
+            notnull: 0,
+            dflt_value: null,
+          });
+
+          raw.pragma('foreign_keys = OFF');
+          const insert = raw.prepare(
+            `INSERT INTO step (
+               id, run_id, kind, plan_order, title, instructions, agent_version_id,
+               image_generation_config_json, state, retries, created_at, updated_at
+             ) VALUES (?, ?, 'execution', ?, 'Image', 'Generate', 'agent-version-image',
+               ?, 'pending', 0, 't0', 't0')`,
+          );
+          insert.run('step-image-legacy', 'run-image-legacy', 0, null);
+          insert.run(
+            'step-image-valid',
+            'run-image-valid',
+            0,
+            JSON.stringify({ size: '1536x1024', quality: 'high', count: 4 }),
+          );
+
+          const invalidConfigs = [
+            { size: '512x512', quality: 'high', count: 1 },
+            { size: '1024x1024', quality: 'ultra', count: 1 },
+            { size: '1024x1024', quality: 'medium', count: 0 },
+            { size: '1024x1024', quality: 'medium', count: 5 },
+            { size: '1024x1024', quality: 'medium', count: 1.5 },
+          ];
+          for (const [index, config] of invalidConfigs.entries()) {
+            expect(() =>
+              insert.run(
+                `step-image-invalid-${index}`,
+                `run-image-invalid-${index}`,
+                0,
+                JSON.stringify(config),
+              ),
+            ).toThrow(/CHECK constraint failed/i);
+          }
+
+          expect(
+            raw
+              .prepare(
+                `SELECT id, image_generation_config_json
+                 FROM step WHERE id IN ('step-image-legacy', 'step-image-valid') ORDER BY id`,
+              )
+              .all(),
+          ).toEqual([
+            { id: 'step-image-legacy', image_generation_config_json: null },
+            {
+              id: 'step-image-valid',
+              image_generation_config_json: JSON.stringify({
+                size: '1536x1024',
+                quality: 'high',
+                count: 4,
+              }),
+            },
+          ]);
+        } finally {
+          raw.close();
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -66,7 +67,7 @@ describe('parseProjectTerminalCommand', () => {
     mkdirSync(join(root, 'src', 'app'), { recursive: true });
 
     await expect(resolveProjectTerminalCwd(root, 'src', 'app')).resolves.toEqual({
-      root,
+      root: await realpath(root),
       cwd: 'src/app',
     });
     await expect(resolveProjectTerminalCwd(root, '', '..')).rejects.toThrow(/project root/i);

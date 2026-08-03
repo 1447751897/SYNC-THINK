@@ -7,6 +7,8 @@ import {
   type ArtifactVersion,
   type FailureClass,
   type HumanOnlyAction,
+  type ProviderRequestUsage,
+  type AgentContextThreadId,
   type RunId,
   type StepId,
   type TaskId,
@@ -19,6 +21,7 @@ import {
   type RunGraph,
   type SqliteApprovalStore,
   SqliteOrchestrationStore,
+  SqliteAgentContextStore,
   type SqliteUnitOfWork,
   type StoredStep,
 } from '@sync-think/storage';
@@ -63,6 +66,8 @@ export interface SchedulerOptions {
   approvalStore?: SqliteApprovalStore;
   unitOfWork?: SqliteUnitOfWork;
   approvalPolicy?: SchedulerApprovalPolicy;
+  onProviderUsage?: (usage: Readonly<ProviderRequestUsage>) => void;
+  agentContextStore?: SqliteAgentContextStore;
 }
 
 const DEFAULT_LEASE_DURATION_MS = 30_000;
@@ -263,7 +268,24 @@ export class Scheduler {
     const ready = readyStepIds(initial);
     const kindByStepId = new Map(initial.steps.map((step) => [step.id, step.kind]));
     const executableReady = ready.filter((stepId) => kindByStepId.get(stepId) !== 'merge');
-    const schedulable = await this.filterProtectedSteps(initial, executableReady);
+    let preparedGraph = initial;
+    const preparationNow = this.now();
+    for (const stepId of executableReady) {
+      const prepared = this.options.store.prepareReviewStepForExecution(
+        runId,
+        stepId,
+        preparationNow,
+      );
+      preparedGraph = prepared.graph;
+      if (prepared.status === 'image-selection-required') {
+        return {
+          graph: preparedGraph,
+          startedStepIds: [],
+          readyStepIds: readyStepIds(preparedGraph),
+        };
+      }
+    }
+    const schedulable = await this.filterProtectedSteps(preparedGraph, executableReady);
     const claimedAt = this.now();
     const claimed = this.options.store.claimReadySteps({
       runId,
@@ -711,12 +733,36 @@ export class Scheduler {
         },
       );
       const persistedReviewContext = this.options.store.getReviewStepContext(runId, step.id);
+      const graph = this.options.store.getGraph(runId);
+      const run = graph?.run ?? this.options.store.getRun(runId);
+      if (!run) throw new StepExecutionError(`Run is unavailable: ${runId}`, 'acceptance');
+      const threadTargetStep =
+        persistedReviewContext?.kind === 'rework'
+          ? (graph?.steps.find(
+              (candidate) => candidate.id === persistedReviewContext.targetStepId,
+            ) ?? step)
+          : step;
+      const workstreamKey =
+        persistedReviewContext?.kind === 'reviewer'
+          ? `review:${persistedReviewContext.targetStepId}:${step.agentVersionId}`
+          : `step:${threadTargetStep.id}`;
+      const agentContextThread = this.options.agentContextStore?.getOrCreateThread({
+        taskId: run.taskId,
+        agentVersionId: threadTargetStep.agentVersionId,
+        workstreamKey,
+        role: persistedReviewContext?.kind === 'reviewer' ? 'reviewer' : 'executor',
+        now: this.now(),
+      });
       const executionArtifactVersions =
         persistedReviewContext?.kind === 'reviewer'
           ? persistedReviewContext.reviewedArtifactVersions
           : artifactVersions;
       const context: StepExecutionContext = {
         runId,
+        taskId: run.taskId,
+        ...(agentContextThread
+          ? { agentContextThreadId: agentContextThread.id as AgentContextThreadId }
+          : {}),
         step: deepFreeze(structuredClone(step)),
         idempotencyKey,
         artifactVersions: isolatedSnapshot(executionArtifactVersions),
@@ -735,6 +781,9 @@ export class Scheduler {
         },
       };
       const result = await Promise.race([this.options.executor.execute(context), heartbeatFailure]);
+      for (const usage of result.providerUsages ?? []) {
+        this.options.onProviderUsage?.(usage);
+      }
       if (controller.signal.reason instanceof StepLeaseHeartbeatError) {
         throw controller.signal.reason;
       }

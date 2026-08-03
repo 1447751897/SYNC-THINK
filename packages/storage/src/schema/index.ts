@@ -21,3 +21,6 @@ export * from './conversation.js';
 export * from './app-setting.js';
 export * from './browser.js';
 
+
+export * from './desktop.js';
+export * from './agent-context.js';

@@ -6,6 +6,7 @@ import {
   parseAgentListPayload,
   parseAgentVersionsPayload,
   parseArtifactComparePayload,
+  parseArtifactImagePreviewPayload,
   parseArtifactConflictListPayload,
   parseArtifactConflictResolutionPayload,
   parseArtifactListPayload,
@@ -33,6 +34,7 @@ const ids = {
   baseVersionId: '01J00000000000000000000008',
   leftVersionId: '01J00000000000000000000009',
   rightVersionId: '01J0000000000000000000000A',
+  artifactVersionId: '01J0000000000000000000000D',
   operationId: '01J0000000000000000000000B',
   conflictId: '01J0000000000000000000000C',
 };
@@ -112,6 +114,16 @@ describe('orchestration payload validation', () => {
       runId: ids.runId,
     };
     expect(parseArtifactListPayload({ ...scope, limit: 8 })).toMatchObject({ limit: 8 });
+    expect(
+      parseArtifactImagePreviewPayload({ ...scope, artifactVersionId: ids.artifactVersionId }),
+    ).toEqual({ ...scope, artifactVersionId: ids.artifactVersionId });
+    expect(() =>
+      parseArtifactImagePreviewPayload({
+        ...scope,
+        artifactVersionId: ids.artifactVersionId,
+        contentRef: 'D:/secret.png',
+      }),
+    ).toThrow(/Invalid artifact-image-preview payload/);
     expect(
       parseArtifactComparePayload({
         ...scope,
@@ -277,5 +289,58 @@ describe('orchestration payload validation', () => {
         mcpToolAllowlist: ['x'.repeat(257)],
       }),
     ).toThrow(/Invalid agent-create payload/);
+  });
+});
+
+
+describe('image generation plan payloads', () => {
+  it('accepts an exact complete image generation config', () => {
+    const parsed = parsePlanCreatePayload({
+      taskId: ids.taskId,
+      expectedTaskVersion: 4,
+      title: 'Image plan',
+      steps: [
+        {
+          ...step,
+          imageGeneration: { size: '1024x1536', quality: 'medium', count: 3 },
+        },
+      ],
+    });
+    expect(parsed.steps[0]?.imageGeneration).toEqual({
+      size: '1024x1536',
+      quality: 'medium',
+      count: 3,
+    });
+  });
+
+  it.each([
+    { size: 'auto', quality: 'high' },
+    { size: '2048x2048', quality: 'high', count: 1 },
+    { size: 'auto', quality: 'ultra', count: 1 },
+    { size: 'auto', quality: 'high', count: 0 },
+    { size: 'auto', quality: 'high', count: 5 },
+    { size: 'auto', quality: 'high', count: 1, extra: true },
+  ])('rejects malformed image generation config %#', (imageGeneration) => {
+    expect(() =>
+      parsePlanCreatePayload({
+        taskId: ids.taskId,
+        expectedTaskVersion: 4,
+        title: 'Image plan',
+        steps: [{ ...step, imageGeneration }],
+      }),
+    ).toThrow('Invalid plan-create payload');
+  });
+
+  it('rejects image generation config on a merge step', () => {
+    expect(() =>
+      parsePlanCreatePayload({
+        taskId: ids.taskId,
+        expectedTaskVersion: 4,
+        title: 'Merge plan',
+        steps: [
+          { ...step, kind: 'merge', imageGeneration: { size: 'auto', quality: 'auto', count: 1 } },
+        ],
+      }),
+    ).toThrow('Invalid plan-create payload');
   });
 });

@@ -63,6 +63,68 @@ export function mergeCapabilitySuggestions(
   return normalizeCapabilities([...(existing ?? []), ...(suggested ?? [])]);
 }
 
+function isEmbeddingModelId(id: string): boolean {
+  return (
+    /\bembed(ding)?s?\b/.test(id) || id.includes('text-embedding') || id.includes('embedding-')
+  );
+}
+
+function isGeneratedMediaModelId(id: string): boolean {
+  return (
+    /\bdall-?e\b/.test(id) ||
+    id.includes('flux') ||
+    id.includes('imagen') ||
+    id.includes('midjourney') ||
+    id.includes('stable-diffusion') ||
+    id.includes('sdxl') ||
+    id.includes('imagine-image') ||
+    id.includes('imagine-video') ||
+    id.includes('image-generation') ||
+    id.includes('video-generation') ||
+    /\bimage[-_]?gen/.test(id) ||
+    /\bvideo[-_]?gen/.test(id)
+  );
+}
+
+function isAudioOnlyModelId(id: string): boolean {
+  return (
+    /(?:^|[-_/])(tts|whisper|transcribe|transcriber|transcribing|transcription)(?:$|[-_/])/.test(
+      id,
+    ) ||
+    id.includes('text-to-speech') ||
+    id.includes('speech-generation') ||
+    id.includes('audio-only')
+  );
+}
+
+export interface TextFallbackCompatibilityInput {
+  providerModelId: string;
+  protocol: ProtocolFamily;
+  capabilities?: readonly CapabilityTag[];
+}
+
+/**
+ * Conservative guard for chat fallback walks. It deliberately distrusts stale
+ * catalog tags when the protocol/model id clearly identifies a non-text model.
+ */
+export function isTextFallbackCompatibleModel(input: TextFallbackCompatibilityInput): boolean {
+  const id = input.providerModelId.trim().toLowerCase();
+  const capabilities = normalizeCapabilities(input.capabilities);
+  if (input.protocol === 'openai-images') return false;
+  if (capabilities.includes('image-generation') || capabilities.includes('embeddings')) {
+    return false;
+  }
+  if (isEmbeddingModelId(id) || isGeneratedMediaModelId(id) || isAudioOnlyModelId(id)) {
+    return false;
+  }
+  if (capabilities.length > 0 && !capabilities.includes('text')) return false;
+  return (
+    input.protocol === 'openai-chat' ||
+    input.protocol === 'openai-responses' ||
+    input.protocol === 'anthropic-messages'
+  );
+}
+
 /**
  * Local heuristic capability probe suggestions (product §7.2).
  *
@@ -77,17 +139,8 @@ export function suggestCapabilities(input: CapabilitySuggestionInput): Capabilit
   const flags: Partial<Record<CapabilityTag, boolean>> = {};
 
   const isImageProtocol = protocol === 'openai-images';
-  const isEmbedding =
-    /\bembed(ding)?s?\b/.test(id) || id.includes('text-embedding') || id.includes('embedding-');
-  const isImageGen =
-    isImageProtocol ||
-    /\bdall-?e\b/.test(id) ||
-    id.includes('flux') ||
-    id.includes('imagen') ||
-    id.includes('midjourney') ||
-    id.includes('stable-diffusion') ||
-    id.includes('sdxl') ||
-    /\bimage[-_]?gen/.test(id);
+  const isEmbedding = isEmbeddingModelId(id);
+  const isImageGen = isGeneratedMediaModelId(id) || isImageProtocol;
   const isVision =
     !isEmbedding &&
     !isImageGen &&
@@ -125,7 +178,9 @@ export function suggestCapabilities(input: CapabilitySuggestionInput): Capabilit
     reasons.push('model id looks like an embedding model');
   } else if (isImageGen) {
     flags['image-generation'] = true;
-    reasons.push(isImageProtocol ? 'openai-images protocol' : 'model id looks like image generation');
+    reasons.push(
+      isImageProtocol ? 'openai-images protocol' : 'model id looks like image generation',
+    );
   } else {
     flags.text = true;
     reasons.push('chat/messages protocol defaults to text');

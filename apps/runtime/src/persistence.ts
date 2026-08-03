@@ -1,8 +1,15 @@
-﻿import { mkdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import {
+  buildEventPayloadBackfillProjection,
+  DEFAULT_EVENT_PAYLOAD_BACKFILL_MINIMUM_BYTES,
+  EVENT_PAYLOAD_BACKFILL_EVENT_TYPES,
+  EVENT_PAYLOAD_PROJECTION_BUILDER_ID,
+  EVENT_PAYLOAD_PROJECTION_BUILDER_VERSION,
+  EventPayloadSidecarStore,
   openDatabaseAsync,
   runMigrations,
   SqliteEventCheckpointStore,
@@ -23,8 +30,10 @@ import {
   SqliteArtifactStore,
   SqliteProductionExecutionStore,
   SqliteBrowserStore,
+  SqliteDesktopStore,
   SqliteUnitOfWork,
   SqliteAppSettingStore,
+  SqliteAgentContextStore,
 } from '@sync-think/storage';
 import {
   SecureStore,
@@ -35,14 +44,29 @@ import {
 } from '@sync-think/secure-store';
 import { Runtime, type RuntimeOptions } from './runtime.js';
 import { createProductionStepExecutor } from './orchestration/production-step-executor.js';
-import { BrowserHost, type BrowserHostLike } from '@sync-think/workers';
+import { GeneratedImageStore } from './orchestration/generated-image-store.js';
+import { BrowserHost, PersistentBrowserWorker, type BrowserHostLike } from '@sync-think/workers';
+import { RuntimeBrowserController } from './browser/runtime-browser-controller.js';
+
+export interface RuntimeEventPayloadSidecarOptions {
+  /** Explicit opt-in. Omitting this object keeps every Event payload inline. */
+  enabled: true;
+  rootDirectory?: string;
+  minimumBytes?: number;
+}
 
 export interface OpenPersistentRuntimeOptions
-  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'globalAgentStore' | 'teamStore' | 'conversationStore' | 'messageStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'browserStore' | 'unitOfWork' | 'secureStore' | 'appSettingStore' | 'queryUsageSummary'> {
+  extends Omit<RuntimeOptions, 'checkpoint' | 'stateStore' | 'workspaceStore' | 'providerStore' | 'agentStore' | 'globalAgentStore' | 'teamStore' | 'conversationStore' | 'messageStore' | 'memoryStore' | 'skillStore' | 'mcpStore' | 'approvalStore' | 'policyStore' | 'authorizationStore' | 'orchestrationStore' | 'artifactStore' | 'productionExecutionStore' | 'browserStore' | 'desktopStore' | 'unitOfWork' | 'secureStore' | 'appSettingStore' | 'queryUsageSummary'> {
   dbPath: string;
   secureStoreBackend?: SecureStoreBackend;
   secureStoreKeyPath?: string;
+  eventPayloadSidecar?: RuntimeEventPayloadSidecarOptions;
 }
+
+export const RUNTIME_EVENT_PAYLOAD_PROJECTION_BUILDER = Object.freeze({
+  id: EVENT_PAYLOAD_PROJECTION_BUILDER_ID,
+  version: EVENT_PAYLOAD_PROJECTION_BUILDER_VERSION,
+});
 
 export interface CreateRuntimeSecureStoreOptions {
   secureStoreBackend?: SecureStoreBackend;
@@ -67,6 +91,30 @@ export function resolveRuntimeDatabasePath(
   if (env.SYNC_THINK_DB_PATH) return resolve(env.SYNC_THINK_DB_PATH);
   const dataRoot = env.LOCALAPPDATA ?? join(homeDirectory, '.sync-think');
   return join(dataRoot, 'SYNC-THINK', 'sync-think.db');
+}
+
+export function resolveRuntimeEventPayloadSidecarRoot(
+  databasePathInput: string,
+  installId: string,
+): string {
+  const databasePath = databasePathInput === ':memory:' ? ':memory:' : resolve(databasePathInput);
+  const identity = createHash('sha256')
+    .update(databasePath, 'utf8')
+    .update('\0', 'utf8')
+    .update(installId, 'utf8')
+    .digest('hex')
+    .slice(0, 24);
+  const dataRoot =
+    databasePath === ':memory:' ? join(tmpdir(), 'sync-think-runtime') : dirname(databasePath);
+  return join(dataRoot, 'event-payload-sidecars', identity);
+}
+
+function runtimeEventPayloadMinimumBytes(value: number | undefined): number {
+  const minimumBytes = value ?? DEFAULT_EVENT_PAYLOAD_BACKFILL_MINIMUM_BYTES;
+  if (!Number.isSafeInteger(minimumBytes) || minimumBytes < 1) {
+    throw new Error('Runtime Event payload sidecar minimumBytes must be a positive safe integer');
+  }
+  return minimumBytes;
 }
 
 export function resolveSecureStoreKeyPath(
@@ -103,7 +151,13 @@ export function createRuntimeSecureStore(options: CreateRuntimeSecureStoreOption
 export async function openPersistentRuntime(
   options: OpenPersistentRuntimeOptions,
 ): Promise<PersistentRuntimeSession> {
-  const { dbPath, secureStoreBackend, secureStoreKeyPath, ...runtimeOptions } = options;
+  const {
+    dbPath,
+    secureStoreBackend,
+    secureStoreKeyPath,
+    eventPayloadSidecar,
+    ...runtimeOptions
+  } = options;
   const databasePath = dbPath === ':memory:' ? dbPath : resolve(dbPath);
   if (databasePath !== ':memory:') {
     await mkdir(dirname(databasePath), { recursive: true });
@@ -130,7 +184,9 @@ export async function openPersistentRuntime(
     const orchestrationStore = new SqliteOrchestrationStore(connection.raw);
     const artifactStore = new SqliteArtifactStore(connection.raw);
     const productionExecutionStore = new SqliteProductionExecutionStore(connection.raw);
+    const agentContextStore = new SqliteAgentContextStore(connection.raw);
     const browserStore = new SqliteBrowserStore(connection.raw);
+    const desktopStore = new SqliteDesktopStore(connection.raw);
     const skillStore = new SqliteSkillStore(connection.raw);
     const appSettingStore = new SqliteAppSettingStore(connection.raw);
     // 0026+: rebuild NewMax-style usage views from durable provider/run/tool events.
@@ -139,19 +195,34 @@ export async function openPersistentRuntime(
       const requestRows = connection.raw
         .prepare(
           `WITH usage_packets AS (
-             SELECT COALESCE(json_extract(payload_json, '$.packetId'), id) AS packet_id,
+             SELECT COALESCE(
+                      json_extract(payload_json, '$.requestId'),
+                      json_extract(payload_json, '$.packetId'),
+                      id
+                    ) AS request_id,
+                    task_id,
                     run_id,
+                    step_id,
                     json_extract(payload_json, '$.modelId') AS model_id,
-                    json_extract(payload_json, '$.run.providerId') AS provider_id,
+                    COALESCE(
+                      json_extract(payload_json, '$.providerId'),
+                      json_extract(payload_json, '$.run.providerId')
+                    ) AS provider_id,
+                    json_extract(payload_json, '$.providerModelId') AS provider_model_id,
+                    json_extract(payload_json, '$.agentContextThreadId') AS agent_context_thread_id,
+                    json_extract(payload_json, '$.contextEpochId') AS context_epoch_id,
+                    json_extract(payload_json, '$.purpose') AS purpose,
                     MAX(COALESCE(json_extract(payload_json, '$.tokensIn'), 0)) AS tokens_in,
                     MAX(COALESCE(json_extract(payload_json, '$.tokensOut'), 0)) AS tokens_out,
                     MAX(json_extract(payload_json, '$.cachedTokensHit')) AS cached_tokens_hit,
                     MAX(json_extract(payload_json, '$.cachedTokensCreated')) AS cached_tokens_created,
+                    MAX(COALESCE(json_extract(payload_json, '$.reasoningTokens'), 0)) AS reasoning_tokens,
+                    MAX(COALESCE(json_extract(payload_json, '$.totalTokens'), 0)) AS total_tokens,
                     MIN(occurred_at) AS started_at,
                     MAX(occurred_at) AS usage_at
              FROM event
              WHERE type = 'provider.usage' AND occurred_at >= ?
-             GROUP BY packet_id, run_id, model_id, provider_id
+             GROUP BY request_id, task_id, run_id, step_id, model_id, provider_id, provider_model_id, agent_context_thread_id, context_epoch_id, purpose
            ), terminal AS (
              SELECT run_id,
                     MAX(CASE WHEN type = 'run.completed' THEN occurred_at END) AS completed_at,
@@ -163,25 +234,34 @@ export async function openPersistentRuntime(
                AND occurred_at >= ?
              GROUP BY run_id
            )
-           SELECT u.packet_id, u.run_id, u.model_id, u.provider_id,
-                  u.tokens_in, u.tokens_out,
-                  u.cached_tokens_hit, u.cached_tokens_created,
-                  u.started_at, u.usage_at,
-                  t.completed_at, t.failed_at, t.error_message
+           SELECT u.request_id, u.task_id, u.run_id, u.step_id, u.model_id, u.provider_id,
+                   u.provider_model_id, u.agent_context_thread_id, u.context_epoch_id, u.purpose,
+                   u.tokens_in, u.tokens_out, u.cached_tokens_hit, u.cached_tokens_created,
+                   u.reasoning_tokens, u.total_tokens,
+                   u.started_at, u.usage_at,
+                   t.completed_at, t.failed_at, t.error_message
            FROM usage_packets u
            LEFT JOIN terminal t ON t.run_id = u.run_id
            WHERE u.model_id IS NOT NULL
            ORDER BY u.usage_at DESC`,
         )
         .all(filter, filter) as Array<{
-        packet_id: string;
-        run_id: string | null;
-        model_id: string;
-        provider_id: string | null;
-        tokens_in: number;
-        tokens_out: number;
-        cached_tokens_hit: number | null;
-        cached_tokens_created: number | null;
+         request_id: string;
+         task_id: string | null;
+         run_id: string | null;
+         step_id: string | null;
+         model_id: string;
+         provider_id: string | null;
+         provider_model_id: string | null;
+         agent_context_thread_id: string | null;
+         context_epoch_id: string | null;
+         purpose: string | null;
+         tokens_in: number;
+         tokens_out: number;
+         cached_tokens_hit: number | null;
+         cached_tokens_created: number | null;
+         reasoning_tokens: number;
+         total_tokens: number;
         started_at: string;
         usage_at: string;
         completed_at: string | null;
@@ -194,15 +274,23 @@ export async function openPersistentRuntime(
         const startMs = Date.parse(row.started_at);
         const endMs = terminalAt ? Date.parse(terminalAt) : Number.NaN;
         return {
-          requestId: row.packet_id,
+          requestId: row.request_id,
+          taskId: row.task_id ?? undefined,
           runId: row.run_id ?? undefined,
+          stepId: row.step_id ?? undefined,
+          agentContextThreadId: row.agent_context_thread_id ?? undefined,
+          contextEpochId: row.context_epoch_id ?? undefined,
           occurredAt: row.usage_at,
           modelId: row.model_id,
           providerId: row.provider_id ?? undefined,
+          providerModelId: row.provider_model_id ?? undefined,
+          purpose: row.purpose as import('@sync-think/shared').ProviderUsagePurpose | undefined,
           tokensIn: row.tokens_in,
           tokensOut: row.tokens_out,
           cachedTokensHit: row.cached_tokens_hit ?? undefined,
           cachedTokensCreated: row.cached_tokens_created ?? undefined,
+          reasoningTokens: row.reasoning_tokens || undefined,
+          totalTokens: row.total_tokens || row.tokens_in + row.tokens_out,
           status: row.failed_at ? ('failed' as const) : row.completed_at ? ('success' as const) : ('unknown' as const),
           latencyMs:
             Number.isFinite(startMs) && Number.isFinite(endMs)
@@ -222,6 +310,10 @@ export async function openPersistentRuntime(
           failedRequests: number;
           tokensIn: number;
           tokensOut: number;
+          cachedTokensHit: number;
+          cachedTokensCreated: number;
+          reasoningTokens: number;
+          totalTokens: number;
           latencyTotalMs: number;
           latencySamples: number;
           averageLatencyMs?: number;
@@ -238,6 +330,10 @@ export async function openPersistentRuntime(
           failedRequests: 0,
           tokensIn: 0,
           tokensOut: 0,
+          cachedTokensHit: 0,
+          cachedTokensCreated: 0,
+          reasoningTokens: 0,
+          totalTokens: 0,
           latencyTotalMs: 0,
           latencySamples: 0,
           lastUsedAt: request.occurredAt,
@@ -247,6 +343,10 @@ export async function openPersistentRuntime(
         if (request.status === 'failed') current.failedRequests += 1;
         current.tokensIn += request.tokensIn;
         current.tokensOut += request.tokensOut;
+        current.cachedTokensHit += request.cachedTokensHit ?? 0;
+        current.cachedTokensCreated += request.cachedTokensCreated ?? 0;
+        current.reasoningTokens += request.reasoningTokens ?? 0;
+        current.totalTokens += request.totalTokens;
         if (typeof request.latencyMs === 'number') {
           current.latencyTotalMs += request.latencyMs;
           current.latencySamples += 1;
@@ -426,7 +526,20 @@ export async function openPersistentRuntime(
           .slice(0, 200),
       };
     };
-    unitOfWork.run(() => workspaceStore.reconcileTaskVersionsFromMessageEvents());
+    const taskVersionRepairAt = new Date().toISOString();
+    workspaceStore.reconcileTaskVersionFloorsFromMessages(taskVersionRepairAt);
+    workspaceStore.reconcileTaskVersionFloorsFromTaskEvents(taskVersionRepairAt);
+    browserHost ??= new BrowserHost({
+      profileRoot: join(runtimeDataRoot, 'browser-profiles'),
+      executablePath: process.env.SYNC_THINK_BROWSER_EXECUTABLE,
+    });
+    const productionBrowserController = new RuntimeBrowserController({
+      worker: new PersistentBrowserWorker(browserHost),
+      store: browserStore,
+      profileId: runtimeOptions.browserProfileId,
+      fallbackWorkingDir: runtimeOptions.browserFallbackWorkingDir ?? runtimeDataRoot,
+      leaseHost: browserHost,
+    });
     const stepExecutor =
       runtimeOptions.stepExecutor ??
       createProductionStepExecutor({
@@ -435,18 +548,35 @@ export async function openPersistentRuntime(
         workspaceStore,
         orchestrationStore,
         executionStore: productionExecutionStore,
+        agentContextStore,
         skillStore,
         secureStore,
         adaptersByProtocol: runtimeOptions.discoveryByProtocol,
         fallbackAdapter: runtimeOptions.discoveryAdapter,
+        browserController: productionBrowserController,
+        generatedImageStore: new GeneratedImageStore(
+          join(runtimeDataRoot, 'artifacts', 'generated-images'),
+        ),
       });
-    browserHost ??= new BrowserHost({
-      profileRoot: join(runtimeDataRoot, 'browser-profiles'),
-      executablePath: process.env.SYNC_THINK_BROWSER_EXECUTABLE,
-    });
+    const eventPayloadStateStore = new SqliteEventCheckpointStore(
+      connection.raw,
+      eventPayloadSidecar?.enabled === true
+        ? {
+            sidecar: new EventPayloadSidecarStore(
+              eventPayloadSidecar.rootDirectory
+                ? resolve(eventPayloadSidecar.rootDirectory)
+                : resolveRuntimeEventPayloadSidecarRoot(databasePath, options.installId),
+            ),
+            minimumBytes: runtimeEventPayloadMinimumBytes(eventPayloadSidecar.minimumBytes),
+            shouldExternalize: (event) =>
+              event.type === EVENT_PAYLOAD_BACKFILL_EVENT_TYPES[0],
+            project: (event) => buildEventPayloadBackfillProjection(event.type, event.payload),
+          }
+        : undefined,
+    );
     runtime = new Runtime({
       ...runtimeOptions,
-      stateStore: new SqliteEventCheckpointStore(connection.raw),
+      stateStore: eventPayloadStateStore,
       workspaceStore,
       providerStore,
       agentStore,
@@ -463,7 +593,9 @@ export async function openPersistentRuntime(
       orchestrationStore,
       artifactStore,
       productionExecutionStore,
+      agentContextStore,
       browserStore,
+      desktopStore,
       unitOfWork,
       secureStore,
       stepExecutor,

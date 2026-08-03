@@ -24,19 +24,27 @@ async function openInternal(opts: OpenDbOptions): Promise<{ db: Database; raw: B
     readonly: opts.readonly ?? false,
     fileMustExist: opts.fileMustExist ?? false,
   });
-  raw.pragma('journal_mode = WAL');
+  if (opts.readonly) {
+    raw.pragma('query_only = ON');
+  } else {
+    raw.pragma('journal_mode = WAL');
+  }
   raw.pragma('foreign_keys = ON');
   return { db: drizzle(raw, { schema }), raw };
 }
 
 // Public async opener for tests + Runtime bootstrap.
-export async function openDatabaseAsync(opts: OpenDbOptions): Promise<{ db: Database; raw: BetterSQLite3Raw }> {
+export async function openDatabaseAsync(
+  opts: OpenDbOptions,
+): Promise<{ db: Database; raw: BetterSQLite3Raw }> {
   return openInternal(opts);
 }
 
 // Synchronous variant for hot-path use; better-sqlite3 itself is sync, but
 // we expose async entry for ESM dynamic import. After first warm-up, callers
 // can hold the raw handle for sync access via the returned `raw`.
-export async function openDatabase(opts: OpenDbOptions): Promise<{ db: Database; raw: BetterSQLite3Raw }> {
+export async function openDatabase(
+  opts: OpenDbOptions,
+): Promise<{ db: Database; raw: BetterSQLite3Raw }> {
   return openInternal(opts);
 }

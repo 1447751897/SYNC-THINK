@@ -1,14 +1,21 @@
-import type {
+﻿import type {
   FailureClass,
   ReviewOutcome,
   ReviewStepExecutionContext,
   RunId,
+  TaskId,
+  AgentContextThreadId,
+  ContextEpochId,
+  ProviderRequestUsage,
 } from '@sync-think/shared';
 import type { StepArtifactVersionOutput, StoredStep } from '@sync-think/storage';
 import type { ArtifactVersion } from '@sync-think/shared';
 
 export interface StepExecutionContext {
   runId: RunId;
+  taskId?: TaskId;
+  agentContextThreadId?: AgentContextThreadId;
+  contextEpochId?: ContextEpochId;
   step: Readonly<StoredStep>;
   idempotencyKey: string;
   artifactVersions: readonly ArtifactVersion[];
@@ -26,6 +33,8 @@ export interface StepActionGateResult {
 export interface StepExecutionResult {
   outputVersions?: readonly StepArtifactVersionOutput[];
   reviewOutcome?: Readonly<ReviewOutcome>;
+  /** One entry per real provider request, including tool-loop turns. */
+  providerUsages?: readonly Readonly<ProviderRequestUsage>[];
 }
 
 export type StepActionKind =
@@ -41,6 +50,9 @@ export interface StepActionRequest {
 
 export interface StepActionInspectionContext {
   runId: RunId;
+  taskId?: TaskId;
+  agentContextThreadId?: AgentContextThreadId;
+  contextEpochId?: ContextEpochId;
   step: Readonly<StoredStep>;
 }
 
@@ -82,7 +94,7 @@ export class StepExecutionError extends Error {
 
 /**
  * Sentinel subclass: a Provider response echoed the credential secret. This is a
- * non-retryable safety failure — it must never enter the agent fallback chain
+ * non-retryable safety failure 鈥?it must never enter the agent fallback chain
  * (advancing it would erase the real `summary` under a synthetic "paused" error)
  * and must preserve its exact `summary` all the way to `step.failed`.
  */

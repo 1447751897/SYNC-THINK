@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
+  IMAGE_GENERATION_QUALITIES,
+  IMAGE_GENERATION_SIZES,
   MAX_INLINE_ARTIFACT_CONTENT_BYTES,
   ulid,
   type Artifact,
@@ -33,12 +35,7 @@ const MIME_REGEX = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{
 const WINDOWS_ABSOLUTE_PATH_REGEX = /^[a-z]:[\\/]/i;
 const UNC_ABSOLUTE_PATH_REGEX = /^\\\\[^\\/]+[\\/][^\\/]+/;
 const INTERNAL_ARTIFACT_REF_REGEX = /^artifact:\/\/[a-z0-9][a-z0-9._:/-]{0,1023}$/i;
-const MERGEABLE_RUN_STATES = new Set<RunState>([
-  'running',
-  'reviewing',
-  'revising',
-  'paused',
-]);
+const MERGEABLE_RUN_STATES = new Set<RunState>(['running', 'reviewing', 'revising', 'paused']);
 const DEFAULT_ARTIFACT_LIST_LIMIT = 8;
 export const MAX_ARTIFACT_LIST_LIMIT = 8;
 const MAX_LISTED_VERSIONS_PER_ARTIFACT = 8;
@@ -223,6 +220,7 @@ interface ArtifactVersionSummaryDbRow {
   content_hash: string;
   mime_type: string;
   parent_version_ids_json: string;
+  metadata_json: string;
   created_at: string;
   has_inline_content: number;
   has_content_ref: number;
@@ -440,12 +438,49 @@ function decodeMetadata(raw: string): Record<string, JsonValue> {
   return parsed as Record<string, JsonValue>;
 }
 
+function decodeImageGenerationSummary(
+  raw: string,
+): ArtifactVersionSummary['imageGeneration'] | undefined {
+  const metadata = decodeMetadata(raw);
+  if (metadata.executionKind !== 'image-generation' || metadata.generationKind !== 'image') {
+    return undefined;
+  }
+  const imageIndex = metadata.imageIndex;
+  const imageCount = metadata.imageCount;
+  const imageSize = metadata.imageSize;
+  const imageQuality = metadata.imageQuality;
+  const byteLength = metadata.byteLength;
+  if (
+    !Number.isSafeInteger(imageIndex) ||
+    (imageIndex as number) < 0 ||
+    !Number.isSafeInteger(imageCount) ||
+    (imageCount as number) < 1 ||
+    (imageCount as number) > 4 ||
+    (imageIndex as number) >= (imageCount as number) ||
+    !IMAGE_GENERATION_SIZES.includes(imageSize as (typeof IMAGE_GENERATION_SIZES)[number]) ||
+    !IMAGE_GENERATION_QUALITIES.includes(
+      imageQuality as (typeof IMAGE_GENERATION_QUALITIES)[number],
+    ) ||
+    !Number.isSafeInteger(byteLength) ||
+    (byteLength as number) < 1
+  ) {
+    throw new ArtifactDataError(
+      'artifact.invalid_version',
+      'artifactVersion.metadata.imageGeneration',
+      'invalid image candidate metadata',
+    );
+  }
+  return {
+    candidateIndex: (imageIndex as number) + 1,
+    candidateCount: imageCount as number,
+    size: imageSize as (typeof IMAGE_GENERATION_SIZES)[number],
+    quality: imageQuality as (typeof IMAGE_GENERATION_QUALITIES)[number],
+    byteLength: byteLength as number,
+  };
+}
+
 function decodeParentIds(raw: string): ArtifactVersionId[] {
-  const parsed = parseJson(
-    raw,
-    'artifactVersion.parentVersionIds',
-    'artifact.invalid_version',
-  );
+  const parsed = parseJson(raw, 'artifactVersion.parentVersionIds', 'artifact.invalid_version');
   if (
     !Array.isArray(parsed) ||
     parsed.length > MAX_PARENT_VERSIONS ||
@@ -474,10 +509,7 @@ function mapArtifact(row: ArtifactDbRow): Artifact {
 
 function mapOwnedArtifact(row: OwnedArtifactDbRow): Artifact {
   const artifact = mapArtifact(row);
-  if (
-    row.owner_workspace_id !== artifact.workspaceId ||
-    row.owner_task_id !== artifact.taskId
-  ) {
+  if (row.owner_workspace_id !== artifact.workspaceId || row.owner_task_id !== artifact.taskId) {
     throw new ArtifactDataError(
       'artifact.invalid_record',
       'artifact.scope',
@@ -488,6 +520,7 @@ function mapOwnedArtifact(row: OwnedArtifactDbRow): Artifact {
 }
 
 function mapVersionSummary(row: ArtifactVersionSummaryDbRow): ArtifactVersionSummary {
+  const imageGeneration = decodeImageGenerationSummary(row.metadata_json);
   if (!Number.isSafeInteger(row.version) || row.version < 1) {
     throw new ArtifactDataError(
       'artifact.invalid_version',
@@ -506,10 +539,7 @@ function mapVersionSummary(row: ArtifactVersionSummaryDbRow): ArtifactVersionSum
       'expected exactly one content representation',
     );
   }
-  const artifactId = requireStoredText(
-    row.artifact_id,
-    'artifactVersion.artifactId',
-  ) as ArtifactId;
+  const artifactId = requireStoredText(row.artifact_id, 'artifactVersion.artifactId') as ArtifactId;
   if (
     row.artifact_run_id === null ||
     row.source_step_run_id === null ||
@@ -536,16 +566,14 @@ function mapVersionSummary(row: ArtifactVersionSummaryDbRow): ArtifactVersionSum
       'artifactVersion.mimeType',
       'artifact.invalid_version',
     ),
-    sourceStepId: requireStoredText(
-      row.source_step_id,
-      'artifactVersion.sourceStepId',
-    ) as StepId,
+    sourceStepId: requireStoredText(row.source_step_id, 'artifactVersion.sourceStepId') as StepId,
     status: requireVersionStatus(row.status),
     version: row.version,
     parentVersionIds: decodeParentIds(row.parent_version_ids_json),
     createdAt: requireStoredText(row.created_at, 'artifactVersion.createdAt', 128),
     hasInlineContent: row.has_inline_content === 1,
     hasContentRef: row.has_content_ref === 1,
+    ...(imageGeneration ? { imageGeneration } : {}),
   };
 }
 
@@ -627,10 +655,7 @@ function mapVersion(row: ArtifactVersionDbRow): ArtifactVersion {
       'artifactVersion.mimeType',
       'artifact.invalid_version',
     ),
-    sourceStepId: requireStoredText(
-      row.source_step_id,
-      'artifactVersion.sourceStepId',
-    ) as StepId,
+    sourceStepId: requireStoredText(row.source_step_id, 'artifactVersion.sourceStepId') as StepId,
     status: requireVersionStatus(row.status),
     version: row.version,
     parentVersionIds: decodeParentIds(row.parent_version_ids_json),
@@ -662,10 +687,7 @@ function mapSelection(row: ArtifactSelectionDbRow): ArtifactSelection {
 
 function decodeConflictSummary(raw: string): ArtifactMergeConflictSummary {
   const parsed = parseJson(raw, 'artifactMergeConflict.summary', 'artifact.invalid_conflict');
-  if (
-    !isRecord(parsed) ||
-    Object.keys(parsed).sort().join(',') !== 'baseHash,leftHash,rightHash'
-  ) {
+  if (!isRecord(parsed) || Object.keys(parsed).sort().join(',') !== 'baseHash,leftHash,rightHash') {
     throw new ArtifactDataError(
       'artifact.invalid_conflict',
       'artifactMergeConflict.summary',
@@ -702,7 +724,10 @@ function mapConflict(row: ArtifactMergeConflictDbRow): ArtifactMergeConflict {
   const common = {
     id: requireStoredText(row.id, 'artifactMergeConflict.id'),
     operationId: requireStoredText(row.operation_id, 'artifactMergeConflict.operationId'),
-    artifactId: requireStoredText(row.artifact_id, 'artifactMergeConflict.artifactId') as ArtifactId,
+    artifactId: requireStoredText(
+      row.artifact_id,
+      'artifactMergeConflict.artifactId',
+    ) as ArtifactId,
     runId: requireStoredText(row.run_id, 'artifactMergeConflict.runId') as RunId,
     baseVersionId: requireStoredText(
       row.base_version_id,
@@ -753,10 +778,7 @@ function mapConflictResolution(
   }
   return {
     id: requireStoredText(row.id, 'artifactMergeConflictResolution.id'),
-    operationId: requireStoredText(
-      row.operation_id,
-      'artifactMergeConflictResolution.operationId',
-    ),
+    operationId: requireStoredText(row.operation_id, 'artifactMergeConflictResolution.operationId'),
     conflictId: requireStoredText(row.conflict_id, 'artifactMergeConflictResolution.conflictId'),
     resolutionVersionId: requireStoredText(
       row.resolution_version_id,
@@ -771,11 +793,7 @@ function mapConflictResolution(
       row.resulting_task_version,
       'artifactMergeConflictResolution.resultingTaskVersion',
     ),
-    createdAt: requireStoredText(
-      row.created_at,
-      'artifactMergeConflictResolution.createdAt',
-      128,
-    ),
+    createdAt: requireStoredText(row.created_at, 'artifactMergeConflictResolution.createdAt', 128),
   };
 }
 
@@ -824,36 +842,38 @@ export class SqliteArtifactStore {
     const runId = requireText(input.runId, 'artifact.runId') as RunId;
     const name = requireText(input.name, 'artifact.name', MAX_NAME_LENGTH).trim();
     const now = input.now ?? new Date().toISOString();
-    return this.raw.transaction(() => {
-      const ownership = this.raw
-        .prepare(
-          `SELECT run.task_id AS taskId, task.workspace_id AS workspaceId
+    return this.raw
+      .transaction(() => {
+        const ownership = this.raw
+          .prepare(
+            `SELECT run.task_id AS taskId, task.workspace_id AS workspaceId
            FROM run JOIN task ON task.id = run.task_id WHERE run.id = ?`,
-        )
-        .get(runId) as { taskId: string; workspaceId: string } | undefined;
-      if (!ownership || ownership.taskId !== taskId || ownership.workspaceId !== workspaceId) {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'artifact.scope',
-          'Run does not belong to workspace/task',
-        );
-      }
-      const artifact: Artifact = {
-        id: ulid() as ArtifactId,
-        workspaceId,
-        taskId,
-        runId,
-        name,
-        createdAt: now,
-      };
-      this.raw
-        .prepare(
-          `INSERT INTO artifact (id, workspace_id, task_id, run_id, name, created_at)
+          )
+          .get(runId) as { taskId: string; workspaceId: string } | undefined;
+        if (!ownership || ownership.taskId !== taskId || ownership.workspaceId !== workspaceId) {
+          throw new ArtifactDataError(
+            'artifact.invalid_input',
+            'artifact.scope',
+            'Run does not belong to workspace/task',
+          );
+        }
+        const artifact: Artifact = {
+          id: ulid() as ArtifactId,
+          workspaceId,
+          taskId,
+          runId,
+          name,
+          createdAt: now,
+        };
+        this.raw
+          .prepare(
+            `INSERT INTO artifact (id, workspace_id, task_id, run_id, name, created_at)
            VALUES (?, ?, ?, ?, ?, ?)`,
-        )
-        .run(artifact.id, workspaceId, taskId, runId, name, now);
-      return artifact;
-    }).immediate();
+          )
+          .run(artifact.id, workspaceId, taskId, runId, name, now);
+        return artifact;
+      })
+      .immediate();
   }
 
   getArtifact(id: ArtifactId): Artifact | undefined {
@@ -883,10 +903,7 @@ export class SqliteArtifactStore {
     return row ? mapOwnedArtifact(row as OwnedArtifactDbRow) : undefined;
   }
 
-  listArtifacts(
-    scope: ArtifactScope,
-    options: ListArtifactsOptions = {},
-  ): StoredArtifactListPage {
+  listArtifacts(scope: ArtifactScope, options: ListArtifactsOptions = {}): StoredArtifactListPage {
     const limit = options.limit ?? DEFAULT_ARTIFACT_LIST_LIMIT;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_ARTIFACT_LIST_LIMIT) {
       throw new ArtifactDataError(
@@ -942,7 +959,8 @@ export class SqliteArtifactStore {
              artifact_version.source_run_id, artifact_version.source_step_id,
              artifact_version.status, artifact_version.version,
              artifact_version.content_hash, artifact_version.mime_type,
-             artifact_version.parent_version_ids_json, artifact_version.created_at,
+             artifact_version.parent_version_ids_json, artifact_version.metadata_json,
+             artifact_version.created_at,
              CASE WHEN artifact_version.content IS NULL THEN 0 ELSE 1 END AS has_inline_content,
              CASE WHEN artifact_version.content_ref IS NULL THEN 0 ELSE 1 END AS has_content_ref,
              artifact.run_id AS artifact_run_id,
@@ -974,7 +992,7 @@ export class SqliteArtifactStore {
            WHERE artifact_version.artifact_id IN (${placeholders})
          )
          SELECT id, artifact_id, source_run_id, source_step_id, status, version,
-           content_hash, mime_type, parent_version_ids_json, created_at,
+           content_hash, mime_type, parent_version_ids_json, metadata_json, created_at,
            has_inline_content, has_content_ref, artifact_run_id,
            source_step_run_id, invalid_parent_count
          FROM ranked_versions
@@ -1012,8 +1030,8 @@ export class SqliteArtifactStore {
            )`,
       )
       .all(...artifacts.map((artifact) => artifact.id)) as Array<
-        ArtifactSelectionDbRow & { selected_artifact_id: string | null }
-      >;
+      ArtifactSelectionDbRow & { selected_artifact_id: string | null }
+    >;
     const selectedByArtifact = new Map<ArtifactId, ArtifactVersionId>();
     for (const row of selectionRows) {
       const selection = mapSelection(row);
@@ -1044,63 +1062,66 @@ export class SqliteArtifactStore {
     return this.raw.transaction(() => this.createVersionInternal(input)).immediate();
   }
 
-  createMergedVersion(
-    input: CreateMergedArtifactVersionInput,
-  ): { created: boolean; version: ArtifactVersion } {
-    return this.raw.transaction(() => {
-      if (
-        this.getSelectionByOperationId(input.operationId) ||
-        this.getConflictResolutionByOperationId(input.operationId)
-      ) {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'operationId',
-          'operation ID belongs to a different artifact mutation',
-        );
-      }
-      this.assertMergePreconditionsInternal(input);
-      const existing = this.getMergeOutcomeByOperationId(input.operationId);
-      if (existing) {
+  createMergedVersion(input: CreateMergedArtifactVersionInput): {
+    created: boolean;
+    version: ArtifactVersion;
+  } {
+    return this.raw
+      .transaction(() => {
         if (
-          existing.status !== 'clean' ||
-          existing.version.artifactId !== input.artifactId ||
-          existing.baseVersionId !== input.baseVersionId ||
-          existing.version.sourceStepId !== input.sourceStepId ||
-          existing.version.parentVersionIds[0] !== input.leftVersionId ||
-          existing.version.parentVersionIds[1] !== input.rightVersionId ||
-          existing.expectedTaskVersion !== input.expectedTaskVersion ||
-          existing.resultingTaskVersion !== input.resultingTaskVersion
+          this.getSelectionByOperationId(input.operationId) ||
+          this.getConflictResolutionByOperationId(input.operationId)
         ) {
           throw new ArtifactDataError(
             'artifact.invalid_input',
             'operationId',
-            'operation ID was reused with different merge input',
+            'operation ID belongs to a different artifact mutation',
           );
         }
-        return { created: false, version: existing.version };
-      }
-      assertNextTaskVersion(input.expectedTaskVersion, input.resultingTaskVersion);
-      this.assertDistinctMergeVersions(input);
-      const version = this.createVersionInternal(
-        {
-          artifactId: input.artifactId,
-          sourceStepId: input.sourceStepId,
-          content: input.content,
-          mimeType: input.mimeType,
-          status: 'merged',
-          parentVersionIds: [input.leftVersionId, input.rightVersionId],
-          metadata: input.metadata,
-          now: input.now,
-        },
-        {
-          operationId: requireText(input.operationId, 'operationId'),
-          mergeBaseVersionId: input.baseVersionId,
-          expectedTaskVersion: input.expectedTaskVersion,
-          resultingTaskVersion: input.resultingTaskVersion,
-        },
-      );
-      return { created: true, version };
-    }).immediate();
+        this.assertMergePreconditionsInternal(input);
+        const existing = this.getMergeOutcomeByOperationId(input.operationId);
+        if (existing) {
+          if (
+            existing.status !== 'clean' ||
+            existing.version.artifactId !== input.artifactId ||
+            existing.baseVersionId !== input.baseVersionId ||
+            existing.version.sourceStepId !== input.sourceStepId ||
+            existing.version.parentVersionIds[0] !== input.leftVersionId ||
+            existing.version.parentVersionIds[1] !== input.rightVersionId ||
+            existing.expectedTaskVersion !== input.expectedTaskVersion ||
+            existing.resultingTaskVersion !== input.resultingTaskVersion
+          ) {
+            throw new ArtifactDataError(
+              'artifact.invalid_input',
+              'operationId',
+              'operation ID was reused with different merge input',
+            );
+          }
+          return { created: false, version: existing.version };
+        }
+        assertNextTaskVersion(input.expectedTaskVersion, input.resultingTaskVersion);
+        this.assertDistinctMergeVersions(input);
+        const version = this.createVersionInternal(
+          {
+            artifactId: input.artifactId,
+            sourceStepId: input.sourceStepId,
+            content: input.content,
+            mimeType: input.mimeType,
+            status: 'merged',
+            parentVersionIds: [input.leftVersionId, input.rightVersionId],
+            metadata: input.metadata,
+            now: input.now,
+          },
+          {
+            operationId: requireText(input.operationId, 'operationId'),
+            mergeBaseVersionId: input.baseVersionId,
+            expectedTaskVersion: input.expectedTaskVersion,
+            resultingTaskVersion: input.resultingTaskVersion,
+          },
+        );
+        return { created: true, version };
+      })
+      .immediate();
   }
 
   getVersion(id: ArtifactVersionId): ArtifactVersion | undefined {
@@ -1157,61 +1178,64 @@ export class SqliteArtifactStore {
     return versions;
   }
 
-  selectVersion(
-    input: SelectArtifactVersionInput,
-  ): { created: boolean; selection: ArtifactSelection } {
-    return this.raw.transaction(() => {
-      const operationId = requireText(input.operationId, 'operationId');
-      const existing = this.getSelectionByOperationId(operationId);
-      if (existing) {
-        if (!isSameSelection(existing, input)) {
+  selectVersion(input: SelectArtifactVersionInput): {
+    created: boolean;
+    selection: ArtifactSelection;
+  } {
+    return this.raw
+      .transaction(() => {
+        const operationId = requireText(input.operationId, 'operationId');
+        const existing = this.getSelectionByOperationId(operationId);
+        if (existing) {
+          if (!isSameSelection(existing, input)) {
+            throw new ArtifactDataError(
+              'artifact.invalid_input',
+              'operationId',
+              'operation ID was reused with different selection input',
+            );
+          }
+          return { created: false, selection: existing };
+        }
+        if (
+          this.getMergeOutcomeByOperationId(operationId) ||
+          this.getConflictResolutionByOperationId(operationId)
+        ) {
           throw new ArtifactDataError(
             'artifact.invalid_input',
             'operationId',
-            'operation ID was reused with different selection input',
+            'operation ID belongs to a different artifact mutation',
           );
         }
-        return { created: false, selection: existing };
-      }
-      if (
-        this.getMergeOutcomeByOperationId(operationId) ||
-        this.getConflictResolutionByOperationId(operationId)
-      ) {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'operationId',
-          'operation ID belongs to a different artifact mutation',
-        );
-      }
-      assertNextTaskVersion(input.expectedTaskVersion, input.resultingTaskVersion);
-      this.getRequiredVersionForArtifact(input.versionId, input.artifactId);
-      const selection: ArtifactSelection = {
-        id: ulid(),
-        operationId,
-        artifactId: input.artifactId,
-        selectedVersionId: input.versionId,
-        expectedTaskVersion: input.expectedTaskVersion,
-        resultingTaskVersion: input.resultingTaskVersion,
-        createdAt: input.now ?? new Date().toISOString(),
-      };
-      this.raw
-        .prepare(
-          `INSERT INTO artifact_selection (
+        assertNextTaskVersion(input.expectedTaskVersion, input.resultingTaskVersion);
+        this.getRequiredVersionForArtifact(input.versionId, input.artifactId);
+        const selection: ArtifactSelection = {
+          id: ulid(),
+          operationId,
+          artifactId: input.artifactId,
+          selectedVersionId: input.versionId,
+          expectedTaskVersion: input.expectedTaskVersion,
+          resultingTaskVersion: input.resultingTaskVersion,
+          createdAt: input.now ?? new Date().toISOString(),
+        };
+        this.raw
+          .prepare(
+            `INSERT INTO artifact_selection (
              id, operation_id, artifact_id, selected_version_id,
              expected_task_version, resulting_task_version, created_at
            ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          selection.id,
-          selection.operationId,
-          selection.artifactId,
-          selection.selectedVersionId,
-          selection.expectedTaskVersion,
-          selection.resultingTaskVersion,
-          selection.createdAt,
-        );
-      return { created: true, selection };
-    }).immediate();
+          )
+          .run(
+            selection.id,
+            selection.operationId,
+            selection.artifactId,
+            selection.selectedVersionId,
+            selection.expectedTaskVersion,
+            selection.resultingTaskVersion,
+            selection.createdAt,
+          );
+        return { created: true, selection };
+      })
+      .immediate();
   }
 
   getSelectionByOperationId(operationId: string): ArtifactSelection | undefined {
@@ -1238,104 +1262,107 @@ export class SqliteArtifactStore {
     });
   }
 
-  createMergeConflict(
-    input: CreateArtifactMergeConflictInput,
-  ): { created: boolean; conflict: ArtifactMergeConflict } {
-    return this.raw.transaction(() => {
-      const operationId = requireText(input.operationId, 'operationId');
-      if (
-        this.getSelectionByOperationId(operationId) ||
-        this.getConflictResolutionByOperationId(operationId)
-      ) {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'operationId',
-          'operation ID belongs to a different artifact mutation',
-        );
-      }
-      this.assertMergePreconditionsInternal(input);
-      const existing = this.getMergeOutcomeByOperationId(operationId);
-      if (existing) {
-        if (existing.status !== 'conflict' || !isSameConflict(existing.conflict, input)) {
+  createMergeConflict(input: CreateArtifactMergeConflictInput): {
+    created: boolean;
+    conflict: ArtifactMergeConflict;
+  } {
+    return this.raw
+      .transaction(() => {
+        const operationId = requireText(input.operationId, 'operationId');
+        if (
+          this.getSelectionByOperationId(operationId) ||
+          this.getConflictResolutionByOperationId(operationId)
+        ) {
           throw new ArtifactDataError(
             'artifact.invalid_input',
             'operationId',
-            'operation ID was reused with different conflict input',
+            'operation ID belongs to a different artifact mutation',
           );
         }
-        return { created: false, conflict: existing.conflict };
-      }
-      assertNextTaskVersion(input.expectedTaskVersion, input.resultingTaskVersion);
-      const artifact = this.getRequiredArtifact(input.artifactId);
-      const base = this.getRequiredVersionForArtifact(input.baseVersionId, input.artifactId);
-      const left = this.getRequiredVersionForArtifact(input.leftVersionId, input.artifactId);
-      const right = this.getRequiredVersionForArtifact(input.rightVersionId, input.artifactId);
-      if (
-        input.summary.baseHash !== base.contentHash ||
-        input.summary.leftHash !== left.contentHash ||
-        input.summary.rightHash !== right.contentHash
-      ) {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'summary',
-          'summary hashes do not match versions',
-        );
-      }
-      const runRow = this.raw
-        .prepare('SELECT state FROM run WHERE id = ?')
-        .get(artifact.runId) as { state: RunState };
-      const conflict: ArtifactMergeConflict = {
-        id: ulid(),
-        operationId,
-        artifactId: input.artifactId,
-        runId: artifact.runId,
-        sourceStepId: input.sourceStepId,
-        legacySourceStepUnknown: false,
-        baseVersionId: input.baseVersionId,
-        leftVersionId: input.leftVersionId,
-        rightVersionId: input.rightVersionId,
-        status: 'open',
-        summary: { ...input.summary },
-        expectedTaskVersion: input.expectedTaskVersion,
-        resultingTaskVersion: input.resultingTaskVersion,
-        createdAt: input.now ?? new Date().toISOString(),
-      };
-      this.raw
-        .prepare(
-          `INSERT INTO artifact_merge_conflict (
+        this.assertMergePreconditionsInternal(input);
+        const existing = this.getMergeOutcomeByOperationId(operationId);
+        if (existing) {
+          if (existing.status !== 'conflict' || !isSameConflict(existing.conflict, input)) {
+            throw new ArtifactDataError(
+              'artifact.invalid_input',
+              'operationId',
+              'operation ID was reused with different conflict input',
+            );
+          }
+          return { created: false, conflict: existing.conflict };
+        }
+        assertNextTaskVersion(input.expectedTaskVersion, input.resultingTaskVersion);
+        const artifact = this.getRequiredArtifact(input.artifactId);
+        const base = this.getRequiredVersionForArtifact(input.baseVersionId, input.artifactId);
+        const left = this.getRequiredVersionForArtifact(input.leftVersionId, input.artifactId);
+        const right = this.getRequiredVersionForArtifact(input.rightVersionId, input.artifactId);
+        if (
+          input.summary.baseHash !== base.contentHash ||
+          input.summary.leftHash !== left.contentHash ||
+          input.summary.rightHash !== right.contentHash
+        ) {
+          throw new ArtifactDataError(
+            'artifact.invalid_input',
+            'summary',
+            'summary hashes do not match versions',
+          );
+        }
+        const runRow = this.raw
+          .prepare('SELECT state FROM run WHERE id = ?')
+          .get(artifact.runId) as { state: RunState };
+        const conflict: ArtifactMergeConflict = {
+          id: ulid(),
+          operationId,
+          artifactId: input.artifactId,
+          runId: artifact.runId,
+          sourceStepId: input.sourceStepId,
+          legacySourceStepUnknown: false,
+          baseVersionId: input.baseVersionId,
+          leftVersionId: input.leftVersionId,
+          rightVersionId: input.rightVersionId,
+          status: 'open',
+          summary: { ...input.summary },
+          expectedTaskVersion: input.expectedTaskVersion,
+          resultingTaskVersion: input.resultingTaskVersion,
+          createdAt: input.now ?? new Date().toISOString(),
+        };
+        this.raw
+          .prepare(
+            `INSERT INTO artifact_merge_conflict (
              id, operation_id, artifact_id, run_id, source_step_id, base_version_id,
              left_version_id, right_version_id, status, summary_json,
              expected_task_version, resulting_task_version, created_at
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
-        )
-        .run(
-          conflict.id,
-          conflict.operationId,
-          conflict.artifactId,
-          conflict.runId,
-          conflict.sourceStepId,
-          conflict.baseVersionId,
-          conflict.leftVersionId,
-          conflict.rightVersionId,
-          JSON.stringify(conflict.summary),
-          conflict.expectedTaskVersion,
-          conflict.resultingTaskVersion,
-          conflict.createdAt,
-        );
-      if (runRow.state !== 'paused') {
-        const update = this.raw
-          .prepare('UPDATE run SET state = ?, updated_at = ? WHERE id = ? AND state = ?')
-          .run('paused', conflict.createdAt, artifact.runId, runRow.state);
-        if (update.changes !== 1) {
-          throw new ArtifactDataError(
-            'artifact.invalid_input',
-            'artifact.runId',
-            'Run changed while recording merge conflict',
+          )
+          .run(
+            conflict.id,
+            conflict.operationId,
+            conflict.artifactId,
+            conflict.runId,
+            conflict.sourceStepId,
+            conflict.baseVersionId,
+            conflict.leftVersionId,
+            conflict.rightVersionId,
+            JSON.stringify(conflict.summary),
+            conflict.expectedTaskVersion,
+            conflict.resultingTaskVersion,
+            conflict.createdAt,
           );
+        if (runRow.state !== 'paused') {
+          const update = this.raw
+            .prepare('UPDATE run SET state = ?, updated_at = ? WHERE id = ? AND state = ?')
+            .run('paused', conflict.createdAt, artifact.runId, runRow.state);
+          if (update.changes !== 1) {
+            throw new ArtifactDataError(
+              'artifact.invalid_input',
+              'artifact.runId',
+              'Run changed while recording merge conflict',
+            );
+          }
         }
-      }
-      return { created: true, conflict };
-    }).immediate();
+        return { created: true, conflict };
+      })
+      .immediate();
   }
 
   getMergeOutcomeByOperationId(operationId: string): StoredMergeOutcome | undefined {
@@ -1418,10 +1445,7 @@ export class SqliteArtifactStore {
     return conflict;
   }
 
-  getMergeConflictForScope(
-    id: string,
-    scope: ArtifactScope,
-  ): ArtifactMergeConflict | undefined {
+  getMergeConflictForScope(id: string, scope: ArtifactScope): ArtifactMergeConflict | undefined {
     const row = this.raw
       .prepare(
         `SELECT ${CONFLICT_COLUMNS} FROM artifact_merge_conflict
@@ -1431,8 +1455,7 @@ export class SqliteArtifactStore {
          )`,
       )
       .get(id, scope.workspaceId, scope.taskId, scope.runId) as
-      | ArtifactMergeConflictDbRow
-      | undefined;
+      ArtifactMergeConflictDbRow | undefined;
     if (!row) return undefined;
     const conflict = mapConflict(row);
     this.assertConflictOwnership(conflict);
@@ -1495,154 +1518,166 @@ export class SqliteArtifactStore {
     );
   }
 
-  resolveMergeConflict(
-    input: ResolveArtifactMergeConflictInput,
-  ): {
+  resolveMergeConflict(input: ResolveArtifactMergeConflictInput): {
     created: boolean;
     resolution: ArtifactMergeConflictResolution;
     version: ArtifactVersion;
   } {
-    return this.raw.transaction(() => {
-      const operationId = requireText(input.operationId, 'operationId');
-      const existing = this.getConflictResolutionByOperationId(operationId);
-      if (existing) {
-        const version = this.getVersion(existing.resolutionVersionId);
+    return this.raw
+      .transaction(() => {
+        const operationId = requireText(input.operationId, 'operationId');
+        const existing = this.getConflictResolutionByOperationId(operationId);
+        if (existing) {
+          const version = this.getVersion(existing.resolutionVersionId);
+          if (
+            !version ||
+            existing.conflictId !== input.conflictId ||
+            existing.strategy !== input.strategy ||
+            existing.expectedTaskVersion !== input.expectedTaskVersion ||
+            existing.resultingTaskVersion !== input.resultingTaskVersion ||
+            (input.strategy === 'manual' && version.content !== input.content)
+          ) {
+            throw new ArtifactDataError(
+              'artifact.invalid_input',
+              'operationId',
+              'operation ID was reused with different conflict resolution input',
+            );
+          }
+          return { created: false, resolution: existing, version };
+        }
         if (
-          !version ||
-          existing.conflictId !== input.conflictId ||
-          existing.strategy !== input.strategy ||
-          existing.expectedTaskVersion !== input.expectedTaskVersion ||
-          existing.resultingTaskVersion !== input.resultingTaskVersion ||
-          (input.strategy === 'manual' && version.content !== input.content)
+          this.getSelectionByOperationId(operationId) ||
+          this.raw
+            .prepare('SELECT 1 FROM artifact_version WHERE operation_id = ?')
+            .get(operationId) ||
+          this.raw
+            .prepare('SELECT 1 FROM artifact_merge_conflict WHERE operation_id = ?')
+            .get(operationId)
         ) {
           throw new ArtifactDataError(
             'artifact.invalid_input',
             'operationId',
-            'operation ID was reused with different conflict resolution input',
+            'operation ID belongs to a different artifact mutation',
           );
         }
-        return { created: false, resolution: existing, version };
-      }
-      if (
-        this.getSelectionByOperationId(operationId) ||
-        this.raw.prepare('SELECT 1 FROM artifact_version WHERE operation_id = ?').get(operationId) ||
-        this.raw.prepare('SELECT 1 FROM artifact_merge_conflict WHERE operation_id = ?').get(operationId)
-      ) {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'operationId',
-          'operation ID belongs to a different artifact mutation',
+        assertNextTaskVersion(input.expectedTaskVersion, input.resultingTaskVersion);
+        const conflict = this.getMergeConflict(input.conflictId);
+        if (!conflict) {
+          throw new ArtifactDataError('artifact.invalid_input', 'conflictId', 'conflict not found');
+        }
+        if (conflict.legacySourceStepUnknown) {
+          throw new ArtifactDataError(
+            'artifact.legacy_conflict_step_unknown',
+            'conflictId',
+            'legacy conflict cannot be resolved without an auditable merge Step',
+          );
+        }
+        if (this.getConflictResolution(conflict.id)) {
+          throw new ArtifactDataError(
+            'artifact.invalid_input',
+            'conflictId',
+            'conflict already has an append-only resolution',
+          );
+        }
+        const run = this.raw.prepare('SELECT state FROM run WHERE id = ?').get(conflict.runId) as
+          { state: RunState } | undefined;
+        if (run?.state !== 'paused') {
+          throw new ArtifactDataError(
+            'artifact.invalid_input',
+            'conflict.runId',
+            'conflict resolution requires a paused Run',
+          );
+        }
+        const base = this.getRequiredVersionForArtifact(
+          conflict.baseVersionId,
+          conflict.artifactId,
         );
-      }
-      assertNextTaskVersion(input.expectedTaskVersion, input.resultingTaskVersion);
-      const conflict = this.getMergeConflict(input.conflictId);
-      if (!conflict) {
-        throw new ArtifactDataError('artifact.invalid_input', 'conflictId', 'conflict not found');
-      }
-      if (conflict.legacySourceStepUnknown) {
-        throw new ArtifactDataError(
-          'artifact.legacy_conflict_step_unknown',
-          'conflictId',
-          'legacy conflict cannot be resolved without an auditable merge Step',
+        const left = this.getRequiredVersionForArtifact(
+          conflict.leftVersionId,
+          conflict.artifactId,
         );
-      }
-      if (this.getConflictResolution(conflict.id)) {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'conflictId',
-          'conflict already has an append-only resolution',
+        const right = this.getRequiredVersionForArtifact(
+          conflict.rightVersionId,
+          conflict.artifactId,
         );
-      }
-      const run = this.raw.prepare('SELECT state FROM run WHERE id = ?').get(conflict.runId) as
-        | { state: RunState }
-        | undefined;
-      if (run?.state !== 'paused') {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'conflict.runId',
-          'conflict resolution requires a paused Run',
-        );
-      }
-      const base = this.getRequiredVersionForArtifact(conflict.baseVersionId, conflict.artifactId);
-      const left = this.getRequiredVersionForArtifact(conflict.leftVersionId, conflict.artifactId);
-      const right = this.getRequiredVersionForArtifact(conflict.rightVersionId, conflict.artifactId);
-      if (
-        base.mimeType !== left.mimeType ||
-        base.mimeType !== right.mimeType ||
-        base.content === undefined ||
-        left.content === undefined ||
-        right.content === undefined
-      ) {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'conflict.versions',
-          'conflict resolution requires inline versions with one MIME type',
-        );
-      }
-      const content =
-        input.strategy === 'left'
-          ? left.content
-          : input.strategy === 'right'
-            ? right.content
-            : input.content;
-      if (content === undefined) {
-        throw new ArtifactDataError(
-          'artifact.invalid_input',
-          'content',
-          'manual conflict resolution requires content',
-        );
-      }
-      const createdAt = input.now ?? new Date().toISOString();
-      const version = this.createVersionInternal(
-        {
-          artifactId: conflict.artifactId,
-          sourceStepId: conflict.sourceStepId,
-          content,
-          mimeType: base.mimeType,
-          status: 'merged',
-          parentVersionIds: [left.id, right.id],
-          metadata: {
-            mergeSource: `conflict-resolution:${input.strategy}`,
-            conflictId: conflict.id,
+        if (
+          base.mimeType !== left.mimeType ||
+          base.mimeType !== right.mimeType ||
+          base.content === undefined ||
+          left.content === undefined ||
+          right.content === undefined
+        ) {
+          throw new ArtifactDataError(
+            'artifact.invalid_input',
+            'conflict.versions',
+            'conflict resolution requires inline versions with one MIME type',
+          );
+        }
+        const content =
+          input.strategy === 'left'
+            ? left.content
+            : input.strategy === 'right'
+              ? right.content
+              : input.content;
+        if (content === undefined) {
+          throw new ArtifactDataError(
+            'artifact.invalid_input',
+            'content',
+            'manual conflict resolution requires content',
+          );
+        }
+        const createdAt = input.now ?? new Date().toISOString();
+        const version = this.createVersionInternal(
+          {
+            artifactId: conflict.artifactId,
+            sourceStepId: conflict.sourceStepId,
+            content,
+            mimeType: base.mimeType,
+            status: 'merged',
+            parentVersionIds: [left.id, right.id],
+            metadata: {
+              mergeSource: `conflict-resolution:${input.strategy}`,
+              conflictId: conflict.id,
+            },
+            now: createdAt,
           },
-          now: createdAt,
-        },
-        {
+          {
+            operationId,
+            mergeBaseVersionId: base.id,
+            expectedTaskVersion: input.expectedTaskVersion,
+            resultingTaskVersion: input.resultingTaskVersion,
+          },
+        );
+        const resolution: ArtifactMergeConflictResolution = {
+          id: ulid(),
           operationId,
-          mergeBaseVersionId: base.id,
+          conflictId: conflict.id,
+          resolutionVersionId: version.id,
+          strategy: input.strategy,
           expectedTaskVersion: input.expectedTaskVersion,
           resultingTaskVersion: input.resultingTaskVersion,
-        },
-      );
-      const resolution: ArtifactMergeConflictResolution = {
-        id: ulid(),
-        operationId,
-        conflictId: conflict.id,
-        resolutionVersionId: version.id,
-        strategy: input.strategy,
-        expectedTaskVersion: input.expectedTaskVersion,
-        resultingTaskVersion: input.resultingTaskVersion,
-        createdAt,
-      };
-      this.raw
-        .prepare(
-          `INSERT INTO artifact_merge_conflict_resolution (
+          createdAt,
+        };
+        this.raw
+          .prepare(
+            `INSERT INTO artifact_merge_conflict_resolution (
              id, operation_id, conflict_id, resolution_version_id, strategy,
              expected_task_version, resulting_task_version, created_at
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          resolution.id,
-          resolution.operationId,
-          resolution.conflictId,
-          resolution.resolutionVersionId,
-          resolution.strategy,
-          resolution.expectedTaskVersion,
-          resolution.resultingTaskVersion,
-          resolution.createdAt,
-        );
-      return { created: true, resolution, version };
-    }).immediate();
+          )
+          .run(
+            resolution.id,
+            resolution.operationId,
+            resolution.conflictId,
+            resolution.resolutionVersionId,
+            resolution.strategy,
+            resolution.expectedTaskVersion,
+            resolution.resultingTaskVersion,
+            resolution.createdAt,
+          );
+        return { created: true, resolution, version };
+      })
+      .immediate();
   }
 
   compareReferences(left: ArtifactVersion, right: ArtifactVersion): ArtifactComparison {
@@ -1672,12 +1707,7 @@ export class SqliteArtifactStore {
   ): void {
     this.raw
       .transaction(() =>
-        this.assertCommonAncestorInternal(
-          artifactId,
-          baseVersionId,
-          leftVersionId,
-          rightVersionId,
-        ),
+        this.assertCommonAncestorInternal(artifactId, baseVersionId, leftVersionId, rightVersionId),
       )
       .immediate();
   }
@@ -1732,8 +1762,7 @@ export class SqliteArtifactStore {
     }
     if (
       input.contentRef !== undefined &&
-      (!input.contentRef.trim() ||
-        !isLocalContentRef(input.contentRef))
+      (!input.contentRef.trim() || !isLocalContentRef(input.contentRef))
     ) {
       throw new ArtifactDataError(
         'artifact.invalid_input',
@@ -1743,13 +1772,13 @@ export class SqliteArtifactStore {
     }
     const computedHash =
       input.content === undefined
-        ? requireHash(
-            input.contentHash,
-            'artifactVersion.contentHash',
-            'artifact.invalid_input',
-          )
+        ? requireHash(input.contentHash, 'artifactVersion.contentHash', 'artifact.invalid_input')
         : createHash('sha256').update(input.content, 'utf8').digest('hex');
-    if (input.content !== undefined && input.contentHash !== undefined && input.contentHash !== computedHash) {
+    if (
+      input.content !== undefined &&
+      input.contentHash !== undefined &&
+      input.contentHash !== computedHash
+    ) {
       throw new ArtifactDataError(
         'artifact.invalid_input',
         'artifactVersion.contentHash',
@@ -1772,7 +1801,9 @@ export class SqliteArtifactStore {
     }
     if (operation) this.getRequiredVersionForArtifact(operation.mergeBaseVersionId, artifact.id);
     const latest = this.raw
-      .prepare('SELECT COALESCE(MAX(version), 0) AS version FROM artifact_version WHERE artifact_id = ?')
+      .prepare(
+        'SELECT COALESCE(MAX(version), 0) AS version FROM artifact_version WHERE artifact_id = ?',
+      )
       .get(artifact.id) as { version: number };
     const versionNumber = latest.version + 1;
     const version: ArtifactVersion = {
@@ -1841,9 +1872,8 @@ export class SqliteArtifactStore {
         'source Step does not belong to the Artifact Run',
       );
     }
-    const run = this.raw
-      .prepare('SELECT state FROM run WHERE id = ?')
-      .get(artifact.runId) as { state: RunState } | undefined;
+    const run = this.raw.prepare('SELECT state FROM run WHERE id = ?').get(artifact.runId) as
+      { state: RunState } | undefined;
     if (!run || !MERGEABLE_RUN_STATES.has(run.state)) {
       throw new ArtifactDataError(
         'artifact.invalid_input',
@@ -1871,9 +1901,7 @@ export class SqliteArtifactStore {
     const collectAncestors = (rootId: ArtifactVersionId): Set<ArtifactVersionId> => {
       const visited = new Set<ArtifactVersionId>();
       const visiting = new Set<ArtifactVersionId>();
-      const stack: Array<{ id: ArtifactVersionId; exit: boolean }> = [
-        { id: rootId, exit: false },
-      ];
+      const stack: Array<{ id: ArtifactVersionId; exit: boolean }> = [{ id: rootId, exit: false }];
       let nodeCount = 0;
       while (stack.length > 0) {
         const current = stack.pop()!;
@@ -1929,10 +1957,7 @@ export class SqliteArtifactStore {
     }
   }
 
-  private assertVersionOwnership(
-    row: ArtifactVersionDbRow,
-    version: ArtifactVersion,
-  ): void {
+  private assertVersionOwnership(row: ArtifactVersionDbRow, version: ArtifactVersion): void {
     const ownership = this.raw
       .prepare(
         `SELECT artifact.run_id AS artifact_run_id,

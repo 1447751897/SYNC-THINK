@@ -130,7 +130,216 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0030_browser_persistence_permissions',
     sql: browserPersistencePermissionsDdlSql(),
   },
+  {
+    name: '0031_desktop_command',
+    sql: desktopCommandDdlSql(),
+  },
+  {
+    name: '0032_scheduler_fencing_repair',
+    sql: schedulerFencingRepairDdlSql(),
+  },
+  {
+    name: '0033_image_generation_config',
+    sql: imageGenerationConfigDdlSql(),
+  },
+  {
+    name: '0034_agent_context_usage',
+    sql: agentContextUsageDdlSql(),
+  },
+  {
+    name: '0035_review_image_selection_freeze',
+    sql: reviewImageSelectionFreezeDdlSql(),
+  },
 ];
+
+function reviewImageSelectionFreezeDdlSql(): string {
+  return `
+CREATE TABLE review_step_artifact_selection (
+  gate_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  reviewer_step_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL REFERENCES artifact(id) ON DELETE RESTRICT,
+  selected_version_id TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, reviewer_step_id, artifact_id),
+  FOREIGN KEY (gate_id, run_id, reviewer_step_id)
+    REFERENCES acceptance_gate_step(gate_id, run_id, step_id) ON DELETE RESTRICT
+);
+CREATE TRIGGER review_step_artifact_selection_insert_guard
+BEFORE INSERT ON review_step_artifact_selection
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM acceptance_gate_step AS mapping
+  JOIN artifact_version AS selected_version
+    ON selected_version.id = NEW.selected_version_id
+   AND selected_version.artifact_id = NEW.artifact_id
+  JOIN review_step_artifact AS assignment
+    ON assignment.gate_id = NEW.gate_id
+   AND assignment.run_id = NEW.run_id
+   AND assignment.reviewer_step_id = NEW.reviewer_step_id
+   AND assignment.artifact_version_id = NEW.selected_version_id
+  WHERE mapping.gate_id = NEW.gate_id
+    AND mapping.run_id = NEW.run_id
+    AND mapping.step_id = NEW.reviewer_step_id
+    AND mapping.role = 'reviewer'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'review.image_selection_scope_mismatch');
+END;
+CREATE TRIGGER review_step_artifact_selection_update_guard
+BEFORE UPDATE ON review_step_artifact_selection
+BEGIN
+  SELECT RAISE(ABORT, 'review.image_selection_immutable');
+END;
+CREATE TRIGGER review_step_artifact_selection_delete_guard
+BEFORE DELETE ON review_step_artifact_selection
+BEGIN
+  SELECT RAISE(ABORT, 'review.image_selection_immutable');
+END;
+`;
+}
+
+function agentContextUsageDdlSql(): string {
+  return `
+CREATE TABLE agent_context_thread (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  agent_version_id TEXT NOT NULL REFERENCES agent_version(id) ON DELETE RESTRICT,
+  workstream_key TEXT NOT NULL,
+  role TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (task_id, agent_version_id, workstream_key)
+);
+CREATE INDEX agent_context_thread_task_idx ON agent_context_thread(task_id);
+
+CREATE TABLE context_epoch (
+  id TEXT PRIMARY KEY,
+  agent_context_thread_id TEXT NOT NULL REFERENCES agent_context_thread(id) ON DELETE CASCADE,
+  provider_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  reasoning_effort TEXT,
+  context_window INTEGER,
+  parent_epoch_id TEXT REFERENCES context_epoch(id) ON DELETE RESTRICT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed')),
+  started_at TEXT NOT NULL,
+  closed_at TEXT,
+  CHECK ((status = 'active' AND closed_at IS NULL) OR (status = 'closed' AND closed_at IS NOT NULL))
+);
+CREATE INDEX context_epoch_thread_idx ON context_epoch(agent_context_thread_id, started_at);
+CREATE UNIQUE INDEX context_epoch_active_uidx ON context_epoch(agent_context_thread_id) WHERE status = 'active';
+`;
+}
+
+function imageGenerationConfigDdlSql(): string {
+  return `
+ALTER TABLE step ADD COLUMN image_generation_config_json TEXT
+  CONSTRAINT step_image_generation_config_json_check CHECK (
+    image_generation_config_json IS NULL
+    OR (
+      json_valid(image_generation_config_json) = 1
+      AND json_type(image_generation_config_json) = 'object'
+      AND json_extract(image_generation_config_json, '$.size') IN ('auto', '1024x1024', '1024x1536', '1536x1024')
+      AND json_extract(image_generation_config_json, '$.quality') IN ('auto', 'low', 'medium', 'high')
+      AND json_type(image_generation_config_json, '$.count') = 'integer'
+      AND json_extract(image_generation_config_json, '$.count') BETWEEN 1 AND 4
+    )
+  );
+`;
+}
+
+function schedulerFencingRepairDdlSql(): string {
+  return `
+DROP TRIGGER IF EXISTS step_execution_insert_guard;
+DROP TRIGGER IF EXISTS step_execution_update_guard;
+
+CREATE TRIGGER step_execution_insert_guard
+BEFORE INSERT ON step
+WHEN NEW.execution_attempt < 0
+  OR (NEW.state = 'running' AND (NEW.execution_owner_id IS NULL OR NEW.lease_expires_at IS NULL))
+  OR (NEW.state <> 'running' AND NEW.lease_expires_at IS NOT NULL)
+  OR (NEW.state IN ('pending', 'ready', 'awaitingApproval', 'skipped', 'cancelled')
+    AND NEW.execution_owner_id IS NOT NULL)
+BEGIN
+  SELECT RAISE(ABORT, 'step.execution_fence invalid');
+END;
+
+CREATE TRIGGER step_execution_update_guard
+BEFORE UPDATE OF state, execution_owner_id, lease_expires_at, execution_attempt ON step
+WHEN NEW.execution_attempt < 0
+  OR (NEW.state = 'running' AND (NEW.execution_owner_id IS NULL OR NEW.lease_expires_at IS NULL))
+  OR (NEW.state <> 'running' AND NEW.lease_expires_at IS NOT NULL)
+  OR (NEW.state IN ('pending', 'ready', 'awaitingApproval', 'skipped', 'cancelled')
+    AND NEW.execution_owner_id IS NOT NULL)
+BEGIN
+  SELECT RAISE(ABORT, 'step.execution_fence invalid');
+END;
+`;
+}
+
+function desktopCommandDdlSql(): string {
+  return `
+CREATE TABLE desktop_command (
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  workspace_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_identity TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  sanitized_args_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  result_json TEXT,
+  error_code TEXT,
+  failure_class TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  approved_at TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  CONSTRAINT desktop_command_state_check CHECK (
+    state IN ('requested', 'approved', 'running', 'completed', 'failed', 'waiting_user')
+  ),
+  CONSTRAINT desktop_command_request_digest_check CHECK (
+    length(request_digest) = 64 AND request_digest NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT desktop_command_args_json_check CHECK (json_valid(sanitized_args_json)),
+  CONSTRAINT desktop_command_result_json_check CHECK (result_json IS NULL OR json_valid(result_json)),
+  CONSTRAINT desktop_command_terminal_check CHECK (
+    (state = 'completed' AND result_json IS NOT NULL AND completed_at IS NOT NULL) OR
+    (state = 'failed' AND error_code IS NOT NULL AND completed_at IS NOT NULL) OR
+    state IN ('requested', 'approved', 'running', 'waiting_user')
+  )
+);
+CREATE INDEX desktop_command_owner_idx ON desktop_command(workspace_id, owner_id, updated_at);
+CREATE INDEX desktop_command_state_idx ON desktop_command(state, updated_at);
+CREATE TRIGGER desktop_command_identity_guard
+BEFORE UPDATE ON desktop_command
+WHEN OLD.id <> NEW.id
+  OR OLD.idempotency_key <> NEW.idempotency_key
+  OR OLD.workspace_id <> NEW.workspace_id
+  OR OLD.run_id <> NEW.run_id
+  OR OLD.owner_id <> NEW.owner_id
+  OR OLD.tool_name <> NEW.tool_name
+  OR OLD.action <> NEW.action
+  OR OLD.target_identity <> NEW.target_identity
+  OR OLD.request_digest <> NEW.request_digest
+  OR OLD.sanitized_args_json <> NEW.sanitized_args_json
+  OR OLD.created_at <> NEW.created_at
+  OR OLD.state IN ('completed', 'failed')
+BEGIN
+  SELECT RAISE(ABORT, 'desktop.command_immutable');
+END;
+CREATE TRIGGER desktop_command_delete_guard
+BEFORE DELETE ON desktop_command
+BEGIN
+  SELECT RAISE(ABORT, 'desktop.command_immutable');
+END;
+`;
+}
 
 function browserPersistencePermissionsDdlSql(): string {
   return `
@@ -2116,6 +2325,7 @@ async function listApplied(db: Database): Promise<string[]> {
 
 // Main entry invoked by pnpm db:migrate. Phase 0 dev skips backup for ':memory:'.
 export async function runMigrations(dbPath: string): Promise<MigrationPlanResult> {
+  const databaseExisted = dbPath !== ':memory:' && existsSync(dbPath);
   const { db, raw } = await openDatabaseAsync({ path: dbPath });
   try {
     // Ensure migration_record table exists before anything else.
@@ -2125,14 +2335,14 @@ export async function runMigrations(dbPath: string): Promise<MigrationPlanResult
       applied_at TEXT NOT NULL
     );`);
 
-    let backupPath: string | undefined;
-    if (dbPath !== ':memory:' && existsSync(dbPath)) {
-      const b = backupDatabase(dbPath);
-      backupPath = b.backupPath;
-    }
-
     const prior = await listApplied(db);
     const plan = planMigrations(prior);
+
+    let backupPath: string | undefined;
+    if (databaseExisted && plan.applied.length > 0) {
+      const backup = backupDatabase(dbPath);
+      backupPath = backup.backupPath;
+    }
     for (const name of plan.applied) {
       const m = MIGRATIONS.find((x) => x.name === name);
       if (!m) throw new Error(`migration not found: ${name}`);

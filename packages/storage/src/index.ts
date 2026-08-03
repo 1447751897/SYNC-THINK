@@ -5,6 +5,11 @@ export * from './unit-of-work.js';
 export * from './backup.js';
 export * from './fts.js';
 export * from './runtime-state-store.js';
+export * from './event-payload-sidecar.js';
+export * from './event-payload-backup.js';
+export * from './event-payload-backfill.js';
+export * from './database-governance.js';
+export * from './database-maintenance-executor.js';
 export * from './message-store.js';
 export { MIGRATIONS, planMigrations, runMigrations } from './scripts/migrate.js';
 export * from './path-allowlist.js';
@@ -20,7 +25,6 @@ export * from './memory-store.js';
 export * from './skill-store.js';
 export * from './mcp-store.js';
 
-
 export * from './approval-store.js';
 export * from './policy-store.js';
 export * from './authorization-store.js';
@@ -29,3 +33,11 @@ export * from './artifact-store.js';
 export * from './production-execution-store.js';
 export * from './browser-store.js';
 export * from './cc-switch-db.js';
+
+export * from './desktop-store.js';
+export * from './agent-context-store.js';
+export * from './event-payload-backfill-executor.js';
+export * from './event-payload-backfill-rollback.js';
+export * from './event-payload-sidecar-gc.js';
+export * from './event-retention-archive.js';
+export * from './database-compaction.js';

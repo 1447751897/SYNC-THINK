@@ -1,4 +1,4 @@
-﻿// Stable error codes returned over the local protocol (dev principles §5).
+// Stable error codes returned over the local protocol (dev principles §5).
 // Strings are the wire contract; never renumber or reuse. Add new codes at end.
 export const ErrorCode = {
   PROTOCOL_HANDSHAKE_FAILED: 'protocol.handshake_failed',
@@ -32,6 +32,41 @@ export const ErrorCode = {
   SECRET_SCRUB_FAILED: 'security.secret_scrub_failed',
   WORKER_CRASHED: 'worker.crashed',
   WORKER_TIMEOUT: 'worker.timeout',
+  BROWSER_HANDOFF_NOT_FOUND: 'browser.handoff-not-found',
+  BROWSER_HANDOFF_NOT_WAITING: 'browser.handoff-not-waiting',
+  BROWSER_HANDOFF_ALREADY_CANCELLED: 'browser.handoff-already-cancelled',
+  BROWSER_HANDOFF_REVISION_CONFLICT: 'browser.handoff-revision-conflict',
+  BROWSER_HANDOFF_CONFLICT: 'browser.handoff-conflict',
+  BROWSER_HANDOFF_CHECKPOINT_INVALID: 'browser.handoff-checkpoint-invalid',
+  BROWSER_HANDOFF_OWNERSHIP_MISMATCH: 'browser.handoff-ownership-mismatch',
+  BROWSER_HANDOFF_HOST_UNAVAILABLE: 'browser.handoff-host-unavailable',
+  BROWSER_HANDOFF_BINDING_INVALID: 'browser.handoff-binding-invalid',
+  BROWSER_HANDOFF_UNAVAILABLE: 'browser.handoff-unavailable',
+  DESKTOP_HOST_HANDSHAKE_FAILED: 'desktop.host-handshake-failed',
+  DESKTOP_TIMEOUT: 'desktop.timeout',
+  DESKTOP_CANCELLED: 'desktop.cancelled',
+  DESKTOP_CRASHED: 'desktop.crashed',
+  DESKTOP_PERMISSION_DENIED: 'desktop.permission-denied',
+  DESKTOP_UIA_UNAVAILABLE: 'desktop.uia-unavailable',
+  DESKTOP_ACTION_UNSUPPORTED: 'desktop.action-unsupported',
+  DESKTOP_PLATFORM_UNSUPPORTED: 'desktop.platform-unsupported',
+  DESKTOP_PROTOCOL_MALFORMED: 'desktop.protocol-malformed',
+  DESKTOP_WINDOW_STALE: 'desktop.window-stale',
+  DESKTOP_SNAPSHOT_STALE: 'desktop.snapshot-stale',
+  DESKTOP_SELECTOR_NOT_FOUND: 'desktop.selector-not-found',
+  DESKTOP_SELECTOR_AMBIGUOUS: 'desktop.selector-ambiguous',
+  DESKTOP_ELEMENT_NOT_FOUND: 'desktop.element-not-found',
+  DESKTOP_ELEMENT_DISABLED: 'desktop.element-disabled',
+  DESKTOP_ELEMENT_OFFSCREEN: 'desktop.element-offscreen',
+  DESKTOP_PATTERN_UNSUPPORTED: 'desktop.pattern-unsupported',
+  DESKTOP_VALUE_READ_ONLY: 'desktop.value-read-only',
+  DESKTOP_ACTION_FAILED: 'desktop.action-failed',
+  DESKTOP_CAPABILITY_DISABLED: 'desktop.capability-disabled',
+  DESKTOP_INPUT_MONITOR_UNAVAILABLE: 'desktop.input-monitor-unavailable',
+  DESKTOP_USER_INPUT_DETECTED: 'desktop.user-input-detected',
+  DESKTOP_COMMAND_INSPECTION_REQUIRED: 'desktop.command-inspection-required',
+  DESKTOP_COMMAND_CONFLICT: 'desktop.command-conflict',
+  DESKTOP_COMMAND_CANCELLED: 'desktop.command-cancelled',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -44,4 +79,3 @@ export interface AppError {
   /** Diagnostic reference id; raw evidence lives in secret-scrubbed diagnostic store. */
   diagnosticRefId?: string;
 }
-

@@ -122,6 +122,12 @@ export type CommandType =
   | 'conversation.compact'
   | 'conversation.decideToolApproval'
   | 'conversation.submitBrowserResult'
+  | 'browser.handoff.listWaiting'
+  | 'browser.handoff.continue'
+  | 'browser.handoff.cancel'
+  | 'desktop.command.listWaiting'
+  | 'desktop.command.continue'
+  | 'desktop.command.cancel'
   | 'skill.import'
   | 'skill.list'
   | 'skill.get'
@@ -1064,6 +1070,8 @@ export interface UsageSummaryPayload {
 export interface UsageSummaryRow {
   modelId: string;
   providerId?: string;
+  providerModelId?: string;
+  purpose?: import('@sync-think/shared').ProviderUsagePurpose;
   displayName?: string;
   providerName?: string;
   requests: number;
@@ -1071,6 +1079,10 @@ export interface UsageSummaryRow {
   failedRequests: number;
   tokensIn: number;
   tokensOut: number;
+  cachedTokensHit?: number;
+  cachedTokensCreated?: number;
+  reasoningTokens: number;
+  totalTokens: number;
   totalCost?: number;
   currency?: 'USD' | 'CNY';
   averageLatencyMs?: number;
@@ -1080,10 +1092,16 @@ export interface UsageSummaryRow {
 /** One real provider request reconstructed from provider.usage + terminal run events. */
 export interface UsageRequestRow {
   requestId: string;
+  taskId?: string;
   runId?: string;
+  stepId?: string;
+  agentContextThreadId?: string;
+  contextEpochId?: string;
   occurredAt: string;
   modelId: string;
   providerId?: string;
+  providerModelId?: string;
+  purpose?: import('@sync-think/shared').ProviderUsagePurpose;
   displayName?: string;
   providerName?: string;
   tokensIn: number;
@@ -1091,6 +1109,8 @@ export interface UsageRequestRow {
   /** Present only when the provider reports cache usage. */
   cachedTokensHit?: number;
   cachedTokensCreated?: number;
+  reasoningTokens?: number;
+  totalTokens: number;
   /** Runtime event-level outcome; this is not fabricated from HTTP status codes. */
   status: 'success' | 'failed' | 'unknown';
   latencyMs?: number;
@@ -1605,6 +1625,8 @@ export interface UsageSummaryResponse {
   /** Absent until the active providers report cache accounting. */
   totalCachedTokensHit?: number;
   totalCachedTokensCreated?: number;
+  totalReasoningTokens: number;
+  totalTokens: number;
 }
 
 // --- Agent binding (persistent default / fallback 搂5.3) ---
@@ -2608,12 +2630,7 @@ export interface ConversationListMessagesResponse {
   hasMore: boolean;
 }
 export type ContextStatusSectionType =
-  | 'system'
-  | 'agent'
-  | 'project'
-  | 'summary'
-  | 'messages'
-  | 'tools';
+  'system' | 'agent' | 'project' | 'summary' | 'messages' | 'tools';
 
 /** Audit-only context composition data. It must never contain prompt text or reasoning. */
 export interface ContextStatusSection {
@@ -2637,15 +2654,7 @@ export interface ConversationGetContextStatusResponse {
 
 export type ProcessStepStatus = 'running' | 'done' | 'error';
 export type ProcessToolKind =
-  | 'read'
-  | 'list'
-  | 'write'
-  | 'bash'
-  | 'git'
-  | 'browser'
-  | 'search'
-  | 'mcp'
-  | 'other';
+  'read' | 'list' | 'write' | 'bash' | 'git' | 'browser' | 'search' | 'mcp' | 'other';
 
 export interface ExecutionProcessStep {
   id: string;
@@ -2849,6 +2858,123 @@ export interface ConversationSubmitBrowserResultPayload {
 export interface ConversationSubmitBrowserResultResponse {
   requestId: string;
   accepted: boolean;
+}
+
+export type BrowserHandoffReason =
+  'login' | 'captcha' | 'payment' | 'device-confirmation' | 'manual';
+
+export interface BrowserHandoffSummary {
+  handoffId: string;
+  revision: 1;
+  workspaceId: WorkspaceId;
+  taskId?: TaskId;
+  runId: RunId;
+  stepId?: StepId;
+  agentVersionId?: AgentVersionId;
+  siteOrigin: string;
+  reason: BrowserHandoffReason;
+  requestedOutcome: string;
+  onCancel: 'keep-open' | 'close-page';
+  status: 'waiting_user';
+  createdAt: string;
+  updatedAt: string;
+  canContinue: true;
+  canCancel: true;
+}
+
+export interface ListWaitingBrowserHandoffsPayload {
+  workspaceId?: WorkspaceId;
+  runId?: RunId;
+}
+
+export interface ListWaitingBrowserHandoffsResponse {
+  handoffs: BrowserHandoffSummary[];
+}
+
+export type DesktopWaitingReason =
+  | 'user-input-detected'
+  | 'restart-inspection'
+  | 'attention-required';
+
+export interface DesktopWaitingCommandSummary {
+  commandId: string;
+  workspaceId: WorkspaceId;
+  taskId?: TaskId;
+  runId: RunId;
+  toolName: string;
+  action: string;
+  target?: {
+    processId?: number;
+    title?: string;
+    appId?: string;
+  };
+  reason: DesktopWaitingReason;
+  errorCode: string;
+  status: 'waiting_user';
+  canContinue: boolean;
+  canCancel: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListWaitingDesktopCommandsPayload {
+  workspaceId?: WorkspaceId;
+  runId?: RunId;
+}
+
+export interface ListWaitingDesktopCommandsResponse {
+  commands: DesktopWaitingCommandSummary[];
+}
+
+export interface ContinueDesktopCommandPayload {
+  commandId: string;
+  expectedUpdatedAt: string;
+}
+
+export interface ContinueDesktopCommandResponse {
+  status: 'continued';
+  commandId: string;
+  replayed: boolean;
+  updatedAt: string;
+}
+
+export interface CancelDesktopCommandPayload {
+  commandId: string;
+  expectedUpdatedAt: string;
+}
+
+export interface CancelDesktopCommandResponse {
+  status: 'cancelled';
+  commandId: string;
+  replayed: boolean;
+  updatedAt: string;
+}
+
+export interface ContinueBrowserHandoffPayload {
+  handoffId: string;
+  expectedRevision: number;
+}
+
+export interface ContinueBrowserHandoffResponse {
+  status: 'continued';
+  handoffId: string;
+  replayed: boolean;
+  runId: RunId;
+  stepId: StepId;
+}
+
+export interface CancelBrowserHandoffPayload {
+  handoffId: string;
+  expectedRevision: number;
+  leaseDisposition?: 'preserve' | 'release';
+}
+
+export interface CancelBrowserHandoffResponse {
+  status: 'cancelled';
+  handoffId: string;
+  replayed: boolean;
+  runId: RunId;
+  stepId: StepId;
 }
 
 // Helper: build a typed request envelope.

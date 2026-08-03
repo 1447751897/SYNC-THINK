@@ -9,6 +9,7 @@ import type {
 } from './ids.js';
 import type { RunState } from './enums.js';
 import type { PlanStepKind } from './plan.js';
+import type { ImageGenerationConfig } from '../image-generation.js';
 
 export interface Run {
   id: RunId;
@@ -39,6 +40,8 @@ export interface Step {
   instructions?: string;
   /** Exact per-Step override; absence resolves through the pinned AgentVersion. */
   modelOverrideId?: ModelId;
+  /** Frozen image generation parameters copied from the approved PlanRevision. */
+  imageGeneration?: ImageGenerationConfig;
   state: import('./enums.js').StepState;
   retries: number;
   /** Idempotency marker for safe re-execution on recovery (§20 rule 2). */

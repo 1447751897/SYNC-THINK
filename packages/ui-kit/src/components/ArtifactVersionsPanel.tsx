@@ -22,6 +22,24 @@ export interface ArtifactVersionView {
   mimeType: string;
   parentVersionIds: readonly string[];
   createdAt: string;
+  hasContentRef?: boolean;
+  imageGeneration?: {
+    candidateIndex: number;
+    candidateCount: number;
+    size: string;
+    quality: string;
+    byteLength: number;
+  };
+  preview?:
+    | { status: 'loading' }
+    | {
+        status: 'ready';
+        previewUrl: string;
+        mimeType: string;
+        byteLength: number;
+        contentHash: string;
+      }
+    | { status: 'error'; message: string };
 }
 
 export interface ArtifactVersionsView {
@@ -95,6 +113,64 @@ const RESOLUTION_LABEL: Record<ArtifactMergeConflictResolutionStrategy, string> 
 const EMPTY_MERGE_STEPS: readonly ArtifactMergeStepView[] = [];
 const EMPTY_CONFLICTS: readonly ArtifactMergeConflictView[] = [];
 
+function safeArtifactPreviewUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'sync-think-image:' &&
+      url.hostname === 'artifact' &&
+      /^\/[A-Za-z0-9_-]{16,128}$/.test(url.pathname) &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function ArtifactImagePreview({ version }: { version: ArtifactVersionView }) {
+  const [dimensions, setDimensions] = useState<string | null>(null);
+  const preview = version.preview;
+  if (!preview || preview.status === 'loading') {
+    return (
+      <div className="st-artifacts__image-loading" role="status">
+        图片预览加载中
+      </div>
+    );
+  }
+  if (preview.status === 'error' || !safeArtifactPreviewUrl(preview.previewUrl)) {
+    return (
+      <div className="st-artifacts__image-error" role="alert">
+        {preview.status === 'error' ? preview.message : '图片预览地址无效'}
+      </div>
+    );
+  }
+  return (
+    <figure className="st-artifacts__image">
+      <img
+        src={preview.previewUrl}
+        alt={`Artifact v${version.version} 图片预览`}
+        onLoad={(event) =>
+          setDimensions(
+            `${event.currentTarget.naturalWidth} × ${event.currentTarget.naturalHeight}`,
+          )
+        }
+      />
+      <figcaption>
+        <span>{preview.mimeType}</span>
+        <span>{formatBytes(preview.byteLength)}</span>
+        {dimensions ? <span>{dimensions}</span> : null}
+      </figcaption>
+    </figure>
+  );
+}
+
 export function ArtifactVersionsPanel({
   artifact,
   comparison,
@@ -118,9 +194,17 @@ export function ArtifactVersionsPanel({
     setRightId(versions[1]?.id ?? versions[0]?.id ?? '');
   }, [artifact.id, versions]);
 
+  const imageCandidateSet =
+    versions.length > 1 &&
+    versions.every(
+      (version) =>
+        /^image\/(?:png|jpeg|webp)$/.test(version.mimeType) &&
+        version.hasContentRef &&
+        version.imageGeneration?.candidateCount === versions.length,
+    );
   const left = versions.find((version) => version.id === leftId);
   const right = versions.find((version) => version.id === rightId);
-  const canPair = Boolean(left && right && left.id !== right.id);
+  const canPair = !imageCandidateSet && Boolean(left && right && left.id !== right.id);
   const eligibleMergeSteps = useMemo(
     () =>
       left && right
@@ -162,59 +246,79 @@ export function ArtifactVersionsPanel({
         <div>
           <span className="st-artifacts__kicker">Artifact</span>
           <strong>{artifact.name}</strong>
-          <small>{versions.length} 个不可变版本</small>
+          <small>
+            {imageCandidateSet
+              ? `${versions.length} 个图片候选`
+              : `${versions.length} 个不可变版本`}
+          </small>
         </div>
-        <div className="st-artifacts__actions">
-          <label className="st-artifacts__merge-field">
-            <span>合并步骤</span>
-            <select
-              aria-label="合并步骤"
-              value={mergeStepId}
-              disabled={!canPair || eligibleMergeSteps.length === 0 || busy}
-              onChange={(event) => setMergeStepId(event.target.value)}
+        {!imageCandidateSet ? (
+          <div className="st-artifacts__actions">
+            <label className="st-artifacts__merge-field">
+              <span>合并步骤</span>
+              <select
+                aria-label="合并步骤"
+                value={mergeStepId}
+                disabled={!canPair || eligibleMergeSteps.length === 0 || busy}
+                onChange={(event) => setMergeStepId(event.target.value)}
+              >
+                {eligibleMergeSteps.length === 0 ? (
+                  <option value="">没有就绪的合并步骤</option>
+                ) : (
+                  eligibleMergeSteps.map((step) => (
+                    <option key={step.id} value={step.id}>
+                      {step.title}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={!onCompare || !canPair || busy}
+              aria-label={
+                left && right ? `比较版本 ${left.version} 与版本 ${right.version}` : '比较版本'
+              }
+              onClick={() => left && right && onCompare?.(left.id, right.id)}
             >
-              {eligibleMergeSteps.length === 0 ? (
-                <option value="">没有就绪的合并步骤</option>
-              ) : (
-                eligibleMergeSteps.map((step) => (
-                  <option key={step.id} value={step.id}>
-                    {step.title}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
-          <button
-            type="button"
-            disabled={!onCompare || !canPair || busy}
-            aria-label={
-              left && right ? `比较版本 ${left.version} 与版本 ${right.version}` : '比较版本'
-            }
-            onClick={() => left && right && onCompare?.(left.id, right.id)}
-          >
-            <GitCompareArrows aria-hidden="true" size={14} />
-            比较
-          </button>
-          <button
-            type="button"
-            disabled={!onMerge || !canPair || !mergeStepId || busy}
-            aria-label={
-              left && right ? `合并版本 ${left.version} 与版本 ${right.version}` : '合并版本'
-            }
-            onClick={() =>
-              left && right && mergeStepId && onMerge?.(artifact.id, left.id, right.id, mergeStepId)
-            }
-          >
-            <GitMerge aria-hidden="true" size={14} />
-            合并
-          </button>
-        </div>
+              <GitCompareArrows aria-hidden="true" size={14} />
+              比较
+            </button>
+            <button
+              type="button"
+              disabled={!onMerge || !canPair || !mergeStepId || busy}
+              aria-label={
+                left && right ? `合并版本 ${left.version} 与版本 ${right.version}` : '合并版本'
+              }
+              onClick={() =>
+                left &&
+                right &&
+                mergeStepId &&
+                onMerge?.(artifact.id, left.id, right.id, mergeStepId)
+              }
+            >
+              <GitMerge aria-hidden="true" size={14} />
+              合并
+            </button>
+          </div>
+        ) : null}
       </header>
 
-      <div className="st-artifacts__body">
-        <div className="st-artifacts__shelf" aria-label="版本架">
+      <div className="st-artifacts__body" data-image-candidates={imageCandidateSet ? '1' : '0'}>
+        <div
+          className="st-artifacts__shelf"
+          data-image-candidates={imageCandidateSet ? '1' : '0'}
+          aria-label={imageCandidateSet ? '图片候选画廊' : '版本架'}
+        >
           {versions.map((version) => {
             const selected = artifact.selectedVersionId === version.id;
+            const supersededCandidate =
+              imageCandidateSet && Boolean(artifact.selectedVersionId) && !selected;
+            const displayStatus = selected
+              ? '已选'
+              : supersededCandidate
+                ? '未采用'
+                : (STATUS_LABEL[version.status] ?? version.status);
             return (
               <article
                 key={version.id}
@@ -223,9 +327,16 @@ export function ArtifactVersionsPanel({
                 data-selected={selected ? '1' : '0'}
               >
                 <header>
-                  <span>v{version.version}</span>
-                  <strong>{STATUS_LABEL[version.status] ?? version.status}</strong>
+                  <span>
+                    {imageCandidateSet && version.imageGeneration
+                      ? `候选 ${version.imageGeneration.candidateIndex}`
+                      : `v${version.version}`}
+                  </span>
+                  <strong>{displayStatus}</strong>
                 </header>
+                {/^image\/(?:png|jpeg|webp)$/.test(version.mimeType) && version.hasContentRef ? (
+                  <ArtifactImagePreview version={version} />
+                ) : null}
                 <dl>
                   <div>
                     <dt>来源</dt>
@@ -235,6 +346,18 @@ export function ArtifactVersionsPanel({
                     <dt>类型</dt>
                     <dd>{version.mimeType}</dd>
                   </div>
+                  {version.imageGeneration ? (
+                    <>
+                      <div>
+                        <dt>尺寸</dt>
+                        <dd>{version.imageGeneration.size}</dd>
+                      </div>
+                      <div>
+                        <dt>质量</dt>
+                        <dd>{version.imageGeneration.quality}</dd>
+                      </div>
+                    </>
+                  ) : null}
                   <div>
                     <dt>Hash</dt>
                     <dd title={version.contentHash}>{version.contentHash.slice(0, 12)}</dd>
@@ -248,83 +371,97 @@ export function ArtifactVersionsPanel({
                     </dd>
                   </div>
                 </dl>
-                <div className="st-artifacts__pickers">
-                  <label>
-                    <input
-                      type="radio"
-                      name={`artifact-${artifact.id}-left`}
-                      checked={leftId === version.id}
-                      onChange={() => setLeftId(version.id)}
-                    />
-                    左侧
-                  </label>
-                  <label>
-                    <input
-                      type="radio"
-                      name={`artifact-${artifact.id}-right`}
-                      checked={rightId === version.id}
-                      onChange={() => setRightId(version.id)}
-                    />
-                    右侧
-                  </label>
-                </div>
+                {!imageCandidateSet ? (
+                  <div className="st-artifacts__pickers">
+                    <label>
+                      <input
+                        type="radio"
+                        name={`artifact-${artifact.id}-left`}
+                        checked={leftId === version.id}
+                        onChange={() => setLeftId(version.id)}
+                      />
+                      左侧
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name={`artifact-${artifact.id}-right`}
+                        checked={rightId === version.id}
+                        onChange={() => setRightId(version.id)}
+                      />
+                      右侧
+                    </label>
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   className="st-artifacts__select"
                   disabled={!onSelect || selected || busy}
-                  aria-label={`选择版本 ${version.version}`}
+                  aria-label={
+                    imageCandidateSet && version.imageGeneration
+                      ? `选择候选 ${version.imageGeneration.candidateIndex}`
+                      : `选择版本 ${version.version}`
+                  }
                   onClick={() => onSelect?.(artifact.id, version.id)}
                 >
                   <Check aria-hidden="true" size={13} />
-                  {selected ? '当前版本' : '设为当前'}
+                  {imageCandidateSet
+                    ? selected
+                      ? '当前候选'
+                      : '选择此候选'
+                    : selected
+                      ? '当前版本'
+                      : '设为当前'}
                 </button>
               </article>
             );
           })}
         </div>
 
-        <div className="st-artifacts__comparison" data-testid="artifact-comparison">
-          <div className="st-artifacts__comparison-head">
-            <Layers3 aria-hidden="true" size={14} />
-            <strong>版本对照</strong>
-            {comparison ? (
-              <small>
-                {comparison.leftVersionId} ↔ {comparison.rightVersionId}
-              </small>
-            ) : null}
+        {!imageCandidateSet ? (
+          <div className="st-artifacts__comparison" data-testid="artifact-comparison">
+            <div className="st-artifacts__comparison-head">
+              <Layers3 aria-hidden="true" size={14} />
+              <strong>版本对照</strong>
+              {comparison ? (
+                <small>
+                  {comparison.leftVersionId} ↔ {comparison.rightVersionId}
+                </small>
+              ) : null}
+            </div>
+            {!comparison ? (
+              <p>选择左右版本并运行比较。</p>
+            ) : comparison.comparison.kind === 'reference' ? (
+              <div className="st-artifacts__reference-diff">
+                <span>{comparison.comparison.leftHash}</span>
+                <span>{comparison.comparison.rightHash}</span>
+                <strong>{comparison.comparison.equal ? '内容一致' : '引用不同'}</strong>
+              </div>
+            ) : comparison.comparison.hunks.length === 0 ? (
+              <p>{comparison.comparison.equal ? '两个版本内容一致。' : '没有可显示的文本差异。'}</p>
+            ) : (
+              <div className="st-artifacts__diff">
+                {comparison.comparison.hunks.map((hunk, index) => (
+                  <div key={`${hunk.leftStartLine}-${hunk.rightStartLine}-${index}`}>
+                    <small>
+                      @@ -{hunk.leftStartLine} +{hunk.rightStartLine} @@
+                    </small>
+                    {hunk.removedLines.map((line, lineIndex) => (
+                      <pre key={`remove-${lineIndex}`} data-kind="remove">
+                        - {line}
+                      </pre>
+                    ))}
+                    {hunk.addedLines.map((line, lineIndex) => (
+                      <pre key={`add-${lineIndex}`} data-kind="add">
+                        + {line}
+                      </pre>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          {!comparison ? (
-            <p>选择左右版本并运行比较。</p>
-          ) : comparison.comparison.kind === 'reference' ? (
-            <div className="st-artifacts__reference-diff">
-              <span>{comparison.comparison.leftHash}</span>
-              <span>{comparison.comparison.rightHash}</span>
-              <strong>{comparison.comparison.equal ? '内容一致' : '引用不同'}</strong>
-            </div>
-          ) : comparison.comparison.hunks.length === 0 ? (
-            <p>{comparison.comparison.equal ? '两个版本内容一致。' : '没有可显示的文本差异。'}</p>
-          ) : (
-            <div className="st-artifacts__diff">
-              {comparison.comparison.hunks.map((hunk, index) => (
-                <div key={`${hunk.leftStartLine}-${hunk.rightStartLine}-${index}`}>
-                  <small>
-                    @@ -{hunk.leftStartLine} +{hunk.rightStartLine} @@
-                  </small>
-                  {hunk.removedLines.map((line, lineIndex) => (
-                    <pre key={`remove-${lineIndex}`} data-kind="remove">
-                      - {line}
-                    </pre>
-                  ))}
-                  {hunk.addedLines.map((line, lineIndex) => (
-                    <pre key={`add-${lineIndex}`} data-kind="add">
-                      + {line}
-                    </pre>
-                  ))}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        ) : null}
 
         {visibleConflicts.length > 0 ? (
           <section className="st-artifacts__conflicts" aria-label="合并冲突">

@@ -40,6 +40,30 @@ describe('demo-run reasoning', () => {
     expect(done.payload.reasoningText).toBe('先分析问题。');
   });
 
+
+  it('projects cache and reasoning usage into the durable provider usage event', () => {
+    const run = createDemoRun('run-usage' as never, 'thread-usage', 'hello');
+    const projected = projectAdapterEvent(run, {
+      type: 'usage',
+      tokensIn: 100,
+      tokensOut: 20,
+      cachedTokensHit: 70,
+      cachedTokensCreated: 10,
+      reasoningTokens: 8,
+      totalTokens: 120,
+    });
+
+    expect(projected.type).toBe('provider.usage');
+    expect(projected.payload).toMatchObject({
+      tokensIn: 100,
+      tokensOut: 20,
+      cachedTokensHit: 70,
+      cachedTokensCreated: 10,
+      reasoningTokens: 8,
+      totalTokens: 120,
+    });
+  });
+
   it('never includes image data or the full run snapshot in durable delta payloads', () => {
     const run = createDemoRun('run-image' as never, 'thread-image', 'describe', {
       images: [

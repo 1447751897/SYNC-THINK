@@ -1,5 +1,5 @@
 // Runtime - long-lived Agent Runtime process entry. UI lifecycle independent:
-// killing the UI must not terminate active Runs (design 锟?6 / 锟?).
+// killing the UI must not terminate active Runs (design �?6 / �?).
 
 import {
   pipePathPortable,
@@ -110,6 +110,15 @@ import {
   type ConversationTransientSnapshot,
   type SubscribeConversationTransientStreamResponse,
   type UnsubscribeConversationTransientStreamResponse,
+  type ListWaitingBrowserHandoffsResponse,
+  type DesktopWaitingCommandSummary,
+  type ListWaitingDesktopCommandsResponse,
+  type ContinueDesktopCommandResponse,
+  type CancelDesktopCommandResponse,
+  type ContinueBrowserHandoffResponse,
+  type CancelBrowserHandoffResponse,
+  COMPUTER_USE_PLUGIN_SETTING_KEY,
+  isComputerUsePluginEnabled as isComputerUsePluginSettingEnabled,
 } from '@sync-think/protocol';
 import {
   ErrorCode,
@@ -180,11 +189,14 @@ import {
   type SqliteArtifactStore,
   type SqliteProductionExecutionStore,
   type SqliteBrowserStore,
+  type SqliteDesktopStore,
+  type DesktopCommandRecord,
   type SqliteUnitOfWork,
   type SqliteGlobalAgentStore,
   type SqliteTeamStore,
   type SqliteConversationStore,
   type SqliteMessageStore,
+  type SqliteAgentContextStore,
   type GlobalAgentRecord,
   type TeamRecord,
   type TeamRunRecord,
@@ -218,6 +230,7 @@ import {
   shouldAttemptFallback,
   suggestCapabilities,
   normalizeCapabilities,
+  isTextFallbackCompatibleModel,
   parseSkillMd,
   skillContentFingerprint,
   ParseSkillMdError,
@@ -253,6 +266,7 @@ import {
   buildLocalCompactSummary,
   CHAT_AGENT_TOOL_NAMES,
   CHAT_BROWSER_TOOL_NAMES,
+  CHAT_DESKTOP_TOOL_NAMES,
   CHAT_PLAN_TOOL_NAMES,
   CHAT_SKILL_TOOL_NAMES,
   CHAT_TEAM_TOOL_NAMES,
@@ -267,6 +281,7 @@ import {
   mcpToolsToProviderSchemas,
   parseMcpProviderToolName,
   executeChatBuiltInTool,
+  executeChatDesktopTool,
   executeChatPlanTool,
   foldLongToolOutputsInMessages,
   foldToolOutputText,
@@ -286,6 +301,7 @@ import {
   type ContextSnapshotSource,
 } from './context-snapshot.js';
 import { buildProviderMessagesFromDurableMessages } from './context-message-history.js';
+import { shouldCreateRuntimeCheckpoint } from './runtime-checkpoint-policy.js';
 import { resolveHistoricalMessageImageDataUrl } from './message-image-context.js';
 import {
   parseAppendMessagePayload,
@@ -387,6 +403,12 @@ import {
   parseConversationCompactPayload,
   parseConversationDecideToolApprovalPayload,
   parseConversationSubmitBrowserResultPayload,
+  parseListWaitingBrowserHandoffsPayload,
+  parseContinueBrowserHandoffPayload,
+  parseCancelBrowserHandoffPayload,
+  parseListWaitingDesktopCommandsPayload,
+  parseContinueDesktopCommandPayload,
+  parseCancelDesktopCommandPayload,
 } from './command-validation.js';
 import { createPipeServer, type PipeServerHandlers } from './pipe/server.js';
 import { healthcheck, type HealthcheckResult, type HealthcheckError } from './healthcheck.js';
@@ -396,12 +418,20 @@ import {
   FakeMcpWorker,
   LocalStdioMcpWorker,
   PersistentBrowserWorker,
+  IsolatedDesktopWorker,
   formatMcpPolicyLabel,
   normalizeMcpProcessPolicy,
   previewMcpOutput,
   type BrowserHostLike,
+  type DesktopUserInputMonitor,
+  type DesktopWorker,
 } from '@sync-think/workers';
-import { RuntimeBrowserController } from './browser/runtime-browser-controller.js';
+import {
+  RuntimeBrowserController,
+  RuntimeBrowserHandoffError,
+  type RuntimeBrowserHandoffContext,
+} from './browser/runtime-browser-controller.js';
+import { RuntimeDesktopController } from './desktop/runtime-desktop-controller.js';
 
 import {
   estimateUsageCost,
@@ -445,7 +475,11 @@ export interface RuntimeOptions {
   orchestrationStore?: SqliteOrchestrationStore;
   artifactStore?: SqliteArtifactStore;
   productionExecutionStore?: SqliteProductionExecutionStore;
+  agentContextStore?: SqliteAgentContextStore;
   browserStore?: SqliteBrowserStore;
+  desktopStore?: SqliteDesktopStore;
+  desktopWorker?: DesktopWorker;
+  desktopUserInputMonitor?: DesktopUserInputMonitor;
   unitOfWork?: SqliteUnitOfWork;
   stepExecutor?: StepExecutor;
   skillStore?: SqliteSkillStore;
@@ -477,19 +511,31 @@ export interface RuntimeOptions {
       failedRequests: number;
       tokensIn: number;
       tokensOut: number;
+      cachedTokensHit?: number;
+      cachedTokensCreated?: number;
+      reasoningTokens: number;
+      totalTokens: number;
       averageLatencyMs?: number;
       lastUsedAt?: string;
     }>;
     requests: Array<{
       requestId: string;
+      taskId?: string;
       runId?: string;
+      stepId?: string;
+      agentContextThreadId?: string;
+      contextEpochId?: string;
       occurredAt: string;
       modelId: string;
       providerId?: string;
+      providerModelId?: string;
+      purpose?: import('@sync-think/shared').ProviderUsagePurpose;
       tokensIn: number;
       tokensOut: number;
       cachedTokensHit?: number;
       cachedTokensCreated?: number;
+      reasoningTokens?: number;
+      totalTokens: number;
       status: 'success' | 'failed' | 'unknown';
       latencyMs?: number;
       errorMessage?: string;
@@ -525,6 +571,8 @@ export interface RuntimeStateStore {
   listEvents(workspaceId: WorkspaceId, afterSequence: number): Event[];
   /** Run-local durable query used by the conversation process read model. */
   listEventsByRun?(runId: RunId): Event[];
+  /** Task-local durable query used by context history and compaction. */
+  listEventsByTask?(taskId: TaskId): Event[];
   /** Global durable stream used by Runtime replay; optional for legacy/test stores. */
   listAllEvents?(afterSequence: number): Event[];
   /** Latest durable global cursor; optional for legacy/test stores. */
@@ -571,6 +619,12 @@ interface RuntimeEventSubscription {
   highWatermark: EventReplayCursor;
   replayCursor: EventReplayCursor;
   liveCursor: EventReplayCursor;
+}
+
+function runtimeRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function cursorForEvent(event: Event): EventReplayCursor {
@@ -643,6 +697,7 @@ export class Runtime {
   private readonly secureStore?: SecureStore;
   private readonly browserHost?: BrowserHostLike;
   private readonly browserController?: RuntimeBrowserController;
+  private readonly desktopController?: RuntimeDesktopController;
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
   private readonly discoveryAdapter?: DemoProvider;
@@ -650,7 +705,7 @@ export class Runtime {
   /** Abort controllers for in-flight demo chat streams (Stop button). */
   private readonly demoRunAborts = new Map<string, AbortController>();
   /**
-   * Chat tool approvals under「询问批准」:
+   * Chat tool approvals under「询问批准�?
    * mutating tools pause here until conversation.decideToolApproval.
    */
   private readonly pendingToolApprovals = new Map<
@@ -691,6 +746,7 @@ export class Runtime {
     { summaryText: string; compactedAt: string }
   >();
   private eventSequence = 0;
+  private lastCheckpointEventSequence = 0;
 
   constructor(opts: RuntimeOptions) {
     this.installId = opts.installId;
@@ -720,8 +776,22 @@ export class Runtime {
         ? new Scheduler({
             store: opts.orchestrationStore,
             executor: opts.stepExecutor,
+            agentContextStore: opts.agentContextStore,
             approvalStore: opts.approvalStore,
             unitOfWork: opts.unitOfWork,
+            onProviderUsage: (usage) => {
+              const { taskId, runId, stepId, ...payload } = usage;
+              const event = this.appendEvent(
+                'provider',
+                'provider.usage',
+                payload,
+                undefined,
+                runId,
+                taskId,
+                stepId,
+              );
+              this.publishEvent(event);
+            },
             approvalPolicy:
               opts.approvalStore && opts.unitOfWork
                 ? {
@@ -767,11 +837,24 @@ export class Runtime {
     this.mcpStore = opts.mcpStore;
     this.secureStore = opts.secureStore;
     this.browserHost = opts.browserHost;
-    this.browserController = opts.browserHost && opts.browserStore
-      ? new RuntimeBrowserController({
-          worker: new PersistentBrowserWorker(opts.browserHost),
-          store: opts.browserStore,
-          profileId: opts.browserProfileId,
+    this.browserController =
+      opts.browserHost && opts.browserStore
+        ? new RuntimeBrowserController({
+            worker: new PersistentBrowserWorker(opts.browserHost),
+            store: opts.browserStore,
+            profileId: opts.browserProfileId,
+            fallbackWorkingDir: opts.browserFallbackWorkingDir ?? process.cwd(),
+            leaseHost: opts.browserHost,
+          })
+        : undefined;
+    this.desktopController = opts.desktopStore
+      ? new RuntimeDesktopController({
+          store: opts.desktopStore,
+          ...(opts.desktopWorker ? { worker: opts.desktopWorker } : {}),
+          workerFactory: () => new IsolatedDesktopWorker(),
+          ...(opts.desktopUserInputMonitor
+            ? { userInputMonitor: opts.desktopUserInputMonitor }
+            : {}),
           fallbackWorkingDir: opts.browserFallbackWorkingDir ?? process.cwd(),
         })
       : undefined;
@@ -1165,6 +1248,30 @@ export class Runtime {
           this.handleConversationSubmitBrowserResult(socket, frame);
           return;
         }
+        if (frame.type === 'desktop.command.listWaiting') {
+          this.handleListWaitingDesktopCommands(socket, frame);
+          return;
+        }
+        if (frame.type === 'desktop.command.continue') {
+          this.handleContinueDesktopCommand(socket, frame);
+          return;
+        }
+        if (frame.type === 'desktop.command.cancel') {
+          this.handleCancelDesktopCommand(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.handoff.listWaiting') {
+          this.handleListWaitingBrowserHandoffs(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.handoff.continue') {
+          this.trackBackgroundTask(this.handleContinueBrowserHandoff(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.handoff.cancel') {
+          this.trackBackgroundTask(this.handleCancelBrowserHandoff(socket, frame));
+          return;
+        }
         if (frame.type === 'skill.import') {
           this.handleImportSkill(socket, frame);
           return;
@@ -1318,6 +1425,7 @@ export class Runtime {
   private restorePersistedState(): void {
     if (!this.stateStore) return;
     const checkpoint = this.stateStore.loadLatestCheckpoint(this.checkpointRunId);
+    this.lastCheckpointEventSequence = checkpoint?.lastEventSequence ?? 0;
     if (checkpoint) {
       this.restoreProjection(checkpoint.state);
       this.eventSequence = checkpoint.lastEventSequence;
@@ -3763,7 +3871,10 @@ export class Runtime {
               models: discovered.map((id) => ({
                 providerModelId: id,
                 displayName: id,
-                capabilities: ['text'] as CapabilityTag[],
+                capabilities: suggestCapabilities({
+                  providerModelId: id,
+                  protocol: payload.protocol,
+                }).capabilities,
               })),
               capabilitiesConfirmed: false,
             });
@@ -4053,6 +4164,8 @@ export class Runtime {
           continue;
         }
 
+        const mappedProtocol = mapped.protocol;
+
         let storeHandle: string | undefined;
         let providerCommitted = false;
         try {
@@ -4079,7 +4192,8 @@ export class Runtime {
               models: mapped.models.map((id) => ({
                 providerModelId: id,
                 displayName: id,
-                capabilities: ['text'] as CapabilityTag[],
+                capabilities: suggestCapabilities({ providerModelId: id, protocol: mappedProtocol })
+                  .capabilities,
               })),
               capabilitiesConfirmed: false,
             });
@@ -4289,7 +4403,7 @@ export class Runtime {
             providerModelId: id,
             displayName: id,
             protocol,
-            capabilities: ['text'] as CapabilityTag[],
+            capabilities: suggestCapabilities({ providerModelId: id, protocol }).capabilities,
             capabilitiesConfirmed: false,
             priority: index,
           };
@@ -4322,7 +4436,7 @@ export class Runtime {
         models: discoveredIds.map((id) => ({
           providerModelId: id,
           displayName: id,
-          capabilities: ['text'] as CapabilityTag[],
+          capabilities: suggestCapabilities({ providerModelId: id, protocol }).capabilities,
         })),
         capabilitiesConfirmed: false,
       });
@@ -4794,7 +4908,7 @@ export class Runtime {
         apiKey,
         expiresAt,
       };
-      // Audit metadata only — never the secret.
+      // Audit metadata only �?never the secret.
       if (this.stateStore) {
         try {
           const draft: EventDraft = {
@@ -5147,7 +5261,7 @@ export class Runtime {
         const candidates = [
           modelId,
           model?.providerModelId,
-          // strip vendor prefix: "z-ai/glm-5.2" → "glm-5.2"
+          // strip vendor prefix: "z-ai/glm-5.2" �?"glm-5.2"
           model?.providerModelId?.includes('/')
             ? model.providerModelId.slice(model.providerModelId.lastIndexOf('/') + 1)
             : undefined,
@@ -5218,6 +5332,8 @@ export class Runtime {
       const cachedCreated = requests
         .map((row) => row.cachedTokensCreated)
         .filter((v): v is number => typeof v === 'number');
+      const totalReasoningTokens = requests.reduce((sum, row) => sum + (row.reasoningTokens ?? 0), 0);
+      const totalTokens = requests.reduce((sum, row) => sum + row.totalTokens, 0);
       const totalCostByCurrency: UsageSummaryResponse['totalCostByCurrency'] = {};
       for (const request of requests) {
         if (typeof request.estimatedCost !== 'number' || !request.currency) continue;
@@ -5241,6 +5357,8 @@ export class Runtime {
           cachedCreated.length > 0
             ? cachedCreated.reduce((sum, value) => sum + value, 0)
             : undefined,
+        totalReasoningTokens,
+        totalTokens,
       };
       socket.write(
         encodeFrame({ id: frame.id, kind: 'response', type: 'usage.summary', payload: response }),
@@ -5766,7 +5884,7 @@ export class Runtime {
               payload: {
                 archived: true,
                 conversationCount: referenced.length,
-                message: `智能体仍被 ${referenced.length} 个对话引用，已归档而非删除`,
+                message: `智能体仍有 ${referenced.length} 个对话引用，已归档而非删除`,
               },
             }),
           );
@@ -5910,7 +6028,7 @@ export class Runtime {
       return;
     }
     try {
-      // Refuse delete while conversations still reference this team — historical
+      // Refuse delete while conversations still reference this team �?historical
       // chats would otherwise silently lose their team identity (same class of
       // bug as deleting a global agent with open agent-track conversations).
       if (this.conversationStore) {
@@ -6064,7 +6182,7 @@ export class Runtime {
       if (!conversation) {
         throw new Error(`Conversation not found: ${payload.conversationId}`);
       }
-      // Conversations that never had a message sent have no task/thread — return empty page.
+      // Conversations that never had a message sent have no task/thread �?return empty page.
       const emptyPage: ConversationListMessagesResponse = { messages: [], hasMore: false };
       if (!conversation.taskId) {
         socket.write(
@@ -6113,7 +6231,7 @@ export class Runtime {
     const agentIdentityPrompt = run.teamPromptBlock
       ? [
           run.globalAgentName
-            ? `You are the Agent?${run.globalAgentName}?in SYNC-THINK, acting as the team coordinator.`
+            ? `You are the Agent「${run.globalAgentName}」in SYNC-THINK, acting as the team coordinator.`
             : undefined,
           run.persona ? `Coordinator persona:\n${run.persona}` : undefined,
           run.teamPromptBlock,
@@ -6122,7 +6240,7 @@ export class Runtime {
           .join('\n\n')
       : run.globalAgentName
         ? [
-            `You are the Agent?${run.globalAgentName}?in SYNC-THINK.`,
+            `You are the Agent「${run.globalAgentName}」in SYNC-THINK.`,
             run.persona
               ? `Follow this persona / system instructions exactly:\n${run.persona}`
               : 'Stay in character for this Agent across the whole conversation.',
@@ -6147,11 +6265,7 @@ export class Runtime {
     ].filter((value): value is string => Boolean(value));
   }
 
-  private formatSkillPromptBlock(skill: {
-    name: string;
-    version: string;
-    body: string;
-  }): string {
+  private formatSkillPromptBlock(skill: { name: string; version: string; body: string }): string {
     const heading = `### Skill: ${skill.name}${skill.version ? ` (${skill.version})` : ''}`;
     return skill.body ? `${heading}\n${skill.body}` : heading;
   }
@@ -6543,7 +6657,7 @@ export class Runtime {
   }
 
   /**
-   * conversation.rebindTarget — free retarget of "who this conversation talks
+   * conversation.rebindTarget �?free retarget of "who this conversation talks
    * to": same-track swap or any cross-track switch. Validation is inline
    * (strict key/shape check) mirroring parseUpgradeConversationTrackPayload.
    */
@@ -6615,7 +6729,7 @@ export class Runtime {
 
   /**
    * NewMax-style context compact:
-   * 1) User types /compact (or auto at ~70% window) → runtime receives conversation.compact
+   * 1) User types /compact (or auto at ~70% window) �?runtime receives conversation.compact
    * 2) Primary path: call the bound provider with Claude Code's compact summary prompt
    *    (same approach NewMax uses by submitting /compact to the long-lived CLI)
    * 3) Write durable context.compacted boundary + visible system marker
@@ -6665,9 +6779,11 @@ export class Runtime {
         throw new Error(`Task/thread not found for conversation: ${payload.conversationId}`);
       }
       const threadId = String(task.threadId);
-      const events = this.stateStore.listAllEvents
-        ? this.stateStore.listAllEvents(0)
-        : this.stateStore.listEvents(this.workspaceId, 0);
+      const events = this.stateStore.listEventsByTask
+        ? this.stateStore.listEventsByTask(task.id)
+        : this.stateStore.listAllEvents
+          ? this.stateStore.listAllEvents(0)
+          : this.stateStore.listEvents(this.workspaceId, 0);
       const snapshot = this.getOrBuildConversationContextSnapshot({
         threadId,
         modelId: conversation.track === 'model' ? conversation.targetRef : undefined,
@@ -6791,7 +6907,7 @@ export class Runtime {
       const foldedCount = split.foldedCount;
       const compactMessageId = ulid() as MessageId;
       const markerMessageId = ulid() as MessageId;
-      // Prefer durable task.version — same source appendMessage uses for OCC.
+      // Prefer durable task.version �?same source appendMessage uses for OCC.
       const currentVersion = task.version ?? this.threadVersions.get(threadId) ?? 0;
       const nextVersion = currentVersion + 1;
 
@@ -6887,8 +7003,8 @@ export class Runtime {
 
   /**
    * Resolve the model used for compact summaries.
-   * Model track → targetRef; agent track → agent.defaultModelId;
-   * team track → coordinator agent default model (fallback: undefined → fake/default).
+   * Model track �?targetRef; agent track �?agent.defaultModelId;
+   * team track �?coordinator agent default model (fallback: undefined �?fake/default).
    */
   private resolveCompactModelId(conversation: {
     track?: string;
@@ -6938,7 +7054,7 @@ export class Runtime {
   /**
    * Call the bound provider with Claude Code's compact summary prompt.
    * Returns raw model text, or undefined when no live provider is available.
-   * Tools are intentionally disabled — compaction agents must only produce text.
+   * Tools are intentionally disabled �?compaction agents must only produce text.
    */
   private async generateModelCompactSummary(input: {
     threadId: string;
@@ -7491,9 +7607,9 @@ export class Runtime {
    * Reuses prepareRunBinding selection without starting a run or appending events.
    */
   /**
-   * Thread-scoped Manifest amend (protocol context.packet.amend, design 搂10.3).
+   * Thread-scoped Manifest amend (protocol context.packet.amend, design �?0.3).
    * Stores force-exclude overrides applied on next peek / run. Protected kinds
-   * (搂20.9) cannot be force-excluded; refused ids are returned for observability.
+   * (�?0.9) cannot be force-excluded; refused ids are returned for observability.
    */
   private handleAmendContextPacket(socket: Socket, frame: Frame): void {
     const payload = parseAmendContextPacketPayload(frame.payload);
@@ -7585,7 +7701,7 @@ export class Runtime {
       const userText =
         typeof payload.userText === 'string' && payload.userText.trim().length > 0
           ? payload.userText
-          : '锛堥瑙堬細灏氭湭鍙戦€佺殑涓婁笅鏂囷級';
+          : '（预览：尚未发送的上下文）';
       const prepared = this.prepareRunBinding({
         runId: peekRunId,
         threadId: payload.threadId,
@@ -8261,7 +8377,7 @@ export class Runtime {
   }
 
   /**
-   * 搂9.1 / 搂9.3: Import never auto-allowlists. After a human approves a
+   * �?.1 / �?.3: Import never auto-allowlists. After a human approves a
    * skill-permission (upgrade reapproval), bind the approved skillVersionId
    * onto the default conversation Agent allowlist. Reject leaves allowlist untouched.
    */
@@ -8547,13 +8663,13 @@ export class Runtime {
   }
 
   /**
-   * Import SKILL.md as a content-addressed library entry (搂9.2).
+   * Import SKILL.md as a content-addressed library entry (�?.2).
    * Parse-only: scripts/shell tools are recorded, never executed on import.
-   * Installing a Skill does not auto-allowlist it for any Agent (搂9.1).
+   * Installing a Skill does not auto-allowlist it for any Agent (�?.1).
    */
   /**
    * Shared SKILL.md import core used by the skill.import command and the
-   * create_skill / update_skill chat tools. Parses text only — never executes
+   * create_skill / update_skill chat tools. Parses text only �?never executes
    * scripts. Emits skill.imported (+ optional reapproval) events.
    */
   private importSkillMdCore(skillMd: string): ImportSkillResponse {
@@ -8861,7 +8977,7 @@ export class Runtime {
   }
 
   /**
-   * Register MCP server metadata (搂9.3). Does not spawn process or call remote tools.
+   * Register MCP server metadata (�?.3). Does not spawn process or call remote tools.
    * Tool schemas are recorded for later allowlisted Context Packet injection.
    */
   private handleRegisterMcpServer(socket: Socket, frame: Frame): void {
@@ -8929,7 +9045,7 @@ export class Runtime {
   }
 
   /**
-   * Probe MCP process policy without spawning (搂9.3).
+   * Probe MCP process policy without spawning (�?.3).
    * Uses FakeMcpWorker + registered server limits when mcpServerId is provided.
    */
   private async handleProbeMcpPolicy(socket: Socket, frame: Frame): Promise<void> {
@@ -8978,7 +9094,7 @@ export class Runtime {
       const simulatedOutput =
         typeof payload.simulatedOutput === 'string'
           ? payload.simulatedOutput
-          : '[probe] MCP policy dry-run 鈥?no process spawn';
+          : '[probe] MCP policy dry-run �?no process spawn';
       const simulatedElapsedMs =
         typeof payload.simulatedElapsedMs === 'number' ? payload.simulatedElapsedMs : 0;
 
@@ -9089,7 +9205,7 @@ export class Runtime {
   }
 
   /**
-   * Soft craft MCP tool *request* (搂9.3 鈫?搂13).
+   * Soft craft MCP tool *request* (�?.3 �?�?3).
    * Evaluates sensitivity + approval policy and may enqueue Approval Center.
    * Never spawns a process or executes the tool.
    */
@@ -9576,7 +9692,7 @@ export class Runtime {
   }
 
   /**
-   * Real MCP JSON-RPC tool call (搂9.3 / 搂13 / 搂14).
+   * Real MCP JSON-RPC tool call (�?.3 / �?3 / �?4).
    * Exact orchestration call. Approval gates are owned by Scheduler Step state.
    */
   private async handleCallMcpTool(socket: Socket, frame: Frame): Promise<void> {
@@ -9628,7 +9744,7 @@ export class Runtime {
         sensitivity: {
           sensitive: true,
           reasons: ['missing-metadata'],
-          labelZh: '缂哄皯 mcpServerId/toolName',
+          labelZh: '缺少 mcpServerId/toolName',
           toolOnCatalog: false,
         },
         evaluation: {
@@ -10264,7 +10380,7 @@ export class Runtime {
   }
 
   /**
-   * Refresh MCP tool catalog via real JSON-RPC tools/list (搂9.3).
+   * Refresh MCP tool catalog via real JSON-RPC tools/list (�?.3).
    * Does NOT execute tools. Persists discovered schemas onto the registry.
    * Does not mutate Agent allowlist.
    */
@@ -11190,7 +11306,7 @@ export class Runtime {
     if (demoRunId && demoRun) this.demoRuns.set(demoRunId, demoRun);
 
     // Durable Message Store write (S1): final user/system/tool text message.
-    // Images are attached later via message.attachImages (Desktop promotes staging → storageRef).
+    // Images are attached later via message.attachImages (Desktop promotes staging �?storageRef).
     this.persistFinalChatMessage({
       id: messageId,
       threadId: payload.threadId as ThreadId,
@@ -11546,7 +11662,7 @@ export class Runtime {
     const task = this.scheduler
       .runUntilIdle(runId)
       .then(() => this.syncOrchestrationEvents())
-      .catch(() => console.warn(`[runtime] orchestration ${source} failed`));
+      .catch((error) => console.warn(`[runtime] orchestration ${source} failed`, error));
     this.trackBackgroundTask(task);
   }
 
@@ -11555,7 +11671,7 @@ export class Runtime {
     const task = this.scheduler
       .recover(runId)
       .then(() => this.syncOrchestrationEvents())
-      .catch(() => console.warn(`[runtime] orchestration ${source} recovery failed`));
+      .catch((error) => console.warn(`[runtime] orchestration ${source} recovery failed`, error));
     this.trackBackgroundTask(task);
   }
 
@@ -11594,21 +11710,38 @@ export class Runtime {
     projectedRuns: ReadonlyMap<string, DemoRunState>,
   ): Event[] {
     if (!this.stateStore) throw new Error('Runtime state store is not configured');
-    const checkpoint: CheckpointDraft = {
-      id: ulid(),
-      runId: this.checkpointRunId,
-      state: {
-        schemaVersion: 1,
-        threadVersions: Array.from(projectedThreadVersions.entries()).sort(([left], [right]) =>
-          left.localeCompare(right),
-        ),
-        demoRuns: serializeDemoRuns(projectedRuns),
-      },
-      createdAt: events[events.length - 1].occurredAt,
-    };
-    const committed = this.stateStore.commitTransition({ events, checkpoint });
+    const durableEventSequence = Math.max(
+      this.eventSequence,
+      this.stateStore.getLatestEventSequence?.() ?? this.eventSequence,
+    );
+    const shouldCheckpoint = shouldCreateRuntimeCheckpoint({
+      lastCheckpointEventSequence: this.lastCheckpointEventSequence,
+      projectedLastEventSequence: durableEventSequence + events.length,
+      eventTypes: events.map((event) => event.type),
+    });
+    const checkpoint: CheckpointDraft | undefined = shouldCheckpoint
+      ? {
+          id: ulid(),
+          runId: this.checkpointRunId,
+          state: {
+            schemaVersion: 1,
+            threadVersions: Array.from(projectedThreadVersions.entries()).sort(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+            demoRuns: serializeDemoRuns(projectedRuns),
+          },
+          createdAt: events[events.length - 1].occurredAt,
+        }
+      : undefined;
+    const committed = this.stateStore.commitTransition({
+      events,
+      ...(checkpoint ? { checkpoint } : {}),
+    });
     if (committed.events.length === 0) {
       throw new Error('The event store returned an empty transition');
+    }
+    if (committed.checkpoint) {
+      this.lastCheckpointEventSequence = committed.checkpoint.lastEventSequence;
     }
     return committed.events;
   }
@@ -11627,9 +11760,11 @@ export class Runtime {
       const executionMode = this.resolveChatExecutionMode(initialRun.threadId);
       const networkEnabled = initialRun.networkEnabled === true;
       // Agent-management tools (create_agent / list_agent_resources) do not need
-      // a bound project folder — only a configured global agent store.
+      // a bound project folder �?only a configured global agent store.
       const agentToolsEnabled = Boolean(this.globalAgentStore);
-      const toolsEnabled = Boolean(workspaceRoot) || networkEnabled || agentToolsEnabled;
+      const desktopToolsEnabled = this.isComputerUsePluginEnabled();
+      const toolsEnabled =
+        Boolean(workspaceRoot) || networkEnabled || agentToolsEnabled || desktopToolsEnabled;
       const pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[] = [];
       let toolLoopRound = 0;
       const MAX_TOOL_ROUNDS = 8;
@@ -11742,8 +11877,7 @@ export class Runtime {
               finishedWithToolRequests = true;
             }
 
-            // When tools are requested, do not treat finished as terminal yet —
-            // we still need a local tool loop + follow-up model turn.
+            // When tools are requested, do not treat finished as terminal yet �?            // we still need a local tool loop + follow-up model turn.
             const suppressTerminal =
               finishedWithToolRequests &&
               toolsEnabled &&
@@ -11786,6 +11920,9 @@ export class Runtime {
               const scrubbed = this.scrubDiagnosticMessage(payload.errorMessage);
               if (scrubbed) payload.errorMessage = scrubbed;
               else delete payload.errorMessage;
+            }
+            if (!projection.terminal && projection.nextRun) {
+              payload.run = serializeDemoRun(projection.nextRun);
             }
             const isTransientDelta =
               projection.type === 'message.delta' || projection.type === 'message.reasoning_delta';
@@ -11898,11 +12035,32 @@ export class Runtime {
               const toolCall = pendingToolCalls[toolIndex]!;
               if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
 
+              const desktopCapabilityEnabled = this.isComputerUsePluginEnabled();
+              if (CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name) && !desktopCapabilityEnabled) {
+                const disabledText = await executeChatDesktopTool({
+                  workspaceRoot,
+                  toolCall,
+                  capabilityEnabled: false,
+                  signal: abort.signal,
+                });
+                this.publishToolCompleted(runId, currentRun.threadId, toolCall, disabledText);
+                completedResults.push({ toolCallId: toolCall.id, content: disabledText });
+                chatMessages = [
+                  ...chatMessages,
+                  { role: 'tool', toolCallId: toolCall.id, content: disabledText },
+                ];
+                continue;
+              }
+
               let browserApproval: { approvalId: string } | undefined;
+              let desktopApproval: { approvalId: string } | undefined;
               if (
                 CHAT_BROWSER_TOOL_NAMES.has(toolCall.name) &&
                 this.browserController &&
-                isChatToolAllowed(executionMode, toolCall.name, { networkEnabled })
+                isChatToolAllowed(executionMode, toolCall.name, {
+                  networkEnabled,
+                  desktopEnabled: desktopCapabilityEnabled,
+                })
               ) {
                 const browserPermissionInput = {
                   toolName: toolCall.name,
@@ -11913,7 +12071,8 @@ export class Runtime {
                   idempotencyKey: `browser:${runId}:${toolCall.id}`,
                   ...(workspaceRoot ? { workspaceRoot } : {}),
                 };
-                const permission = this.browserController.evaluatePermission(browserPermissionInput);
+                const permission =
+                  this.browserController.evaluatePermission(browserPermissionInput);
                 if (permission.decision === 'approval-required') {
                   const approval = await this.requestChatToolApproval({
                     runId,
@@ -11938,12 +12097,82 @@ export class Runtime {
                     browserApproval = { approvalId: approval.approvalId };
                   }
                 }
+              } else if (
+                CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name) &&
+                this.desktopController &&
+                isChatToolAllowed(executionMode, toolCall.name, {
+                  networkEnabled,
+                  desktopEnabled: desktopCapabilityEnabled,
+                })
+              ) {
+                const permission = this.desktopController.evaluatePermission({
+                  executionMode,
+                  toolName: toolCall.name,
+                  argumentsJson: toolCall.argumentsJson || '{}',
+                });
+                if (permission.decision === 'deny') {
+                  const deniedText = JSON.stringify({
+                    ok: false,
+                    code: permission.code,
+                    error: permission.error,
+                    failureClass: permission.failureClass,
+                  });
+                  this.publishToolCompleted(runId, currentRun.threadId, toolCall, deniedText);
+                  completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                  chatMessages = [
+                    ...chatMessages,
+                    { role: 'tool', toolCallId: toolCall.id, content: deniedText },
+                  ];
+                  continue;
+                }
+                if (permission.decision === 'approval-required') {
+                  const approval = await this.requestChatToolApproval({
+                    runId,
+                    threadId: currentRun.threadId,
+                    workspaceRoot: workspaceRoot ?? '',
+                    executionMode,
+                    chatMessages,
+                    pendingToolCalls: [...pendingToolCalls],
+                    currentIndex: toolIndex,
+                    completedResults: [...completedResults],
+                    toolLoopRound,
+                    toolCall,
+                    approvalArguments: permission.risk.approvalArguments,
+                    approvalRisk: {
+                      level: permission.risk.level,
+                      reasonCodes: permission.risk.reasonCodes,
+                      ...(permission.risk.humanOnlyAction
+                        ? { humanOnlyAction: permission.risk.humanOnlyAction }
+                        : {}),
+                    },
+                    signal: abort.signal,
+                  });
+                  if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+                  if (approval.decision === 'deny') {
+                    const deniedText = JSON.stringify({
+                      ok: false,
+                      code: 'desktop.approval-denied',
+                      error: 'User denied the Desktop action.',
+                      deniedBy: 'user',
+                      executionMode: normalizeChatExecutionMode(executionMode),
+                    });
+                    this.publishToolCompleted(runId, currentRun.threadId, toolCall, deniedText);
+                    completedResults.push({ toolCallId: toolCall.id, content: deniedText });
+                    chatMessages = [
+                      ...chatMessages,
+                      { role: 'tool', toolCallId: toolCall.id, content: deniedText },
+                    ];
+                    continue;
+                  }
+                  desktopApproval = { approvalId: approval.approvalId };
+                }
               } else if (chatToolRequiresApproval(executionMode, toolCall.name)) {
-                const isAgentTool =
+                const canRunWithoutWorkspace =
                   CHAT_AGENT_TOOL_NAMES.has(toolCall.name) ||
                   CHAT_SKILL_TOOL_NAMES.has(toolCall.name) ||
-                  CHAT_TEAM_TOOL_NAMES.has(toolCall.name);
-                if (!workspaceRoot && !isAgentTool) {
+                  CHAT_TEAM_TOOL_NAMES.has(toolCall.name) ||
+                  CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name);
+                if (!workspaceRoot && !canRunWithoutWorkspace) {
                   const deniedText = JSON.stringify({
                     ok: false,
                     error: 'No project folder is bound; mutating tools are unavailable.',
@@ -11985,8 +12214,13 @@ export class Runtime {
                   ];
                   continue;
                 }
-                // approved → fall through to execute
-              } else if (!isChatToolAllowed(executionMode, toolCall.name, { networkEnabled })) {
+                // approved �?fall through to execute
+              } else if (
+                !isChatToolAllowed(executionMode, toolCall.name, {
+                  networkEnabled,
+                  desktopEnabled: desktopCapabilityEnabled,
+                })
+              ) {
                 const deniedText = JSON.stringify({
                   ok: false,
                   error: chatToolDeniedMessage(executionMode, toolCall.name),
@@ -12020,6 +12254,16 @@ export class Runtime {
                   workspaceRoot,
                   signal: abort.signal,
                   approval: browserApproval,
+                });
+              } else if (CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name)) {
+                resultText = await this.executeChatDesktopWorkerTool({
+                  runId,
+                  threadId: currentRun.threadId,
+                  toolCall,
+                  workspaceRoot,
+                  executionMode,
+                  approval: desktopApproval,
+                  signal: abort.signal,
                 });
               } else if (CHAT_AGENT_TOOL_NAMES.has(toolCall.name)) {
                 resultText = this.executeChatAgentTool({
@@ -12079,7 +12323,7 @@ export class Runtime {
               forceFinalAnswer = true;
               forceFinalReason = guard.reason;
             } else if (guard.reason) {
-              // Soft recovery hint (e.g. first all-unavailable batch) — keep tools on
+              // Soft recovery hint (e.g. first all-unavailable batch) �?keep tools on
               // but tell the model how to recover.
               chatMessages = [
                 ...chatMessages,
@@ -12188,7 +12432,7 @@ export class Runtime {
     });
   }
 
-  /** 搂10.3 鈥?Agent / Skill allowlist / policy ids for Manifest inspect. */
+  /** �?0.3 �?Agent / Skill allowlist / policy ids for Manifest inspect. */
   private resolveAgentManifestMeta(agentVersionId: string): {
     skillVersionIds: string[];
     mcpServerIds: string[];
@@ -12230,7 +12474,7 @@ export class Runtime {
   }
 
   /**
-   * Product 搂5.4: run > pin > agent group first > provider primary.
+   * Product �?.4: run > pin > agent group first > provider primary.
    * Never returns secrets; only CredentialRef metadata + storeHandle in store layer.
    */
   private resolveRunCredentialRef(input: {
@@ -12279,9 +12523,9 @@ export class Runtime {
     threadId: string;
     userText: string;
     tokenBudget?: number;
-    /** Agent allowlist 鈥?only these Skill versions become skill-definition sources (搂9.1). */
+    /** Agent allowlist �?only these Skill versions become skill-definition sources (�?.1). */
     skillVersionIds?: readonly string[];
-    /** Agent MCP allowlist 鈥?only these servers contribute tool-schema sources (搂9.3). */
+    /** Agent MCP allowlist �?only these servers contribute tool-schema sources (�?.3). */
     mcpServerIds?: readonly string[];
   }) {
     const task = this.resolveTaskForThread(input.threadId);
@@ -12337,7 +12581,7 @@ ${task.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`,
       );
     }
 
-    // Explicit cross-task ref via parentTaskId only (搂10.1) 锟?never sibling scrape.
+    // Explicit cross-task ref via parentTaskId only (�?0.1) �?never sibling scrape.
     const parent =
       task?.parentTaskId && this.workspaceStore
         ? this.workspaceStore.getTask(task.parentTaskId)
@@ -12378,7 +12622,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       );
     }
 
-    // Approved/active project memory (搂10.1 layer 2) 锟?explicit durable entries only.
+    // Approved/active project memory (�?0.1 layer 2) �?explicit durable entries only.
     let memoryEvidenceRefs: string[] = [];
     if (this.memoryStore) {
       try {
@@ -12427,7 +12671,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       summary: input.userText.slice(0, 80),
     });
 
-    // Allowed Skills only 鈥?install 鈮?available (搂9.1 / 搂10.2 skill-definition).
+    // Allowed Skills only �?install �?available (�?.1 / �?0.2 skill-definition).
     let resolvedSkillVersionIds: string[] = [];
     let missingSkillVersionIds: string[] = [];
     let resolvedSkills: Array<{
@@ -12485,7 +12729,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
     }
 
-    // Allowed MCP tools only 鈥?register 鈮?available (搂9.3 / 搂10.2 tool-schema).
+    // Allowed MCP tools only �?register �?available (�?.3 / �?0.2 tool-schema).
     let resolvedMcpServerIds: string[] = [];
     let missingMcpServerIds: string[] = [];
     let toolSchemaCount = 0;
@@ -12582,7 +12826,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     agentVersionId?: string;
     /** Bound global Agent (mutable agent table) for persona / default model. */
     globalAgentId?: string;
-    /** Bound team (team-track conversations) — coordinator drives the model. */
+    /** Bound team (team-track conversations) �?coordinator drives the model. */
     teamId?: string;
     /** Exact per-turn subset. Undefined preserves the older full-allowlist behavior. */
     skillVersionIds?: readonly string[];
@@ -12683,7 +12927,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         })()
       : undefined;
     const agent = this.resolveAgentModelBinding(input.agentVersionId);
-    // When a global agent is bound, its full config wins — including empty
+    // When a global agent is bound, its full config wins �?including empty
     // fallback/skill/mcp arrays (explicit "none"), not "inherit legacy".
     const effectiveAgentBinding: typeof agent = globalAgent
       ? {
@@ -12817,9 +13061,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
     const skillPromptBlocks = appliedSkills.map((skill) => this.formatSkillPromptBlock(skill));
     const skillPromptBySourceId = new Map(
-      appliedSkills.map(
-        (skill) => [skill.sourceId, this.formatSkillPromptBlock(skill)] as const,
-      ),
+      appliedSkills.map((skill) => [skill.sourceId, this.formatSkillPromptBlock(skill)] as const),
     );
 
     let contextWindow = 128_000;
@@ -12961,8 +13203,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   /**
    * After a model call failure:
-   * 1) Same-provider priority chain — walk *forward only* from the failed model
-   *    (e.g. spare-1 → spare-2, never back to primary).
+   * 1) Same-provider priority chain �?walk *forward only* from the failed model
+   *    (e.g. spare-1 �?spare-2, never back to primary).
    * 2) Agent-configured fallbackModelIds (§5.3).
    * Never silent-swaps models; pauses when both chains are empty or exhausted.
    */
@@ -12978,6 +13220,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
     const scrubbedMessage = this.scrubDiagnosticMessage(errorMessage);
     const failedModelId = run.modelId as ModelId;
+    const attemptedModelIds = Array.from(
+      new Set([...(run.attemptedModelIds ?? []), run.modelId]),
+    ) as ModelId[];
 
     // Layer 1: same-provider priority chain (forward-only from current model).
     if (this.providerStore) {
@@ -12985,11 +13230,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (failedRecord) {
         const ordered = this.providerStore
           .listModels(failedRecord.providerId)
+          .filter((model) =>
+            isTextFallbackCompatibleModel({
+              providerModelId: model.providerModelId,
+              protocol: model.protocol,
+              capabilities: model.capabilities,
+            }),
+          )
           .slice()
           .sort((a, b) => a.priority - b.priority);
         const providerNext = resolveProviderPriorityFallback({
           orderedModelIds: ordered.map((m) => m.id as ModelId),
           failedModelId,
+          attemptedModelIds,
         });
         if (providerNext) {
           const nextRun = this.rebindRunToModel(run, providerNext.modelId, 'providerFallback');
@@ -13014,10 +13267,26 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             fallbackModelIds: run.fallbackModelIds.map((id) => id as ModelId),
           }
         : legacyAgent;
+    const textCompatibleAgent = {
+      ...agent,
+      fallbackModelIds: agent.fallbackModelIds.filter((modelId) => {
+        if (!this.providerStore) return true;
+        const model = this.providerStore.getModel(modelId);
+        return Boolean(
+          model &&
+          isTextFallbackCompatibleModel({
+            providerModelId: model.providerModelId,
+            protocol: model.protocol,
+            capabilities: model.capabilities,
+          }),
+        );
+      }),
+    };
     const resolution = resolveModelBinding({
-      agent,
+      agent: textCompatibleAgent,
       failedModelId,
       failureClass,
+      attemptedModelIds,
     });
 
     // Do NOT call recordRunDiagnostic here: it uses appendEvent and advances
@@ -13062,41 +13331,29 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       fallbackIndex?: number;
       resolutionSource: ModelResolutionSource | string;
     },
-  ): 'continued' | 'failed' {
+  ): 'continued' | 'paused' | 'failed' {
+    const currentRun = this.demoRuns.get(runId);
+    if (currentRun?.modelId === nextRun.modelId && currentRun.packetId === nextRun.packetId) {
+      return 'continued';
+    }
+
+    const alreadyAttempted = new Set([...(run.attemptedModelIds ?? []), run.modelId]);
+    if (alreadyAttempted.has(nextRun.modelId)) {
+      this.persistDemoRunPaused(runId, {
+        reason: 'fallback_exhausted',
+        failedModelId: run.modelId,
+        failureClass: details.failureClass,
+        errorMessage: details.scrubbedMessage,
+      });
+      return 'paused';
+    }
+
     const projectedRuns = new Map(this.demoRuns);
     projectedRuns.set(runId, nextRun);
 
     try {
-      const event = this.persistProjectedEvent(
-        {
-          id: ulid() as Event['id'],
-          workspaceId: this.workspaceId,
-          runId,
-          category: 'run',
-          type: 'run.fallback.selected',
-          occurredAt: new Date().toISOString(),
-          payload: {
-            threadId: run.threadId,
-            fromModelId: run.modelId,
-            toModelId: nextRun.modelId,
-            fromProviderModelId: run.providerModelId,
-            toProviderModelId: nextRun.providerModelId,
-            failureClass: details.failureClass,
-            ...(details.scrubbedMessage ? { errorMessage: details.scrubbedMessage } : {}),
-            resolutionSource: nextRun.resolutionSource ?? details.resolutionSource,
-            fallbackIndex: details.fallbackIndex,
-            agentVersionId: nextRun.agentVersionId,
-            packetId: nextRun.packetId,
-            previousPacketId: run.packetId,
-            run: serializeDemoRun(nextRun),
-          },
-        },
-        projectedRuns,
-      );
-      this.demoRuns.set(runId, nextRun);
-      this.publishEvent(event);
-
-      // Observable Manifest refresh for the fallback model (same task context).
+      // Build the fallback Manifest before persistence so the fallback selection and
+      // its context packet enter SQLite as one all-or-nothing transition.
       const fallbackAgentMeta = this.resolveAgentManifestMeta(String(nextRun.agentVersionId));
       const fallbackContextSelection = this.buildProtectedContextSelection({
         runId,
@@ -13114,67 +13371,93 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         summaries: fallbackContextSelection.summaries,
         evidenceRefsForMemory: fallbackContextSelection.memoryEvidenceRefs,
       });
-      const contextEvent = this.persistProjectedEvent(
-        {
-          id: ulid() as Event['id'],
-          workspaceId: this.workspaceId,
-          runId,
-          category: 'context',
-          type: 'context.packet.built',
-          occurredAt: new Date().toISOString(),
-          payload: {
-            threadId: nextRun.threadId,
-            packetId: nextRun.packetId,
-            proofHash: nextRun.proofHash,
-            modelId: nextRun.modelId,
-            providerModelId: nextRun.providerModelId,
-            resolutionSource: nextRun.resolutionSource,
-            credentialRefId: nextRun.credentialRefId,
-            credentialResolutionSource: nextRun.credentialResolutionSource,
-            agentVersionId: nextRun.agentVersionId,
-            fallbackIndex: details.fallbackIndex,
-            agentVersion: fallbackAgentMeta.agentVersion,
-            requestedSkillVersionIds: nextRun.requestedSkillVersionIds ?? [],
-            skillVersionIds: nextRun.skillVersionIds ?? [],
-            mcpServerIds: nextRun.mcpServerIds ?? [],
-            policyId: fallbackAgentMeta.policyId,
-            includedSourceIds: fallbackAmended.included.map((s) => s.id),
-            excludedSourceIds: fallbackAmended.excluded.map((s) => s.id),
-            includedSources: fallbackAmended.included.map((s) => ({
-              id: s.id,
-              kind: s.kind,
-              tokenEstimate: s.tokenEstimate,
-            })),
-            excludedSources: fallbackAmended.excluded.map((s) => ({
-              id: s.id,
-              kind: s.kind,
-              tokenEstimate: s.tokenEstimate,
-            })),
-            summaries: fallbackAmended.summaries,
-            truncations: [
-              ...fallbackContextSelection.skillTruncations,
-              ...fallbackContextSelection.selected.truncations,
-            ].map((tr) => ({
-              sourceId: tr.sourceId,
-              reason: tr.reason,
-              beforeTokens: tr.beforeTokens,
-              afterTokens: tr.afterTokens,
-            })),
-            crossTaskRefs: fallbackContextSelection.crossTaskRefs ?? [],
-            evidenceRefsForMemory: fallbackAmended.evidenceRefsForMemory,
-            tokenEstimate: fallbackAmended.tokenEstimate,
+      const committedEvents = this.persistProjectedEvents(
+        [
+          {
+            id: ulid() as Event['id'],
+            workspaceId: this.workspaceId,
+            runId,
+            category: 'run',
+            type: 'run.fallback.selected',
+            occurredAt: new Date().toISOString(),
+            payload: {
+              threadId: run.threadId,
+              fromModelId: run.modelId,
+              toModelId: nextRun.modelId,
+              fromProviderModelId: run.providerModelId,
+              toProviderModelId: nextRun.providerModelId,
+              failureClass: details.failureClass,
+              ...(details.scrubbedMessage ? { errorMessage: details.scrubbedMessage } : {}),
+              resolutionSource: nextRun.resolutionSource ?? details.resolutionSource,
+              fallbackIndex: details.fallbackIndex,
+              agentVersionId: nextRun.agentVersionId,
+              packetId: nextRun.packetId,
+              previousPacketId: run.packetId,
+              run: serializeDemoRun(nextRun),
+            },
           },
-        },
-        new Map(this.demoRuns),
+          {
+            id: ulid() as Event['id'],
+            workspaceId: this.workspaceId,
+            runId,
+            category: 'context',
+            type: 'context.packet.built',
+            occurredAt: new Date().toISOString(),
+            payload: {
+              threadId: nextRun.threadId,
+              packetId: nextRun.packetId,
+              proofHash: nextRun.proofHash,
+              modelId: nextRun.modelId,
+              providerModelId: nextRun.providerModelId,
+              resolutionSource: nextRun.resolutionSource,
+              credentialRefId: nextRun.credentialRefId,
+              credentialResolutionSource: nextRun.credentialResolutionSource,
+              agentVersionId: nextRun.agentVersionId,
+              fallbackIndex: details.fallbackIndex,
+              agentVersion: fallbackAgentMeta.agentVersion,
+              requestedSkillVersionIds: nextRun.requestedSkillVersionIds ?? [],
+              skillVersionIds: nextRun.skillVersionIds ?? [],
+              mcpServerIds: nextRun.mcpServerIds ?? [],
+              policyId: fallbackAgentMeta.policyId,
+              includedSourceIds: fallbackAmended.included.map((source) => source.id),
+              excludedSourceIds: fallbackAmended.excluded.map((source) => source.id),
+              includedSources: fallbackAmended.included.map((source) => ({
+                id: source.id,
+                kind: source.kind,
+                tokenEstimate: source.tokenEstimate,
+              })),
+              excludedSources: fallbackAmended.excluded.map((source) => ({
+                id: source.id,
+                kind: source.kind,
+                tokenEstimate: source.tokenEstimate,
+              })),
+              summaries: fallbackAmended.summaries,
+              truncations: [
+                ...fallbackContextSelection.skillTruncations,
+                ...fallbackContextSelection.selected.truncations,
+              ].map((truncation) => ({
+                sourceId: truncation.sourceId,
+                reason: truncation.reason,
+                beforeTokens: truncation.beforeTokens,
+                afterTokens: truncation.afterTokens,
+              })),
+              crossTaskRefs: fallbackContextSelection.crossTaskRefs ?? [],
+              evidenceRefsForMemory: fallbackAmended.evidenceRefsForMemory,
+              tokenEstimate: fallbackAmended.tokenEstimate,
+            },
+          },
+        ],
+        this.threadVersions,
+        projectedRuns,
       );
-      this.publishEvent(contextEvent);
+      this.demoRuns.set(runId, nextRun);
+      for (const event of committedEvents) this.publishEvent(event);
       return 'continued';
     } catch {
       console.warn('[runtime] fallback selection could not be persisted');
       return 'failed';
     }
   }
-
   private rebindRunToModel(
     run: DemoRunState,
     modelId: ModelId,
@@ -13238,9 +13521,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       policyVersion: rebindAgentMeta.policyVersion,
     });
 
+    const reboundModelId = (modelRecord?.id ?? modelId) as string;
     return {
       ...run,
-      modelId: (modelRecord?.id ?? modelId) as string,
+      modelId: reboundModelId,
       providerModelId: modelRecord?.providerModelId ?? modelId,
       protocol: modelRecord?.protocol ?? run.protocol,
       baseUrl: provider?.baseUrl ?? run.baseUrl,
@@ -13248,6 +13532,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       credentialRefId: credential?.id as string | undefined,
       credentialResolutionSource: credentialResolution.source,
       resolutionSource: source,
+      attemptedModelIds: Array.from(
+        new Set([...(run.attemptedModelIds ?? []), run.modelId, reboundModelId]),
+      ),
       reasoningEffort: run.reasoningEffort,
       // Keep network + images on rebind so vision/web turns survive fallback walks.
       networkEnabled: run.networkEnabled === true ? true : undefined,
@@ -13344,9 +13631,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const cached = this.latestCompactByThread.get(threadId);
     if (cached) return cached;
     if (!this.stateStore) return undefined;
-    const events = this.stateStore.listAllEvents
-      ? this.stateStore.listAllEvents(0)
-      : this.stateStore.listEvents(this.workspaceId, 0);
+    const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+    const events =
+      task && this.stateStore.listEventsByTask
+        ? this.stateStore.listEventsByTask(task.id)
+        : this.stateStore.listAllEvents
+          ? this.stateStore.listAllEvents(0)
+          : this.stateStore.listEvents(this.workspaceId, 0);
     let latest: { summaryText: string; compactedAt: string; sequence: number } | undefined;
     for (const event of events) {
       if (event.type !== 'context.compacted' || event.payload.threadId !== threadId) continue;
@@ -13426,7 +13717,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   /**
    * Chat-loop MCP dispatch (no orchestration step fence).
-   * Bound servers only — schemas were already filtered by run.mcpServerIds.
+   * Bound servers only �?schemas were already filtered by run.mcpServerIds.
    */
   private async executeChatBoundMcpTool(input: {
     run: DemoRunState;
@@ -13560,6 +13851,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     if (!task || !this.conversationStore) return 'workspace';
     const conversation = this.conversationStore.getByTaskId(task.id);
     return normalizeChatExecutionMode(conversation?.executionMode);
+  }
+
+  private isComputerUsePluginEnabled(): boolean {
+    return isComputerUsePluginSettingEnabled(
+      this.appSettingStore?.get(COMPUTER_USE_PLUGIN_SETTING_KEY)?.value,
+    );
   }
 
   private resolveEventWorkspaceId(threadId: string): WorkspaceId {
@@ -13763,7 +14060,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     };
 
     // Resolve an update/archive target by exact agent id, then by unique
-    // non-archived agent name. Ambiguity or miss is a hard error — never guess.
+    // non-archived agent name. Ambiguity or miss is a hard error �?never guess.
     const resolveAgentTarget = (
       raw: unknown,
     ):
@@ -13841,7 +14138,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           ? args.reasoningEffort
           : undefined;
       try {
-        // Same validation as the UI path: ≤8 skills, versions exist & approved.
+        // Same validation as the UI path: �? skills, versions exist & approved.
         this.assertGlobalAgentSkillVersions(resolvedSkillIds);
         const created = this.globalAgentStore.create({
           name,
@@ -13958,7 +14255,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
 
       try {
-        // Same validation as the UI path: ≤8 skills, versions exist & approved.
+        // Same validation as the UI path: �? skills, versions exist & approved.
         this.assertGlobalAgentSkillVersions(nextSkillIds);
         const updated = this.globalAgentStore.update({
           agentId: current.id,
@@ -14051,7 +14348,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
    * Skill-management chat tools: list_skills / read_skill / create_skill /
    * update_skill / delete_skill. Mutations reach here only after the
    * permission gate passed (full-access, or approved on the approval card).
-   * Import parses text only — scripts are never executed (§9.2).
+   * Import parses text only �?scripts are never executed (§9.2).
    */
   private executeChatSkillTool(input: {
     run: DemoRunState;
@@ -14121,8 +14418,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
       try {
         const result = this.importSkillMdCore(skillMd);
-        // update_skill on a name that doesn't exist yet is really a create —
-        // surface that so the model can tell the user what actually happened.
+        // update_skill on a name that doesn't exist yet is really a create �?        // surface that so the model can tell the user what actually happened.
         const note = result.deduped
           ? '相同内容的版本已存在，未创建重复版本。'
           : result.reapprovalRequest
@@ -14249,7 +14545,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     // Resolve a member/coordinator agent by exact id, then by unique
-    // non-archived agent name. Ambiguity or miss is a hard error — never guess.
+    // non-archived agent name. Ambiguity or miss is a hard error �?never guess.
     const resolveAgentRef = (
       raw: unknown,
     ): { ok: true; agentId: AgentId } | { ok: false; error: string } => {
@@ -14550,7 +14846,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         });
       }
       // Same guard as the UI path: refuse while conversations still reference
-      // this team — historical chats would silently lose their team identity.
+      // this team �?historical chats would silently lose their team identity.
       if (this.conversationStore) {
         const referenced = this.conversationStore
           .list({ track: 'team', includeArchived: true })
@@ -14558,7 +14854,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         if (referenced.length > 0) {
           return JSON.stringify({
             ok: false,
-            error: `小队「${current.name}」仍被 ${referenced.length} 个对话引用，请先归档或删除这些对话后再删除小队。`,
+            error: `小队「${current.name}」仍有 ${referenced.length} 个对话引用，请先归档或删除这些对话后再删除小队。`,
           });
         }
       }
@@ -14591,8 +14887,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   /**
    * Persist + publish tool.approval_decided so the shell approval card always
-   * collapses — including cancel/abort paths that used to deny silently and
-   * leave an orphan card that then failed with「没有待处理的工具批准请求」.
+   * collapses �?including cancel/abort paths that used to deny silently and
+   * leave an orphan card that then failed with「没有待处理的工具批准请求�?
    */
   private emitToolApprovalDecided(input: {
     approvalId: string;
@@ -14658,6 +14954,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     completedResults: Array<{ toolCallId: string; content: string }>;
     toolLoopRound: number;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
+    approvalArguments?: Record<string, unknown>;
+    approvalRisk?: { level: string; reasonCodes: string[]; humanOnlyAction?: string };
     signal: AbortSignal;
   }): Promise<{ decision: 'approve' | 'deny'; approvalId: string }> {
     const approvalId = input.approvalId ?? `tappr-${ulid()}`;
@@ -14680,13 +14978,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           runId: input.runId,
           toolCallId: input.toolCall.id,
           toolName: input.toolCall.name,
-          arguments: (() => {
-            try {
-              return JSON.parse(input.toolCall.argumentsJson || '{}');
-            } catch {
-              return {};
-            }
-          })(),
+          arguments:
+            input.approvalArguments ??
+            (() => {
+              try {
+                return JSON.parse(input.toolCall.argumentsJson || '{}');
+              } catch {
+                return {};
+              }
+            })(),
+          ...(input.approvalRisk ? { risk: input.approvalRisk } : {}),
           title: summary.title,
           detail: summary.detail,
           path: summary.path,
@@ -14700,7 +15001,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
     return new Promise<{ decision: 'approve' | 'deny'; approvalId: string }>((resolve) => {
       const onAbort = () => {
-        // Only emit decided if the pending entry is still ours — run.cancel
+        // Only emit decided if the pending entry is still ours �?run.cancel
         // already removed + emitted for its own runs.
         if (this.pendingToolApprovals.delete(approvalId)) {
           this.emitToolApprovalDecided({
@@ -14784,7 +15085,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         }
       }
       if (priorDecision) {
-        // Already decided — idempotent success so double-clicks don't error.
+        // Already decided �?idempotent success so double-clicks don't error.
         socket.write(
           encodeFrame({
             id: frame.id,
@@ -14870,6 +15171,98 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
   }
 
+  /** Runtime-owned durable Desktop Worker path with user-input interruption fencing. */
+  private async executeChatDesktopWorkerTool(input: {
+    runId: RunId;
+    threadId: string;
+    toolCall: import('@sync-think/adapters').ProviderToolCall;
+    workspaceRoot?: string;
+    executionMode: string;
+    approval?: { approvalId: string };
+    signal: AbortSignal;
+  }): Promise<string> {
+    const capabilityEnabled = this.isComputerUsePluginEnabled();
+    if (!this.desktopController) {
+      return executeChatDesktopTool({
+        workspaceRoot: input.workspaceRoot,
+        toolCall: input.toolCall,
+        capabilityEnabled,
+        signal: input.signal,
+      });
+    }
+    const requestId = `dsk-${ulid()}`;
+    const result = await this.desktopController.execute({
+      capabilityEnabled,
+      toolName: input.toolCall.name,
+      argumentsJson: input.toolCall.argumentsJson || '{}',
+      executionMode: input.executionMode,
+      approval: input.approval,
+      workspaceId: this.resolveEventWorkspaceId(input.threadId),
+      runId: input.runId,
+      ownerId: input.threadId,
+      idempotencyKey: `desktop:${input.runId}:${input.toolCall.id}`,
+      capabilityToken: `desktop:${input.runId}:${input.toolCall.id}`,
+      workspaceRoot: input.workspaceRoot,
+      signal: input.signal,
+      beforeStart: () => !input.signal.aborted && this.demoRuns.has(input.runId),
+      beforeExecute: (intent) => {
+        const event = this.persistProjectedEvent(
+          {
+            id: ulid() as Event['id'],
+            workspaceId: this.resolveEventWorkspaceId(input.threadId),
+            runId: input.runId,
+            category: 'tool',
+            type: 'desktop.command.started',
+            occurredAt: new Date().toISOString(),
+            payload: {
+              requestId,
+              threadId: input.threadId,
+              runId: input.runId,
+              toolCallId: input.toolCall.id,
+              toolName: input.toolCall.name,
+              action: intent.action.kind,
+              risk: {
+                level: intent.risk.level,
+                reasonCodes: intent.risk.reasonCodes,
+                ...(intent.risk.humanOnlyAction
+                  ? { humanOnlyAction: intent.risk.humanOnlyAction }
+                  : {}),
+              },
+              args: intent.eventArgs,
+            },
+          },
+          new Map(this.demoRuns),
+        );
+        this.publishEvent(event);
+      },
+    });
+    const waiting = parseDesktopWaitingResult(result);
+    if (waiting) {
+      const event = this.persistProjectedEvent(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: this.resolveEventWorkspaceId(input.threadId),
+          runId: input.runId,
+          category: 'tool',
+          type: 'desktop.command.waiting_user',
+          occurredAt: new Date().toISOString(),
+          payload: {
+            requestId,
+            threadId: input.threadId,
+            runId: input.runId,
+            toolCallId: input.toolCall.id,
+            toolName: input.toolCall.name,
+            commandId: waiting.commandId,
+            errorCode: waiting.code,
+          },
+        },
+        new Map(this.demoRuns),
+      );
+      this.publishEvent(event);
+    }
+    return result;
+  }
+
   /** Runtime-owned Browser Worker path. Renderer receives only completed URLs for preview. */
   private async executeChatBrowserWorkerTool(input: {
     runId: RunId;
@@ -14929,6 +15322,528 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
   }
 
+  private handleListWaitingDesktopCommands(socket: Socket, frame: Frame): void {
+    const payload = parseListWaitingDesktopCommandsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.desktopController) {
+      this.writeDesktopCommandQueryError(
+        socket,
+        frame,
+        new Error('Desktop command persistence is not configured on this Runtime.'),
+      );
+      return;
+    }
+    try {
+      const response: ListWaitingDesktopCommandsResponse = {
+        commands: this.desktopController
+          .listWaitingCommands(payload)
+          .map((command) => this.toDesktopWaitingCommandSummary(command)),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'desktop.command.listWaiting',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeDesktopCommandQueryError(socket, frame, error);
+    }
+  }
+
+  private handleContinueDesktopCommand(socket: Socket, frame: Frame): void {
+    const payload = parseContinueDesktopCommandPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.desktopController) {
+      this.writeDesktopCommandQueryError(
+        socket,
+        frame,
+        new Error('Desktop command persistence is not configured on this Runtime.'),
+      );
+      return;
+    }
+    try {
+      const command = this.desktopController.continueWaitingCommand(payload);
+      this.publishDesktopCommandLifecycleEvent('desktop.command.continued', command, {
+        replayed: command.replayed,
+      });
+      const response: ContinueDesktopCommandResponse = {
+        status: 'continued',
+        commandId: command.id,
+        replayed: command.replayed,
+        updatedAt: command.updatedAt,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'desktop.command.continue',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeDesktopCommandQueryError(socket, frame, error);
+    }
+  }
+
+  private handleCancelDesktopCommand(socket: Socket, frame: Frame): void {
+    const payload = parseCancelDesktopCommandPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.desktopController) {
+      this.writeDesktopCommandQueryError(
+        socket,
+        frame,
+        new Error('Desktop command persistence is not configured on this Runtime.'),
+      );
+      return;
+    }
+    try {
+      const command = this.desktopController.cancelWaitingCommand(payload);
+      this.publishDesktopCommandLifecycleEvent('desktop.command.cancelled', command, {
+        replayed: command.replayed,
+      });
+      const response: CancelDesktopCommandResponse = {
+        status: 'cancelled',
+        commandId: command.id,
+        replayed: command.replayed,
+        updatedAt: command.updatedAt,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'desktop.command.cancel',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeDesktopCommandQueryError(socket, frame, error);
+    }
+  }
+
+  private publishDesktopCommandLifecycleEvent(
+    type: 'desktop.command.continued' | 'desktop.command.cancelled',
+    command: DesktopCommandRecord,
+    payload: Record<string, unknown>,
+  ): void {
+    const summary = this.toDesktopWaitingCommandSummary(command);
+    const event = this.persistProjectedEvent(
+      {
+        id: ulid() as Event['id'],
+        workspaceId: summary.workspaceId,
+        ...(summary.taskId ? { taskId: summary.taskId } : {}),
+        runId: summary.runId,
+        category: 'tool',
+        type,
+        occurredAt: new Date().toISOString(),
+        payload: {
+          commandId: command.id,
+          toolName: command.toolName,
+          action: command.action,
+          ...payload,
+        },
+      },
+      new Map(this.demoRuns),
+    );
+    this.publishEvent(event);
+  }
+
+  private toDesktopWaitingCommandSummary(
+    command: DesktopCommandRecord,
+  ): DesktopWaitingCommandSummary {
+    const ownerTask = this.workspaceStore?.getTaskByThreadId(command.ownerId as ThreadId);
+    const run = ownerTask ? undefined : this.orchestrationStore?.getRun(command.runId as RunId);
+    const runTask = run ? this.workspaceStore?.getTask(run.taskId) : undefined;
+    const taskId =
+      ownerTask?.workspaceId === command.workspaceId
+        ? ownerTask.id
+        : runTask?.workspaceId === command.workspaceId
+          ? run?.taskId
+          : undefined;
+    const target = projectDesktopWaitingTarget(command.sanitizedArgs);
+    const errorCode = command.errorCode ?? ErrorCode.DESKTOP_COMMAND_INSPECTION_REQUIRED;
+    return {
+      commandId: command.id,
+      workspaceId: command.workspaceId as WorkspaceId,
+      ...(taskId ? { taskId } : {}),
+      runId: command.runId as RunId,
+      toolName: command.toolName,
+      action: command.action,
+      ...(target ? { target } : {}),
+      reason:
+        errorCode === ErrorCode.DESKTOP_USER_INPUT_DETECTED
+          ? 'user-input-detected'
+          : errorCode === ErrorCode.DESKTOP_COMMAND_INSPECTION_REQUIRED
+            ? 'restart-inspection'
+            : 'attention-required',
+      errorCode,
+      status: 'waiting_user',
+      canContinue: true,
+      canCancel: true,
+      createdAt: command.createdAt,
+      updatedAt: command.updatedAt,
+    };
+  }
+
+  private handleListWaitingBrowserHandoffs(socket: Socket, frame: Frame): void {
+    const payload = parseListWaitingBrowserHandoffsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserController) {
+      this.writeBrowserHandoffUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ListWaitingBrowserHandoffsResponse = {
+        handoffs: this.browserController.listWaitingHandoffs(payload).map((handoff) => {
+          const run = this.orchestrationStore?.getRun(handoff.runId as RunId);
+          const task = run ? this.workspaceStore?.getTask(run.taskId) : undefined;
+          const taskId = task?.workspaceId === handoff.workspaceId ? run?.taskId : undefined;
+          return {
+            handoffId: handoff.handoffId,
+            revision: handoff.revision,
+            workspaceId: handoff.workspaceId as WorkspaceId,
+            ...(taskId ? { taskId } : {}),
+            runId: handoff.runId as RunId,
+            ...(handoff.stepId ? { stepId: handoff.stepId as StepId } : {}),
+            ...(handoff.agentVersionId
+              ? { agentVersionId: handoff.agentVersionId as AgentVersionId }
+              : {}),
+            siteOrigin: handoff.siteOrigin,
+            reason: handoff.reason,
+            requestedOutcome: handoff.requestedOutcome,
+            onCancel: handoff.onCancel,
+            status: handoff.status,
+            createdAt: handoff.createdAt,
+            updatedAt: handoff.updatedAt,
+            canContinue: handoff.canContinue,
+            canCancel: handoff.canCancel,
+          };
+        }),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'browser.handoff.listWaiting',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeBrowserHandoffCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleContinueBrowserHandoff(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseContinueBrowserHandoffPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const binding = this.resolveBrowserHandoffBinding(payload.handoffId, 'approved');
+      const handoffDecision = await this.browserController!.continueHandoff(payload);
+      const approvalDecision = this.scheduler!.decideApproval({
+        approvalId: binding.approval.id,
+        decision: 'approved',
+        decidedBy: 'human',
+      });
+      this.syncOrchestrationEvents();
+      this.publishBrowserHandoffLifecycleEvent(
+        'browser.handoff.continued',
+        binding.handoff,
+        approvalDecision.graph.run.taskId,
+        {
+          approvalId: binding.approval.id,
+          replayed: handoffDecision.replayed || approvalDecision.replayed,
+        },
+      );
+      this.scheduleOrchestrationDrain(binding.handoff.runId as RunId, 'browser-handoff-continue');
+      const response: ContinueBrowserHandoffResponse = {
+        status: 'continued',
+        handoffId: binding.handoff.handoffId,
+        replayed: handoffDecision.replayed || approvalDecision.replayed,
+        runId: binding.handoff.runId as RunId,
+        stepId: binding.handoff.stepId as StepId,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'browser.handoff.continue',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeBrowserHandoffCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleCancelBrowserHandoff(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseCancelBrowserHandoffPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const binding = this.resolveBrowserHandoffBinding(payload.handoffId, 'rejected');
+      const handoffDecision = await this.browserController!.cancelHandoff(payload);
+      const approvalDecision = this.scheduler!.decideApproval({
+        approvalId: binding.approval.id,
+        decision: 'rejected',
+        decidedBy: 'human',
+      });
+      this.syncOrchestrationEvents();
+      this.publishBrowserHandoffLifecycleEvent(
+        'browser.handoff.cancelled',
+        binding.handoff,
+        approvalDecision.graph.run.taskId,
+        {
+          approvalId: binding.approval.id,
+          replayed: handoffDecision.replayed || approvalDecision.replayed,
+          leaseDisposition: payload.leaseDisposition ?? 'default',
+        },
+      );
+      const response: CancelBrowserHandoffResponse = {
+        status: 'cancelled',
+        handoffId: binding.handoff.handoffId,
+        replayed: handoffDecision.replayed || approvalDecision.replayed,
+        runId: binding.handoff.runId as RunId,
+        stepId: binding.handoff.stepId as StepId,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'browser.handoff.cancel',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeBrowserHandoffCommandError(socket, frame, error);
+    }
+  }
+
+  private resolveBrowserHandoffBinding(
+    handoffId: string,
+    decision: 'approved' | 'rejected',
+  ): {
+    handoff: RuntimeBrowserHandoffContext & { stepId: string; agentVersionId: string };
+    approval: import('@sync-think/storage').ApprovalRequestRecord;
+  } {
+    if (
+      !this.browserController ||
+      !this.approvalStore ||
+      !this.orchestrationStore ||
+      !this.productionExecutionStore ||
+      !this.scheduler
+    ) {
+      throw new RuntimeBrowserHandoffError(
+        'browser.handoff-unavailable',
+        'Browser handoff recovery services are not configured on this Runtime.',
+      );
+    }
+    const handoff = this.browserController.inspectHandoff(handoffId);
+    if (!handoff.stepId || !handoff.agentVersionId) {
+      throw new RuntimeBrowserHandoffError(
+        'browser.handoff-binding-invalid',
+        'Browser handoff is not bound to a durable orchestration Step.',
+      );
+    }
+    const boundHandoff = handoff as RuntimeBrowserHandoffContext & {
+      stepId: string;
+      agentVersionId: string;
+    };
+    const graph = this.orchestrationStore.getGraph(handoff.runId as RunId);
+    const step = graph?.steps.find((candidate) => candidate.id === handoff.stepId);
+    const task = graph ? this.workspaceStore?.getTask(graph.run.taskId) : undefined;
+    if (
+      !graph ||
+      !step ||
+      !task ||
+      task.workspaceId !== handoff.workspaceId ||
+      step.agentVersionId !== handoff.agentVersionId
+    ) {
+      throw new RuntimeBrowserHandoffError(
+        'browser.handoff-binding-invalid',
+        'Browser handoff Run, Step, AgentVersion, or Workspace binding is invalid.',
+      );
+    }
+
+    const approval = this.approvalStore
+      .list({ workspaceId: handoff.workspaceId as WorkspaceId, limit: 200 })
+      .find((candidate) => {
+        const details = runtimeRecord(candidate.metadata.actionDetails);
+        return (
+          candidate.action === 'browser.handoff' &&
+          candidate.runId === handoff.runId &&
+          candidate.stepId === handoff.stepId &&
+          candidate.metadata.source === 'scheduler.step-action' &&
+          candidate.metadata.runId === handoff.runId &&
+          candidate.metadata.stepId === handoff.stepId &&
+          candidate.metadata.agentVersionId === handoff.agentVersionId &&
+          details?.handoffId === handoff.handoffId &&
+          details.revision === 1
+        );
+      });
+    if (!approval) {
+      throw new RuntimeBrowserHandoffError(
+        'browser.handoff-binding-invalid',
+        'Browser handoff approval binding was not found.',
+      );
+    }
+    if (approval.state !== 'pending') {
+      if (approval.state === decision && approval.decidedBy === 'human') {
+        return { handoff: boundHandoff, approval };
+      }
+      throw new RuntimeBrowserHandoffError(
+        'browser.handoff-conflict',
+        'Browser handoff approval has already been decided differently.',
+      );
+    }
+    if (
+      step.state !== 'awaitingApproval' ||
+      graph.run.state !== 'awaitingToolApproval' ||
+      !step.idempotencyKey
+    ) {
+      throw new RuntimeBrowserHandoffError(
+        'browser.handoff-binding-invalid',
+        'Browser handoff Step is not waiting for a human decision.',
+      );
+    }
+
+    const reservation = this.productionExecutionStore.getProviderExecution(step.idempotencyKey);
+    const checkpoint = runtimeRecord(reservation?.checkpoint);
+    const pending = runtimeRecord(checkpoint?.pending);
+    const toolCall = runtimeRecord(pending?.toolCall);
+    const request = runtimeRecord(pending?.request);
+    const details = runtimeRecord(request?.details);
+    if (
+      !reservation ||
+      reservation.idempotencyKey !== step.idempotencyKey ||
+      reservation.runId !== graph.run.id ||
+      reservation.stepId !== step.id ||
+      reservation.agentVersionId !== step.agentVersionId ||
+      reservation.executionAttempt !== step.executionAttempt ||
+      reservation.state !== 'released' ||
+      checkpoint?.version !== 1 ||
+      pending?.state !== 'waiting-user' ||
+      toolCall?.name !== 'browser_handoff' ||
+      request?.action !== 'browser.handoff' ||
+      details?.handoffId !== handoff.handoffId ||
+      details.revision !== 1
+    ) {
+      throw new RuntimeBrowserHandoffError(
+        'browser.handoff-checkpoint-invalid',
+        'Browser handoff Provider checkpoint does not match the waiting Step.',
+      );
+    }
+    return { handoff: boundHandoff, approval };
+  }
+
+  private publishBrowserHandoffLifecycleEvent(
+    type: 'browser.handoff.continued' | 'browser.handoff.cancelled',
+    handoff: RuntimeBrowserHandoffContext,
+    taskId: TaskId,
+    payload: Record<string, unknown>,
+  ): void {
+    const draft: EventDraft = {
+      id: ulid() as Event['id'],
+      workspaceId: handoff.workspaceId as WorkspaceId,
+      taskId,
+      runId: handoff.runId as RunId,
+      stepId: handoff.stepId as StepId,
+      category: 'approval',
+      type,
+      occurredAt: new Date().toISOString(),
+      payload: {
+        handoffId: handoff.handoffId,
+        revision: handoff.revision,
+        ...payload,
+      },
+    };
+    if (this.stateStore) {
+      const events = this.commitEvents([draft]);
+      this.recordCommittedEvents(events);
+      for (const event of events) this.publishEvent(event);
+      return;
+    }
+    const event: Event = { ...draft, sequence: ++this.eventSequence };
+    this.rememberRecentEvents([event]);
+    this.publishEvent(event);
+  }
+
+  private writeDesktopCommandQueryError(socket: Socket, frame: Frame, error: unknown): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code:
+            error instanceof Error &&
+            ['desktop.command_conflict', 'desktop.command_not_waiting'].includes(error.message)
+              ? ErrorCode.DESKTOP_COMMAND_CONFLICT
+              : ErrorCode.DESKTOP_ACTION_FAILED,
+          message:
+            error instanceof Error
+              ? error.message
+                  .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+                  .replace(/Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, 'Bearer [REDACTED]')
+              : 'Desktop command request failed.',
+        },
+      }),
+    );
+  }
+
+  private writeBrowserHandoffUnavailable(socket: Socket, frame: Frame): void {
+    this.writeBrowserHandoffCommandError(
+      socket,
+      frame,
+      new RuntimeBrowserHandoffError(
+        'browser.handoff-unavailable',
+        'Browser handoff is not configured on this Runtime.',
+      ),
+    );
+  }
+
+  private writeBrowserHandoffCommandError(socket: Socket, frame: Frame, error: unknown): void {
+    const knownCodes = new Set<string>(Object.values(ErrorCode));
+    const rawCode = error instanceof RuntimeBrowserHandoffError ? error.code : undefined;
+    const code =
+      rawCode && knownCodes.has(rawCode)
+        ? (rawCode as (typeof ErrorCode)[keyof typeof ErrorCode])
+        : ErrorCode.BROWSER_HANDOFF_CONFLICT;
+    const message = error instanceof Error ? error.message : 'Browser handoff command failed.';
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code,
+          message: message
+            .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+            .replace(/Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, 'Bearer [REDACTED]'),
+        },
+      }),
+    );
+  }
+
   /** Legacy Renderer reverse channel retained during migration; no real command waits here. */
   private handleConversationSubmitBrowserResult(socket: Socket, frame: Frame): void {
     const payload = parseConversationSubmitBrowserResultPayload(frame.payload);
@@ -14980,13 +15895,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ).mcpToolDispatch = mcpExtra.dispatch;
     }
     const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
+    const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
     const tools =
       options.toolsEnabled &&
-      (hasProjectTools || networkEnabled || agentToolsEnabled || mcpExtra.tools.length > 0)
+      (hasProjectTools ||
+        networkEnabled ||
+        agentToolsEnabled ||
+        desktopToolsEnabled ||
+        mcpExtra.tools.length > 0)
         ? toolsForExecutionMode(executionMode, {
             networkEnabled,
             includeProjectTools: hasProjectTools,
             includeAgentTools: agentToolsEnabled,
+            includeDesktopTools: desktopToolsEnabled,
             extraTools: mcpExtra.tools,
           })
         : undefined;
@@ -15000,10 +15921,21 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           'browser_screenshot saves a PNG under the project folder and returns embedUrl + path — embed it in your markdown reply as ![说明](embedUrl). 典型用法：操作网页后输出带截图的评审报告（每个关键步骤截一张图并配文字说明）。',
         ].join('\n')
       : 'Web tools are DISABLED. Do not claim you browsed the live web; answer from knowledge or ask the user to enable 联网.';
+    const desktopPrompt = desktopToolsEnabled
+      ? [
+          'Computer Use tools are ENABLED for this turn.',
+          'Use this sequence: desktop_list_windows -> desktop_inspect_window -> desktop_resolve_selector -> one immediate desktop_read_element / desktop_focus_element / desktop_invoke_element / desktop_set_value.',
+          'After any UI change, inspect and resolve again. If a snapshot or accessibility revision is stale, do not guess, use coordinates, or reuse an old element index.',
+          'Do not fall back to OCR, clipboard automation, SendInput, fuzzy selectors, or coordinate clicking.',
+          executionMode === 'ask'
+            ? 'Permission mode is ask: focus, invoke, and set-value pause for user approval; list, inspect, resolve, and read do not.'
+            : 'Permission mode is workspace/full-access: ordinary Computer Use actions execute without an extra approval card.',
+        ].join('\n')
+      : undefined;
     const agentCreationPrompt = agentToolsEnabled
       ? [
           'Agent Library tools are ENABLED (list_agent_resources, create_agent, update_agent, archive_agent):',
-          '- When the user asks to 创建智能体/新建智能体/入库, FIRST call list_agent_resources to get valid model ids and approved skill versions, THEN call create_agent with a complete draft (name, persona, description, defaultModelId, skillIds).',
+          '- When the user asks to 创建智能体 / 新建智能体 / 入库, FIRST call list_agent_resources to get valid model ids and approved skill versions, THEN call create_agent with a complete draft (name, persona, description, defaultModelId, skillIds).',
           '- When the user asks to 修改/调整某个智能体, FIRST call list_agent_resources to confirm the target agent id, THEN call update_agent with ONLY the fields to change. skillIds is full-replace: include the complete final set.',
           '- When the user asks to 删除/归档某个智能体, use archive_agent (soft-delete, restorable in the Agent Library). There is NO hard-delete tool; never claim you deleted permanently. The agent of the CURRENT conversation cannot be archived.',
           executionMode === 'full-access'
@@ -15035,7 +15967,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const planToolPrompt = [
       'Task checklist (update_task_plan):',
       '- For any request needing 2+ distinct steps, call update_task_plan FIRST with the full step list (first step in_progress), and call it again with the FULL updated list每当 a step completes or the plan changes.',
-      '- Titles: short imperative Chinese, ≤40 chars. Do not use it for trivial single-step answers.',
+      '- Titles: short imperative Chinese, ≤20 chars. Do not use it for trivial single-step answers.',
       '- This tool only updates the progress UI — it never touches files and needs no approval.',
     ].join('\n');
     const productBoundaryPrompt = [
@@ -15052,7 +15984,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           `Project folder: ${options.workspaceRoot}`,
           `Permission mode: ${executionMode}` +
             (executionMode === 'ask'
-              ? ' (「询问批准」: you MAY call write_file / run_command; the user will be prompted to approve each mutating action before it runs. Prefer read-only tools when enough.)'
+              ? ' (「询问批准」 you MAY call write_file / run_command; the user will be prompted to approve each mutating action before it runs. Prefer read-only tools when enough.)'
               : ' (write_file / run_command auto-allowed inside the project folder).'),
           'Use tools when needed. Paths are relative to the project folder. Prefer tools over guessing file contents.',
           ...(run.projectContextPromptBlocks ?? []),
@@ -15078,7 +16010,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return new ContextSnapshotBuilder().build({
       modelId: run.modelId,
       contextWindow: run.contextWindow ?? 128_000,
-      systemInstructions: [productBoundaryPrompt, networkPrompt],
+      systemInstructions: [
+        productBoundaryPrompt,
+        networkPrompt,
+        ...(desktopPrompt ? [desktopPrompt] : []),
+      ],
       agentInstructions,
       projectContext,
       compactSummary: run.compactSummary,
@@ -15106,7 +16042,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const executionMode = normalizeChatExecutionMode(options.executionMode);
     const networkEnabled = options.networkEnabled === true || run.networkEnabled === true;
     const hasProjectTools = Boolean(options.toolsEnabled && options.workspaceRoot);
-    // MCP tools bound on the run — expose schemas to the provider when tools are on.
+    // MCP tools bound on the run �?expose schemas to the provider when tools are on.
     const mcpExtra = (() => {
       if (!options.toolsEnabled || !this.mcpStore || !run.mcpServerIds?.length) {
         return {
@@ -15133,14 +16069,20 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ).mcpToolDispatch = mcpExtra.dispatch;
     }
     const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
+    const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
     const tools =
       options.toolsEnabled &&
-      (hasProjectTools || networkEnabled || agentToolsEnabled || mcpExtra.tools.length > 0)
+      (hasProjectTools ||
+        networkEnabled ||
+        agentToolsEnabled ||
+        desktopToolsEnabled ||
+        mcpExtra.tools.length > 0)
         ? [
             ...toolsForExecutionMode(executionMode, {
               networkEnabled,
               includeProjectTools: hasProjectTools,
               includeAgentTools: agentToolsEnabled,
+              includeDesktopTools: desktopToolsEnabled,
               extraTools: mcpExtra.tools,
             }),
           ]
@@ -15300,7 +16242,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   /**
    * Persist a final chat message into SqliteMessageStore (S1 durable message path).
-   * Failures are logged but never fail the live chat event stream — events remain source of truth
+   * Failures are logged but never fail the live chat event stream �?events remain source of truth
    * until ChatView fully switches to the message store.
    */
   private persistFinalChatMessage(input: {
@@ -15352,7 +16294,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.messageStore.createFinalMessage(message);
     } catch (error) {
       if (error instanceof MessageStoreError && error.code === 'message.conflict') {
-        // Idempotent retry / same-id replay — ignore.
+        // Idempotent retry / same-id replay �?ignore.
         return;
       }
       console.warn(
@@ -15656,11 +16598,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     messageId?: MessageId,
     runId?: RunId,
     taskId?: TaskId,
+    stepId?: StepId,
   ): Event {
     const draft: EventDraft = {
       id: ulid() as Event['id'],
       workspaceId: this.workspaceId,
       taskId,
+      stepId,
       messageId,
       runId,
       category,
@@ -15889,7 +16833,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           const recovery = this.scheduler
             .recoverAll()
             .then(() => this.syncOrchestrationEvents())
-            .catch(() => console.warn('[runtime] orchestration recovery failed'));
+            .catch((error) => console.warn('[runtime] orchestration recovery failed', error));
           this.trackBackgroundTask(recovery);
         }
         resolve();
@@ -15913,8 +16857,57 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
     await this.scheduler?.shutdown();
     await Promise.allSettled([...this.backgroundTasks]);
-    await this.browserHost?.shutdown();
+    const preserveBrowserSessions = (this.browserController?.listWaitingHandoffs().length ?? 0) > 0;
+    await this.browserHost?.shutdown({ preserveSessions: preserveBrowserSessions });
   }
+}
+
+function parseDesktopWaitingResult(value: string): { commandId: string; code: string } | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const record = parsed as Record<string, unknown>;
+    if (
+      typeof record.commandId !== 'string' ||
+      (record.code !== ErrorCode.DESKTOP_USER_INPUT_DETECTED &&
+        record.code !== ErrorCode.DESKTOP_COMMAND_INSPECTION_REQUIRED)
+    ) {
+      return undefined;
+    }
+    return { commandId: record.commandId, code: record.code };
+  } catch {
+    return undefined;
+  }
+}
+
+function projectDesktopWaitingTarget(
+  sanitizedArgs: Record<string, unknown>,
+): DesktopWaitingCommandSummary['target'] | undefined {
+  const target = sanitizedArgs.target;
+  if (!target || typeof target !== 'object' || Array.isArray(target)) return undefined;
+  const window = (target as Record<string, unknown>).window;
+  if (!window || typeof window !== 'object' || Array.isArray(window)) return undefined;
+  const record = window as Record<string, unknown>;
+  const processId =
+    typeof record.processId === 'number' &&
+    Number.isSafeInteger(record.processId) &&
+    record.processId > 0
+      ? record.processId
+      : undefined;
+  const title =
+    typeof record.title === 'string' && record.title.trim()
+      ? record.title.trim().slice(0, 512)
+      : undefined;
+  const appId =
+    typeof record.appId === 'string' && record.appId.trim()
+      ? record.appId.trim().slice(0, 256)
+      : undefined;
+  if (processId === undefined && title === undefined && appId === undefined) return undefined;
+  return {
+    ...(processId !== undefined ? { processId } : {}),
+    ...(title ? { title } : {}),
+    ...(appId ? { appId } : {}),
+  };
 }
 
 function browserFailureMessage(code: unknown, failureClass: unknown): string {

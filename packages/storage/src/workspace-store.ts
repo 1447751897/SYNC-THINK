@@ -129,6 +129,11 @@ interface TaskVersionEventPayloadRow {
   payload_json: string;
 }
 
+interface TaskMessageVersionFloorRow {
+  task_id: string;
+  version: number;
+}
+
 export class SqliteWorkspaceStore {
   constructor(private readonly raw: BetterSQLite3Raw) {}
 
@@ -592,6 +597,87 @@ export class SqliteWorkspaceStore {
     return advance.immediate();
   }
 
+  /**
+   * Fast startup repair for task concurrency tokens. Durable message sequences are
+   * monotonic per thread, so they establish a safe lower bound without replaying
+   * the potentially large legacy event table.
+   */
+  reconcileTaskVersionFloorsFromMessages(now?: string): number {
+    const rows = this.raw
+      .prepare(
+        `SELECT th.task_id, MAX(m.sequence) AS version
+         FROM thread AS th
+         INNER JOIN message AS m INDEXED BY message_thread_sequence_uidx
+           ON m.thread_id = th.id
+         GROUP BY th.task_id`,
+      )
+      .all() as TaskMessageVersionFloorRow[];
+    const changedAt = now ?? new Date().toISOString();
+    const reconcile = this.raw.transaction(() => {
+      let updatedTasks = 0;
+      const update = this.raw.prepare(
+        `UPDATE task
+         SET version = ?, updated_at = ?
+         WHERE id = ? AND version < ?`,
+      );
+      for (const row of rows) {
+        if (!Number.isSafeInteger(row.version) || row.version < 0) continue;
+        updatedTasks += update.run(row.version, changedAt, row.task_id, row.version).changes;
+      }
+      return updatedTasks;
+    });
+    return reconcile.immediate();
+  }
+
+  /**
+   * Startup-compatible legacy repair. Looking up each durable task through
+   * event_task_idx avoids scanning unrelated task-less telemetry events.
+   */
+  reconcileTaskVersionFloorsFromTaskEvents(now?: string): number {
+    const tasks = this.raw.prepare('SELECT id FROM task').all() as Array<{ id: string }>;
+    const eventsByTask = this.raw.prepare(
+      `SELECT type, task_id, payload_json
+       FROM event INDEXED BY event_task_idx
+       WHERE task_id = ?
+         AND type IN ('message.appended', 'task.participation-mode.changed')`,
+    );
+    const maxVersionByTask = new Map<string, number>();
+    for (const task of tasks) {
+      const rows = eventsByTask.all(task.id) as TaskVersionEventPayloadRow[];
+      for (const row of rows) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(row.payload_json);
+        } catch {
+          continue;
+        }
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+        const taskVersion = (payload as Record<string, unknown>).taskVersion;
+        if (!Number.isSafeInteger(taskVersion) || (taskVersion as number) < 0) continue;
+        maxVersionByTask.set(
+          task.id,
+          Math.max(maxVersionByTask.get(task.id) ?? 0, taskVersion as number),
+        );
+      }
+    }
+
+    const changedAt = now ?? new Date().toISOString();
+    const reconcile = this.raw.transaction(() => {
+      let updatedTasks = 0;
+      const update = this.raw.prepare(
+        `UPDATE task
+         SET version = ?, updated_at = ?
+         WHERE id = ? AND version < ?`,
+      );
+      for (const [taskId, version] of maxVersionByTask) {
+        updatedTasks += update.run(version, changedAt, taskId, version).changes;
+      }
+      return updatedTasks;
+    });
+    return reconcile.immediate();
+  }
+
+  /** Legacy maintenance repair that replays historical version-bearing events. */
   reconcileTaskVersionsFromMessageEvents(now?: string): number {
     const rows = this.raw
       .prepare(

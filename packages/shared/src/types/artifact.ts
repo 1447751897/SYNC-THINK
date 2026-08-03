@@ -1,23 +1,12 @@
-import type {
-  ArtifactId,
-  ArtifactVersionId,
-  RunId,
-  StepId,
-  TaskId,
-  WorkspaceId,
-} from './ids.js';
+import type { ArtifactId, ArtifactVersionId, RunId, StepId, TaskId, WorkspaceId } from './ids.js';
+import type { ImageGenerationQuality, ImageGenerationSize } from '../image-generation.js';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
 export const MAX_INLINE_ARTIFACT_CONTENT_BYTES = 48 * 1024;
 
-export type ArtifactVersionStatus =
-  | 'candidate'
-  | 'selected'
-  | 'rejected'
-  | 'incomplete'
-  | 'merged';
+export type ArtifactVersionStatus = 'candidate' | 'selected' | 'rejected' | 'incomplete' | 'merged';
 
 export interface Artifact {
   id: ArtifactId;
@@ -43,10 +32,19 @@ export interface ArtifactVersion {
   createdAt: string;
 }
 
-export interface ArtifactVersionSummary
-  extends Omit<ArtifactVersion, 'content' | 'contentRef' | 'metadata'> {
+export interface ArtifactVersionSummary extends Omit<
+  ArtifactVersion,
+  'content' | 'contentRef' | 'metadata'
+> {
   hasInlineContent: boolean;
   hasContentRef: boolean;
+  imageGeneration?: {
+    candidateIndex: number;
+    candidateCount: number;
+    size: ImageGenerationSize;
+    quality: ImageGenerationQuality;
+    byteLength: number;
+  };
 }
 
 export interface ArtifactSelection {

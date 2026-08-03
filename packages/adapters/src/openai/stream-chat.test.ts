@@ -385,7 +385,13 @@ describe('streamOpenAIChatCompletions', () => {
       text: async () =>
         JSON.stringify({
           choices: [{ message: { content: 'solid reply' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 3, completion_tokens: 2 },
+          usage: {
+            prompt_tokens: 13,
+            completion_tokens: 5,
+            total_tokens: 18,
+            prompt_tokens_details: { cached_tokens: 8 },
+            completion_tokens_details: { reasoning_tokens: 3 },
+          },
         }),
     } as unknown as Response);
 
@@ -393,7 +399,14 @@ describe('streamOpenAIChatCompletions', () => {
       streamOpenAIChatCompletions(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
     );
     expect(textFromEvents(events)).toContain('solid reply');
-    expect(events.some((e) => e.type === 'usage')).toBe(true);
+    expect(events).toContainEqual({
+      type: 'usage',
+      tokensIn: 13,
+      tokensOut: 5,
+      cachedTokensHit: 8,
+      reasoningTokens: 3,
+      totalTokens: 18,
+    });
     expect(events[events.length - 1]).toMatchObject({ type: 'finished' });
   });
 

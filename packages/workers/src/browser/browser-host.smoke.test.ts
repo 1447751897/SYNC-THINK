@@ -93,6 +93,60 @@ describe('system browser CDP smoke', () => {
   );
 
   it.runIf(process.env.SYNC_THINK_BROWSER_SMOKE === '1')(
+    'reattaches to the same system browser target and recovers a durable lease after Host restart',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'sync-think-browser-recovery-smoke-'));
+      roots.push(root);
+      const server = createServer((_request, response) => {
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        response.end('<html><body><main id="checkpoint">before restart</main></body></html>');
+      });
+      await new Promise<void>((resolveListen, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolveListen);
+      });
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('smoke server has no port');
+      const origin = `http://127.0.0.1:${address.port}`;
+      const profileRoot = join(root, 'profiles');
+      const firstHost = new BrowserHost({ profileRoot });
+      let secondHost: BrowserHost | undefined;
+      try {
+        const checkpoint = await firstHost.acquireLease({
+          profileId: 'recovery-smoke',
+          ownerId: 'smoke:recovery',
+        });
+        await firstHost.execute({
+          leaseId: checkpoint.leaseId,
+          action: { kind: 'navigate', url: `${origin}/checkpoint` },
+          allowedSites: [origin],
+          timeoutMs: 15_000,
+        });
+        await firstHost.shutdown({ preserveSessions: true });
+
+        secondHost = new BrowserHost({ profileRoot });
+        await expect(secondHost.inspectLease(checkpoint.leaseId)).rejects.toMatchObject({
+          code: 'browser.lease-not-found',
+        });
+        await expect(secondHost.recoverLease(checkpoint)).resolves.toEqual(checkpoint);
+        const read = await secondHost.execute({
+          leaseId: checkpoint.leaseId,
+          action: { kind: 'read', selector: '#checkpoint' },
+          allowedSites: [origin],
+          timeoutMs: 10_000,
+        });
+        expect(read.text).toContain('before restart');
+        expect(read.pageId).toBe(checkpoint.pageId);
+      } finally {
+        if (secondHost) await secondHost.shutdown();
+        else await firstHost.shutdown();
+        await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      }
+    },
+    60_000,
+  );
+
+  it.runIf(process.env.SYNC_THINK_BROWSER_SMOKE === '1')(
     'blocks redirects and popup navigations before a denied origin receives a request',
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'sync-think-browser-policy-smoke-'));

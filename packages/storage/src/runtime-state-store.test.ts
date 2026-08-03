@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { EventId, RunId, WorkspaceId } from '@sync-think/shared';
+import type { EventId, RunId, TaskId, WorkspaceId } from '@sync-think/shared';
 import { openDatabaseAsync, SqliteEventCheckpointStore } from './index.js';
 import { runMigrations } from './scripts/migrate.js';
 
@@ -32,6 +32,51 @@ function eventDraft(id: string, workspaceId: WorkspaceId, text: string) {
 }
 
 describe('SqliteEventCheckpointStore', () => {
+  it('lists one Task through event_task_idx without returning global telemetry or other Tasks', async () => {
+    const dbPath = makeDbPath();
+    const workspaceId = 'workspace-task-events' as WorkspaceId;
+    const taskA = 'task-a' as TaskId;
+    const taskB = 'task-b' as TaskId;
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+
+    try {
+      const store = new SqliteEventCheckpointStore(connection.raw);
+      store.commitTransition({
+        events: [
+          { ...eventDraft('event-global', workspaceId, 'global telemetry'), type: 'telemetry' },
+          { ...eventDraft('event-task-a-1', workspaceId, 'a1'), taskId: taskA },
+          { ...eventDraft('event-task-b-1', workspaceId, 'b1'), taskId: taskB },
+          { ...eventDraft('event-task-a-2', workspaceId, 'a2'), taskId: taskA },
+        ],
+      });
+
+      expect(store.listEventsByTask(taskA).map((event) => event.id)).toEqual([
+        'event-task-a-1',
+        'event-task-a-2',
+      ]);
+      expect(store.listEventsByTask(taskB).map((event) => event.id)).toEqual([
+        'event-task-b-1',
+      ]);
+      expect(store.listEventsByTask('missing-task' as TaskId)).toEqual([]);
+      expect(
+        connection.raw
+          .prepare(
+            `EXPLAIN QUERY PLAN
+             SELECT id FROM event INDEXED BY event_task_idx
+             WHERE task_id = ? ORDER BY sequence ASC, id ASC`,
+          )
+          .all(taskA),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ detail: expect.stringContaining('event_task_idx') }),
+        ]),
+      );
+    } finally {
+      connection.raw.close();
+    }
+  });
+
   it('lists one run in stable (sequence, id) order without returning other runs', async () => {
     const dbPath = makeDbPath();
     const workspaceId = 'workspace-run-events' as WorkspaceId;

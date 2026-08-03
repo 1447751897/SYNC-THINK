@@ -3,6 +3,8 @@ import type { Event, RunId, TaskId } from '@sync-think/shared';
 import {
   applyConversationStreamOperations,
   collectConversationStreamBatch,
+  projectConversationRunActivity,
+  selectLatestRunPauseNotice,
 } from './chat-stream.js';
 
 function event(input: {
@@ -90,6 +92,83 @@ describe('conversation stream event consumption', () => {
       reasoningText: '新思考',
       timestamp: new Date(4_000).toISOString(),
     });
+  });
+
+  it('projects run.paused as no longer streaming', () => {
+    expect(
+      projectConversationRunActivity({
+        events: [
+          event({ sequence: 1, type: 'run.started', runId: 'run-a', threadId: 'thread-a' }),
+          event({ sequence: 2, type: 'run.paused', runId: 'run-a', threadId: 'thread-a' }),
+        ],
+        threadId: 'thread-a',
+        taskId: 'task-a',
+      }),
+    ).toEqual({ streaming: false, activeRunId: undefined });
+  });
+
+  it('treats run.paused as terminal and clears the active draft', () => {
+    const batch = collectConversationStreamBatch({
+      afterSequence: 0,
+      threadId: 'thread-a',
+      taskId: 'task-a',
+      events: [
+        event({
+          sequence: 1,
+          type: 'message.reasoning_delta',
+          runId: 'run-a',
+          threadId: 'thread-a',
+          payload: { reasoningDelta: 'thinking' },
+        }),
+        event({
+          sequence: 2,
+          type: 'run.paused',
+          runId: 'run-a',
+          threadId: 'thread-a',
+          payload: { reason: 'fallback_exhausted', failureClass: 'transient' },
+        }),
+      ],
+    });
+
+    expect(batch.sawTerminalEvent).toBe(true);
+    expect(applyConversationStreamOperations(null, batch.operations)).toBeNull();
+  });
+
+  it('builds an actionable pause notice only for the latest lifecycle state', () => {
+    const paused = event({
+      sequence: 2,
+      type: 'run.paused',
+      runId: 'run-a',
+      threadId: 'thread-a',
+      payload: {
+        reason: 'fallback_exhausted',
+        failureClass: 'transient',
+        providerModelId: 'grok-4.5',
+        errorMessage: 'Provider Responses call failed (503)',
+      },
+    });
+    const notice = selectLatestRunPauseNotice({
+      events: [
+        event({ sequence: 1, type: 'run.started', runId: 'run-a', threadId: 'thread-a' }),
+        paused,
+      ],
+      threadId: 'thread-a',
+      taskId: 'task-a',
+    });
+
+    expect(notice).toMatchObject({ runId: 'run-a', tone: 'error' });
+    expect(notice?.text).toContain('??????????????');
+    expect(notice?.text).toContain('503');
+
+    expect(
+      selectLatestRunPauseNotice({
+        events: [
+          paused,
+          event({ sequence: 3, type: 'run.started', runId: 'run-b', threadId: 'thread-a' }),
+        ],
+        threadId: 'thread-a',
+      }),
+    ).toBeUndefined();
   });
 
   it('advances the global cursor while ignoring another conversation events', () => {

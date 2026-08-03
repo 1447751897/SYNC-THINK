@@ -48,8 +48,10 @@ export {
   normalizeCapabilities,
   mergeCapabilitySuggestions,
   suggestCapabilities,
+  isTextFallbackCompatibleModel,
   type CapabilitySuggestionInput,
   type CapabilitySuggestion,
+  type TextFallbackCompatibilityInput,
 } from './capability-probe.js';
 export * from './credential-binding.js';
 
@@ -60,7 +62,6 @@ export {
   type ParsedSkillMd,
   type ParseSkillMdErrorCode,
 } from './skill-md.js';
-
 
 export {
   diffSkillPermissions,
@@ -92,10 +93,7 @@ export {
 } from './mcp-tool-sensitivity.js';
 
 export * from './cc-switch-import.js';
-export {
-  canTransitionMode,
-  type ParticipationTransitionContext,
-} from './participation-policy.js';
+export { canTransitionMode, type ParticipationTransitionContext } from './participation-policy.js';
 export {
   resolveActionDecision,
   resolveScopedPolicy,

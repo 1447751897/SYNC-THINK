@@ -1715,3 +1715,62 @@ describe('SqliteOrchestrationStore durable scheduler transitions', () => {
     }
   });
 });
+
+
+describe('image generation plan persistence', () => {
+  it('persists exact settings into approved Steps and keeps legacy null compatible', async () => {
+    const { raw, store, close } = await openStore();
+    try {
+      const draft = store.createPlanDraft({
+        taskId,
+        title: 'Image settings',
+        steps: [
+          planStep('image', writerVersionId, {
+            imageGeneration: { size: '1536x1024', quality: 'high', count: 3 },
+          }),
+          planStep('legacy', plannerVersionId),
+        ],
+      });
+      expect(draft.steps[0]?.imageGeneration).toEqual({
+        size: '1536x1024',
+        quality: 'high',
+        count: 3,
+      });
+
+      const graph = store.approvePlan({ planId: draft.planId, revision: 1 });
+      expect(graph.steps[0]?.imageGeneration).toEqual({
+        size: '1536x1024',
+        quality: 'high',
+        count: 3,
+      });
+      expect(graph.steps[1]?.imageGeneration).toBeUndefined();
+      expect(
+        raw.prepare('SELECT image_generation_config_json AS value FROM step WHERE id = ?').get('image'),
+      ).toEqual({ value: JSON.stringify({ size: '1536x1024', quality: 'high', count: 3 }) });
+    } finally {
+      close();
+    }
+  });
+
+  it('rejects malformed and merge-only image generation settings before persistence', async () => {
+    const { store, close } = await openStore();
+    try {
+      expect(() =>
+        store.createPlanDraft({
+          taskId,
+          title: 'Invalid image settings',
+          steps: [planStep('image', writerVersionId, { imageGeneration: { size: 'auto', quality: 'high', count: 5 } as never })],
+        }),
+      ).toThrow(/imageGeneration/);
+      expect(() =>
+        store.createPlanDraft({
+          taskId,
+          title: 'Invalid merge settings',
+          steps: [planStep('merge', writerVersionId, { kind: 'merge', imageGeneration: { size: 'auto', quality: 'auto', count: 1 } })],
+        }),
+      ).toThrow(/imageGeneration/);
+    } finally {
+      close();
+    }
+  });
+});

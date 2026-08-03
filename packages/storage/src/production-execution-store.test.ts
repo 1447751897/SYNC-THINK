@@ -142,6 +142,53 @@ describe('SqliteProductionExecutionStore', () => {
     }
   });
 
+  it('persists referenced image results and rejects invalid content representations', async () => {
+    const f = await fixture();
+    try {
+      const store = new SqliteProductionExecutionStore(f.raw);
+      const input = {
+        idempotencyKey: f.step.idempotencyKey!,
+        runId: f.runId,
+        stepId: f.step.id,
+        agentVersionId,
+        ownerId: 'owner-production',
+        executionAttempt: f.step.executionAttempt,
+        now: '2026-07-14T00:00:02.000Z',
+      };
+      store.reserveProviderExecution(input);
+      const result = {
+        outputVersions: [{
+          artifactName: 'Generated image',
+          contentRef: 'D:\\artifacts\\generated.png',
+          contentHash: 'a'.repeat(64),
+          mimeType: 'image/png',
+          status: 'candidate' as const,
+          metadata: { generationKind: 'image' },
+        }],
+      };
+      expect(store.completeProviderExecution({ ...input, result })).toMatchObject({ result });
+      expect(store.getCompletedProviderExecution(input)?.result).toEqual(result);
+
+      const unsafeStore = store as unknown as {
+        completeProviderExecution(input: unknown): unknown;
+      };
+      for (const output of [
+        { artifactName: 'Missing', mimeType: 'image/png', status: 'candidate' },
+        { artifactName: 'Both', content: 'x', contentRef: 'D:\\x.png', contentHash: 'a'.repeat(64), mimeType: 'image/png', status: 'candidate' },
+        { artifactName: 'Remote', contentRef: 'https://cdn.test/x.png', contentHash: 'a'.repeat(64), mimeType: 'image/png', status: 'candidate' },
+        { artifactName: 'No hash', contentRef: 'D:\\x.png', mimeType: 'image/png', status: 'candidate' },
+      ]) {
+        expect(() => unsafeStore.completeProviderExecution({
+          ...input,
+          idempotencyKey: `invalid-${output.artifactName}`,
+          result: { outputVersions: [output] },
+        })).toThrow();
+      }
+    } finally {
+      f.raw.close();
+    }
+  });
+
   it('rejects Provider completion at or after the persisted Step lease expiry', async () => {
     const f = await fixture();
     try {

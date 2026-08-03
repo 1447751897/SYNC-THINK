@@ -112,6 +112,8 @@ export class SqliteBrowserStore {
     runId: string;
     ownerId: string;
     profileId: string;
+    leaseId?: string;
+    pageId?: string;
     toolName: string;
     action: string;
     targetOrigin: string;
@@ -129,10 +131,10 @@ export class SqliteBrowserStore {
       this.raw.prepare(
         `INSERT INTO browser_command (
            id, idempotency_key, workspace_id, run_id, owner_id, profile_id,
-           tool_name, action, target_origin, request_digest, sanitized_args_json,
+           lease_id, page_id, tool_name, action, target_origin, request_digest, sanitized_args_json,
            state, result_json, error_code, failure_class, created_at, updated_at,
            approved_at, started_at, completed_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', NULL, NULL, NULL, ?, ?, NULL, NULL, NULL)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', NULL, NULL, NULL, ?, ?, NULL, NULL, NULL)`,
       ).run(
         normalized.id,
         normalized.idempotencyKey,
@@ -140,6 +142,8 @@ export class SqliteBrowserStore {
         normalized.runId,
         normalized.ownerId,
         normalized.profileId,
+        normalized.leaseId ?? null,
+        normalized.pageId ?? null,
         normalized.toolName,
         normalized.action,
         normalized.targetOrigin,
@@ -266,6 +270,86 @@ export class SqliteBrowserStore {
       | BrowserCommandRow
       | undefined;
     return row ? mapCommand(row) : undefined;
+  }
+
+  getLastCompletedCommand(input: {
+    workspaceId: string;
+    runId: string;
+    ownerId: string;
+    profileId: string;
+  }): BrowserCommandRecord | undefined {
+    const workspaceId = normalizeId(input.workspaceId, 'browser.command_workspace_id_invalid');
+    const runId = normalizeId(input.runId, 'browser.command_run_id_invalid');
+    const ownerId = normalizeId(input.ownerId, 'browser.command_owner_id_invalid');
+    const profileId = normalizeId(input.profileId, 'browser.command_profile_id_invalid');
+    const row = this.raw.prepare(
+      `${commandSelect()}
+       WHERE workspace_id = ? AND run_id = ? AND owner_id = ? AND profile_id = ?
+         AND state = 'completed' AND tool_name <> 'browser_handoff'
+         AND lease_id IS NOT NULL AND page_id IS NOT NULL
+       ORDER BY completed_at DESC, id DESC
+       LIMIT 1`,
+    ).get(workspaceId, runId, ownerId, profileId) as BrowserCommandRow | undefined;
+    return row ? mapCommand(row) : undefined;
+  }
+
+  markHandoffWaiting(
+    id: string,
+    lease: { leaseId: string; pageId: string },
+    now?: string,
+  ): BrowserCommandRecord {
+    const leaseId = normalizeId(lease.leaseId, 'browser.command_lease_id_invalid');
+    const pageId = normalizeId(lease.pageId, 'browser.command_page_id_invalid');
+    const at = normalizeNow(now);
+    return this.raw.transaction(() => {
+      const existing = this.getRequiredCommand(id);
+      if (existing.toolName !== 'browser_handoff' || existing.action !== 'handoff') {
+        throw new Error('browser.handoff_command_invalid');
+      }
+      if (existing.state === 'waiting_user') {
+        if (existing.leaseId !== leaseId || existing.pageId !== pageId) {
+          throw new Error('browser.handoff_lease_mismatch');
+        }
+        return existing;
+      }
+      if (existing.state !== 'requested') throw new Error('browser.handoff_transition_invalid');
+      if (existing.leaseId !== leaseId || existing.pageId !== pageId) {
+        throw new Error('browser.handoff_lease_mismatch');
+      }
+      const update = this.raw.prepare(
+        `UPDATE browser_command
+         SET state = 'waiting_user',
+             error_code = 'browser.handoff-required', failure_class = 'permission', updated_at = ?
+         WHERE id = ? AND state = 'requested'`,
+      ).run(at, id);
+      if (update.changes !== 1) throw new Error('browser.command_transition_conflict');
+      return this.getRequiredCommand(id);
+    }).immediate();
+  }
+
+  listWaitingHandoffs(input: {
+    workspaceId?: string;
+    runId?: string;
+  } = {}): BrowserCommandRecord[] {
+    const clauses = [
+      "tool_name = 'browser_handoff'",
+      "action = 'handoff'",
+      "state = 'waiting_user'",
+      "error_code = 'browser.handoff-required'",
+    ];
+    const args: string[] = [];
+    if (input.workspaceId !== undefined) {
+      clauses.push('workspace_id = ?');
+      args.push(normalizeId(input.workspaceId, 'browser.command_workspace_id_invalid'));
+    }
+    if (input.runId !== undefined) {
+      clauses.push('run_id = ?');
+      args.push(normalizeId(input.runId, 'browser.command_run_id_invalid'));
+    }
+    const rows = this.raw.prepare(
+      `${commandSelect()} WHERE ${clauses.join(' AND ')} ORDER BY created_at ASC, id ASC`,
+    ).all(...args) as BrowserCommandRow[];
+    return rows.map(mapCommand);
   }
 
   getLastCompletedOrigin(input: {
@@ -423,6 +507,8 @@ function normalizeCommandInput(input: {
   runId: string;
   ownerId: string;
   profileId: string;
+  leaseId?: string;
+  pageId?: string;
   toolName: string;
   action: string;
   targetOrigin: string;
@@ -434,12 +520,21 @@ function normalizeCommandInput(input: {
   const runId = normalizeId(input.runId, 'browser.command_run_id_invalid');
   const ownerId = normalizeId(input.ownerId, 'browser.command_owner_id_invalid');
   const profileId = normalizeId(input.profileId, 'browser.command_profile_id_invalid');
+  const leaseId = input.leaseId
+    ? normalizeId(input.leaseId, 'browser.command_lease_id_invalid')
+    : undefined;
+  const pageId = input.pageId
+    ? normalizeId(input.pageId, 'browser.command_page_id_invalid')
+    : undefined;
+  if ((leaseId === undefined) !== (pageId === undefined)) {
+    throw new Error('browser.command_lease_identity_incomplete');
+  }
   const toolName = normalizeId(input.toolName, 'browser.command_tool_name_invalid');
   const action = normalizeAction(input.action);
   const targetOrigin = normalizeOrigin(input.targetOrigin);
   const sanitizedArgsJson = boundedJson(input.sanitizedArgs, 'browser.command_args_too_large');
   const requestDigest = createHash('sha256')
-    .update(JSON.stringify({ workspaceId, runId, ownerId, profileId, toolName, action, targetOrigin, sanitizedArgs: JSON.parse(sanitizedArgsJson) }))
+    .update(JSON.stringify({ workspaceId, runId, ownerId, profileId, leaseId, pageId, toolName, action, targetOrigin, sanitizedArgs: JSON.parse(sanitizedArgsJson) }))
     .digest('hex');
   return {
     id,
@@ -448,6 +543,8 @@ function normalizeCommandInput(input: {
     runId,
     ownerId,
     profileId,
+    leaseId,
+    pageId,
     toolName,
     action,
     targetOrigin,

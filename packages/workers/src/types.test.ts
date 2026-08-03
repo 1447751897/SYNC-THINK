@@ -30,7 +30,7 @@ describe('FakeDesktopWorker', () => {
     const w = new FakeDesktopWorker();
     const events = await collect(
       w.exec(
-        { action: { kind: 'screenshot' }, workingDir: 'D:/proj' },
+        { action: { kind: 'probe' }, workingDir: 'D:/proj' },
         { token: 't', allowedRoot: 'D:/proj', timeoutMs: 1000 },
       ),
     );
@@ -44,7 +44,11 @@ describe('FakeBrowserWorker site allowlist', () => {
     const w = new FakeBrowserWorker();
     const events = await collect(
       w.exec(
-        { action: { kind: 'navigate', url: 'https://evil.example' }, workingDir: 'D:/p', allowedSites: ['https://good.example'] },
+        {
+          action: { kind: 'navigate', url: 'https://evil.example' },
+          workingDir: 'D:/p',
+          allowedSites: ['https://good.example'],
+        },
         { token: 't', allowedRoot: 'D:/p', timeoutMs: 1000 },
       ),
     );
