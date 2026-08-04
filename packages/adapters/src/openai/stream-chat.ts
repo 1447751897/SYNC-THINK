@@ -7,6 +7,7 @@ import {
   createProviderCallControl,
   providerAbortEvent,
 } from '../call-control.js';
+import { openAIPromptCacheBodyFields } from './prompt-cache.js';
 
 export class ProviderCallError extends Error {
   readonly failureClass: FailureClass;
@@ -31,12 +32,11 @@ export function joinChatCompletionsUrl(baseUrl: string): string {
   return `${root}/chat/completions`;
 }
 
-
 type ChatUsage = {
   prompt_tokens?: unknown;
   completion_tokens?: unknown;
   total_tokens?: unknown;
-  prompt_tokens_details?: { cached_tokens?: unknown };
+  prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown };
   completion_tokens_details?: { reasoning_tokens?: unknown };
 };
 
@@ -46,6 +46,7 @@ function nonNegativeNumber(value: unknown): number | undefined {
 
 function toUsageEvent(usage: ChatUsage): AdapterEvent {
   const cachedTokensHit = nonNegativeNumber(usage.prompt_tokens_details?.cached_tokens);
+  const cachedTokensCreated = nonNegativeNumber(usage.prompt_tokens_details?.cache_write_tokens);
   const reasoningTokens = nonNegativeNumber(usage.completion_tokens_details?.reasoning_tokens);
   const totalTokens = nonNegativeNumber(usage.total_tokens);
   return {
@@ -53,6 +54,7 @@ function toUsageEvent(usage: ChatUsage): AdapterEvent {
     tokensIn: nonNegativeNumber(usage.prompt_tokens) ?? 0,
     tokensOut: nonNegativeNumber(usage.completion_tokens) ?? 0,
     ...(cachedTokensHit !== undefined ? { cachedTokensHit } : {}),
+    ...(cachedTokensCreated !== undefined ? { cachedTokensCreated } : {}),
     ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
   };
@@ -193,7 +195,8 @@ export async function* streamOpenAIChatCompletions(
   // - o-series & gpt-5 reject max_tokens (want max_completion_tokens) and
   //   non-default temperature.
   const modelTail = (request.modelId.split('/').pop() ?? request.modelId).toLowerCase();
-  const isOpenAiReasoningFamily = /^o[1-9](\b|[-.])/.test(modelTail) || modelTail.startsWith('gpt-5');
+  const isOpenAiReasoningFamily =
+    /^o[1-9](\b|[-.])/.test(modelTail) || modelTail.startsWith('gpt-5');
   const wantsEnableThinking = /qwen|glm|doubao|hunyuan/.test(modelTail);
   const effortLevel = normalizeReasoningEffort(request.reasoningEffort);
   const sendEffort = Boolean(effortLevel) && !shouldOmitReasoningEffort(effortLevel);
@@ -202,6 +205,7 @@ export async function* streamOpenAIChatCompletions(
     model: request.modelId,
     messages: toOpenAIMessages(request),
     stream: true,
+    ...openAIPromptCacheBodyFields(request),
     ...(request.maxOutputTokens !== undefined
       ? isOpenAiReasoningFamily
         ? { max_completion_tokens: request.maxOutputTokens }
@@ -222,6 +226,7 @@ export async function* streamOpenAIChatCompletions(
               parameters: tool.inputSchema,
             },
           })),
+          ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
         }
       : {}),
   };

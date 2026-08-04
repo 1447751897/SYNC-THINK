@@ -423,7 +423,9 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
            ORDER BY sequence ASC`,
         )
         .all() as Array<{ type: string; sequence: number }>;
-      const fallbackEvents = durableEvents.filter((event) => event.type === 'run.fallback.selected');
+      const fallbackEvents = durableEvents.filter(
+        (event) => event.type === 'run.fallback.selected',
+      );
       const contextEvents = durableEvents.filter((event) => event.type === 'context.packet.built');
       const fallbackIndex = durableEvents.findIndex(
         (event) => event.type === 'run.fallback.selected',
@@ -565,7 +567,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     await session.close();
   }, 30_000);
 
-  it('does not cycle from provider fallbacks back into an already-attempted agent fallback', async () => {
+  it('opens the provider circuit after two endpoint failures without cycling into more same-provider models', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-fb-cycle-'));
     tempDirs.push(dir);
     const dbPath = join(dir, 'sync-think.db');
@@ -670,10 +672,6 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       (type) => type === 'run.fallback.selected',
       6_000,
     );
-    const secondFallback = await reader.waitForEvent(
-      (type) => type === 'run.fallback.selected',
-      6_000,
-    );
     const terminal = await reader.waitForEvent(
       (type) => type === 'run.paused' || type === 'run.failed',
       8_000,
@@ -684,11 +682,10 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     );
 
     expect(eventInner(firstFallback!).toProviderModelId).toBe('beta-model');
-    expect(eventInner(secondFallback!).toProviderModelId).toBe('gamma-model');
     expect(eventType(terminal!)).toBe('run.paused');
-    expect(eventInner(terminal!).reason).toBe('fallback_exhausted');
+    expect(eventInner(terminal!).reason).toBe('no_fallback_configured');
     expect(unexpectedFallback).toBeUndefined();
-    expect(adapter.calls).toEqual(['alpha-model', 'beta-model', 'gamma-model']);
+    expect(adapter.calls).toEqual(['alpha-model', 'beta-model']);
 
     reader.close();
     sock.destroy();

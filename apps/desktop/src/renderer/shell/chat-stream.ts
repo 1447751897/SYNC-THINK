@@ -209,22 +209,28 @@ function formatRunPauseNotice(event: Event): RunPauseNotice {
 
   const headline =
     reason === 'fallback_exhausted'
-      ? '???????????????????????'
+      ? '备用模型已全部尝试，任务已暂停。'
       : reason === 'no_fallback_configured'
-        ? '??????????????????????????'
-        : `????????${reason}??`;
+        ? '当前模型不可用，且没有配置备用模型。'
+        : reason === 'recovery_expired'
+          ? '历史请求已过期，未自动重新执行。'
+          : `任务已暂停（${reason}）。`;
   const details = [
-    providerModelId ? `???${providerModelId}` : '',
-    failureClass ? `?????${failureClass}` : '',
-    errorMessage ? `???${errorMessage}` : '',
+    providerModelId ? `模型：${providerModelId}` : '',
+    failureClass ? `失败类型：${failureClass}` : '',
+    errorMessage ? `详情：${errorMessage}` : '',
   ].filter(Boolean);
   const retryHint =
-    reason === 'fallback_exhausted' || reason === 'no_fallback_configured' ? '???????????' : '';
+    reason === 'fallback_exhausted' || reason === 'no_fallback_configured'
+      ? '请切换 Provider、模型或检查连接后重试。'
+      : reason === 'recovery_expired'
+        ? '请重新发送请求。'
+        : '';
 
   return {
     id: `run-paused-${String(event.id)}`,
     runId: event.runId,
-    text: [headline, details.join('?'), retryHint].filter(Boolean).join(' '),
+    text: [headline, details.join('；'), retryHint].filter(Boolean).join(' '),
     timestamp: event.occurredAt,
     tone: failureClass || errorMessage ? 'error' : 'warning',
   };

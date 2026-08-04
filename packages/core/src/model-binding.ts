@@ -159,9 +159,7 @@ export function resolveModelBinding(input: ResolveModelBindingInput): ModelBindi
   const startIndex = failedAtDefault ? -1 : failedIndex;
   const nextIndex =
     failedAtDefault || failedIndex >= 0
-      ? chain.findIndex(
-          (modelId, index) => index > startIndex && !attempted.has(modelId),
-        )
+      ? chain.findIndex((modelId, index) => index > startIndex && !attempted.has(modelId))
       : -1;
   if (nextIndex >= 0) {
     return {
@@ -194,6 +192,20 @@ export function shouldAttemptFallback(failureClass: FailureClass | undefined): b
   // Acceptance / permission are not model-availability issues.
   if (failureClass === 'acceptance' || failureClass === 'permission') return false;
   return isRetryable(failureClass) || failureClass === 'auth' || failureClass === 'unknown';
+}
+
+/** Failures that normally affect a Provider endpoint or credential, not one model. */
+export function shouldSkipSameProviderFallback(
+  failureClass: FailureClass,
+  consecutiveProviderFailures = 1,
+): boolean {
+  if (consecutiveProviderFailures < 2) return false;
+  return (
+    failureClass === 'timeout' ||
+    failureClass === 'transient' ||
+    failureClass === 'rate-limit' ||
+    failureClass === 'auth'
+  );
 }
 
 /**

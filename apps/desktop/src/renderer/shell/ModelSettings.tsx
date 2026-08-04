@@ -2,6 +2,7 @@
 // Left: ordered provider list with enable toggles.
 // Right: selected provider detail (endpoint / keys / models / priority) + global vision/plan-act.
 import {
+  Fragment,
   forwardRef,
   useCallback,
   useEffect,
@@ -63,6 +64,7 @@ import type {
   ProviderSummary,
   UsageSummaryResponse,
 } from '@sync-think/protocol';
+import { splitProviderUsageTokens } from '@sync-think/shared';
 import type { RendererUpdateProviderPayload } from '../../provider-payloads.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -182,7 +184,10 @@ function formatContext(tokens?: number): string | null {
  * Accepts: 372000, 372k, 372K, 1m, 1.5M, 200_000, "372 k".
  */
 function parseContextTokens(raw: string): number | null {
-  const text = raw.trim().toLowerCase().replace(/[,\s_]/g, '');
+  const text = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[,\s_]/g, '');
   if (!text) return null;
   const match = text.match(/^(\d+(?:\.\d+)?)([km]?)$/);
   if (!match) return null;
@@ -195,10 +200,7 @@ function parseContextTokens(raw: string): number | null {
 }
 
 /** Single visible model title — avoid "GPT-5.6 Sol / gpt-5.6-sol" duplication. */
-function modelPrimaryLabel(model: {
-  displayName: string;
-  providerModelId: string;
-}): string {
+function modelPrimaryLabel(model: { displayName: string; providerModelId: string }): string {
   const display = model.displayName.trim();
   const providerId = model.providerModelId.trim();
   if (!display) return providerId;
@@ -278,7 +280,8 @@ export const ModelSettings = forwardRef<
         models: providerOrders[selectedProvider.providerId] ?? selectedProvider.models,
       }
     : null;
-  const providerListBusy = operation?.kind === 'reorder-provider' || operation?.kind === 'toggle-provider';
+  const providerListBusy =
+    operation?.kind === 'reorder-provider' || operation?.kind === 'toggle-provider';
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -287,10 +290,7 @@ export const ModelSettings = forwardRef<
   const showToast = useCallback((kind: SettingsToast['kind'], message: string) => {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     setToast({ id: ++toastSequence.current, kind, message });
-    toastTimer.current = window.setTimeout(
-      () => setToast(null),
-      kind === 'error' ? 5000 : 2400,
-    );
+    toastTimer.current = window.setTimeout(() => setToast(null), kind === 'error' ? 5000 : 2400);
   }, []);
 
   useEffect(
@@ -380,35 +380,32 @@ export const ModelSettings = forwardRef<
   );
 
   const handleCreate = () =>
-    void withBusy(
-      { kind: 'create-provider', label: '正在创建供应商…' },
-      async () => {
-        const api = bridge();
-        if (!api?.createProvider) throw new Error('Runtime 未连接');
-        const name = createDraft.name.trim();
-        const baseUrl = createDraft.baseUrl.trim();
-        const apiKey = createDraft.apiKey.trim();
-        if (!name) throw new Error('请填写供应商名称');
-        if (!baseUrl || baseUrl === 'https://') throw new Error('请填写 Base URL');
-        if (!apiKey) throw new Error('请填写 API Key，并先复制到剪贴板');
-        await navigator.clipboard.writeText(apiKey);
-        const result = await api.createProvider({
-          name,
-          baseUrl,
-          protocol: createDraft.protocol,
-          supportsDiscovery: createDraft.supportsDiscovery,
-        });
-        setCreateDraft(EMPTY_CREATE);
-        setShowCreate(false);
-        setSelectedId(result.provider.providerId);
-        setLastSelectedId(result.provider.providerId);
-        await load();
-        showToast(
-          'success',
-          `已创建 ${result.provider.name} · 发现 ${result.discoveredModelCount} 个模型`,
-        );
-      },
-    );
+    void withBusy({ kind: 'create-provider', label: '正在创建供应商…' }, async () => {
+      const api = bridge();
+      if (!api?.createProvider) throw new Error('Runtime 未连接');
+      const name = createDraft.name.trim();
+      const baseUrl = createDraft.baseUrl.trim();
+      const apiKey = createDraft.apiKey.trim();
+      if (!name) throw new Error('请填写供应商名称');
+      if (!baseUrl || baseUrl === 'https://') throw new Error('请填写 Base URL');
+      if (!apiKey) throw new Error('请填写 API Key，并先复制到剪贴板');
+      await navigator.clipboard.writeText(apiKey);
+      const result = await api.createProvider({
+        name,
+        baseUrl,
+        protocol: createDraft.protocol,
+        supportsDiscovery: createDraft.supportsDiscovery,
+      });
+      setCreateDraft(EMPTY_CREATE);
+      setShowCreate(false);
+      setSelectedId(result.provider.providerId);
+      setLastSelectedId(result.provider.providerId);
+      await load();
+      showToast(
+        'success',
+        `已创建 ${result.provider.name} · 发现 ${result.discoveredModelCount} 个模型`,
+      );
+    });
 
   const persistProviderOrder = useCallback(
     async (orderedEnabled: ProviderSummary[], previousProviders = providers) => {
@@ -465,7 +462,8 @@ export const ModelSettings = forwardRef<
     );
     setProviders(nextProviders);
     if (!enabled && selectedId === provider.providerId) {
-      const nextSelected = nextProviders.find((item) => item.enabled)?.providerId ?? provider.providerId;
+      const nextSelected =
+        nextProviders.find((item) => item.enabled)?.providerId ?? provider.providerId;
       setSelectedId(nextSelected);
     }
     if (enabled) setDisabledOpen(true);
@@ -533,16 +531,19 @@ export const ModelSettings = forwardRef<
     );
 
   const handleRemoveCredential = (providerId: string, credentialRefId: string) =>
-    void withBusy({ kind: 'remove-credential', targetId: providerId, label: '正在删除密钥…' }, async () => {
-      const api = bridge();
-      if (!api?.removeProviderCredential) throw new Error('Runtime 未连接');
-      await api.removeProviderCredential({
-        providerId: providerId as never,
-        credentialRefId: credentialRefId as never,
-      });
-      setStatus('密钥已删除');
-      await load();
-    });
+    void withBusy(
+      { kind: 'remove-credential', targetId: providerId, label: '正在删除密钥…' },
+      async () => {
+        const api = bridge();
+        if (!api?.removeProviderCredential) throw new Error('Runtime 未连接');
+        await api.removeProviderCredential({
+          providerId: providerId as never,
+          credentialRefId: credentialRefId as never,
+        });
+        setStatus('密钥已删除');
+        await load();
+      },
+    );
 
   const handleRevealCredential = useCallback(
     async (providerId: string, credentialRefId: string) => {
@@ -755,9 +756,7 @@ export const ModelSettings = forwardRef<
             // Apply priorities onto the freshly listed tree.
             setProviders(
               nextProviders.map((item) =>
-                item.providerId === dialog.providerId
-                  ? { ...item, models: result.models }
-                  : item,
+                item.providerId === dialog.providerId ? { ...item, models: result.models } : item,
               ),
             );
             setProviderOrders((current) => ({
@@ -817,31 +816,35 @@ export const ModelSettings = forwardRef<
     );
 
   const handleRemoveModel = (providerId: string, modelId: string) =>
-    void withBusy({ kind: 'remove-model', targetId: providerId, label: '正在移除模型…' }, async () => {
-      const api = bridge();
-      if (!api?.removeProviderModel || !api?.setModelPriorities) throw new Error('Runtime 未连接');
-      await api.removeProviderModel({
-        providerId: providerId as never,
-        modelId: modelId as never,
-      });
-      const provider = providers.find((item) => item.providerId === providerId);
-      const remaining = (provider?.models ?? [])
-        .filter((model) => model.modelId !== modelId)
-        .sort((a, b) => a.priority - b.priority);
-      if (remaining.length > 0) {
-        const result = await api.setModelPriorities({
+    void withBusy(
+      { kind: 'remove-model', targetId: providerId, label: '正在移除模型…' },
+      async () => {
+        const api = bridge();
+        if (!api?.removeProviderModel || !api?.setModelPriorities)
+          throw new Error('Runtime 未连接');
+        await api.removeProviderModel({
           providerId: providerId as never,
-          entries: remaining.map((model) => ({
-            modelId: model.modelId as never,
-            credentialRefId: (model.credentialRefId ?? undefined) as never,
-          })),
+          modelId: modelId as never,
         });
-        mergeProviderModels(providerId, result.models);
-      } else {
-        mergeProviderModels(providerId, []);
-      }
-      setStatus('模型已移除');
-    });
+        const provider = providers.find((item) => item.providerId === providerId);
+        const remaining = (provider?.models ?? [])
+          .filter((model) => model.modelId !== modelId)
+          .sort((a, b) => a.priority - b.priority);
+        if (remaining.length > 0) {
+          const result = await api.setModelPriorities({
+            providerId: providerId as never,
+            entries: remaining.map((model) => ({
+              modelId: model.modelId as never,
+              credentialRefId: (model.credentialRefId ?? undefined) as never,
+            })),
+          });
+          mergeProviderModels(providerId, result.models);
+        } else {
+          mergeProviderModels(providerId, []);
+        }
+        setStatus('模型已移除');
+      },
+    );
 
   const handleUpdateModelContext = (
     providerId: string,
@@ -916,22 +919,25 @@ export const ModelSettings = forwardRef<
     modelId: string,
     credentialRefId: string | null,
   ) =>
-    void withBusy({ kind: 'pin-credential', targetId: provider.providerId, label: '正在绑定密钥…' }, async () => {
-      const api = bridge();
-      if (!api?.setModelPriorities) throw new Error('Runtime 未连接');
-      const ordered = [...provider.models].sort((a, b) => a.priority - b.priority);
-      const result = await api.setModelPriorities({
-        providerId: provider.providerId as never,
-        entries: ordered.map((m) => ({
-          modelId: m.modelId as never,
-          credentialRefId: (m.modelId === modelId
-            ? credentialRefId
-            : (m.credentialRefId ?? undefined)) as never,
-        })),
-      });
-      mergeProviderModels(provider.providerId, result.models);
-      setStatus(credentialRefId ? '模型已绑定密钥' : '已清除模型密钥绑定');
-    });
+    void withBusy(
+      { kind: 'pin-credential', targetId: provider.providerId, label: '正在绑定密钥…' },
+      async () => {
+        const api = bridge();
+        if (!api?.setModelPriorities) throw new Error('Runtime 未连接');
+        const ordered = [...provider.models].sort((a, b) => a.priority - b.priority);
+        const result = await api.setModelPriorities({
+          providerId: provider.providerId as never,
+          entries: ordered.map((m) => ({
+            modelId: m.modelId as never,
+            credentialRefId: (m.modelId === modelId
+              ? credentialRefId
+              : (m.credentialRefId ?? undefined)) as never,
+          })),
+        });
+        mergeProviderModels(provider.providerId, result.models);
+        setStatus(credentialRefId ? '模型已绑定密钥' : '已清除模型密钥绑定');
+      },
+    );
 
   const handleSaveVision = (next: VisionFallbackSetting) => {
     const previous = visionFallback;
@@ -1144,10 +1150,7 @@ export const ModelSettings = forwardRef<
       {modelTab === 'usage' ? (
         <UsageSettings />
       ) : modelTab !== 'text' ? (
-            <div
-              key={modelTab}
-              className="model-settings-tab-panel model-settings-unavailable"
-            >
+        <div key={modelTab} className="model-settings-tab-panel model-settings-unavailable">
           <p>
             {modelTab === 'image' ? '图像生成' : modelTab === 'video' ? '视频生成' : '语音生成'}
             模型配置尚未接入。
@@ -1292,7 +1295,8 @@ export const ModelSettings = forwardRef<
                                 'model-enabled-row is-disabled',
                                 detailView === 'provider' &&
                                   provider.providerId === selectedId &&
-                                  !showCreate && 'is-active',
+                                  !showCreate &&
+                                  'is-active',
                               )}
                             >
                               <span className="model-enabled-row__avatar">
@@ -1381,7 +1385,8 @@ export const ModelSettings = forwardRef<
                       setShowCreate(false);
                       setCreateDraft(EMPTY_CREATE);
                       const restoreId =
-                        lastSelectedId && providers.some((provider) => provider.providerId === lastSelectedId)
+                        lastSelectedId &&
+                        providers.some((provider) => provider.providerId === lastSelectedId)
                           ? lastSelectedId
                           : (providers[0]?.providerId ?? null);
                       setSelectedId(restoreId);
@@ -1405,9 +1410,7 @@ export const ModelSettings = forwardRef<
                   <ProviderDetail
                     provider={selected}
                     operation={operation}
-                    connectionTest={
-                      connectionTests[selected.providerId] ?? EMPTY_CONNECTION_TEST
-                    }
+                    connectionTest={connectionTests[selected.providerId] ?? EMPTY_CONNECTION_TEST}
                     onUpdateProvider={async (providerId, patch) => {
                       const ok = await handleUpdateProvider(providerId, patch);
                       if (ok && patch.baseUrl !== undefined) {
@@ -1587,7 +1590,10 @@ function SortableProviderRow({
   useEffect(() => {
     if (!menuOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Element) || !event.target.closest('.model-enabled-row__menu-wrap')) {
+      if (
+        !(event.target instanceof Element) ||
+        !event.target.closest('.model-enabled-row__menu-wrap')
+      ) {
         setMenuOpen(false);
       }
     };
@@ -1601,14 +1607,10 @@ function SortableProviderRow({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [menuOpen]);
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: provider.providerId, disabled: busy });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: provider.providerId,
+    disabled: busy,
+  });
   const primaryModel = providerPrimaryModel(provider);
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1638,9 +1640,7 @@ function SortableProviderRow({
         <GripVertical size={14} />
       </button>
       <button type="button" className="model-enabled-row__main" onClick={onSelect}>
-        <span className="model-enabled-row__avatar">
-          {provider.name[0]?.toUpperCase() ?? '?'}
-        </span>
+        <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>
         <span className="model-enabled-row__copy">
           <span>
             {provider.name}
@@ -1705,7 +1705,9 @@ function ProviderRowPreview({ provider }: { provider: ProviderSummary | null }) 
   const primaryModel = providerPrimaryModel(provider);
   return (
     <div className="model-enabled-row model-enabled-row--overlay">
-      <span className="model-enabled-row__grip is-static"><GripVertical size={14} /></span>
+      <span className="model-enabled-row__grip is-static">
+        <GripVertical size={14} />
+      </span>
       <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>
       <span className="model-enabled-row__copy">
         <span>{provider.name}</span>
@@ -1850,11 +1852,7 @@ function ProviderDetail({
     contextWindow?: number,
   ) => Promise<boolean>;
   onRemoveModel: (providerId: string, modelId: string) => void;
-  onUpdateModelContext: (
-    providerId: string,
-    modelId: string,
-    contextWindow: number | null,
-  ) => void;
+  onUpdateModelContext: (providerId: string, modelId: string, contextWindow: number | null) => void;
   onReorderModels: (provider: ProviderSummary, models: ProviderModelSummary[]) => void;
   onMoveModel: (provider: ProviderSummary, modelId: string, direction: -1 | 1) => void;
   onPinCredential: (
@@ -1984,7 +1982,9 @@ function ProviderDetail({
               onChange={(event) => setBaseUrlDraft(event.target.value)}
               onBlur={(event) => void saveTextField('baseUrl', event.currentTarget.value)}
             />
-            {savingField === 'baseUrl' ? <Loader2 size={13} className="model-settings-spin" /> : null}
+            {savingField === 'baseUrl' ? (
+              <Loader2 size={13} className="model-settings-spin" />
+            ) : null}
           </div>
           {baseUrlError ? <span className="model-field-error">{baseUrlError}</span> : null}
         </Field>
@@ -1994,7 +1994,9 @@ function ProviderDetail({
               protocol={protocolDraft}
               onChange={(protocol) => void saveProtocol(protocol)}
             />
-            {savingField === 'protocol' ? <Loader2 size={13} className="model-settings-spin" /> : null}
+            {savingField === 'protocol' ? (
+              <Loader2 size={13} className="model-settings-spin" />
+            ) : null}
           </div>
         </Field>
       </div>
@@ -2028,12 +2030,7 @@ function ProviderDetail({
           <div className="model-add-key-form">
             <div>
               <label>API Key</label>
-              <SecretInput
-                value={newKey}
-                placeholder="sk-…"
-                disabled={busy}
-                onChange={setNewKey}
-              />
+              <SecretInput value={newKey} placeholder="sk-…" disabled={busy} onChange={setNewKey} />
             </div>
             <div className="model-add-key-form__actions">
               <button
@@ -2120,9 +2117,7 @@ function ProviderDetail({
                         onRemoveModel(provider.providerId, model.modelId);
                       }
                     }}
-                    onPin={(credentialId) =>
-                      onPinCredential(provider, model.modelId, credentialId)
-                    }
+                    onPin={(credentialId) => onPinCredential(provider, model.modelId, credentialId)}
                     onSaveContext={(contextWindow) =>
                       onUpdateModelContext(provider.providerId, model.modelId, contextWindow)
                     }
@@ -2251,11 +2246,7 @@ function ProviderDetail({
             disabled={busy || testing}
             onClick={onTestConnection}
           >
-            {testing ? (
-              <Loader2 size={15} className="model-settings-spin" />
-            ) : (
-              <Plug size={15} />
-            )}
+            {testing ? <Loader2 size={15} className="model-settings-spin" /> : <Plug size={15} />}
             {testing ? '测试中…' : '测试连接'}
           </button>
           {connectionTest.status === 'success' ? (
@@ -2373,12 +2364,7 @@ function ImportModelsDialog({
           <button type="button" disabled={dialog.applying} onClick={onClose}>
             取消
           </button>
-          <button
-            type="button"
-            className="is-primary"
-            disabled={dialog.applying}
-            onClick={onApply}
-          >
+          <button type="button" className="is-primary" disabled={dialog.applying} onClick={onApply}>
             {dialog.applying ? (
               <>
                 <Loader2 size={14} className="model-settings-spin" /> 更新中…
@@ -2628,14 +2614,10 @@ function SortableModelRow({
   onPin: (credentialRefId: string | null) => void;
   onSaveContext: (contextWindow: number | null) => void;
 }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: model.modelId, disabled: busy });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: model.modelId,
+    disabled: busy,
+  });
   const [editingContext, setEditingContext] = useState(false);
   const [contextDraft, setContextDraft] = useState(
     model.contextWindow && model.contextWindow > 0
@@ -2802,7 +2784,9 @@ function ModelRowPreview({ model }: { model: ProviderModelSummary | null }) {
   const ctx = formatContext(model.contextWindow);
   return (
     <div className="model-priority-row model-priority-row--overlay">
-      <span className="model-priority-row__grip"><GripVertical size={14} /></span>
+      <span className="model-priority-row__grip">
+        <GripVertical size={14} />
+      </span>
       <span className="model-priority-row__rank">·</span>
       <div className="model-priority-row__copy">
         <p title={title}>{title}</p>
@@ -2857,7 +2841,9 @@ function VisionFallbackPanel({
   return (
     <div className="model-strategy-panel">
       <div className="model-strategy-panel__head">
-        <span className="model-strategy-panel__icon"><Image size={16} /></span>
+        <span className="model-strategy-panel__icon">
+          <Image size={16} />
+        </span>
         <div>
           <h2>图片识别 Fallback</h2>
           <p>当前模型不支持识图时，自动切换到指定视觉模型。</p>
@@ -2874,9 +2860,7 @@ function VisionFallbackPanel({
             className="st-field-input"
             value={value.modelId ?? ''}
             disabled={busy || !value.enabled}
-            onChange={(event) =>
-              onChange({ ...value, modelId: event.target.value || null })
-            }
+            onChange={(event) => onChange({ ...value, modelId: event.target.value || null })}
           >
             <option value="">选择视觉模型…</option>
             {options.map((model) => (
@@ -2912,7 +2896,9 @@ function PlanActPanel({
   return (
     <div className="model-strategy-panel">
       <div className="model-strategy-panel__head">
-        <span className="model-strategy-panel__icon"><Sparkles size={16} /></span>
+        <span className="model-strategy-panel__icon">
+          <Sparkles size={16} />
+        </span>
         <div>
           <h2>规划 & 执行模型</h2>
           <p>将任务规划与实际执行分配给不同模型。</p>
@@ -2929,9 +2915,7 @@ function PlanActPanel({
             className="st-field-input"
             value={value.planModelId ?? ''}
             disabled={busy || !value.enabled}
-            onChange={(event) =>
-              onChange({ ...value, planModelId: event.target.value || null })
-            }
+            onChange={(event) => onChange({ ...value, planModelId: event.target.value || null })}
           >
             <option value="">选择规划模型…</option>
             {options.map((model) => (
@@ -2946,9 +2930,7 @@ function PlanActPanel({
             className="st-field-input"
             value={value.actModelId ?? ''}
             disabled={busy || !value.enabled}
-            onChange={(event) =>
-              onChange({ ...value, actModelId: event.target.value || null })
-            }
+            onChange={(event) => onChange({ ...value, actModelId: event.target.value || null })}
           >
             <option value="">选择执行模型…</option>
             {options.map((model) => (
@@ -2976,7 +2958,6 @@ export function UsageSettings() {
   >('requests');
   const [modelQuery, setModelQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all');
-  const [showDetails, setShowDetails] = useState(false);
   const [pricingDraft, setPricingDraft] = useState<PricingDraft | null>(null);
   const [editingPricingId, setEditingPricingId] = useState<string | null>(null);
   const [savingPricing, setSavingPricing] = useState(false);
@@ -3057,7 +3038,12 @@ export function UsageSettings() {
     return matchesModel && matchesStatus;
   });
   const providerRows = aggregateUsageByProvider(rows, data?.toolModels ?? []);
-  const totalTokens = (data?.totalTokensIn ?? 0) + (data?.totalTokensOut ?? 0);
+  const totalUsageTokens = splitProviderUsageTokens({
+    tokensIn: data?.totalTokensIn ?? 0,
+    tokensOut: data?.totalTokensOut ?? 0,
+    cachedTokensHit: data?.totalCachedTokensHit,
+    cachedTokensCreated: data?.totalCachedTokensCreated,
+  });
   const hasCacheUsage =
     typeof data?.totalCachedTokensHit === 'number' ||
     typeof data?.totalCachedTokensCreated === 'number';
@@ -3065,8 +3051,7 @@ export function UsageSettings() {
   const totalToolCalls = tools.reduce((sum, row) => sum + row.calls, 0);
   const totalToolSuccesses = tools.reduce((sum, row) => sum + row.successes, 0);
   const totalToolFailures = tools.reduce((sum, row) => sum + row.failures, 0);
-  const totalToolSuccessRate =
-    totalToolCalls > 0 ? (totalToolSuccesses / totalToolCalls) * 100 : 0;
+  const totalToolSuccessRate = totalToolCalls > 0 ? (totalToolSuccesses / totalToolCalls) * 100 : 0;
 
   const openNewPricing = () => {
     setEditingPricingId(null);
@@ -3133,22 +3118,19 @@ export function UsageSettings() {
         <UsageMetric label="总费用" value={totalCostLabel} hint="以模型供应商最终结算为准" />
         <UsageMetric
           label="总 Token"
-          value={formatTokenCount(totalTokens)}
-          hint={`输入 ${formatTokenCount(data?.totalTokensIn ?? 0)}  /  输出 ${formatTokenCount(data?.totalTokensOut ?? 0)}`}
+          value={formatTokenCount(totalUsageTokens.totalTokens)}
+          hint={`普通输入 ${formatTokenCount(totalUsageTokens.inputTokens)} / 缓存读取 ${formatTokenCount(totalUsageTokens.cacheReadTokens)} / 缓存创建 ${formatTokenCount(totalUsageTokens.cacheWriteTokens)} / 输出 ${formatTokenCount(totalUsageTokens.outputTokens)}`}
         />
         <UsageMetric
-          label="缓存 Token"
+          label="缓存命中率"
           value={
-            hasCacheUsage
-              ? formatTokenCount(
-                  (data?.totalCachedTokensHit ?? 0) +
-                    (data?.totalCachedTokensCreated ?? 0),
-                )
+            hasCacheUsage && totalUsageTokens.totalInputTokens > 0
+              ? formatRate(totalUsageTokens.cacheReadTokens, totalUsageTokens.totalInputTokens)
               : '—'
           }
           hint={
             hasCacheUsage
-              ? `命中 ${formatTokenCount(data?.totalCachedTokensHit ?? 0)}  /  创建 ${formatTokenCount(data?.totalCachedTokensCreated ?? 0)}`
+              ? `读取 ${formatTokenCount(totalUsageTokens.cacheReadTokens)} / 创建 ${formatTokenCount(totalUsageTokens.cacheWriteTokens)}`
               : '当前供应商未返回缓存用量'
           }
         />
@@ -3193,17 +3175,9 @@ export function UsageSettings() {
               <option value="success">成功</option>
               <option value="failed">失败</option>
             </select>
-            <label className="usage-detail-switch">
-              <input
-                type="checkbox"
-                checked={showDetails}
-                onChange={(event) => setShowDetails(event.target.checked)}
-              />
-              <span>详情记录</span>
-            </label>
             <span className="usage-record-count">共 {visibleRequests.length} 条记录</span>
           </div>
-          <UsageRequestTable rows={visibleRequests} showDetails={showDetails} />
+          <UsageRequestTable rows={visibleRequests} />
         </section>
       ) : null}
 
@@ -3253,7 +3227,9 @@ export function UsageSettings() {
           }}
           onDraftChange={setPricingDraft}
           onSave={commitPricingDraft}
-          onDelete={(entry) => void savePricing(pricing.filter((row) => row.modelId !== entry.modelId))}
+          onDelete={(entry) =>
+            void savePricing(pricing.filter((row) => row.modelId !== entry.modelId))
+          }
         />
       ) : null}
     </div>
@@ -3350,55 +3326,119 @@ function aggregateUsageByProvider(
     .sort((left, right) => right.tokensIn + right.tokensOut - (left.tokensIn + left.tokensOut));
 }
 
-function UsageRequestTable({
-  rows,
-  showDetails,
-}: {
-  rows: UsageSummaryResponse['requests'];
-  showDetails: boolean;
-}) {
+function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] }) {
+  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
   if (rows.length === 0) {
     return <div className="usage-table-empty">暂无符合条件的请求记录</div>;
   }
   return (
     <div className="usage-table-wrap">
-      <table className="usage-table">
+      <table className="usage-table usage-request-table">
         <thead>
           <tr>
             <th>时间</th>
-            <th>供应商</th>
-            <th>模型</th>
-            <th>Token</th>
+            <th>模型与供应商</th>
+            <th>Token 明细</th>
             <th>费用</th>
             <th>延迟</th>
             <th>状态</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.requestId}>
-              <td>{formatTimestamp(row.occurredAt)}</td>
-              <td>{row.providerName ?? row.providerId ?? '—'}</td>
-              <td title={row.modelId}>
-                {row.displayName ?? row.modelId}
-                {showDetails ? (
-                  <small>
-                    输入 {formatTokenCount(row.tokensIn)} · 输出{' '}
-                    {formatTokenCount(row.tokensOut)}
-                    {row.errorMessage ? ` · ${row.errorMessage}` : ''}
-                  </small>
+          {rows.map((row) => {
+            const tokens = splitProviderUsageTokens(row);
+            const isExpanded = expandedRequestId === row.requestId;
+            const displayName = row.displayName ?? row.modelId;
+            const detailsId = `usage-request-details-${row.requestId}`;
+            return (
+              <Fragment key={row.requestId}>
+                <tr className="usage-request-row">
+                  <td>{formatTimestamp(row.occurredAt)}</td>
+                  <td className="usage-request-model" title={row.modelId}>
+                    <strong>{displayName}</strong>
+                    <span>{row.providerName ?? row.providerId ?? '-'}</span>
+                  </td>
+                  <td className="usage-token-breakdown">
+                    <div className="usage-token-totals">
+                      <strong>输入 {formatTokenCount(tokens.totalInputTokens)}</strong>
+                      <span>输出 {formatTokenCount(tokens.outputTokens)}</span>
+                    </div>
+                    <div className="usage-token-parts">
+                      <span>普通输入 {formatTokenCount(tokens.inputTokens)}</span>
+                      <span>缓存读取 {formatTokenCount(tokens.cacheReadTokens)}</span>
+                      <span>缓存创建 {formatTokenCount(tokens.cacheWriteTokens)}</span>
+                      <span className="usage-cache-rate">
+                        缓存命中 {formatRate(tokens.cacheReadTokens, tokens.totalInputTokens)}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="usage-request-cost">
+                    <strong>{formatCurrency(row.estimatedCost, row.currency)}</strong>
+                    <button
+                      type="button"
+                      className={clsx('usage-request-toggle', isExpanded && 'is-expanded')}
+                      aria-expanded={isExpanded}
+                      aria-controls={detailsId}
+                      aria-label={`${isExpanded ? '收起' : '查看'} ${displayName} 请求详情`}
+                      title={isExpanded ? '收起费用明细' : '展开费用明细'}
+                      onClick={() => setExpandedRequestId(isExpanded ? null : row.requestId)}
+                    >
+                      <ChevronDown size={13} />
+                    </button>
+                  </td>
+                  <td>{typeof row.latencyMs === 'number' ? formatLatency(row.latencyMs) : '-'}</td>
+                  <td>
+                    <span className={`usage-status is-${row.status}`}>
+                      {row.status === 'success' ? '200' : row.status === 'failed' ? '失败' : '-'}
+                    </span>
+                  </td>
+                </tr>
+                {isExpanded ? (
+                  <tr className="usage-request-details" id={detailsId}>
+                    <td colSpan={6}>
+                      <div className="usage-request-detail-grid">
+                        <strong>费用明细</strong>
+                        {row.estimatedCostBreakdown ? (
+                          <>
+                            <span>
+                              输入费{' '}
+                              {formatCurrencyDetail(row.estimatedCostBreakdown.input, row.currency)}
+                            </span>
+                            <span>
+                              缓存读取费{' '}
+                              {formatCurrencyDetail(
+                                row.estimatedCostBreakdown.cacheRead,
+                                row.currency,
+                              )}
+                            </span>
+                            <span>
+                              缓存创建费{' '}
+                              {formatCurrencyDetail(
+                                row.estimatedCostBreakdown.cacheWrite,
+                                row.currency,
+                              )}
+                            </span>
+                            <span>
+                              输出费{' '}
+                              {formatCurrencyDetail(
+                                row.estimatedCostBreakdown.output,
+                                row.currency,
+                              )}
+                            </span>
+                          </>
+                        ) : (
+                          <span>供应商未返回费用拆分</span>
+                        )}
+                        {row.errorMessage ? (
+                          <span className="usage-error">{row.errorMessage}</span>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
                 ) : null}
-              </td>
-              <td>{formatTokenCount(row.tokensIn + row.tokensOut)}</td>
-              <td>{formatCurrency(row.estimatedCost, row.currency)}</td>
-              <td>{typeof row.latencyMs === 'number' ? formatLatency(row.latencyMs) : '—'}</td>
-              <td>
-                <span className={`usage-status is-${row.status}`}>
-                  {row.status === 'success' ? '200' : row.status === 'failed' ? '失败' : '—'}
-                </span>
-              </td>
-            </tr>
-          ))}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -3430,9 +3470,15 @@ function UsageProviderTable({ rows }: { rows: AggregateUsageRow[] }) {
               <td>{formatCurrency(row.totalCost, row.currency)}</td>
               <td className="usage-positive">{formatRate(row.succeededRequests, row.requests)}</td>
               <td className="usage-positive">
-                {typeof row.toolSuccessRate === 'number' ? `${row.toolSuccessRate.toFixed(1)}%` : '—'}
+                {typeof row.toolSuccessRate === 'number'
+                  ? `${row.toolSuccessRate.toFixed(1)}%`
+                  : '—'}
               </td>
-              <td>{typeof row.averageLatencyMs === 'number' ? formatLatency(row.averageLatencyMs) : '—'}</td>
+              <td>
+                {typeof row.averageLatencyMs === 'number'
+                  ? formatLatency(row.averageLatencyMs)
+                  : '—'}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -3508,7 +3554,15 @@ function UsageToolPanel({
         ) : (
           <div className="usage-table-wrap is-compact">
             <table className="usage-table">
-              <thead><tr><th>模型</th><th>调用数</th><th>成功</th><th>失败</th><th>成功率</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>调用数</th>
+                  <th>成功</th>
+                  <th>失败</th>
+                  <th>成功率</th>
+                </tr>
+              </thead>
               <tbody>
                 {modelRows.map((row) => (
                   <tr key={row.modelId}>
@@ -3532,7 +3586,15 @@ function UsageToolPanel({
         ) : (
           <div className="usage-table-wrap is-compact">
             <table className="usage-table">
-              <thead><tr><th>工具</th><th>调用数</th><th>成功</th><th>失败</th><th>成功率</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>工具</th>
+                  <th>调用数</th>
+                  <th>成功</th>
+                  <th>失败</th>
+                  <th>成功率</th>
+                </tr>
+              </thead>
               <tbody>
                 {rows.map((row) => (
                   <tr key={row.toolName}>
@@ -3559,7 +3621,15 @@ function UsageToolPanel({
         ) : (
           <div className="usage-table-wrap is-compact">
             <table className="usage-table">
-              <thead><tr><th>时间</th><th>工具</th><th>对话</th><th>模型</th><th>错误摘要</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>工具</th>
+                  <th>对话</th>
+                  <th>模型</th>
+                  <th>错误摘要</th>
+                </tr>
+              </thead>
               <tbody>
                 {failures.map((row, index) => (
                   <tr key={`${row.occurredAt}:${row.toolName}:${index}`}>
@@ -3567,7 +3637,9 @@ function UsageToolPanel({
                     <td>{row.toolName}</td>
                     <td>{row.conversationTitle ?? '—'}</td>
                     <td>{row.displayName ?? row.modelId ?? '—'}</td>
-                    <td className="usage-error" title={row.errorSummary}>{row.errorSummary}</td>
+                    <td className="usage-error" title={row.errorSummary}>
+                      {row.errorSummary}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -3602,7 +3674,13 @@ function PricingTable({
   onSave: () => void;
   onDelete: (entry: ModelPricingEntry) => void;
 }) {
-  const setNumber = (key: keyof Pick<PricingDraft, 'inputPerMillion' | 'outputPerMillion' | 'cacheReadPerMillion' | 'cacheWritePerMillion'>, value: string) => {
+  const setNumber = (
+    key: keyof Pick<
+      PricingDraft,
+      'inputPerMillion' | 'outputPerMillion' | 'cacheReadPerMillion' | 'cacheWritePerMillion'
+    >,
+    value: string,
+  ) => {
     if (!draft) return;
     onDraftChange({ ...draft, [key]: Math.max(0, Number(value) || 0) });
   };
@@ -3610,39 +3688,116 @@ function PricingTable({
     <section className="usage-pricing-panel">
       <div className="usage-pricing-toolbar">
         <span>共 {entries.length} 个模型定价</span>
-        <button type="button" onClick={onAdd}><Plus size={13} /> 添加</button>
+        <button type="button" onClick={onAdd}>
+          <Plus size={13} /> 添加
+        </button>
       </div>
       {draft ? (
         <div className="usage-pricing-form">
-          <input value={draft.modelId} disabled={saving} placeholder="模型 ID" onChange={(event) => onDraftChange({ ...draft, modelId: event.target.value })} />
-          <input value={draft.displayName} disabled={saving} placeholder="显示名" onChange={(event) => onDraftChange({ ...draft, displayName: event.target.value })} />
-          <select value={draft.currency} disabled={saving} onChange={(event) => onDraftChange({ ...draft, currency: event.target.value as 'USD' | 'CNY' })}>
-            <option value="USD">USD</option><option value="CNY">CNY</option>
+          <input
+            value={draft.modelId}
+            disabled={saving}
+            placeholder="模型 ID"
+            onChange={(event) => onDraftChange({ ...draft, modelId: event.target.value })}
+          />
+          <input
+            value={draft.displayName}
+            disabled={saving}
+            placeholder="显示名"
+            onChange={(event) => onDraftChange({ ...draft, displayName: event.target.value })}
+          />
+          <select
+            value={draft.currency}
+            disabled={saving}
+            onChange={(event) =>
+              onDraftChange({ ...draft, currency: event.target.value as 'USD' | 'CNY' })
+            }
+          >
+            <option value="USD">USD</option>
+            <option value="CNY">CNY</option>
           </select>
-          <input type="number" min="0" step="0.01" value={draft.inputPerMillion} disabled={saving} aria-label="输入每百万 Token 单价" onChange={(event) => setNumber('inputPerMillion', event.target.value)} />
-          <input type="number" min="0" step="0.01" value={draft.outputPerMillion} disabled={saving} aria-label="输出每百万 Token 单价" onChange={(event) => setNumber('outputPerMillion', event.target.value)} />
-          <input type="number" min="0" step="0.01" value={draft.cacheReadPerMillion} disabled={saving} aria-label="缓存读每百万 Token 单价" onChange={(event) => setNumber('cacheReadPerMillion', event.target.value)} />
-          <input type="number" min="0" step="0.01" value={draft.cacheWritePerMillion} disabled={saving} aria-label="缓存建每百万 Token 单价" onChange={(event) => setNumber('cacheWritePerMillion', event.target.value)} />
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={draft.inputPerMillion}
+            disabled={saving}
+            aria-label="输入每百万 Token 单价"
+            onChange={(event) => setNumber('inputPerMillion', event.target.value)}
+          />
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={draft.outputPerMillion}
+            disabled={saving}
+            aria-label="输出每百万 Token 单价"
+            onChange={(event) => setNumber('outputPerMillion', event.target.value)}
+          />
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={draft.cacheReadPerMillion}
+            disabled={saving}
+            aria-label="缓存读每百万 Token 单价"
+            onChange={(event) => setNumber('cacheReadPerMillion', event.target.value)}
+          />
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={draft.cacheWritePerMillion}
+            disabled={saving}
+            aria-label="缓存建每百万 Token 单价"
+            onChange={(event) => setNumber('cacheWritePerMillion', event.target.value)}
+          />
           <div className="usage-pricing-form-actions">
-            <button type="button" onClick={onSave} disabled={saving}>{saving ? '保存中…' : editingId ? '保存' : '添加'}</button>
-            <button type="button" className="is-secondary" onClick={onCancel} disabled={saving}>取消</button>
+            <button type="button" onClick={onSave} disabled={saving}>
+              {saving ? '保存中…' : editingId ? '保存' : '添加'}
+            </button>
+            <button type="button" className="is-secondary" onClick={onCancel} disabled={saving}>
+              取消
+            </button>
           </div>
         </div>
       ) : null}
       <div className="usage-table-wrap usage-pricing-table">
         <table className="usage-table">
-          <thead><tr><th>模型 ID</th><th>显示名</th><th>币种</th><th>输入/M</th><th>输出/M</th><th>缓存读/M</th><th>缓存建/M</th><th>操作</th></tr></thead>
+          <thead>
+            <tr>
+              <th>模型 ID</th>
+              <th>显示名</th>
+              <th>币种</th>
+              <th>输入/M</th>
+              <th>输出/M</th>
+              <th>缓存读/M</th>
+              <th>缓存建/M</th>
+              <th>操作</th>
+            </tr>
+          </thead>
           <tbody>
             {entries.map((entry) => (
               <tr key={entry.modelId}>
-                <td className="usage-model-id" title={entry.modelId}>{entry.modelId}</td>
+                <td className="usage-model-id" title={entry.modelId}>
+                  {entry.modelId}
+                </td>
                 <td>{entry.displayName}</td>
                 <td>{entry.currency}</td>
                 <td>{formatCurrency(entry.inputPerMillion, entry.currency)}</td>
                 <td>{formatCurrency(entry.outputPerMillion, entry.currency)}</td>
                 <td>{formatCurrency(entry.cacheReadPerMillion, entry.currency)}</td>
                 <td>{formatCurrency(entry.cacheWritePerMillion, entry.currency)}</td>
-                <td><div className="usage-row-actions"><button type="button" title="编辑" onClick={() => onEdit(entry)}><Pencil size={12} /></button><button type="button" title="删除" onClick={() => onDelete(entry)}><Trash2 size={12} /></button></div></td>
+                <td>
+                  <div className="usage-row-actions">
+                    <button type="button" title="编辑" onClick={() => onEdit(entry)}>
+                      <Pencil size={12} />
+                    </button>
+                    <button type="button" title="删除" onClick={() => onDelete(entry)}>
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -3730,10 +3885,7 @@ function Toggle({
   );
 }
 
-function formatCurrency(
-  value: number | undefined,
-  currency: 'USD' | 'CNY' | undefined,
-): string {
+function formatCurrency(value: number | undefined, currency: 'USD' | 'CNY' | undefined): string {
   if (typeof value !== 'number' || !currency) return '—';
   const symbol = currency === 'CNY' ? '¥' : '$';
   const digits = value >= 1 ? 2 : value > 0 ? 4 : 2;
@@ -3743,13 +3895,18 @@ function formatCurrency(
   })}`;
 }
 
-function formatCurrencyTotals(
-  totals: Partial<Record<'USD' | 'CNY', number>>,
+function formatCurrencyDetail(
+  value: number | undefined,
+  currency: 'USD' | 'CNY' | undefined,
 ): string {
+  if (typeof value !== 'number' || !currency) return '—';
+  const symbol = currency === 'CNY' ? '¥' : '$';
+  return `${symbol}${value.toFixed(6)}`;
+}
+
+function formatCurrencyTotals(totals: Partial<Record<'USD' | 'CNY', number>>): string {
   const values = (['CNY', 'USD'] as const).flatMap((currency) =>
-    typeof totals[currency] === 'number'
-      ? [formatCurrency(totals[currency], currency)]
-      : [],
+    typeof totals[currency] === 'number' ? [formatCurrency(totals[currency], currency)] : [],
   );
   return values.length > 0 ? values.join(' / ') : '—';
 }
@@ -3763,4 +3920,3 @@ function formatTokenCount(n: number): string {
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
 }
-

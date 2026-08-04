@@ -185,7 +185,7 @@ pnpm release:smoke:installer:win
 
 该 smoke 使用 `.data/installer-smoke-<guid>` 隔离根目录，验证安装、启动与 Runtime ready；不得指向真实用户的 `LOCALAPPDATA`、`userData` 或数据库。
 
-真实 electron-updater `quitAndInstall()` differential continuity 已于 **2026-08-02** 通过正式组合入口复验：
+真实 electron-updater `quitAndInstall()` differential continuity 已于 **2026-08-04** 通过正式组合入口复验：
 
 ```powershell
 pnpm test:update-install:win
@@ -194,7 +194,7 @@ pnpm test:update-install:win
 最新证据：
 
 ```text
-D:\projects\SYNC-THINK\.data\update-install-e2e-20260802T174113\smoke-result.json
+D:\projects\MYSELF\SYNC-THINK\.data\update-install-e2e-20260804T064953\smoke-result.json
 ```
 
 该证据确认：
@@ -202,10 +202,20 @@ D:\projects\SYNC-THINK\.data\update-install-e2e-20260802T174113\smoke-result.jso
 - base `0.0.1` 只发出一次 install request，静默安装 `0.0.2`；package 与 Windows uninstall registry 版本均为 `0.0.2`。
 - 升级后 managed Runtime 以 `0.0.2` 重启并 ready；Install ID、secret handle、identity metadata、ciphertext 与 SQLite 数据库保持连续。
 - `latest.yml` 和两个 blockmap 使用 HTTPS + Bearer 返回 HTTP 200；installer 只发生 7 个 Range 请求并全部返回 HTTP 206。
-- 完整 target installer 为 `135491101` bytes，实际 installer 响应为 `504941` bytes，节省 `134986160` bytes；没有观察到 installer HTTP 200 完整下载回退。
+- 完整 target installer 为 `130425065` bytes，实际 installer 响应为 `556013` bytes，节省 `129869052` bytes；没有观察到 installer HTTP 200 完整下载回退。
 - 安装前当前版本保持可用，`automaticRollbackAttempted=false`。
+- watchdog-ready、target relaunch、health marker 与 `healthy` outcome 已落盘；结束后安装目录、卸载注册表、相关进程、handoff 和 native updater cache backup 均为 0。
 
-该证据使用显式 `unsigned-fixture`，用于证明真实 quit/install/restart、差分传输和本机连续性；它不替代正式证书、真实 RFC 3161 timestamp provider 或真实 private origin/CDN 验收。脚本只在一次性闭测机或可清理的隔离 Windows runner 上运行。
+该证据中的目标版本正常启动，因此没有触发 automatic rollback。它使用显式 `unsigned-fixture`，用于证明真实 quit/install/restart、差分传输和本机连续性；它不替代正式证书、真实 RFC 3161 timestamp provider 或真实 private origin/CDN 验收。脚本只在一次性闭测机或可清理的隔离 Windows runner 上运行。
+
+当前内部无签名闭测 installer：
+
+```text
+apps/desktop/release/installer/SYNC-THINK-Setup-0.0.1-x64.exe
+bytes: 130425094
+sha256: 9154fca844eb8855453f549998cb23dd005ce769051a40b96f72d9a542bf83fe
+manifest: schemaVersion=3, signing.mode=unsigned-fixture
+```
 
 ## 7. 升级期间的数据与版本语义
 
@@ -213,7 +223,8 @@ D:\projects\SYNC-THINK\.data\update-install-e2e-20260802T174113\smoke-result.jso
 - 保持相同 `appId`，从而保持 Electron `userData`、Install ID、safeStorage 与 SQLite 路径连续。
 - 安装前不删除当前版本；下载或准备安装失败时，当前版本继续可用。
 - `autoInstallOnAppQuit=false`，只有显式安装动作调用 `quitAndInstall()`。
-- Controller evidence 明确记录 `currentVersionPreserved: true` 与 `automaticRollbackAttempted: false`。
+- `quitAndInstall()` 前先验证并冻结上一 healthy installer，写入 durable rollback intent，并启动独立 watchdog；准备失败时不进入安装。
+- Controller failure evidence 明确记录 `currentVersionPreserved: true` 与 `automaticRollbackAttempted: false`；watchdog 的真实结果单独写入 rollback outcome。
 - 下载完成后若 `beforeInstall` 或安装准备失败，可从 error 状态重试同一已下载版本。
 - 不在同一 user data 上并行运行 portable 与 installed app。
 
@@ -268,7 +279,7 @@ feed metadata 记录 installer 与 blockmap 的 bytes、SHA-512、SHA-256，并�
 pnpm test:update-feed:win
 ```
 
-该命令构建 Desktop、运行 Generic feed 单元测试和 Electron updater driver E2E。fixture server 仅监听 `127.0.0.1`，使用隔离 app/userData/cache，不访问真实用户数据。
+该命令先执行根构建、显式 `unsigned-fixture` portable staging 和 schema v3 NSIS installer build，再运行 Generic feed 单元测试和 Electron updater driver E2E。已有受验证 fixture 时可运行 `pnpm test:update-feed:prepared:win` 跳过重建。fixture server 仅监听 `127.0.0.1`，使用隔离 app/userData/cache，不访问真实用户数据。
 
 ### 8.2 撤回版本
 
@@ -303,6 +314,21 @@ Updater Controller 在内存保留最近 20 条失败证据；Electron driver �
 
 证据不得包含 Bearer token、Authorization header、证书密码、pipe secret、带 credential/query 的 feed URL 或用户内容。
 
+automatic rollback 使用独立、非 `userData` 的恢复根：
+
+```text
+%LOCALAPPDATA%\sync-think-updater\recovery
+|- installers\<version>\installer.exe
+|- healthy-releases\<version>.json
+|- intents\<intentId>.json
+|- health\<intentId>.json
+|- attempts\<intentId>.json
+|- outcomes\<intentId>.json
+`- watchdog\update-rollback-watchdog.ps1
+```
+
+正式模式下 healthy installer 和 rollback 前复验都要求有效 Authenticode、RFC 3161 timestamp、bytes、SHA-512 与 signer thumbprint 一致。unsigned installer 仅在隔离 update fixture 显式开启。
+
 ### 9.2 故障处置
 
 1. 不删除当前安装和 userData；先确认当前版本仍能启动。
@@ -311,21 +337,26 @@ Updater Controller 在内存保留最近 20 条失败证据；Electron driver �
 4. 对 hash 或 blockmap mismatch，停止 rollout，验证 origin/CDN 内容并清理 updater cache 后重试。
 5. 对已下载但安装准备失败的包，从 error 状态重试安装；不要重新覆盖 userData。
 6. 对签名或 timestamp 错误，撤回 feed，重新签名并生成更高版本修复包。
-7. 恢复后核对 app version、registry version、Runtime hello、Install ID、secret handle、metadata/ciphertext 和数据库存在性。
+7. 检查 recovery root 中 active intent、health marker、attempt fence 与 outcome；`rolled-back` 表示 watchdog 已调用上一 healthy installer，`rejected` 或 `rollback-failed` 需要人工介入。
+8. 恢复后核对 app version、registry version、Runtime hello、Install ID、secret handle、metadata/ciphertext 和数据库存在性。
 
 ### 9.3 旧版本保留与恢复边界
 
 - 在 `quitAndInstall()` 真正接管前，当前版本文件和 userData 保持可用。
-- 当前实现不执行自动 binary rollback。
-- 发布侧的首选恢复方式是撤回问题版本并发布更高版本修复包。
+- NSIS 安装成功时将产生该版本的 installer 原子归档；显式用户卸载会删除 recovery root，升级替换过程则保留。
+- packaged Desktop 在 managed Runtime `hello` 成功后登记当前版本为 healthy，并为匹配 active intent 写入 target health marker。
+- 安装前 coordinator 对上一 healthy installer 的路径、bytes、SHA-512、签名、timestamp 与 signer pin 重新校验，写入 intent 后启动独立 PowerShell watchdog。
+- target 在 deadline 前产出匹配 intent/version 的 health marker 时 outcome 为 `healthy`；超时后 watchdog 先用 durable create-new attempt fence 阻止重复回滚，再复验上一 installer 并静默启动。
+- 缺少上一 healthy installer 时记录 `unavailable`，不会伪装为已 armed；path/hash/signature/timestamp/signer 漂移会 fail-closed 并记录 `rejected`。
+- 发布侧仍应同步撤回问题版本并发布更高版本修复包；自动回滚不是 feed 治理、诊断保留或人工恢复预案的替代品。
 - 人工恢复必须使用已验证 installer，并在操作前保留 diagnostics 与 userData 备份。
 
 ## 10. Known limitations
 
-- updater 没有自动 binary rollback；恢复依赖旧版本继续可用、feed 撤回、重试或人工安装正常版本。
+- automatic binary rollback 的本地 store/coordinator/watchdog/NSIS archive 与 PowerShell 5.1 smoke 已完成；正式签名 installer 的真实故障目标升级与自动回滚 E2E 仍待发布环境证据。
 - recovery evidence 仅在本机 `<userData>/diagnostics` 保留最近 20 条，没有集中上传、跨机器关联或服务端聚合。
 - blockmap 已进入 build/manifest/feed 门禁，并执行 gzip、JSON 与最小 schema 校验；隔离 E2E 已证明可走 Range/206 差分路径，但 electron-updater 在差分条件不满足或差分失败时仍可能回退到完整 installer。
-- 2026-08-02 的隔离 update-install 证据属于 unsigned fixture；它可证明 blockmap/Range/206 差分路径与 continuity，但不能替代正式证书、真实 timestamp provider 和真实 private origin/CDN 验收。
+- 2026-08-04 的隔离 update-install 证据属于 unsigned fixture；它可证明 blockmap/Range/206 差分路径、watchdog/自动拉起与 continuity，但不能替代正式证书、真实 timestamp provider 和真实 private origin/CDN 验收。
 - channel policy 已生成并验证；`rolloutPercent`、设备 cohort、授权和 cache invalidation 仍由 private feed 服务实现。
 - 尚未使用正式发布证书和真实 timestamp provider 完成端到端发布验收。
 
@@ -340,5 +371,7 @@ Updater Controller 在内存保留最近 20 条失败证据；Electron driver �
 - [x] private channel policy、allowed/withdrawn version 治理。
 - [x] updater failure evidence、旧版本保留与 diagnostics/recovery runbook。
 - [x] Desktop updater driver 使用 differential download，并持久化 bounded recovery evidence。
+- [x] automatic binary rollback 本地链路：installer 自归档、durable intent/health/outcome、独立 watchdog 与 one-shot attempt fence。
 - [ ] 使用正式发布证书和真实 RFC 3161 timestamp provider 完成一次端到端验收。
+- [ ] 使用正式签名 installer 完成故障目标版本的 automatic rollback E2E。
 - [ ] 在 private feed 服务中完成 cohort/rollout enforcement 与 CDN cache invalidation 自动化。

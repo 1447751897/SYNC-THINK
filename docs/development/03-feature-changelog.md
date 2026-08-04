@@ -1,10 +1,56 @@
+## 2026-08-04：内部无签名闭测发布链最终收口
+
+### Fixed
+
+- Windows rollback watchdog 改由隐藏 detached `cmd.exe` 托管 PowerShell 5.1，使用裁剪后的环境变量传递受控路径；增加 ready marker、目标可执行文件投影、one-shot relaunch fence，并在 installer 退出后兜底拉起目标版本。
+- Chromium network service 首次崩溃时，update-install probe 只对一次 `desktop.update.check-failed` 做有界重试；watchdog ready 的 fail-closed 等待预算从 5 秒调整为 15 秒，避免全仓负载下的假超时。
+- update-install 清理命令对已退出 Runtime 保持幂等，并严格等待安装目录和对应卸载注册表键同时消失；handoff、native updater cache 备份和 watchdog 进程均纳入零残留检查。
+
+### Verification
+
+- `pnpm test:update-install:win` 从源码重建 portable 与两套 schema v3 `unsigned-fixture` installer 后通过真实 `0.0.1 -> 0.0.2`：单次安装、自动拉起、identity/safeStorage/metadata/ciphertext/SQLite 连续，2 次 blockmap、7 次 Range/HTTP 206、完整包 `130425065` bytes、实际传输 `556013` bytes、无整包 HTTP 200 回退。证据：`.data/update-install-e2e-20260804T064953/smoke-result.json`。
+- recovery snapshot 包含 watchdog-ready、relaunch、target health 与 `healthy` outcome，`automaticRollbackAttempted=false`；测试结束后安装目录、卸载注册表、相关进程、handoff 和 cache backup 全部为 0。
+- 默认内部闭测 installer 为 `apps/desktop/release/installer/SYNC-THINK-Setup-0.0.1-x64.exe`，`130425094` bytes，SHA-256 `9154fca844eb8855453f549998cb23dd005ce769051a40b96f72d9a542bf83fe`，manifest schema v3、`signing.mode=unsigned-fixture`。
+- 最终门禁：`pnpm test` 20/20 tasks（Desktop 127 files / 852 tests）、`pnpm typecheck` 20/20、`pnpm lint` 11/11、`pnpm build` 11/11、portable contract 14/14、Phase 3 release/visual contract 41/41；`pnpm selftest:phase3` 9 步通过并保持 `passed-with-external-evidence-pending`。
+
+### Remaining external evidence
+
+- 正式 Authenticode/RFC 3161、正式签名故障注入 rollback E2E、真实 private feed/CDN、真实图片 Provider 凭证及 5-20 位邀请用户反馈；内部无签名闭测不依赖这些外部条件。
+
+## 2026-08-03：Phase 3 本地门禁稳定性与发布自检收口
+
+### Fixed
+
+- 修复 packaged 首次启动身份锁在异步身份落盘完成前提前释放的问题；并发初始化现在只生成一套 install ID / pipe secret，并用延迟 secret-store 写入稳定复现竞态。
+- Desktop 测试统一使用 15 秒框架预算；Windows Desktop Host 的正常/畸形握手 fixture 使用 10 秒 capability 预算，20 ms 超时负例保持不变；Runtime bounded replay fixture 改为零节拍，保留 260-frame 窗口语义而不制造无意义 timer 压力。
+- 将 `@tailwindcss/cli` 与 `tailwindcss` 限定为 Desktop build-time devDependencies，production deploy 从 294 个包降至 262 个包；portable verifier 同时拒绝 Tailwind build-only package 和 `.bin/tailwindcss*` 进入发布载荷。
+- Windows 临时目录清理增加有界重试，消除 Electron/updater 句柄刚释放时的 `ENOTEMPTY` 抖动。
+
+### Changed
+
+- `pnpm test:update-feed:win` 现在从零执行根构建、显式 `unsigned-fixture` portable staging、schema v3 NSIS installer build，再运行 Generic feed 合同与真实 Electron HTTPS E2E；已有 fixture 可通过 `pnpm test:update-feed:prepared:win` 复用。
+- `pnpm selftest:phase3` 增加独立 `prepare-update-feed-fixture` 步骤和 installer preflight 合同，缺失、legacy、篡改或非 `unsigned-fixture` 产物都会返回稳定错误和准备命令。
+
+### Verification
+
+- packaged identity 并发回归 8/8，Desktop 全量 127 files / 849 tests，Runtime transient 定向 8/8，根测试 20/20 Turbo tasks 均已通过。
+- portable staging 连续两次通过；production packages 为 262，unsigned NSIS installer 为 `130561014` bytes，manifest schema v3 验证通过。
+- 删除既有 `apps/desktop/release` 后，`pnpm test:update-feed:win` 可自行重建并通过 Generic feed 9/9 与 Electron HTTPS 8 场景，包括真实 installer 下载和 checksum mismatch。
+- `pnpm selftest:phase3` 于 2026-08-03 完整通过 9 个步骤：Desktop contracts 12 files / 87 tests、release/visual contracts 33 tests、Generic feed、image provider build、无凭证显式 skip 和 Electron 7-case 视觉矩阵；聚合状态为 `passed-with-external-evidence-pending`。
+- 最终 `pnpm install --frozen-lockfile` 通过；`pnpm exec turbo run test --force` 为 20/20 tasks、0 cached；`pnpm typecheck` 20/20、`pnpm build` 11/11、`pnpm lint` 11/11，`git diff --check` 通过。
+
+### Remaining external evidence
+
+- 正式 Authenticode 证书与 RFC 3161 timestamp、正式签名升级/自动 rollback E2E、真实 private feed/CDN 演练、真实图片 Provider 凭证验收，以及 5-20 位邀请用户 Windows 闭测。
+
 ## 2026-08-02：全部本地工程任务最终收口
 
 - 完整通过 `pnpm selftest:phase3`：Desktop contracts 12 files / 86 tests、release/visual contracts 29 tests、Desktop typecheck/build、Generic feed Electron HTTPS E2E、image provider build 与 7-case Electron 视觉矩阵；无真实图片凭证时 live acceptance 显式 skipped，聚合状态为 `passed-with-external-evidence-pending`。
 - 完整复跑根仓 `pnpm test`、`pnpm typecheck`、`pnpm build`、`pnpm lint` 和 `git diff --check`：Turbo 任务分别 20/20、20/20、11/11、11/11；Desktop 123 files / 836 tests、Runtime 63 files / 436 tests、Storage 36 files / 374 tests。
 - 修复 `diagnostics-export-wiring.test.ts` 的格式脆弱字符串断言，并为 Generic feed Electron E2E 的所有场景生成、复制和显式传入最小有效 gzip blockmap，使 fixture 与生产 blockmap fail-closed 规则保持一致。
 - 用全新 install id、SQLite 与 secure-store 路径启动可见 Desktop：隔离目录 `.data/manual-phase3-20260802-015614`，Electron PID `9296`、managed Runtime PID `50712`；pipe/database/hello 正常，stderr 为空，默认 `16873340928` bytes 数据库未触碰。
-- 当前分支 `feature/newmax-shell-rewrite` 的累计修改仍未提交、未推送；剩余项依赖正式证书/timestamp、真实 private feed/CDN、真实图片凭证和邀请用户，自动 binary rollback 保持独立后续范围。
+- 当前分支 `feature/newmax-shell-rewrite` 的累计修改仍未提交、未推送；当时剩余项包括正式证书/timestamp、真实 private feed/CDN、真实图片凭证、邀请用户与自动 binary rollback。自动 rollback 本地实现已在后续远端增量中补齐，正式签名 E2E 仍属于外部证据。
+
 ## 2026-08-02 · Phase 3 本地发布链与 Database Governance P0.4 收口
 
 ### Added
@@ -2352,3 +2398,32 @@ Desktop typecheck/build：passed
 - 默认 sidecar 目录绑定 database path 与 install ID；重启 hydrate，missing/corrupt blob fail-closed。
 - Runtime 启动不触发 backfill、rollback、GC、quarantine 或其他数据库治理动作。
 - 新增默认关闭、白名单、阈值、projection、身份隔离、legacy inline、startup no-governance、restart hydrate 与 blob 故障测试。
+
+## 2026-08-04 · 历史 Run 恢复熔断与全协议 Prompt Cache
+
+- Runtime 冷启动只自动恢复最近 5 分钟内仍有活动的对话 Run；超龄 Run 保留审计记录并转为 `run.paused/recovery_expired`，不再发起 Provider 请求。
+- 同一 Provider 连续两次出现 timeout、transient、rate-limit 或 auth 失败后打开 Run 级熔断，跳过剩余同源模型；跨 Provider 的用户配置 fallback 仍可继续。
+- 桌面任务对话现在按 Provider、内部模型和 Thread 生成稳定缓存键，不再使用每轮变化的 Run ID；工作流 Step 继续使用 AgentContextThread/ContextEpoch 隔离缓存身份。
+- OpenAI Responses 与 Chat Completions 同时支持缓存键、cache read/write usage；GPT-5.6 及后续模型使用稳定 `prompt_cache_key` 与 `prompt_cache_options { mode: implicit, ttl: 30m }`，不发送当前中转站会以 502 拒绝的内容级 `prompt_cache_breakpoint`；旧模型保留稳定 key，并只在兼容型号上发送 retention。
+- Anthropic Messages 在稳定 system、tools 和最近历史消息上写入原生 `cache_control`，继续解析 cache read/create usage。
+- 修复暂停通知源码中的问号字面量，新增过期恢复、缓存请求体、usage 与 Provider 熔断回归测试。
+- 本地源码重启后完成真实中转验证：`gpt-5.6-sol` 去除 breakpoint 后连续三次 `run.completed`，第三次输入 8932 tokens、缓存命中 8704；`gpt-5.5` 两轮均完成并各命中 3584。`usage.summary` 投影近一天总缓存命中 15872 tokens，其中 5.6 为 8704、5.5 为 7168，模型与 Provider 显示正常。
+- 本轮只构建并重启本地源码实例，未生成 installer、portable 或 release artifact。
+
+## 2026-08-04 · Token 计价拆分与用量明细修复
+
+- 新增统一 Token 拆分规则：Provider `tokensIn` 作为包含缓存读写的总输入，普通输入按 `tokensIn - cacheRead - cacheWrite` 计算；缓存明细异常超过总输入时会被裁剪，避免负数与重复计费。
+- Runtime 费用投影新增普通输入、缓存读取、缓存创建、输出四个互斥费用分项；总费用只汇总这四项一次，请求日志可展开查看六位小数明细。
+- Anthropic usage 归一化修正为“普通输入 + cache read + cache creation = 总输入”，与 OpenAI 和项目 `ProviderUsage` 契约一致。
+- 使用统计请求表固定显示普通输入、缓存读取、缓存创建、输出与命中率；模型和供应商合并为双层信息列，顶部摘要使用同一拆分口径并把核心缓存指标改为命中率。
+- 移除失控的“详情记录”复选框，费用拆分改为每行 Chevron 按需展开；请求表固定最小宽度 720px，在 1024x720 窗口中不再出现无意义横向滚动角块。
+- 聊天消息“本轮回复”悬浮卡新增总 Token、普通输入、缓存读取、缓存创建和输出五行；Runtime run process 单独投影缓存读写字段。
+- 实际数据验证：一条 `gpt-5.6-sol` 请求显示总计 `22.6k`、普通输入 `3.7k`、缓存读取 `16.9k`、缓存创建 `0`、输出 `2.0k`；费用分项 `$0.018660 + $0.506880 + $0.000000 + $0.023424 = $0.548964`，列表按四位小数显示 `$0.549`。
+- Shared、Protocol、Adapters、Runtime、Desktop 定向测试、类型检查、lint 和 build 通过；全量并发中的 MCP/watchdog 时序用例单独串行复跑为 `10/10` 与 `9/9` 通过。仅重启本地源码实例，未生成安装包。
+
+## 2026-08-04 · Prompt Cache 与使用统计最终闭环
+
+- Force-final 请求保留原 system 与 tools，仅通过 `tool_choice: none` 禁止继续工具调用，避免最后一轮因为 Prompt 前缀突变丢失缓存；OpenAI Chat、Responses 与 Anthropic Messages 均已覆盖。
+- 同一 `gpt-5.6-luna` 对话的实时闭环验证显示：切换 tools 配置后的首轮为预热 miss，随后两轮分别读取 `2560/3102` 与 `2560/3141` 输入 Token，命中率约 82%；中转继续返回缓存创建 0，因此不合成不存在的 write usage。
+- 使用统计深浅主题、1424x861 与 1024x720 均完成实窗检查；请求表默认态、费用展开态与消息 Token 悬浮明细均可读且无布局溢出。
+- 本轮继续只使用本地源码构建与 Runtime/SQLite 实测，没有生成 installer、portable 或 release artifact。

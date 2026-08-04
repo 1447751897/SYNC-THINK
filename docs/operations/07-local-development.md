@@ -400,7 +400,11 @@ pnpm db:governance `
 ```powershell
 pnpm test:phase3
 pnpm capture:phase3
+pnpm prepare:update-feed-fixture:win
+pnpm test:update-feed:prepared:win
 pnpm selftest:phase3
 ```
+
+`pnpm prepare:update-feed-fixture:win` 会执行根构建、显式 unsigned portable staging 和 schema v3 NSIS installer build；`pnpm test:update-feed:prepared:win` 只消费并严格预检该 fixture。常规入口 `pnpm test:update-feed:win` 会串联两步，从空 `apps/desktop/release` 开始也可复现。
 
 截图与 manifest 输出到 `.data/phase3-visual/current`。该目录只代表本地可复验证据，不替代正式签名、真实私有 feed、真实图片 Provider 或邀请用户闭测。

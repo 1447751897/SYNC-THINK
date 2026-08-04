@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createDemoProviderRequest,
   createDemoRun,
+  isDemoRunRecoveryExpired,
   projectAdapterEvent,
   serializeDemoRuns,
 } from './demo-run.js';
@@ -13,6 +14,45 @@ describe('demo-run reasoning', () => {
     });
     const req = createDemoProviderRequest(run);
     expect(req.reasoningEffort).toBe('medium');
+  });
+
+  it('uses one stable provider cache identity for every turn in the same model thread', () => {
+    const first = createDemoRun('run-cache-1' as never, 'thread-cache', 'first', {
+      providerId: 'provider-openai',
+      modelId: 'model-gpt',
+      providerModelId: 'gpt-5.6-sol',
+      useFakeProvider: false,
+    });
+    const second = createDemoRun('run-cache-2' as never, 'thread-cache', 'second', {
+      providerId: 'provider-openai',
+      modelId: 'model-gpt',
+      providerModelId: 'gpt-5.6-sol',
+      useFakeProvider: false,
+    });
+
+    expect(createDemoProviderRequest(first).promptCache).toEqual(
+      createDemoProviderRequest(second).promptCache,
+    );
+    expect(createDemoProviderRequest(first).promptCache).toMatchObject({
+      key: 'sync-think:provider-openai:model-gpt:thread-cache',
+      strategy: 'automatic',
+    });
+    expect(createDemoProviderRequest(first).promptCache?.key).not.toContain('run-cache');
+  });
+
+  it('expires only cold-start recovery runs whose durable activity is too old', () => {
+    expect(
+      isDemoRunRecoveryExpired({
+        lastActivityAt: '2026-08-04T08:00:00.000Z',
+        now: '2026-08-04T08:05:01.000Z',
+      }),
+    ).toBe(true);
+    expect(
+      isDemoRunRecoveryExpired({
+        lastActivityAt: '2026-08-04T08:00:00.000Z',
+        now: '2026-08-04T08:04:59.000Z',
+      }),
+    ).toBe(false);
   });
 
   it('projects reasoning-delta without mixing into assistantText', () => {
@@ -39,7 +79,6 @@ describe('demo-run reasoning', () => {
     expect(done.payload.assistantText).toBe('结论如下。');
     expect(done.payload.reasoningText).toBe('先分析问题。');
   });
-
 
   it('projects cache and reasoning usage into the durable provider usage event', () => {
     const run = createDemoRun('run-usage' as never, 'thread-usage', 'hello');

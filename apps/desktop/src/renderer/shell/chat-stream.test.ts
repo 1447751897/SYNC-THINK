@@ -157,7 +157,7 @@ describe('conversation stream event consumption', () => {
     });
 
     expect(notice).toMatchObject({ runId: 'run-a', tone: 'error' });
-    expect(notice?.text).toContain('??????????????');
+    expect(notice?.text).toContain('备用模型已全部尝试');
     expect(notice?.text).toContain('503');
 
     expect(

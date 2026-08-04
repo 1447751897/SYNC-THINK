@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,7 +15,14 @@ const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
+    temporaryDirectories.splice(0).map((path) =>
+      rm(path, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      }),
+    ),
   );
 });
 
@@ -36,6 +43,7 @@ async function fixture(version = '0.0.1') {
   };
   const verifyInstaller = vi.fn(async () => verification);
   const launchWatchdog = vi.fn(async () => undefined);
+  const targetExecutablePath = join(root, 'install', 'SYNC-THINK.exe');
   const coordinator = new DesktopUpdateRollbackCoordinator({
     recoveryRoot: root,
     currentVersion: version,
@@ -43,9 +51,18 @@ async function fixture(version = '0.0.1') {
     createIntentId: () => 'intent-fixed',
     verifyInstaller,
     launchWatchdog,
+    targetExecutablePath,
     healthDeadlineMs: 180_000,
   });
-  return { root, installer, verification, verifyInstaller, launchWatchdog, coordinator };
+  return {
+    root,
+    installer,
+    verification,
+    verifyInstaller,
+    launchWatchdog,
+    targetExecutablePath,
+    coordinator,
+  };
 }
 
 describe('DesktopUpdateRollbackCoordinator', () => {
@@ -59,7 +76,7 @@ describe('DesktopUpdateRollbackCoordinator', () => {
   });
 
   it('arms a durable one-shot watchdog before installing a newer target', async () => {
-    const { coordinator, launchWatchdog, root } = await fixture();
+    const { coordinator, launchWatchdog, root, targetExecutablePath } = await fixture();
     await coordinator.registerCurrentVersionInstaller();
 
     const result = await coordinator.prepareInstall({
@@ -73,6 +90,9 @@ describe('DesktopUpdateRollbackCoordinator', () => {
       expect.objectContaining({
         previousVersion: '0.0.1',
         targetVersion: '0.0.2',
+        targetExecutablePath,
+        watchdogReadyPath: join(root, 'watchdog-ready', 'intent-fixed.json'),
+        relaunchFencePath: join(root, 'relaunch', 'intent-fixed.json'),
         intentId: 'intent-fixed',
       }),
     );
@@ -145,4 +165,57 @@ describe('DesktopUpdateRollbackCoordinator', () => {
       'desktop.update.rollback-prior-installer-changed',
     );
   });
+
+  it.runIf(process.platform === 'win32')(
+    'waits for the default watchdog ready marker before installation can continue',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sync-think-update-watchdog-launch-'));
+      temporaryDirectories.push(root);
+      const installer = recoveryInstallerPath(root, '0.0.1');
+      await mkdir(join(installer, '..'), { recursive: true });
+      await writeFile(installer, 'installer-fixture');
+      const verification: DesktopUpdateInstallerVerification = {
+        bytes: 17,
+        sha512: 'd'.repeat(128),
+        signature: {
+          status: 'unsigned-fixture',
+          signerThumbprint: null,
+          timestampStatus: 'not-required',
+        },
+      };
+      const coordinator = new DesktopUpdateRollbackCoordinator({
+        recoveryRoot: root,
+        currentVersion: '0.0.1',
+        targetExecutablePath: join(root, 'install', 'SYNC-THINK.exe'),
+        allowUnsignedFixture: true,
+        healthDeadlineMs: 10_000,
+        createIntentId: () => 'intent-default-watchdog',
+        verifyInstaller: vi.fn(async () => verification),
+      });
+      await coordinator.registerCurrentVersionInstaller();
+
+      await expect(coordinator.prepareInstall({ targetVersion: '0.0.2' })).resolves.toMatchObject({
+        status: 'armed',
+        intentId: 'intent-default-watchdog',
+      });
+      const store = new DesktopUpdateRollbackStore(root);
+      await expect(
+        readFile(store.watchdogReadyPath('intent-default-watchdog'), 'utf8').then(JSON.parse),
+      ).resolves.toMatchObject({ intentId: 'intent-default-watchdog' });
+      await store.writeHealthMarker({
+        schemaVersion: 1,
+        intentId: 'intent-default-watchdog',
+        targetVersion: '0.0.2',
+        healthyAt: new Date().toISOString(),
+      });
+      const deadline = Date.now() + 5_000;
+      while (!(await store.readOutcome('intent-default-watchdog'))) {
+        if (Date.now() >= deadline) throw new Error('watchdog-outcome-timeout');
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+      }
+      await expect(store.readOutcome('intent-default-watchdog')).resolves.toMatchObject({
+        status: 'healthy',
+      });
+    },
+  );
 });

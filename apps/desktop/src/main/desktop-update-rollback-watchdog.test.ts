@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
@@ -18,12 +18,20 @@ async function fixture(intentId: string, deadlineAt: string) {
   const installer = join(root, 'installers', '0.0.1', 'installer.exe');
   const intentPath = join(root, 'intents', `${intentId}.json`);
   const healthMarkerPath = join(root, 'health', `${intentId}.json`);
+  const watchdogReadyPath = join(root, 'watchdog-ready', `${intentId}.json`);
+  const relaunchFencePath = join(root, 'relaunch', `${intentId}.json`);
   const attemptFencePath = join(root, 'attempts', `${intentId}.json`);
   const outcomePath = join(root, 'outcomes', `${intentId}.json`);
   const scriptPath = join(root, 'watchdog', 'watchdog.ps1');
+  const targetExecutablePath = join(root, 'target', 'SYNC-THINK.exe');
   await mkdir(join(root, 'installers', '0.0.1'), { recursive: true });
   await mkdir(join(root, 'intents'), { recursive: true });
   await mkdir(join(root, 'watchdog'), { recursive: true });
+  await mkdir(join(root, 'target', 'resources', 'app'), { recursive: true });
+  await writeFile(
+    join(root, 'target', 'resources', 'app', 'package.json'),
+    JSON.stringify({ version: '0.0.2' }),
+  );
   const installerBytes = Buffer.from('fixture-installer');
   await writeFile(installer, installerBytes);
   await writeFile(scriptPath, DESKTOP_UPDATE_ROLLBACK_WATCHDOG_SCRIPT, 'utf8');
@@ -35,6 +43,7 @@ async function fixture(intentId: string, deadlineAt: string) {
     previousVersion: '0.0.1',
     targetVersion: '0.0.2',
     targetDownloadedFile: null,
+    targetExecutablePath,
     previousRelease: {
       schemaVersion: 1,
       version: '0.0.1',
@@ -51,12 +60,37 @@ async function fixture(intentId: string, deadlineAt: string) {
       },
     },
     healthMarkerPath,
+    watchdogReadyPath,
+    relaunchFencePath,
     attemptFencePath,
     outcomePath,
     allowUnsignedFixture: true,
   };
   await writeFile(intentPath, JSON.stringify(intent), 'utf8');
-  return { root, intentId, intentPath, healthMarkerPath, attemptFencePath, outcomePath, scriptPath };
+  return {
+    root,
+    intentId,
+    intentPath,
+    healthMarkerPath,
+    watchdogReadyPath,
+    relaunchFencePath,
+    attemptFencePath,
+    outcomePath,
+    scriptPath,
+    targetExecutablePath,
+  };
+}
+
+async function waitForPath(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(path);
+      return;
+    } catch {}
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+  }
+  throw new Error(`path-timeout:${path}`);
 }
 
 async function runWatchdog(input: Awaited<ReturnType<typeof fixture>>) {
@@ -80,7 +114,16 @@ async function runWatchdog(input: Awaited<ReturnType<typeof fixture>>) {
 }
 
 afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
+  await Promise.all(
+    temporaryDirectories.splice(0).map((path) =>
+      rm(path, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      }),
+    ),
+  );
 });
 
 describe.skipIf(process.platform !== 'win32')('desktop update rollback watchdog', () => {
@@ -119,6 +162,33 @@ describe.skipIf(process.platform !== 'win32')('desktop update rollback watchdog'
       status: 'rejected',
       automaticRollbackAttempted: false,
       reason: 'attempt-already-recorded',
+    });
+  });
+
+  it('relaunches the installed target once after its version is published', async () => {
+    const input = await fixture('relaunch', new Date(Date.now() + 10_000).toISOString());
+    await copyFile(
+      join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'where.exe'),
+      input.targetExecutablePath,
+    );
+
+    const watchdog = runWatchdog(input);
+    await waitForPath(input.relaunchFencePath);
+    await mkdir(join(input.root, 'health'), { recursive: true });
+    await writeFile(
+      input.healthMarkerPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        intentId: input.intentId,
+        targetVersion: '0.0.2',
+        healthyAt: new Date().toISOString(),
+      }),
+    );
+
+    await expect(watchdog).resolves.toMatchObject({ stdout: '', stderr: '' });
+    await expect(readFile(input.relaunchFencePath, 'utf8').then(JSON.parse)).resolves.toMatchObject({
+      intentId: input.intentId,
+      targetVersion: '0.0.2',
     });
   });
 });

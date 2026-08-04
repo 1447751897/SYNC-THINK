@@ -16,7 +16,10 @@ class FileIdentitySecretStore implements IdentitySecretStore {
   retrieveCalls = 0;
   failRetrieve = false;
 
-  constructor(private readonly directory: string) {}
+  constructor(
+    private readonly directory: string,
+    private readonly storeDelayMs = 0,
+  ) {}
 
   async isAvailable(): Promise<boolean> {
     return true;
@@ -24,6 +27,9 @@ class FileIdentitySecretStore implements IdentitySecretStore {
 
   async storeSecret(plaintext: string): Promise<string> {
     this.storeCalls++;
+    if (this.storeDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.storeDelayMs));
+    }
     await writeFile(join(this.directory, `${HANDLE}.cipher`), encodeSecret(plaintext), 'utf8');
     return HANDLE;
   }
@@ -47,9 +53,9 @@ function decodeSecret(ciphertext: string): string {
   return [...Buffer.from(ciphertext, 'base64').toString('utf8')].reverse().join('');
 }
 
-async function createFixture() {
+async function createFixture(storeDelayMs = 0) {
   const userDataPath = await mkdtemp(join(tmpdir(), 'sync-think-runtime-identity-'));
-  const secretStore = new FileIdentitySecretStore(userDataPath);
+  const secretStore = new FileIdentitySecretStore(userDataPath, storeDelayMs);
   return { userDataPath, secretStore };
 }
 
@@ -97,7 +103,7 @@ describe('resolveDesktopRuntimeIdentity', () => {
   });
 
   it('serializes concurrent first-launch initialization into one stable identity', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture(100);
     let installCounter = 0;
     let secretCounter = 0;
     const options = {

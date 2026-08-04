@@ -14,6 +14,7 @@ import {
   mcpToolsToProviderSchemas,
   normalizeChatExecutionMode,
   parseMcpProviderToolName,
+  resolveToolLoopProviderPolicy,
   splitHistoryForCompact,
   toolsForExecutionMode,
   wrapModelCompactSummary,
@@ -376,16 +377,21 @@ describe('chat execution mode tool gating', () => {
     // Display-only: never approval-gated.
     expect(chatToolRequiresApproval('ask', 'browser_open')).toBe(false);
     // URL validation.
-    expect(JSON.parse(executeChatBrowserTool(JSON.stringify({ url: 'https://example.com' }))).ok).toBe(true);
-    expect(JSON.parse(executeChatBrowserTool(JSON.stringify({ url: 'file:///etc/passwd' }))).ok).toBe(false);
-    expect(JSON.parse(executeChatBrowserTool(JSON.stringify({ url: 'javascript:alert(1)' }))).ok).toBe(false);
+    expect(
+      JSON.parse(executeChatBrowserTool(JSON.stringify({ url: 'https://example.com' }))).ok,
+    ).toBe(true);
+    expect(
+      JSON.parse(executeChatBrowserTool(JSON.stringify({ url: 'file:///etc/passwd' }))).ok,
+    ).toBe(false);
+    expect(
+      JSON.parse(executeChatBrowserTool(JSON.stringify({ url: 'javascript:alert(1)' }))).ok,
+    ).toBe(false);
     expect(JSON.parse(executeChatBrowserTool('broken')).ok).toBe(false);
   });
 
   it('browser command tools: network-gated, never approval-gated', async () => {
-    const { chatToolRequiresApproval, CHAT_BROWSER_COMMAND_TOOL_NAMES } = await import(
-      './chat-tools.js'
-    );
+    const { chatToolRequiresApproval, CHAT_BROWSER_COMMAND_TOOL_NAMES } =
+      await import('./chat-tools.js');
     for (const name of ['browser_click', 'browser_type', 'browser_read', 'browser_screenshot']) {
       expect(CHAT_BROWSER_COMMAND_TOOL_NAMES.has(name)).toBe(true);
       // Hidden without 联网, exposed with it.
@@ -432,10 +438,12 @@ describe('chat execution mode tool gating', () => {
       ok: true,
       command: { action: 'browser_type', args: { selector: 'input[name=q]', text: 'hello' } },
     });
-    expect(validateChatBrowserCommand('browser_type', JSON.stringify({ text: 'x' })).ok).toBe(false);
-    expect(
-      validateChatBrowserCommand('browser_type', JSON.stringify({ selector: '#a' })).ok,
-    ).toBe(false);
+    expect(validateChatBrowserCommand('browser_type', JSON.stringify({ text: 'x' })).ok).toBe(
+      false,
+    );
+    expect(validateChatBrowserCommand('browser_type', JSON.stringify({ selector: '#a' })).ok).toBe(
+      false,
+    );
     expect(
       validateChatBrowserCommand(
         'browser_type',
@@ -505,6 +513,15 @@ describe('chat execution mode tool gating', () => {
 });
 
 describe('evaluateToolLoopGuard', () => {
+  it('keeps tool schemas stable while forcing the final turn to avoid tool calls', () => {
+    expect(resolveToolLoopProviderPolicy(true, false)).toEqual({ toolsEnabled: true });
+    expect(resolveToolLoopProviderPolicy(true, true)).toEqual({
+      toolsEnabled: true,
+      toolChoice: 'none',
+    });
+    expect(resolveToolLoopProviderPolicy(false, true)).toEqual({ toolsEnabled: false });
+  });
+
   it('does not force_final on the first all-unavailable batch', () => {
     const first = evaluateToolLoopGuard({
       toolLoopRound: 1,
@@ -746,7 +763,9 @@ describe('chatToolDeniedMessage — agent mutations', () => {
     expect(chatToolDeniedMessage('workspace', 'update_agent', 'denied')).toContain('修改智能体');
     expect(chatToolDeniedMessage('workspace', 'archive_agent', 'denied')).toContain('归档智能体');
     expect(chatToolDeniedMessage('workspace', 'create_agent', 'denied')).toContain('创建智能体');
-    expect(chatToolDeniedMessage('workspace', 'update_agent', 'blocked')).toContain('需要用户先批准');
+    expect(chatToolDeniedMessage('workspace', 'update_agent', 'blocked')).toContain(
+      '需要用户先批准',
+    );
   });
 });
 
@@ -758,7 +777,13 @@ describe('skill tools (capability center)', () => {
       includeAgentTools: true,
     });
     const names = tools.map((t) => t.name);
-    for (const name of ['list_skills', 'read_skill', 'create_skill', 'update_skill', 'delete_skill']) {
+    for (const name of [
+      'list_skills',
+      'read_skill',
+      'create_skill',
+      'update_skill',
+      'delete_skill',
+    ]) {
       expect(names).toContain(name);
       expect(CHAT_SKILL_TOOL_NAMES.has(name)).toBe(true);
     }
@@ -818,7 +843,9 @@ describe('skill tools (capability center)', () => {
     expect(chatToolDeniedMessage('workspace', 'create_skill', 'denied')).toContain('SKILL.md');
     expect(chatToolDeniedMessage('workspace', 'update_skill', 'denied')).toContain('SKILL.md');
     expect(chatToolDeniedMessage('workspace', 'delete_skill', 'denied')).toContain('卸载');
-    expect(chatToolDeniedMessage('workspace', 'create_skill', 'blocked')).toContain('需要用户先批准');
+    expect(chatToolDeniedMessage('workspace', 'create_skill', 'blocked')).toContain(
+      '需要用户先批准',
+    );
   });
 });
 
@@ -915,10 +942,11 @@ describe('team tools (team library)', () => {
     expect(chatToolDeniedMessage('workspace', 'create_team', 'denied')).toContain('创建小队');
     expect(chatToolDeniedMessage('workspace', 'update_team', 'denied')).toContain('修改小队');
     expect(chatToolDeniedMessage('workspace', 'delete_team', 'denied')).toContain('删除小队');
-    expect(chatToolDeniedMessage('workspace', 'create_team', 'blocked')).toContain('需要用户先批准');
+    expect(chatToolDeniedMessage('workspace', 'create_team', 'blocked')).toContain(
+      '需要用户先批准',
+    );
   });
 });
-
 
 describe('Computer Use desktop tool gating', () => {
   const desktopTools = [

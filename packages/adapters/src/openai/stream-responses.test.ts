@@ -92,7 +92,7 @@ describe('streamOpenAIResponses', () => {
     expect(body.input[0]).toMatchObject({ role: 'user', content: 'hello responses' });
   });
 
-  it('forwards provider-managed prompt cache identity and retention', async () => {
+  it('forwards provider-managed prompt cache identity without unsupported retention', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
@@ -114,10 +114,49 @@ describe('streamOpenAIResponses', () => {
     );
 
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
-    expect(body).toMatchObject({
-      prompt_cache_key: 'openai:gpt-5-mini:thread-123:epoch-456',
-      prompt_cache_retention: '24h',
-    });
+    expect(body.prompt_cache_key).toBe('openai:gpt-5-mini:thread-123:epoch-456');
+    expect(body).not.toHaveProperty('prompt_cache_retention');
+  });
+
+  it('uses an implicit cache breakpoint for GPT-5.6 when content breakpoints are unavailable', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ status: 'completed', output: [] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIResponses(
+        req({
+          modelId: 'gpt-5.6-sol',
+          messages: [
+            { role: 'user', content: 'first question' },
+            { role: 'assistant', content: 'first answer' },
+            { role: 'user', content: 'next question' },
+          ],
+          tools: [{ name: 'read_file', inputSchema: { type: 'object' } }],
+          toolChoice: 'none',
+          promptCache: {
+            key: 'thread-cache-key',
+            retention: '24h',
+            strategy: 'automatic',
+          },
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body.prompt_cache_key).toBe('thread-cache-key');
+    expect(body.prompt_cache_options).toEqual({ mode: 'implicit', ttl: '30m' });
+    expect(body).not.toHaveProperty('prompt_cache_retention');
+    expect(body.instructions).toBe('Be concise.');
+    expect(body.input[0]).toMatchObject({ role: 'user', content: 'first question' });
+    expect(body.tool_choice).toBe('none');
+    expect(body.tools).toHaveLength(1);
+    expect(JSON.stringify(body.input)).not.toContain('prompt_cache_breakpoint');
   });
 
   it('serializes prior function calls and their local outputs for the next Responses turn', async () => {

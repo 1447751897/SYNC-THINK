@@ -228,6 +228,7 @@ import {
   resolveCredentialRef,
   resolveRunSkillSelection,
   shouldAttemptFallback,
+  shouldSkipSameProviderFallback,
   suggestCapabilities,
   normalizeCapabilities,
   isTextFallbackCompatibleModel,
@@ -254,6 +255,7 @@ import {
   applyDemoRunEvent,
   createDemoProviderRequest,
   createDemoRun,
+  isDemoRunRecoveryExpired,
   parseDemoRuns,
   projectAdapterEvent,
   serializeDemoRun,
@@ -280,6 +282,7 @@ import {
   evaluateToolLoopGuard,
   mcpToolsToProviderSchemas,
   parseMcpProviderToolName,
+  resolveToolLoopProviderPolicy,
   executeChatBuiltInTool,
   executeChatDesktopTool,
   executeChatPlanTool,
@@ -434,7 +437,7 @@ import {
 import { RuntimeDesktopController } from './desktop/runtime-desktop-controller.js';
 
 import {
-  estimateUsageCost,
+  estimateUsageCostBreakdown,
   MODEL_PRICING_SETTING_KEY,
   parseModelPricingEntries,
 } from './pricing.js';
@@ -5288,11 +5291,15 @@ export class Runtime {
       };
       const requests = raw.requests.map((row) => {
         const modelPricing = resolvePricing(row.modelId);
+        const estimatedCostBreakdown = modelPricing
+          ? estimateUsageCostBreakdown(row, modelPricing)
+          : undefined;
         return {
           ...row,
           displayName: resolveDisplayName(row.modelId),
           providerName: row.providerId ? providerNameById.get(row.providerId) : undefined,
-          estimatedCost: modelPricing ? estimateUsageCost(row, modelPricing) : undefined,
+          estimatedCost: estimatedCostBreakdown?.total,
+          estimatedCostBreakdown,
           currency: modelPricing?.currency,
         };
       });
@@ -5332,7 +5339,10 @@ export class Runtime {
       const cachedCreated = requests
         .map((row) => row.cachedTokensCreated)
         .filter((v): v is number => typeof v === 'number');
-      const totalReasoningTokens = requests.reduce((sum, row) => sum + (row.reasoningTokens ?? 0), 0);
+      const totalReasoningTokens = requests.reduce(
+        (sum, row) => sum + (row.reasoningTokens ?? 0),
+        0,
+      );
       const totalTokens = requests.reduce((sum, row) => sum + row.totalTokens, 0);
       const totalCostByCurrency: UsageSummaryResponse['totalCostByCurrency'] = {};
       for (const request of requests) {
@@ -11783,8 +11793,9 @@ export class Runtime {
 
         try {
           let stream: AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined;
+          const finalTurn = forceFinalAnswer;
           try {
-            const finalTurn = forceFinalAnswer;
+            const providerPolicy = resolveToolLoopProviderPolicy(toolsEnabled, finalTurn);
             stream = await this.openProviderStream(attemptRun, {
               messages: finalTurn
                 ? [
@@ -11798,8 +11809,8 @@ export class Runtime {
                     },
                   ]
                 : chatMessages,
-              // When the guard forces a final turn, hide tools so the model must answer.
-              toolsEnabled: finalTurn ? false : toolsEnabled,
+              toolsEnabled: providerPolicy.toolsEnabled,
+              toolChoice: providerPolicy.toolChoice,
               workspaceRoot,
               executionMode,
               networkEnabled,
@@ -11879,6 +11890,7 @@ export class Runtime {
 
             // When tools are requested, do not treat finished as terminal yet �?            // we still need a local tool loop + follow-up model turn.
             const suppressTerminal =
+              !finalTurn &&
               finishedWithToolRequests &&
               toolsEnabled &&
               pendingToolCalls.length > 0 &&
@@ -12006,6 +12018,7 @@ export class Runtime {
           // Local tool loop: execute requested tools and continue the model turn.
           // Project tools need workspaceRoot; network tools only need networkEnabled.
           if (
+            !finalTurn &&
             finishedWithToolRequests &&
             toolsEnabled &&
             pendingToolCalls.length > 0 &&
@@ -12344,6 +12357,7 @@ export class Runtime {
 
           // Hit the round cap with pending tools still requested: one forced final turn.
           if (
+            !finalTurn &&
             finishedWithToolRequests &&
             toolsEnabled &&
             pendingToolCalls.length > 0 &&
@@ -13220,13 +13234,23 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
     const scrubbedMessage = this.scrubDiagnosticMessage(errorMessage);
     const failedModelId = run.modelId as ModelId;
+    const failedRecord = this.providerStore?.getModel(failedModelId);
+    const providerFailureCounts = { ...(run.providerFailureCounts ?? {}) };
+    const providerFailureCount = failedRecord
+      ? (providerFailureCounts[failedRecord.providerId] ?? 0) + 1
+      : 1;
+    if (failedRecord) providerFailureCounts[failedRecord.providerId] = providerFailureCount;
+    const failedRun: DemoRunState = {
+      ...run,
+      providerFailureCounts,
+    };
     const attemptedModelIds = Array.from(
-      new Set([...(run.attemptedModelIds ?? []), run.modelId]),
+      new Set([...(failedRun.attemptedModelIds ?? []), failedRun.modelId]),
     ) as ModelId[];
+    const skipSameProvider = shouldSkipSameProviderFallback(failureClass, providerFailureCount);
 
     // Layer 1: same-provider priority chain (forward-only from current model).
-    if (this.providerStore) {
-      const failedRecord = this.providerStore.getModel(failedModelId);
+    if (this.providerStore && !skipSameProvider) {
       if (failedRecord) {
         const ordered = this.providerStore
           .listModels(failedRecord.providerId)
@@ -13245,8 +13269,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           attemptedModelIds,
         });
         if (providerNext) {
-          const nextRun = this.rebindRunToModel(run, providerNext.modelId, 'providerFallback');
-          return this.persistFallbackContinuation(runId, run, nextRun, {
+          const nextRun = this.rebindRunToModel(
+            failedRun,
+            providerNext.modelId,
+            'providerFallback',
+          );
+          return this.persistFallbackContinuation(runId, failedRun, nextRun, {
             failureClass,
             scrubbedMessage,
             fallbackIndex: providerNext.fallbackIndex,
@@ -13274,6 +13302,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         const model = this.providerStore.getModel(modelId);
         return Boolean(
           model &&
+          (!skipSameProvider || model.providerId !== failedRecord?.providerId) &&
           isTextFallbackCompatibleModel({
             providerModelId: model.providerModelId,
             protocol: model.protocol,
@@ -13308,8 +13337,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return 'failed';
     }
 
-    const nextRun = this.rebindRunToModel(run, resolution.modelId, resolution.source);
-    return this.persistFallbackContinuation(runId, run, nextRun, {
+    const nextRun = this.rebindRunToModel(failedRun, resolution.modelId, resolution.source);
+    return this.persistFallbackContinuation(runId, failedRun, nextRun, {
       failureClass,
       scrubbedMessage,
       fallbackIndex: resolution.fallbackIndex,
@@ -13551,7 +13580,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   private persistDemoRunPaused(
     runId: RunId,
     details: {
-      reason: 'no_fallback_configured' | 'fallback_exhausted';
+      reason: 'no_fallback_configured' | 'fallback_exhausted' | 'recovery_expired';
       failedModelId: ModelId | string;
       failureClass: FailureClass;
       errorMessage?: string;
@@ -16030,6 +16059,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     options: {
       messages?: import('@sync-think/adapters').ProviderMessage[];
       toolsEnabled?: boolean;
+      toolChoice?: import('@sync-think/adapters').ProviderCallRequest['toolChoice'];
       workspaceRoot?: string;
       executionMode?: string;
       networkEnabled?: boolean;
@@ -16090,6 +16120,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     let requestExtras: {
       messages?: import('@sync-think/adapters').ProviderMessage[];
       tools?: import('@sync-think/adapters').ProviderToolSchema[];
+      toolChoice?: import('@sync-think/adapters').ProviderCallRequest['toolChoice'];
       systemPrompt: string;
     };
     if (typeof options.systemPromptOverride === 'string' && options.systemPromptOverride.trim()) {
@@ -16118,6 +16149,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       });
       requestExtras = snapshot.providerRequest;
     }
+    if (options.toolChoice) requestExtras.toolChoice = options.toolChoice;
 
     // Diagnostic: confirm multimodal parts actually reached the provider request.
     if (run.images && run.images.length > 0) {
@@ -16488,7 +16520,23 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   private resumeDemoRuns(): void {
     if (!this.canStartModelRun()) return;
-    for (const run of this.demoRuns.values()) void this.executeDemoRun(run.runId);
+    const now = new Date().toISOString();
+    for (const run of [...this.demoRuns.values()]) {
+      const events = this.stateStore?.listEventsByRun
+        ? this.stateStore.listEventsByRun(run.runId)
+        : this.events.filter((event) => event.runId === run.runId);
+      const lastActivityAt = events.at(-1)?.occurredAt;
+      if (isDemoRunRecoveryExpired({ lastActivityAt, now })) {
+        this.persistDemoRunPaused(run.runId, {
+          reason: 'recovery_expired',
+          failedModelId: run.modelId,
+          failureClass: 'unknown',
+          errorMessage: '历史请求已过期，已暂停自动恢复。',
+        });
+        continue;
+      }
+      void this.executeDemoRun(run.runId);
+    }
   }
 
   private scrubDiagnosticMessage(message: string | undefined): string | undefined {

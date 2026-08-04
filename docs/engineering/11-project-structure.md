@@ -1,6 +1,6 @@
 # Project Structure
 
-更新时间：2026-07-30
+更新时间：2026-08-03
 
 本文档提供当前仓库的模块地图与文件放置规则。产品边界以已批准设计文档为准，技术取舍以 `04-tech-decisions.md` 为准。
 
@@ -33,6 +33,7 @@ SYNC-THINK/
 | --- | --- | --- |
 | Main | `apps/desktop/src/main/index.ts` | BrowserWindow、Runtime supervisor、IPC 校验、sender 生命周期和本机文件/进程能力编排 |
 | Main services | `project-content-search.ts`、`project-file-editor.ts`、`project-terminal.ts`、`project-terminal-registry.ts` | 搜索、文件读写/监听、命令解析/cwd 校验、终端会话唯一性 |
+| Updater/recovery | `desktop-updater.ts`、`electron-updater-driver.ts`、`desktop-update-recovery-store.ts`、`desktop-update-rollback-*.ts` | Main-only feed 控制、bounded failure evidence、healthy installer 登记、rollback intent/health/outcome 与独立 watchdog |
 | Preload | `apps/desktop/src/preload/index.ts` | 在 sandbox/contextIsolation 下暴露最小 typed bridge，转发 terminal 事件并返回 disposer |
 | IPC contract | `apps/desktop/src/workspace-tools-contract.ts`、`renderer/global.d.ts` | Renderer 可见 payload/result/event 类型；不得暴露 Node 或 secret |
 | Renderer shell | `apps/desktop/src/renderer/shell/ShellApp.tsx` | 顶层目录、Workspace/会话状态、Pane 快照提交和各页面装配 |
@@ -53,7 +54,7 @@ Main 或 Preload 发生变化后必须完整重启 Electron；只刷新 Renderer
 - `packages/storage` 的 Skill list 查询只投影 metadata；完整正文只由 Runtime 通过精确 SkillVersion ID 读取，不进入 Renderer 目录响应。
 - `packages/workers` 负责最小权限执行。`terminal/terminal-worker.ts` 定义命令能力与输出上限，`process-runner.ts` 负责 spawn、流式读取、超时/取消和进程树清理。
 - `packages/workers/src/browser/browser-host.ts` 负责系统浏览器发现/启动、CDP、Profile Session、Page lease、同 Page 队列与具体 Playwright 动作；`browser-worker.ts` 只把 capability token、路径与事件合同接到共享 Host。
-- `apps/runtime/src/browser/runtime-browser-controller.ts` 把聊天 `browser_*` 参数映射为 Worker action，维护 P0.2 owner 临时 origin 集合，并保证 Runtime 的脱敏意图回调先于 Worker。正式 durable grant/command 状态仍属于 P0.3。
+- `apps/runtime/src/browser/runtime-browser-controller.ts` 把聊天 `browser_*` 参数映射为 Worker action，使用 `SqliteBrowserStore` 持久化 origin grant、command 与人工 handoff，并保证 Runtime 的脱敏意图先于 Worker 副作用；Page lease 与浏览器进程仍由 `BrowserHost` 管理。
 - `packages/core` 保持无 I/O 的领域规则；`packages/adapters` 隔离 Provider 差异；`packages/ui-kit` 只承载可复用产品组件，不持有 Desktop 业务生命周期。
 
 ## 4. Workspace 工具调用链
@@ -111,11 +112,11 @@ TurnSkillControl 打开菜单
   -> 只注入该成员自己的 Skill，Artifact metadata 记录实际 ID
 ```
 
-### 浏览器 Worker（P0.1/P0.2）
+### 浏览器 Worker（P0）
 
 ```text
 Provider browser_* tool call
-  -> RuntimeBrowserController 参数校验 + owner 临时 origin grant
+  -> RuntimeBrowserController 参数校验 + durable owner/origin grant
   -> Runtime 先持久化脱敏 browser.command.started
   -> PersistentBrowserWorker capability/fence/path 校验
   -> shared BrowserHost
@@ -127,6 +128,23 @@ Provider browser_* tool call
 ```
 
 Renderer 的 `browser.command_requested -> submitBrowserResult` 仅为旧 Runtime 迁移兼容；新 Runtime 不发布该请求。Profile 登录态位于 Runtime 数据目录 `browser-profiles/<profileId>`，不进入 Renderer、SQLite 或默认系统浏览器 Profile。
+
+### Windows 更新与自动 rollback
+
+```text
+Settings/About updater action
+  -> trusted Renderer IPC
+  -> DesktopUpdateController action/phase fence
+  -> electron-updater Main-only HTTPS/Bearer driver
+  -> beforeInstall: DesktopUpdateRollbackCoordinator.prepareInstall
+  -> verify previous healthy installer + write durable intent
+  -> detached PowerShell watchdog
+  -> shutdownDesktopServices -> quitAndInstall
+  -> target managed Runtime hello -> matching health marker
+  -> healthy outcome，或 deadline 后 one-shot previous installer rollback
+```
+
+NSIS `apps/desktop/build/installer.nsh` 负责把每个已安装版本的 installer 原子归档到 `%LOCALAPPDATA%\sync-think-updater\recovery\installers\<version>`。`scripts/windows-portable-release.mjs`、`windows-installer-release.mjs`、`windows-generic-update-feed.mjs` 及对应 selftest 负责构建与离线验证；发布脚本不得接触 Renderer secret 或真实 userData。
 
 ## 5. 数据与恢复边界
 
@@ -141,7 +159,11 @@ Renderer 的 `browser.command_requested -> submitBrowserResult` 仅为旧 Runtim
 | terminal 输出、历史、运行态、命令输入 | 当前 Renderer Session |
 | terminal 子进程 | Main/Worker 当前生命周期；Renderer 销毁和应用退出时 abort |
 | 浏览器 Profile/Cookie | Runtime 数据目录中的专用系统浏览器 Profile；不复制进 SQLite/Renderer |
-| Browser Session/Page lease | 当前 Runtime/BrowserHost 生命周期；P0.2 origin grant 仅在内存，P0.3 前不具备重启恢复 |
+| Browser origin grant、command 与人工 handoff | SQLite durable store；重启后按 revision/ownership fence 恢复，不重放未知副作用 |
+| Browser Session/Page lease | 当前 Runtime/BrowserHost 生命周期；durable handoff 只保存恢复所需的有界 lease checkpoint，继续前重新验证 ownership |
+| 生成图片正文 | Runtime 受控 GeneratedImageStore；SQLite/Renderer 只保存 contentRef/hash 和 opaque preview 投影 |
+| Updater failure evidence | `<userData>/diagnostics/desktop-updater-recovery.json`，最多 20 条脱敏记录 |
+| Automatic rollback | `%LOCALAPPDATA%\sync-think-updater\recovery` 下的 installer、healthy release、intent、health、attempt 与 outcome；不进入 Renderer |
 
 布局偏好不得存储文件正文、terminal 输出、流式帧、错误态、会话级临时 Skill 选择或旧进程“仍在运行”的声明。Run event/checkpoint 也不得复制完整 `SKILL.md` 正文。
 
@@ -155,3 +177,4 @@ Renderer 的 `browser.command_requested -> submitBrowserResult` 仅为旧 Runtim
 6. 重型 Renderer 依赖：独立 bundle 并按需加载；进入首屏前必须记录性能与回滚决策。
 7. 行为变化同步更新 changelog/current status；架构或依赖变化同步更新 tech decisions 与本页。
 8. 新的每轮上下文附件必须先定义 `undefined`/空/非空语义、Runtime 权威校验、冻结与恢复边界；Renderer 目录默认只取 metadata。
+9. Windows 发布能力进入 `scripts/windows-*.mjs` 与 `apps/desktop/build`，必须区分正式 fail-closed 模式和显式 unsigned fixture，并让聚合 selftest 自包含准备步骤。

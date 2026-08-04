@@ -32,8 +32,11 @@ export interface DesktopUpdateRollbackIntent {
   previousVersion: string;
   targetVersion: string;
   targetDownloadedFile: string | null;
+  targetExecutablePath: string;
   previousRelease: DesktopUpdateHealthyRelease;
   healthMarkerPath: string;
+  watchdogReadyPath: string;
+  relaunchFencePath: string;
   attemptFencePath: string;
   outcomePath: string;
   allowUnsignedFixture: boolean;
@@ -106,10 +109,26 @@ export class DesktopUpdateRollbackStore {
     );
   }
 
+  watchdogReadyPath(intentId: string): string {
+    return join(
+      this.root,
+      'watchdog-ready',
+      `${assertSegment(intentId, INTENT_ID_PATTERN, 'desktop.update.rollback-intent-invalid')}.json`,
+    );
+  }
+
   attemptFencePath(intentId: string): string {
     return join(
       this.root,
       'attempts',
+      `${assertSegment(intentId, INTENT_ID_PATTERN, 'desktop.update.rollback-intent-invalid')}.json`,
+    );
+  }
+
+  relaunchFencePath(intentId: string): string {
+    return join(
+      this.root,
+      'relaunch',
       `${assertSegment(intentId, INTENT_ID_PATTERN, 'desktop.update.rollback-intent-invalid')}.json`,
     );
   }
@@ -124,6 +143,10 @@ export class DesktopUpdateRollbackStore {
 
   watchdogPath(): string {
     return join(this.root, 'watchdog', 'update-rollback-watchdog.ps1');
+  }
+
+  watchdogHostPath(): string {
+    return join(this.root, 'watchdog', 'update-rollback-watchdog-host.cmd');
   }
 
   activeIntentPath(): string {

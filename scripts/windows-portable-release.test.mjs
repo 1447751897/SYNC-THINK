@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -11,8 +11,10 @@ import {
   createCriticalFileManifest,
   createWindowsUpdaterBootstrapConfig,
   createPnpmDeployInvocation,
+  isIgnorableWindowsPnpmBinShimFailure,
   normalizeWindowsPublisherName,
   normalizeWindowsReleaseVersion,
+  pruneProductionBinDirectories,
   resolveWindowsUpdaterBootstrapConfiguration,
   verifyWindowsPortableLayout,
 } from './windows-portable-release.mjs';
@@ -189,21 +191,106 @@ test('portable deploy uses modern injected workspace packages in the controlled 
   );
 });
 
-test('forbidden release scan rejects secrets, databases, source trees and test trees', async () => {
+test('portable deploy ignores only a Windows pnpm PowerShell shim EPERM inside its target', () => {
+  const target = resolve('D:/workspace/sync-think/apps/desktop/release/deploy/runtime');
+  const prefix = 'Deployment with a shared lockfile has failed.\n';
+  assert.equal(
+    isIgnorableWindowsPnpmBinShimFailure(
+      prefix +
+        "EPERM EPERM: operation not permitted, open '" +
+        join(target, 'node_modules', '.bin', 'semver.ps1') +
+        "'",
+      target,
+      'win32',
+    ),
+    true,
+  );
+  for (const stderr of [
+    prefix +
+      "EPERM: operation not permitted, open '" +
+      resolve('D:/outside/node_modules/.bin/semver.ps1') +
+      "'",
+    prefix +
+      "EPERM: operation not permitted, open '" +
+      join(target, 'node_modules', '.bin', 'semver.cmd') +
+      "'",
+    prefix +
+      "EPERM: operation not permitted, open '" + join(target, 'package.json') + "'",
+    "EPERM: operation not permitted, open '" +
+      join(target, 'node_modules', '.bin', 'semver.ps1') +
+      "'",
+  ]) {
+    assert.equal(isIgnorableWindowsPnpmBinShimFailure(stderr, target, 'win32'), false);
+  }
+  assert.equal(
+    isIgnorableWindowsPnpmBinShimFailure(
+      prefix +
+        "EPERM: operation not permitted, open '" +
+        join(target, 'node_modules', '.bin', 'semver.ps1') +
+        "'",
+      target,
+      'linux',
+    ),
+    false,
+  );
+});
+
+test('desktop build-only Tailwind packages stay outside production dependencies', async () => {
+  const desktopPackage = JSON.parse(
+    await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'),
+  );
+  for (const packageName of ['@tailwindcss/cli', 'tailwindcss']) {
+    assert.equal(desktopPackage.dependencies?.[packageName], undefined);
+    assert.equal(typeof desktopPackage.devDependencies?.[packageName], 'string');
+  }
+});
+
+test('production deploy pruning removes package-manager bin shims and keeps runtime modules', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sync-think-release-bin-prune-'));
+  const rootBin = join(root, 'node_modules', '.bin');
+  const nestedBin = join(root, 'node_modules', '.pnpm', 'semver@7.7.2', 'node_modules', '.bin');
+  const runtimeModule = join(root, 'node_modules', 'semver', 'index.js');
+  await mkdir(rootBin, { recursive: true });
+  await mkdir(nestedBin, { recursive: true });
+  await mkdir(join(root, 'node_modules', 'semver'), { recursive: true });
+  await writeFile(join(rootBin, 'semver.ps1'), 'shim');
+  await writeFile(join(nestedBin, 'semver.cmd'), 'shim');
+  await writeFile(runtimeModule, 'export {};');
+
+  await pruneProductionBinDirectories(root);
+
+  await assert.rejects(access(rootBin), { code: 'ENOENT' });
+  await assert.rejects(access(nestedBin), { code: 'ENOENT' });
+  await access(runtimeModule);
+});
+
+test('forbidden release scan rejects secrets, databases, source trees, tests and build tools', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sync-think-release-scan-'));
   await mkdir(join(root, 'resources', 'app', 'src'), { recursive: true });
   await mkdir(join(root, 'resources', 'runtime', 'tests'), { recursive: true });
   await mkdir(join(root, 'resources', 'app', 'release'), { recursive: true });
+  await mkdir(join(root, 'resources', 'app', 'node_modules', '@tailwindcss', 'cli'), {
+    recursive: true,
+  });
+  await mkdir(join(root, 'resources', 'app', 'node_modules', 'tailwindcss'), { recursive: true });
+  await mkdir(join(root, 'resources', 'app', 'node_modules', '.bin'), { recursive: true });
+  await mkdir(join(root, 'resources', 'runtime', 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(root, 'resources', 'app', '.env.production'), 'TOKEN=secret');
   await writeFile(join(root, 'resources', 'runtime', 'sync-think.db'), 'sqlite');
+  await writeFile(join(root, 'resources', 'app', 'node_modules', '.bin', 'tailwindcss.ps1'), 'shim');
+  await writeFile(join(root, 'resources', 'runtime', 'node_modules', '.bin', 'semver.ps1'), 'shim');
 
   const forbidden = await collectForbiddenReleaseFiles(root);
   assert.deepEqual(
     forbidden.map((item) => item.replaceAll('\\', '/')),
     [
       'resources/app/.env.production',
+      'resources/app/node_modules/.bin/tailwindcss.ps1',
+      'resources/app/node_modules/@tailwindcss/cli',
+      'resources/app/node_modules/tailwindcss',
       'resources/app/release',
       'resources/app/src',
+      'resources/runtime/node_modules/.bin/semver.ps1',
       'resources/runtime/sync-think.db',
       'resources/runtime/tests',
     ],

@@ -11,6 +11,7 @@ import {
   createProviderCallControl,
   providerAbortEvent,
 } from '../call-control.js';
+import { openAIPromptCacheBodyFields } from './prompt-cache.js';
 
 export interface StreamOpenAIResponsesOptions {
   fetchImpl?: typeof fetch;
@@ -231,9 +232,7 @@ function usageEvent(response: unknown): AdapterEvent | undefined {
     output_tokens_details?: { reasoning_tokens?: unknown };
   };
   const cachedTokensHit = nonNegativeNumber(typed.input_tokens_details?.cached_tokens);
-  const cachedTokensCreated = nonNegativeNumber(
-    typed.input_tokens_details?.cache_write_tokens,
-  );
+  const cachedTokensCreated = nonNegativeNumber(typed.input_tokens_details?.cache_write_tokens);
   const reasoningTokens = nonNegativeNumber(typed.output_tokens_details?.reasoning_tokens);
   const totalTokens = nonNegativeNumber(typed.total_tokens);
   return {
@@ -426,17 +425,17 @@ export async function* streamOpenAIResponses(
 
   const control = createProviderCallControl(request.signal, options.timeoutMs ?? 120_000);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const instructions = resolveInstructions(request);
+  const input = toResponsesInput(request);
   const body: Record<string, unknown> = {
     model: request.modelId,
-    input: toResponsesInput(request),
+    input,
     stream: true,
+    ...openAIPromptCacheBodyFields(request),
   };
-  const instructions = resolveInstructions(request);
   if (instructions) body.instructions = instructions;
   if (request.maxOutputTokens !== undefined) body.max_output_tokens = request.maxOutputTokens;
   if (request.temperature !== undefined) body.temperature = request.temperature;
-  if (request.promptCache?.key?.trim()) body.prompt_cache_key = request.promptCache.key.trim();
-  if (request.promptCache?.retention) body.prompt_cache_retention = request.promptCache.retention;
   // Responses API uses nested `reasoning` config (o-series / gpt-5); the flat
   // chat-completions style `reasoning_effort` / `enable_thinking` is rejected.
   {
@@ -455,6 +454,7 @@ export async function* streamOpenAIResponses(
       description: tool.description,
       parameters: tool.inputSchema,
     }));
+    if (request.toolChoice) body.tool_choice = request.toolChoice;
   }
 
   try {

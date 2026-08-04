@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ProviderSummary } from '@sync-think/protocol';
 import { ModelSettings } from './ModelSettings.js';
 
@@ -53,6 +53,7 @@ const runtime = {
   removeProviderModel: vi.fn(),
   setModelPriorities: vi.fn(),
   setSetting: vi.fn(),
+  getUsageSummary: vi.fn(),
 };
 
 beforeEach(() => {
@@ -102,6 +103,46 @@ beforeEach(() => {
     models: provider.models,
   });
   runtime.setSetting.mockResolvedValue({});
+  runtime.getUsageSummary.mockResolvedValue({
+    rows: [],
+    requests: [
+      {
+        requestId: 'request-cache-1',
+        occurredAt: '2026-08-04T09:30:00.000Z',
+        modelId: 'model-1',
+        providerId: 'provider-1',
+        displayName: 'gpt-5',
+        providerName: 'CODEX',
+        tokensIn: 14_000,
+        tokensOut: 488,
+        cachedTokensHit: 12_800,
+        cachedTokensCreated: 0,
+        totalTokens: 14_488,
+        status: 'success',
+        estimatedCost: 0.018256,
+        estimatedCostBreakdown: {
+          input: 0.006,
+          cacheRead: 0.0064,
+          cacheWrite: 0,
+          output: 0.005856,
+          total: 0.018256,
+        },
+        currency: 'USD',
+      },
+    ],
+    tools: [],
+    toolModels: [],
+    toolFailures: [],
+    pricing: [],
+    totalRequests: 1,
+    totalTokensIn: 14_000,
+    totalTokensOut: 488,
+    totalCachedTokensHit: 12_800,
+    totalCachedTokensCreated: 0,
+    totalCostByCurrency: { USD: 0.018256 },
+    totalReasoningTokens: 0,
+    totalTokens: 14_488,
+  });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: { runtime },
@@ -124,6 +165,25 @@ async function renderSettings(onDirtyChange = vi.fn()) {
 }
 
 describe('ModelSettings NewMax provider detail', () => {
+  it('shows readable cache efficiency and expands one request cost breakdown on demand', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
+
+    const requestTable = await screen.findByRole('table');
+    expect(screen.getByText('缓存命中率')).toBeTruthy();
+    expect(within(requestTable).getByText('普通输入 1.2k')).toBeTruthy();
+    expect(within(requestTable).getByText(/缓存读取 12\.8k/)).toBeTruthy();
+    expect(within(requestTable).getByText('缓存命中 91.4%')).toBeTruthy();
+    expect(within(requestTable).getByText('输出 488')).toBeTruthy();
+    expect(screen.queryByText(/输入费 \$0\.006000/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 gpt-5 请求详情' }));
+    expect(await screen.findByText(/输入费 \$0\.006000/)).toBeTruthy();
+    expect(screen.getByText(/缓存读取费 \$0\.006400/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '收起 gpt-5 请求详情' })).toBeTruthy();
+    expect(screen.queryByText('详情记录')).toBeNull();
+  });
+
   it('shows direct-edit fields without the legacy edit and save controls', async () => {
     await renderSettings();
 

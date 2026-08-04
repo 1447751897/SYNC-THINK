@@ -8,6 +8,19 @@ import type {
   RunId,
 } from '@sync-think/shared';
 
+export const DEMO_RUN_RECOVERY_MAX_AGE_MS = 5 * 60 * 1_000;
+
+export function isDemoRunRecoveryExpired(input: {
+  lastActivityAt?: string;
+  now?: string;
+  maxAgeMs?: number;
+}): boolean {
+  const lastActivityAt = Date.parse(input.lastActivityAt ?? '');
+  const now = Date.parse(input.now ?? new Date().toISOString());
+  if (!Number.isFinite(lastActivityAt) || !Number.isFinite(now)) return true;
+  return now - lastActivityAt > (input.maxAgeMs ?? DEMO_RUN_RECOVERY_MAX_AGE_MS);
+}
+
 export interface DemoRunImage {
   name: string;
   mimeType: string;
@@ -53,6 +66,8 @@ export interface DemoRunState {
   fallbackModelIds?: string[];
   /** Durable de-duplicated model attempt order across all fallback layers. */
   attemptedModelIds: string[];
+  /** Durable Provider-scoped failure count used by the fallback circuit breaker. */
+  providerFailureCounts?: Record<string, number>;
   /** Skill bodies injected into system prompt for this run. */
   skillPromptBlocks?: string[];
   /** Per-turn request before Context budget/amendment filtering. */
@@ -119,6 +134,7 @@ export interface CreateDemoRunInput {
   teamPromptBlock?: string;
   fallbackModelIds?: string[];
   attemptedModelIds?: string[];
+  providerFailureCounts?: Record<string, number>;
   skillPromptBlocks?: string[];
   requestedSkillVersionIds?: string[];
   skillVersionIds?: string[];
@@ -167,6 +183,9 @@ export function createDemoRun(
         ? [...extras.fallbackModelIds]
         : undefined,
     attemptedModelIds: Array.from(new Set([...(extras.attemptedModelIds ?? []), modelId])),
+    providerFailureCounts: extras.providerFailureCounts
+      ? { ...extras.providerFailureCounts }
+      : undefined,
     skillPromptBlocks:
       extras.skillPromptBlocks && extras.skillPromptBlocks.length > 0
         ? [...extras.skillPromptBlocks]
@@ -175,16 +194,13 @@ export function createDemoRun(
       extras.requestedSkillVersionIds === undefined
         ? undefined
         : [...extras.requestedSkillVersionIds],
-    skillVersionIds:
-      extras.skillVersionIds === undefined ? undefined : [...extras.skillVersionIds],
+    skillVersionIds: extras.skillVersionIds === undefined ? undefined : [...extras.skillVersionIds],
     skillSnapshots:
       extras.skillSnapshots === undefined
         ? undefined
         : extras.skillSnapshots.map((snapshot) => ({ ...snapshot })),
     mcpServerIds:
-      extras.mcpServerIds && extras.mcpServerIds.length > 0
-        ? [...extras.mcpServerIds]
-        : undefined,
+      extras.mcpServerIds && extras.mcpServerIds.length > 0 ? [...extras.mcpServerIds] : undefined,
     contextWindow: extras.contextWindow,
     projectContextPromptBlocks:
       extras.projectContextPromptBlocks && extras.projectContextPromptBlocks.length > 0
@@ -213,11 +229,19 @@ export function createDemoProviderRequest(
   extras: {
     messages?: ProviderCallRequest['messages'];
     tools?: ProviderCallRequest['tools'];
+    toolChoice?: ProviderCallRequest['toolChoice'];
     systemPrompt?: string;
     reasoningEffort?: string;
   } = {},
 ): ProviderCallRequest {
   const reasoningEffort = extras.reasoningEffort ?? run.reasoningEffort;
+  const promptCache = run.providerId
+    ? {
+        key: `sync-think:${run.providerId}:${run.modelId}:${run.threadId}`,
+        retention: '24h' as const,
+        strategy: 'automatic' as const,
+      }
+    : undefined;
   return {
     protocol: run.protocol,
     baseUrl: run.baseUrl,
@@ -228,7 +252,9 @@ export function createDemoProviderRequest(
     ...(extras.systemPrompt ? { systemPrompt: extras.systemPrompt } : {}),
     messages: extras.messages ?? [{ role: 'user', content: run.userText }],
     ...(extras.tools && extras.tools.length > 0 ? { tools: [...extras.tools] } : {}),
+    ...(extras.toolChoice ? { toolChoice: extras.toolChoice } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(promptCache ? { promptCache } : {}),
     stream: true,
   };
 }
@@ -446,13 +472,32 @@ function parseDemoRun(value: unknown): DemoRunState {
   const modelId = run.modelId;
   const stringArray = (input: unknown, max = 64): string[] | undefined => {
     if (input === undefined) return undefined;
-    if (!Array.isArray(input) || input.length > max || input.some((item) => typeof item !== 'string')) {
+    if (
+      !Array.isArray(input) ||
+      input.length > max ||
+      input.some((item) => typeof item !== 'string')
+    ) {
       throw new Error('Runtime checkpoint contains an invalid run string array');
     }
     return input.map((item) => String(item));
   };
   const attemptedModelIds = stringArray(run.attemptedModelIds, 256) ?? [];
   if (!attemptedModelIds.includes(modelId)) attemptedModelIds.push(modelId);
+  const providerFailureCounts = (() => {
+    if (!run.providerFailureCounts || typeof run.providerFailureCounts !== 'object') {
+      return undefined;
+    }
+    const entries = Object.entries(run.providerFailureCounts)
+      .filter(
+        (entry): entry is [string, number] =>
+          entry[0].length > 0 &&
+          typeof entry[1] === 'number' &&
+          Number.isInteger(entry[1]) &&
+          entry[1] > 0,
+      )
+      .slice(0, 64);
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  })();
   const skillSnapshots = (() => {
     if (run.skillSnapshots === undefined) return undefined;
     if (!Array.isArray(run.skillSnapshots) || run.skillSnapshots.length > 8) {
@@ -525,6 +570,7 @@ function parseDemoRun(value: unknown): DemoRunState {
     teamPromptBlock: typeof run.teamPromptBlock === 'string' ? run.teamPromptBlock : undefined,
     fallbackModelIds: stringArray(run.fallbackModelIds),
     attemptedModelIds: Array.from(new Set(attemptedModelIds)),
+    providerFailureCounts,
     requestedSkillVersionIds: stringArray(run.requestedSkillVersionIds, 8),
     skillVersionIds: stringArray(run.skillVersionIds, 8),
     skillSnapshots,

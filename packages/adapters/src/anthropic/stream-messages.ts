@@ -129,6 +129,25 @@ function toAnthropicMessages(
   } else if (out[0]!.role !== 'user') {
     out.unshift({ role: 'user', content: '(context)' });
   }
+  if (!request.promptCache?.key?.trim()) return out;
+
+  // System and tools consume up to two of Anthropic's four cache breakpoints.
+  // Use the remaining two for the latest stable conversation messages and
+  // intentionally exclude the changing final user turn.
+  for (const message of out.slice(0, -1).slice(-2)) {
+    if (typeof message.content === 'string') {
+      message.content = [
+        {
+          type: 'text',
+          text: message.content,
+          cache_control: { type: 'ephemeral' },
+        },
+      ];
+      continue;
+    }
+    const block = message.content.at(-1);
+    if (block) block.cache_control = { type: 'ephemeral' };
+  }
   return out;
 }
 
@@ -219,15 +238,27 @@ export async function* streamAnthropicMessages(
     messages: toAnthropicMessages(request),
     stream: true,
   };
+  let systemPrompt: string | undefined;
   if (request.systemPrompt && request.systemPrompt.trim().length > 0) {
-    body.system = request.systemPrompt;
+    systemPrompt = request.systemPrompt;
   } else {
     // Promote leading system messages into Anthropic system field if present.
     const systemParts = request.messages
       .filter((m) => m.role === 'system')
       .map(messageContentToString)
       .filter((s) => s.length > 0);
-    if (systemParts.length > 0) body.system = systemParts.join('\n\n');
+    if (systemParts.length > 0) systemPrompt = systemParts.join('\n\n');
+  }
+  if (systemPrompt) {
+    body.system = request.promptCache?.key?.trim()
+      ? [
+          {
+            type: 'text',
+            text: systemPrompt,
+            cache_control: { type: 'ephemeral' },
+          },
+        ]
+      : systemPrompt;
   }
   if (request.temperature !== undefined) body.temperature = request.temperature;
   Object.assign(body, reasoningFields);
@@ -237,6 +268,11 @@ export async function* streamAnthropicMessages(
       description: tool.description,
       input_schema: tool.inputSchema,
     }));
+    if (request.promptCache?.key?.trim()) {
+      const tools = body.tools as Array<Record<string, unknown>>;
+      tools[tools.length - 1]!.cache_control = { type: 'ephemeral' };
+    }
+    if (request.toolChoice) body.tool_choice = { type: request.toolChoice };
   }
 
   try {
@@ -372,10 +408,11 @@ function mergeAnthropicUsage(
 }
 
 function toUsageEvent(usage: AnthropicUsage): AdapterEvent {
-  const tokensIn = nonNegativeNumber(usage.input_tokens) ?? 0;
+  const ordinaryInputTokens = nonNegativeNumber(usage.input_tokens) ?? 0;
   const tokensOut = nonNegativeNumber(usage.output_tokens) ?? 0;
   const cachedTokensHit = nonNegativeNumber(usage.cache_read_input_tokens);
   const cachedTokensCreated = nonNegativeNumber(usage.cache_creation_input_tokens);
+  const tokensIn = ordinaryInputTokens + (cachedTokensHit ?? 0) + (cachedTokensCreated ?? 0);
   return {
     type: 'usage',
     tokensIn,
@@ -464,7 +501,8 @@ function parseAnthropicStreamEvent(
   if (
     root.type === 'content_block_delta' &&
     (root.delta?.type === 'thinking_delta' || root.delta?.type === 'reasoning_delta') &&
-    (typeof root.delta.text === 'string' || typeof (root.delta as { thinking?: string }).thinking === 'string')
+    (typeof root.delta.text === 'string' ||
+      typeof (root.delta as { thinking?: string }).thinking === 'string')
   ) {
     const text =
       typeof root.delta.text === 'string'

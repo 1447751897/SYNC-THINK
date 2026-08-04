@@ -3,11 +3,14 @@ import { spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
 import { closeSync, openSync } from 'node:fs';
 import { createServer } from 'node:https';
-import { access, cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { access, cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeWindowsGenericUpdateFeed } from './windows-generic-update-feed.mjs';
-import { buildWindowsInstaller } from './windows-installer-release.mjs';
+import {
+  buildWindowsInstaller,
+  verifyWindowsInstallerLayout,
+} from './windows-installer-release.mjs';
 import { verifyWindowsPortableLayout } from './windows-portable-release.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,12 +21,78 @@ const TOKEN = 'update-install-e2e-token';
 const CHANNEL = 'latest';
 const EXE = 'SYNC-THINK.exe';
 const UNINSTALLER = 'Uninstall SYNC-THINK.exe';
+const UPDATER_CACHE_NAME = 'sync-think-updater';
+const PROBE_HANDOFF_NAME = 'update-install-e2e-handoff.json';
+const REMOVE_OPTIONS = Object.freeze({
+  recursive: true,
+  force: true,
+  maxRetries: 8,
+  retryDelay: 250,
+});
+export const UPDATE_INSTALL_BASE_INSTALL_TIMEOUT_MS = 480_000;
+export const UPDATE_INSTALL_UPGRADE_HEALTH_TIMEOUT_MS = 900_000;
+export const UPDATE_INSTALL_NSIS_ASSISTED_SUCCESS_EXIT_CODES = Object.freeze([0, 2]);
 const sleep = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 const id = () =>
   new Date()
     .toISOString()
     .replace(/[-:]/g, '')
     .replace(/\.\d{3}Z$/, '');
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+export async function reserveNativeUpdaterCache(cacheDir, backupDir) {
+  if (
+    dirname(cacheDir) !== dirname(backupDir) ||
+    !basename(backupDir).startsWith(basename(cacheDir) + '.update-install-e2e-backup-')
+  ) {
+    throw new Error('update-install.native-cache-backup-unsafe');
+  }
+  if (await pathExists(backupDir)) {
+    throw new Error('update-install.native-cache-backup-exists');
+  }
+  if (!(await pathExists(cacheDir))) return false;
+  await rename(cacheDir, backupDir);
+  return true;
+}
+
+export async function restoreNativeUpdaterCache(cacheDir, backupDir, wasReserved) {
+  await rm(cacheDir, REMOVE_OPTIONS);
+  if (wasReserved) await rename(backupDir, cacheDir);
+}
+
+export function updateInstallProbeHandoffPath(appDataDir) {
+  const root = String(appDataDir ?? '').trim();
+  if (!isAbsolute(root)) throw new Error('update-install.app-data-missing');
+  return join(root, '@sync-think', 'desktop', PROBE_HANDOFF_NAME);
+}
+
+async function readPreparedInstallerBuild(installerDir, expectedVersion) {
+  const verification = await verifyWindowsInstallerLayout(installerDir, {
+    allowUnsignedFixture: true,
+    requireCurrentManifest: true,
+  });
+  assert.equal(
+    verification.ok,
+    true,
+    'update-install.prepared-installer-invalid:' + JSON.stringify(verification.errors),
+  );
+  const manifest = JSON.parse(
+    await readFile(join(installerDir, 'installer-manifest.json'), 'utf8'),
+  );
+  assert.equal(manifest.version, expectedVersion);
+  assert.equal(manifest.signing?.mode, 'unsigned-fixture');
+  assert.equal(manifest.files?.length, 1);
+  return { manifest };
+}
 
 async function readPortableVersion(portableDir) {
   const packageJson = JSON.parse(
@@ -78,9 +147,10 @@ function collect(child, timeoutMs, code) {
   return new Promise((resolveChild, rejectChild) => {
     let stdout = '';
     let stderr = '';
+    let timeoutError = null;
     const timer = setTimeout(() => {
+      timeoutError = new Error(code);
       child.kill();
-      rejectChild(new Error(code));
     }, timeoutMs);
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
@@ -96,12 +166,17 @@ function collect(child, timeoutMs, code) {
     });
     child.once('exit', (exitCode, signal) => {
       clearTimeout(timer);
+      if (timeoutError) {
+        rejectChild(timeoutError);
+        return;
+      }
       resolveChild({ exitCode, signal, stdout, stderr });
     });
   });
 }
 
-async function run(file, args, options = {}) {
+export async function run(file, args, options = {}) {
+  const startedAt = Date.now();
   const child = spawn(file, args, {
     cwd: ROOT,
     env: options.env ?? process.env,
@@ -113,7 +188,8 @@ async function run(file, args, options = {}) {
     options.timeoutMs ?? 120000,
     options.timeoutCode ?? 'process.timeout',
   );
-  if (result.exitCode !== 0) {
+  const acceptedExitCodes = options.acceptedExitCodes ?? [0];
+  if (!acceptedExitCodes.includes(result.exitCode)) {
     throw new Error(
       (options.errorCode ?? 'process.failed') +
         ':' +
@@ -122,7 +198,7 @@ async function run(file, args, options = {}) {
         (result.stderr || result.stdout),
     );
   }
-  return result;
+  return { ...result, durationMs: Date.now() - startedAt };
 }
 
 async function certificate(root) {
@@ -307,15 +383,19 @@ async function identity(userData, database) {
   };
 }
 
-async function registryVersion(installDir) {
+export function registryVersionCommand(installDir) {
   const target = join(installDir, UNINSTALLER).replaceAll("'", "''").toLowerCase();
-  const command = [
+  return [
     "$root = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'",
     "$target = '" + target + "'",
     '$version = $null',
-    'if (Test-Path -LiteralPath $root) { foreach ($key in Get-ChildItem -LiteralPath $root) { $entry = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue; $value = [string]$entry.UninstallString; if ($value -and $value.ToLowerInvariant().Contains($target)) { $version = [string]$entry.DisplayVersion; break } } }',
+    "if (Test-Path -LiteralPath $root) { foreach ($key in Get-ChildItem -LiteralPath $root) { $entry = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue; $value = [string]$entry.UninstallString; if ($value -and $value.ToLowerInvariant().Contains($target)) { $version = [string]$entry.DisplayVersion; if (-not $version) { $version = '__present_without_version__' }; break } } }",
     'Write-Output $version',
   ].join('; ');
+}
+
+async function registryVersion(installDir) {
+  const command = registryVersionCommand(installDir);
   return (
     await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
       timeoutMs: 20000,
@@ -323,31 +403,58 @@ async function registryVersion(installDir) {
   ).stdout.trim();
 }
 
-async function cleanup(installDir, localAppData, installId) {
-  let runtimePid = '';
-  try {
-    runtimePid = (
-      await readFile(join(localAppData, 'SYNC-THINK', 'runtime-' + installId + '.pid'), 'utf8')
-    ).trim();
-  } catch {}
+export function cleanupProcessCommand(installDir, runtimePid = '') {
   const prefix = (installDir.endsWith('\\') ? installDir : installDir + '\\').replaceAll("'", "''");
-  const command = [
+  return [
     "$prefix = '" + prefix + "'",
     'Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and ([string]$_.ExecutablePath).StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
     runtimePid
-      ? 'Stop-Process -Id ' + Number(runtimePid) + ' -Force -ErrorAction SilentlyContinue'
+      ? '$runtime = Get-Process -Id ' +
+        Number(runtimePid) +
+        ' -ErrorAction SilentlyContinue; if ($runtime) { Stop-Process -Id $runtime.Id -Force -ErrorAction Stop }'
       : '',
+    'exit 0',
   ]
     .filter(Boolean)
     .join('; ');
+}
+
+async function cleanup(installDir, localAppData, installId) {
+  let runtimePid = '';
+  if (installId) {
+    try {
+      runtimePid = (
+        await readFile(join(localAppData, 'SYNC-THINK', 'runtime-' + installId + '.pid'), 'utf8')
+      ).trim();
+    } catch {}
+  }
+  const command = cleanupProcessCommand(installDir, runtimePid);
   await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
     timeoutMs: 20000,
   });
+  const uninstaller = join(installDir, UNINSTALLER);
+  if (await pathExists(uninstaller)) {
+    await run(uninstaller, ['/S', '/currentuser'], {
+      timeoutMs: UPDATE_INSTALL_BASE_INSTALL_TIMEOUT_MS,
+      timeoutCode: 'update-install.cleanup-uninstall-timeout',
+      errorCode: 'update-install.cleanup-uninstall-failed',
+    });
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      if (!(await pathExists(installDir)) && (await registryVersion(installDir)) === '') return;
+      await sleep(250);
+    }
+    throw new Error('update-install.cleanup-uninstall-incomplete');
+  }
 }
 
 async function main() {
   if (process.platform !== 'win32') throw new Error('update-install.windows-only');
-  const root = join(ROOT, '.data', 'update-install-e2e-' + id());
+  const nativeLocalAppData = String(process.env.LOCALAPPDATA ?? '').trim();
+  if (!nativeLocalAppData) throw new Error('update-install.native-local-app-data-missing');
+  const runId = id();
+  const reuseInstallers = process.argv.includes('--reuse-installers');
+  const root = join(ROOT, '.data', 'update-install-e2e-' + runId);
   const paths = {
     basePortable: join(RELEASE, 'win-unpacked'),
     upgradePortable: join(RELEASE, 'win-unpacked-update-e2e-upgrade'),
@@ -361,8 +468,20 @@ async function main() {
     logs: join(root, 'logs'),
     probe: join(root, 'probe-result.json'),
     result: join(root, 'smoke-result.json'),
+    progress: join(root, 'logs', 'progress.json'),
+    recoverySnapshot: join(root, 'recovery-snapshot'),
+    handoff: updateInstallProbeHandoffPath(process.env.APPDATA),
+    nativeUpdaterCache: join(nativeLocalAppData, UPDATER_CACHE_NAME),
+    nativeUpdaterCacheBackup: join(
+      nativeLocalAppData,
+      UPDATER_CACHE_NAME + '.update-install-e2e-backup-' + runId,
+    ),
   };
   paths.database = join(paths.runtimeData, 'sync-think.db');
+  paths.isolatedUpdaterCache = join(paths.localAppData, UPDATER_CACHE_NAME);
+  if (await pathExists(paths.handoff)) {
+    throw new Error('update-install.preexisting-handoff');
+  }
   await Promise.all(
     [
       paths.install,
@@ -374,63 +493,138 @@ async function main() {
     ].map((value) => mkdir(value, { recursive: true })),
   );
   console.log('[update-install] root: ' + root);
+  const markProgress = async (stage, detail = {}) =>
+    writeFile(
+      paths.progress,
+      JSON.stringify({ stage, at: new Date().toISOString(), ...detail }, null, 2) + '\n',
+      'utf8',
+    );
   assert.equal(await readPortableVersion(paths.basePortable), BASE);
-  await createUpgradePortable(paths.basePortable, paths.upgradePortable, TARGET);
-  const baseBuild = await buildWindowsInstaller({
-    portableDir: paths.basePortable,
-    installerDir: paths.baseInstaller,
-    version: BASE,
-    signingMode: 'unsigned-fixture',
-  });
-  const upgradeBuild = await buildWindowsInstaller({
-    portableDir: paths.upgradePortable,
-    installerDir: paths.upgradeInstaller,
-    version: TARGET,
-    signingMode: 'unsigned-fixture',
-  });
+  if (!reuseInstallers) {
+    await createUpgradePortable(paths.basePortable, paths.upgradePortable, TARGET);
+  } else {
+    assert.equal(await readPortableVersion(paths.upgradePortable), TARGET);
+  }
+  const baseBuild = reuseInstallers
+    ? await readPreparedInstallerBuild(paths.baseInstaller, BASE)
+    : await buildWindowsInstaller({
+        portableDir: paths.basePortable,
+        installerDir: paths.baseInstaller,
+        version: BASE,
+        signingMode: 'unsigned-fixture',
+      });
+  const upgradeBuild = reuseInstallers
+    ? await readPreparedInstallerBuild(paths.upgradeInstaller, TARGET)
+    : await buildWindowsInstaller({
+        portableDir: paths.upgradePortable,
+        installerDir: paths.upgradeInstaller,
+        version: TARGET,
+        signingMode: 'unsigned-fixture',
+      });
+  await markProgress('fixtures-ready', { reuseInstallers });
   const baseInstaller = join(paths.baseInstaller, baseBuild.manifest.files[0].path);
   const upgradeInstaller = join(paths.upgradeInstaller, upgradeBuild.manifest.files[0].path);
-  await run(baseInstaller, ['/S', '/D=' + paths.install], {
-    env: {
-      ...process.env,
-      LOCALAPPDATA: paths.localAppData,
-    },
-    timeoutMs: 120000,
-    errorCode: 'update-install.base-install-failed',
-  });
-  const executable = join(paths.install, EXE);
-  await access(executable);
-  const updaterCacheDir = join(paths.localAppData, 'sync-think-updater');
-  await mkdir(updaterCacheDir, { recursive: true });
-  // A fresh manual NSIS install does not populate electron-updater's isolated cache.
-  // Seed the exact installed baseline so the E2E represents the state after a prior updater install.
-  await cp(baseInstaller, join(updaterCacheDir, 'installer.exe'));
-  await cp(baseInstaller + '.blockmap', join(paths.feed, basename(baseInstaller) + '.blockmap'));
-  await writeWindowsGenericUpdateFeed({
-    artifactPath: upgradeInstaller,
-    outputDir: paths.feed,
-    version: TARGET,
-    channel: CHANNEL,
-    requireBlockmap: true,
-    channelPolicy: {
-      channel: CHANNEL,
-      audience: 'private',
-      requiresAuthorization: true,
-      allowedVersions: [TARGET],
-      withdrawnVersions: [],
-    },
-  });
-  const tls = await certificate(root);
-  const server = await feedServer(paths.feed, tls);
   let baseIdentity = null;
   let desktop = null;
+  let server = null;
+  let nativeUpdaterCachePrepared = false;
+  let nativeUpdaterCacheReserved = false;
+  let baseInstallDurationMs = null;
+  let baseInstallExitCode = null;
   try {
+    nativeUpdaterCacheReserved = await reserveNativeUpdaterCache(
+      paths.nativeUpdaterCache,
+      paths.nativeUpdaterCacheBackup,
+    );
+    nativeUpdaterCachePrepared = true;
+    await markProgress('native-cache-reserved');
+    let baseInstall;
+    try {
+      baseInstall = await run(
+        baseInstaller,
+        ['/S', '/currentuser', '/D=' + paths.install],
+        {
+          env: {
+            ...process.env,
+            LOCALAPPDATA: paths.localAppData,
+          },
+          timeoutMs: UPDATE_INSTALL_BASE_INSTALL_TIMEOUT_MS,
+          timeoutCode: 'update-install.base-install-timeout',
+          errorCode: 'update-install.base-install-failed',
+          acceptedExitCodes: UPDATE_INSTALL_NSIS_ASSISTED_SUCCESS_EXIT_CODES,
+        },
+      );
+    } catch (error) {
+      await markProgress('base-install-failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    baseInstallDurationMs = baseInstall.durationMs;
+    baseInstallExitCode = baseInstall.exitCode;
+    await markProgress('base-installed', { baseInstallDurationMs, baseInstallExitCode });
+    const executable = join(paths.install, EXE);
+    await Promise.all([
+      access(executable),
+      access(join(paths.install, 'resources', 'runtime', 'package.json')),
+      access(join(paths.install, UNINSTALLER)),
+    ]);
+    const installedLayout = await verifyWindowsPortableLayout(paths.install, {
+      signingMode: 'unsigned-fixture',
+      environment: {},
+    });
+    assert.equal(
+      installedLayout.ok,
+      true,
+      'update-install.base-layout-invalid:' + JSON.stringify(installedLayout.errors),
+    );
+    assert.equal(await registryVersion(paths.install), BASE);
+    const archivedBaseInstaller = join(
+      paths.nativeUpdaterCache,
+      'recovery',
+      'installers',
+      BASE,
+      'installer.exe',
+    );
+    assert.equal(hash(await readFile(archivedBaseInstaller)), hash(await readFile(baseInstaller)));
+    await markProgress('base-validated');
+    await mkdir(paths.isolatedUpdaterCache, { recursive: true });
+    // NSIS resolves LOCALAPPDATA through the Windows Known Folder API. Seed the
+    // environment-isolated cache used by Electron while preserving the native cache separately.
+    await cp(baseInstaller, join(paths.isolatedUpdaterCache, 'installer.exe'));
+    const isolatedRecoveryInstaller = join(
+      paths.isolatedUpdaterCache,
+      'recovery',
+      'installers',
+      BASE,
+      'installer.exe',
+    );
+    await mkdir(dirname(isolatedRecoveryInstaller), { recursive: true });
+    await cp(baseInstaller, isolatedRecoveryInstaller);
+    await cp(baseInstaller + '.blockmap', join(paths.feed, basename(baseInstaller) + '.blockmap'));
+    await writeWindowsGenericUpdateFeed({
+      artifactPath: upgradeInstaller,
+      outputDir: paths.feed,
+      version: TARGET,
+      channel: CHANNEL,
+      requireBlockmap: true,
+      channelPolicy: {
+        channel: CHANNEL,
+        audience: 'private',
+        requiresAuthorization: true,
+        allowedVersions: [TARGET],
+        withdrawnVersions: [],
+      },
+    });
+    const tls = await certificate(root);
+    server = await feedServer(paths.feed, tls);
+    await markProgress('feed-ready');
     const probe = {
       resultPath: paths.probe,
       userDataPath: paths.userData,
       targetVersion: TARGET,
       markerName: 'Update install E2E ' + basename(root),
-      timeoutMs: 480000,
+      timeoutMs: UPDATE_INSTALL_UPGRADE_HEALTH_TIMEOUT_MS,
       trustedCertificateData: tls.data,
     };
     const out = openSync(join(paths.logs, 'desktop.stdout.log'), 'a');
@@ -445,6 +639,10 @@ async function main() {
         SYNC_THINK_UPDATE_FEED_URL: server.url,
         SYNC_THINK_UPDATE_CHANNEL: CHANNEL,
         SYNC_THINK_UPDATE_TOKEN: TOKEN,
+        SYNC_THINK_UPDATE_ROLLBACK_ALLOW_UNSIGNED_FIXTURE: '1',
+        SYNC_THINK_UPDATE_ROLLBACK_HEALTH_TIMEOUT_MS: String(
+          UPDATE_INSTALL_UPGRADE_HEALTH_TIMEOUT_MS,
+        ),
         SYNC_THINK_UPDATE_INSTALL_E2E_CONFIG: JSON.stringify(probe),
       },
       stdio: ['ignore', out, err],
@@ -452,6 +650,7 @@ async function main() {
     });
     closeSync(out);
     closeSync(err);
+    await markProgress('desktop-spawned', { pid: desktop.pid ?? null });
     await waitState(
       paths.probe,
       (state) => state.events?.some((event) => event.type === 'base-runtime-ready'),
@@ -459,11 +658,12 @@ async function main() {
       'update-install.base-runtime-timeout',
     );
     baseIdentity = await identity(paths.userData, paths.database);
+    await markProgress('base-ready');
     console.log('[update-install] base ready; waiting for updater relaunch');
     const finalState = await waitState(
       paths.probe,
       (state) => state.completed === true,
-      480000,
+      UPDATE_INSTALL_UPGRADE_HEALTH_TIMEOUT_MS,
       'update-install.relaunch-timeout',
     );
     const upgradedIdentity = await identity(paths.userData, paths.database);
@@ -544,6 +744,10 @@ async function main() {
       databasePresent: true,
       installerSigningMode: 'unsigned-fixture',
       unsignedFixtureExplicit: true,
+      baseInstallExitCode,
+      baseInstallDurationMs,
+      baseInstallTimeoutMs: UPDATE_INSTALL_BASE_INSTALL_TIMEOUT_MS,
+      nativeUpdaterCacheIsolation: true,
       differentialPackage: true,
       blockmapRequested: blockmapRequests.length > 0,
       blockmapRequestCount: blockmapRequests.length,
@@ -566,27 +770,45 @@ async function main() {
       probeEvents: finalState.events,
     };
     await writeFile(paths.result, JSON.stringify(result, null, 2) + '\n', 'utf8');
+    await markProgress('completed');
     console.log('[update-install] real quitAndInstall E2E passed');
     console.log(JSON.stringify(result, null, 2));
   } finally {
+    let cleanupError = null;
     await writeFile(
       join(paths.logs, 'feed-requests.json'),
-      JSON.stringify(server.requests, null, 2) + '\n',
+      JSON.stringify(server?.requests ?? [], null, 2) + '\n',
       'utf8',
     ).catch(() => undefined);
-    await server.close().catch(() => undefined);
-    if (baseIdentity)
-      await cleanup(paths.install, paths.localAppData, baseIdentity.installId).catch(
-        () => undefined,
+    await server?.close().catch(() => undefined);
+    desktop?.kill();
+    await cp(join(paths.isolatedUpdaterCache, 'recovery'), paths.recoverySnapshot, {
+      recursive: true,
+    }).catch(() => undefined);
+    try {
+      await cleanup(paths.install, paths.localAppData, baseIdentity?.installId ?? '');
+    } catch (error) {
+      cleanupError = error;
+      console.error('[update-install] cleanup failed:', error);
+    }
+    await rm(paths.handoff, { force: true });
+    if (nativeUpdaterCachePrepared) {
+      await restoreNativeUpdaterCache(
+        paths.nativeUpdaterCache,
+        paths.nativeUpdaterCacheBackup,
+        nativeUpdaterCacheReserved,
       );
-    else desktop?.kill();
+    }
+    if (cleanupError) throw cleanupError;
   }
 }
 
-main().catch((error) => {
-  console.error(
-    '[update-install]',
-    error instanceof Error ? (error.stack ?? error.message) : error,
-  );
-  process.exitCode = 1;
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(
+      '[update-install]',
+      error instanceof Error ? (error.stack ?? error.message) : error,
+    );
+    process.exitCode = 1;
+  });
+}

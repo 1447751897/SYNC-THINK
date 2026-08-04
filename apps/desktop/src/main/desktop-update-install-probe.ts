@@ -13,6 +13,8 @@ const HANDOFF_ENVIRONMENT_KEYS = [
   'LOCALAPPDATA',
   'SYNC_THINK_DB_PATH',
   'SYNC_THINK_RUNTIME_FORCE_RESTART',
+  'SYNC_THINK_UPDATE_ROLLBACK_ALLOW_UNSIGNED_FIXTURE',
+  'SYNC_THINK_UPDATE_ROLLBACK_HEALTH_TIMEOUT_MS',
 ] as const;
 
 type DesktopUpdateInstallProbeEnvironmentKey = (typeof HANDOFF_ENVIRONMENT_KEYS)[number];
@@ -55,6 +57,7 @@ export interface DesktopUpdateInstallProbeOptions {
   createMarker(name: string): Promise<string>;
   markerExists(name: string, markerId: string | null): Promise<boolean>;
   prepareInstallRelaunch?(): Promise<void>;
+  waitBeforeCheckRetry?(): Promise<void>;
   now?: () => Date;
 }
 
@@ -100,17 +103,15 @@ export function resolveDesktopUpdateInstallProbeConfiguration(
     'desktop.update.probe-target-version-invalid',
   );
   const markerName = requiredString(parsed.markerName, 'desktop.update.probe-marker-invalid');
-  const timeoutValue = parsed.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : Number(parsed.timeoutMs);
+  const timeoutValue =
+    parsed.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : Number(parsed.timeoutMs);
   if (!Number.isInteger(timeoutValue) || timeoutValue < 1_000 || timeoutValue > MAX_TIMEOUT_MS) {
     throw new Error('desktop.update.probe-timeout-invalid');
   }
   const trustedCertificateData =
     parsed.trustedCertificateData === undefined || parsed.trustedCertificateData === null
       ? null
-      : requiredString(
-          parsed.trustedCertificateData,
-          'desktop.update.probe-certificate-invalid',
-        );
+      : requiredString(parsed.trustedCertificateData, 'desktop.update.probe-certificate-invalid');
   return {
     resultPath,
     userDataPath,
@@ -313,7 +314,12 @@ export async function runDesktopUpdateInstallProbe(
     appendEvent(state, now, 'base-runtime-ready', currentVersion);
     await writeState(configuration, state);
 
-    const checkResult = await controller.checkForUpdates();
+    let checkResult = await controller.checkForUpdates();
+    if (!checkResult.ok && checkResult.errorCode === 'desktop.update.check-failed') {
+      await (options.waitBeforeCheckRetry?.() ??
+        new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 1_000)));
+      checkResult = await controller.checkForUpdates();
+    }
     if (!checkResult.ok || checkResult.state.phase !== 'available') {
       throw new Error(checkResult.errorCode ?? 'desktop.update.probe-check-incomplete');
     }

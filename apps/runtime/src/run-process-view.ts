@@ -8,10 +8,7 @@ import type {
 } from '@sync-think/protocol';
 import type { Event, RunId } from '@sync-think/shared';
 
-const TOOL_META: Record<
-  string,
-  { verb: string; kind: ProcessToolKind; zh: string }
-> = {
+const TOOL_META: Record<string, { verb: string; kind: ProcessToolKind; zh: string }> = {
   read_file: { verb: 'Read', kind: 'read', zh: '读取文件' },
   write_file: { verb: 'Edit', kind: 'write', zh: '写入文件' },
   edit_file: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
@@ -137,7 +134,10 @@ function extractToolCallId(payload: Record<string, unknown>, eventId: string): s
   return eventId;
 }
 
-function buildLabel(toolName: string, args?: Record<string, unknown>): {
+function buildLabel(
+  toolName: string,
+  args?: Record<string, unknown>,
+): {
   label: string;
   verb: string;
   zh: string;
@@ -174,9 +174,10 @@ function extractWriteContent(args?: Record<string, unknown>): string | undefined
 
 function clipContentPreview(content: string, maxLines = 200, maxChars = 12_000): string {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
-  const lineClipped = lines.length <= maxLines
-    ? lines.join('\n')
-    : `${lines.slice(0, maxLines).join('\n')}\n... (${lines.length} lines total)`;
+  const lineClipped =
+    lines.length <= maxLines
+      ? lines.join('\n')
+      : `${lines.slice(0, maxLines).join('\n')}\n... (${lines.length} lines total)`;
   if (lineClipped.length <= maxChars) return lineClipped;
   return `${lineClipped.slice(0, maxChars)}\n... (content truncated)`;
 }
@@ -308,10 +309,7 @@ function summarizeResult(
 /**
  * Project NewMax-style "执行过程" steps + file changes + token usage.
  */
-export function projectRunProcess(
-  runId: RunId,
-  events: readonly Event[],
-): RunProcessView {
+export function projectRunProcess(runId: RunId, events: readonly Event[]): RunProcessView {
   const threadId: string | undefined = undefined;
   const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
   const byId = new Map<string, ExecutionProcessStep>();
@@ -322,6 +320,8 @@ export function projectRunProcess(
   const writeContentByCall = new Map<string, string>();
   let tokensIn: number | undefined;
   let tokensOut: number | undefined;
+  let cachedTokensHit: number | undefined;
+  let cachedTokensCreated: number | undefined;
   let startedAt: string | undefined;
   let completedAt: string | undefined;
   let providerModelId: string | undefined;
@@ -358,6 +358,12 @@ export function projectRunProcess(
     if (event.type === 'provider.usage') {
       if (typeof event.payload.tokensIn === 'number') tokensIn = event.payload.tokensIn;
       if (typeof event.payload.tokensOut === 'number') tokensOut = event.payload.tokensOut;
+      if (typeof event.payload.cachedTokensHit === 'number') {
+        cachedTokensHit = event.payload.cachedTokensHit;
+      }
+      if (typeof event.payload.cachedTokensCreated === 'number') {
+        cachedTokensCreated = event.payload.cachedTokensCreated;
+      }
       // Some adapters use input/output naming.
       if (tokensIn === undefined && typeof event.payload.inputTokens === 'number') {
         tokensIn = event.payload.inputTokens;
@@ -450,15 +456,12 @@ export function projectRunProcess(
             : failed && typeof payload.errorMessage === 'string'
               ? payload.errorMessage
               : resultFailed
-                ? extractToolResultError(payload.result ?? payload.output) ?? resultSummary.preview
+                ? (extractToolResultError(payload.result ?? payload.output) ??
+                  resultSummary.preview)
                 : undefined,
         occurredAt: event.occurredAt,
       });
-      if (
-        completed &&
-        (toolName === 'write_file' || toolName === 'edit_file') &&
-        built.path
-      ) {
+      if (completed && (toolName === 'write_file' || toolName === 'edit_file') && built.path) {
         fileChanges.push({
           path: built.path,
           action: resultSummary.created ? 'created' : 'edited',
@@ -478,18 +481,14 @@ export function projectRunProcess(
             ? payload.errorMessage
             : existing.error;
     } else if (completed) {
-      const summary = summarizeResult(
-        toolName,
-        payload.result ?? payload.output,
-        argsForSummary,
-      );
+      const summary = summarizeResult(toolName, payload.result ?? payload.output, argsForSummary);
       const resultFailed = isToolResultFailure(payload.result ?? payload.output, summary);
-      existing.status =
-        existing.status === 'error' || resultFailed ? 'error' : 'done';
+      existing.status = existing.status === 'error' || resultFailed ? 'error' : 'done';
       existing.preview = summary.preview ?? existing.preview;
       existing.exitCode = summary.exitCode ?? existing.exitCode;
       if (resultFailed && !existing.error) {
-        existing.error = extractToolResultError(payload.result ?? payload.output) ?? existing.preview;
+        existing.error =
+          extractToolResultError(payload.result ?? payload.output) ?? existing.preview;
       }
       if (
         (toolName === 'write_file' || toolName === 'edit_file') &&
@@ -590,6 +589,8 @@ export function projectRunProcess(
     errorCount: steps.filter((step) => step.status === 'error').length,
     tokensIn,
     tokensOut,
+    cachedTokensHit,
+    cachedTokensCreated,
     durationMs,
     providerModelId,
     modelId,
@@ -625,9 +626,7 @@ function normalizeTaskPlanItems(raw: unknown): TaskPlanView | undefined {
     const title = typeof rec?.title === 'string' ? rec.title.trim() : '';
     if (!title) continue;
     const status =
-      rec?.status === 'in_progress' || rec?.status === 'completed'
-        ? rec.status
-        : 'pending';
+      rec?.status === 'in_progress' || rec?.status === 'completed' ? rec.status : 'pending';
     items.push({ title, status });
   }
   if (items.length === 0) return undefined;
@@ -638,10 +637,7 @@ function normalizeTaskPlanItems(raw: unknown): TaskPlanView | undefined {
   };
 }
 
-function isToolResultFailure(
-  resultRaw: unknown,
-  summary: { exitCode?: number },
-): boolean {
+function isToolResultFailure(resultRaw: unknown, summary: { exitCode?: number }): boolean {
   if (typeof summary.exitCode === 'number' && summary.exitCode !== 0) return true;
   const parsed = parseMaybeJson(resultRaw);
   const obj = asRecord(parsed);

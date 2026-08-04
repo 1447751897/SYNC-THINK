@@ -99,6 +99,39 @@ describe('streamAnthropicMessages', () => {
     expect(bodyJson.messages[0]).toMatchObject({ role: 'user', content: 'hello anthropic stream' });
   });
 
+  it('adds cache controls to stable system, tools, and conversation history', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }),
+    } as unknown as Response);
+
+    await collect(
+      streamAnthropicMessages(
+        req({
+          systemPrompt: 'stable system prompt',
+          messages: [
+            { role: 'user', content: 'first question' },
+            { role: 'assistant', content: 'first answer' },
+            { role: 'user', content: 'next question' },
+          ],
+          tools: [{ name: 'read_file', inputSchema: { type: 'object' } }],
+          toolChoice: 'none',
+          promptCache: { key: 'thread-cache-key', strategy: 'explicit' },
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(JSON.stringify(body.system)).toContain('cache_control');
+    expect(JSON.stringify(body.tools)).toContain('cache_control');
+    expect(JSON.stringify(body.messages)).toContain('cache_control');
+    expect(body.tool_choice).toEqual({ type: 'none' });
+  });
+
   it('merges message_start input/cache usage with later message_delta output usage', async () => {
     const body = sseStream([
       'event: message_start\n',
@@ -124,11 +157,11 @@ describe('streamAnthropicMessages', () => {
     expect(textFromEvents(events)).toBe('Complete');
     expect(events).toContainEqual({
       type: 'usage',
-      tokensIn: 31,
+      tokensIn: 48,
       tokensOut: 9,
       cachedTokensHit: 13,
       cachedTokensCreated: 4,
-      totalTokens: 40,
+      totalTokens: 57,
     });
     expect(events.at(-1)).toMatchObject({ type: 'finished', reason: 'stop' });
   });
@@ -255,11 +288,11 @@ describe('streamAnthropicMessages', () => {
     expect(textFromEvents(events)).toContain('solid claude reply');
     expect(events).toContainEqual({
       type: 'usage',
-      tokensIn: 17,
+      tokensIn: 31,
       tokensOut: 4,
       cachedTokensHit: 9,
       cachedTokensCreated: 5,
-      totalTokens: 21,
+      totalTokens: 35,
     });
     expect(events[events.length - 1]).toMatchObject({ type: 'finished' });
   });

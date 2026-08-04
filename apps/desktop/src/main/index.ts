@@ -374,6 +374,7 @@ function initializeDesktopUpdater(): void {
     desktopUpdateRollbackCoordinator = new DesktopUpdateRollbackCoordinator({
       recoveryRoot,
       currentVersion: app.getVersion(),
+      targetExecutablePath: process.execPath,
       allowUnsignedFixture: unsignedFixture,
       expectedSignerThumbprint: process.env.SYNC_THINK_WINDOWS_EXPECTED_SIGNER_SHA1 ?? null,
       ...(unsignedFixture && Number.isInteger(fixtureTimeout)

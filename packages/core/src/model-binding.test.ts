@@ -3,6 +3,7 @@ import {
   resolveModelBinding,
   resolveProviderPriorityFallback,
   shouldAttemptFallback,
+  shouldSkipSameProviderFallback,
   type AgentModelBinding,
 } from './model-binding.js';
 import type { AgentVersionId, ModelId } from '@sync-think/shared';
@@ -90,10 +91,7 @@ describe('resolveModelBinding precedence ?5.3', () => {
       agent: agent(),
       failedModelId: 'model-default' as ModelId,
       failureClass: 'timeout',
-      attemptedModelIds: [
-        'model-default' as ModelId,
-        'model-fb-1' as ModelId,
-      ],
+      attemptedModelIds: ['model-default' as ModelId, 'model-fb-1' as ModelId],
     });
     expect(result).toMatchObject({
       status: 'resolved',
@@ -171,12 +169,25 @@ describe('shouldAttemptFallback', () => {
   });
 });
 
+describe('shouldSkipSameProviderFallback', () => {
+  it.each(['timeout', 'transient', 'rate-limit', 'auth'] as const)(
+    'treats %s as a provider-scoped failure',
+    (failureClass) => {
+      expect(shouldSkipSameProviderFallback(failureClass, 1)).toBe(false);
+      expect(shouldSkipSameProviderFallback(failureClass, 2)).toBe(true);
+    },
+  );
+
+  it.each(['protocol', 'acceptance', 'permission', 'unknown'] as const)(
+    'does not infer provider scope for %s',
+    (failureClass) => {
+      expect(shouldSkipSameProviderFallback(failureClass, 2)).toBe(false);
+    },
+  );
+});
+
 describe('resolveProviderPriorityFallback', () => {
-  const chain = [
-    'model-5.6' as ModelId,
-    'model-5.5' as ModelId,
-    'model-5.4' as ModelId,
-  ];
+  const chain = ['model-5.6' as ModelId, 'model-5.5' as ModelId, 'model-5.4' as ModelId];
 
   it('walks forward from primary to spare-1', () => {
     expect(

@@ -18,7 +18,9 @@ const execFileAsync = promisify(execFile);
 const VERSION_PATTERN = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
 const DEFAULT_HEALTH_DEADLINE_MS = 3 * 60_000;
 const MAX_HEALTH_DEADLINE_MS = 15 * 60_000;
+const WATCHDOG_READY_TIMEOUT_MS = 15_000;
 const HEALTHY_RELEASE_LIMIT = 2;
+const WATCHDOG_HOST_SCRIPT = `@echo off\r\n"%SYNC_THINK_WATCHDOG_POWERSHELL%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SYNC_THINK_WATCHDOG_SCRIPT%" -IntentPath "%SYNC_THINK_WATCHDOG_INTENT%" -RecoveryRoot "%SYNC_THINK_WATCHDOG_ROOT%"\r\nexit /b %errorlevel%\r\n`;
 
 export interface DesktopUpdateInstallerVerification {
   bytes: number;
@@ -38,6 +40,7 @@ interface DesktopUpdateRollbackCoordinatorOptions {
   healthDeadlineMs?: number;
   allowUnsignedFixture?: boolean;
   expectedSignerThumbprint?: string | null;
+  targetExecutablePath?: string;
   verifyInstaller?: (
     path: string,
     allowUnsignedFixture: boolean,
@@ -140,6 +143,7 @@ export class DesktopUpdateRollbackCoordinator {
   private readonly healthDeadlineMs: number;
   private readonly allowUnsignedFixture: boolean;
   private readonly expectedSignerThumbprint: string | null;
+  private readonly targetExecutablePath: string;
   private readonly verifyInstaller: (
     path: string,
     allowUnsignedFixture: boolean,
@@ -160,6 +164,7 @@ export class DesktopUpdateRollbackCoordinator {
     }
     this.allowUnsignedFixture = options.allowUnsignedFixture === true;
     this.expectedSignerThumbprint = normalizeThumbprint(options.expectedSignerThumbprint);
+    this.targetExecutablePath = resolve(options.targetExecutablePath ?? process.execPath);
     this.verifyInstaller = options.verifyInstaller ?? verifyDesktopUpdateRecoveryInstaller;
     this.launchWatchdog = options.launchWatchdog ?? ((intent) => this.launchDefaultWatchdog(intent));
     assertVersion(options.currentVersion);
@@ -229,8 +234,11 @@ export class DesktopUpdateRollbackCoordinator {
       previousVersion: this.options.currentVersion,
       targetVersion,
       targetDownloadedFile: input.downloadedFile ? resolve(input.downloadedFile) : null,
+      targetExecutablePath: this.targetExecutablePath,
       previousRelease,
       healthMarkerPath: this.store.healthMarkerPath(intentId),
+      watchdogReadyPath: this.store.watchdogReadyPath(intentId),
+      relaunchFencePath: this.store.relaunchFencePath(intentId),
       attemptFencePath: this.store.attemptFencePath(intentId),
       outcomePath: this.store.outcomePath(intentId),
       allowUnsignedFixture: this.allowUnsignedFixture,
@@ -322,25 +330,62 @@ export class DesktopUpdateRollbackCoordinator {
   private async launchDefaultWatchdog(intent: DesktopUpdateRollbackIntent): Promise<void> {
     if (process.platform !== 'win32') throw new Error('desktop.update.rollback-watchdog-platform');
     const watchdogPath = this.store.watchdogPath();
+    const watchdogHostPath = this.store.watchdogHostPath();
     await mkdir(dirname(watchdogPath), { recursive: true });
     await writeFile(watchdogPath, DESKTOP_UPDATE_ROLLBACK_WATCHDOG_SCRIPT, 'utf8');
+    await writeFile(watchdogHostPath, WATCHDOG_HOST_SCRIPT, 'utf8');
+    const systemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows';
+    const commandInterpreter =
+      process.env.ComSpec ?? join(systemRoot, 'System32', 'cmd.exe');
     const child = spawn(
-      powershellExecutable(),
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        watchdogPath,
-        '-IntentPath',
-        this.store.intentPath(intent.intentId),
-        '-RecoveryRoot',
-        this.options.recoveryRoot,
-      ],
-      { detached: true, stdio: 'ignore', windowsHide: true, shell: false },
+      commandInterpreter,
+      ['/d', '/s', '/c', 'call', watchdogHostPath],
+      {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        shell: false,
+        env: {
+          SystemRoot: systemRoot,
+          WINDIR: systemRoot,
+          ComSpec: commandInterpreter,
+          APPDATA: process.env.APPDATA,
+          LOCALAPPDATA: process.env.LOCALAPPDATA,
+          USERPROFILE: process.env.USERPROFILE,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          PSModulePath: process.env.PSModulePath,
+          SYNC_THINK_WATCHDOG_POWERSHELL: powershellExecutable(),
+          SYNC_THINK_WATCHDOG_SCRIPT: watchdogPath,
+          SYNC_THINK_WATCHDOG_INTENT: this.store.intentPath(intent.intentId),
+          SYNC_THINK_WATCHDOG_ROOT: this.options.recoveryRoot,
+        },
+      },
     );
+    let exitCode: number | null | undefined;
+    child.once('exit', (code) => {
+      exitCode = code;
+    });
+    await new Promise<void>((resolvePromise, reject) => {
+      child.once('spawn', resolvePromise);
+      child.once('error', reject);
+    });
+    const readyDeadline = Date.now() + WATCHDOG_READY_TIMEOUT_MS;
+    while (true) {
+      try {
+        await stat(intent.watchdogReadyPath);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      if (exitCode !== undefined) {
+        throw new Error(`desktop.update.rollback-watchdog-exited:${exitCode ?? 'signal'}`);
+      }
+      if (Date.now() >= readyDeadline) {
+        throw new Error('desktop.update.rollback-watchdog-ready-timeout');
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    }
     child.unref();
   }
 }

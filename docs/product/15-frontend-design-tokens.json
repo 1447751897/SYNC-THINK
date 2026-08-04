@@ -116,6 +116,13 @@
     "lg": "0 22px 56px rgba(16,24,20,0.18)",
     "compose": "0 8px 22px rgba(28,40,31,0.08)"
   },
+  "usage-statistics": {
+    "request-table-min-width": "720px",
+    "request-row-height": "58px",
+    "request-detail-min-height": "38px",
+    "request-detail-toggle-size": "24px",
+    "token-breakdown-columns": 2
+  },
   "layout": {
     "left-nav-width": "236px",
     "right-trace-width": "274px",
@@ -145,11 +152,6 @@
       "approval-pause",
       "artifact-creation"
     ],
-    "forbidden": [
-      "ambient-decorative",
-      "gradient-orbs",
-      "bokeh",
-      "layout-shifting-hover"
-    ]
+    "forbidden": ["ambient-decorative", "gradient-orbs", "bokeh", "layout-shifting-hover"]
   }
 }

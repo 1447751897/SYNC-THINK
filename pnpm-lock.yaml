@@ -108,9 +108,6 @@ importers:
       '@sync-think/workers':
         specifier: workspace:*
         version: link:../../packages/workers
-      '@tailwindcss/cli':
-        specifier: ^4.3.3
-        version: 4.3.3
       '@xterm/xterm':
         specifier: ^5.5.0
         version: 5.5.0
@@ -135,10 +132,10 @@ importers:
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1
-      tailwindcss:
+    devDependencies:
+      '@tailwindcss/cli':
         specifier: ^4.3.3
         version: 4.3.3
-    devDependencies:
       '@testing-library/react':
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -169,6 +166,9 @@ importers:
       react-dom:
         specifier: ^18.3.1
         version: 18.3.1(react@18.3.1)
+      tailwindcss:
+        specifier: ^4.3.3
+        version: 4.3.3
       typescript:
         specifier: ^5.5.4
         version: 5.9.3

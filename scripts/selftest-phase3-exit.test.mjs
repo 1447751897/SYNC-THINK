@@ -15,11 +15,16 @@ describe('Phase 3 exit selftest plan', () => {
       'release-and-visual-contracts',
       'desktop-typecheck',
       'desktop-build',
+      'prepare-update-feed-fixture',
       'generic-feed-e2e',
       'image-provider-build',
       'live-image-provider',
       'electron-visual-capture',
     ]);
+    const releaseContracts = PHASE3_EXIT_STEPS.find(
+      (step) => step.id === 'release-and-visual-contracts',
+    );
+    assert.ok(releaseContracts?.args.includes('scripts/selftest-windows-update-install-e2e.test.mjs'));
   });
 
   it('keeps paid credentials, signed installs, private rollout, and user cohort as external evidence', () => {

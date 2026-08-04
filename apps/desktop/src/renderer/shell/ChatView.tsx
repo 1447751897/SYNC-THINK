@@ -37,15 +37,16 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import type {
-  Conversation,
-  Event,
-  GlobalAgent,
-  Message,
-  MessageBlock,
-  RunId,
-  TaskId,
-  Team,
+import {
+  splitProviderUsageTokens,
+  type Conversation,
+  type Event,
+  type GlobalAgent,
+  type Message,
+  type MessageBlock,
+  type RunId,
+  type TaskId,
+  type Team,
 } from '@sync-think/shared';
 import type {
   ConversationGetContextStatusResponse,
@@ -123,7 +124,6 @@ import {
   formatMessageAbsoluteTime,
   formatMessageClock,
   formatRunModelLabel,
-  formatTokenUsage,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { executeBrowserCommand } from './browser-commands.js';
@@ -794,41 +794,44 @@ export function ChatView({
     return revision;
   }, [conversation.workspaceId, eventHistory, projected.activeRunId]);
 
-  const refreshDesktopWaitingCommands = useCallback(async (showLoading = true) => {
-    const api = bridge();
-    const workspaceId = conversation.workspaceId;
-    const taskId = conversation.taskId;
-    const runId = projected.activeRunId;
-    if (!api?.listWaitingDesktopCommands || !workspaceId || !taskId || !threadId) {
-      desktopWaitingLoadGenerationRef.current += 1;
-      setDesktopWaitingCommands([]);
-      setDesktopWaitingStatus('idle');
+  const refreshDesktopWaitingCommands = useCallback(
+    async (showLoading = true) => {
+      const api = bridge();
+      const workspaceId = conversation.workspaceId;
+      const taskId = conversation.taskId;
+      const runId = projected.activeRunId;
+      if (!api?.listWaitingDesktopCommands || !workspaceId || !taskId || !threadId) {
+        desktopWaitingLoadGenerationRef.current += 1;
+        setDesktopWaitingCommands([]);
+        setDesktopWaitingStatus('idle');
+        setDesktopWaitingError(undefined);
+        return;
+      }
+      const generation = (desktopWaitingLoadGenerationRef.current += 1);
+      if (showLoading) setDesktopWaitingStatus('loading');
       setDesktopWaitingError(undefined);
-      return;
-    }
-    const generation = (desktopWaitingLoadGenerationRef.current += 1);
-    if (showLoading) setDesktopWaitingStatus('loading');
-    setDesktopWaitingError(undefined);
-    try {
-      const response = await api.listWaitingDesktopCommands({
-        workspaceId,
-        ...(runId ? { runId: runId as RunId } : {}),
-      });
-      if (desktopWaitingLoadGenerationRef.current !== generation) return;
-      setDesktopWaitingCommands(
-        response.commands.filter(
-          (command) =>
-            command.workspaceId === workspaceId &&
-            command.taskId === taskId &&
-            (!runId || command.runId === runId),
-        ),
-      );
-      setDesktopWaitingStatus('ready');
-    } catch {
-      if (desktopWaitingLoadGenerationRef.current !== generation) return;
-      setDesktopWaitingStatus('error');
-    }
-  }, [conversation.taskId, conversation.workspaceId, projected.activeRunId, threadId]);
+      try {
+        const response = await api.listWaitingDesktopCommands({
+          workspaceId,
+          ...(runId ? { runId: runId as RunId } : {}),
+        });
+        if (desktopWaitingLoadGenerationRef.current !== generation) return;
+        setDesktopWaitingCommands(
+          response.commands.filter(
+            (command) =>
+              command.workspaceId === workspaceId &&
+              command.taskId === taskId &&
+              (!runId || command.runId === runId),
+          ),
+        );
+        setDesktopWaitingStatus('ready');
+      } catch {
+        if (desktopWaitingLoadGenerationRef.current !== generation) return;
+        setDesktopWaitingStatus('error');
+      }
+    },
+    [conversation.taskId, conversation.workspaceId, projected.activeRunId, threadId],
+  );
 
   useEffect(() => {
     void refreshDesktopWaitingCommands();
@@ -857,9 +860,7 @@ export function ChatView({
         await refreshDesktopWaitingCommands(false);
       } catch {
         await refreshDesktopWaitingCommands(false);
-        setDesktopWaitingError(
-          '操作未生效，桌面等待状态可能已在其他窗口改变。请刷新状态后重试。',
-        );
+        setDesktopWaitingError('操作未生效，桌面等待状态可能已在其他窗口改变。请刷新状态后重试。');
       } finally {
         setBusyDesktopCommandId(undefined);
       }
@@ -2864,11 +2865,7 @@ export function ChatView({
               </div>
             )}
             {visibleDurableMessages.map((msg) => (
-              <div
-                key={msg.id}
-                data-message-id={msg.id}
-                className="shell-message-window-item pb-6"
-              >
+              <div key={msg.id} data-message-id={msg.id} className="shell-message-window-item pb-6">
                 <MessageBubble
                   message={msg}
                   processView={msg.runId ? runProcessById.get(msg.runId) : undefined}
@@ -3469,15 +3466,19 @@ const MessageBubble = memo(function MessageBubble({
       typeof processView.durationMs === 'number'
         ? `${Math.round(processView.durationMs)}ms`
         : undefined;
-    const usage =
-      formatTokenUsage(processView.tokensIn, processView.tokensOut) ??
-      (processView.tokensIn !== undefined || processView.tokensOut !== undefined
-        ? formatCompactCount((processView.tokensIn ?? 0) + (processView.tokensOut ?? 0))
-        : undefined);
+    const tokens =
+      processView.tokensIn !== undefined || processView.tokensOut !== undefined
+        ? splitProviderUsageTokens({
+            tokensIn: processView.tokensIn ?? 0,
+            tokensOut: processView.tokensOut ?? 0,
+            cachedTokensHit: processView.cachedTokensHit,
+            cachedTokensCreated: processView.cachedTokensCreated,
+          })
+        : undefined;
     return {
       duration,
       durationExact,
-      usage,
+      tokens,
       model: modelLabel,
       absoluteTime,
     };
@@ -3710,10 +3711,38 @@ const MessageBubble = memo(function MessageBubble({
                           </strong>
                         </div>
                       ) : null}
-                      {metricsDetail.usage ? (
+                      {metricsDetail.tokens ? (
                         <div className="shell-meta-tip__row">
-                          <span>用量</span>
-                          <strong>{metricsDetail.usage}</strong>
+                          <span>总 Token</span>
+                          <strong>{formatCompactCount(metricsDetail.tokens.totalTokens)}</strong>
+                        </div>
+                      ) : null}
+                      {metricsDetail.tokens ? (
+                        <div className="shell-meta-tip__row">
+                          <span>普通输入</span>
+                          <strong>{formatCompactCount(metricsDetail.tokens.inputTokens)}</strong>
+                        </div>
+                      ) : null}
+                      {metricsDetail.tokens ? (
+                        <div className="shell-meta-tip__row">
+                          <span>缓存读取</span>
+                          <strong>
+                            {formatCompactCount(metricsDetail.tokens.cacheReadTokens)}
+                          </strong>
+                        </div>
+                      ) : null}
+                      {metricsDetail.tokens ? (
+                        <div className="shell-meta-tip__row">
+                          <span>缓存创建</span>
+                          <strong>
+                            {formatCompactCount(metricsDetail.tokens.cacheWriteTokens)}
+                          </strong>
+                        </div>
+                      ) : null}
+                      {metricsDetail.tokens ? (
+                        <div className="shell-meta-tip__row">
+                          <span>输出</span>
+                          <strong>{formatCompactCount(metricsDetail.tokens.outputTokens)}</strong>
                         </div>
                       ) : null}
                       {metricsDetail.model ? (

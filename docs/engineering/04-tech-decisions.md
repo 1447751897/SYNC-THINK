@@ -3,7 +3,7 @@
 - **决策**：本地自动化只证明可在仓库内复现的契约、构建、feed、截图和恢复证据；正式证书、真实私有服务、Provider 凭证与邀请用户结果必须作为独立外部证据，不以 fixture 结果冒充完成。
 - **视觉方案**：使用项目现有 Electron `BrowserWindow.capturePage()`，不引入 Playwright/Puppeteer；通过仅测试可达的 query fixture 复用真实 React 组件，固定 viewport/theme/zoom/reduced-motion，并用 manifest 复核 case、尺寸、字节数与 SHA-256。Hash 用于同次产物完整性，不宣称跨机器像素完全一致。
 - **发布方案**：正式 Windows release 对证书来源、SHA-256 和 RFC 3161 timestamp fail-closed；installer 与 `.exe.blockmap` 必须配对进入 manifest/feed。Generic feed 的 audience、授权、rollout、最低版本、允许/撤回版本策略均由生成与消费两端验证。
-- **恢复边界**：Updater 失败时保留当前已安装版本，原子写入最多 20 条脱敏 recovery evidence；当前不自动 binary rollback。恢复优先采用撤回 feed、重试、发布更高修复版本或人工安装已验证旧版本。
+- **恢复边界**：Updater 失败时保留当前已安装版本，原子写入最多 20 条脱敏 recovery evidence；后续 TD-034 已补充本地 automatic binary rollback。恢复仍同时采用撤回 feed、重试、发布更高修复版本或人工安装已验证旧版本，正式签名 rollback E2E 按外部证据管理。
 - **回滚**：视觉 fixture 可从 shell entry 移除且不影响生产导航；发布策略可回退到上一稳定 manifest/feed，但不得关闭签名校验来“修复”正式发布。
 
 ## TD-032：Database Governance retention 与 physical compaction 保持显式离线（2026-08-02）
@@ -1078,12 +1078,25 @@ Computer Use built-in plugin
 5. 外置 envelope 仍由 SQLite Event row 提供 source-of-truth identity；读取必须完整校验并 hydrate，缺失或损坏时 fail-closed。
 6. Runtime startup 只打开写入/hydrate 能力，不运行 backfill、rollback、orphan sweep、retention、archive 或 VACUUM；所有治理执行器保持显式离线命令。
 
-### TD-034?Windows ?? binary rollback?installer ??????????? watchdog?2026-08-02?
+### TD-034：Windows 自动 binary rollback、installer 自归档与独立 watchdog（2026-08-02）
 
-1. ?? NSIS ??????installer ???????? `%LOCALAPPDATA%/SYNC-THINK/update-recovery/installers/<version>/`?Desktop ???????????? managed Runtime `hello` ??????????????? healthy release?
-2. healthy release ??????????? installer ???????SHA-512??????signer thumbprint ?????????????????? recovery root?hash/bytes ??? Authenticode signer/timestamp ???unsigned fixture ????????????
-3. `quitAndInstall()` ????? rollback intent?????? watchdog?intent ?? previous/target version???? intent token?prior installer ???health marker?deadline ? attempt fence??????token?hash?bytes ??????? fail-closed?????? installer?
-4. ??????????? intent target ?????managed Runtime `hello` ?????? marker?watchdog ????? intent token + target version ? marker?????? intent ?????? previous installer????????? `automaticRollbackAttempted=true`?
-5. watchdog ?? Main ????? PowerShell helper ??????? executable ??? argv?`shell:false`?????? Renderer ???feed token ?????????? installer ???? NSIS ?????????????????safeStorage ? SQLite ????
-6. ????? prior installer ????????????????? `unavailable` ??????????????healthy installer ?????????? intent ? attempt fence ?????????????
-7. E2E ?????? packaged `0.0.1 ? 0.0.2` ?????target ??????? marker?watchdog ?? `0.0.1`???? registry/app version?Runtime hello?install identity?secret?SQLite ??????????????
+1. NSIS `customInstall` 必须把刚完成安装的 installer 先复制到 `.pending`，再原子发布到 `%LOCALAPPDATA%\sync-think-updater\recovery\installers\<version>\installer.exe`。升级卸载过程保留 recovery root，只有显式用户卸载才删除它。
+2. packaged Desktop 只有在 managed Runtime `hello` 成功后才把当前版本登记为 healthy release。登记内容固定包含 installer 受控路径、bytes、SHA-512、签名状态、signer thumbprint 与 timestamp 状态；只保留最近两个 healthy release。
+3. 正式模式下 healthy installer 必须通过 Authenticode、RFC 3161 timestamp 和 signer pin 校验；`unsigned-fixture` 只允许由隔离 update-install probe 显式开启。每次安装前都重新读取文件并比对路径、bytes、hash 与签名投影，任何漂移都 fail-closed。
+4. `quitAndInstall()` 前写入 durable rollback intent，冻结 previous/target version、目标下载路径、上一 healthy installer 投影、health marker、deadline、attempt fence 与 outcome 路径，并在 Desktop 退出前启动独立 watchdog。缺少上一 healthy installer 时明确记录 `unavailable`，不伪装为已 armed。
+5. watchdog 由隐藏、detached、`shell:false` 的 `cmd.exe` host 托管 Windows PowerShell 5.1；受控脚本/intent/recovery root 通过裁剪后的环境变量传入，生命周期独立于 Desktop Main。它不继承 feed token、Authorization、pipe secret、Renderer 数据或用户内容。
+6. Desktop 只有在独立 watchdog 写出匹配 intent 的 ready marker 后才允许进入安装；intent 同时冻结目标 executable，watchdog 使用 one-shot relaunch fence，并在 installer 退出后兜底拉起目标版本，避免 `quitAndInstall()` 完成但新版本无人启动。
+7. target 版本在 deadline 前完成 managed Runtime `hello` 后，Main 写入匹配 intent ID + target version 的 health marker，watchdog 记录 `healthy` 并结束。超时后 watchdog 先以 create-new 文件建立 one-shot attempt fence，再复验上一 installer 的路径、bytes、SHA-512、签名、timestamp 与 signer，最后静默启动上一版本 installer；结果记录为 `rolled-back`、`rollback-failed` 或 `rejected`。
+8. automatic rollback 必须保持 install identity、safeStorage secret 和 SQLite user data 不变，并与 feed 撤回、较高版本修复包及人工恢复 runbook 并存。本地 unit/contract、PowerShell healthy/attempt-fence smoke 和 unsigned NSIS build 关闭实现门禁；正式签名 `0.0.1 -> 0.0.2` 故障注入 rollback E2E 仍属于外部发布证据。
+
+### TD-035：对话 Prompt Cache、冷启动恢复 TTL 与 Provider 熔断（2026-08-04）
+
+1. Prompt Cache 继续采用 Provider-managed KV，不新增本地缓存服务，不把缓存正文写入 SQLite。应用只持久化稳定身份、Context 边界和 Provider 返回的 read/write usage。
+2. 桌面任务对话缓存键固定为 `providerId + modelId + threadId`，不得包含每轮变化的 Run ID；工作流 Step 继续使用 `providerId + modelId + AgentContextThreadId + ContextEpochId`。
+3. OpenAI Responses 与 Chat Completions 共用模型族策略：GPT-5.6 及后续模型使用稳定 `prompt_cache_key` 和 `prompt_cache_options { mode: implicit, ttl: 30m }`。OpenAI 官方接口在支持时可用显式 breakpoint 精确冻结稳定前缀，但当前中转站对内容级 `prompt_cache_breakpoint` 返回 502，因此闭测链路采用兼容的 implicit 模式，并通过稳定 system、tools 与消息前缀提高复用率。更早模型使用稳定 key，并只对支持的模型发送 legacy retention。
+4. Anthropic Messages 不复用 OpenAI 字段；在 system、tools 与最多两个稳定历史消息上使用原生 ephemeral `cache_control`，总 breakpoint 数不超过四个。
+5. 缓存支持不等于强制命中。Adapter 必须原样投影 Provider usage 中的 cache read/write，不得从 cache miss 推测或伪造 cache write。Provider、不兼容中转、低于最小前缀、前缀或 tools 变化导致的 0 命中属于可观测结果；当后续出现 cache read 时，早先 `cache_write_tokens=0` 只说明中转没有上报可计费写入量，不等同于缓存从未建立。
+6. 对话 Run 在 Runtime 冷启动时以最后 durable activity 为准；超过 5 分钟则转为 `run.paused/recovery_expired` 并停止自动执行。审计记录保留，用户后续通过重新发送请求继续。
+7. timeout、transient、rate-limit 和 auth 视为可能的 Provider 端点级故障。同一 Run 对同一 Provider 连续失败两次后跳过剩余同源模型；不同 Provider 的用户配置 fallback 不受影响。失败计数进入 Run checkpoint，防止重启清零后再次长时间重试。
+8. 强制最终回复不得通过删除 system 或 tools 改变 Prompt 前缀。OpenAI Responses、Chat Completions 与 Anthropic Messages 保留相同 system/tools，只使用 `tool_choice: none` 禁止本轮继续调用工具。
+9. 当前中转实测在同一 `gpt-5.6-luna` 对话、相同 tools 配置下，首轮预热后连续两轮分别命中 `2560/3102` 与 `2560/3141` 输入 Token；两轮 `cache_write_tokens` 均为 0。产品以缓存读取量和命中率衡量复用效果，不以持续增加缓存创建量为目标。

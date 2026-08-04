@@ -1,3 +1,26 @@
+## Resume checkpoint（2026-08-04 · 内部无签名闭测链全绿）
+
+- 分支 `feature/newmax-shell-rewrite`，HEAD `5cc35a1`；累计改动仍在未提交工作树，禁止 reset、clean、覆盖式 checkout 和全仓格式化。
+- 标准 `pnpm test:update-install:win` 已从源码重建并通过真实 `0.0.1 -> 0.0.2`，证据为 `.data/update-install-e2e-20260804T064953/smoke-result.json`。7 次 Range 全为 206，只传输 `556013 / 130425065` bytes，自动拉起和身份/密钥/SQLite 连续性通过。
+- watchdog 使用隐藏 detached `cmd.exe` 托管 PowerShell 5.1；安装只在 ready marker 出现后继续，relaunch fence 与 installer-exit fallback 防止目标版本无人拉起。正式签名规则保持 fail-closed，unsigned 只允许显式 fixture。
+- 清理合同要求安装目录和对应卸载注册表键同时消失；最新运行的相关进程、handoff、native cache backup 均为 0。
+- 默认内部 installer：`apps/desktop/release/installer/SYNC-THINK-Setup-0.0.1-x64.exe`，`130425094` bytes，SHA-256 `9154fca844eb8855453f549998cb23dd005ce769051a40b96f72d9a542bf83fe`，schema v3 `unsigned-fixture`。
+- 最终门禁：根 test/typecheck/lint/build 全绿，portable 14/14，Phase 3 release/visual 41/41，`selftest:phase3` 9 步通过。当前只剩正式证书/timestamp、正式签名 rollback、真实 private feed/图片 Provider 与邀请用户反馈。
+
+## Resume checkpoint（2026-08-03 · Phase 3 本地收口复核）
+
+- 分支：`feature/newmax-shell-rewrite`；HEAD `5cc35a1` 与远端跟踪分支一致，相对 `origin/main` 领先 16 个提交；本轮修复仍位于未提交工作树。
+- packaged identity 锁现在覆盖完整异步创建/secret-store 落盘窗口，并发首次启动回归 8/8；Desktop 全量恢复为 127 files / 849 tests。
+- 全仓并发门禁已稳定：Desktop 使用 15 秒测试框架预算，Desktop Host 正常路径使用 10 秒 capability 预算，Runtime 260-frame bounded replay 保持零节拍；根 `pnpm test` 为 20/20 Turbo tasks。
+- portable production payload 已移除 Tailwind build-only 依赖并增加 verifier fence；production packages 从 294 降为 262，现代 injected pnpm deploy 连续通过。
+- update-feed 自检已自包含：`pnpm test:update-feed:win` 从根构建开始准备 unsigned portable + schema v3 installer；`pnpm test:update-feed:prepared:win` 只复用已验证 fixture。缺失/legacy/篡改/签名模式错误均有稳定 preflight。
+- `pnpm selftest:phase3` 完整 9 步通过：Desktop 12 files / 87 tests、release/visual 33 tests、Generic feed 9/9、Electron HTTPS 8 场景、image provider build、无凭证显式 skip 和 7-case 视觉抓取；状态为 `passed-with-external-evidence-pending`。
+- 最终冻结安装通过；Turbo 强制测试 20/20 tasks、0 cached，typecheck 20/20、build 11/11、lint 11/11 与 `git diff --check` 均通过。
+- 自动 binary rollback 的 recovery store、coordinator、PowerShell watchdog、NSIS installer 自归档和 Runtime hello health marker 已在本地实现；正式签名 installer 的故障注入 rollback E2E 仍待外部发布证据。
+- 后续只剩正式证书/timestamp、正式签名升级/rollback、真实 private feed/CDN、真实图片 Provider 凭证与 5-20 位邀请用户闭测。
+
+以下 2026-08-02 checkpoint 保留为历史交接证据。
+
 ## Resume checkpoint（2026-08-02 · 全部本地工程任务收口）
 
 - 分支：`feature/newmax-shell-rewrite`；累计修改仍位于同一未提交工作树。禁止 reset、clean、覆盖式 checkout 和全仓格式化。
@@ -8,7 +31,7 @@
 - 最终人工测试实例：`D:\projects\SYNC-THINK\.data\manual-phase3-20260802-015614`；launcher `102824`、Electron `9296`、Runtime `50712`；窗口可见且响应，pipe/database/hello 正常，stderr 为空。
 - 隔离数据库：`D:\projects\SYNC-THINK\.data\manual-phase3-20260802-015614\sync-think.db`。配置的 legacy key 路径为同目录 `secure.key`；当前 Windows DPAPI 空白身份未写 Provider secret，因此文件尚未生成。
 - 默认真实数据库 `D:\projects\SYNC-THINK\.data\SYNC-THINK\sync-think.db` 保持 `16873340928` bytes 与原 UTC 修改时间，未触碰。
-- 后续仅剩外部条件或独立范围：正式证书/timestamp、正式签名真实升级、真实 private feed/CDN 演练、真实图片 Provider 凭证验收、5–20 位邀请用户闭测、自动 binary rollback。
+- 后续仅剩外部条件：正式证书/timestamp、正式签名真实升级与自动 rollback E2E、真实 private feed/CDN 演练、真实图片 Provider 凭证验收、5–20 位邀请用户闭测。
 - 工作树状态：**未提交、未推送**。
 
 ## 2026-08-01 Image P0.3 第一切片交接

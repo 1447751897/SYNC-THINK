@@ -82,6 +82,8 @@ describe('desktop update install probe handoff', () => {
         LOCALAPPDATA: join(config.userDataPath, 'local-app-data'),
         SYNC_THINK_DB_PATH: join(config.userDataPath, 'runtime-data', 'sync-think.db'),
         SYNC_THINK_RUNTIME_FORCE_RESTART: '1',
+        SYNC_THINK_UPDATE_ROLLBACK_ALLOW_UNSIGNED_FIXTURE: '1',
+        SYNC_THINK_UPDATE_ROLLBACK_HEALTH_TIMEOUT_MS: '480000',
         SYNC_THINK_UPDATE_TOKEN: 'must-not-be-persisted',
       },
       now: new Date('2026-08-02T06:00:00.000Z'),
@@ -101,6 +103,8 @@ describe('desktop update install probe handoff', () => {
         LOCALAPPDATA: join(config.userDataPath, 'local-app-data'),
         SYNC_THINK_DB_PATH: join(config.userDataPath, 'runtime-data', 'sync-think.db'),
         SYNC_THINK_RUNTIME_FORCE_RESTART: '1',
+        SYNC_THINK_UPDATE_ROLLBACK_ALLOW_UNSIGNED_FIXTURE: '1',
+        SYNC_THINK_UPDATE_ROLLBACK_HEALTH_TIMEOUT_MS: '480000',
       },
     });
     expect(bootstrap?.environment).not.toHaveProperty('SYNC_THINK_UPDATE_TOKEN');
@@ -152,6 +156,37 @@ describe('runDesktopUpdateInstallProbe', () => {
       'install-requested',
     ]);
     expect(controller.installUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries one transient updater check after the network service restarts', async () => {
+    const config = await configuration();
+    const controller = baseController();
+    vi.mocked(controller.checkForUpdates)
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'desktop.update.check-failed',
+        state: { phase: 'error' },
+      } as never)
+      .mockResolvedValueOnce({
+        ok: true,
+        errorCode: null,
+        state: { phase: 'available', availableVersion: '0.0.2' },
+      } as never);
+    const waitBeforeCheckRetry = vi.fn().mockResolvedValue(undefined);
+
+    const result = await runDesktopUpdateInstallProbe({
+      configuration: config,
+      currentVersion: '0.0.1',
+      controller,
+      ensureRuntimeReady: vi.fn().mockResolvedValue(undefined),
+      createMarker: vi.fn().mockResolvedValue('workspace-marker-id'),
+      markerExists: vi.fn(),
+      waitBeforeCheckRetry,
+    });
+
+    expect(controller.checkForUpdates).toHaveBeenCalledTimes(2);
+    expect(waitBeforeCheckRetry).toHaveBeenCalledTimes(1);
+    expect(result.installRequestCount).toBe(1);
   });
 
   it('persists relaunch state before recording or invoking the installer request', async () => {

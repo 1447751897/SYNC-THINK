@@ -94,6 +94,92 @@ describe('streamOpenAIChatCompletions', () => {
     expect(bodyJson.stream).toBe(true);
   });
 
+  it('serializes GPT-5.6 implicit cache policy without gateway-incompatible breakpoints', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(
+        req({
+          modelId: 'gpt-5.6-sol',
+          systemPrompt: 'stable system prompt',
+          messages: [
+            { role: 'user', content: 'first question' },
+            { role: 'assistant', content: 'first answer' },
+            { role: 'user', content: 'next question' },
+          ],
+          tools: [{ name: 'read_file', inputSchema: { type: 'object' } }],
+          toolChoice: 'none',
+          promptCache: { key: 'thread-cache-key', strategy: 'automatic', retention: '24h' },
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body.prompt_cache_key).toBe('thread-cache-key');
+    expect(body.prompt_cache_options).toEqual({ mode: 'implicit', ttl: '30m' });
+    expect(body).not.toHaveProperty('prompt_cache_retention');
+    expect(body.tool_choice).toBe('none');
+    expect(body.tools).toHaveLength(1);
+    expect(JSON.stringify(body.messages)).not.toContain('prompt_cache_breakpoint');
+  });
+
+  it('keeps a stable key without unsupported retention for earlier OpenAI models', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(
+        req({
+          modelId: 'gpt-4o-mini',
+          promptCache: { key: 'legacy-thread-key', strategy: 'explicit', retention: '24h' },
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body.prompt_cache_key).toBe('legacy-thread-key');
+    expect(body).not.toHaveProperty('prompt_cache_retention');
+    expect(body).not.toHaveProperty('prompt_cache_options');
+  });
+
+  it('uses 24h retention for an earlier model family that supports it', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(
+        req({
+          modelId: 'gpt-5.5-sol',
+          promptCache: { key: 'retained-thread-key', strategy: 'automatic', retention: '24h' },
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body.prompt_cache_key).toBe('retained-thread-key');
+    expect(body.prompt_cache_retention).toBe('24h');
+    expect(body).not.toHaveProperty('prompt_cache_options');
+  });
+
   it('serializes multimodal user images as image_url parts', async () => {
     const body = sseStream([
       'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
@@ -389,7 +475,7 @@ describe('streamOpenAIChatCompletions', () => {
             prompt_tokens: 13,
             completion_tokens: 5,
             total_tokens: 18,
-            prompt_tokens_details: { cached_tokens: 8 },
+            prompt_tokens_details: { cached_tokens: 8, cache_write_tokens: 2 },
             completion_tokens_details: { reasoning_tokens: 3 },
           },
         }),
@@ -404,6 +490,7 @@ describe('streamOpenAIChatCompletions', () => {
       tokensIn: 13,
       tokensOut: 5,
       cachedTokensHit: 8,
+      cachedTokensCreated: 2,
       reasoningTokens: 3,
       totalTokens: 18,
     });

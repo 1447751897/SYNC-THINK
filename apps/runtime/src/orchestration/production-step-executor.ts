@@ -17,6 +17,7 @@ import {
   resolveModelBinding,
   resolveRunSkillSelection,
   shouldAttemptFallback,
+  shouldSkipSameProviderFallback,
   type AgentModelBinding,
 } from '@sync-think/core';
 import {
@@ -274,6 +275,7 @@ async function executeProviderStep(
   let reserved = false;
   let reservationCheckpoint: JsonValue | undefined;
   let lastError: unknown;
+  const providerFailureCounts = new Map<string, number>();
 
   // Walk agent fallback chain on retryable provider failures only.
   // Never silently pick a model outside resolveModelBinding.
@@ -499,7 +501,13 @@ async function executeProviderStep(
             ? { reasoningEffort: contextEpoch.reasoningEffort }
             : {}),
           ...(promptCacheKey
-            ? { promptCache: { key: promptCacheKey, retention: '24h' as const } }
+            ? {
+                promptCache: {
+                  key: promptCacheKey,
+                  retention: '24h' as const,
+                  strategy: 'automatic' as const,
+                },
+              }
             : {}),
           ...(toolsEnabled ? { tools: toolSchemas } : {}),
           stream: true,
@@ -522,6 +530,8 @@ async function executeProviderStep(
       if (context.signal.aborted) throw error;
 
       const failureClass = failureClassOf(error);
+      const providerFailureCount = (providerFailureCounts.get(provider.id) ?? 0) + 1;
+      providerFailureCounts.set(provider.id, providerFailureCount);
       lastError =
         error instanceof StepExecutionError
           ? error
@@ -529,8 +539,20 @@ async function executeProviderStep(
               error instanceof Error ? error.message : 'Production Step execution failed',
               failureClass,
             );
+      const fallbackAgentBinding = shouldSkipSameProviderFallback(
+        failureClass,
+        providerFailureCount,
+      )
+        ? {
+            ...agentBinding,
+            fallbackModelIds: agentBinding.fallbackModelIds.filter((fallbackModelId) => {
+              const fallbackModel = options.providerStore.getModel(fallbackModelId);
+              return fallbackModel?.providerId !== provider.id;
+            }),
+          }
+        : agentBinding;
       modelResolution = advanceModelBindingAfterFailure(
-        agentBinding,
+        fallbackAgentBinding,
         modelId,
         failureClass,
         context.step.modelOverrideId,

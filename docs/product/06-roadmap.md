@@ -5,14 +5,16 @@
 - [x] Windows release signing/timestamp fail-closed、独立 signer/publisher pin、installer manifest v3、blockmap 配对与 Generic feed policy。
 - [x] Generic feed 对 blockmap 执行 gzip、JSON 与最小 schema 的 fail-closed 校验；仅显式 `allowLegacyFullDownload` 允许旧完整下载 fixture。
 - [x] 隔离 unsigned fixture 覆盖真实 NSIS `0.0.1 → 0.0.2` 安装、blockmap 请求、Range/206 差分传输字节、重启与 install identity 连续性。
+- [x] 内部无签名闭测发布链收口：watchdog ready/relaunch/health、默认 unsigned installer、真实更新与严格零残留均有可追溯证据。
 - [x] Updater bounded recovery evidence、当前版本保留与撤回/重试 runbook。
+- [x] 自动 binary rollback 本地能力：版本化 installer 自归档、durable intent/health/outcome、独立 PowerShell watchdog、one-shot attempt fence 与 Runtime hello 健康标记。
 - [x] Database Governance P0.4：Event payload sidecar/backfill/rollback/GC、retention/archive、incremental vacuum 与 offline `VACUUM INTO` compaction 均完成 fixture-only 门禁。
 - [x] 确定性 Electron 7-case 视觉证据及 `selftest:phase3` 聚合门禁。
 - [ ] 使用正式 Authenticode 证书与真实 RFC 3161 timestamp provider 完成签名安装升级验收。
 - [ ] 在真实私有 HTTPS feed 完成授权、cohort/rollout enforcement、CDN cache invalidation 与撤回演练。
 - [ ] 使用真实图片 Provider 凭证完成生成、预览、Reviewer、返工与重启恢复验收。
 - [ ] 完成 5–20 位邀请用户 Windows 闭测。
-- [ ] 自动 binary rollback 作为独立后续能力；当前恢复语义仍是保留旧版本、撤回 feed、重试、发布更高修复版本或人工恢复。
+- [ ] 使用正式签名 installer 完成真实升级和故障注入自动 rollback E2E。
 
 # Roadmap
 
@@ -45,14 +47,14 @@
 | Phase 0 | 技术验证与文档/结构基线 | Electron/Runtime/管道/SQLite 骨架；凭证/Playwright/UIA spike；V3 结构验证               | 2-3 周 | 已完成（M0 关闭 2026-07-12）              | Spike 结论写入 tech decisions；骨架可演示假 Provider 流式与重启恢复 |
 | Phase 1 | 多模型对话 Alpha        | 文件夹/任务/完整对话；Provider 与流式适配；Agent 绑定与 Context Packet；浅/深主题与轨迹 | 6-8 周 | 已完成（M1 关闭 2026-07-15；dogfood 1/1） | 同一任务跨至少 2 Provider / 3 模型无需重述上下文                    |
 | Phase 2 | 多 Agent 编排 Alpha     | 参与模式、计划审批、DAG/并行、验收门禁、Skill/MCP、审批策略、产物版本                   | 6-8 周 | 已完成（M2 关闭 2026-07-15）              | 计划批准后可多 Agent 执行、审查返工有界、全程可追溯                 |
-| Phase 3 | Windows 闭测            | Worker、生图管线、CC Switch 导入、安装更新诊断、视觉与无障碍、5-20 邀请用户             | 6-9 周 | 进行中（部分能力已交付）                  | 满足设计文档 §23.2 全部闭测验收项                                   |
+| Phase 3 | Windows 闭测            | Worker、生图管线、CC Switch 导入、安装更新诊断、视觉与无障碍、5-20 邀请用户             | 6-9 周 | 进行中（本地工程已收口，外部证据待补）    | 满足设计文档 §23.2 全部闭测验收项                                   |
 | Later   | 平台扩展                | Gemini/Ollama、OAuth/CLI 桥、macOS/Linux、加密同步、团队、市场                          | 分期   | 未开始                                    | 各阶段单独定义                                                      |
 
 ## 2. 当前阶段
 
 ```text
-当前阶段：M1、M2 已完成；Phase 3 进行中
-阶段目标：在已交付 File/Terminal/Git Worker、递归 Pane、文件编辑、内容搜索、受控终端 Pane 和每轮精确 Skill 上下文的基础上，继续 Browser/UIA、生图和安装分发
+当前阶段：M1、M2 已完成；Phase 3 本地工程已收口，外部发布与闭测证据进行中
+阶段目标：完成正式签名、真实 private feed、真实图片 Provider 与 5-20 位邀请用户 Windows 闭测
 开始日期：2026-07-12
 M2 完成日期：2026-07-15
 M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1）
@@ -107,6 +109,18 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
 10. Image P0.3 自动化闭环已覆盖“候选 → 选择 → vision review → rework → 再选择 → 达限暂停”；下一步只保留真实凭证人工验收与失败体验优化，不再阻塞 Phase 3 的安装分发主线。Phase 3 继续保持进行中。
 11. Windows Distribution P0.1-P0.2 已完成：自包含 portable、packaged identity、per-user NSIS installer，以及 clean / overlay / 真实版本升级 / uninstall / reinstall 自动 smoke 均已通过；卸载默认保留身份密文和数据库。
 12. Windows Distribution P0.3 的 installer 压缩、品牌图标、production deploy、updater 手动控制面和 loopback Generic feed 版本/SHA-512 E2E 已完成：更新默认关闭、秘密留在 Main、安装前受控退出；真实私有 HTTPS feed + 真实 NSIS 重启安装、Authenticode、differential package、失败回滚与闭测清单仍未完成，Phase 3 继续保持进行中。
+
+补充（2026-08-03）：
+
+1. Windows Distribution 本地工程链已补齐 automatic binary rollback：NSIS 版本化 installer 自归档、Main rollback coordinator、durable intent/health/outcome、独立 PowerShell watchdog、one-shot attempt fence 与 Runtime hello 健康标记均已接线。
+2. packaged identity 并发首次启动竞态已修复；全仓并发测试、portable production deploy、schema v3 unsigned installer 与自包含 Generic feed E2E 已恢复稳定绿门禁。
+3. `pnpm selftest:phase3` 从零准备发布 fixture 并通过全部 9 个步骤，聚合结果为 `passed-with-external-evidence-pending`；Phase 3 继续等待正式签名 rollback E2E、真实 private feed/图片 Provider 和邀请用户闭测。
+
+补充（2026-08-04）：
+
+1. 内部无签名闭测链已全绿，标准 `pnpm test:update-install:win` 通过从源码构建、差分下载、真实升级、自动拉起、健康登记和严格卸载清理。
+2. 默认内部包为 schema v3 `unsigned-fixture`，正式签名校验规则未放宽；该包可进入内部闭测，但不作为公开发布包。
+3. Phase 3 后续仅保留正式签名/真实外部服务证据与 5-20 位邀请用户反馈。
 
 ## 3. Phase 0 - 技术验证
 
@@ -266,7 +280,8 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
       - [x] Generic feed fixture、Bearer header、metadata 解析、版本/channel 矩阵、installer SHA-512 与 blockmap gzip/JSON/schema fail-closed E2E。
       - [x] 隔离 unsigned NSIS `0.0.1 → 0.0.2` 真实重启安装：Range/HTTP 206 差分传输、identity/secret/SQLite 连续性与当前版本安装前保留均通过。
     - [ ] 在真实 private origin/CDN 完成授权、cohort/rollout、cache invalidation、撤回与正式签名升级演练。
-    - [ ] 自动 binary rollback；作为独立后续能力，不与当前保留旧版本、撤回 feed、重试和人工恢复语义混淆。
+    - [x] 自动 binary rollback 本地实现：installer 自归档、durable intent/health/outcome、独立 watchdog、attempt fence 与目标 Runtime health marker。
+    - [ ] 使用正式签名 installer 完成失败目标版本的真实 automatic rollback E2E。
     - [ ] 闭测分发、诊断收集与发布清单。
 
 不包含（Later）：
@@ -326,6 +341,7 @@ MVP 边界（闭测）：Windows 单机 local-first 多模型 Agent 工作台
 | 2026-08-02 | Windows Distribution P0.3.2 loopback feed E2E    | 真实 Electron driver 已通过版本矩阵、Bearer 请求和完整 installer SHA-512 成功/失败验收；真实 HTTPS installer 安装仍待完成      |
 | 2026-08-02 | Windows Distribution P0.3.3 HTTPS/真实 NSIS 下载 | updater E2E 已切换受控 HTTPS，并通过 107,893,840 bytes 真实 installer 下载与缓存 SHA-512；下一步为真实 quitAndInstall 重启安装 |
 | 2026-08-02 | Windows Distribution P0.3.4 差分安装 E2E    | unsigned fixture 已通过真实 `quitAndInstall`、Range/206 差分传输与 Runtime/identity/SQLite 连续性；仅剩正式签名与真实 private feed 演练 |
+| 2026-08-03 | Phase 3 本地工程门禁收口                   | 修复 identity 竞态与并发抖动，恢复 portable/update-feed 自包含发布链，automatic rollback 本地实现纳入现行路线图；仅剩外部证据         |
 
 ### Image P0.3（2026-08-01 更新）
 

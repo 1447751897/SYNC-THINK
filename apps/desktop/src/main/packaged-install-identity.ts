@@ -89,7 +89,7 @@ export async function resolveDesktopRuntimeIdentity(
       try {
         const afterLock = await tryReadPersistedIdentity(metadataPath);
         if (afterLock) return loadPersistedIdentity(afterLock, secretStore);
-        return createPackagedIdentity({ ...options, secretStore }, metadataPath);
+        return await createPackagedIdentity({ ...options, secretStore }, metadataPath);
       } finally {
         await releaseLock();
       }

@@ -575,10 +575,13 @@ describe('conversation transient shadow stream', () => {
     }
   });
   it('signals resetRequired when a cursor falls outside the bounded replay window', async () => {
-    const fixture = await createFixture(() => [
-      ...Array.from({ length: 260 }, () => ({ type: 'text-delta', text: 'x' }) as const),
-      { type: 'finished', reason: 'stop' } as const,
-    ]);
+    const fixture = await createFixture(
+      () => [
+        ...Array.from({ length: 260 }, () => ({ type: 'text-delta', text: 'x' }) as const),
+        { type: 'finished', reason: 'stop' } as const,
+      ],
+      0,
+    );
     const producer = await connectRuntime(fixture.installId);
     const producerInbox = createInbox(producer);
     const subscriber = await connectRuntime(fixture.installId);

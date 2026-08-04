@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   access,
   cp,
@@ -12,7 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { constants as fsConstants, existsSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Data, NtExecutable, NtExecutableResource, Resource } from 'resedit';
 
@@ -24,6 +24,12 @@ const WORKSPACE_PACKAGE_PARTS = new Map([
   ['@sync-think/runtime', ['apps', 'runtime']],
 ]);
 const OWNED_PRUNE_NAMES = ['.turbo', 'src', 'tests', 'scripts', 'release'];
+const RECURSIVE_REMOVE_OPTIONS = Object.freeze({
+  recursive: true,
+  force: true,
+  maxRetries: 5,
+  retryDelay: 100,
+});
 const WINDOWS_BRAND_ICON_PATH = join(
   DEFAULT_WORKSPACE_ROOT,
   'apps',
@@ -111,6 +117,38 @@ function normalizedPath(path) {
   return resolve(path).replaceAll('/', sep).toLowerCase();
 }
 
+function isWithin(root, candidate) {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel);
+}
+
+export function isIgnorableWindowsPnpmBinShimFailure(
+  stderr,
+  targetDir,
+  platform = process.platform,
+) {
+  if (
+    platform !== 'win32' ||
+    !/Deployment with a shared lockfile has failed/i.test(String(stderr))
+  ) {
+    return false;
+  }
+  const matches = String(stderr).matchAll(
+    /EPERM[^\r\n]{0,200}?operation not permitted,\s*open\s+'([^'\r\n]+)'/gi,
+  );
+  for (const match of matches) {
+    const candidate = match[1];
+    if (
+      candidate &&
+      /[\\/]node_modules[\\/]\.bin[\\/][^\\/]+\.ps1$/i.test(candidate) &&
+      isWithin(targetDir, candidate)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function assertSafeReleaseOutput(workspaceRoot, outputDir) {
   if (!isAbsolute(workspaceRoot) || !isAbsolute(outputDir)) {
     throw new Error('release.output_unsafe');
@@ -174,12 +212,30 @@ function isOwnedSourceTree(relativePath) {
   );
 }
 
+function isBuildOnlyPayload(relativePath, entry) {
+  const parts = relativePath.toLowerCase().split('/');
+  if (parts[0] !== 'resources' || !['app', 'runtime'].includes(parts[1])) return false;
+  const modulesIndex = parts.lastIndexOf('node_modules');
+  if (modulesIndex < 0) return false;
+  const packageParts = parts.slice(modulesIndex + 1);
+  if (parts[1] === 'app' && entry.isDirectory()) {
+    return (
+      (packageParts.length === 2 &&
+        packageParts[0] === '@tailwindcss' &&
+        packageParts[1] === 'cli') ||
+      (packageParts.length === 1 && packageParts[0] === 'tailwindcss')
+    );
+  }
+  return entry.isFile() && packageParts.includes('.bin');
+}
+
 export async function collectForbiddenReleaseFiles(releaseDir) {
   const found = new Set();
   await walk(releaseDir, async (absolute, entry) => {
     const rel = toPortableRelative(releaseDir, absolute);
     const name = entry.name.toLowerCase();
     if (entry.isDirectory() && isOwnedSourceTree(rel)) found.add(rel);
+    if (isBuildOnlyPayload(rel, entry)) found.add(rel);
     if (
       entry.isFile() &&
       (name === '.env' || name.startsWith('.env.') || name.endsWith('.db') || name.includes('.db-'))
@@ -342,17 +398,30 @@ function pnpmCommand(args) {
 
 async function runCommand(command, args, options = {}) {
   await new Promise((resolvePromise, rejectPromise) => {
+    let stderr = '';
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: process.env,
-      stdio: 'inherit',
+      stdio: ['inherit', 'inherit', 'pipe'],
       windowsHide: true,
       shell: false,
+    });
+    child.stderr.on('data', (chunk) => {
+      process.stderr.write(chunk);
+      stderr = (stderr + chunk.toString('utf8')).slice(-256 * 1024);
     });
     child.once('error', rejectPromise);
     child.once('exit', (code, signal) => {
       if (code === 0) resolvePromise();
-      else
+      else if (
+        options.binShimRoot &&
+        isIgnorableWindowsPnpmBinShimFailure(stderr, options.binShimRoot)
+      ) {
+        console.warn(
+          '[release] ignored pnpm Windows PowerShell bin-shim EPERM; production bin shims will be pruned',
+        );
+        resolvePromise();
+      } else
         rejectPromise(
           new Error(
             'release.command_failed:' +
@@ -388,7 +457,11 @@ export function createPnpmDeployInvocation(workspaceRoot, packageName, targetDir
 
 async function deployWorkspacePackage(workspaceRoot, packageName, targetDir) {
   const invocation = createPnpmDeployInvocation(workspaceRoot, packageName, targetDir);
-  await runCommand(invocation.command, invocation.args, { cwd: invocation.cwd });
+  await runCommand(invocation.command, invocation.args, {
+    cwd: invocation.cwd,
+    binShimRoot: targetDir,
+  });
+  await ensureReadable(join(targetDir, 'package.json'), 'release.deploy_incomplete');
 }
 
 async function pruneOwnedPayload(packageRoot) {
@@ -414,6 +487,24 @@ async function pruneAllOwnedPackages(root) {
     if (entry.isFile() && entry.name === 'package.json') packageRoots.push(dirname(absolute));
   });
   for (const packageRoot of packageRoots) await pruneOwnedPayload(packageRoot);
+}
+
+export async function pruneProductionBinDirectories(root) {
+  const directories = [];
+  await walk(root, async (absolute, entry) => {
+    if (
+      entry.isDirectory() &&
+      entry.name.toLowerCase() === '.bin' &&
+      basename(dirname(absolute)).toLowerCase() === 'node_modules'
+    ) {
+      directories.push(absolute);
+    }
+  });
+  directories.sort((left, right) => right.length - left.length);
+  for (const directory of directories) {
+    await rm(directory, RECURSIVE_REMOVE_OPTIONS);
+  }
+  return directories.map((directory) => toPortableRelative(root, directory)).sort();
 }
 
 async function ensureReadable(path, code) {
@@ -475,7 +566,7 @@ export async function stageWindowsPortableRelease(options = {}) {
     options.environment ?? process.env,
   );
 
-  await rm(outputDir, { recursive: true, force: true });
+  await rm(outputDir, RECURSIVE_REMOVE_OPTIONS);
   await mkdir(dirname(outputDir), { recursive: true });
   await cp(electronDist, outputDir, { recursive: true, force: true });
   await rename(join(outputDir, 'electron.exe'), join(outputDir, 'SYNC-THINK.exe'));
@@ -485,8 +576,24 @@ export async function stageWindowsPortableRelease(options = {}) {
   const releaseVersion = normalizeWindowsReleaseVersion(options.version ?? rootPackage.version);
   const appDir = join(outputDir, 'resources', 'app');
   const runtimeDir = join(outputDir, 'resources', 'runtime');
-  await deployWorkspacePackage(workspaceRoot, '@sync-think/desktop', appDir);
-  await deployWorkspacePackage(workspaceRoot, '@sync-think/runtime', runtimeDir);
+  const deployRoot = assertSafeReleaseOutput(
+    workspaceRoot,
+    outputDir + '.deploy-' + process.pid + '-' + randomUUID(),
+  );
+  const stagedAppDir = join(deployRoot, 'app');
+  const stagedRuntimeDir = join(deployRoot, 'runtime');
+  try {
+    await deployWorkspacePackage(workspaceRoot, '@sync-think/desktop', stagedAppDir);
+    await pruneAllOwnedPackages(stagedAppDir);
+    await pruneProductionBinDirectories(stagedAppDir);
+    await deployWorkspacePackage(workspaceRoot, '@sync-think/runtime', stagedRuntimeDir);
+    await pruneAllOwnedPackages(stagedRuntimeDir);
+    await pruneProductionBinDirectories(stagedRuntimeDir);
+    await rename(stagedAppDir, appDir);
+    await rename(stagedRuntimeDir, runtimeDir);
+  } finally {
+    await rm(deployRoot, RECURSIVE_REMOVE_OPTIONS);
+  }
   const packagedApp = JSON.parse(await readFile(join(appDir, 'package.json'), 'utf8'));
   packagedApp.version = releaseVersion;
   await writeFile(
@@ -494,8 +601,6 @@ export async function stageWindowsPortableRelease(options = {}) {
     JSON.stringify(packagedApp, null, 2) + '\n',
     'utf8',
   );
-  await pruneAllOwnedPackages(appDir);
-  await pruneAllOwnedPackages(runtimeDir);
 
   await writeFile(
     join(outputDir, 'resources', 'app-update.yml'),

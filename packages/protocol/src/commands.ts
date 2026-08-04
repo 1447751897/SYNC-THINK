@@ -1116,6 +1116,13 @@ export interface UsageRequestRow {
   latencyMs?: number;
   errorMessage?: string;
   estimatedCost?: number;
+  estimatedCostBreakdown?: {
+    input: number;
+    cacheRead: number;
+    cacheWrite: number;
+    output: number;
+    total: number;
+  };
   currency?: 'USD' | 'CNY';
 }
 
@@ -2705,6 +2712,8 @@ export interface RunProcessView {
   errorCount: number;
   tokensIn?: number;
   tokensOut?: number;
+  cachedTokensHit?: number;
+  cachedTokensCreated?: number;
   durationMs?: number;
   providerModelId?: string;
   modelId?: string;
@@ -2892,9 +2901,7 @@ export interface ListWaitingBrowserHandoffsResponse {
 }
 
 export type DesktopWaitingReason =
-  | 'user-input-detected'
-  | 'restart-inspection'
-  | 'attention-required';
+  'user-input-detected' | 'restart-inspection' | 'attention-required';
 
 export interface DesktopWaitingCommandSummary {
   commandId: string;

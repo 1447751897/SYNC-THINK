@@ -23,7 +23,7 @@ async function withTempDir(prefix, task) {
   try {
     return await task(root);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

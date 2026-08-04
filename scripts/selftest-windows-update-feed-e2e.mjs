@@ -16,7 +16,8 @@ import {
 } from './windows-generic-update-feed.mjs';
 import { verifyWindowsInstallerLayout } from './windows-installer-release.mjs';
 
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const SCRIPT_DIR = dirname(SCRIPT_PATH);
 const WORKSPACE_ROOT = resolve(SCRIPT_DIR, '..');
 const DESKTOP_ROOT = join(WORKSPACE_ROOT, 'apps', 'desktop');
 const DRIVER_PATH = join(DESKTOP_ROOT, 'dist', 'main', 'electron-updater-driver.js');
@@ -27,6 +28,9 @@ const AUTH_TOKEN = 'loopback-update-token';
 const RELEASE_DATE = '2026-08-02T00:00:00.000Z';
 const INSTALLER_DIR = join(DESKTOP_ROOT, 'release', 'installer');
 const REAL_INSTALLER_PATH = join(INSTALLER_DIR, 'SYNC-THINK-Setup-0.0.1-x64.exe');
+
+export const UPDATE_FEED_INSTALLER_FIXTURE_PREPARE_COMMAND =
+  'pnpm prepare:update-feed-fixture:win';
 
 function requestPath(requestUrl) {
   return decodeURIComponent(new URL(requestUrl ?? '/', 'https://127.0.0.1').pathname);
@@ -329,16 +333,52 @@ function errorCode(result, phase) {
   return result[`${phase}Error`]?.code ?? null;
 }
 
+export async function verifyUpdateFeedInstallerFixture(options = {}) {
+  const installerDir = resolve(options.installerDir ?? INSTALLER_DIR);
+  const installerPath = resolve(
+    options.installerPath ?? join(installerDir, 'SYNC-THINK-Setup-0.0.1-x64.exe'),
+  );
+  const accessFile = options.accessFile ?? access;
+  const verifyInstallerLayout = options.verifyInstallerLayout ?? verifyWindowsInstallerLayout;
+  try {
+    await accessFile(installerPath);
+  } catch (error) {
+    throw new Error(
+      'update-feed.installer_fixture_missing:path=' +
+        installerPath +
+        ':prepare=' +
+        UPDATE_FEED_INSTALLER_FIXTURE_PREPARE_COMMAND,
+      { cause: error },
+    );
+  }
+  const verification = await verifyInstallerLayout(installerDir, {
+    allowUnsignedFixture: true,
+    requireCurrentManifest: true,
+  });
+  if (!verification.ok) {
+    throw new Error(
+      'update-feed.installer_fixture_invalid:errors=' +
+        verification.errors.join(',') +
+        ':prepare=' +
+        UPDATE_FEED_INSTALLER_FIXTURE_PREPARE_COMMAND,
+    );
+  }
+  const signingMode = verification.manifest?.signing?.mode;
+  if (verification.manifest?.schemaVersion !== 3 || signingMode !== 'unsigned-fixture') {
+    throw new Error(
+      'update-feed.installer_fixture_mode_invalid:expected=unsigned-fixture:actual=' +
+        String(signingMode ?? 'missing') +
+        ':prepare=' +
+        UPDATE_FEED_INSTALLER_FIXTURE_PREPARE_COMMAND,
+    );
+  }
+  return { installerDir, installerPath, verification };
+}
+
 async function main() {
   await access(DRIVER_PATH);
   await access(RUNNER_SOURCE);
-  await access(REAL_INSTALLER_PATH);
-  const installerVerification = await verifyWindowsInstallerLayout(INSTALLER_DIR);
-  assert.equal(
-    installerVerification.ok,
-    true,
-    `real installer fixture invalid: ${installerVerification.errors.join(',')}`,
-  );
+  await verifyUpdateFeedInstallerFixture();
   const desktopRequire = createRequire(pathToFileURL(join(DESKTOP_ROOT, 'package.json')));
   const electronExecutable = desktopRequire('electron');
   const root = await mkdtemp(join(tmpdir(), 'sync-think-generic-feed-e2e-'));
@@ -507,8 +547,8 @@ async function main() {
     );
   } finally {
     if (server) await server.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
-await main();
+if (process.argv[1] && resolve(process.argv[1]) === resolve(SCRIPT_PATH)) await main();

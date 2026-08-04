@@ -54,18 +54,53 @@ function ClearActiveIntent([object]$Intent) {
   } catch {}
 }
 
+function ProcessRunningFromPath([string]$Path) {
+  $full = FullPath $Path
+  $matches = @(Get-CimInstance Win32_Process -Filter "Name='$([System.IO.Path]::GetFileName($full).Replace("'", "''"))'" -ErrorAction SilentlyContinue | Where-Object {
+    $_.ExecutablePath -and (FullPath ([string]$_.ExecutablePath)) -eq $full
+  })
+  return $matches.Count -gt 0
+}
+
+function CreateOneShotFence([string]$Path, [object]$Value) {
+  [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($Path)) | Out-Null
+  try {
+    $fence = [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    try {
+      $payload = [System.Text.Encoding]::UTF8.GetBytes(($Value | ConvertTo-Json))
+      $fence.Write($payload, 0, $payload.Length)
+    } finally {
+      $fence.Dispose()
+    }
+    return $true
+  } catch [System.IO.IOException] {
+    return $false
+  }
+}
+
 $intent = $null
 try {
   if (-not (IsWithin $RecoveryRoot $IntentPath)) { throw 'intent-path-outside-root' }
   $intent = Get-Content -Raw -LiteralPath $IntentPath | ConvertFrom-Json
   if ([int]$intent.schemaVersion -ne 1) { throw 'intent-schema-invalid' }
   if (-not (IsWithin $RecoveryRoot ([string]$intent.healthMarkerPath))) { throw 'health-path-outside-root' }
+  if (-not (IsWithin $RecoveryRoot ([string]$intent.watchdogReadyPath))) { throw 'watchdog-ready-path-outside-root' }
+  if (-not (IsWithin $RecoveryRoot ([string]$intent.relaunchFencePath))) { throw 'relaunch-path-outside-root' }
   if (-not (IsWithin $RecoveryRoot ([string]$intent.attemptFencePath))) { throw 'attempt-path-outside-root' }
   if (-not (IsWithin $RecoveryRoot ([string]$intent.outcomePath))) { throw 'outcome-path-outside-root' }
   $installer = [string]$intent.previousRelease.installer.path
   if (-not (IsWithin (Join-Path $RecoveryRoot 'installers') $installer)) { throw 'installer-path-outside-root' }
+  $targetExecutable = FullPath ([string]$intent.targetExecutablePath)
+  if (-not [System.IO.Path]::IsPathRooted($targetExecutable)) { throw 'target-executable-path-invalid' }
+  $targetPackage = Join-Path ([System.IO.Path]::GetDirectoryName($targetExecutable)) 'resources\app\package.json'
+  WriteAtomicJson ([string]$intent.watchdogReadyPath) ([ordered]@{
+    schemaVersion = 1
+    intentId = [string]$intent.intentId
+    readyAt = [DateTime]::UtcNow.ToString('o')
+  })
 
   $deadline = [DateTime]::Parse([string]$intent.deadlineAt).ToUniversalTime()
+  $relaunchAttempted = Test-Path -LiteralPath ([string]$intent.relaunchFencePath)
   while ([DateTime]::UtcNow -lt $deadline) {
     if (Test-Path -LiteralPath ([string]$intent.healthMarkerPath)) {
       try {
@@ -74,6 +109,28 @@ try {
           RecordOutcome $intent 'healthy' $false '' $null
           ClearActiveIntent $intent
           exit 0
+        }
+      } catch {}
+    }
+    if (-not $relaunchAttempted -and (Test-Path -LiteralPath $targetExecutable) -and (Test-Path -LiteralPath $targetPackage)) {
+      try {
+        $targetProjection = Get-Content -Raw -LiteralPath $targetPackage | ConvertFrom-Json
+        $installerRunning = $false
+        if ([string]$intent.targetDownloadedFile) {
+          $installerRunning = ProcessRunningFromPath ([string]$intent.targetDownloadedFile)
+        }
+        if ([string]$targetProjection.version -eq [string]$intent.targetVersion -and -not $installerRunning -and -not (ProcessRunningFromPath $targetExecutable)) {
+          $relaunchAttempted = CreateOneShotFence ([string]$intent.relaunchFencePath) ([ordered]@{
+            schemaVersion = 1
+            intentId = [string]$intent.intentId
+            attemptedAt = [DateTime]::UtcNow.ToString('o')
+            targetVersion = [string]$intent.targetVersion
+          })
+          if ($relaunchAttempted) {
+            try {
+              Start-Process -FilePath $targetExecutable -ArgumentList @('--updated') -WorkingDirectory ([System.IO.Path]::GetDirectoryName($targetExecutable)) | Out-Null
+            } catch {}
+          }
         }
       } catch {}
     }

@@ -17,6 +17,7 @@
     Delete "$R2"
     Abort "Failed to publish the installer archive for automatic rollback."
   ${EndIf}
+
 !macroend
 
 !macro customUnInstall

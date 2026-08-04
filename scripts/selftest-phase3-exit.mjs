@@ -37,6 +37,8 @@ export const PHASE3_EXIT_STEPS = Object.freeze([
       '--test',
       'scripts/windows-installer-release.test.mjs',
       'scripts/windows-generic-update-feed.test.mjs',
+      'scripts/selftest-windows-update-feed-e2e.test.mjs',
+      'scripts/selftest-windows-update-install-e2e.test.mjs',
       'scripts/live-image-provider-acceptance.test.mjs',
       'scripts/phase3-visual-capture.test.mjs',
     ],
@@ -52,9 +54,14 @@ export const PHASE3_EXIT_STEPS = Object.freeze([
     args: ['--filter', '@sync-think/desktop', 'build'],
   },
   {
+    id: 'prepare-update-feed-fixture',
+    command: 'pnpm',
+    args: ['prepare:update-feed-fixture:win'],
+  },
+  {
     id: 'generic-feed-e2e',
     command: 'pnpm',
-    args: ['test:update-feed:win'],
+    args: ['test:update-feed:prepared:win'],
   },
   {
     id: 'image-provider-build',

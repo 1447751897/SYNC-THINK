@@ -14,6 +14,28 @@ function event(input: Partial<Event> & Pick<Event, 'id' | 'sequence' | 'type' | 
 }
 
 describe('projectRunProcess', () => {
+  it('projects cache usage separately from total provider input', () => {
+    const runId = 'run-cache-usage' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-cache-usage' as EventId,
+        sequence: 1,
+        runId,
+        type: 'provider.usage',
+        payload: {
+          tokensIn: 14_000,
+          tokensOut: 488,
+          cachedTokensHit: 12_800,
+          cachedTokensCreated: 0,
+        },
+      }),
+    ]);
+
+    expect(view.tokensIn).toBe(14_000);
+    expect(view.cachedTokensHit).toBe(12_800);
+    expect(view.cachedTokensCreated).toBe(0);
+  });
+
   it('projects requested/completed tools once for a run and exposes file paths in titles', () => {
     const runId = 'run-1' as RunId;
     const events: Event[] = [
@@ -148,9 +170,7 @@ describe('projectRunProcess', () => {
 
     const view = projectRunProcess(runId, events);
     expect(view.steps).toHaveLength(1);
-    expect(view.steps[0]).toEqual(
-      expect.objectContaining({ id: actionDigest, status: 'done' }),
-    );
+    expect(view.steps[0]).toEqual(expect.objectContaining({ id: actionDigest, status: 'done' }));
     expect(view.running).toBe(false);
   });
 

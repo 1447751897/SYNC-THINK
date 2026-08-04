@@ -1,9 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type {
-  ProviderMessage,
-  ProviderToolCall,
-  ProviderToolSchema,
-} from '@sync-think/adapters';
+import type { ProviderMessage, ProviderToolCall, ProviderToolSchema } from '@sync-think/adapters';
 import type { Event } from '@sync-think/shared';
 import {
   CHAT_DESKTOP_MUTATING_TOOL_NAMES,
@@ -111,7 +107,10 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       required: ['name'],
       properties: {
         name: { type: 'string', description: 'Agent display name (non-empty)' },
-        description: { type: 'string', description: 'Short description shown in the Agent Library' },
+        description: {
+          type: 'string',
+          description: 'Short description shown in the Agent Library',
+        },
         persona: {
           type: 'string',
           description: 'System instructions / persona the agent will follow',
@@ -148,7 +147,10 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
           type: 'string',
           description: 'Target agent: exact agent id (preferred) or unique agent name.',
         },
-        name: { type: 'string', description: 'New display name (must not collide with another agent)' },
+        name: {
+          type: 'string',
+          description: 'New display name (must not collide with another agent)',
+        },
         description: { type: 'string', description: 'New short description' },
         persona: { type: 'string', description: 'New system instructions / persona' },
         defaultModelId: {
@@ -318,7 +320,10 @@ export const CHAT_TEAM_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
                 type: 'string',
                 description: 'Member agent: exact agent id (preferred) or unique agent name.',
               },
-              title: { type: 'string', description: 'Member title shown in the roster (e.g. 前端负责人)' },
+              title: {
+                type: 'string',
+                description: 'Member title shown in the roster (e.g. 前端负责人)',
+              },
               role: { type: 'string', description: 'Member role keyword (defaults to "member")' },
               dependsOn: {
                 type: 'array',
@@ -467,8 +472,16 @@ export const CHAT_BROWSER_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
           type: 'string',
           description: 'CSS selector of the element to click (preferred over coordinates)',
         },
-        x: { type: 'integer', minimum: 0, description: 'Viewport X coordinate (with y, when no selector)' },
-        y: { type: 'integer', minimum: 0, description: 'Viewport Y coordinate (with x, when no selector)' },
+        x: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Viewport X coordinate (with y, when no selector)',
+        },
+        y: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Viewport Y coordinate (with x, when no selector)',
+        },
       },
     },
   },
@@ -509,9 +522,7 @@ export const CHAT_BROWSER_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   },
 ];
 
-export const CHAT_BROWSER_TOOL_NAMES = new Set(
-  CHAT_BROWSER_TOOL_SCHEMAS.map((tool) => tool.name),
-);
+export const CHAT_BROWSER_TOOL_NAMES = new Set(CHAT_BROWSER_TOOL_SCHEMAS.map((tool) => tool.name));
 
 /** Browser command tools that operate an already-open Page (not browser_open). */
 export const CHAT_BROWSER_COMMAND_TOOL_NAMES = new Set([
@@ -545,15 +556,18 @@ export function validateChatBrowserCommand(
   let parsed: Record<string, unknown>;
   try {
     const raw = JSON.parse(argumentsJson || '{}') as unknown;
-    parsed = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+    parsed =
+      raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   } catch {
     return { ok: false, error: `${toolName}: invalid JSON arguments.` };
   }
 
   if (toolName === 'browser_click') {
     const selector = typeof parsed.selector === 'string' ? parsed.selector.trim() : '';
-    const x = typeof parsed.x === 'number' && Number.isFinite(parsed.x) ? Math.round(parsed.x) : undefined;
-    const y = typeof parsed.y === 'number' && Number.isFinite(parsed.y) ? Math.round(parsed.y) : undefined;
+    const x =
+      typeof parsed.x === 'number' && Number.isFinite(parsed.x) ? Math.round(parsed.x) : undefined;
+    const y =
+      typeof parsed.y === 'number' && Number.isFinite(parsed.y) ? Math.round(parsed.y) : undefined;
     if (!selector && (x === undefined || y === undefined)) {
       return {
         ok: false,
@@ -664,7 +678,10 @@ export function executeChatPlanTool(argumentsJson: string): string {
   }
   const rawItems = (parsed as { items?: unknown })?.items;
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
-    return JSON.stringify({ ok: false, error: 'update_task_plan: items must be a non-empty array.' });
+    return JSON.stringify({
+      ok: false,
+      error: 'update_task_plan: items must be a non-empty array.',
+    });
   }
   const items: ChatPlanItem[] = [];
   for (const raw of rawItems.slice(0, 20)) {
@@ -731,9 +748,7 @@ export const CHAT_NETWORK_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   },
 ];
 
-export const CHAT_NETWORK_TOOL_NAMES = new Set(
-  CHAT_NETWORK_TOOL_SCHEMAS.map((tool) => tool.name),
-);
+export const CHAT_NETWORK_TOOL_NAMES = new Set(CHAT_NETWORK_TOOL_SCHEMAS.map((tool) => tool.name));
 
 /** Tools that only observe the workspace (safe under「询问批准」). */
 export const CHAT_READ_ONLY_TOOL_NAMES = new Set([
@@ -768,7 +783,12 @@ export function normalizeChatExecutionMode(mode: string | undefined | null): Cha
   if (value === 'ask' || value === 'read-only' || value === 'readonly' || value === 'read_only') {
     return 'ask';
   }
-  if (value === 'full-access' || value === 'full' || value === 'full_access' || value === 'unrestricted') {
+  if (
+    value === 'full-access' ||
+    value === 'full' ||
+    value === 'full_access' ||
+    value === 'unrestricted'
+  ) {
     return 'full-access';
   }
   return 'workspace';
@@ -853,7 +873,9 @@ export function mcpToolsToProviderSchemas(
       // Prefer mcp__{serverId}__{tool} to avoid colliding with built-ins.
       let providerName = `mcp__${server.id}__${toolName}`.replace(/[^a-zA-Z0-9_-]/g, '_');
       if (usedNames.has(providerName) || providerName.length > 64) {
-        providerName = `mcp_${tools.length}_${toolName}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+        providerName = `mcp_${tools.length}_${toolName}`
+          .replace(/[^a-zA-Z0-9_-]/g, '_')
+          .slice(0, 64);
       }
       if (usedNames.has(providerName)) continue;
       usedNames.add(providerName);
@@ -1038,9 +1060,7 @@ export function summarizeToolCallForApproval(
     const lines = content.split(/\r?\n/).length;
     return {
       title: path ? `写入文件 ${path}` : '写入文件',
-      detail: content
-        ? `约 ${lines} 行 · ${content.length} 字符`
-        : '将修改项目内文件',
+      detail: content ? `约 ${lines} 行 · ${content.length} 字符` : '将修改项目内文件',
       path,
     };
   }
@@ -1088,7 +1108,8 @@ export function summarizeToolCallForApproval(
       changed.push(`模型 → ${args.defaultModelId.trim()}`);
     }
     if (Array.isArray(args.skillIds)) changed.push(`Skill 绑定 → ${args.skillIds.length} 个`);
-    if (typeof args.reasoningEffort === 'string') changed.push(`推理力度 → ${args.reasoningEffort}`);
+    if (typeof args.reasoningEffort === 'string')
+      changed.push(`推理力度 → ${args.reasoningEffort}`);
     return {
       title: target ? `修改智能体「${target}」` : '修改智能体',
       detail: changed.length > 0 ? `变更：${changed.join(' · ')}` : '未指定任何变更字段',
@@ -1101,7 +1122,9 @@ export function summarizeToolCallForApproval(
       title: target ? `归档智能体「${target}」` : '归档智能体',
       detail: [
         '软删除，可在智能体库恢复',
-        reasonText ? `理由：${reasonText.length > 80 ? `${reasonText.slice(0, 79)}…` : reasonText}` : '',
+        reasonText
+          ? `理由：${reasonText.length > 80 ? `${reasonText.slice(0, 79)}…` : reasonText}`
+          : '',
       ]
         .filter(Boolean)
         .join(' · '),
@@ -1168,22 +1191,25 @@ export function summarizeToolCallForApproval(
       title: target ? `删除小队「${target}」` : '删除小队',
       detail: [
         '仍被对话引用或已有运行记录时会被拒绝',
-        reasonText ? `理由：${reasonText.length > 80 ? `${reasonText.slice(0, 79)}…` : reasonText}` : '',
+        reasonText
+          ? `理由：${reasonText.length > 80 ? `${reasonText.slice(0, 79)}…` : reasonText}`
+          : '',
       ]
         .filter(Boolean)
         .join(' · '),
     };
   }
   if (toolName === 'delete_skill') {
-    const versionId =
-      typeof args.skillVersionId === 'string' ? args.skillVersionId.trim() : '';
+    const versionId = typeof args.skillVersionId === 'string' ? args.skillVersionId.trim() : '';
     const reasonText = typeof args.reason === 'string' ? args.reason.trim() : '';
     return {
       title: '卸载 Skill 版本',
       detail: [
         versionId ? `版本 ID：${versionId.slice(0, 40)}` : '',
         '被智能体装备或待审批引用时会被拒绝',
-        reasonText ? `理由：${reasonText.length > 80 ? `${reasonText.slice(0, 79)}…` : reasonText}` : '',
+        reasonText
+          ? `理由：${reasonText.length > 80 ? `${reasonText.slice(0, 79)}…` : reasonText}`
+          : '',
       ]
         .filter(Boolean)
         .join(' · '),
@@ -1375,7 +1401,8 @@ export function collectThreadChatHistory(
           role,
           content: text,
           sequence: event.sequence,
-          messageId: typeof event.payload.messageId === 'string' ? event.payload.messageId : undefined,
+          messageId:
+            typeof event.payload.messageId === 'string' ? event.payload.messageId : undefined,
         });
       }
       continue;
@@ -1691,9 +1718,7 @@ export function buildChatMessagesFromEvents(
     }
   } else {
     const lastIsSameUserText =
-      last?.role === 'user' &&
-      typeof last.content === 'string' &&
-      last.content === latestUserText;
+      last?.role === 'user' && typeof last.content === 'string' && last.content === latestUserText;
     if (!lastIsSameUserText) {
       messages.push({ role: 'user', content: latestContent });
     }
@@ -2186,9 +2211,7 @@ function toolResultMeta(content: string): {
           : typeof parsed.text === 'string'
             ? parsed.text
             : '';
-    const bodyHash = body
-      ? `${body.length}:${body.slice(0, 24)}:${body.slice(-16)}`
-      : '';
+    const bodyHash = body ? `${body.length}:${body.slice(0, 24)}:${body.slice(-16)}` : '';
     const fingerprint = [
       ok ? 'ok' : 'err',
       code || '',
@@ -2236,7 +2259,8 @@ export function evaluateToolLoopGuard(input: ToolLoopGuardInput): ToolLoopGuardR
   const allFailed = batchSize > 0 && failedCount === batchSize;
   const prevStagnant = Math.max(0, input.stagnantRounds ?? 0);
   // A batch with no new fingerprints (or all failures of already-seen kinds) is stagnant.
-  const batchStagnant = batchSize > 0 && (newFingerprints === 0 || (allFailed && newFingerprints <= 1));
+  const batchStagnant =
+    batchSize > 0 && (newFingerprints === 0 || (allFailed && newFingerprints <= 1));
   const stagnantRounds = batchStagnant ? prevStagnant + 1 : 0;
 
   if (input.toolLoopRound >= maxToolRounds) {
@@ -2309,6 +2333,16 @@ export function buildForceFinalToolLoopMessage(reason: string): string {
   return [
     '[system tool-loop guard]',
     reason,
-    'Respond in the user\'s language. Do not call tools in this turn.',
+    "Respond in the user's language. Do not call tools in this turn.",
   ].join('\n');
+}
+
+export function resolveToolLoopProviderPolicy(
+  toolsEnabled: boolean,
+  forceFinalAnswer: boolean,
+): { toolsEnabled: boolean; toolChoice?: 'none' } {
+  return {
+    toolsEnabled,
+    ...(toolsEnabled && forceFinalAnswer ? { toolChoice: 'none' as const } : {}),
+  };
 }

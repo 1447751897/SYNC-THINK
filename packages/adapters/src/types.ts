@@ -28,6 +28,8 @@ export interface ProviderCallRequest {
   messages: ProviderMessage[];
   /** Optional tool schemas (§ capability = 'tool-calling'). */
   tools?: ProviderToolSchema[];
+  /** Provider tool selection policy. `none` preserves tool schemas while forcing a text turn. */
+  toolChoice?: 'auto' | 'none';
   /** Stopping criteria for cost control & determinism. */
   maxOutputTokens?: number;
   temperature?: number;
@@ -41,6 +43,8 @@ export interface ProviderCallRequest {
   promptCache?: {
     key?: string;
     retention?: 'in_memory' | '24h';
+    /** Let the adapter select automatic or explicit cache breakpoints supported by the provider. */
+    strategy?: 'automatic' | 'explicit';
   };
   stream: boolean;
 }
