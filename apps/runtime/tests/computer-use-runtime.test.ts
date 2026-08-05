@@ -1022,6 +1022,7 @@ describe('Runtime Computer Use plugin gate', () => {
         .filter((name) => name.startsWith('desktop_'));
       expect(desktopToolNames).toEqual([
         'desktop_list_windows',
+        'desktop_launch_app',
         'desktop_inspect_window',
         'desktop_resolve_selector',
         'desktop_read_element',

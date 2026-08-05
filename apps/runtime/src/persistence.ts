@@ -51,6 +51,9 @@ import { createProductionStepExecutor } from './orchestration/production-step-ex
 import { GeneratedImageStore } from './orchestration/generated-image-store.js';
 import { BrowserHost, PersistentBrowserWorker, type BrowserHostLike } from '@sync-think/workers';
 import { RuntimeBrowserController } from './browser/runtime-browser-controller.js';
+import { RuntimeBrowserProfileService } from './browser/runtime-browser-profile-service.js';
+import { RuntimeBrowserProfileGate } from './browser/runtime-browser-profile-gate.js';
+import { RuntimeBrowserRecordingService } from './browser/runtime-browser-recording-service.js';
 
 export interface RuntimeEventPayloadSidecarOptions {
   /** Explicit opt-in. Omitting this object keeps every Event payload inline. */
@@ -221,7 +224,7 @@ export async function openPersistentRuntime(
       ReturnType<typeof refreshUsageSummarySnapshotFromDatabase> | undefined;
     const usageSummaryService = new UsageSummaryQueryService({
       databasePath,
-      cachePath: join(runtimeDataRoot, 'usage-summary-cache-v1.json'),
+      cachePath: join(runtimeDataRoot, 'usage-summary-cache-v2.json'),
       ...(databasePath === ':memory:'
         ? {
             snapshotLoader: async () => {
@@ -242,12 +245,33 @@ export async function openPersistentRuntime(
       profileRoot: join(runtimeDataRoot, 'browser-profiles'),
       executablePath: process.env.SYNC_THINK_BROWSER_EXECUTABLE,
     });
+    const browserProfileGate = runtimeOptions.browserProfileGate ?? new RuntimeBrowserProfileGate();
+    const recordingRecovery = await new RuntimeBrowserRecordingService({
+      store: browserStore,
+      host: browserHost,
+    }).recoverInterruptedRecordings();
+    if (recordingRecovery.failedRecordingIds.length > 0) {
+      console.warn(
+        `[runtime] Browser recording cleanup pending: ${recordingRecovery.failedRecordingIds.length}`,
+      );
+    }
+    const profileRecovery = await new RuntimeBrowserProfileService({
+      store: browserStore,
+      host: browserHost,
+      profileGate: browserProfileGate,
+    }).reconcileDeletedProfiles();
+    if (profileRecovery.failedProfileIds.length > 0) {
+      console.warn(
+        `[runtime] Browser Profile cleanup pending: ${profileRecovery.failedProfileIds.length}`,
+      );
+    }
     const productionBrowserController = new RuntimeBrowserController({
       worker: new PersistentBrowserWorker(browserHost),
       store: browserStore,
       profileId: runtimeOptions.browserProfileId,
       fallbackWorkingDir: runtimeOptions.browserFallbackWorkingDir ?? runtimeDataRoot,
       leaseHost: browserHost,
+      profileGate: browserProfileGate,
     });
     const stepExecutor =
       runtimeOptions.stepExecutor ??
@@ -310,6 +334,7 @@ export async function openPersistentRuntime(
       appSettingStore,
       queryUsageSummary,
       browserHost,
+      browserProfileGate,
       browserFallbackWorkingDir: runtimeOptions.browserFallbackWorkingDir ?? runtimeDataRoot,
     });
   } catch (error) {

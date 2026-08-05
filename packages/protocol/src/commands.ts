@@ -25,6 +25,9 @@
   ArtifactVersion,
   ArtifactVersionId,
   ArtifactVersionSummary,
+  BrowserRecordingStatus,
+  BrowserRecordingStepRecord,
+  BrowserRecordingStopReason,
 } from '@sync-think/shared';
 import { ulid } from '@sync-think/shared';
 import type { Feature } from './version.js';
@@ -122,6 +125,16 @@ export type CommandType =
   | 'conversation.compact'
   | 'conversation.decideToolApproval'
   | 'conversation.submitBrowserResult'
+  | 'browser.profile.list'
+  | 'browser.profile.create'
+  | 'browser.profile.rename'
+  | 'browser.profile.delete'
+  | 'browser.profile.listSiteSessions'
+  | 'browser.profile.clearSiteSession'
+  | 'browser.recording.list'
+  | 'browser.recording.get'
+  | 'browser.recording.start'
+  | 'browser.recording.stop'
   | 'browser.handoff.listWaiting'
   | 'browser.handoff.continue'
   | 'browser.handoff.cancel'
@@ -2867,6 +2880,147 @@ export interface ConversationSubmitBrowserResultPayload {
 export interface ConversationSubmitBrowserResultResponse {
   requestId: string;
   accepted: boolean;
+}
+
+export interface BrowserProfileSummary {
+  id: string;
+  name: string;
+  revision: number;
+  isDefault: boolean;
+  inUse: boolean;
+  siteCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
+}
+
+export type BrowserSiteSessionState = 'data_present' | 'verified' | 'reauth_required';
+
+export interface BrowserSiteSessionSummary {
+  profileId: string;
+  siteKey: string;
+  origins: string[];
+  state: BrowserSiteSessionState;
+  cookieCount: number;
+  storageBytes: number;
+  storageTypes: string[];
+  lastSeenAt?: string;
+  lastVerifiedAt?: string;
+  lastCheckedAt: string;
+  updatedAt: string;
+}
+
+export type ListBrowserProfilesPayload = Record<string, never>;
+
+export interface ListBrowserProfilesResponse {
+  profiles: BrowserProfileSummary[];
+}
+
+export interface CreateBrowserProfilePayload {
+  name: string;
+}
+
+export interface CreateBrowserProfileResponse {
+  profile: BrowserProfileSummary;
+}
+
+export interface RenameBrowserProfilePayload {
+  profileId: string;
+  name: string;
+  expectedRevision: number;
+}
+
+export interface RenameBrowserProfileResponse {
+  profile: BrowserProfileSummary;
+}
+
+export interface DeleteBrowserProfilePayload {
+  profileId: string;
+  expectedRevision: number;
+}
+
+export interface DeleteBrowserProfileResponse {
+  profileId: string;
+  deleted: true;
+}
+
+export interface ListBrowserSiteSessionsPayload {
+  profileId: string;
+  refresh?: boolean;
+}
+
+export interface ListBrowserSiteSessionsResponse {
+  profile: BrowserProfileSummary;
+  sessions: BrowserSiteSessionSummary[];
+  refreshed: boolean;
+  checkedAt?: string;
+}
+
+export interface ClearBrowserSiteSessionPayload {
+  profileId: string;
+  siteKey: string;
+}
+
+export interface ClearBrowserSiteSessionResponse {
+  profileId: string;
+  siteKey: string;
+  clearedOrigins: string[];
+  deletedCookieCount: number;
+  checkedAt: string;
+}
+
+export interface BrowserRecordingSummary {
+  id: string;
+  profileId: string;
+  status: BrowserRecordingStatus;
+  revision: number;
+  stepCount: number;
+  startUrl?: string;
+  currentUrl?: string;
+  stopReason?: BrowserRecordingStopReason;
+  errorCode?: string;
+  createdAt: string;
+  startedAt?: string;
+  stoppedAt?: string;
+  updatedAt: string;
+}
+
+export interface ListBrowserRecordingsPayload {
+  profileId: string;
+  limit?: number;
+}
+
+export interface ListBrowserRecordingsResponse {
+  recordings: BrowserRecordingSummary[];
+}
+
+export interface GetBrowserRecordingPayload {
+  recordingId: string;
+  afterSequence?: number;
+  limit?: number;
+}
+
+export interface GetBrowserRecordingResponse {
+  recording: BrowserRecordingSummary;
+  steps: BrowserRecordingStepRecord[];
+}
+
+export interface StartBrowserRecordingPayload {
+  profileId: string;
+  expectedProfileRevision: number;
+  startUrl?: string;
+}
+
+export interface StartBrowserRecordingResponse {
+  recording: BrowserRecordingSummary;
+}
+
+export interface StopBrowserRecordingPayload {
+  recordingId: string;
+}
+
+export interface StopBrowserRecordingResponse {
+  recording: BrowserRecordingSummary;
 }
 
 export type BrowserHandoffReason =

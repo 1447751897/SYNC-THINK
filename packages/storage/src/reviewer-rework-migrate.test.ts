@@ -191,7 +191,7 @@ describe('0017_reviewer_rework migration', () => {
     const names = MIGRATIONS.map((migration) => migration.name);
     const frozenIndex = names.indexOf('0016_production_execution');
     const reviewerReworkIndex = names.indexOf('0017_reviewer_rework');
-    const latestIndex = names.indexOf('0035_review_image_selection_freeze');
+    const latestIndex = names.indexOf('0037_browser_recording');
 
     expect(frozenIndex).toBeGreaterThanOrEqual(0);
     expect(reviewerReworkIndex).toBe(frozenIndex + 1);

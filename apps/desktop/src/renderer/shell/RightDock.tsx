@@ -1,6 +1,6 @@
-// 右侧多面板 Dock（NewMax 式）：浏览器 / 文件 / 工作区（git）三个标签页。
-// - 浏览器面板始终保持挂载（display 切换），避免切标签丢失 webview 状态；
-// - AI 通过 browser_open 工具驱动时，宿主把 URL 下发到这里并自动切到浏览器页；
+// 右侧多面板 Dock（NewMax 式）：预览 / 文件 / 工作区（git）三个标签页。
+// - 预览面板始终保持挂载（display 切换），避免切标签丢失当前页面；
+// - AI 下发 URL 时，面板只展示结果；真实 Browser 工具仍由 Runtime 的系统浏览器执行；
 // - 文件面板：搜索 + 预览项目内文本文件（主进程只读 IPC，防目录穿越）；
 // - 工作区面板：当前分支 / 未提交变更 / 最近提交。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -76,7 +76,7 @@ export function RightDock(props: {
         <DockTabBtn
           active={tab === 'browser'}
           icon={<Globe size={13} />}
-          label="浏览器"
+          label="预览"
           onClick={() => setTab('browser')}
         />
         <DockTabBtn
@@ -102,9 +102,12 @@ export function RightDock(props: {
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {/* 浏览器常驻挂载：切走时仅隐藏，保住页面状态与登录态。 */}
+        {/* 预览常驻挂载：使用临时 partition，不承载 Runtime Profile 登录态。 */}
         <div
-          className={clsx('shell-dock-panel absolute inset-0', tab === 'browser' ? 'is-active' : 'is-hidden')}
+          className={clsx(
+            'shell-dock-panel absolute inset-0',
+            tab === 'browser' ? 'is-active' : 'is-hidden',
+          )}
           aria-hidden={tab !== 'browser'}
         >
           <BrowserPanel
@@ -113,6 +116,8 @@ export function RightDock(props: {
             navigateSeq={props.browserNavSeq}
             onClose={props.onClose}
             embedded
+            partition="browser-preview"
+            registerForAutomation={false}
           />
         </div>
         {tab === 'files' ? (
@@ -160,7 +165,11 @@ function FilesPanel({
   const [selectedInternal, setSelectedInternal] = useState<string | null>(null);
   // 分屏模式下高亮跟随宿主的分屏文件；内嵌预览模式沿用内部选中态。
   const selected = onOpenFile ? (activeFilePath ?? null) : selectedInternal;
-  const [preview, setPreview] = useState<{ path: string; content: string | null; error: string | null } | null>(null);
+  const [preview, setPreview] = useState<{
+    path: string;
+    content: string | null;
+    error: string | null;
+  } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   // 树形状态：dir path ('' = root) → children；expanded 记录展开集合。
   const [dirs, setDirs] = useState<Record<string, TreeDirState>>({});
@@ -174,15 +183,25 @@ function FilesPanel({
       if (!projectFolder || !api?.listProjectDir) return;
       setDirs((current) => ({
         ...current,
-        [dir]: { loaded: current[dir]?.loaded ?? false, loading: true, entries: current[dir]?.entries ?? [] },
+        [dir]: {
+          loaded: current[dir]?.loaded ?? false,
+          loading: true,
+          entries: current[dir]?.entries ?? [],
+        },
       }));
       void api
         .listProjectDir({ root: projectFolder, dir })
         .then((result: { entries: ProjectFileEntry[] }) => {
-          setDirs((current) => ({ ...current, [dir]: { loaded: true, loading: false, entries: result.entries } }));
+          setDirs((current) => ({
+            ...current,
+            [dir]: { loaded: true, loading: false, entries: result.entries },
+          }));
         })
         .catch(() => {
-          setDirs((current) => ({ ...current, [dir]: { loaded: true, loading: false, entries: [] } }));
+          setDirs((current) => ({
+            ...current,
+            [dir]: { loaded: true, loading: false, entries: [] },
+          }));
         });
     },
     [projectFolder],
@@ -299,7 +318,13 @@ function FilesPanel({
   );
 
   if (!projectFolder) {
-    return <DockEmpty icon={<Folder size={22} />} title="未绑定项目文件夹" subtitle="绑定后可在此浏览工作区文件" />;
+    return (
+      <DockEmpty
+        icon={<Folder size={22} />}
+        title="未绑定项目文件夹"
+        subtitle="绑定后可在此浏览工作区文件"
+      />
+    );
   }
 
   return (
@@ -329,7 +354,10 @@ function FilesPanel({
           ))}
         </div>
         <div className="relative">
-          <Search size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-text-faint" />
+          <Search
+            size={11}
+            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-text-faint"
+          />
           <input
             className="h-7 w-full rounded-md border border-border bg-page pl-6.5 pr-2 text-[11.5px] text-text focus:border-accent focus:outline-none"
             value={query}
@@ -354,7 +382,10 @@ function FilesPanel({
               </div>
             ) : searchKind === 'content' ? (
               contentError ? (
-                <div className="flex items-start gap-2 px-3 py-3 text-[11.5px] text-error" role="alert">
+                <div
+                  className="flex items-start gap-2 px-3 py-3 text-[11.5px] text-error"
+                  role="alert"
+                >
                   <AlertTriangle size={12} className="mt-0.5 shrink-0" />
                   <span>{contentError}</span>
                 </div>
@@ -379,14 +410,18 @@ function FilesPanel({
                       type="button"
                       className={clsx(
                         'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px]',
-                        selected === file.path ? 'bg-accent-soft text-accent-text' : 'text-text hover:bg-hover',
+                        selected === file.path
+                          ? 'bg-accent-soft text-accent-text'
+                          : 'text-text hover:bg-hover',
                       )}
                       title={file.path}
                       onClick={() => openFile(file.path)}
                     >
                       <FileCode2 size={12} className="shrink-0 text-text-faint" />
                       <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                      <span className="max-w-[45%] shrink-0 truncate text-[10.5px] text-text-faint">{file.path}</span>
+                      <span className="max-w-[45%] shrink-0 truncate text-[10.5px] text-text-faint">
+                        {file.path}
+                      </span>
                     </button>
                   </li>
                 ))}
@@ -412,7 +447,10 @@ function FilesPanel({
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3">
               <FileText size={12} className="shrink-0 text-text-faint" />
-              <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text" title={selected}>
+              <span
+                className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text"
+                title={selected}
+              >
                 {selected}
               </span>
               <button
@@ -488,9 +526,7 @@ function ContentSearchResults({
       </ul>
       {searchResult.truncated || searchResult.timedOut ? (
         <div className="border-t border-border px-3 py-2 text-[10px] text-text-faint">
-          {searchResult.timedOut
-            ? '搜索达到 5 秒上限，仅显示已找到的结果'
-            : '仅显示前 200 条结果'}
+          {searchResult.timedOut ? '搜索达到 5 秒上限，仅显示已找到的结果' : '仅显示前 200 条结果'}
         </div>
       ) : null}
     </div>
@@ -518,14 +554,20 @@ function FileTreeLevel({
   const state = dirs[dir];
   if (!state || (state.loading && !state.loaded)) {
     return (
-      <div className="flex items-center gap-2 px-2 py-1 text-[11.5px] text-text-faint" style={{ paddingLeft: 8 + depth * 14 }}>
+      <div
+        className="flex items-center gap-2 px-2 py-1 text-[11.5px] text-text-faint"
+        style={{ paddingLeft: 8 + depth * 14 }}
+      >
         <Loader2 size={11} className="animate-spin" /> 加载中…
       </div>
     );
   }
   if (state.entries.length === 0) {
     return (
-      <div className="px-2 py-1 text-[11px] text-text-faint opacity-70" style={{ paddingLeft: 8 + depth * 14 }}>
+      <div
+        className="px-2 py-1 text-[11px] text-text-faint opacity-70"
+        style={{ paddingLeft: 8 + depth * 14 }}
+      >
         （空目录）
       </div>
     );
@@ -572,7 +614,9 @@ function FileTreeLevel({
               type="button"
               className={clsx(
                 'flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[12px]',
-                selected === entry.path ? 'bg-accent-soft text-accent-text' : 'text-text hover:bg-hover',
+                selected === entry.path
+                  ? 'bg-accent-soft text-accent-text'
+                  : 'text-text hover:bg-hover',
               )}
               style={{ paddingLeft: 8 + depth * 14 + 15 }}
               title={entry.path}
@@ -596,7 +640,9 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
   // 分支切换：picker 打开态 / 目标分支 / 脏工作区确认弹层 / 进行中 / 错误。
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const [pendingBranch, setPendingBranch] = useState<string | null>(null);
-  const [dirtyChanges, setDirtyChanges] = useState<Array<{ status: string; path: string }> | null>(null);
+  const [dirtyChanges, setDirtyChanges] = useState<Array<{ status: string; path: string }> | null>(
+    null,
+  );
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
 
@@ -624,21 +670,29 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
       setSwitchError(null);
       void api
         .gitCheckout({ root: projectFolder, branch, strategy })
-        .then((result: { ok: boolean; dirty: boolean; changes: Array<{ status: string; path: string }>; error: string | null; stashed?: boolean }) => {
-          if (result.ok) {
-            setPendingBranch(null);
-            setDirtyChanges(null);
-            refresh();
-            return;
-          }
-          if (result.dirty && strategy === 'check') {
-            // 有未提交更改 → 弹确认层，让用户先处理。
-            setPendingBranch(branch);
-            setDirtyChanges(result.changes);
-            return;
-          }
-          setSwitchError(result.error ?? '切换失败');
-        })
+        .then(
+          (result: {
+            ok: boolean;
+            dirty: boolean;
+            changes: Array<{ status: string; path: string }>;
+            error: string | null;
+            stashed?: boolean;
+          }) => {
+            if (result.ok) {
+              setPendingBranch(null);
+              setDirtyChanges(null);
+              refresh();
+              return;
+            }
+            if (result.dirty && strategy === 'check') {
+              // 有未提交更改 → 弹确认层，让用户先处理。
+              setPendingBranch(branch);
+              setDirtyChanges(result.changes);
+              return;
+            }
+            setSwitchError(result.error ?? '切换失败');
+          },
+        )
         .catch(() => setSwitchError('切换失败'))
         .finally(() => setSwitching(false));
     },
@@ -651,7 +705,13 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
   }, [info]);
 
   if (!projectFolder) {
-    return <DockEmpty icon={<GitBranch size={22} />} title="未绑定项目文件夹" subtitle="绑定后可查看分支与变更" />;
+    return (
+      <DockEmpty
+        icon={<GitBranch size={22} />}
+        title="未绑定项目文件夹"
+        subtitle="绑定后可查看分支与变更"
+      />
+    );
   }
 
   const otherBranches = (info?.branches ?? []).filter((b) => b !== info?.branch);
@@ -691,7 +751,9 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
                       切换分支
                     </div>
                     {otherBranches.length === 0 ? (
-                      <div className="px-2 py-1.5 text-[11.5px] text-text-faint">没有其他本地分支</div>
+                      <div className="px-2 py-1.5 text-[11.5px] text-text-faint">
+                        没有其他本地分支
+                      </div>
                     ) : (
                       otherBranches.map((branch) => (
                         <button
@@ -771,7 +833,9 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
                 </li>
               ))}
               {dirtyChanges.length > 12 ? (
-                <li className="pl-7 text-[10.5px] text-text-faint">… 其余 {dirtyChanges.length - 12} 项</li>
+                <li className="pl-7 text-[10.5px] text-text-faint">
+                  … 其余 {dirtyChanges.length - 12} 项
+                </li>
               ) : null}
             </ul>
             <div className="flex items-center justify-end gap-2">
@@ -834,17 +898,23 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
                   </li>
                 ))}
                 {info.changes.length > 40 ? (
-                  <li className="pl-7 text-[11px] text-text-faint">… 其余 {info.changes.length - 40} 项</li>
+                  <li className="pl-7 text-[11px] text-text-faint">
+                    … 其余 {info.changes.length - 40} 项
+                  </li>
                 ) : null}
               </ul>
             )}
           </div>
           <div className="shrink-0 px-3 py-2">
-            <div className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wide text-text-faint">最近提交</div>
+            <div className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wide text-text-faint">
+              最近提交
+            </div>
             <ul className="space-y-1">
               {info.recentCommits.map((commit) => (
                 <li key={commit.hash} className="flex items-baseline gap-2 text-[11.5px]">
-                  <span className="shrink-0 font-mono text-[10.5px] text-text-faint">{commit.hash}</span>
+                  <span className="shrink-0 font-mono text-[10.5px] text-text-faint">
+                    {commit.hash}
+                  </span>
                   <span className="min-w-0 flex-1 truncate text-text" title={commit.subject}>
                     {commit.subject}
                   </span>
@@ -860,7 +930,15 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
 
 // ─── 共用小件 ─────────────────────────────────────────────────────────────────
 
-function DockEmpty({ icon, title, subtitle }: { icon: React.ReactNode; title: string; subtitle: string }) {
+function DockEmpty({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+}) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 py-12 text-center">
       <span className="text-text-faint opacity-40">{icon}</span>
@@ -887,7 +965,9 @@ function DockTabBtn({
       onClick={onClick}
       className={clsx(
         'flex h-7 items-center gap-1 rounded-md px-2 text-[11.5px] transition-colors',
-        active ? 'bg-accent-soft text-accent-text' : 'text-text-faint hover:bg-hover hover:text-text',
+        active
+          ? 'bg-accent-soft text-accent-text'
+          : 'text-text-faint hover:bg-hover hover:text-text',
       )}
     >
       {icon}

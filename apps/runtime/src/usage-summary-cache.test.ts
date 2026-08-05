@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDatabaseAsync, type BetterSQLite3Raw } from '@sync-think/storage';
 import {
+  USAGE_SUMMARY_CACHE_VERSION,
   UsageSummaryQueryService,
   loadUsageSummarySnapshotInWorker,
   refreshUsageSummarySnapshotFromDatabase,
@@ -92,6 +93,68 @@ function insertEvent(
 }
 
 describe('usage summary cache projection', () => {
+  it('keeps legacy provider turns separate when only a shared packet id is available', async () => {
+    const fixture = await createFixture();
+    try {
+      insertEvent(fixture.raw, {
+        id: 'usage-legacy-turn-1',
+        sequence: 1,
+        type: 'provider.usage',
+        occurredAt: '2026-08-02T09:00:00.000Z',
+        taskId: 'task-legacy',
+        runId: 'run-legacy',
+        stepId: 'step-legacy',
+        payload: {
+          packetId: 'packet-shared-by-tool-loop',
+          modelId: 'model-legacy',
+          providerId: 'provider-legacy',
+          tokensIn: 1_000,
+          tokensOut: 10,
+          cachedTokensHit: 512,
+          totalTokens: 1_010,
+        },
+      });
+      insertEvent(fixture.raw, {
+        id: 'usage-legacy-turn-2',
+        sequence: 2,
+        type: 'provider.usage',
+        occurredAt: '2026-08-02T09:00:01.000Z',
+        taskId: 'task-legacy',
+        runId: 'run-legacy',
+        stepId: 'step-legacy',
+        payload: {
+          packetId: 'packet-shared-by-tool-loop',
+          modelId: 'model-legacy',
+          providerId: 'provider-legacy',
+          tokensIn: 2_000,
+          tokensOut: 20,
+          cachedTokensHit: 1_024,
+          totalTokens: 2_020,
+        },
+      });
+
+      const summary = summarizeUsageSnapshot(refreshUsageSummarySnapshotFromDatabase(fixture.raw));
+
+      expect(summary.requests).toHaveLength(2);
+      expect(summary.requests.map((row) => row.requestId)).toEqual([
+        'usage-legacy-turn-2',
+        'usage-legacy-turn-1',
+      ]);
+      expect(summary.rows).toEqual([
+        expect.objectContaining({
+          modelId: 'model-legacy',
+          requests: 2,
+          tokensIn: 3_000,
+          tokensOut: 30,
+          cachedTokensHit: 1_536,
+          totalTokens: 3_030,
+        }),
+      ]);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it('ignores unrelated event storms and preserves provider/run/tool aggregation semantics', async () => {
     const fixture = await createFixture();
     try {
@@ -305,7 +368,7 @@ describe('UsageSummaryQueryService', () => {
     const second = service.query('2026-08-01T00:00:00.000Z');
     expect(loader).toHaveBeenCalledTimes(1);
 
-    resolveSnapshot({ version: 1, highWater: null, facts: [] });
+    resolveSnapshot({ version: USAGE_SUMMARY_CACHE_VERSION, highWater: null, facts: [] });
     await expect(first).resolves.toMatchObject({ requests: [] });
     await expect(second).resolves.toMatchObject({ requests: [] });
   });
@@ -316,7 +379,7 @@ describe('loadUsageSummarySnapshotInWorker', () => {
     const fixture = await createFixture();
     const cachePath = join(
       temporaryDirectories[temporaryDirectories.length - 1]!,
-      'usage-summary-cache-v1.json',
+      'usage-summary-cache-v2.json',
     );
     try {
       insertEvent(fixture.raw, {

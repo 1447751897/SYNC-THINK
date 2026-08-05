@@ -110,6 +110,26 @@ import type {
   ContinueBrowserHandoffResponse,
   CancelBrowserHandoffPayload,
   CancelBrowserHandoffResponse,
+  ListBrowserProfilesPayload,
+  ListBrowserProfilesResponse,
+  CreateBrowserProfilePayload,
+  CreateBrowserProfileResponse,
+  RenameBrowserProfilePayload,
+  RenameBrowserProfileResponse,
+  DeleteBrowserProfilePayload,
+  DeleteBrowserProfileResponse,
+  ListBrowserSiteSessionsPayload,
+  ListBrowserSiteSessionsResponse,
+  ClearBrowserSiteSessionPayload,
+  ClearBrowserSiteSessionResponse,
+  ListBrowserRecordingsPayload,
+  ListBrowserRecordingsResponse,
+  GetBrowserRecordingPayload,
+  GetBrowserRecordingResponse,
+  StartBrowserRecordingPayload,
+  StartBrowserRecordingResponse,
+  StopBrowserRecordingPayload,
+  StopBrowserRecordingResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -403,6 +423,30 @@ declare global {
         cancelDesktopCommand(
           payload: CancelDesktopCommandPayload,
         ): Promise<CancelDesktopCommandResponse>;
+        listBrowserProfiles(
+          payload?: ListBrowserProfilesPayload,
+        ): Promise<ListBrowserProfilesResponse>;
+        createBrowserProfile(
+          payload: CreateBrowserProfilePayload,
+        ): Promise<CreateBrowserProfileResponse>;
+        renameBrowserProfile(
+          payload: RenameBrowserProfilePayload,
+        ): Promise<RenameBrowserProfileResponse>;
+        deleteBrowserProfile(
+          payload: DeleteBrowserProfilePayload,
+        ): Promise<DeleteBrowserProfileResponse>;
+        listBrowserSiteSessions(
+          payload: ListBrowserSiteSessionsPayload,
+        ): Promise<ListBrowserSiteSessionsResponse>;
+        clearBrowserSiteSession(
+          payload: ClearBrowserSiteSessionPayload,
+        ): Promise<ClearBrowserSiteSessionResponse>;
+        browserRecording: {
+          list(payload: ListBrowserRecordingsPayload): Promise<ListBrowserRecordingsResponse>;
+          get(payload: GetBrowserRecordingPayload): Promise<GetBrowserRecordingResponse>;
+          start(payload: StartBrowserRecordingPayload): Promise<StartBrowserRecordingResponse>;
+          stop(payload: StopBrowserRecordingPayload): Promise<StopBrowserRecordingResponse>;
+        };
         listWaitingBrowserHandoffs(
           payload?: ListWaitingBrowserHandoffsPayload,
         ): Promise<ListWaitingBrowserHandoffsResponse>;

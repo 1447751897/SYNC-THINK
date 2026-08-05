@@ -2,11 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  openDatabaseAsync,
-  runMigrations,
-  SqliteBrowserStore,
-} from '@sync-think/storage';
+import { openDatabaseAsync, runMigrations, SqliteBrowserStore } from '@sync-think/storage';
 import type {
   BrowserHostLike,
   BrowserLeaseInfo,
@@ -21,10 +17,15 @@ import {
   type RuntimeBrowserHandoffRequest,
   type RuntimeBrowserPermissionInput,
 } from './runtime-browser-controller.js';
+import {
+  RuntimeBrowserProfileGate,
+  type BrowserProfileOperationGate,
+} from './runtime-browser-profile-gate.js';
 
-class RecordingLeaseHost
-  implements Pick<BrowserHostLike, 'inspectLease' | 'recoverLease' | 'releaseLease'>
-{
+class RecordingLeaseHost implements Pick<
+  BrowserHostLike,
+  'inspectLease' | 'recoverLease' | 'releaseLease'
+> {
   lease: BrowserLeaseInfo = {
     leaseId: 'lease-1',
     pageId: 'page-1',
@@ -79,6 +80,18 @@ class RecordingBrowserWorker implements BrowserWorker {
   }
 }
 
+function createBlockingProfileGate(): BrowserProfileOperationGate & {
+  release(): void;
+  waitUntilReleased(): Promise<void>;
+} {
+  const gate = new RuntimeBrowserProfileGate();
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return Object.assign(gate, { release, waitUntilReleased: () => released });
+}
+
 const tempDirs: string[] = [];
 const connections: Array<Awaited<ReturnType<typeof openDatabaseAsync>>> = [];
 
@@ -90,6 +103,7 @@ afterEach(() => {
 async function createHarnessWithWorker<T extends BrowserWorker>(
   worker: T,
   leaseHost?: Pick<BrowserHostLike, 'inspectLease' | 'recoverLease' | 'releaseLease'>,
+  profileGate?: BrowserProfileOperationGate,
 ) {
   const root = mkdtempSync(join(tmpdir(), 'sync-think-browser-controller-'));
   tempDirs.push(root);
@@ -104,6 +118,7 @@ async function createHarnessWithWorker<T extends BrowserWorker>(
     profileId: 'default',
     fallbackWorkingDir: 'D:/runtime-data',
     leaseHost,
+    profileGate,
   });
   return { controller, store, worker, connection, leaseHost };
 }
@@ -112,7 +127,9 @@ async function createHarness() {
   return createHarnessWithWorker(new RecordingBrowserWorker());
 }
 
-function permissionInput(overrides: Partial<RuntimeBrowserPermissionInput> = {}): RuntimeBrowserPermissionInput {
+function permissionInput(
+  overrides: Partial<RuntimeBrowserPermissionInput> = {},
+): RuntimeBrowserPermissionInput {
   return {
     toolName: 'browser_open',
     argumentsJson: JSON.stringify({ url: 'https://example.test/dashboard?secret=hidden' }),
@@ -151,6 +168,28 @@ function handoffInput(
 }
 
 describe('RuntimeBrowserController durable permissions', () => {
+  it('keeps command reservation behind Profile maintenance', async () => {
+    const profileGate = createBlockingProfileGate();
+    const maintenance = profileGate.runExclusive('default', async () => {
+      await profileGate.waitUntilReleased();
+    });
+    const worker = new RecordingBrowserWorker();
+    const { controller, store } = await createHarnessWithWorker(worker, undefined, profileGate);
+    const input = executeInput({ approval: { approvalId: 'approval-maintenance' } });
+    const execution = controller.execute(input);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(store.getCommandByIdempotencyKey(input.idempotencyKey)).toBeUndefined();
+
+    profileGate.release();
+    await maintenance;
+    const result = JSON.parse(await execution) as Record<string, unknown>;
+    expect(result).toMatchObject({ ok: true });
+    expect(store.getCommandByIdempotencyKey(input.idempotencyKey)).toMatchObject({
+      state: 'completed',
+    });
+  });
+
   it('requires a precise grant before Worker execution and persists the completed command', async () => {
     const { controller, store, worker } = await createHarness();
     const input = permissionInput();
@@ -218,7 +257,9 @@ describe('RuntimeBrowserController durable permissions', () => {
       failureClass: 'permission',
     });
     expect(worker.calls).toHaveLength(0);
-    expect(store.getCommandByIdempotencyKey(input.idempotencyKey)).toMatchObject({ state: 'failed' });
+    expect(store.getCommandByIdempotencyKey(input.idempotencyKey)).toMatchObject({
+      state: 'failed',
+    });
   });
 
   it('replays a completed idempotency key without repeating the browser side effect', async () => {
@@ -258,11 +299,11 @@ describe('RuntimeBrowserController durable permissions', () => {
       runId: 'run-2',
       idempotencyKey: 'browser:run-2:call-open',
     });
-    expect(controller.evaluatePermission(otherRun)).toMatchObject({ decision: 'approval-required' });
+    expect(controller.evaluatePermission(otherRun)).toMatchObject({
+      decision: 'approval-required',
+    });
     expect(worker.calls).toHaveLength(2);
   });
-
-
 
   it('isolates Team Step grants by exact AgentVersion and rejects origins outside the frozen permission snapshot', async () => {
     const { controller, store } = await createHarness();
@@ -416,7 +457,10 @@ describe('RuntimeBrowserController durable permissions', () => {
 
   it('persists a durable waiting handoff against the exact active Page lease', async () => {
     const leaseHost = new RecordingLeaseHost();
-    const { controller, store } = await createHarnessWithWorker(new RecordingBrowserWorker(), leaseHost);
+    const { controller, store } = await createHarnessWithWorker(
+      new RecordingBrowserWorker(),
+      leaseHost,
+    );
     const browserInput = permissionInput();
     controller.recordPermissionDecision(browserInput, 'allow', 'approval-1');
     await controller.execute(executeInput());
@@ -445,6 +489,11 @@ describe('RuntimeBrowserController durable permissions', () => {
       leaseId: 'lease-1',
       pageId: 'page-1',
       errorCode: 'browser.handoff-required',
+    });
+    expect(controller.inspectHandoff(result.handoff.handoffId)).toMatchObject({
+      profileId: 'default',
+      siteOrigin: 'https://example.test',
+      reason: 'login',
     });
     expect(controller.listWaitingHandoffs({ workspaceId: 'workspace-1' })).toEqual([
       result.handoff,
@@ -508,9 +557,7 @@ describe('RuntimeBrowserController durable permissions', () => {
     const browserInput = permissionInput();
     controller.recordPermissionDecision(browserInput, 'allow', 'approval-1');
     await controller.execute(executeInput());
-    const waiting = await controller.requestHandoff(
-      handoffInput({ onCancel: 'close-page' }),
-    );
+    const waiting = await controller.requestHandoff(handoffInput({ onCancel: 'close-page' }));
     if (waiting.status !== 'waiting_user') throw new Error('expected waiting handoff');
     leaseHost.missingUntilRecovered = true;
 
@@ -576,9 +623,10 @@ describe('RuntimeBrowserController durable permissions', () => {
       throw new Error('event store unavailable');
     });
 
-    const result = JSON.parse(
-      await controller.execute(executeInput({ beforeExecute })),
-    ) as Record<string, unknown>;
+    const result = JSON.parse(await controller.execute(executeInput({ beforeExecute }))) as Record<
+      string,
+      unknown
+    >;
 
     expect(result).toMatchObject({ ok: false, code: 'browser.intent-persist-failed' });
     expect(worker.calls).toHaveLength(0);

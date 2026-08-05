@@ -65,6 +65,7 @@ export interface DesktopAccessibilitySnapshot {
 export type DesktopAction =
   | { kind: 'probe' }
   | { kind: 'list-windows' }
+  | { kind: 'launch-app'; application: string }
   | { kind: 'inspect-window'; window: DesktopWindowIdentity; limits?: Partial<DesktopTreeLimits> }
   | {
       kind: 'resolve-selector';
@@ -111,6 +112,12 @@ export interface DesktopWindowListResult {
   truncated: boolean;
 }
 
+export interface DesktopAppLaunchResult {
+  kind: 'app-launched';
+  window: DesktopWindowIdentity;
+  reusedExistingWindow: boolean;
+}
+
 export interface DesktopElementResolvedResult {
   kind: 'element-resolved';
   target: DesktopElementTarget;
@@ -130,6 +137,7 @@ export interface DesktopActionCompletedResult {
 export type DesktopActionResult =
   | DesktopProbeResult
   | DesktopWindowListResult
+  | DesktopAppLaunchResult
   | DesktopAccessibilitySnapshot
   | DesktopElementResolvedResult
   | DesktopElementReadResult
@@ -263,6 +271,10 @@ function validateActionResult(value: unknown): asserts value is DesktopActionRes
       for (const window of value.windows) validateWindow(window);
       if (typeof value.truncated !== 'boolean') invalidRequest();
       return;
+    case 'app-launched':
+      validateWindow(value.window);
+      if (typeof value.reusedExistingWindow !== 'boolean') invalidRequest();
+      return;
     case 'accessibility-snapshot':
       validateWindow(value.window);
       if (!isNonEmptyString(value.snapshotRevision, 128)) invalidRequest();
@@ -293,6 +305,9 @@ function validateAction(value: unknown): asserts value is DesktopAction {
   switch (value.kind) {
     case 'probe':
     case 'list-windows':
+      return;
+    case 'launch-app':
+      if (!isDesktopApplication(value.application)) invalidRequest();
       return;
     case 'inspect-window':
       validateWindow(value.window);
@@ -406,6 +421,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown, maxLength: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= maxLength;
+}
+
+function isDesktopApplication(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 1_024) return false;
+  if (value !== value.trim() || /[\0\r\n"<>|?*]/u.test(value) || !/\.exe$/iu.test(value)) {
+    return false;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/iu.test(value) && !/^[a-z]:\\/iu.test(value)) return false;
+  if (/^\\\\/u.test(value)) return false;
+  if (/^[a-z]:\\/iu.test(value)) {
+    return !value.split(/[\\/]/u).some((segment) => segment === '..');
+  }
+  return !/[\\/:]/u.test(value);
 }
 
 function isFailureClass(

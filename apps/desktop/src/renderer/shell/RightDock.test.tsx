@@ -2,7 +2,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./BrowserPanel.js', () => ({ BrowserPanel: () => <div data-testid="browser-panel" /> }));
+vi.mock('./BrowserPanel.js', () => ({
+  BrowserPanel: (props: { partition?: string; registerForAutomation?: boolean }) => (
+    <div
+      data-testid="browser-panel"
+      data-partition={props.partition}
+      data-register-for-automation={String(props.registerForAutomation)}
+    />
+  ),
+}));
 
 import { RightDock } from './RightDock.js';
 
@@ -12,6 +20,15 @@ afterEach(() => {
 });
 
 describe('RightDock project content search', () => {
+  it('keeps the right-side browser as an ephemeral preview, separate from AI automation Profiles', () => {
+    render(<RightDock initialTab="browser" onClose={vi.fn()} />);
+
+    const preview = screen.getByTestId('browser-panel');
+    expect(preview.getAttribute('data-partition')).toBe('browser-preview');
+    expect(preview.getAttribute('data-register-for-automation')).toBe('false');
+    expect(screen.getByRole('button', { name: '预览' })).toBeTruthy();
+  });
+
   it('switches from filename search to bounded content matches and opens the exact line', async () => {
     const searchProjectContent = vi.fn(async () => ({
       engine: 'rg' as const,

@@ -32,6 +32,7 @@ export interface TerminalWorkerOutput extends WorkerJobOutput {
   truncated?: boolean;
   timedOut?: boolean;
   shell?: false;
+  guiWindowVerified?: false;
 }
 
 export interface TerminalWorker extends Worker<TerminalWorkerInput> {
@@ -99,13 +100,19 @@ export class TerminalProcessWorker implements TerminalWorker {
       wake?.();
       wake = undefined;
     };
-    const completion = runBoundedProcess(command, args, cwd, {
-      ...token,
-      signal: executionController.signal,
-    }, {
-      onStdout: (text) => enqueue({ type: 'stdout', text }),
-      onStderr: (text) => enqueue({ type: 'stderr', text }),
-    }).finally(() => {
+    const completion = runBoundedProcess(
+      command,
+      args,
+      cwd,
+      {
+        ...token,
+        signal: executionController.signal,
+      },
+      {
+        onStdout: (text) => enqueue({ type: 'stdout', text }),
+        onStderr: (text) => enqueue({ type: 'stderr', text }),
+      },
+    ).finally(() => {
       finished = true;
       wake?.();
       wake = undefined;
@@ -148,7 +155,7 @@ export class TerminalProcessWorker implements TerminalWorker {
           ok: result.exitCode === 0,
           message:
             result.exitCode === 0
-              ? 'Terminal command completed'
+              ? 'Terminal command completed; GUI window visibility was not verified'
               : `Terminal command exited with code ${String(result.exitCode)}`,
           exitCode: result.exitCode ?? undefined,
           stdout: result.stdout,
@@ -156,6 +163,7 @@ export class TerminalProcessWorker implements TerminalWorker {
           truncated: result.truncated,
           timedOut: false,
           shell: false,
+          guiWindowVerified: false,
         },
       };
     } finally {

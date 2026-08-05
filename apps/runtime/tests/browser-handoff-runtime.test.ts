@@ -483,6 +483,22 @@ describe('Runtime durable Browser handoff commands', () => {
       secondClient.socket.destroy();
       await second.close();
     }
+
+    const verificationConnection = await openDatabaseAsync({ path: fixture.dbPath });
+    try {
+      const sessions = new SqliteBrowserStore(verificationConnection.raw).listSiteSessions(
+        'default',
+      );
+      expect(sessions).toMatchObject([
+        {
+          siteKey: 'example.test',
+          state: 'verified',
+          origins: ['https://example.test'],
+        },
+      ]);
+    } finally {
+      verificationConnection.raw.close();
+    }
   });
 
   it('recovers a keep-open lease after cold restart so final shutdown still owns the browser', async () => {

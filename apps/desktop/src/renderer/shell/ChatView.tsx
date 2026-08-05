@@ -3479,6 +3479,8 @@ const MessageBubble = memo(function MessageBubble({
       duration,
       durationExact,
       tokens,
+      cacheReadReported: typeof processView.cachedTokensHit === 'number',
+      cacheWriteReported: typeof processView.cachedTokensCreated === 'number',
       model: modelLabel,
       absoluteTime,
     };
@@ -3696,7 +3698,7 @@ const MessageBubble = memo(function MessageBubble({
                   label={metricsLabel}
                   panel={
                     <div className="shell-meta-tip">
-                      <div className="shell-meta-tip__title">本轮回复</div>
+                      <div className="shell-meta-tip__title">本次回复累计</div>
                       {metricsDetail.duration ? (
                         <div className="shell-meta-tip__row">
                           <span>耗时</span>
@@ -3727,7 +3729,9 @@ const MessageBubble = memo(function MessageBubble({
                         <div className="shell-meta-tip__row">
                           <span>缓存读取</span>
                           <strong>
-                            {formatCompactCount(metricsDetail.tokens.cacheReadTokens)}
+                            {metricsDetail.cacheReadReported
+                              ? formatCompactCount(metricsDetail.tokens.cacheReadTokens)
+                              : '未上报'}
                           </strong>
                         </div>
                       ) : null}
@@ -3735,7 +3739,9 @@ const MessageBubble = memo(function MessageBubble({
                         <div className="shell-meta-tip__row">
                           <span>缓存创建</span>
                           <strong>
-                            {formatCompactCount(metricsDetail.tokens.cacheWriteTokens)}
+                            {metricsDetail.cacheWriteReported
+                              ? formatCompactCount(metricsDetail.tokens.cacheWriteTokens)
+                              : '未上报'}
                           </strong>
                         </div>
                       ) : null}

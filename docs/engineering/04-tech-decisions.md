@@ -1100,3 +1100,62 @@ Computer Use built-in plugin
 7. timeout、transient、rate-limit 和 auth 视为可能的 Provider 端点级故障。同一 Run 对同一 Provider 连续失败两次后跳过剩余同源模型；不同 Provider 的用户配置 fallback 不受影响。失败计数进入 Run checkpoint，防止重启清零后再次长时间重试。
 8. 强制最终回复不得通过删除 system 或 tools 改变 Prompt 前缀。OpenAI Responses、Chat Completions 与 Anthropic Messages 保留相同 system/tools，只使用 `tool_choice: none` 禁止本轮继续调用工具。
 9. 当前中转实测在同一 `gpt-5.6-luna` 对话、相同 tools 配置下，首轮预热后连续两轮分别命中 `2560/3102` 与 `2560/3141` 输入 Token；两轮 `cache_write_tokens` 均为 0。产品以缓存读取量和命中率衡量复用效果，不以持续增加缓存创建量为目标。
+10. 一次聊天回复可能包含多个 Provider 请求。消息悬浮卡按真实 `requestId` 去重后累计整次回复；使用统计也按请求边界展示。旧 Event 缺少 `requestId` 时以 Event ID 作为独立请求身份，禁止使用覆盖整个工具循环的 `packetId` 合并。缓存字段缺失表示“未上报”，与 Provider 明确返回 `0` 严格区分。
+
+### TD-007 实施更新：DesktopWorker P0.11 应用启动与可见窗口验证（2026-08-05）
+
+1. Computer Use 新增第八个受限工具 `desktop_launch_app`。输入只接受可执行文件名或本地绝对 `.exe` 路径，不接受参数、URL、UNC、路径穿越或其他协议，继续禁止命令解释器回退。
+2. 应用激活固定在短生命周期 Desktop Host 内通过 Windows Shell 执行。Host 在激活前记录可见窗口，激活后按目标进程映像轮询可见顶层窗口；只有返回 exact `DesktopWindowIdentity` 才产生 `app-launched` 成功结果。
+3. Windows Shell 拒绝启动与启动后未出现匹配可见窗口分别返回 `desktop.app-launch-failed`、`desktop.app-window-not-found`。终端 `exit 0` 明确投影 `guiWindowVerified: false`，不得再作为 GUI 已打开的证据。
+4. `launch-app` 属于可见副作用，继续走 durable command、before-execute intent、幂等重放和用户输入中断 fence。受信任的系统展示应用按 `display` 风险处理；任意本地路径按 `sensitive` 处理，并在所有 execution mode 下要求人工批准。
+5. 启动结果返回的 exact window 可直接进入既有 inspect → resolve → immediate action 流程；OCR、坐标点击、SendInput、UAC/UIPI 绕过和安全桌面控制仍不进入能力边界。
+
+### TD-036：Runtime Profile 真源、CDP 站点会话清单与按站点清除（2026-08-05）
+
+状态：已采用，P1.1 已完成。
+
+技术需求：为 Browser Automation Studio 建立唯一 Profile/登录态基础层。用户需要在 Browser 页面查看每个 Profile 已保存的站点会话，并能单独清除某站点及其子域的数据；未来录制、回放和定时任务必须复用同一 Profile。
+
+方案对比：
+
+| 方案                                                                    | 优点                                                     | 缺点                                             | 结论     |
+| ----------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------ | -------- |
+| 解析 Chromium Profile 磁盘数据库                                        | 不启动浏览器即可扫描                                     | 格式/锁/加密随 Chromium 变化，容易读取不一致数据 | 不采用   |
+| 仅保存 SQLite 历史摘要                                                  | 首屏快，不接触浏览器秘密                                 | 可能过期，不能证明当前数据仍存在                 | 只作缓存 |
+| Playwright BrowserContext + loopback CDP 查询/清理，SQLite 保存脱敏摘要 | 与真实执行 Profile 一致，可清除 Cookie 与 origin storage | 实时刷新可能启动可见系统浏览器                   | 采用     |
+
+采用合同：
+
+1. Runtime `browser-profiles/<profileId>` 是 Cookie/站点存储真源；Renderer `localStorage` 与 Electron partition 不再拥有 Profile 业务状态。
+2. SQLite 通过 `SqliteBrowserStore` 的专用 `browser_profile` 与 `browser_site_session` 表保存版本化 Profile 元数据和脱敏站点摘要，包括域名、状态、计数和时间戳；不得保存 Cookie 名值、JWT、Token、密码或网站存储正文。迁移真源为 `0036_browser_profile_site_sessions`。
+3. 页面先显示缓存摘要；只有显式刷新、录制或运行 Workflow 时才启动/接管专用系统浏览器并查询真实 BrowserContext。
+4. registrable domain 通过 Public Suffix List 解析；清除默认覆盖主站及其子域，第三方 SSO origin 默认不包含。
+5. 清除通过 Playwright Cookie API 与 CDP `Storage.clearDataForOrigin` 完成；Storage 查询与清除固定使用 Page target CDP Session。Edge 143 对 Browser target 的同一清除命令返回 `Internal error`，Page target 已完成真实兼容性复核。操作前检查 BrowserHost lease 与 SQLite 非终态 command/handoff。Profile 刷新、冷恢复、清除和删除使用同一 Host 维护门禁，Lease 释放排空命令期间仍视为占用，避免 CDP 查询、恢复或目录删除互相穿插。
+6. 完整 Profile 删除必须关闭受管 Session、删除受控根目录下对应 Profile 数据并保留不含秘密的审计事实；默认 Profile 不允许删除。
+7. 回滚边界：Profile 管理 UI/API 可独立移除，既有 `browser_*` 执行与 handoff 继续使用 `default` Profile，不修改已有 command 记录。
+8. Desktop 对实时刷新、按站点清除和完整 Profile 删除使用 30 秒维护预算；普通 Profile CRUD 与 `runtime.healthcheck` 保持默认 5 秒。这样冷启动系统浏览器时 UI 不会先报超时、Runtime 后完成写入，避免界面与 SQLite 状态分叉。
+9. registrable domain 解析使用 `tldts@6.1.86`（Public Suffix List），并将 origin inventory 限制为最多 512 条。Inventory 只由 Runtime 已知 origin、当前 Page origin 和 Cookie domain 派生；不调用 `storageState()`，也不把 LocalStorage/IndexedDB 正文载入 Runtime。裸 IPv4、localhost 与 IPv6 站点键均保留精确主机语义。
+
+### TD-037：Durable 语义录制、独占 Page lease 与脱敏步骤草稿（2026-08-05）
+
+状态：已采用，P1.2 已完成。
+
+技术需求：用户需要在专用系统 Edge/Chrome 中通过真人操作生成可检查、可恢复的自动化草稿，同时保持 Profile 登录态隔离，并为 P1.3 的确定性 WorkflowVersion 提供结构化输入。
+
+方案对比：
+
+| 方案                                        | 优点                                             | 缺点                           | 结论   |
+| ------------------------------------------- | ------------------------------------------------ | ------------------------------ | ------ |
+| 录屏视频或坐标轨迹                          | 实现直观                                         | 不稳定、不可编辑、无法可靠回放 | 不采用 |
+| 直接保存 Playwright codegen 文本            | 接近执行代码                                     | 难做版本化、脱敏、变量化与迁移 | 不采用 |
+| SQLite 状态机 + 结构化语义步骤 + 稳定定位器 | 可审计、可恢复、可在 P1.3 冻结为 WorkflowVersion | 需要严格事件归并与隐私边界     | 采用   |
+
+采用合同：
+
+1. 迁移 `0037_browser_recording` 新增 `browser_recording` 与 `browser_recording_step`。状态固定为 `starting/recording/stopping/stopped/failed/interrupted`，每个 Profile 最多一个非终态录制；步骤最多 200 条、单步最多 16 KiB。
+2. start 先写 durable intent，再以 `recording:<recordingId>` 获取专用 Profile claim 和 exact Page lease。command reservation、Profile 维护与第二个 recording 都必须双向拒绝。
+3. P1.2 只捕获单 Page 主 Frame 的 `navigate/click/fill/select/check/Enter`。fill/select 同定位器更新使用 `replace-last`，click/Enter 后 2.5 秒内的导航折叠为 `resultUrl`；坐标、等待时长、Popup 和 iframe 不进入执行真源。
+4. URL 在 Host 和 Storage 双层移除 userinfo、query、hash；敏感输入保存 `{ kind: "secret" }`。DOM binding 使用每次录制随机 capture token，只接受主 Frame、可信用户事件和有界结构化 payload，网页伪造或超大事件不进入 SQLite。
+5. stop 先 CAS 到 `stopping`，停止事件接收、排空 mutation、关闭 exact Page、释放 lease，再写终态；重复 stop 复用同一操作。Page 关闭、Browser 关闭和捕获失败形成明确终态，冷启动把遗留非终态录制清理为 `interrupted/runtime_restarted`。
+6. Desktop 暴露 `browser.recording.{list,get,start,stop}` 四条严格 IPC；start/stop 使用 30 秒预算，list/get 保持短预算。Renderer 通过有界快照轮询展示实时步骤，start 未知结果必须先向 Runtime 对账再决定是否解锁。
+7. 回滚边界：可移除录制 UI/API 和 `0037` 之后的业务入口而不影响既有 `browser_*` command 与 P1.1 Profile；P1.2 草稿不被调度器执行。WorkflowVersion、变量、秘密引用、编辑与回放留在 P1.3。

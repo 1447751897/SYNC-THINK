@@ -21,7 +21,8 @@
     "@sync-think/protocol": "workspace:*",
     "@sync-think/shared": "workspace:*",
     "koffi": "3.1.4",
-    "playwright-core": "^1.62.0"
+    "playwright-core": "^1.62.0",
+    "tldts": "^6.1.86"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",

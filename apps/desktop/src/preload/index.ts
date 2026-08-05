@@ -118,6 +118,26 @@ import type {
   ContinueBrowserHandoffResponse,
   CancelBrowserHandoffPayload,
   CancelBrowserHandoffResponse,
+  ListBrowserProfilesPayload,
+  ListBrowserProfilesResponse,
+  CreateBrowserProfilePayload,
+  CreateBrowserProfileResponse,
+  RenameBrowserProfilePayload,
+  RenameBrowserProfileResponse,
+  DeleteBrowserProfilePayload,
+  DeleteBrowserProfileResponse,
+  ListBrowserSiteSessionsPayload,
+  ListBrowserSiteSessionsResponse,
+  ClearBrowserSiteSessionPayload,
+  ClearBrowserSiteSessionResponse,
+  ListBrowserRecordingsPayload,
+  ListBrowserRecordingsResponse,
+  GetBrowserRecordingPayload,
+  GetBrowserRecordingResponse,
+  StartBrowserRecordingPayload,
+  StartBrowserRecordingResponse,
+  StopBrowserRecordingPayload,
+  StopBrowserRecordingResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -619,6 +639,58 @@ const api = {
         'runtime:desktop-command-cancel',
         payload,
       ) as Promise<CancelDesktopCommandResponse>,
+    listBrowserProfiles: (payload: ListBrowserProfilesPayload = {}) =>
+      ipcRenderer.invoke(
+        'runtime:browser-profile-list',
+        payload,
+      ) as Promise<ListBrowserProfilesResponse>,
+    createBrowserProfile: (payload: CreateBrowserProfilePayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-profile-create',
+        payload,
+      ) as Promise<CreateBrowserProfileResponse>,
+    renameBrowserProfile: (payload: RenameBrowserProfilePayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-profile-rename',
+        payload,
+      ) as Promise<RenameBrowserProfileResponse>,
+    deleteBrowserProfile: (payload: DeleteBrowserProfilePayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-profile-delete',
+        payload,
+      ) as Promise<DeleteBrowserProfileResponse>,
+    listBrowserSiteSessions: (payload: ListBrowserSiteSessionsPayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-profile-list-site-sessions',
+        payload,
+      ) as Promise<ListBrowserSiteSessionsResponse>,
+    clearBrowserSiteSession: (payload: ClearBrowserSiteSessionPayload) =>
+      ipcRenderer.invoke(
+        'runtime:browser-profile-clear-site-session',
+        payload,
+      ) as Promise<ClearBrowserSiteSessionResponse>,
+    browserRecording: {
+      list: (payload: ListBrowserRecordingsPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-recording-list',
+          payload,
+        ) as Promise<ListBrowserRecordingsResponse>,
+      get: (payload: GetBrowserRecordingPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-recording-get',
+          payload,
+        ) as Promise<GetBrowserRecordingResponse>,
+      start: (payload: StartBrowserRecordingPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-recording-start',
+          payload,
+        ) as Promise<StartBrowserRecordingResponse>,
+      stop: (payload: StopBrowserRecordingPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-recording-stop',
+          payload,
+        ) as Promise<StopBrowserRecordingResponse>,
+    },
     listWaitingBrowserHandoffs: (payload: ListWaitingBrowserHandoffsPayload = {}) =>
       ipcRenderer.invoke(
         'runtime:browser-handoff-list-waiting',

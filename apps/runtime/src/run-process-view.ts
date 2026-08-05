@@ -14,6 +14,7 @@ const TOOL_META: Record<string, { verb: string; kind: ProcessToolKind; zh: strin
   edit_file: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
   list_files: { verb: 'List', kind: 'list', zh: '列出文件' },
   run_command: { verb: 'Bash', kind: 'bash', zh: '执行命令' },
+  desktop_launch_app: { verb: 'Launch', kind: 'other', zh: '启动应用' },
   git_status: { verb: 'Git', kind: 'git', zh: 'Git 状态' },
   git_diff: { verb: 'Git', kind: 'git', zh: 'Git diff' },
   browser_open: { verb: 'Browse', kind: 'browser', zh: '打开网页' },
@@ -156,7 +157,8 @@ function buildLabel(
   const command = typeof args?.command === 'string' ? args.command : undefined;
   const url = typeof args?.url === 'string' ? args.url : undefined;
   const query = typeof args?.query === 'string' ? args.query : undefined;
-  const focus = path ?? command ?? url ?? query;
+  const application = typeof args?.application === 'string' ? args.application : undefined;
+  const focus = path ?? command ?? url ?? query ?? application;
   const label = focus ? `${meta.verb} · ${shortText(String(focus), 52)}` : meta.verb;
   return { label, verb: meta.verb, zh: meta.zh, kind: meta.kind, path, command, url };
 }
@@ -306,6 +308,40 @@ function summarizeResult(
   return {};
 }
 
+interface ProviderUsageProjection {
+  tokensIn?: number;
+  tokensOut?: number;
+  cachedTokensHit?: number;
+  cachedTokensCreated?: number;
+}
+
+function providerUsageNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function maximumUsageValue(
+  current: number | undefined,
+  next: number | undefined,
+): number | undefined {
+  if (next === undefined) return current;
+  return current === undefined ? next : Math.max(current, next);
+}
+
+function sumUsageValues(
+  usages: Iterable<ProviderUsageProjection>,
+  field: keyof ProviderUsageProjection,
+): number | undefined {
+  let reported = false;
+  let total = 0;
+  for (const usage of usages) {
+    const value = usage[field];
+    if (value === undefined) continue;
+    reported = true;
+    total += value;
+  }
+  return reported ? total : undefined;
+}
+
 /**
  * Project NewMax-style "执行过程" steps + file changes + token usage.
  */
@@ -318,10 +354,7 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
   let taskPlan: TaskPlanView | undefined;
   /** write_file body often only appears on tool.requested args, not on completed result. */
   const writeContentByCall = new Map<string, string>();
-  let tokensIn: number | undefined;
-  let tokensOut: number | undefined;
-  let cachedTokensHit: number | undefined;
-  let cachedTokensCreated: number | undefined;
+  const providerUsageByRequest = new Map<string, ProviderUsageProjection>();
   let startedAt: string | undefined;
   let completedAt: string | undefined;
   let providerModelId: string | undefined;
@@ -356,21 +389,29 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
     }
 
     if (event.type === 'provider.usage') {
-      if (typeof event.payload.tokensIn === 'number') tokensIn = event.payload.tokensIn;
-      if (typeof event.payload.tokensOut === 'number') tokensOut = event.payload.tokensOut;
-      if (typeof event.payload.cachedTokensHit === 'number') {
-        cachedTokensHit = event.payload.cachedTokensHit;
-      }
-      if (typeof event.payload.cachedTokensCreated === 'number') {
-        cachedTokensCreated = event.payload.cachedTokensCreated;
-      }
-      // Some adapters use input/output naming.
-      if (tokensIn === undefined && typeof event.payload.inputTokens === 'number') {
-        tokensIn = event.payload.inputTokens;
-      }
-      if (tokensOut === undefined && typeof event.payload.outputTokens === 'number') {
-        tokensOut = event.payload.outputTokens;
-      }
+      const requestId =
+        typeof event.payload.requestId === 'string' && event.payload.requestId.length > 0
+          ? event.payload.requestId
+          : event.id;
+      const current = providerUsageByRequest.get(requestId) ?? {};
+      const nextTokensIn =
+        providerUsageNumber(event.payload.tokensIn) ??
+        providerUsageNumber(event.payload.inputTokens);
+      const nextTokensOut =
+        providerUsageNumber(event.payload.tokensOut) ??
+        providerUsageNumber(event.payload.outputTokens);
+      providerUsageByRequest.set(requestId, {
+        tokensIn: maximumUsageValue(current.tokensIn, nextTokensIn),
+        tokensOut: maximumUsageValue(current.tokensOut, nextTokensOut),
+        cachedTokensHit: maximumUsageValue(
+          current.cachedTokensHit,
+          providerUsageNumber(event.payload.cachedTokensHit),
+        ),
+        cachedTokensCreated: maximumUsageValue(
+          current.cachedTokensCreated,
+          providerUsageNumber(event.payload.cachedTokensCreated),
+        ),
+      });
       providerModelId = eventProviderModelId(event) ?? providerModelId;
       modelId = eventModelId(event) ?? modelId;
       // Do NOT treat mid-run provider.usage as completion — tool loops emit usage
@@ -521,9 +562,11 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
     if (built.command) existing.command = built.command;
     if (built.url) existing.url = built.url;
     const titleDetail = existing.path ?? existing.command ?? existing.url;
-    existing.label = titleDetail
-      ? `${built.verb} ? ${shortText(titleDetail, 52)}`
-      : built.label || existing.label;
+    if (titleDetail) {
+      existing.label = `${built.verb} ? ${shortText(titleDetail, 52)}`;
+    } else if (built.label !== built.verb || existing.label === existing.verb) {
+      existing.label = built.label || existing.label;
+    }
     existing.verb = built.verb || existing.verb;
     existing.zh = built.zh || existing.zh;
     existing.toolName = toolName || existing.toolName;
@@ -569,6 +612,12 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
   for (const change of fileChanges) {
     changeByPath.set(change.path, change);
   }
+
+  const usageRows = [...providerUsageByRequest.values()];
+  const tokensIn = sumUsageValues(usageRows, 'tokensIn');
+  const tokensOut = sumUsageValues(usageRows, 'tokensOut');
+  const cachedTokensHit = sumUsageValues(usageRows, 'cachedTokensHit');
+  const cachedTokensCreated = sumUsageValues(usageRows, 'cachedTokensCreated');
 
   let durationMs: number | undefined;
   if (startedAt && completedAt) {

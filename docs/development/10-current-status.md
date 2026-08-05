@@ -1,3 +1,88 @@
+## 当前状态：2026-08-05 17:44 +08:00 · Browser Automation Studio P1.1 最终收口
+
+### 当前结论
+
+- P1.1 已完成：Runtime Profile 是唯一真源，Profile 会话只返回脱敏摘要，占用中的 Profile 拒绝刷新、清除和删除；右栏已收敛为临时 partition 的“预览”，不参与 AI 自动化或复用 Runtime Profile 登录态。
+- 历史 Run 超过 5 分钟恢复 TTL 时，会把该 Run 的活动 Browser command 终结为 `failed/browser.command-recovery-expired`，再写入 `run.paused/recovery_expired`；不会重放 Provider 或继续占用 Profile。
+- Handoff Continue 在 `reason=login` 时写入已验证登录摘要；清除成功但缓存重载失败时保留错误提示，不再被成功提示覆盖。
+- BrowserHost 不再调用 `storageState()`；origin inventory 由 Runtime 已知 origin、当前 Page 和 Cookie domain 派生并限制为 512 条。registrable domain 使用 `tldts@6.1.86`，裸 IPv6 与 URL 方括号主机名可正确清除，CDP 建连失败时临时 Page 会被回收。
+
+### 最终门禁
+
+- Storage build 通过；Storage `36 files / 380 tests`、Workers `15 files / 117 passed / 3 skipped`、Runtime `70 files / 464 tests`、Desktop `131 files / 868 tests` 全部通过，均按包隔离并使用最多 2 个 test worker。
+- `pnpm typecheck`：20/20；`pnpm lint`：11/11；`pnpm lint:tokens`：通过；`pnpm exec turbo run build --force`：11/11、0 cached。
+- 本轮相关文件 Prettier 检查与 `git diff --check` 通过；源码中没有 `storageState()` 调用残留。
+
+### 本地闭测实例
+
+- 最新源码 Electron PID `43956`、managed Runtime PID `37228`，CDP `127.0.0.1:9333`；Pipe 握手、`runtime.healthcheck`、database 和 hello 均正常。
+- 日志：`.data/local-restart-20260805-125346-browser-profile/desktop-final.stdout.log` 与 `desktop-final.stderr.log`；stderr 只有 DevTools 监听信息和一条 `libpng iCCP` 图片色彩配置警告，没有应用错误。
+- 实窗切换到“最终闭测”Profile 后，实时刷新发现 `microsoft.com` 会话；清除返回 origin `https://copilot.microsoft.com` 并删除 1 个 Cookie。随后 UI 空态、SQLite `browser_site_session` 空表和活动 Browser command `0` 保持一致。
+- 最终截图：`.data/local-restart-20260805-125346-browser-profile/profile-final-after-clear.png`；1424x861 下 `scrollWidth=clientWidth=1424`、`scrollHeight=clientHeight=861`，无页面级溢出。测试专用 Edge 窗口已关闭，Electron/Runtime 保持运行。
+- 工作树继续保持 dirty；未提交、未推送，也未生成 installer、portable 或 release artifact。
+
+### 下一步
+
+1. P1.2：录制专用系统浏览器的语义动作、实时脱敏步骤流与停止后的资源清理。
+2. P1.3：把确认后的录制步骤冻结为 WorkflowVersion，并实现确定性回放、失败定位与登录接管恢复。
+3. 录制和回放都复用本轮 Profile/Page lease/维护门禁；Cookie、Token 和网站存储正文不得写入 Workflow。
+
+## 当前状态：2026-08-05 14:09 +08:00 · Browser Automation Studio P1.1 收口
+
+### 当前结论
+
+- P1.1 已完成：Runtime Profile 是唯一真源，Browser 页面可创建、重命名、删除非默认 Profile，查看脱敏站点会话，显式刷新，按站点清除 Cookie/LocalStorage/IndexedDB 等数据。
+- Profile 被 Run、handoff 或 BrowserHost lease 占用时，刷新、清除和删除均在 Runtime/Main 双侧禁用；默认 Profile 不可删除；危险清除使用单层确认。
+- Runtime 刷新命令也有同一占用栅栏；直接 IPC 绕过 UI 时不会读取活动 Profile。
+- Edge 143 的 `Storage.getUsageAndQuota` / `Storage.clearDataForOrigin` 固定走 Page target CDP Session；没有现有 Page 时创建临时 Page，避免 Browser target 的 `Internal error`。
+- Profile 实时维护命令使用 30 秒预算，`runtime.healthcheck` 仍为 5 秒；冷启动刷新实测约 2.32 秒完成，UI 与 SQLite 摘要保持一致。
+- P1.2 尚未开始：专用系统浏览器语义动作录制、实时步骤流、WorkflowVersion 与确定性回放仍是下一阶段工作。
+
+### 本轮实窗证据
+
+- 隔离目录：`.data/local-restart-20260805-125346-browser-profile`；Electron PID `46488`、Runtime PID `19704`、CDP `127.0.0.1:9333`。
+- 已验证鼠标切换 Profile、创建/重命名/删除非默认 Profile、默认 Profile 保护、站点清除确认、Page 级 CDP 清除、清除后空态和 SQLite 同步删除。
+- 1424x861、1024x720 的浅色/深色页面均无横向溢出或可见文本溢出；截图位于该隔离目录的 `initial.png`、`profile-light-session.png`、`profile-clear-dialog.png`、`profile-dark-1424x861.png`、`profile-dark-1024x720.png`、`profile-light-1024x720.png`，最终保留页为 `profile-light-final-1424x861.png`。
+
+### 当前验证门禁
+
+- `pnpm typecheck`：20/20；`pnpm lint`：11/11；`pnpm lint:tokens`：通过；`pnpm exec turbo run build --force`：11/11、0 cached。
+- P1.1 定向/包级测试与 Browser Profile 实窗验收已通过：Workers 15 files / 111 passed / 3 skipped，Runtime 70 files / 460 passed，Desktop 131 files / 866 passed；`git diff --check` 通过。新增 Profile 文件已用 Prettier 格式化；历史文件的基线格式差异未做全仓重排。
+- 根 `pnpm test` 在默认并发和 `turbo --concurrency=1` 下各有既有资源时序抖动（Workers/MCP、Runtime lease 时间断言、Desktop updater watchdog）；对应 Workers/Runtime/Desktop 包级受控复跑及失败文件单独复跑均通过。本轮未修改这些无关测试。
+- 工作树仍保持 dirty，不提交、不推送、不生成 installer/release artifact。
+
+### 下一步
+
+1. P1.2：录制专用浏览器的语义动作（navigate/click/fill/select/wait 等），实时输出脱敏步骤流并支持停止后清理。
+2. 在 P1.2 设计中复用本轮 Profile、Page lease 和维护门禁，不把登录态或 Cookie 正文写入 Workflow。
+3. 录制能力通过自动化测试和本地源码重启实窗验收后，再进入 WorkflowVersion/回放实现。
+
+## 当前状态：2026-08-05 10:30 +08:00 · Computer Use 与回复累计缓存用量已修复
+
+### 当前结论
+
+- Computer Use 新增 `desktop_launch_app`，只有 Windows Shell 启动后找到匹配进程映像的可见顶层窗口才返回成功；`run_command` 的退出码不再被当作 GUI 已打开的证据。
+- 聊天消息用量现按真实 Provider `requestId` 去重并累计整次回复，不再只显示工具循环最后一次请求；使用统计的旧 Event 也不再按共享 `packetId` 合并。
+- 缓存字段缺失与明确 `0` 已分开：缺失显示“未上报”，命中率分母只包含已上报缓存读取的请求；请求状态和费用标签改为“成功 / 失败 / 未结束”与“普通输入费”。
+- 用户截图中的两条历史回复已由运行中的 Runtime 复核：4 个工具步骤的回复累计输入 `30,002`、缓存读取 `20,480`、输出 `546`；5 个工具步骤的下一条回复累计输入 `46,422`、缓存读取 `37,376`、输出 `1,045`。此前显示的 `5,632 -> 4,608` 只是两条回复各自最后一次 Provider 请求，单请求下降本身符合中转缓存的 exact-prefix 行为。
+- usage sidecar 已升级为 `.data/SYNC-THINK/usage-summary-cache-v2.json`：483,420 bytes、schema V2、high-water rowid 36,041、1,791 条投影事实。近 7 天真实统计为 91 个请求、输入 777,698、缓存读取 496,640、缓存创建 0。
+- 当前分支 `feature/newmax-shell-rewrite`、HEAD `9e5ee8d`；改动仍在未提交工作树，未生成 installer、portable 或 release artifact。
+
+### 验证与运行实例
+
+- Runtime：67 files / 454 tests passed；Desktop：130 files / 860 tests passed。双包同时并行时出现既有异步计时抖动，按包隔离复跑全部通过。
+- Runtime / Desktop typecheck、lint、design token 检查、Prettier 和 `git diff --check` 通过。
+- `pnpm exec turbo run build --force`：11/11 successful、0 cached。
+- 当前 Electron PID `23508`、managed Runtime PID `23468`，窗口 Responding；日志 `.data/local-restart-20260805-102720/` 包含 `pipe ready`、`database ready`、`hello accepted`，stderr 只有 DevTools 监听信息。
+- 使用统计实窗截图：`.data/local-restart-20260805-102720/usage-settings.png`；当前窗口停留在“设置 → 模型 → 使用统计”，便于继续手测。
+
+### 用户手测
+
+1. 开启 Computer Use，发送“打开本地记事本”。预期执行 `desktop_launch_app`，数秒内出现可见 Notepad 窗口；不应使用 `run_command` 证明成功，也不应等待 120 秒。
+2. 在同一对话连续执行两次含工具调用的请求，悬浮每条助手消息底部 Token。标题应为“本次回复累计”，数值应为该回复内全部 Provider 请求之和。
+3. 打开“设置 → 模型 → 使用统计”。缓存未上报时显示“未上报”，真实零显示 `0`；状态显示“成功 / 失败 / 未结束”，缓存命中率提示包含上报请求数。
+4. 中转站单次缓存读取可以随动态工具结果和前缀变化而下降；应关注整次回复累计值和长期命中率，不要求每个后续请求都单调增加。
+
 ## 当前状态：2026-08-04 19:47 +08:00 · Prompt Cache 与使用统计 UI 本地收口
 
 ### 当前结论
@@ -374,3 +459,53 @@
    ```
    预期：返回 `SYNC-THINK`，不额外等待审批。
 3. 观察运行中的“正在思考与执行 · MM:SS”每秒增长；完成后应变为“思考与执行过程 · MM:SS”，且时间停止增长。
+
+## 当前状态：2026-08-05 19:35 +08:00 · Browser Automation Studio P1.2 代码收口
+
+### 当前结论
+
+- P1.2 语义录制主链已完成：专用系统浏览器、Runtime Profile 独占、durable intent/步骤、实时脱敏步骤流、停止资源清理和冷启动中断恢复均已接线。
+- Renderer 只展示“登录状态 / 录制”，未实现的自动化任务不出现；start pending 与未知对账结果保持全局 Profile 锁，异常终态显示具体原因并清理过期成功提示。
+- 安全边界固定为单 Page 主 Frame、`navigate/click/fill/select/check/Enter`、200 步和 16 KiB 单步；URL 去除 userinfo/query/hash，敏感输入用秘密占位，binding 使用随机 capture token 和 trusted event。
+- 质量审查已修复两个 Runtime 错误路径：lease 获取失败不关闭无关 Profile session；stop 失败不产生 unhandled rejection，并可重试。
+
+### 当前验证
+
+- Storage 定向 `3 files / 73 tests`；Workers BrowserHost `33/33`；Runtime Recording Service `7/7`；Desktop BrowserStage/payload/timeout/wiring `4 files / 38 tests`。
+- Workers、Runtime、Desktop typecheck 与 lint 通过；Desktop design token 检查通过；相关文件 Prettier 和 `git diff --check` 通过。
+- 包级全量、根级最终门禁、强制 build 和最新源码实窗录制尚待执行；未生成 installer、portable 或 release artifact，未提交、未推送。
+
+### 下一步
+
+1. 运行 Storage、Workers、Runtime、Desktop 包级全量，再运行根级 typecheck、lint、token lint 与强制 build。
+2. 重启本地源码 Electron/Runtime，使用真实 Edge 录制 `navigate/click/fill/select/check/Enter`，确认 URL/敏感值脱敏、Page 关闭中断和停止后 Profile 立即可维护。
+3. P1.3：把录制草稿冻结为 WorkflowVersion，实现变量/秘密引用、编辑、确定性回放、失败定位和登录 handoff。
+
+## 当前状态：2026-08-05 21:00 +08:00 · Browser Automation Studio P1.2 最终实窗收口
+
+### 当前结论
+
+- P1.2 已完成自动门禁与真实 Edge 闭环。刷新登录状态后 Profile 不再被本次维护锁错误标记为“使用中”，刷新、站点清除、再次录制和删除会按真实占用状态立即恢复。
+- 文本输入在 Enter 前仍会排空 debounce，但随后触发的 change 只处理尚未排空的输入，不再产生重复 fill；因此 Enter 后导航可稳定折叠进同一 press 步骤。
+- trusted event 边界保持不变。真实 select 验收通过键盘事件完成；脚本直接派发的非 trusted change 继续被拒绝。
+
+### 最终验证
+
+- Storage 基线 `36 files / 384 tests`、Workers `15 files / 124 passed / 3 skipped`、Runtime `74 files / 477 tests`、Desktop `133 files / 897 tests` 全部通过；本轮新增定向为 Profile Service `8/8`、BrowserHost `35/35`。
+- 根 `pnpm test --force --concurrency=1` 为 20/20 Turbo tasks、0 cached，最终源码在受控串行资源下全绿。
+- 根 `pnpm typecheck --force` 为 20/20、`pnpm lint --force` 为 11/11、design tokens 通过、`pnpm exec turbo run build --force` 为 11/11 且 0 cached；目标文件 Prettier 与 `git diff --check` 通过。
+- Pipe probe 返回 `PIPE_SMOKE_OK`，Runtime healthcheck 为 `ok: true`，没有 in-flight Run。
+
+### 真实 Edge 证据
+
+- 隔离目录：`.data/local-restart-20260805-204946-browser-recording-final`；Electron PID `3452`、Runtime PID `33812`、CDP `127.0.0.1:9336`，窗口保持运行供手测。
+- 正常录制得到 10 个 durable 步骤，覆盖 `navigate/fill/select/check/click/press`；立即停止在 528 ms 内完成并保留最后一次 fill。Enter 输入仅一条，结果 URL 已折叠进 press。
+- 刷新登录状态后站点清除按钮立即可用；清除完成后可再次录制。关闭系统 Edge Page 后终态为 `interrupted/page_closed`，随后 Profile 完整删除。
+- SQLite 活动录制为 0、站点摘要为 0，测试密码、敏感富文本、URL userinfo/query/hash 均无明文命中；删除 Profile 的目录、CDP metadata 与 Edge 进程均已清理。
+- 三张 1424x861 截图已目视复核，无重叠、截断或页面级溢出；DOM 指标为 `scrollWidth=clientWidth=1424`、`scrollHeight=clientHeight=861`。
+- 未生成 installer、portable 或 release artifact，未提交、未推送。
+
+### 下一步
+
+1. P1.3：把确认后的录制草稿冻结为 WorkflowVersion，增加固定值/运行变量/秘密引用、编辑和确定性回放。
+2. P1.4/P1.5 继续负责运行历史、失败定位、登录 handoff 与手动启停定时任务；P1.2 草稿本身仍不可调度执行。

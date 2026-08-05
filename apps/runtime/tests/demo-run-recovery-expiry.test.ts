@@ -3,9 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
-import { openDatabaseAsync, runMigrations, SqliteEventCheckpointStore } from '@sync-think/storage';
+import {
+  openDatabaseAsync,
+  runMigrations,
+  SqliteBrowserStore,
+  SqliteEventCheckpointStore,
+} from '@sync-think/storage';
 import type { RunId, WorkspaceId } from '@sync-think/shared';
+import type { BrowserHostLike } from '@sync-think/workers';
 import { createDemoRun, serializeDemoRuns } from '../src/demo-run.js';
+import { RuntimeBrowserProfileService } from '../src/browser/runtime-browser-profile-service.js';
 import { Runtime } from '../src/runtime.js';
 
 const tempDirs: string[] = [];
@@ -35,6 +42,21 @@ describe('demo Run cold-start recovery expiry', () => {
     await runMigrations(dbPath);
     const connection = await openDatabaseAsync({ path: dbPath });
     const store = new SqliteEventCheckpointStore(connection.raw);
+    const browserStore = new SqliteBrowserStore(connection.raw);
+    const browserHost: BrowserHostLike = {
+      acquireLease: async () => {
+        throw new Error('unexpected Browser lease acquisition');
+      },
+      inspectLease: async () => {
+        throw new Error('unexpected Browser lease inspection');
+      },
+      execute: async () => {
+        throw new Error('unexpected Browser execution');
+      },
+      releaseLease: async () => undefined,
+      shutdown: async () => undefined,
+      hasActiveProfileLeases: () => false,
+    };
     const run = createDemoRun(runId, 'thread-expired', 'old request');
     const oldTime = '2026-07-31T06:40:49.686Z';
 
@@ -60,6 +82,26 @@ describe('demo Run cold-start recovery expiry', () => {
         createdAt: oldTime,
       },
     });
+    const browserCommand = browserStore.reserveCommand({
+      id: 'browser-command-expired-run',
+      idempotencyKey: 'browser:restored-expired-run:call-1',
+      workspaceId,
+      runId,
+      ownerId: run.threadId,
+      profileId: 'default',
+      toolName: 'browser_open',
+      action: 'navigate',
+      targetOrigin: 'https://example.test',
+      sanitizedArgs: { url: 'https://example.test/' },
+      now: oldTime,
+    });
+    browserStore.markApproved(browserCommand.id, oldTime);
+    browserStore.markRunning(browserCommand.id, oldTime);
+    expect(
+      new RuntimeBrowserProfileService({ store: browserStore, host: browserHost })
+        .listProfiles()
+        .find((profile) => profile.id === 'default'),
+    ).toMatchObject({ inUse: true });
 
     const provider = new CountingProvider();
     const runtime = new Runtime({
@@ -69,6 +111,8 @@ describe('demo Run cold-start recovery expiry', () => {
       checkpointRunId,
       stateStore: store,
       demoProvider: provider,
+      browserStore,
+      browserHost,
     });
 
     try {
@@ -80,6 +124,16 @@ describe('demo Run cold-start recovery expiry', () => {
         type: 'run.paused',
         payload: { reason: 'recovery_expired', failureClass: 'unknown' },
       });
+      expect(browserStore.getCommand(browserCommand.id)).toMatchObject({
+        state: 'failed',
+        errorCode: 'browser.command-recovery-expired',
+        failureClass: 'acceptance',
+      });
+      expect(
+        new RuntimeBrowserProfileService({ store: browserStore, host: browserHost })
+          .listProfiles()
+          .find((profile) => profile.id === 'default'),
+      ).toMatchObject({ inUse: false });
     } finally {
       await runtime.stop();
       connection.raw.close();

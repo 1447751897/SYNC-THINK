@@ -3047,6 +3047,17 @@ export function UsageSettings() {
   const hasCacheUsage =
     typeof data?.totalCachedTokensHit === 'number' ||
     typeof data?.totalCachedTokensCreated === 'number';
+  const cacheReadReported = requests.reduce(
+    (summary, request) => {
+      if (typeof request.cachedTokensHit !== 'number') return summary;
+      const tokens = splitProviderUsageTokens(request);
+      summary.requests += 1;
+      summary.inputTokens += tokens.totalInputTokens;
+      summary.readTokens += tokens.cacheReadTokens;
+      return summary;
+    },
+    { requests: 0, inputTokens: 0, readTokens: 0 },
+  );
   const totalCostLabel = formatCurrencyTotals(data?.totalCostByCurrency ?? {});
   const totalToolCalls = tools.reduce((sum, row) => sum + row.calls, 0);
   const totalToolSuccesses = tools.reduce((sum, row) => sum + row.successes, 0);
@@ -3124,13 +3135,13 @@ export function UsageSettings() {
         <UsageMetric
           label="缓存命中率"
           value={
-            hasCacheUsage && totalUsageTokens.totalInputTokens > 0
-              ? formatRate(totalUsageTokens.cacheReadTokens, totalUsageTokens.totalInputTokens)
+            cacheReadReported.requests > 0 && cacheReadReported.inputTokens > 0
+              ? formatRate(cacheReadReported.readTokens, cacheReadReported.inputTokens)
               : '—'
           }
           hint={
             hasCacheUsage
-              ? `读取 ${formatTokenCount(totalUsageTokens.cacheReadTokens)} / 创建 ${formatTokenCount(totalUsageTokens.cacheWriteTokens)}`
+              ? `读取 ${formatTokenCount(totalUsageTokens.cacheReadTokens)} / 创建 ${formatTokenCount(totalUsageTokens.cacheWriteTokens)} · ${cacheReadReported.requests}/${requests.length} 请求上报读取`
               : '当前供应商未返回缓存用量'
           }
         />
@@ -3347,6 +3358,8 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
         <tbody>
           {rows.map((row) => {
             const tokens = splitProviderUsageTokens(row);
+            const cacheReadReported = typeof row.cachedTokensHit === 'number';
+            const cacheWriteReported = typeof row.cachedTokensCreated === 'number';
             const isExpanded = expandedRequestId === row.requestId;
             const displayName = row.displayName ?? row.modelId;
             const detailsId = `usage-request-details-${row.requestId}`;
@@ -3365,10 +3378,19 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
                     </div>
                     <div className="usage-token-parts">
                       <span>普通输入 {formatTokenCount(tokens.inputTokens)}</span>
-                      <span>缓存读取 {formatTokenCount(tokens.cacheReadTokens)}</span>
-                      <span>缓存创建 {formatTokenCount(tokens.cacheWriteTokens)}</span>
+                      <span>
+                        缓存读取{' '}
+                        {cacheReadReported ? formatTokenCount(tokens.cacheReadTokens) : '未上报'}
+                      </span>
+                      <span>
+                        缓存创建{' '}
+                        {cacheWriteReported ? formatTokenCount(tokens.cacheWriteTokens) : '未上报'}
+                      </span>
                       <span className="usage-cache-rate">
-                        缓存命中 {formatRate(tokens.cacheReadTokens, tokens.totalInputTokens)}
+                        缓存命中{' '}
+                        {cacheReadReported
+                          ? formatRate(tokens.cacheReadTokens, tokens.totalInputTokens)
+                          : '未上报'}
                       </span>
                     </div>
                   </td>
@@ -3389,7 +3411,11 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
                   <td>{typeof row.latencyMs === 'number' ? formatLatency(row.latencyMs) : '-'}</td>
                   <td>
                     <span className={`usage-status is-${row.status}`}>
-                      {row.status === 'success' ? '200' : row.status === 'failed' ? '失败' : '-'}
+                      {row.status === 'success'
+                        ? '成功'
+                        : row.status === 'failed'
+                          ? '失败'
+                          : '未结束'}
                     </span>
                   </td>
                 </tr>
@@ -3401,7 +3427,7 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
                         {row.estimatedCostBreakdown ? (
                           <>
                             <span>
-                              输入费{' '}
+                              普通输入费{' '}
                               {formatCurrencyDetail(row.estimatedCostBreakdown.input, row.currency)}
                             </span>
                             <span>

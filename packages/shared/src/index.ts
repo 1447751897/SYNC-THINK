@@ -14,6 +14,7 @@ export * from './types/usage.js';
 export * from './types/artifact.js';
 export * from './types/review.js';
 export * from './types/errors.js';
+export * from './types/browser-recording.js';
 export * from './provider-surface.js';
 export * from './acceptance-criteria.js';
 export * from './review-policy.js';

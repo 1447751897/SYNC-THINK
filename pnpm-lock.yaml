@@ -413,6 +413,9 @@ importers:
       playwright-core:
         specifier: ^1.62.0
         version: 1.62.0
+      tldts:
+        specifier: ^6.1.86
+        version: 6.1.86
     devDependencies:
       '@types/node':
         specifier: ^20.17.0

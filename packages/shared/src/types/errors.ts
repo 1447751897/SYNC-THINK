@@ -67,6 +67,19 @@ export const ErrorCode = {
   DESKTOP_COMMAND_INSPECTION_REQUIRED: 'desktop.command-inspection-required',
   DESKTOP_COMMAND_CONFLICT: 'desktop.command-conflict',
   DESKTOP_COMMAND_CANCELLED: 'desktop.command-cancelled',
+  DESKTOP_APP_LAUNCH_FAILED: 'desktop.app-launch-failed',
+  DESKTOP_APP_WINDOW_NOT_FOUND: 'desktop.app-window-not-found',
+  BROWSER_PROFILE_NOT_FOUND: 'browser.profile-not-found',
+  BROWSER_PROFILE_IN_USE: 'browser.profile-in-use',
+  BROWSER_PROFILE_REVISION_CONFLICT: 'browser.profile-revision-conflict',
+  BROWSER_DEFAULT_PROFILE_IMMUTABLE: 'browser.default-profile-immutable',
+  BROWSER_SITE_SESSION_NOT_FOUND: 'browser.site-session-not-found',
+  BROWSER_PROFILE_HOST_UNAVAILABLE: 'browser.profile-host-unavailable',
+  BROWSER_PROFILE_OPERATION_FAILED: 'browser.profile-operation-failed',
+  BROWSER_RECORDING_NOT_FOUND: 'browser.recording-not-found',
+  BROWSER_RECORDING_CONFLICT: 'browser.recording-conflict',
+  BROWSER_RECORDING_HOST_UNAVAILABLE: 'browser.recording-host-unavailable',
+  BROWSER_RECORDING_OPERATION_FAILED: 'browser.recording-operation-failed',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

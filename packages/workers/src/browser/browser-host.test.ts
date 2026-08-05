@@ -1,20 +1,271 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BrowserHost,
   BrowserHostError,
+  PlaywrightDriverPage,
+  browserRecordingInstallScript,
+  buildBrowserProfileOriginInventory,
+  clearBrowserProfileSiteData,
   discoverSystemBrowser,
+  inspectBrowserProfileSiteData,
+  projectBrowserRecordingDomEvent,
   resolveBrowserProfileDirectory,
+  resolveBrowserSiteKey,
   resolveBrowserScreenshotPath,
+  sanitizeBrowserRecordingUrl,
+  withProfilePageCdpSession,
   type BrowserAction,
   type BrowserDriverPage,
   type BrowserDriverSession,
   type BrowserPageExecutionOptions,
   type BrowserPageExecutionResult,
   type BrowserSessionFactory,
+  type BrowserRecordingMutation,
+  type BrowserPageRecordingOptions,
 } from './browser-host.js';
+
+describe('Profile Page CDP session', () => {
+  it('uses an existing Page target for Storage commands', async () => {
+    const page = { isClosed: () => false, close: vi.fn(async () => undefined) };
+    const send = vi.fn(async () => ({ usage: 0 }));
+    const detach = vi.fn(async () => undefined);
+    const session = { send, detach };
+    const context = {
+      pages: () => [page],
+      newPage: vi.fn(async () => page),
+      newCDPSession: vi.fn(async () => session),
+    };
+
+    await expect(
+      withProfilePageCdpSession(context as never, async (cdp) =>
+        cdp.send('Storage.clearDataForOrigin', {
+          origin: 'https://example.com',
+          storageTypes: 'all',
+        }),
+      ),
+    ).resolves.toEqual({ usage: 0 });
+    expect(context.newCDPSession).toHaveBeenCalledWith(page);
+    expect(context.newPage).not.toHaveBeenCalled();
+    expect(detach).toHaveBeenCalledTimes(1);
+    expect(page.close).not.toHaveBeenCalled();
+  });
+
+  it('closes a temporary Page target after the Storage command', async () => {
+    const page = { isClosed: () => false, close: vi.fn(async () => undefined) };
+    const detach = vi.fn(async () => undefined);
+    const context = {
+      pages: () => [],
+      newPage: vi.fn(async () => page),
+      newCDPSession: vi.fn(async () => ({ send: vi.fn(), detach })),
+    };
+
+    await withProfilePageCdpSession(context as never, async () => undefined);
+    expect(context.newPage).toHaveBeenCalledTimes(1);
+    expect(context.newCDPSession).toHaveBeenCalledWith(page);
+    expect(detach).toHaveBeenCalledTimes(1);
+    expect(page.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes a temporary Page when creating its CDP session fails', async () => {
+    const page = { isClosed: () => false, close: vi.fn(async () => undefined) };
+    const context = {
+      pages: () => [],
+      newPage: vi.fn(async () => page),
+      newCDPSession: vi.fn(async () => {
+        throw new Error('CDP target unavailable');
+      }),
+    };
+
+    await expect(
+      withProfilePageCdpSession(context as never, async () => undefined),
+    ).rejects.toThrow('CDP target unavailable');
+    expect(page.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Profile site-data origin inventory', () => {
+  it('combines known Pages and bounded Cookie-derived origins', () => {
+    expect(
+      buildBrowserProfileOriginInventory(
+        ['https://known.example.test/path'],
+        ['https://page.example.test/workflow', 'about:blank'],
+        [
+          { domain: '.secure.example.test', secure: true },
+          { domain: 'plain.example.test', secure: false },
+        ],
+      ),
+    ).toEqual([
+      'http://plain.example.test',
+      'https://known.example.test',
+      'https://page.example.test',
+      'https://plain.example.test',
+      'https://secure.example.test',
+    ]);
+  });
+
+  it('rejects an inventory that exceeds the origin query budget', () => {
+    const knownOrigins = Array.from(
+      { length: 512 },
+      (_, index) => `https://origin-${index}.example.test`,
+    );
+    expect(() =>
+      buildBrowserProfileOriginInventory(
+        knownOrigins,
+        [],
+        [{ domain: 'overflow.example.test', secure: true }],
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'browser.profile-origins-too-many' }));
+  });
+
+  it('uses aggregate Page CDP usage and never requests a storage snapshot', async () => {
+    const page = {
+      isClosed: () => false,
+      url: () => 'https://page.example.test/path',
+      close: vi.fn(async () => undefined),
+      goto: vi.fn(async () => undefined),
+    };
+    const send = vi.fn(async (method: string, params: { origin?: string }) => {
+      if (method === 'Storage.getUsageAndQuota') {
+        return {
+          usage: params.origin === 'https://known.example.test' ? 2_048 : 0,
+          usageBreakdown: [
+            {
+              storageType: 'indexeddb',
+              usage: params.origin === 'https://known.example.test' ? 2_048 : 0,
+            },
+          ],
+        };
+      }
+      return undefined;
+    });
+    const storageState = vi.fn(() => {
+      throw new Error('storage snapshots must not be requested');
+    });
+    const context = {
+      cookies: vi.fn(async () => [
+        {
+          name: 'session',
+          value: 'secret-value',
+          domain: '.example.test',
+          path: '/',
+          expires: -1,
+          httpOnly: true,
+          secure: true,
+          sameSite: 'Lax' as const,
+        },
+      ]),
+      clearCookies: vi.fn(async () => undefined),
+      pages: () => [page],
+      newPage: vi.fn(async () => page),
+      newCDPSession: vi.fn(async () => ({
+        send,
+        detach: vi.fn(async () => undefined),
+      })),
+      storageState,
+    };
+
+    const snapshot = await inspectBrowserProfileSiteData(context as never, 'work', [
+      'https://known.example.test',
+    ]);
+
+    expect(storageState).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith('Storage.getUsageAndQuota', {
+      origin: 'https://known.example.test',
+    });
+    expect(snapshot).toMatchObject({
+      profileId: 'work',
+      sites: [
+        {
+          siteKey: 'example.test',
+          cookieCount: 1,
+          storageBytes: 2_048,
+          storageTypes: ['cookies', 'indexed_db'],
+        },
+      ],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('secret-value');
+  });
+
+  it('clears matching cookies and origins through the Page CDP target', async () => {
+    const page = {
+      isClosed: () => false,
+      url: () => 'https://app.example.test/dashboard',
+      close: vi.fn(async () => undefined),
+      goto: vi.fn(async () => undefined),
+    };
+    const send = vi.fn(async () => undefined);
+    const storageState = vi.fn(() => {
+      throw new Error('storage snapshots must not be requested');
+    });
+    const clearCookies = vi.fn(async () => undefined);
+    const context = {
+      cookies: vi.fn(async () => [
+        {
+          name: 'session',
+          value: 'secret-value',
+          domain: '.example.test',
+          path: '/',
+          expires: -1,
+          httpOnly: true,
+          secure: true,
+          sameSite: 'Lax' as const,
+        },
+        {
+          name: 'other',
+          value: 'other-secret',
+          domain: '.other.test',
+          path: '/',
+          expires: -1,
+          httpOnly: false,
+          secure: true,
+          sameSite: 'Lax' as const,
+        },
+      ]),
+      clearCookies,
+      pages: () => [page],
+      newPage: vi.fn(async () => page),
+      newCDPSession: vi.fn(async () => ({
+        send,
+        detach: vi.fn(async () => undefined),
+      })),
+      storageState,
+    };
+
+    const result = await clearBrowserProfileSiteData(context as never, 'work', 'example.test', [
+      'https://app.example.test',
+    ]);
+
+    expect(storageState).not.toHaveBeenCalled();
+    expect(page.goto).toHaveBeenCalledWith('about:blank', {
+      waitUntil: 'commit',
+      timeout: 5_000,
+    });
+    expect(clearCookies).toHaveBeenCalledTimes(1);
+    expect(clearCookies).toHaveBeenCalledWith({
+      name: 'session',
+      domain: '.example.test',
+      path: '/',
+    });
+    expect(send).toHaveBeenCalledWith('Storage.clearDataForOrigin', {
+      origin: 'https://app.example.test',
+      storageTypes: 'all',
+    });
+    expect(send).toHaveBeenCalledWith('Storage.clearDataForOrigin', {
+      origin: 'https://example.test',
+      storageTypes: 'all',
+    });
+    expect(result).toMatchObject({
+      profileId: 'work',
+      siteKey: 'example.test',
+      deletedCookieCount: 1,
+      clearedOrigins: ['https://app.example.test', 'https://example.test'],
+    });
+  });
+});
 
 const tempRoots: string[] = [];
 
@@ -36,6 +287,8 @@ class FakePage implements BrowserDriverPage {
   readonly pageId: string;
   closed = false;
   currentUrl = 'about:blank';
+  recordingOptions?: BrowserPageRecordingOptions;
+  readonly closeListeners = new Set<() => void>();
   constructor(pageId = `page-${nextFakePageId++}`) {
     this.pageId = pageId;
   }
@@ -61,10 +314,31 @@ class FakePage implements BrowserDriverPage {
 
   async close(): Promise<void> {
     this.closed = true;
+    for (const listener of this.closeListeners) listener();
+  }
+
+  async startRecording(options: BrowserPageRecordingOptions): Promise<void> {
+    this.recordingOptions = options;
+  }
+
+  async stopRecording(): Promise<void> {
+    this.recordingOptions = undefined;
+  }
+
+  onClosed(listener: () => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
+  async emitRecordingMutation(mutation: BrowserRecordingMutation): Promise<void> {
+    await this.recordingOptions?.onMutation(mutation);
   }
 }
 
-function fakeSessionFactory(state?: { launches?: string[]; pages?: FakePage[] }): BrowserSessionFactory {
+function fakeSessionFactory(state?: {
+  launches?: string[];
+  pages?: FakePage[];
+}): BrowserSessionFactory {
   return async (input) => {
     state?.launches?.push(input.profileId);
     const session: BrowserDriverSession = {
@@ -131,9 +405,366 @@ describe('system browser discovery and safe output paths', () => {
       BrowserHostError,
     );
   });
+
+  it('groups hosts by registrable domain while keeping localhost and IP fixtures exact', () => {
+    expect(resolveBrowserSiteKey('https://accounts.example.co.uk/login')).toBe('example.co.uk');
+    expect(resolveBrowserSiteKey('.sub.example.com')).toBe('example.com');
+    expect(resolveBrowserSiteKey('localhost')).toBe('localhost');
+    expect(resolveBrowserSiteKey('127.0.0.1')).toBe('127.0.0.1');
+    expect(resolveBrowserSiteKey('https://[::1]/')).toBe('::1');
+  });
 });
 
 describe('BrowserHost Profile sessions and Page leases', () => {
+  it('holds an exclusive Profile claim for a recording lease until release', async () => {
+    const host = new BrowserHost({
+      profileRoot: createProfileRoot(),
+      sessionFactory: fakeSessionFactory(),
+    });
+
+    const recordingLease = await host.acquireLease({
+      profileId: 'work',
+      ownerId: 'recording:1',
+      mode: 'recording',
+    });
+    await expect(host.acquireLease({ profileId: 'work', ownerId: 'run:1' })).rejects.toMatchObject({
+      code: 'browser.profile-in-use',
+    });
+    await expect(
+      host.acquireLease({ profileId: 'work', ownerId: 'recording:2', mode: 'recording' }),
+    ).rejects.toMatchObject({ code: 'browser.profile-in-use' });
+    await expect(host.listProfileSiteData({ profileId: 'work' })).rejects.toMatchObject({
+      code: 'browser.profile-in-use',
+    });
+
+    await host.releaseLease(recordingLease.leaseId);
+    await expect(host.acquireLease({ profileId: 'work', ownerId: 'run:1' })).resolves.toMatchObject(
+      { profileId: 'work', ownerId: 'run:1' },
+    );
+    await host.shutdown();
+  });
+
+  it('binds recording to the exact Page, streams bounded mutations, and stops intake', async () => {
+    const pages: FakePage[] = [];
+    const host = new BrowserHost({
+      profileRoot: createProfileRoot(),
+      sessionFactory: fakeSessionFactory({ pages }),
+    });
+    const lease = await host.acquireLease({
+      profileId: 'work',
+      ownerId: 'recording:1',
+      mode: 'recording',
+    });
+    const mutations: BrowserRecordingMutation[] = [];
+    const terminated = vi.fn();
+
+    await host.startRecording({
+      leaseId: lease.leaseId,
+      startUrl: 'https://example.test/start?token=secret#fragment',
+      maxSteps: 200,
+      onMutation: async (mutation) => mutations.push(mutation),
+      onTerminated: terminated,
+    });
+    expect(pages[0]?.currentUrl).toBe('https://example.test/start');
+    await pages[0]?.emitRecordingMutation({
+      type: 'append',
+      step: {
+        kind: 'fill',
+        locator: { strategy: 'label', value: 'Search' },
+        value: { kind: 'literal', value: 'sync-think' },
+      },
+    });
+    expect(mutations).toEqual([
+      expect.objectContaining({ type: 'append', step: expect.objectContaining({ kind: 'fill' }) }),
+    ]);
+
+    await host.stopRecording(lease.leaseId);
+    await pages[0]?.emitRecordingMutation({
+      type: 'append',
+      step: { kind: 'navigate', url: 'https://ignored.test/' },
+    });
+    expect(mutations).toHaveLength(1);
+    expect(terminated).not.toHaveBeenCalled();
+    await host.releaseLease(lease.leaseId);
+    await host.shutdown();
+  });
+
+  it('cleans lease ownership and reports interruption when the user closes the recording Page', async () => {
+    const pages: FakePage[] = [];
+    const host = new BrowserHost({
+      profileRoot: createProfileRoot(),
+      sessionFactory: fakeSessionFactory({ pages }),
+    });
+    const lease = await host.acquireLease({
+      profileId: 'work',
+      ownerId: 'recording:1',
+      mode: 'recording',
+    });
+    const terminated = vi.fn();
+    await host.startRecording({
+      leaseId: lease.leaseId,
+      maxSteps: 200,
+      onMutation: vi.fn(),
+      onTerminated: terminated,
+    });
+
+    await pages[0]!.close();
+    await vi.waitFor(() => expect(terminated).toHaveBeenCalledWith('page_closed'));
+    expect(host.hasActiveProfileLeases('work')).toBe(false);
+    await expect(
+      host.acquireLease({ profileId: 'work', ownerId: 'run:after-close' }),
+    ).resolves.toMatchObject({ ownerId: 'run:after-close' });
+    await host.shutdown();
+  });
+
+  it('sanitizes recorded navigation URLs before they leave the Host', () => {
+    expect(sanitizeBrowserRecordingUrl('https://user:pass@example.test/path?q=token#secret')).toBe(
+      'https://example.test/path',
+    );
+    expect(() => sanitizeBrowserRecordingUrl('file:///C:/secret.txt')).toThrowError(
+      expect.objectContaining({ code: 'browser.recording-url-invalid' }),
+    );
+  });
+
+  it('keeps recording intake open while Playwright stop flushes the final mutation', async () => {
+    const mainFrame = {};
+    let captureToken = '';
+    let binding: ((source: { frame: object }, payload: unknown) => Promise<void>) | undefined;
+    const cdpSession = {
+      send: vi.fn(async (method: string) => {
+        if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame-1' } } };
+        if (method === 'Target.getTargetInfo') {
+          return { targetInfo: { targetId: 'page-final-flush' } };
+        }
+        return {};
+      }),
+      on: vi.fn(),
+      detach: vi.fn(async () => undefined),
+    };
+    const page = {
+      context: () => ({ newCDPSession: vi.fn(async () => cdpSession) }),
+      once: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+      mainFrame: () => mainFrame,
+      isClosed: () => false,
+      exposeBinding: vi.fn(
+        async (
+          _name: string,
+          handler: (source: { frame: object }, payload: unknown) => Promise<void>,
+        ) => {
+          binding = handler;
+        },
+      ),
+      addInitScript: vi.fn(async ({ content }: { content: string }) => {
+        const match = content.match(/const recordingToken =\s*("[^"]+")/u);
+        captureToken = match ? (JSON.parse(match[1]!) as string) : '';
+      }),
+      evaluate: vi.fn(async (script: string) => {
+        if (!script.startsWith('globalThis.__syncThinkRecorder')) return undefined;
+        await binding?.(
+          { frame: mainFrame },
+          {
+            captureToken,
+            kind: 'fill',
+            locator: { strategy: 'label', value: '备注' },
+            value: '停止前最后输入',
+          },
+        );
+        return true;
+      }),
+    };
+    const driver = await PlaywrightDriverPage.create(page as never, vi.fn(), vi.fn(), vi.fn());
+    const onMutation = vi.fn(async () => undefined);
+    await driver.startRecording({ maxSteps: 200, onMutation, onTerminated: vi.fn() });
+
+    await driver.stopRecording();
+
+    expect(onMutation).toHaveBeenCalledWith({
+      type: 'append',
+      step: {
+        kind: 'fill',
+        locator: { strategy: 'label', value: '备注' },
+        value: { kind: 'literal', value: '停止前最后输入' },
+      },
+    });
+  });
+
+  it('flushes pending inputs, captures native controls, and authenticates DOM uninstall', async () => {
+    type TrustedHandler = (event: {
+      isTrusted: boolean;
+      key?: string;
+      target: FakeElement;
+      composedPath(): FakeElement[];
+    }) => void;
+    class FakeElement {
+      readonly labels: Array<{ innerText: string }> = [];
+      readonly children: FakeElement[] = [];
+      readonly parentElement = null;
+      readonly id = '';
+      innerText = '';
+      textContent = '';
+      isContentEditable = false;
+
+      constructor(
+        readonly tagName: string,
+        readonly attributes: Record<string, string>,
+      ) {}
+
+      getAttribute(name: string): string | null {
+        return this.attributes[name] ?? null;
+      }
+
+      hasAttribute(name: string): boolean {
+        return Object.hasOwn(this.attributes, name);
+      }
+
+      matches(selector: string): boolean {
+        return selector
+          .split(',')
+          .map((candidate) => candidate.trim())
+          .some((candidate) => {
+            if (candidate === 'input') return this.tagName === 'INPUT';
+            if (candidate === 'textarea') return this.tagName === 'TEXTAREA';
+            if (candidate === 'select') return this.tagName === 'SELECT';
+            return false;
+          });
+      }
+
+      closest(selector: string): FakeElement | null {
+        if (
+          this.tagName === 'INPUT' &&
+          selector.includes(`input[type="${this.getAttribute('type')}"]`)
+        ) {
+          return this;
+        }
+        return null;
+      }
+    }
+    class FakeInputElement extends FakeElement {
+      value = '';
+      checked = false;
+
+      get type(): string {
+        return this.getAttribute('type') ?? 'text';
+      }
+    }
+    class FakeSelectElement extends FakeElement {
+      value = '';
+    }
+
+    const textInput = new FakeInputElement('INPUT', {
+      'data-testid': 'note-input',
+      type: 'text',
+    });
+    textInput.value = '停止前最后输入';
+    const contentEditable = new FakeElement('DIV', {
+      'data-testid': 'rich-note',
+      contenteditable: '',
+    });
+    contentEditable.isContentEditable = true;
+    contentEditable.textContent = '敏感富文本';
+    const submitInput = new FakeInputElement('INPUT', {
+      'data-testid': 'native-submit',
+      type: 'submit',
+    });
+    const select = new FakeSelectElement('SELECT', {
+      'data-testid': 'plan-select',
+    });
+    select.value = 'pro';
+    const elements = [textInput, contentEditable, submitInput, select];
+    const listeners = new Map<string, TrustedHandler>();
+    const captured: Array<Record<string, unknown>> = [];
+    const document = {
+      documentElement: new FakeElement('HTML', {}),
+      addEventListener: (name: string, handler: TrustedHandler) => listeners.set(name, handler),
+      removeEventListener: (name: string, handler: TrustedHandler) => {
+        if (listeners.get(name) === handler) listeners.delete(name);
+      },
+      querySelectorAll: (selector: string) => {
+        const testId = selector.match(/^\[data-testid="([^"]+)"\]$/u)?.[1];
+        return testId
+          ? elements.filter((element) => element.getAttribute('data-testid') === testId)
+          : elements;
+      },
+    };
+    const context = {
+      document,
+      Element: FakeElement,
+      HTMLInputElement: FakeInputElement,
+      HTMLSelectElement: FakeSelectElement,
+      CSS: { escape: (value: string) => value },
+      Map,
+      Promise,
+      String,
+      setTimeout,
+      clearTimeout,
+      __record: async (payload: Record<string, unknown>) => {
+        captured.push(payload);
+      },
+    } as Record<string, unknown>;
+    runInNewContext(browserRecordingInstallScript('__record', 'private-capture-token'), context);
+    const recorder = context.__syncThinkRecorder as {
+      uninstall(token: string): Promise<boolean>;
+    };
+    const trustedEvent = (target: FakeElement, key?: string) => ({
+      isTrusted: true,
+      ...(key ? { key } : {}),
+      target,
+      composedPath: () => [target],
+    });
+
+    await expect(recorder.uninstall('forged')).resolves.toBe(false);
+    expect(context.__syncThinkRecorder).toBe(recorder);
+    expect(recorder.uninstall.toString()).not.toContain('private-capture-token');
+
+    listeners.get('input')?.(trustedEvent(textInput));
+    listeners.get('keydown')?.(trustedEvent(textInput, 'Enter'));
+    listeners.get('change')?.(trustedEvent(textInput));
+    listeners.get('change')?.(trustedEvent(select));
+    listeners.get('click')?.(trustedEvent(submitInput));
+    listeners.get('input')?.(trustedEvent(contentEditable));
+    await Promise.resolve();
+
+    await expect(recorder.uninstall('private-capture-token')).resolves.toBe(true);
+    expect(context.__syncThinkRecorder).toBeUndefined();
+    expect(captured.map((payload) => payload.kind)).toEqual([
+      'fill',
+      'press',
+      'select',
+      'click',
+      'fill',
+    ]);
+    expect(captured[0]).toMatchObject({
+      value: '停止前最后输入',
+      sensitive: false,
+    });
+    expect(captured[2]).toMatchObject({ value: 'pro', sensitive: false });
+    expect(captured[4]).toMatchObject({ sensitive: true });
+  });
+
+  it('rejects forged recording binding payloads without the per-recording capture token', () => {
+    const payload = {
+      kind: 'fill',
+      locator: { strategy: 'label', value: 'Password' },
+      value: 'should-not-persist',
+    };
+
+    expect(
+      projectBrowserRecordingDomEvent({ ...payload, captureToken: 'forged' }, 'expected'),
+    ).toBeUndefined();
+    expect(
+      projectBrowserRecordingDomEvent(
+        { ...payload, captureToken: 'expected', sensitive: true },
+        'expected',
+      ),
+    ).toEqual({
+      kind: 'fill',
+      locator: { strategy: 'label', value: 'Password' },
+      value: { kind: 'secret' },
+    });
+  });
+
   it('launches one session per Profile and reuses one lease per owner', async () => {
     const state = { launches: [] as string[], pages: [] as FakePage[] };
     const host = new BrowserHost({
@@ -153,6 +784,281 @@ describe('BrowserHost Profile sessions and Page leases', () => {
     expect(secondOwner.leaseId).not.toBe(first.leaseId);
     expect(secondOwner.pageId).not.toBe(first.pageId);
 
+    await host.shutdown();
+  });
+
+  it('queries and clears a Profile site through the driver without returning secret values', async () => {
+    const listSiteData = vi.fn(async () => ({
+      profileId: 'work',
+      checkedAt: '2026-08-05T03:00:00.000Z',
+      sites: [
+        {
+          siteKey: 'example.com',
+          origins: ['https://app.example.com'],
+          cookieCount: 2,
+          storageBytes: 1024,
+          storageTypes: ['cookies', 'local_storage'],
+        },
+      ],
+    }));
+    const clearSiteData = vi.fn(async () => ({
+      profileId: 'work',
+      siteKey: 'example.com',
+      clearedOrigins: ['https://app.example.com'],
+      deletedCookieCount: 2,
+      checkedAt: '2026-08-05T03:01:00.000Z',
+    }));
+    const host = new BrowserHost({
+      profileRoot: createProfileRoot(),
+      sessionFactory: async (input) => ({
+        browserKind: 'edge',
+        executablePath: 'edge.exe',
+        profileDirectory: input.profileDirectory,
+        cdpEndpoint: 'http://127.0.0.1:43123',
+        isConnected: () => true,
+        newPage: async () => new FakePage(),
+        listSiteData,
+        clearSiteData,
+        close: vi.fn(async () => undefined),
+      }),
+    });
+
+    await expect(
+      host.listProfileSiteData({
+        profileId: 'work',
+        knownOrigins: ['https://app.example.com'],
+      }),
+    ).resolves.toMatchObject({ sites: [{ siteKey: 'example.com', cookieCount: 2 }] });
+    expect(listSiteData).toHaveBeenCalledWith(['https://app.example.com']);
+
+    const lease = await host.acquireLease({ profileId: 'work', ownerId: 'run:1' });
+    await expect(
+      host.clearProfileSiteData({ profileId: 'work', siteKey: 'example.com' }),
+    ).rejects.toMatchObject({ code: 'browser.profile-in-use' });
+    await host.releaseLease(lease.leaseId);
+    await expect(
+      host.clearProfileSiteData({ profileId: 'work', siteKey: 'example.com' }),
+    ).resolves.toMatchObject({ deletedCookieCount: 2 });
+    expect(clearSiteData).toHaveBeenCalledWith('example.com', []);
+    await host.shutdown();
+  });
+
+  it('matches IPv6 origins when clearing a local Profile site', async () => {
+    const page = {
+      isClosed: () => false,
+      url: () => 'http://[::1]/dashboard',
+      close: vi.fn(async () => undefined),
+      goto: vi.fn(async () => undefined),
+    };
+    const send = vi.fn(async () => undefined);
+    const clearCookies = vi.fn(async () => undefined);
+    const context = {
+      cookies: vi.fn(async () => [
+        {
+          name: 'session',
+          value: 'secret-value',
+          domain: '::1',
+          path: '/',
+          expires: -1,
+          httpOnly: true,
+          secure: false,
+          sameSite: 'Lax' as const,
+        },
+      ]),
+      clearCookies,
+      pages: () => [page],
+      newPage: vi.fn(async () => page),
+      newCDPSession: vi.fn(async () => ({
+        send,
+        detach: vi.fn(async () => undefined),
+      })),
+    };
+
+    await expect(
+      clearBrowserProfileSiteData(context as never, 'work', '::1', []),
+    ).resolves.toMatchObject({
+      siteKey: '::1',
+      deletedCookieCount: 1,
+      clearedOrigins: ['http://[::1]', 'https://[::1]'],
+    });
+    expect(clearCookies).toHaveBeenCalledWith({ name: 'session', domain: '::1', path: '/' });
+    expect(send).toHaveBeenCalledWith('Storage.clearDataForOrigin', {
+      origin: 'http://[::1]',
+      storageTypes: 'all',
+    });
+  });
+
+  it('deletes only a non-default idle Profile below the configured root', async () => {
+    const profileRoot = createProfileRoot();
+    const profileDirectory = resolveBrowserProfileDirectory(profileRoot, 'throwaway');
+    mkdirSync(profileDirectory, { recursive: true });
+    const host = new BrowserHost({ profileRoot, sessionFactory: fakeSessionFactory() });
+
+    await expect(host.deleteProfileData('default')).rejects.toMatchObject({
+      code: 'browser.default-profile-immutable',
+    });
+    await expect(host.deleteProfileData('throwaway')).resolves.toBeUndefined();
+    expect(existsSync(profileDirectory)).toBe(false);
+    await host.shutdown();
+  });
+
+  it('keeps Profile deletion behind an in-flight site-data inspection', async () => {
+    const profileRoot = createProfileRoot();
+    let markInspectionStarted!: () => void;
+    const inspectionStarted = new Promise<void>((resolve) => {
+      markInspectionStarted = resolve;
+    });
+    let finishInspection!: () => void;
+    const inspectionGate = new Promise<void>((resolve) => {
+      finishInspection = resolve;
+    });
+    const close = vi.fn(async () => undefined);
+    const host = new BrowserHost({
+      profileRoot,
+      sessionFactory: async (input) => ({
+        browserKind: 'edge',
+        executablePath: 'edge.exe',
+        profileDirectory: input.profileDirectory,
+        cdpEndpoint: 'http://127.0.0.1:43123',
+        isConnected: () => true,
+        newPage: async () => new FakePage(),
+        listSiteData: async () => {
+          markInspectionStarted();
+          await inspectionGate;
+          return {
+            profileId: 'work',
+            checkedAt: '2026-08-05T03:00:00.000Z',
+            sites: [],
+          };
+        },
+        close,
+      }),
+    });
+
+    const inspection = host.listProfileSiteData({ profileId: 'work' });
+    await inspectionStarted;
+    const deletion = host.deleteProfileData('work');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      finishInspection();
+    }
+    await expect(inspection).resolves.toMatchObject({ profileId: 'work', sites: [] });
+    await expect(deletion).resolves.toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(1);
+    await host.shutdown();
+  });
+
+  it('keeps Profile deletion behind lease recovery and rejects it after recovery wins', async () => {
+    const profileRoot = createProfileRoot();
+    const page = new FakePage('page-recovering');
+    let markRecoveryStarted!: () => void;
+    const recoveryStarted = new Promise<void>((resolve) => {
+      markRecoveryStarted = resolve;
+    });
+    let finishRecovery!: () => void;
+    const recoveryGate = new Promise<void>((resolve) => {
+      finishRecovery = resolve;
+    });
+    const close = vi.fn(async () => undefined);
+    const host = new BrowserHost({
+      profileRoot,
+      sessionFactory: async (input) => ({
+        browserKind: 'edge',
+        executablePath: 'edge.exe',
+        profileDirectory: input.profileDirectory,
+        cdpEndpoint: 'http://127.0.0.1:43123',
+        isConnected: () => true,
+        newPage: async () => new FakePage(),
+        findPage: async () => {
+          markRecoveryStarted();
+          await recoveryGate;
+          return page;
+        },
+        close,
+      }),
+    });
+    const checkpoint = {
+      leaseId: 'lease-recovering',
+      pageId: page.pageId,
+      profileId: 'work',
+      ownerId: 'run:recovering',
+    };
+
+    const recovery = host.recoverLease(checkpoint);
+    await recoveryStarted;
+    const deletion = host.deleteProfileData('work');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      finishRecovery();
+    }
+    await expect(recovery).resolves.toEqual(checkpoint);
+    await expect(deletion).rejects.toMatchObject({ code: 'browser.profile-in-use' });
+    expect(close).not.toHaveBeenCalled();
+    await host.shutdown();
+  });
+
+  it('keeps a Profile busy while release drains an in-flight Page command', async () => {
+    const pages: FakePage[] = [];
+    const clearSiteData = vi.fn(async () => ({
+      profileId: 'work',
+      siteKey: 'example.com',
+      clearedOrigins: ['https://app.example.com'],
+      deletedCookieCount: 1,
+      checkedAt: '2026-08-05T03:01:00.000Z',
+    }));
+    const host = new BrowserHost({
+      profileRoot: createProfileRoot(),
+      sessionFactory: async (input) => ({
+        browserKind: 'edge',
+        executablePath: 'edge.exe',
+        profileDirectory: input.profileDirectory,
+        cdpEndpoint: 'http://127.0.0.1:43123',
+        isConnected: () => true,
+        newPage: async () => {
+          const page = new FakePage();
+          pages.push(page);
+          return page;
+        },
+        clearSiteData,
+        close: vi.fn(async () => undefined),
+      }),
+    });
+    const lease = await host.acquireLease({ profileId: 'work', ownerId: 'run:1' });
+    let markCommandStarted!: () => void;
+    const commandStarted = new Promise<void>((resolve) => {
+      markCommandStarted = resolve;
+    });
+    let finishCommand!: () => void;
+    const commandGate = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    pages[0]!.executeImpl = async () => {
+      markCommandStarted();
+      await commandGate;
+      return { url: 'https://app.example.com/', title: 'Fixture' };
+    };
+
+    const command = host.execute({
+      leaseId: lease.leaseId,
+      action: { kind: 'read' },
+      allowedSites: ['https://app.example.com'],
+      timeoutMs: 1_000,
+    });
+    await commandStarted;
+    const release = host.releaseLease(lease.leaseId);
+    await expect(
+      host.clearProfileSiteData({ profileId: 'work', siteKey: 'example.com' }),
+    ).rejects.toMatchObject({ code: 'browser.profile-in-use' });
+    expect(clearSiteData).not.toHaveBeenCalled();
+    finishCommand();
+    await Promise.all([command, release]);
+    await expect(
+      host.clearProfileSiteData({ profileId: 'work', siteKey: 'example.com' }),
+    ).resolves.toMatchObject({ deletedCookieCount: 1 });
     await host.shutdown();
   });
 
@@ -345,7 +1251,11 @@ describe('BrowserHost Profile sessions and Page leases', () => {
     const outside = join(root, 'outside');
     mkdirSync(profileRoot, { recursive: true });
     mkdirSync(outside, { recursive: true });
-    symlinkSync(outside, join(profileRoot, 'work'), process.platform === 'win32' ? 'junction' : 'dir');
+    symlinkSync(
+      outside,
+      join(profileRoot, 'work'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
     const launches: string[] = [];
     const host = new BrowserHost({
       profileRoot,

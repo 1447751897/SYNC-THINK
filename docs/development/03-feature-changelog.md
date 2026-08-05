@@ -2457,3 +2457,56 @@ Desktop typecheck/build：passed
 - 两次完成态分别显示并冻结为“思考与执行过程 · 00:10”和“思考与执行过程 · 00:09”，数秒后未继续增长。
 - 验证：Runtime 4 files / 24 tests、Desktop 4 files / 21 tests、Runtime/Desktop typecheck、Browser handoff 三场景、Desktop handoff 两场景全部通过；`pnpm exec turbo run build --force` 为 11/11、0 cached。
 - 最新本地源码实例已重启并保持运行，Runtime PID `61144`、Electron PID `61212`，Pipe 为 `\\.\pipe\sync-think-dev-0001`。未生成 installer、portable 或 release artifact，未提交、未推送。
+
+## 2026-08-05 · Computer Use 应用启动与可见窗口成功判定
+
+- 新增 `desktop_launch_app`：通过隔离 Desktop Host 调用 Windows Shell 启动 `.exe`，不再用 `run_command` 承担 GUI 应用启动。
+- Host 在启动前后枚举可见顶层窗口，并按进程映像匹配目标应用；只有拿到 exact PID、HWND 与标题才返回 `app-launched`。启动请求成功但没有可见窗口时返回稳定失败，不再误报“已打开”。
+- 应用启动接入现有 durable command、幂等、审批和用户输入中断边界；常见系统展示应用为 `display` 风险，任意本地路径为 `sensitive` 风险。
+- `run_command` 结果新增 `guiWindowVerified: false`，工具描述与 Desktop prompt 明确禁止用终端退出码证明 GUI 成功。
+- 执行过程新增“启动应用”中文标签，并保留请求事件中的应用名，避免完成事件缺少参数时退化成裸工具名。
+- 本机隔离 Host 实测 `notepad.exe` 在约 2 秒内返回 `app-launched` 与可见 Notepad 窗口，不再等待原有 120 秒终端超时。未生成 installer、portable 或 release artifact。
+
+## 2026-08-05 · 回复累计用量与缓存上报语义修复
+
+- 聊天消息用量由“最后一次 Provider 请求”改为按真实 `requestId` 去重后累计整次回复，工具循环中的多次模型请求不再被最后一轮覆盖；悬浮标题同步改为“本次回复累计”。
+- 使用统计不再用覆盖整个工具循环的 `packetId` 兜底请求身份。旧 Event 缺少 `requestId` 时按 Event ID 保持独立，避免把多次请求按各字段最大值拼成一条不存在的记录。
+- 缓存读取/创建字段缺失时显示“未上报”，Provider 明确返回 `0` 时仍显示 `0`；顶部缓存命中率只使用已上报读取量的请求作为分母，混合中转或 Provider 不再被未上报请求误算为 miss。
+- 请求状态改为“成功 / 失败 / 未结束”，费用分项明确为“普通输入费”，Token 次级文字和摘要提示提高字号、对比度并允许换行。
+- usage sidecar schema 提升为 V2，并使用 `usage-summary-cache-v2.json`，确保既有 V1 错误分组不会被继续复用；首次打开统计会重新只读扫描，后续仍按 high-water 增量刷新。
+- 定向回归：Runtime 2 files / 14 tests、Desktop 2 files / 15 tests；包级全量 Runtime 67 files / 454 tests、Desktop 130 files / 860 tests；两包 typecheck/lint、根级强制构建 11/11、Prettier 与 `git diff --check` 均通过。仅修改并验证本地源码，未生成 installer、portable 或 release artifact。
+- 真实历史 Run 复核：原截图上方回复由 5 个 Provider 请求累计为输入 `30,002`、缓存读取 `20,480`；下方回复由 7 个 Provider 请求累计为输入 `46,422`、缓存读取 `37,376`。旧 UI 只显示最后一次请求的 `5,632` 与 `4,608`，因此造成“下面反而更低”的误导。
+- 2026-08-05 10:27 +08:00 已重启本地源码：Electron PID `23508`、Runtime PID `23468`；V2 sidecar 与使用统计实窗通过，截图位于 `.data/local-restart-20260805-102720/usage-settings.png`。
+
+## 2026-08-05 · Browser Automation Studio P1.1 Profile 与登录状态管理
+
+- BrowserStage 已从 Renderer `localStorage` 和 Electron `<webview>` Profile 迁到 Runtime 真源；左侧管理 Runtime Profile，右侧展示脱敏站点会话，支持创建、重命名、完整删除、缓存加载、显式实时刷新和按站点清除。
+- 新增六条 `browser.profile.*` 协议命令及 Desktop Main/Preload 严格 IPC；Runtime `RuntimeBrowserProfileService` 统一处理 optimistic revision、默认 Profile 保护、非终态 command/handoff 与 Page lease 占用栅栏。
+- Storage 迁移 `0036_browser_profile_site_sessions` 新增 `browser_profile`、`browser_site_session` 与 `browser_command_profile_state_idx`；`SqliteBrowserStore` 保存 Profile 元数据、脱敏会话摘要和 known origin，Cookie、Token、LocalStorage、IndexedDB 等正文继续只存在 Runtime 浏览器 Profile 目录。
+- BrowserHost 使用 Public Suffix List 归并 registrable domain，通过 Playwright/CDP 查询和清除站点数据；第三方 SSO 默认保留。Profile 查询、冷恢复、清除和删除使用同一维护门禁，Lease 释放排空命令期间继续视为占用。
+- UI 明确区分“已验证登录 / 存在会话数据 / 需要重新登录”，危险操作使用单层确认 Dialog；Profile 被 command、handoff 或 lease 占用时禁用清除和删除并显示原因。P1.2 录制与 Workflow 仍未实现。
+- 实窗收口修复：Profile 行选择层提升到图标/文字上方且操作按钮保持独立层级，鼠标点击整行可切换；缓存加载不再清掉新建成功提示。Edge 143 的 Storage 查询/清除改用 Page target CDP Session，并为刷新、清除和删除增加 30 秒 Desktop 维护预算，消除“UI 先超时、后台后完成”的状态分叉。
+- 追加 Runtime 刷新占用栅栏：即使绕过 Renderer 直接发送 `browser.profile.listSiteSessions(refresh=true)`，Profile 被活动 command 或 Page lease 占用时也会在 BrowserHost 查询前返回 `browser.profile_in_use`。
+- 收口边界复核：站点键支持裸 IPv6（例如 `::1`），清除时兼容 URL 的方括号主机名；Page target CDP Session 建连失败时会关闭临时 Page，避免维护操作遗留目标页。registrable domain 使用直接依赖 `tldts@6.1.86`，不读取 Chromium 私有数据库。
+- 最终包级门禁：Storage 36 files / 380 tests、Workers 15 files / 117 passed / 3 skipped、Runtime 70 files / 464 tests、Desktop 131 files / 868 tests；BrowserHost 定向 28/28。根级 typecheck 20/20、lint 11/11、design tokens 与强制 build 11/11（0 cached）通过，Prettier 和 `git diff --check` 通过。
+- 最新源码实例 Electron `43956`、Runtime `37228` 已启动并通过 Pipe healthcheck。实窗刷新“最终闭测”Profile 后发现 `microsoft.com`，按站点清除 `https://copilot.microsoft.com` 和 1 个 Cookie 后，UI 与 SQLite 会话摘要均为空；1424x861 无页面级溢出。未生成 installer、portable 或 release artifact。
+
+## 2026-08-05 · Browser Automation Studio P1.2 语义动作录制
+
+- 新增共享录制状态与结构化步骤合同，支持 `navigate/click/fill/select/check/Enter`、稳定定位器、敏感值占位、200 步和 16 KiB 单步上限。
+- Storage 迁移 `0037_browser_recording` 新增 durable recording/step 表、每 Profile 非终态唯一索引与状态/大小约束；start intent、append/replace-last、stop CAS 和冷启动 interruption 均可追踪。
+- BrowserHost 新增专用 recording Profile claim 与 exact Page lease，捕获主 Frame 真人 DOM 事件，折叠 fill debounce 和 click/Enter 后导航；URL 移除 userinfo/query/hash，敏感字段不保存正文，binding 使用随机 capture token 拒绝网页伪造 payload。
+- Runtime 新增 `RuntimeBrowserRecordingService` 与 `browser.recording.{list,get,start,stop}`，停止时排空 mutation、关闭 exact Page 并释放 lease；Page 关闭与 Runtime 重启形成 `interrupted`，失败的 stop 可重试且不产生未处理 Promise。
+- Desktop Main/Preload 接入四条严格 IPC；BrowserStage 提供“登录状态 / 录制”分段视图、起始 URL、开始/停止、最近录制、实时步骤和终止原因。start pending 或未知结果时全局锁定 Profile，超时后向 Runtime 对账。
+- 质量修复：lease 获取被拒绝时不再关闭无关 Profile session；预先打开的创建/重命名/删除确认在录制锁生效后也无法提交；异常终态会清除旧成功提示。
+- 当前仅生成录制草稿，不展示未实现的“自动化任务”，也不创建或执行 WorkflowVersion。安装包、提交和推送均未执行。
+
+## 2026-08-05 · Browser Automation Studio P1.2 最终实窗收口
+
+- 修复 Profile 刷新后的永久“使用中”：刷新维护锁内只返回原始 Profile、sessions 和 checkedAt，待 gate 释放后再计算 `inUse`；活动 command、recording 和 Page lease 的拒绝边界保持不变。
+- 修复 Enter 后 change 重复记录 fill：文本 change 只排空仍 pending 的 debounce，已由 Enter 或计时器提交的值不再重复；navigate 因而可稳定 replace-last 到 press 的 `resultUrl`。
+- 回归测试新增刷新返回 `inUse: false`、Page lease 拒绝、稳定错误码、Enter 后 change 去重与 trusted select 捕获。定向 Profile Service `8/8`、BrowserHost `35/35` 通过。
+- 最终包级结果为 Storage 36 files / 384 tests、Workers 15 files / 124 passed / 3 skipped、Runtime 74 files / 477 tests、Desktop 133 files / 897 tests；根 typecheck 20/20、lint 11/11、design tokens 和强制 build 11/11（0 cached）通过。
+- 根 `pnpm test --force --concurrency=1` 最终为 20/20 Turbo tasks、0 cached，确认全部标准测试入口在本轮源码上通过。
+- 真实 Edge 验收在 `.data/local-restart-20260805-204946-browser-recording-final` 通过：正常录制 10 步并覆盖六类动作，刷新/清除后可再次录制，关页形成 `interrupted/page_closed`，Profile 删除后无活动录制、站点摘要、Profile 目录、metadata 或相关 Edge 进程。
+- SQLite 和 UI 均未出现测试密码、敏感富文本或 URL userinfo/query/hash；三张 1424x861 截图无页面级溢出。最新 Electron `3452`、Runtime `33812` 保持运行；未生成安装包，未提交、未推送。

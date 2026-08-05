@@ -86,6 +86,7 @@ describe('ChatView reply usage details', () => {
     fireEvent.focus(await screen.findByText('1s · 14.5k'));
 
     const tooltip = await screen.findByRole('tooltip');
+    expect(within(tooltip).getByText('本次回复累计')).toBeTruthy();
     expect(within(tooltip).getByText('总 Token')).toBeTruthy();
     expect(within(tooltip).getByText('14.5k')).toBeTruthy();
     expect(within(tooltip).getByText('普通输入')).toBeTruthy();
@@ -95,5 +96,31 @@ describe('ChatView reply usage details', () => {
     expect(within(tooltip).getByText('缓存创建')).toBeTruthy();
     expect(within(tooltip).getByText('输出')).toBeTruthy();
     expect(within(tooltip).getByText('488')).toBeTruthy();
+  });
+
+  it('shows unreported cache accounting instead of fabricating zeroes', async () => {
+    runtime.getConversationRunProcess.mockResolvedValueOnce({
+      process: {
+        ...processView,
+        cachedTokensHit: undefined,
+        cachedTokensCreated: undefined,
+      },
+    });
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('cached reply')).toBeTruthy();
+    await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
+    fireEvent.focus(await screen.findByText('1s · 14.5k'));
+
+    const tooltip = await screen.findByRole('tooltip');
+    expect(within(tooltip).getAllByText('未上报')).toHaveLength(2);
   });
 });

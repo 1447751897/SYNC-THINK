@@ -248,6 +248,8 @@ async function openLegacyConflictStore() {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     await runMigrations(dbPath);
   } finally {

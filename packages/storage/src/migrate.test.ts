@@ -50,6 +50,8 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -258,6 +260,8 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -438,15 +442,15 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
 
 describe('migration planner (pure)', () => {
   it('keeps message pagination, the event cursor, and Browser persistence ordered last', () => {
-    expect(MIGRATIONS.at(-14)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-13)?.name).toBe('0023_provider_execution_checkpoint');
-    expect(MIGRATIONS.at(-12)?.name).toBe('0024_mutable_agent_team_conversation');
-    expect(MIGRATIONS.at(-11)?.name).toBe('0025_conversation_task_binding');
-    expect(MIGRATIONS.at(-10)?.name).toBe('0026_provider_source_config');
-    expect(MIGRATIONS.at(-9)?.name).toBe('0027_skill_archive');
-    expect(MIGRATIONS.at(-8)?.name).toBe('0028_message_pagination');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0029_event_global_cursor');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0030_browser_persistence_permissions');
+    expect(MIGRATIONS.at(-16)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-15)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.at(-14)?.name).toBe('0024_mutable_agent_team_conversation');
+    expect(MIGRATIONS.at(-13)?.name).toBe('0025_conversation_task_binding');
+    expect(MIGRATIONS.at(-12)?.name).toBe('0026_provider_source_config');
+    expect(MIGRATIONS.at(-11)?.name).toBe('0027_skill_archive');
+    expect(MIGRATIONS.at(-10)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-9)?.name).toBe('0029_event_global_cursor');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0030_browser_persistence_permissions');
   });
 
   it.runIf(canOpenNativeSqlite())(
@@ -510,6 +514,8 @@ describe('migration planner (pure)', () => {
           '0033_image_generation_config',
           '0034_agent_context_usage',
           '0035_review_image_selection_freeze',
+          '0036_browser_profile_site_sessions',
+          '0037_browser_recording',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -565,40 +571,40 @@ describe('migration planner (pure)', () => {
   );
 
   it('appends the complete AgentVersion migration after reviewer/rework', () => {
-    expect(MIGRATIONS.at(-19)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-18)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-17)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-16)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-15)?.name).toBe('0021_merge_step_conflict_resolution');
-    expect(MIGRATIONS.at(-14)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-13)?.name).toBe('0023_provider_execution_checkpoint');
-    expect(MIGRATIONS.at(-12)?.name).toBe('0024_mutable_agent_team_conversation');
-    expect(MIGRATIONS.at(-11)?.name).toBe('0025_conversation_task_binding');
-    expect(MIGRATIONS.at(-10)?.name).toBe('0026_provider_source_config');
-    expect(MIGRATIONS.at(-9)?.name).toBe('0027_skill_archive');
-    expect(MIGRATIONS.at(-8)?.name).toBe('0028_message_pagination');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0029_event_global_cursor');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0030_browser_persistence_permissions');
+    expect(MIGRATIONS.at(-21)?.name).toBe('0017_reviewer_rework');
+    expect(MIGRATIONS.at(-20)?.name).toBe('0018_complete_agent_version');
+    expect(MIGRATIONS.at(-19)?.name).toBe('0019_review_source_evidence_integrity');
+    expect(MIGRATIONS.at(-18)?.name).toBe('0020_review_bounds_integrity');
+    expect(MIGRATIONS.at(-17)?.name).toBe('0021_merge_step_conflict_resolution');
+    expect(MIGRATIONS.at(-16)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-15)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.at(-14)?.name).toBe('0024_mutable_agent_team_conversation');
+    expect(MIGRATIONS.at(-13)?.name).toBe('0025_conversation_task_binding');
+    expect(MIGRATIONS.at(-12)?.name).toBe('0026_provider_source_config');
+    expect(MIGRATIONS.at(-11)?.name).toBe('0027_skill_archive');
+    expect(MIGRATIONS.at(-10)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-9)?.name).toBe('0029_event_global_cursor');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0030_browser_persistence_permissions');
   });
 
   it('reserves 0016 for production execution fencing after frozen 0015', () => {
-    expect(MIGRATIONS.at(-21)?.name).toBe('0015_capability_authorization');
-    expect(MIGRATIONS.at(-20)?.name).toBe('0016_production_execution');
-    expect(MIGRATIONS.at(-19)?.name).toBe('0017_reviewer_rework');
-    expect(MIGRATIONS.at(-18)?.name).toBe('0018_complete_agent_version');
-    expect(MIGRATIONS.at(-17)?.name).toBe('0019_review_source_evidence_integrity');
-    expect(MIGRATIONS.at(-16)?.name).toBe('0020_review_bounds_integrity');
-    expect(MIGRATIONS.at(-15)?.name).toBe('0021_merge_step_conflict_resolution');
-    expect(MIGRATIONS.at(-14)?.name).toBe('0022_optional_project_folder');
-    expect(MIGRATIONS.at(-13)?.name).toBe('0023_provider_execution_checkpoint');
-    expect(MIGRATIONS.at(-12)?.name).toBe('0024_mutable_agent_team_conversation');
-    expect(MIGRATIONS.at(-11)?.name).toBe('0025_conversation_task_binding');
-    expect(MIGRATIONS.at(-10)?.name).toBe('0026_provider_source_config');
-    expect(MIGRATIONS.at(-9)?.name).toBe('0027_skill_archive');
-    expect(MIGRATIONS.at(-8)?.name).toBe('0028_message_pagination');
-    expect(MIGRATIONS.at(-7)?.name).toBe('0029_event_global_cursor');
-    expect(MIGRATIONS.at(-6)?.name).toBe('0030_browser_persistence_permissions');
-    const through0015 = MIGRATIONS.slice(0, -20).map((migration) => migration.name);
+    expect(MIGRATIONS.at(-23)?.name).toBe('0015_capability_authorization');
+    expect(MIGRATIONS.at(-22)?.name).toBe('0016_production_execution');
+    expect(MIGRATIONS.at(-21)?.name).toBe('0017_reviewer_rework');
+    expect(MIGRATIONS.at(-20)?.name).toBe('0018_complete_agent_version');
+    expect(MIGRATIONS.at(-19)?.name).toBe('0019_review_source_evidence_integrity');
+    expect(MIGRATIONS.at(-18)?.name).toBe('0020_review_bounds_integrity');
+    expect(MIGRATIONS.at(-17)?.name).toBe('0021_merge_step_conflict_resolution');
+    expect(MIGRATIONS.at(-16)?.name).toBe('0022_optional_project_folder');
+    expect(MIGRATIONS.at(-15)?.name).toBe('0023_provider_execution_checkpoint');
+    expect(MIGRATIONS.at(-14)?.name).toBe('0024_mutable_agent_team_conversation');
+    expect(MIGRATIONS.at(-13)?.name).toBe('0025_conversation_task_binding');
+    expect(MIGRATIONS.at(-12)?.name).toBe('0026_provider_source_config');
+    expect(MIGRATIONS.at(-11)?.name).toBe('0027_skill_archive');
+    expect(MIGRATIONS.at(-10)?.name).toBe('0028_message_pagination');
+    expect(MIGRATIONS.at(-9)?.name).toBe('0029_event_global_cursor');
+    expect(MIGRATIONS.at(-8)?.name).toBe('0030_browser_persistence_permissions');
+    const through0015 = MIGRATIONS.slice(0, -22).map((migration) => migration.name);
     expect(planMigrations(through0015).applied).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',
@@ -620,13 +626,15 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
   });
 
   it('appends capability authorization after the frozen 0014 migration', () => {
-    expect(MIGRATIONS.at(-22)?.name).toBe('0014_scheduler_fencing');
-    expect(MIGRATIONS.at(-21)?.name).toBe('0015_capability_authorization');
-    const through0014 = MIGRATIONS.slice(0, -21).map((migration) => migration.name);
+    expect(MIGRATIONS.at(-24)?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS.at(-23)?.name).toBe('0015_capability_authorization');
+    const through0014 = MIGRATIONS.slice(0, -23).map((migration) => migration.name);
     expect(planMigrations(through0014).applied).toEqual([
       '0015_capability_authorization',
       '0016_production_execution',
@@ -649,6 +657,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
   });
 
@@ -687,6 +697,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
   });
 
@@ -718,6 +730,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
   });
 
@@ -748,6 +762,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
   });
 
@@ -795,6 +811,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -835,6 +853,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -878,6 +898,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -925,6 +947,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -973,6 +997,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1022,6 +1048,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1072,6 +1100,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1124,6 +1154,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1168,6 +1200,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1209,6 +1243,8 @@ describe('migration planner (pure)', () => {
       '0033_image_generation_config',
       '0034_agent_context_usage',
       '0035_review_image_selection_freeze',
+      '0036_browser_profile_site_sessions',
+      '0037_browser_recording',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1414,6 +1450,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       const index = MIGRATIONS.findIndex((migration) => migration.name === name);
       return index >= 0 ? MIGRATIONS.splice(index, 1)[0] : undefined;
     };
+    const browserRecordingMigration = removeMigration('0037_browser_recording');
+    const browserProfileSiteSessionsMigration = removeMigration(
+      '0036_browser_profile_site_sessions',
+    );
     const reviewImageSelectionFreezeMigration = removeMigration(
       '0035_review_image_selection_freeze',
     );
@@ -1496,6 +1536,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       if (reviewImageSelectionFreezeMigration) {
         MIGRATIONS.push(reviewImageSelectionFreezeMigration);
       }
+      if (browserProfileSiteSessionsMigration) {
+        MIGRATIONS.push(browserProfileSiteSessionsMigration);
+      }
+      if (browserRecordingMigration) MIGRATIONS.push(browserRecordingMigration);
       expect((await runMigrations(dbPath)).applied).toEqual([
         '0018_complete_agent_version',
         '0019_review_source_evidence_integrity',
@@ -1515,6 +1559,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1559,6 +1605,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         browserPersistenceMigration,
         desktopCommandMigration,
         schedulerFencingRepairMigration,
+        imageGenerationConfigMigration,
+        agentContextUsageMigration,
+        reviewImageSelectionFreezeMigration,
+        browserProfileSiteSessionsMigration,
       ]) {
         if (migration && !MIGRATIONS.includes(migration)) MIGRATIONS.push(migration);
       }
@@ -1632,6 +1682,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1688,6 +1740,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1700,7 +1754,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         upgraded.raw.close();
       }
     } finally {
-      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0035_review_image_selection_freeze') {
+      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0037_browser_recording') {
         MIGRATIONS.push(...trailingMigrations);
       }
       rmSync(dir, { recursive: true, force: true });
@@ -1826,7 +1880,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
   });
 
   it('appends 0014 scheduler fencing and exact Step output mapping', async () => {
-    expect(MIGRATIONS.at(-22)?.name).toBe('0014_scheduler_fencing');
+    expect(MIGRATIONS.at(-24)?.name).toBe('0014_scheduler_fencing');
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduler-fencing-migration-'));
     const dbPath = join(dir, 'sync-think.db');
     try {
@@ -2063,6 +2117,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2132,6 +2188,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2176,6 +2234,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2219,6 +2279,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2269,6 +2331,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2387,6 +2451,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2456,6 +2522,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0033_image_generation_config',
         '0034_agent_context_usage',
         '0035_review_image_selection_freeze',
+        '0036_browser_profile_site_sessions',
+        '0037_browser_recording',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2488,6 +2556,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       const index = MIGRATIONS.findIndex((migration) => migration.name === name);
       return index >= 0 ? MIGRATIONS.splice(index, 1)[0] : undefined;
     };
+    const browserRecordingMigration = removeMigration('0037_browser_recording');
+    const browserProfileSiteSessionsMigration = removeMigration(
+      '0036_browser_profile_site_sessions',
+    );
     const reviewImageSelectionFreezeMigration = removeMigration(
       '0035_review_image_selection_freeze',
     );
@@ -2583,6 +2655,15 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
       ) {
         MIGRATIONS.push(reviewImageSelectionFreezeMigration);
       }
+      if (
+        browserProfileSiteSessionsMigration &&
+        !MIGRATIONS.includes(browserProfileSiteSessionsMigration)
+      ) {
+        MIGRATIONS.push(browserProfileSiteSessionsMigration);
+      }
+      if (browserRecordingMigration && !MIGRATIONS.includes(browserRecordingMigration)) {
+        MIGRATIONS.push(browserRecordingMigration);
+      }
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -2658,10 +2739,12 @@ describe('0029 event global cursor migration', () => {
 
 describe('0033 image generation config migration', () => {
   it('is ordered after scheduler fencing repair', () => {
-    expect(MIGRATIONS.at(-4)?.name).toBe('0032_scheduler_fencing_repair');
-    expect(MIGRATIONS.at(-3)?.name).toBe('0033_image_generation_config');
-    expect(MIGRATIONS.at(-2)?.name).toBe('0034_agent_context_usage');
-    expect(MIGRATIONS.at(-1)?.name).toBe('0035_review_image_selection_freeze');
+    expect(MIGRATIONS.at(-6)?.name).toBe('0032_scheduler_fencing_repair');
+    expect(MIGRATIONS.at(-5)?.name).toBe('0033_image_generation_config');
+    expect(MIGRATIONS.at(-4)?.name).toBe('0034_agent_context_usage');
+    expect(MIGRATIONS.at(-3)?.name).toBe('0035_review_image_selection_freeze');
+    expect(MIGRATIONS.at(-2)?.name).toBe('0036_browser_profile_site_sessions');
+    expect(MIGRATIONS.at(-1)?.name).toBe('0037_browser_recording');
   });
 
   it.runIf(canOpenNativeSqlite())(
@@ -2740,6 +2823,216 @@ describe('0033 image generation config migration', () => {
               }),
             },
           ]);
+        } finally {
+          raw.close();
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe('0036 Browser Profile schema contract', () => {
+  it.runIf(canOpenNativeSqlite())(
+    'keeps Drizzle declarations aligned with the published migration',
+    async () => {
+      const schema = await import('./schema/index.js');
+      const profileConfig = getTableConfig(schema.browserProfile);
+      const siteConfig = getTableConfig(schema.browserSiteSession);
+      const commandConfig = getTableConfig(schema.browserCommand);
+
+      expect(profileConfig.indexes.map((index) => index.config.name)).toEqual([
+        'browser_profile_active_idx',
+        'browser_profile_single_default_uidx',
+      ]);
+      expect(profileConfig.checks.map((check) => check.name)).toEqual([
+        'browser_profile_revision_check',
+        'browser_profile_default_check',
+      ]);
+      expect(siteConfig.primaryKeys.map((key) => key.columns.map((column) => column.name))).toEqual(
+        [['profile_id', 'site_key']],
+      );
+      expect(siteConfig.checks.map((check) => check.name)).toEqual([
+        'browser_site_session_origins_json_check',
+        'browser_site_session_storage_types_json_check',
+        'browser_site_session_state_check',
+        'browser_site_session_cookie_count_check',
+        'browser_site_session_storage_bytes_check',
+      ]);
+      expect(commandConfig.indexes.map((index) => index.config.name)).toContain(
+        'browser_command_profile_state_idx',
+      );
+      const siteForeignKey = siteConfig.foreignKeys
+        .map((key) => key.reference())
+        .find(
+          (reference) => reference.columns.map((column) => column.name).join() === 'profile_id',
+        );
+      expect(siteForeignKey).toMatchObject({
+        columns: [expect.objectContaining({ name: 'profile_id' })],
+        foreignColumns: [expect.objectContaining({ name: 'id' })],
+      });
+      expect(getTableName(siteForeignKey!.foreignTable)).toBe('browser_profile');
+
+      const dir = mkdtempSync(join(tmpdir(), 'sync-think-browser-schema-contract-'));
+      const dbPath = join(dir, 'sync-think.db');
+      try {
+        await runMigrations(dbPath);
+        const { raw } = await openDatabaseAsync({ path: dbPath });
+        try {
+          const profileColumns = raw
+            .prepare("PRAGMA table_info('browser_profile')")
+            .all() as Array<{ name: string; notnull: number; dflt_value: string | null }>;
+          expect(profileColumns.map((column) => column.name)).toEqual([
+            'id',
+            'name',
+            'revision',
+            'is_default',
+            'created_at',
+            'updated_at',
+            'last_used_at',
+            'deleted_at',
+          ]);
+          expect(profileColumns.find((column) => column.name === 'revision')).toMatchObject({
+            notnull: 1,
+            dflt_value: '1',
+          });
+
+          const siteColumns = raw
+            .prepare("PRAGMA table_info('browser_site_session')")
+            .all() as Array<{ name: string; pk: number }>;
+          expect(
+            siteColumns.filter((column) => column.pk > 0).map((column) => column.name),
+          ).toEqual(['profile_id', 'site_key']);
+
+          const profileIndexes = raw
+            .prepare("PRAGMA index_list('browser_profile')")
+            .all() as Array<{ name: string; unique: number }>;
+          expect(profileIndexes.map((index) => index.name)).toEqual(
+            expect.arrayContaining([
+              'browser_profile_active_idx',
+              'browser_profile_single_default_uidx',
+            ]),
+          );
+          expect(
+            raw
+              .prepare(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'browser_profile_single_default_uidx'",
+              )
+              .get(),
+          ).toMatchObject({ sql: expect.stringMatching(/WHERE\s+is_default\s*=\s*1/i) });
+
+          const commandIndexes = raw
+            .prepare("PRAGMA index_list('browser_command')")
+            .all() as Array<{ name: string }>;
+          expect(commandIndexes.map((index) => index.name)).toContain(
+            'browser_command_profile_state_idx',
+          );
+          expect(
+            raw
+              .prepare(
+                "SELECT name FROM migration_record WHERE name = '0036_browser_profile_site_sessions'",
+              )
+              .get(),
+          ).toEqual({ name: '0036_browser_profile_site_sessions' });
+          expect(
+            raw.prepare("SELECT id, is_default FROM browser_profile WHERE id = 'default'").get(),
+          ).toEqual({ id: 'default', is_default: 1 });
+        } finally {
+          raw.close();
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe('0037 Browser recording schema contract', () => {
+  it.runIf(canOpenNativeSqlite())(
+    'keeps durable recording intent, bounded steps, and one active claim per Profile',
+    async () => {
+      const schema = await import('./schema/index.js');
+      const recordingConfig = getTableConfig(schema.browserRecording);
+      const stepConfig = getTableConfig(schema.browserRecordingStep);
+
+      expect(recordingConfig.indexes.map((index) => index.config.name)).toEqual([
+        'browser_recording_profile_state_idx',
+        'browser_recording_one_active_profile_uidx',
+      ]);
+      expect(recordingConfig.checks.map((check) => check.name)).toEqual([
+        'browser_recording_status_check',
+        'browser_recording_revision_check',
+        'browser_recording_step_count_check',
+        'browser_recording_lease_pair_check',
+        'browser_recording_stop_reason_check',
+      ]);
+      expect(stepConfig.primaryKeys.map((key) => key.columns.map((column) => column.name))).toEqual(
+        [['recording_id', 'sequence']],
+      );
+      expect(stepConfig.checks.map((check) => check.name)).toEqual([
+        'browser_recording_step_sequence_check',
+        'browser_recording_step_kind_check',
+        'browser_recording_step_payload_json_check',
+        'browser_recording_step_payload_size_check',
+      ]);
+
+      const dir = mkdtempSync(join(tmpdir(), 'sync-think-browser-recording-schema-'));
+      const dbPath = join(dir, 'sync-think.db');
+      try {
+        await runMigrations(dbPath);
+        const { raw } = await openDatabaseAsync({ path: dbPath });
+        try {
+          expect(
+            raw
+              .prepare("SELECT name FROM migration_record WHERE name = '0037_browser_recording'")
+              .get(),
+          ).toEqual({ name: '0037_browser_recording' });
+
+          const activeIndex = raw
+            .prepare(
+              "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'browser_recording_one_active_profile_uidx'",
+            )
+            .get() as { sql: string };
+          expect(activeIndex.sql).toMatch(
+            /UNIQUE[\s\S]+profile_id[\s\S]+WHERE[\s\S]+starting[\s\S]+recording[\s\S]+stopping/i,
+          );
+
+          raw
+            .prepare(
+              `INSERT INTO browser_recording (
+               id, profile_id, owner_id, lease_id, page_id, status, revision,
+               start_url, current_url, step_count, stop_reason, error_code,
+               created_at, started_at, stopped_at, updated_at
+             ) VALUES (
+               'recording-schema-1', 'default', 'recording:recording-schema-1', NULL, NULL,
+               'starting', 1, NULL, NULL, 0, NULL, NULL, 't0', NULL, NULL, 't0'
+             )`,
+            )
+            .run();
+          expect(() =>
+            raw
+              .prepare(
+                `INSERT INTO browser_recording (
+                 id, profile_id, owner_id, lease_id, page_id, status, revision,
+                 start_url, current_url, step_count, stop_reason, error_code,
+                 created_at, started_at, stopped_at, updated_at
+               ) VALUES (
+                 'recording-schema-2', 'default', 'recording:recording-schema-2', NULL, NULL,
+                 'recording', 1, NULL, NULL, 0, NULL, NULL, 't0', 't0', NULL, 't0'
+               )`,
+              )
+              .run(),
+          ).toThrow(/UNIQUE constraint failed/i);
+          expect(() =>
+            raw
+              .prepare(
+                `INSERT INTO browser_recording_step (
+                 recording_id, sequence, kind, payload_json, recorded_at, updated_at
+               ) VALUES ('recording-schema-1', 201, 'navigate', '{}', 't0', 't0')`,
+              )
+              .run(),
+          ).toThrow(/CHECK constraint failed/i);
         } finally {
           raw.close();
         }

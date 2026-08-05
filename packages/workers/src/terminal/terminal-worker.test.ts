@@ -24,25 +24,25 @@ describe('TerminalProcessWorker', () => {
     const root = fixture();
     const controller = new AbortController();
     const events = new TerminalProcessWorker().exec(
-        {
-          workingDir: root,
-          action: {
-            command: process.execPath,
-            args: [
-              '-e',
-              "process.stdout.write('first'); setTimeout(() => process.stdout.write('second'), 2500)",
-            ],
-          },
+      {
+        workingDir: root,
+        action: {
+          command: process.execPath,
+          args: [
+            '-e',
+            "process.stdout.write('first'); setTimeout(() => process.stdout.write('second'), 2500)",
+          ],
         },
-        {
-          token: 'terminal-stream-token',
-          allowedRoot: root,
-          allowedCommands: [process.execPath],
-          timeoutMs: 10_000,
-          maxOutputBytes: 1_024,
-          signal: controller.signal,
-        },
-      );
+      },
+      {
+        token: 'terminal-stream-token',
+        allowedRoot: root,
+        allowedCommands: [process.execPath],
+        timeoutMs: 10_000,
+        maxOutputBytes: 1_024,
+        signal: controller.signal,
+      },
+    );
     const iterator = events[Symbol.asyncIterator]();
 
     const first = await Promise.race([
@@ -76,29 +76,29 @@ describe('TerminalProcessWorker', () => {
   it('kills the spawned process tree when the event consumer closes early', async () => {
     const root = fixture();
     const events = new TerminalProcessWorker().exec(
-        {
-          workingDir: root,
-          action: {
-            command: process.execPath,
-            args: [
-              '-e',
-              [
-                "const { spawn } = require('node:child_process')",
-                "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
-                'process.stdout.write(String(child.pid))',
-                'setInterval(() => {}, 1000)',
-              ].join(';'),
-            ],
-          },
+      {
+        workingDir: root,
+        action: {
+          command: process.execPath,
+          args: [
+            '-e',
+            [
+              "const { spawn } = require('node:child_process')",
+              "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+              'process.stdout.write(String(child.pid))',
+              'setInterval(() => {}, 1000)',
+            ].join(';'),
+          ],
         },
-        {
-          token: 'terminal-tree-token',
-          allowedRoot: root,
-          allowedCommands: [process.execPath],
-          timeoutMs: 15_000,
-          maxOutputBytes: 1_024,
-        },
-      );
+      },
+      {
+        token: 'terminal-tree-token',
+        allowedRoot: root,
+        allowedCommands: [process.execPath],
+        timeoutMs: 15_000,
+        maxOutputBytes: 1_024,
+      },
+    );
     const iterator = events[Symbol.asyncIterator]();
 
     const first = await iterator.next();
@@ -173,7 +173,13 @@ describe('TerminalProcessWorker', () => {
     );
     expect(events.at(-1)).toMatchObject({
       type: 'completed',
-      output: { ok: true, exitCode: 0, stdout: 'terminal-ok', shell: false },
+      output: {
+        ok: true,
+        exitCode: 0,
+        stdout: 'terminal-ok',
+        shell: false,
+        guiWindowVerified: false,
+      },
     });
   }, 20_000);
 

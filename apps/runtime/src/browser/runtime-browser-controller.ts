@@ -20,6 +20,10 @@ import {
   validateChatBrowserCommand,
   validateChatBrowserOpen,
 } from '../chat-tools.js';
+import {
+  RuntimeBrowserProfileGate,
+  type BrowserProfileOperationGate,
+} from './runtime-browser-profile-gate.js';
 
 type BrowserFailureClass = 'timeout' | 'crashed' | 'permission' | 'acceptance' | 'unknown';
 
@@ -67,6 +71,9 @@ export interface RuntimeBrowserHandoffContext {
   revision: 1;
   workspaceId: string;
   runId: string;
+  profileId: string;
+  siteOrigin: string;
+  reason: BrowserHandoffReason;
   stepId?: string;
   agentVersionId?: string;
   state: BrowserCommandRecord['state'];
@@ -104,6 +111,7 @@ export interface RuntimeBrowserControllerOptions {
   profileId?: string;
   fallbackWorkingDir: string;
   leaseHost?: Pick<BrowserHostLike, 'inspectLease' | 'recoverLease' | 'releaseLease'>;
+  profileGate?: BrowserProfileOperationGate;
 }
 
 export interface RuntimeBrowserPermissionInput {
@@ -158,6 +166,7 @@ export class RuntimeBrowserController {
     BrowserHostLike,
     'inspectLease' | 'recoverLease' | 'releaseLease'
   >;
+  private readonly profileGate: BrowserProfileOperationGate;
 
   constructor(options: RuntimeBrowserControllerOptions) {
     this.worker = options.worker;
@@ -165,6 +174,7 @@ export class RuntimeBrowserController {
     this.profileId = options.profileId?.trim() || 'default';
     this.fallbackWorkingDir = options.fallbackWorkingDir;
     this.leaseHost = options.leaseHost;
+    this.profileGate = options.profileGate ?? new RuntimeBrowserProfileGate();
     // A Runtime crash may leave an external side effect with an unknown result.
     // Never retry it automatically; require inspection instead.
     this.store.recoverUnknownInFlight();
@@ -233,17 +243,19 @@ export class RuntimeBrowserController {
 
     let command;
     try {
-      command = this.store.reserveCommand({
-        idempotencyKey: input.idempotencyKey,
-        workspaceId: input.workspaceId,
-        runId: input.runId,
-        ownerId: input.ownerId,
-        profileId: this.profileId,
-        toolName: input.toolName,
-        action: resolved.permissionAction,
-        targetOrigin: resolved.targetOrigin,
-        sanitizedArgs: resolved.prepared.auditArgs,
-      });
+      command = await this.profileGate.runExclusive(this.profileId, () =>
+        this.store.reserveCommand({
+          idempotencyKey: input.idempotencyKey,
+          workspaceId: input.workspaceId,
+          runId: input.runId,
+          ownerId: input.ownerId,
+          profileId: this.profileId,
+          toolName: input.toolName,
+          action: resolved.permissionAction,
+          targetOrigin: resolved.targetOrigin,
+          sanitizedArgs: resolved.prepared.auditArgs,
+        }),
+      );
     } catch (error) {
       return failureJson(
         'browser.command-persist-failed',
@@ -461,25 +473,27 @@ export class RuntimeBrowserController {
         'A completed Browser command with an active Page lease is required before handoff.',
       );
     }
-    const command = this.store.reserveCommand({
-      idempotencyKey: normalized.idempotencyKey,
-      workspaceId: normalized.workspaceId,
-      runId: normalized.runId,
-      ownerId: normalized.ownerId,
-      profileId: this.profileId,
-      leaseId: previous.leaseId,
-      pageId: previous.pageId,
-      toolName: 'browser_handoff',
-      action: 'handoff',
-      targetOrigin: previous.targetOrigin,
-      sanitizedArgs: {
-        reason: normalized.reason,
-        requestedOutcome: normalized.requestedOutcome,
-        onCancel: normalized.onCancel,
-        ...(normalized.agentVersionId ? { agentVersionId: normalized.agentVersionId } : {}),
-        ...(normalized.stepId ? { stepId: normalized.stepId } : {}),
-      },
-    });
+    const command = await this.profileGate.runExclusive(this.profileId, () =>
+      this.store.reserveCommand({
+        idempotencyKey: normalized.idempotencyKey,
+        workspaceId: normalized.workspaceId,
+        runId: normalized.runId,
+        ownerId: normalized.ownerId,
+        profileId: this.profileId,
+        leaseId: previous.leaseId,
+        pageId: previous.pageId,
+        toolName: 'browser_handoff',
+        action: 'handoff',
+        targetOrigin: previous.targetOrigin,
+        sanitizedArgs: {
+          reason: normalized.reason,
+          requestedOutcome: normalized.requestedOutcome,
+          onCancel: normalized.onCancel,
+          ...(normalized.agentVersionId ? { agentVersionId: normalized.agentVersionId } : {}),
+          ...(normalized.stepId ? { stepId: normalized.stepId } : {}),
+        },
+      }),
+    );
 
     if (command.state === 'completed') {
       return {
@@ -532,6 +546,14 @@ export class RuntimeBrowserController {
     return this.store.listWaitingHandoffs(input).map(handoffSummary);
   }
 
+  /**
+   * Cold-start recovery expires the whole Run before any continuation can be resumed.
+   * Browser commands remain durable audit records, but must no longer keep their Profile busy.
+   */
+  expireRunCommands(runId: string, now?: string): number {
+    return this.store.failActiveCommandsForRun(runId, 'browser.command-recovery-expired', now);
+  }
+
   inspectHandoff(handoffId: string): RuntimeBrowserHandoffContext {
     const command = this.getHandoffCommand(handoffId);
     const args = handoffArgs(command);
@@ -540,6 +562,9 @@ export class RuntimeBrowserController {
       revision: 1,
       workspaceId: command.workspaceId,
       runId: command.runId,
+      profileId: command.profileId,
+      siteOrigin: command.targetOrigin,
+      reason: args.reason,
       ...(args.stepId ? { stepId: args.stepId } : {}),
       ...(args.agentVersionId ? { agentVersionId: args.agentVersionId } : {}),
       state: command.state,

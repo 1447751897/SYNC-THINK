@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { verifyClientHello, computeHmac, type Hello } from './handshake.js';
-import { PROTOCOL_VERSION } from './version.js';
+import { DEFAULT_FEATURES, PROTOCOL_VERSION } from './version.js';
 
 describe('client hello verification', () => {
   const base: Hello = {
@@ -13,6 +13,10 @@ describe('client hello verification', () => {
 
   it('uses protocol version 2 for paged event replay', () => {
     expect(PROTOCOL_VERSION).toBe(2);
+  });
+
+  it('advertises the durable Browser recording command family', () => {
+    expect(DEFAULT_FEATURES).toContain('browser.recording');
   });
 
   it('agrees feature intersection on valid hello', () => {

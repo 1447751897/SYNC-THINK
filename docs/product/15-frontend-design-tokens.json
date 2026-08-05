@@ -123,6 +123,14 @@
     "request-detail-toggle-size": "24px",
     "token-breakdown-columns": 2
   },
+  "browser-automation": {
+    "profile-rail-width": "280px",
+    "toolbar-height": "48px",
+    "site-row-min-height": "62px",
+    "row-action-size": "28px",
+    "status-dot-size": "7px",
+    "dialog-max-width": "460px"
+  },
   "layout": {
     "left-nav-width": "236px",
     "right-trace-width": "274px",

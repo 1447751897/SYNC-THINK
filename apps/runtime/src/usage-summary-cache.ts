@@ -14,7 +14,7 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 import { openDatabaseAsync, type BetterSQLite3Raw } from '@sync-think/storage';
 import type { ProviderUsagePurpose } from '@sync-think/shared';
 
-export const USAGE_SUMMARY_CACHE_VERSION = 1 as const;
+export const USAGE_SUMMARY_CACHE_VERSION = 2 as const;
 
 export interface UsageSummaryRawResult {
   rows: Array<{
@@ -230,7 +230,9 @@ function projectUsageFact(row: EventScanRow): UsageEventFact | undefined {
     rowid: row.event_rowid,
     eventId: row.id,
     occurredAt: row.occurred_at,
-    requestId: String(payload.requestId ?? payload.packetId ?? row.id),
+    // A packet spans the whole tool loop, not one provider request. Legacy rows
+    // without requestId must remain distinct instead of being merged by packetId.
+    requestId: String(payload.requestId ?? row.id),
     taskId: row.task_id ?? undefined,
     runId: row.run_id ?? undefined,
     stepId: row.step_id ?? undefined,
@@ -630,8 +632,8 @@ export function summarizeUsageSnapshot(
       failedRequests: 0,
       tokensIn: 0,
       tokensOut: 0,
-      cachedTokensHit: 0,
-      cachedTokensCreated: 0,
+      cachedTokensHit: undefined,
+      cachedTokensCreated: undefined,
       reasoningTokens: 0,
       totalTokens: 0,
       latencyTotalMs: 0,
@@ -643,9 +645,13 @@ export function summarizeUsageSnapshot(
     if (request.status === 'failed') current.failedRequests += 1;
     current.tokensIn += request.tokensIn;
     current.tokensOut += request.tokensOut;
-    current.cachedTokensHit = (current.cachedTokensHit ?? 0) + (request.cachedTokensHit ?? 0);
-    current.cachedTokensCreated =
-      (current.cachedTokensCreated ?? 0) + (request.cachedTokensCreated ?? 0);
+    if (request.cachedTokensHit !== undefined) {
+      current.cachedTokensHit = (current.cachedTokensHit ?? 0) + request.cachedTokensHit;
+    }
+    if (request.cachedTokensCreated !== undefined) {
+      current.cachedTokensCreated =
+        (current.cachedTokensCreated ?? 0) + request.cachedTokensCreated;
+    }
     current.reasoningTokens += request.reasoningTokens ?? 0;
     current.totalTokens += request.totalTokens;
     if (typeof request.latencyMs === 'number') {

@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
-import { createServer } from 'node:net';
+import { createServer, isIP } from 'node:net';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
@@ -11,9 +11,21 @@ import {
   type Browser,
   type BrowserContext,
   type CDPSession,
+  type Cookie,
+  type Frame,
   type Page,
   type Route,
 } from 'playwright-core';
+import { getDomain } from 'tldts';
+import {
+  BROWSER_RECORDING_MAX_LOCATOR_CHARS,
+  BROWSER_RECORDING_MAX_STEP_BYTES,
+  BROWSER_RECORDING_MAX_STEPS,
+  BROWSER_RECORDING_MAX_TEXT_CHARS,
+  BROWSER_RECORDING_MAX_URL_CHARS,
+  type BrowserRecordingLocator,
+  type BrowserRecordingStepInput,
+} from '@sync-think/shared';
 import { DEFAULT_MAX_OUTPUT_BYTES } from '../process-runner.js';
 import { isPathInside, type WorkerJobOutput } from '../types.js';
 
@@ -37,10 +49,21 @@ export type BrowserAction =
       url: string;
       waitUntil?: 'commit' | 'domcontentloaded' | 'load' | 'networkidle';
     }
-  | { kind: 'click'; selector?: string; x?: number; y?: number; button?: 'left' | 'right' | 'middle' }
+  | {
+      kind: 'click';
+      selector?: string;
+      x?: number;
+      y?: number;
+      button?: 'left' | 'right' | 'middle';
+    }
   | { kind: 'fill'; selector: string; text: string }
   | { kind: 'read' | 'extract'; selector?: string; maxChars?: number }
-  | { kind: 'wait'; selector?: string; durationMs?: number; state?: 'attached' | 'detached' | 'visible' | 'hidden' }
+  | {
+      kind: 'wait';
+      selector?: string;
+      durationMs?: number;
+      state?: 'attached' | 'detached' | 'visible' | 'hidden';
+    }
   | { kind: 'screenshot'; fileName?: string; fullPage?: boolean };
 
 export interface BrowserReadLink {
@@ -68,12 +91,48 @@ export interface BrowserPageExecutionResult {
   embedUrl?: string;
 }
 
+export interface BrowserProfileSiteData {
+  siteKey: string;
+  origins: string[];
+  cookieCount: number;
+  storageBytes: number;
+  storageTypes: string[];
+}
+
+export interface BrowserProfileSiteDataSnapshot {
+  profileId: string;
+  checkedAt: string;
+  sites: BrowserProfileSiteData[];
+}
+
+export interface BrowserProfileSiteClearResult {
+  profileId: string;
+  siteKey: string;
+  clearedOrigins: string[];
+  deletedCookieCount: number;
+  checkedAt: string;
+}
+
 export interface BrowserPageExecutionOptions {
   allowedOrigins: ReadonlySet<string>;
   timeoutMs: number;
   maxOutputBytes: number;
   projectRoot?: string;
   signal?: AbortSignal;
+}
+
+export type BrowserRecordingMutation = {
+  type: 'append' | 'replace-last';
+  step: BrowserRecordingStepInput;
+};
+
+export type BrowserRecordingTerminationReason =
+  'page_closed' | 'browser_closed' | 'step_limit' | 'capture_failed';
+
+export interface BrowserPageRecordingOptions {
+  maxSteps: number;
+  onMutation(mutation: BrowserRecordingMutation): void | Promise<void>;
+  onTerminated(reason: BrowserRecordingTerminationReason): void | Promise<void>;
 }
 
 export interface BrowserDriverPage {
@@ -83,6 +142,9 @@ export interface BrowserDriverPage {
     action: BrowserAction,
     options: BrowserPageExecutionOptions,
   ): Promise<BrowserPageExecutionResult>;
+  startRecording?(options: BrowserPageRecordingOptions): Promise<void>;
+  stopRecording?(): Promise<void>;
+  onClosed?(listener: () => void): () => void;
   close(): Promise<void>;
 }
 
@@ -94,6 +156,11 @@ export interface BrowserDriverSession {
   isConnected(): boolean;
   newPage(): Promise<BrowserDriverPage>;
   findPage?(pageId: string): Promise<BrowserDriverPage | undefined>;
+  listSiteData?(knownOrigins?: readonly string[]): Promise<BrowserProfileSiteDataSnapshot>;
+  clearSiteData?(
+    siteKey: string,
+    knownOrigins?: readonly string[],
+  ): Promise<BrowserProfileSiteClearResult>;
   close(options?: { preserve?: boolean }): Promise<void>;
 }
 
@@ -118,9 +185,7 @@ export interface BrowserLeaseInfo {
 }
 
 export interface BrowserCommandResult
-  extends WorkerJobOutput,
-    BrowserPageExecutionResult,
-    BrowserLeaseInfo {
+  extends WorkerJobOutput, BrowserPageExecutionResult, BrowserLeaseInfo {
   ok: true;
   message: string;
 }
@@ -136,11 +201,35 @@ export interface BrowserHostExecuteInput {
 }
 
 export interface BrowserHostLike {
-  acquireLease(input: { profileId: string; ownerId: string }): Promise<BrowserLeaseInfo>;
+  acquireLease(input: {
+    profileId: string;
+    ownerId: string;
+    mode?: 'command' | 'recording';
+  }): Promise<BrowserLeaseInfo>;
   inspectLease(leaseId: string): Promise<BrowserLeaseInfo>;
   recoverLease?(input: BrowserLeaseInfo): Promise<BrowserLeaseInfo>;
   execute(input: BrowserHostExecuteInput): Promise<BrowserCommandResult>;
+  startRecording?(input: {
+    leaseId: string;
+    startUrl?: string;
+    maxSteps: number;
+    onMutation(mutation: BrowserRecordingMutation): void | Promise<void>;
+    onTerminated(reason: BrowserRecordingTerminationReason): void | Promise<void>;
+  }): Promise<void>;
+  stopRecording?(leaseId: string): Promise<void>;
   releaseLease(leaseId: string, options?: { closePage?: boolean }): Promise<void>;
+  listProfileSiteData?(input: {
+    profileId: string;
+    knownOrigins?: readonly string[];
+  }): Promise<BrowserProfileSiteDataSnapshot>;
+  clearProfileSiteData?(input: {
+    profileId: string;
+    siteKey: string;
+    knownOrigins?: readonly string[];
+  }): Promise<BrowserProfileSiteClearResult>;
+  deleteProfileData?(profileId: string): Promise<void>;
+  closeProfileSession?(profileId: string): Promise<void>;
+  hasActiveProfileLeases?(profileId: string): boolean;
   shutdown(options?: { preserveSessions?: boolean }): Promise<void>;
 }
 
@@ -176,6 +265,8 @@ interface ManagedSession {
 interface ManagedLease extends BrowserLeaseInfo {
   page: BrowserDriverPage;
   tail: Promise<void>;
+  mode: 'command' | 'recording';
+  removeCloseListener?: () => void;
 }
 
 export class BrowserHost implements BrowserHostLike {
@@ -186,7 +277,14 @@ export class BrowserHost implements BrowserHostLike {
   private readonly leases = new Map<string, ManagedLease>();
   private readonly ownerLeases = new Map<string, Promise<ManagedLease>>();
   private readonly recoveringLeases = new Map<string, Promise<ManagedLease>>();
+  private readonly leaseReleases = new Map<string, { profileId: string; pending: Promise<void> }>();
+  private readonly recordingClaims = new Map<string, string | symbol>();
+  private readonly recordingTerminations = new Map<
+    string,
+    (reason: BrowserRecordingTerminationReason) => void | Promise<void>
+  >();
   private shuttingDown = false;
+  private readonly profileMaintenance = new Map<string, Promise<void>>();
 
   constructor(options: BrowserHostOptions) {
     this.profileRoot = resolve(options.profileRoot);
@@ -200,17 +298,55 @@ export class BrowserHost implements BrowserHostLike {
         }));
   }
 
-  async acquireLease(input: { profileId: string; ownerId: string }): Promise<BrowserLeaseInfo> {
+  async acquireLease(input: {
+    profileId: string;
+    ownerId: string;
+    mode?: 'command' | 'recording';
+  }): Promise<BrowserLeaseInfo> {
     const profileId = normalizeIdentifier(input.profileId, 'profileId');
     const ownerId = normalizeOwnerId(input.ownerId);
+    const mode = input.mode ?? 'command';
     const ownerKey = `${profileId}\0${ownerId}`;
+    let recordingReservation: symbol | undefined;
 
     while (true) {
+      const maintenance = this.profileMaintenance.get(profileId);
+      if (maintenance) {
+        await maintenance.catch(() => undefined);
+        continue;
+      }
       if (this.shuttingDown) {
         throw new BrowserHostError('browser.host-shutting-down', 'Browser Host is shutting down');
       }
+      if (mode === 'recording') {
+        if (this.recordingClaims.has(profileId) || this.hasActiveProfileLeases(profileId)) {
+          throw new BrowserHostError(
+            'browser.profile-in-use',
+            'Browser Profile is already in use',
+            'acceptance',
+          );
+        }
+        recordingReservation = Symbol(profileId);
+        this.recordingClaims.set(profileId, recordingReservation);
+      } else if (this.recordingClaims.has(profileId)) {
+        throw new BrowserHostError(
+          'browser.profile-in-use',
+          'Browser Profile is reserved by an active recording',
+          'acceptance',
+        );
+      }
       const existingPromise = this.ownerLeases.get(ownerKey);
       if (existingPromise) {
+        if (mode === 'recording') {
+          if (this.recordingClaims.get(profileId) === recordingReservation) {
+            this.recordingClaims.delete(profileId);
+          }
+          throw new BrowserHostError(
+            'browser.profile-in-use',
+            'Browser recording requires an unused Profile',
+            'acceptance',
+          );
+        }
         let existing: ManagedLease;
         try {
           existing = await existingPromise;
@@ -229,12 +365,27 @@ export class BrowserHost implements BrowserHostLike {
         continue;
       }
 
-      const pending = this.createLease(profileId, ownerId);
+      const pending = this.createLease(profileId, ownerId, mode);
       this.ownerLeases.set(ownerKey, pending);
       try {
-        return leaseInfo(await pending);
+        const lease = await pending;
+        if (mode === 'recording') {
+          if (this.recordingClaims.get(profileId) !== recordingReservation) {
+            await lease.page.close().catch(() => undefined);
+            throw new BrowserHostError(
+              'browser.recording-claim-lost',
+              'Browser recording Profile claim was lost',
+              'crashed',
+            );
+          }
+          this.recordingClaims.set(profileId, lease.leaseId);
+        }
+        return leaseInfo(lease);
       } catch (error) {
         if (this.ownerLeases.get(ownerKey) === pending) this.ownerLeases.delete(ownerKey);
+        if (mode === 'recording' && this.recordingClaims.get(profileId) === recordingReservation) {
+          this.recordingClaims.delete(profileId);
+        }
         throw error;
       }
     }
@@ -278,7 +429,9 @@ export class BrowserHost implements BrowserHostLike {
       throw new BrowserHostError('browser.host-shutting-down', 'Browser Host is shutting down');
     }
 
-    const pending = this.recoverLeaseInternal(expected);
+    const pending = this.withProfileMaintenance(expected.profileId, () =>
+      this.recoverLeaseInternal(expected),
+    );
     this.recoveringLeases.set(expected.leaseId, pending);
     try {
       return leaseInfo(await pending);
@@ -323,11 +476,7 @@ export class BrowserHost implements BrowserHostLike {
         const result = await executePageWithDeadline(lease.page, input.action, {
           allowedOrigins,
           timeoutMs: clamp(input.timeoutMs, 1, 10 * 60_000),
-          maxOutputBytes: clamp(
-            input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
-            1,
-            1024 * 1024,
-          ),
+          maxOutputBytes: clamp(input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 1, 1024 * 1024),
           projectRoot: input.projectRoot,
           signal: input.signal,
         });
@@ -349,23 +498,314 @@ export class BrowserHost implements BrowserHostLike {
     return command;
   }
 
-  async releaseLease(leaseId: string, options?: { closePage?: boolean }): Promise<void> {
+  async startRecording(input: {
+    leaseId: string;
+    startUrl?: string;
+    maxSteps: number;
+    onMutation(mutation: BrowserRecordingMutation): void | Promise<void>;
+    onTerminated(reason: BrowserRecordingTerminationReason): void | Promise<void>;
+  }): Promise<void> {
+    const lease = this.leases.get(input.leaseId);
+    if (!lease || lease.page.isClosed()) {
+      throw new BrowserHostError(
+        'browser.lease-not-found',
+        'Browser recording Page lease is missing or closed',
+        'crashed',
+      );
+    }
+    if (lease.mode !== 'recording' || this.recordingClaims.get(lease.profileId) !== lease.leaseId) {
+      throw new BrowserHostError(
+        'browser.recording-lease-required',
+        'Browser recording requires an exclusive recording lease',
+        'acceptance',
+      );
+    }
+    if (!lease.page.startRecording || !lease.page.stopRecording) {
+      throw new BrowserHostError(
+        'browser.recording-unsupported',
+        'Browser driver does not support semantic recording',
+        'acceptance',
+      );
+    }
+    if (
+      !Number.isSafeInteger(input.maxSteps) ||
+      input.maxSteps < 1 ||
+      input.maxSteps > BROWSER_RECORDING_MAX_STEPS
+    ) {
+      throw new BrowserHostError(
+        'browser.recording-step-limit-invalid',
+        'Browser recording step limit is invalid',
+        'acceptance',
+      );
+    }
+    if (this.recordingTerminations.has(lease.leaseId)) {
+      throw new BrowserHostError(
+        'browser.recording-already-started',
+        'Browser recording is already active on this Page',
+        'acceptance',
+      );
+    }
+    const startUrl = input.startUrl ? sanitizeBrowserRecordingUrl(input.startUrl) : undefined;
+    const terminate = async (reason: BrowserRecordingTerminationReason) => {
+      if (this.recordingTerminations.get(lease.leaseId) !== terminate) return;
+      this.recordingTerminations.delete(lease.leaseId);
+      await input.onTerminated(reason);
+    };
+    this.recordingTerminations.set(lease.leaseId, terminate);
+    const start = lease.tail.then(async () => {
+      try {
+        await lease.page.startRecording!({
+          maxSteps: input.maxSteps,
+          onMutation: async (mutation) => {
+            if (this.recordingTerminations.get(lease.leaseId) !== terminate) return;
+            await input.onMutation(normalizeBrowserRecordingMutation(mutation));
+          },
+          onTerminated: terminate,
+        });
+        if (startUrl) {
+          await executePageWithDeadline(
+            lease.page,
+            { kind: 'navigate', url: startUrl },
+            {
+              allowedOrigins: new Set([new URL(startUrl).origin.toLowerCase()]),
+              timeoutMs: 30_000,
+              maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES,
+            },
+          );
+        }
+      } catch (error) {
+        this.recordingTerminations.delete(lease.leaseId);
+        await lease.page.stopRecording?.().catch(() => undefined);
+        throw normalizeBrowserError(error);
+      }
+    });
+    lease.tail = start.then(
+      () => undefined,
+      () => undefined,
+    );
+    await start;
+  }
+
+  async stopRecording(leaseId: string): Promise<void> {
     const lease = this.leases.get(leaseId);
     if (!lease) return;
-    this.leases.delete(leaseId);
-    const ownerKey = `${lease.profileId}\0${lease.ownerId}`;
-    const ownerPromise = this.ownerLeases.get(ownerKey);
-    if (
-      ownerPromise &&
-      (await ownerPromise.catch(() => undefined))?.leaseId === leaseId &&
-      this.ownerLeases.get(ownerKey) === ownerPromise
-    ) {
-      this.ownerLeases.delete(ownerKey);
+    if (lease.mode !== 'recording') {
+      throw new BrowserHostError(
+        'browser.recording-lease-required',
+        'The Page lease is not owned by a recording',
+        'acceptance',
+      );
     }
-    const session = await this.sessions.get(lease.profileId)?.catch(() => undefined);
-    session?.leases.delete(leaseId);
-    await lease.tail;
-    if (options?.closePage !== false && !lease.page.isClosed()) await lease.page.close();
+    const stop = lease.tail.then(async () => {
+      await lease.page.stopRecording?.();
+      this.recordingTerminations.delete(leaseId);
+    });
+    lease.tail = stop.then(
+      () => undefined,
+      () => undefined,
+    );
+    await stop;
+  }
+
+  async releaseLease(leaseId: string, options?: { closePage?: boolean }): Promise<void> {
+    const existingRelease = this.leaseReleases.get(leaseId);
+    if (existingRelease) {
+      await existingRelease.pending;
+      return;
+    }
+    const lease = this.leases.get(leaseId);
+    if (!lease) return;
+    const pending = (async () => {
+      this.recordingTerminations.delete(leaseId);
+      lease.removeCloseListener?.();
+      lease.removeCloseListener = undefined;
+      this.leases.delete(leaseId);
+      const ownerKey = `${lease.profileId}\0${lease.ownerId}`;
+      const ownerPromise = this.ownerLeases.get(ownerKey);
+      if (
+        ownerPromise &&
+        (await ownerPromise.catch(() => undefined))?.leaseId === leaseId &&
+        this.ownerLeases.get(ownerKey) === ownerPromise
+      ) {
+        this.ownerLeases.delete(ownerKey);
+      }
+      const session = await this.sessions.get(lease.profileId)?.catch(() => undefined);
+      session?.leases.delete(leaseId);
+      if (this.recordingClaims.get(lease.profileId) === leaseId) {
+        this.recordingClaims.delete(lease.profileId);
+      }
+      await lease.tail;
+      if (options?.closePage !== false && !lease.page.isClosed()) await lease.page.close();
+    })();
+    this.leaseReleases.set(leaseId, { profileId: lease.profileId, pending });
+    try {
+      await pending;
+    } finally {
+      if (this.leaseReleases.get(leaseId)?.pending === pending) {
+        this.leaseReleases.delete(leaseId);
+      }
+    }
+  }
+
+  hasActiveProfileLeases(profileId: string): boolean {
+    const normalized = normalizeIdentifier(profileId, 'profileId');
+    for (const lease of this.leases.values()) {
+      if (lease.profileId === normalized && !lease.page.isClosed()) return true;
+    }
+    for (const key of this.ownerLeases.keys()) {
+      if (key.startsWith(`${normalized}\0`)) return true;
+    }
+    for (const release of this.leaseReleases.values()) {
+      if (release.profileId === normalized) return true;
+    }
+    return false;
+  }
+
+  async listProfileSiteData(input: {
+    profileId: string;
+    knownOrigins?: readonly string[];
+  }): Promise<BrowserProfileSiteDataSnapshot> {
+    const profileId = normalizeIdentifier(input.profileId, 'profileId');
+    const knownOrigins = normalizeKnownOrigins(input.knownOrigins);
+    return this.withProfileMaintenance(profileId, async () => {
+      if (this.hasActiveProfileLeases(profileId)) {
+        throw new BrowserHostError(
+          'browser.profile-in-use',
+          'Browser Profile has an active Page lease',
+          'acceptance',
+        );
+      }
+      const session = await this.getSession(profileId);
+      if (!session.driver.listSiteData) {
+        throw new BrowserHostError(
+          'browser.profile-site-data-unsupported',
+          'Browser driver does not support Profile site-data inspection',
+        );
+      }
+      const snapshot = await session.driver.listSiteData(knownOrigins);
+      return { ...snapshot, profileId };
+    });
+  }
+
+  async clearProfileSiteData(input: {
+    profileId: string;
+    siteKey: string;
+    knownOrigins?: readonly string[];
+  }): Promise<BrowserProfileSiteClearResult> {
+    const profileId = normalizeIdentifier(input.profileId, 'profileId');
+    const siteKey = resolveBrowserSiteKey(input.siteKey);
+    const knownOrigins = normalizeKnownOrigins(input.knownOrigins);
+    return this.withProfileMaintenance(profileId, async () => {
+      if (this.hasActiveProfileLeases(profileId)) {
+        throw new BrowserHostError(
+          'browser.profile-in-use',
+          'Browser Profile has an active Page lease',
+          'acceptance',
+        );
+      }
+      const session = await this.getSession(profileId);
+      if (session.leases.size > 0 || this.hasActiveProfileLeases(profileId)) {
+        throw new BrowserHostError(
+          'browser.profile-in-use',
+          'Browser Profile has an active Page lease',
+          'acceptance',
+        );
+      }
+      if (!session.driver.clearSiteData) {
+        throw new BrowserHostError(
+          'browser.profile-site-clear-unsupported',
+          'Browser driver does not support Profile site-data clearing',
+        );
+      }
+      return session.driver.clearSiteData(siteKey, knownOrigins);
+    });
+  }
+
+  async deleteProfileData(profileIdInput: string): Promise<void> {
+    const profileId = normalizeIdentifier(profileIdInput, 'profileId');
+    if (profileId === 'default') {
+      throw new BrowserHostError(
+        'browser.default-profile-immutable',
+        'The default Browser Profile cannot be deleted',
+        'acceptance',
+      );
+    }
+    await this.withProfileMaintenance(profileId, async () => {
+      if (this.hasActiveProfileLeases(profileId)) {
+        throw new BrowserHostError(
+          'browser.profile-in-use',
+          'Browser Profile has an active Page lease',
+          'acceptance',
+        );
+      }
+      let session = await this.sessions.get(profileId)?.catch(() => undefined);
+      if (!session) {
+        try {
+          session = await this.getSession(profileId, { recoverOnly: true });
+        } catch (error) {
+          if (!(error instanceof BrowserHostError) || error.code !== 'browser.session-not-found') {
+            throw error;
+          }
+        }
+      }
+      if (session?.leases.size) {
+        throw new BrowserHostError(
+          'browser.profile-in-use',
+          'Browser Profile has an active Page lease',
+          'acceptance',
+        );
+      }
+      if (session) {
+        await session.driver.close();
+        this.sessions.delete(profileId);
+      }
+      const profileDirectory = resolveBrowserProfileDirectory(this.profileRoot, profileId);
+      const existingProfile = await lstat(profileDirectory).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (!existingProfile) return;
+      await ensureSafeBrowserProfileDirectory(this.profileRoot, profileId);
+      const [realRoot, realProfile] = await Promise.all([
+        realpath(this.profileRoot),
+        realpath(profileDirectory),
+      ]);
+      if (!isPathInside(realProfile, realRoot)) {
+        throw new BrowserHostError(
+          'browser.profile-path-invalid',
+          'Browser Profile directory escaped its configured root',
+          'permission',
+        );
+      }
+      await rm(realProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    });
+  }
+
+  async closeProfileSession(profileIdInput: string): Promise<void> {
+    const profileId = normalizeIdentifier(profileIdInput, 'profileId');
+    await this.withProfileMaintenance(profileId, async () => {
+      if (this.hasActiveProfileLeases(profileId)) {
+        throw new BrowserHostError(
+          'browser.profile-in-use',
+          'Browser Profile has an active Page lease',
+          'acceptance',
+        );
+      }
+      let session = await this.sessions.get(profileId)?.catch(() => undefined);
+      if (!session) {
+        try {
+          session = await this.getSession(profileId, { recoverOnly: true });
+        } catch (error) {
+          if (error instanceof BrowserHostError && error.code === 'browser.session-not-found') {
+            return;
+          }
+          throw error;
+        }
+      }
+      await session.driver.close();
+      this.sessions.delete(profileId);
+      this.recordingClaims.delete(profileId);
+    });
   }
 
   async shutdown(options: { preserveSessions?: boolean } = {}): Promise<void> {
@@ -374,6 +814,7 @@ export class BrowserHost implements BrowserHostLike {
     await Promise.allSettled([
       ...this.ownerLeases.values(),
       ...this.recoveringLeases.values(),
+      ...[...this.leaseReleases.values()].map((release) => release.pending),
     ]);
     const preserveSessions = options.preserveSessions === true;
     if (preserveSessions) {
@@ -387,6 +828,8 @@ export class BrowserHost implements BrowserHostLike {
     this.sessions.clear();
     this.ownerLeases.clear();
     this.recoveringLeases.clear();
+    this.recordingClaims.clear();
+    this.recordingTerminations.clear();
     await Promise.allSettled(
       sessions.map(async (sessionPromise) =>
         (await sessionPromise).driver.close({ preserve: preserveSessions }),
@@ -435,14 +878,33 @@ export class BrowserHost implements BrowserHostLike {
     if (this.shuttingDown) {
       throw new BrowserHostError('browser.host-shutting-down', 'Browser Host is shutting down');
     }
-    const lease: ManagedLease = { ...expected, page, tail: Promise.resolve() };
+    const mode = expected.ownerId.startsWith('recording:') ? 'recording' : 'command';
+    if (mode === 'recording') {
+      const existingClaim = this.recordingClaims.get(expected.profileId);
+      if (existingClaim && existingClaim !== expected.leaseId) {
+        throw new BrowserHostError(
+          'browser.profile-in-use',
+          'Browser Profile is reserved by another recording',
+          'acceptance',
+        );
+      }
+      this.recordingClaims.set(expected.profileId, expected.leaseId);
+    }
+    const lease: ManagedLease = { ...expected, page, tail: Promise.resolve(), mode };
+    lease.removeCloseListener = page.onClosed?.(() => {
+      void this.handleLeasePageClosed(lease);
+    });
     session.leases.add(lease.leaseId);
     this.leases.set(lease.leaseId, lease);
     this.ownerLeases.set(ownerKey, Promise.resolve(lease));
     return lease;
   }
 
-  private async createLease(profileId: string, ownerId: string): Promise<ManagedLease> {
+  private async createLease(
+    profileId: string,
+    ownerId: string,
+    mode: 'command' | 'recording',
+  ): Promise<ManagedLease> {
     const session = await this.getSession(profileId);
     const page = await session.driver.newPage();
     if (this.shuttingDown) {
@@ -456,10 +918,34 @@ export class BrowserHost implements BrowserHostLike {
       ownerId,
       page,
       tail: Promise.resolve(),
+      mode,
     };
+    lease.removeCloseListener = page.onClosed?.(() => {
+      void this.handleLeasePageClosed(lease);
+    });
     session.leases.add(lease.leaseId);
     this.leases.set(lease.leaseId, lease);
     return lease;
+  }
+
+  private async handleLeasePageClosed(lease: ManagedLease): Promise<void> {
+    if (this.leases.get(lease.leaseId) !== lease) return;
+    this.leases.delete(lease.leaseId);
+    const session = await this.sessions.get(lease.profileId)?.catch(() => undefined);
+    session?.leases.delete(lease.leaseId);
+    const ownerKey = `${lease.profileId}\0${lease.ownerId}`;
+    const ownerPromise = this.ownerLeases.get(ownerKey);
+    if (ownerPromise && (await ownerPromise.catch(() => undefined)) === lease) {
+      if (this.ownerLeases.get(ownerKey) === ownerPromise) this.ownerLeases.delete(ownerKey);
+    }
+    if (this.recordingClaims.get(lease.profileId) === lease.leaseId) {
+      this.recordingClaims.delete(lease.profileId);
+    }
+    const onTerminated = this.recordingTerminations.get(lease.leaseId);
+    lease.removeCloseListener?.();
+    lease.removeCloseListener = undefined;
+    if (onTerminated) await onTerminated('page_closed');
+    else this.recordingTerminations.delete(lease.leaseId);
   }
 
   private async getSession(
@@ -498,6 +984,227 @@ export class BrowserHost implements BrowserHostLike {
       throw normalizeBrowserError(error);
     }
   }
+
+  private async withProfileMaintenance<T>(
+    profileId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.profileMaintenance.get(profileId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const marker = previous.catch(() => undefined).then(() => gate);
+    this.profileMaintenance.set(profileId, marker);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.profileMaintenance.get(profileId) === marker)
+        this.profileMaintenance.delete(profileId);
+    }
+  }
+}
+
+export function sanitizeBrowserRecordingUrl(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(String(value ?? '').trim());
+  } catch {
+    throw new BrowserHostError(
+      'browser.recording-url-invalid',
+      'Browser recording URL is invalid',
+      'acceptance',
+    );
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new BrowserHostError(
+      'browser.recording-url-invalid',
+      'Browser recording URL must use HTTP or HTTPS',
+      'acceptance',
+    );
+  }
+  parsed.username = '';
+  parsed.password = '';
+  parsed.search = '';
+  parsed.hash = '';
+  const sanitized = parsed.toString();
+  if (sanitized.length > BROWSER_RECORDING_MAX_URL_CHARS) {
+    throw new BrowserHostError(
+      'browser.recording-url-too-long',
+      'Browser recording URL exceeds the configured limit',
+      'acceptance',
+    );
+  }
+  return sanitized;
+}
+
+function normalizeBrowserRecordingMutation(
+  mutation: BrowserRecordingMutation,
+): BrowserRecordingMutation {
+  if (mutation.type !== 'append' && mutation.type !== 'replace-last') {
+    throw new BrowserHostError(
+      'browser.recording-event-invalid',
+      'Browser recording event type is invalid',
+      'acceptance',
+    );
+  }
+  const step = normalizeBrowserRecordingStep(mutation.step);
+  if (Buffer.byteLength(JSON.stringify(step), 'utf8') > BROWSER_RECORDING_MAX_STEP_BYTES) {
+    throw new BrowserHostError(
+      'browser.recording-event-too-large',
+      'Browser recording event exceeds the configured limit',
+      'acceptance',
+    );
+  }
+  return { type: mutation.type, step };
+}
+
+function normalizeBrowserRecordingStep(step: BrowserRecordingStepInput): BrowserRecordingStepInput {
+  switch (step.kind) {
+    case 'navigate':
+      return { kind: 'navigate', url: sanitizeBrowserRecordingUrl(step.url) };
+    case 'click':
+      return {
+        kind: 'click',
+        locator: normalizeBrowserRecordingLocator(step.locator),
+        ...(step.resultUrl ? { resultUrl: sanitizeBrowserRecordingUrl(step.resultUrl) } : {}),
+      };
+    case 'fill':
+    case 'select':
+      return {
+        kind: step.kind,
+        locator: normalizeBrowserRecordingLocator(step.locator),
+        value:
+          step.value.kind === 'secret'
+            ? { kind: 'secret' }
+            : { kind: 'literal', value: normalizeBrowserRecordingText(step.value.value) },
+      };
+    case 'check':
+      return {
+        kind: 'check',
+        locator: normalizeBrowserRecordingLocator(step.locator),
+        checked: step.checked === true,
+      };
+    case 'press':
+      if (step.key !== 'Enter') {
+        throw new BrowserHostError(
+          'browser.recording-event-invalid',
+          'Browser recording key is unsupported',
+          'acceptance',
+        );
+      }
+      return {
+        kind: 'press',
+        locator: normalizeBrowserRecordingLocator(step.locator),
+        key: 'Enter',
+        ...(step.resultUrl ? { resultUrl: sanitizeBrowserRecordingUrl(step.resultUrl) } : {}),
+      };
+  }
+}
+
+function normalizeBrowserRecordingLocator(
+  locator: BrowserRecordingLocator,
+): BrowserRecordingLocator {
+  if (locator.strategy === 'role') {
+    const role = normalizeBrowserRecordingLocatorText(locator.role);
+    if (!/^[a-z][a-z0-9-]{0,63}$/u.test(role)) {
+      throw new BrowserHostError(
+        'browser.recording-locator-invalid',
+        'Browser recording role locator is invalid',
+        'acceptance',
+      );
+    }
+    return {
+      strategy: 'role',
+      role,
+      ...(locator.name ? { name: normalizeBrowserRecordingLocatorText(locator.name) } : {}),
+    };
+  }
+  if (!['test-id', 'label', 'placeholder', 'id', 'name', 'css'].includes(locator.strategy)) {
+    throw new BrowserHostError(
+      'browser.recording-locator-invalid',
+      'Browser recording locator strategy is invalid',
+      'acceptance',
+    );
+  }
+  return {
+    strategy: locator.strategy,
+    value: normalizeBrowserRecordingLocatorText(locator.value),
+  };
+}
+
+function normalizeBrowserRecordingLocatorText(value: string): string {
+  const normalized = String(value ?? '').trim();
+  if (
+    !normalized ||
+    normalized.length > BROWSER_RECORDING_MAX_LOCATOR_CHARS ||
+    hasDisallowedAsciiControlCharacter(normalized)
+  ) {
+    throw new BrowserHostError(
+      'browser.recording-locator-invalid',
+      'Browser recording locator is invalid',
+      'acceptance',
+    );
+  }
+  return normalized;
+}
+
+function normalizeBrowserRecordingText(value: string): string {
+  const text = String(value ?? '');
+  if (
+    text.length > BROWSER_RECORDING_MAX_TEXT_CHARS ||
+    hasDisallowedAsciiControlCharacter(text, true)
+  ) {
+    throw new BrowserHostError(
+      'browser.recording-value-invalid',
+      'Browser recording input value is invalid',
+      'acceptance',
+    );
+  }
+  return text;
+}
+
+function hasDisallowedAsciiControlCharacter(value: string, allowTextWhitespace = false): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    if (code === 0x7f) return true;
+    if (code > 0x1f) return false;
+    return !allowTextWhitespace || (code !== 0x09 && code !== 0x0a && code !== 0x0d);
+  });
+}
+
+export function resolveBrowserSiteKey(value: string): string {
+  const raw = String(value ?? '')
+    .trim()
+    .replace(/^\.+/, '');
+  if (!raw) {
+    throw new BrowserHostError(
+      'browser.site-key-invalid',
+      'Browser site key is empty',
+      'acceptance',
+    );
+  }
+  let hostname: string;
+  try {
+    const bareHost = raw.replace(/^\[|\]$/gu, '');
+    if (isIP(bareHost) === 6) {
+      hostname = bareHost.toLowerCase();
+    } else {
+      const parsed = raw.includes('://') ? new URL(raw) : new URL(`https://${raw}`);
+      if (parsed.username || parsed.password) throw new Error('credentials are not allowed');
+      hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    }
+  } catch {
+    throw new BrowserHostError(
+      'browser.site-key-invalid',
+      'Browser site key is invalid',
+      'acceptance',
+    );
+  }
+  if (hostname === 'localhost' || isIP(hostname) !== 0) return hostname;
+  return getDomain(hostname, { allowPrivateDomains: true })?.toLowerCase() ?? hostname;
 }
 
 export function discoverSystemBrowser(
@@ -651,6 +1358,106 @@ export function normalizeAllowedOrigins(allowedSites: readonly string[]): Readon
     );
   }
   return origins;
+}
+
+const MAX_PROFILE_ORIGINS = 512;
+
+type ProfileSiteDataContext = Pick<
+  BrowserContext,
+  'cookies' | 'clearCookies' | 'pages' | 'newPage' | 'newCDPSession'
+>;
+
+/**
+ * Builds the bounded set of origins that may contain Profile site data.
+ *
+ * Chromium does not expose an origin inventory through the Cookie API. Known
+ * origins persisted by Runtime, currently open Page targets, and the exact
+ * domains represented by cookies are the deliberately bounded inventory we
+ * can query without exporting LocalStorage/IndexedDB values into memory.
+ */
+export function buildBrowserProfileOriginInventory(
+  knownOrigins: readonly string[] | undefined,
+  pageUrls: readonly string[],
+  cookies: readonly Pick<Cookie, 'domain' | 'secure'>[],
+): string[] {
+  const origins = new Set(normalizeKnownOrigins(knownOrigins));
+  for (const pageUrl of pageUrls) addBoundedProfileOrigin(origins, pageUrl);
+  for (const cookie of cookies) {
+    for (const origin of cookieDomainOrigins(cookie.domain, cookie.secure)) {
+      addBoundedProfileOrigin(origins, origin);
+    }
+  }
+  return [...origins].sort();
+}
+
+function addBoundedProfileOrigin(origins: Set<string>, value: string): void {
+  const origin = httpOrigin(value);
+  if (!origin || origins.has(origin)) return;
+  if (origins.size >= MAX_PROFILE_ORIGINS) {
+    throw new BrowserHostError(
+      'browser.profile-origins-too-many',
+      `Browser Profile origin inventory exceeds ${MAX_PROFILE_ORIGINS} entries`,
+      'acceptance',
+    );
+  }
+  origins.add(origin);
+}
+
+function cookieDomainOrigins(domainInput: string, secure: boolean): string[] {
+  const host = normalizeCookieDomain(domainInput);
+  if (!host) return [];
+  // A Secure cookie proves HTTPS. A non-Secure cookie may have been created
+  // on either scheme, so probe both without enumerating arbitrary origins.
+  const schemes = secure ? ['https:'] : ['http:', 'https:'];
+  const urlHost = isIP(host) === 6 ? `[${host}]` : host;
+  return schemes
+    .map((scheme) => httpOrigin(`${scheme}//${urlHost}`))
+    .filter((origin): origin is string => Boolean(origin));
+}
+
+function normalizeCookieDomain(value: unknown): string | undefined {
+  const host = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\.+/u, '')
+    .replace(/\.+$/u, '');
+  if (!host || host.length > 253 || host.includes('\0') || /\s/u.test(host)) return undefined;
+  if (isIP(host) === 0 && host.includes(':')) return undefined;
+  const urlHost = isIP(host) === 6 ? `[${host}]` : host;
+  try {
+    const parsed = new URL(`https://${urlHost}`);
+    if (parsed.username || parsed.password || parsed.port || parsed.pathname !== '/') {
+      return undefined;
+    }
+    const normalized = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+    return normalized || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeKnownOrigins(origins: readonly string[] | undefined): string[] {
+  if (!origins) return [];
+  if (origins.length > MAX_PROFILE_ORIGINS) {
+    throw new BrowserHostError(
+      'browser.profile-origins-too-many',
+      `Browser Profile origin inventory exceeds ${MAX_PROFILE_ORIGINS} entries`,
+      'acceptance',
+    );
+  }
+  const normalized = new Set<string>();
+  for (const value of origins) {
+    if (typeof value !== 'string' || value.length > 8_192 || value.includes('\0')) continue;
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        normalized.add(parsed.origin.toLowerCase());
+      }
+    } catch {
+      // Historical malformed origins are ignored rather than widening the clear scope.
+    }
+  }
+  return [...normalized].sort();
 }
 
 function leaseInfo(lease: ManagedLease): BrowserLeaseInfo {
@@ -850,7 +1657,9 @@ async function executePageWithDeadline(
     rejectCancellation?.(error);
   };
   const onAbort = () =>
-    interrupt(new BrowserHostError('browser.aborted', 'Browser action was cancelled', 'acceptance'));
+    interrupt(
+      new BrowserHostError('browser.aborted', 'Browser action was cancelled', 'acceptance'),
+    );
   options.signal?.addEventListener('abort', onAbort, { once: true });
   const timer = setTimeout(
     () =>
@@ -900,8 +1709,14 @@ function browserCandidates(
     add('chrome', env['ProgramFiles(x86)'], 'Google', 'Chrome', 'Application', 'chrome.exe');
   } else if (platform === 'darwin') {
     candidates.push(
-      { kind: 'edge', executablePath: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge' },
-      { kind: 'chrome', executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
+      {
+        kind: 'edge',
+        executablePath: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      },
+      {
+        kind: 'chrome',
+        executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      },
     );
   } else {
     candidates.push(
@@ -944,7 +1759,12 @@ async function launchPlaywrightCdpSession(
   const metadata = await readBrowserSessionMetadata(metadataPath, input.profileId);
   if (metadata) {
     try {
-      return await connectPlaywrightCdpSession(metadata, input.profileDirectory, metadataPath, input.connectTimeoutMs);
+      return await connectPlaywrightCdpSession(
+        metadata,
+        input.profileDirectory,
+        metadataPath,
+        input.connectTimeoutMs,
+      );
     } catch {
       await unlink(metadataPath).catch(() => undefined);
     }
@@ -994,6 +1814,7 @@ async function launchPlaywrightCdpSession(
     }
     const session = new PlaywrightCdpSession(
       installation,
+      input.profileId,
       input.profileDirectory,
       endpoint,
       metadataPath,
@@ -1023,7 +1844,9 @@ async function connectPlaywrightCdpSession(
   metadataPath: string,
   connectTimeoutMs: number,
 ): Promise<BrowserDriverSession> {
-  const browser = await chromium.connectOverCDP(metadata.cdpEndpoint, { timeout: connectTimeoutMs });
+  const browser = await chromium.connectOverCDP(metadata.cdpEndpoint, {
+    timeout: connectTimeoutMs,
+  });
   const context = browser.contexts()[0];
   if (!context) {
     throw new BrowserHostError(
@@ -1034,6 +1857,7 @@ async function connectPlaywrightCdpSession(
   }
   const session = new PlaywrightCdpSession(
     { kind: metadata.browserKind, executablePath: metadata.executablePath },
+    metadata.profileId,
     profileDirectory,
     metadata.cdpEndpoint,
     metadataPath,
@@ -1050,7 +1874,9 @@ async function readBrowserSessionMetadata(
   expectedProfileId: string,
 ): Promise<BrowserSessionMetadata | undefined> {
   try {
-    const parsed = JSON.parse(await readFile(metadataPath, 'utf8')) as Partial<BrowserSessionMetadata>;
+    const parsed = JSON.parse(
+      await readFile(metadataPath, 'utf8'),
+    ) as Partial<BrowserSessionMetadata>;
     if (
       parsed.version !== 1 ||
       parsed.profileId !== expectedProfileId ||
@@ -1101,6 +1927,180 @@ function isLoopbackCdpEndpoint(value: unknown): value is string {
   }
 }
 
+export async function withProfilePageCdpSession<T>(
+  context: Pick<BrowserContext, 'pages' | 'newPage' | 'newCDPSession'>,
+  operation: (session: CDPSession) => Promise<T>,
+): Promise<T> {
+  let page = context.pages().find((candidate) => !candidate.isClosed());
+  const temporaryPage = !page;
+  page ??= await context.newPage();
+  let session: CDPSession | undefined;
+  try {
+    session = await context.newCDPSession(page);
+    return await operation(session);
+  } finally {
+    await session?.detach().catch(() => undefined);
+    if (temporaryPage) await page.close().catch(() => undefined);
+  }
+}
+
+interface CdpStorageUsageBreakdown {
+  storageType?: unknown;
+  usage?: unknown;
+}
+
+interface CdpStorageUsage {
+  usage?: unknown;
+  usageBreakdown?: readonly CdpStorageUsageBreakdown[];
+}
+
+/**
+ * Reads only aggregate storage usage from the Page target. Storage values are
+ * intentionally never materialized through a BrowserContext state snapshot.
+ */
+export async function inspectBrowserProfileSiteData(
+  context: ProfileSiteDataContext,
+  profileId: string,
+  knownOrigins: readonly string[] = [],
+): Promise<BrowserProfileSiteDataSnapshot> {
+  const checkedAt = new Date().toISOString();
+  const cookies = await context.cookies();
+  const groups = new Map<
+    string,
+    {
+      origins: Set<string>;
+      cookieCount: number;
+      storageBytes: number;
+      storageTypes: Set<string>;
+    }
+  >();
+  const groupFor = (hostOrUrl: string) => {
+    const siteKey = resolveBrowserSiteKey(hostOrUrl);
+    let group = groups.get(siteKey);
+    if (!group) {
+      group = {
+        origins: new Set<string>(),
+        cookieCount: 0,
+        storageBytes: 0,
+        storageTypes: new Set<string>(),
+      };
+      groups.set(siteKey, group);
+    }
+    return { siteKey, group };
+  };
+
+  for (const cookie of cookies) {
+    const domain = normalizeCookieDomain(cookie.domain);
+    if (!domain) continue;
+    const { group } = groupFor(domain);
+    group.cookieCount += 1;
+    group.storageTypes.add('cookies');
+  }
+
+  const origins = buildBrowserProfileOriginInventory(
+    knownOrigins,
+    context
+      .pages()
+      .filter((page) => !page.isClosed())
+      .map((page) => page.url()),
+    cookies,
+  );
+
+  await withProfilePageCdpSession(context, async (pageSession) => {
+    for (const origin of origins) {
+      const { group } = groupFor(origin);
+      group.origins.add(origin);
+      const usage = (await pageSession
+        .send('Storage.getUsageAndQuota', { origin })
+        .catch(() => undefined)) as CdpStorageUsage | undefined;
+      if (!usage) continue;
+      const bytes = Number(usage.usage);
+      if (Number.isFinite(bytes) && bytes > 0) {
+        group.storageBytes += Math.max(0, Math.round(bytes));
+      }
+      for (const item of usage.usageBreakdown ?? []) {
+        const itemUsage = Number(item.usage);
+        const storageType = normalizeCdpStorageType(item.storageType);
+        if (storageType && Number.isFinite(itemUsage) && itemUsage > 0) {
+          group.storageTypes.add(storageType);
+        }
+      }
+    }
+  });
+
+  return {
+    profileId,
+    checkedAt,
+    sites: [...groups.entries()]
+      .filter(
+        ([, group]) =>
+          group.cookieCount > 0 || group.storageBytes > 0 || group.storageTypes.size > 0,
+      )
+      .map(([siteKey, group]) => ({
+        siteKey,
+        origins: [...group.origins].sort(),
+        cookieCount: group.cookieCount,
+        storageBytes: group.storageBytes,
+        storageTypes: [...group.storageTypes].sort(),
+      }))
+      .sort((left, right) => left.siteKey.localeCompare(right.siteKey)),
+  };
+}
+
+export async function clearBrowserProfileSiteData(
+  context: ProfileSiteDataContext,
+  profileId: string,
+  siteKeyInput: string,
+  knownOrigins: readonly string[] = [],
+): Promise<BrowserProfileSiteClearResult> {
+  const siteKey = resolveBrowserSiteKey(siteKeyInput);
+  const cookies = await context.cookies();
+  const matchingCookies = cookies.filter((cookie) => {
+    const domain = normalizeCookieDomain(cookie.domain);
+    return domain ? hostMatchesSite(domain, siteKey) : false;
+  });
+  const origins = buildBrowserProfileOriginInventory(
+    knownOrigins,
+    context
+      .pages()
+      .filter((page) => !page.isClosed())
+      .map((page) => page.url()),
+    cookies,
+  );
+  for (const page of context.pages()) {
+    if (page.isClosed()) continue;
+    const origin = httpOrigin(page.url());
+    if (!origin || !hostMatchesSite(new URL(origin).hostname, siteKey)) continue;
+    await page.goto('about:blank', { waitUntil: 'commit', timeout: 5_000 }).catch(() => undefined);
+  }
+  const clearedOrigins = origins
+    .filter((origin) => hostMatchesSite(new URL(origin).hostname, siteKey))
+    .sort();
+
+  for (const cookie of matchingCookies) {
+    await context.clearCookies({
+      name: cookie.name,
+      domain: cookie.domain,
+      path: cookie.path,
+    });
+  }
+  await withProfilePageCdpSession(context, async (pageSession) => {
+    for (const origin of clearedOrigins) {
+      await pageSession.send('Storage.clearDataForOrigin', {
+        origin,
+        storageTypes: 'all',
+      });
+    }
+  });
+  return {
+    profileId,
+    siteKey,
+    clearedOrigins,
+    deletedCookieCount: matchingCookies.length,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
 class PlaywrightCdpSession implements BrowserDriverSession {
   readonly browserKind: SystemBrowserKind;
   readonly executablePath: string;
@@ -1116,6 +2116,7 @@ class PlaywrightCdpSession implements BrowserDriverSession {
 
   constructor(
     installation: SystemBrowserInstallation,
+    private readonly profileId: string,
     profileDirectory: string,
     cdpEndpoint: string,
     private readonly metadataPath: string,
@@ -1142,7 +2143,11 @@ class PlaywrightCdpSession implements BrowserDriverSession {
 
   async newPage(): Promise<BrowserDriverPage> {
     if (!this.isConnected()) {
-      throw new BrowserHostError('browser.disconnected', 'System browser is disconnected', 'crashed');
+      throw new BrowserHostError(
+        'browser.disconnected',
+        'System browser is disconnected',
+        'crashed',
+      );
     }
     const page = await this.context.newPage();
     return this.managePage(page);
@@ -1158,6 +2163,33 @@ class PlaywrightCdpSession implements BrowserDriverSession {
       if ((await playwrightPageId(page)) === pageId) return this.managePage(page);
     }
     return undefined;
+  }
+
+  async listSiteData(
+    knownOrigins: readonly string[] = [],
+  ): Promise<BrowserProfileSiteDataSnapshot> {
+    if (!this.isConnected()) {
+      throw new BrowserHostError(
+        'browser.disconnected',
+        'System browser is disconnected',
+        'crashed',
+      );
+    }
+    return inspectBrowserProfileSiteData(this.context, this.profileId, knownOrigins);
+  }
+
+  async clearSiteData(
+    siteKeyInput: string,
+    knownOrigins: readonly string[] = [],
+  ): Promise<BrowserProfileSiteClearResult> {
+    if (!this.isConnected()) {
+      throw new BrowserHostError(
+        'browser.disconnected',
+        'System browser is disconnected',
+        'crashed',
+      );
+    }
+    return clearBrowserProfileSiteData(this.context, this.profileId, siteKeyInput, knownOrigins);
   }
 
   async close(options: { preserve?: boolean } = {}): Promise<void> {
@@ -1243,9 +2275,45 @@ class PlaywrightCdpSession implements BrowserDriverSession {
   }
 }
 
+function httpOrigin(value: string): string | undefined {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+      ? parsed.origin.toLowerCase()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hostMatchesSite(hostInput: string, siteKey: string): boolean {
+  const host = String(hostInput ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\.+/, '')
+    .replace(/^\[|\]$/gu, '')
+    .replace(/\.+$/u, '');
+  return host === siteKey || host.endsWith(`.${siteKey}`);
+}
+
+function normalizeCdpStorageType(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase().replaceAll('-', '_');
+  if (!normalized) return undefined;
+  const aliases: Record<string, string> = {
+    indexeddb: 'indexed_db',
+    localstorage: 'local_storage',
+    cachestorage: 'cache_storage',
+    serviceworkers: 'service_workers',
+  };
+  return aliases[normalized] ?? normalized;
+}
 
 async function playwrightPageId(page: Page): Promise<string | undefined> {
-  const session = await page.context().newCDPSession(page).catch(() => undefined);
+  const session = await page
+    .context()
+    .newCDPSession(page)
+    .catch(() => undefined);
   if (!session) return undefined;
   try {
     const { targetInfo } = await session.send('Target.getTargetInfo');
@@ -1257,10 +2325,265 @@ async function playwrightPageId(page: Page): Promise<string | undefined> {
   }
 }
 
-class PlaywrightDriverPage implements BrowserDriverPage {
+interface PlaywrightPageRecordingState {
+  bindingName: string;
+  captureToken: string;
+  options: BrowserPageRecordingOptions;
+  accepting: boolean;
+  terminated: boolean;
+  mutationTail: Promise<void>;
+  stepCount: number;
+  lastStep?: BrowserRecordingStepInput;
+  lastInteractionAt?: number;
+  navigationHandler: (frame: Frame) => void;
+}
+
+export function projectBrowserRecordingDomEvent(
+  payload: unknown,
+  captureToken: string,
+): BrowserRecordingStepInput | undefined {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const event = payload as Record<string, unknown>;
+  if (event.captureToken !== captureToken) return undefined;
+  const locator = projectBrowserRecordingLocator(event.locator);
+  if (!locator) return undefined;
+  switch (event.kind) {
+    case 'click':
+      return { kind: 'click', locator };
+    case 'fill':
+    case 'select': {
+      if (event.sensitive === true) {
+        return { kind: event.kind, locator, value: { kind: 'secret' } };
+      }
+      if (typeof event.value !== 'string') return undefined;
+      return {
+        kind: event.kind,
+        locator,
+        value: { kind: 'literal', value: event.value.slice(0, BROWSER_RECORDING_MAX_TEXT_CHARS) },
+      };
+    }
+    case 'check':
+      return typeof event.checked === 'boolean'
+        ? { kind: 'check', locator, checked: event.checked }
+        : undefined;
+    case 'press':
+      return event.key === 'Enter' ? { kind: 'press', locator, key: 'Enter' } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function projectBrowserRecordingLocator(value: unknown): BrowserRecordingLocator | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const locator = value as Record<string, unknown>;
+  if (locator.strategy === 'role') {
+    if (typeof locator.role !== 'string') return undefined;
+    return {
+      strategy: 'role',
+      role: locator.role,
+      ...(typeof locator.name === 'string' ? { name: locator.name } : {}),
+    };
+  }
+  if (
+    ['test-id', 'label', 'placeholder', 'id', 'name', 'css'].includes(String(locator.strategy)) &&
+    typeof locator.value === 'string'
+  ) {
+    return {
+      strategy: locator.strategy as 'test-id' | 'label' | 'placeholder' | 'id' | 'name' | 'css',
+      value: locator.value,
+    };
+  }
+  return undefined;
+}
+
+export function browserRecordingInstallScript(bindingName: string, captureToken: string): string {
+  const serializedBindingName = JSON.stringify(bindingName);
+  const serializedCaptureToken = JSON.stringify(captureToken);
+  return `(() => {
+    const recordingToken = ${serializedCaptureToken};
+    const existing = globalThis.__syncThinkRecorder;
+    if (existing?.bindingName === ${serializedBindingName}) return;
+    existing?.uninstall?.();
+    const binding = globalThis[${serializedBindingName}];
+    if (typeof binding !== 'function') return;
+    const timers = new Map();
+    const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 512);
+    const escapeCss = (value) => globalThis.CSS?.escape
+      ? globalThis.CSS.escape(String(value))
+      : String(value).replace(/[^a-zA-Z0-9_-]/g, (char) => '\\\\' + char);
+    const unique = (selector) => {
+      try { return document.querySelectorAll(selector).length === 1; } catch { return false; }
+    };
+    const roleOf = (element) => {
+      const explicit = clean(element.getAttribute('role')).toLowerCase();
+      if (explicit) return explicit;
+      const tag = element.tagName.toLowerCase();
+      if (tag === 'button') return 'button';
+      if (tag === 'a' && element.hasAttribute('href')) return 'link';
+      if (tag === 'select') return 'combobox';
+      if (tag === 'textarea') return 'textbox';
+      if (tag === 'input') {
+        const type = clean(element.getAttribute('type') || 'text').toLowerCase();
+        if (['button', 'submit', 'reset'].includes(type)) return 'button';
+        if (type === 'checkbox') return 'checkbox';
+        if (type === 'radio') return 'radio';
+        return 'textbox';
+      }
+      return '';
+    };
+    const nameOf = (element) => clean(
+      element.getAttribute('aria-label') ||
+      element.labels?.[0]?.innerText ||
+      element.getAttribute('alt') ||
+      ((['BUTTON', 'A'].includes(element.tagName)) ? element.innerText : '') ||
+      element.getAttribute('placeholder')
+    );
+    const locatorFor = (element) => {
+      if (!(element instanceof Element)) return null;
+      const testId = clean(element.getAttribute('data-testid'));
+      if (testId && unique('[data-testid="' + escapeCss(testId) + '"]')) {
+        return { strategy: 'test-id', value: testId };
+      }
+      const role = roleOf(element);
+      const name = nameOf(element);
+      if (role) {
+        const matches = Array.from(document.querySelectorAll('[role],button,a[href],input,textarea,select'))
+          .filter((candidate) => roleOf(candidate) === role && (!name || nameOf(candidate) === name));
+        if (matches.length === 1) return { strategy: 'role', role, ...(name ? { name } : {}) };
+      }
+      const label = clean(element.labels?.[0]?.innerText);
+      if (label) {
+        const matches = Array.from(document.querySelectorAll('input,textarea,select'))
+          .filter((candidate) => clean(candidate.labels?.[0]?.innerText) === label);
+        if (matches.length === 1) return { strategy: 'label', value: label };
+      }
+      const id = clean(element.id);
+      if (id && unique('#' + escapeCss(id))) return { strategy: 'id', value: id };
+      const fieldName = clean(element.getAttribute('name'));
+      if (fieldName && unique('[name="' + escapeCss(fieldName) + '"]')) {
+        return { strategy: 'name', value: fieldName };
+      }
+      const placeholder = clean(element.getAttribute('placeholder'));
+      if (placeholder && unique('[placeholder="' + escapeCss(placeholder) + '"]')) {
+        return { strategy: 'placeholder', value: placeholder };
+      }
+      const segments = [];
+      let current = element;
+      for (let depth = 0; current && current !== document.documentElement && depth < 5; depth += 1) {
+        let segment = current.tagName.toLowerCase();
+        const siblings = current.parentElement
+          ? Array.from(current.parentElement.children).filter((candidate) => candidate.tagName === current.tagName)
+          : [];
+        if (siblings.length > 1) segment += ':nth-of-type(' + (siblings.indexOf(current) + 1) + ')';
+        segments.unshift(segment);
+        const selector = segments.join(' > ');
+        if (selector.length <= 512 && unique(selector)) return { strategy: 'css', value: selector };
+        current = current.parentElement;
+      }
+      return null;
+    };
+    const sensitivePattern = /password|passcode|otp|one.?time|token|secret|api.?key|credit|card|cvv|cvc|iban|routing|account.?number/i;
+    const isSensitive = (element) => {
+      const type = clean(element.getAttribute('type')).toLowerCase();
+      if (type === 'password' || type === 'file' || element.isContentEditable) return true;
+      const autocomplete = clean(element.getAttribute('autocomplete')).toLowerCase();
+      if (/current-password|new-password|one-time-code|cc-|transaction-/.test(autocomplete)) return true;
+      return sensitivePattern.test([
+        element.id,
+        element.getAttribute('name'),
+        element.getAttribute('placeholder'),
+        element.getAttribute('aria-label'),
+        element.labels?.[0]?.innerText
+      ].map(clean).join(' '));
+    };
+    const emit = (payload) => Promise.resolve(binding({ ...payload, captureToken: recordingToken })).catch(() => undefined);
+    const targetFrom = (event) => {
+      const target = event.composedPath?.()[0] || event.target;
+      return target instanceof Element ? target : null;
+    };
+    const emitValue = (element) => {
+      const locator = locatorFor(element);
+      if (!locator) return Promise.resolve();
+      if (element instanceof HTMLSelectElement) {
+        const sensitive = isSensitive(element);
+        return emit({ kind: 'select', locator, sensitive, ...(sensitive ? {} : { value: String(element.value || '') }) });
+      }
+      if (element instanceof HTMLInputElement && ['checkbox', 'radio'].includes(element.type)) {
+        return emit({ kind: 'check', locator, checked: element.checked });
+      }
+      const sensitive = isSensitive(element);
+      const value = element.isContentEditable ? element.textContent : element.value;
+      return emit({ kind: 'fill', locator, sensitive, ...(sensitive ? {} : { value: String(value || '').slice(0, 2000) }) });
+    };
+    const flush = (element) => {
+      const timer = timers.get(element);
+      if (timer) clearTimeout(timer);
+      timers.delete(element);
+      return emitValue(element);
+    };
+    const isTextEntry = (element) => element?.matches?.('input,textarea') || element?.isContentEditable;
+    const onInput = (event) => {
+      if (!event.isTrusted) return;
+      const element = targetFrom(event);
+      if (!isTextEntry(element)) return;
+      const existingTimer = timers.get(element);
+      if (existingTimer) clearTimeout(existingTimer);
+      timers.set(element, setTimeout(() => void flush(element), 250));
+    };
+    const onChange = (event) => {
+      if (!event.isTrusted) return;
+      const element = targetFrom(event);
+      if (isTextEntry(element)) {
+        if (timers.has(element)) void flush(element);
+        return;
+      }
+      if (element?.matches?.('select')) void flush(element);
+    };
+    const onClick = (event) => {
+      if (!event.isTrusted) return;
+      const element = targetFrom(event)?.closest?.('button,a,input[type="button"],input[type="submit"],input[type="reset"],[role="button"],[role="link"]');
+      const locator = element ? locatorFor(element) : null;
+      if (locator) emit({ kind: 'click', locator });
+    };
+    const onKeyDown = (event) => {
+      if (!event.isTrusted || event.key !== 'Enter') return;
+      const element = targetFrom(event);
+      if (isTextEntry(element) && timers.has(element)) void flush(element);
+      const locator = element ? locatorFor(element) : null;
+      if (locator) emit({ kind: 'press', locator, key: 'Enter' });
+    };
+    document.addEventListener('input', onInput, true);
+    document.addEventListener('change', onChange, true);
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    globalThis.__syncThinkRecorder = {
+      bindingName: ${serializedBindingName},
+      async uninstall(token) {
+        if (token !== recordingToken) return false;
+        document.removeEventListener('input', onInput, true);
+        document.removeEventListener('change', onChange, true);
+        document.removeEventListener('click', onClick, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+        const pending = [];
+        for (const [element, timer] of timers) {
+          clearTimeout(timer);
+          pending.push(emitValue(element));
+        }
+        timers.clear();
+        await Promise.allSettled(pending);
+        delete globalThis.__syncThinkRecorder;
+        return true;
+      }
+    };
+  })()`;
+}
+
+export class PlaywrightDriverPage implements BrowserDriverPage {
   private allowedOrigins: ReadonlySet<string> = new Set();
   private navigationViolation: BrowserHostError | undefined;
   private readonly policyTasks = new Set<Promise<void>>();
+  private readonly closeListeners = new Set<() => void>();
+  private recording: PlaywrightPageRecordingState | undefined;
 
   private constructor(
     private readonly page: Page,
@@ -1297,7 +2620,10 @@ class PlaywrightDriverPage implements BrowserDriverPage {
     await cdpSession.send('Fetch.enable', {
       patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Response' }],
     });
-    page.once('close', onClose);
+    page.once('close', () => {
+      onClose();
+      driver.notifyClosed();
+    });
     return driver;
   }
 
@@ -1336,12 +2662,102 @@ class PlaywrightDriverPage implements BrowserDriverPage {
     }
   }
 
+  async startRecording(options: BrowserPageRecordingOptions): Promise<void> {
+    if (this.recording) {
+      throw new BrowserHostError(
+        'browser.recording-already-started',
+        'Browser Page is already recording',
+        'acceptance',
+      );
+    }
+    if (
+      !Number.isSafeInteger(options.maxSteps) ||
+      options.maxSteps < 1 ||
+      options.maxSteps > BROWSER_RECORDING_MAX_STEPS
+    ) {
+      throw new BrowserHostError(
+        'browser.recording-step-limit-invalid',
+        'Browser recording step limit is invalid',
+        'acceptance',
+      );
+    }
+    const bindingName = `__syncThinkRecord_${randomUUID().replaceAll('-', '')}`;
+    const captureToken = randomUUID();
+    const state: PlaywrightPageRecordingState = {
+      bindingName,
+      captureToken,
+      options,
+      accepting: true,
+      terminated: false,
+      mutationTail: Promise.resolve(),
+      stepCount: 0,
+      navigationHandler: () => undefined,
+    };
+    state.navigationHandler = (frame: Frame) => {
+      if (frame !== this.page.mainFrame() || !state.accepting) return;
+      const url = frame.url();
+      if (!httpOrigin(url)) return;
+      this.queueRecordingStep(state, { kind: 'navigate', url });
+    };
+    this.recording = state;
+    try {
+      await this.page.exposeBinding(bindingName, async (source, payload: unknown) => {
+        if (source.frame !== this.page.mainFrame() || !state.accepting) return;
+        const step = projectBrowserRecordingDomEvent(payload, captureToken);
+        if (step) this.queueRecordingStep(state, step);
+        await state.mutationTail;
+      });
+      this.page.on('framenavigated', state.navigationHandler);
+      const installScript = browserRecordingInstallScript(bindingName, captureToken);
+      await this.page.addInitScript({ content: installScript });
+      if (!this.page.isClosed()) await this.page.evaluate(installScript);
+    } catch (error) {
+      this.page.off('framenavigated', state.navigationHandler);
+      this.recording = undefined;
+      throw error;
+    }
+  }
+
+  async stopRecording(): Promise<void> {
+    const state = this.recording;
+    if (!state) return;
+    let uninstallError: unknown;
+    try {
+      if (!this.page.isClosed()) {
+        const uninstalled = await this.page.evaluate(
+          `globalThis.__syncThinkRecorder?.uninstall?.(${JSON.stringify(state.captureToken)})`,
+        );
+        if (uninstalled !== true) {
+          throw new BrowserHostError(
+            'browser.recording-uninstall-failed',
+            'Browser recording capture could not be stopped cleanly',
+            'crashed',
+          );
+        }
+      }
+    } catch (error) {
+      uninstallError = error;
+    } finally {
+      state.accepting = false;
+      this.page.off('framenavigated', state.navigationHandler);
+    }
+    await state.mutationTail;
+    if (this.recording === state) this.recording = undefined;
+    if (uninstallError) throw uninstallError;
+  }
+
+  onClosed(listener: () => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
   async close(): Promise<void> {
     if (!this.page.isClosed()) await this.page.close();
     await this.detach();
   }
 
   async detach(): Promise<void> {
+    await this.stopRecording().catch(() => undefined);
     await this.cdpSession.send('Fetch.disable').catch(() => undefined);
     await this.cdpSession.detach().catch(() => undefined);
   }
@@ -1356,7 +2772,9 @@ class PlaywrightDriverPage implements BrowserDriverPage {
     if (popup || !this.isAllowedNavigation(target)) {
       this.recordNavigationViolation(
         target,
-        popup && this.isAllowedNavigation(target) ? 'browser.popup-denied' : 'browser.origin-denied',
+        popup && this.isAllowedNavigation(target)
+          ? 'browser.popup-denied'
+          : 'browser.origin-denied',
       );
       await route.abort('blockedbyclient').catch(() => undefined);
       return;
@@ -1589,11 +3007,88 @@ class PlaywrightDriverPage implements BrowserDriverPage {
       const parsed = new URL(value);
       return (
         (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
-        this.allowedOrigins.has(parsed.origin.toLowerCase())
+        (this.recording?.accepting === true || this.allowedOrigins.has(parsed.origin.toLowerCase()))
       );
     } catch {
       return false;
     }
+  }
+
+  private queueRecordingStep(
+    state: PlaywrightPageRecordingState,
+    rawStep: BrowserRecordingStepInput,
+  ): void {
+    const capturedAt = Date.now();
+    state.mutationTail = state.mutationTail
+      .then(async () => {
+        if (this.recording !== state) return;
+        let step = normalizeBrowserRecordingStep(rawStep);
+        let type: BrowserRecordingMutation['type'] = 'append';
+        const previous = state.lastStep;
+        if (
+          step.kind === 'navigate' &&
+          previous &&
+          (previous.kind === 'click' || previous.kind === 'press') &&
+          state.lastInteractionAt !== undefined &&
+          capturedAt - state.lastInteractionAt <= 2_500
+        ) {
+          step = { ...previous, resultUrl: step.url };
+          type = 'replace-last';
+        } else if (
+          previous &&
+          (step.kind === 'fill' || step.kind === 'select') &&
+          previous.kind === step.kind &&
+          JSON.stringify(previous.locator) === JSON.stringify(step.locator)
+        ) {
+          type = 'replace-last';
+        } else if (
+          step.kind === 'navigate' &&
+          previous?.kind === 'navigate' &&
+          previous.url === step.url
+        ) {
+          return;
+        }
+        if (type === 'append') {
+          if (state.stepCount >= state.options.maxSteps) {
+            await this.terminateRecording(state, 'step_limit');
+            return;
+          }
+          state.stepCount += 1;
+        }
+        await state.options.onMutation({ type, step });
+        state.lastStep = step;
+        if (step.kind === 'click' || step.kind === 'press') {
+          state.lastInteractionAt = capturedAt;
+        } else if (type === 'append') {
+          state.lastInteractionAt = undefined;
+        }
+        if (state.stepCount >= state.options.maxSteps) {
+          await this.terminateRecording(state, 'step_limit');
+        }
+      })
+      .catch(async () => {
+        await this.terminateRecording(state, 'capture_failed');
+      });
+  }
+
+  private async terminateRecording(
+    state: PlaywrightPageRecordingState,
+    reason: BrowserRecordingTerminationReason,
+  ): Promise<void> {
+    if (state.terminated) return;
+    state.terminated = true;
+    state.accepting = false;
+    this.page.off('framenavigated', state.navigationHandler);
+    void Promise.resolve(state.options.onTerminated(reason)).catch(() => undefined);
+  }
+
+  private notifyClosed(): void {
+    const state = this.recording;
+    if (state && !state.terminated) {
+      void this.terminateRecording(state, 'page_closed');
+    }
+    for (const listener of [...this.closeListeners]) listener();
+    this.closeListeners.clear();
   }
 }
 
@@ -1685,5 +3180,8 @@ function clamp(value: number, minimum: number, maximum: number): number {
 function clampUtf8(value: string, maxBytes: number): string {
   const encoded = Buffer.from(value, 'utf8');
   if (encoded.length <= maxBytes) return value;
-  return encoded.subarray(0, maxBytes).toString('utf8').replace(/\uFFFD$/u, '');
+  return encoded
+    .subarray(0, maxBytes)
+    .toString('utf8')
+    .replace(/\uFFFD$/u, '');
 }

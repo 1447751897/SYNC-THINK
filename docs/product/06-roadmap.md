@@ -253,6 +253,12 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
   - [x] P0.4：Team Step 精确权限、Run/Step Tab lease 与成员隔离。
   - [x] P0.5：持久 `waiting_user`、继续/取消和人工接管生命周期。
     - 正式 Desktop/Runtime 冷重启 E2E 的 Continue、Cancel close-page、Cancel keep-open 三路径均通过；Provider 与 `browser_open` 不重放，解析后浏览器与 metadata 完整清理。
+- [ ] Browser Automation Studio：录制、Workflow 与重复执行。
+  - [x] P1.1：Runtime Profile 真源、脱敏站点会话清单、按站点清除与完整 Profile 删除。
+  - [x] P1.2：专用系统浏览器语义动作录制、实时脱敏步骤流、异常终态恢复与停止后清理。
+  - [ ] P1.3：WorkflowVersion、固定值/运行变量/秘密引用、编辑和确定性回放。
+  - [ ] P1.4：运行历史、逐步日志/截图、失败定位与登录 handoff。
+  - [ ] P1.5：手动启停的定时任务；条件、循环与 AI 自修复留在 P2。
 - [x] Windows UI Automation Worker 与人工接管回退。
   - [x] 技术 Spike 与 P0 边界：Koffi COM、.NET sidecar、Microsoft WinAppCLI 三方案完成真实 Windows fixture 验证。
   - [x] 用户确认短生命周期 Node Host + Koffi UIA COM，并更新 TD-007。
@@ -317,31 +323,34 @@ MVP 边界（闭测）：Windows 单机 local-first 多模型 Agent 工作台
 
 ## 9. 变更记录
 
-| 日期       | 变更                                             | 原因                                                                                                                           |
-| ---------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-07-11 | 按已批准产品设计初始化路线图                     | `/zno-init` 文档落盘                                                                                                           |
-| 2026-07-11 | 文档确认；前端升格可获奖级原创标准               | 用户确认 V3 IA + 设计主导授权                                                                                                  |
-| 2026-07-13 | 允许 M1 dogfood 累计期间连续实施 M2              | 用户明确要求 M1/M2 连续完成，且不伪造日历证据                                                                                  |
-| 2026-07-15 | M2 完成；M1 保持 1/3 open                        | M2 exit demo/QA 通过；M1 仅剩真实 dogfood 日期门槛                                                                             |
-| 2026-07-16 | Phase 3 进入部分实施                             | File/Terminal/Git 与模型工具循环已交付；Browser/UIA/安装分发仍待完成                                                           |
-| 2026-07-28 | Phase 3 工作区 P0/P1 切片完成                    | 递归 Pane、文件编辑、内容搜索与受控终端 Pane 已通过全仓及实窗门禁                                                              |
-| 2026-07-29 | Phase 3 工作区 P2 切片完成                       | 每轮 Skill 精确选择、懒上下文与冻结恢复已通过全仓及实窗门禁                                                                    |
-| 2026-07-31 | Phase 3 Browser Worker P0 完成                   | P0.1-P0.5 已通过系统浏览器 Host、持久权限、Team 隔离与三路径真实重启 handoff E2E                                               |
-| 2026-07-31 | Windows UIA Worker 技术 Spike 完成               | 三方案真实 fixture 验证完成；推荐 Koffi 独立 Worker，等待用户确认后进入实现                                                    |
-| 2026-07-31 | DesktopWorker P0.1-P0.6 完成                     | 已接线 UIA/Computer Use、durable command 与输入中断；Continue/Cancel 闭环仍待完成                                              |
-| 2026-08-01 | DesktopWorker P0.7 完成                          | 持久等待态安全查询与只读卡片已接线；Continue/Cancel 与真实恢复仍待完成                                                         |
-| 2026-08-01 | DesktopWorker P0.8 完成                          | Continue/Cancel 与并发栅栏已接线；下一步为动作风险分级和真实冷重启 E2E                                                         |
-| 2026-08-01 | DesktopWorker P0.9 完成                          | 五级动作风险与 Runtime 审批策略已收紧；下一步为真实 WPF 冷重启人工接管 E2E                                                     |
-| 2026-08-01 | DesktopWorker P0.10 / P0 收口                    | 真实 WPF 中断、冷重启恢复、Continue/Cancel 与不重放正式 E2E 2/2 通过                                                           |
-| 2026-08-01 | Image P0.1 durable 管线完成                      | 专用 Images Adapter、受控落盘、引用 Artifact 与重启幂等完成；下一步 Renderer 展示                                              |
-| 2026-08-01 | Image P0.3 视觉审查闭环完成                      | 冻结选择、Runtime-only vision、多候选图片返工与达限暂停已形成有界闭环                                                          |
-| 2026-08-01 | Windows Distribution P0.2 identity 完成          | packaged 身份、safeStorage pipe secret 与两轮冷启动复用通过；安装器 smoke 仍待完成                                             |
-| 2026-08-02 | Windows Distribution P0.2 / P0.3 发布基线更新    | NSIS lifecycle smoke、normal 压缩、品牌图标与现代 production deploy 已通过；剩余签名、更新、回滚和闭测清单                     |
-| 2026-08-02 | Windows Distribution P0.3 updater 控制面完成     | Main-only 私有 feed、手动检查/下载/安装、安全投影与受控退出已接线；真实 feed、签名、差分与回滚仍待完成                         |
-| 2026-08-02 | Windows Distribution P0.3.2 loopback feed E2E    | 真实 Electron driver 已通过版本矩阵、Bearer 请求和完整 installer SHA-512 成功/失败验收；真实 HTTPS installer 安装仍待完成      |
-| 2026-08-02 | Windows Distribution P0.3.3 HTTPS/真实 NSIS 下载 | updater E2E 已切换受控 HTTPS，并通过 107,893,840 bytes 真实 installer 下载与缓存 SHA-512；下一步为真实 quitAndInstall 重启安装 |
-| 2026-08-02 | Windows Distribution P0.3.4 差分安装 E2E    | unsigned fixture 已通过真实 `quitAndInstall`、Range/206 差分传输与 Runtime/identity/SQLite 连续性；仅剩正式签名与真实 private feed 演练 |
-| 2026-08-03 | Phase 3 本地工程门禁收口                   | 修复 identity 竞态与并发抖动，恢复 portable/update-feed 自包含发布链，automatic rollback 本地实现纳入现行路线图；仅剩外部证据         |
+| 日期       | 变更                                             | 原因                                                                                                                                                 |
+| ---------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-11 | 按已批准产品设计初始化路线图                     | `/zno-init` 文档落盘                                                                                                                                 |
+| 2026-07-11 | 文档确认；前端升格可获奖级原创标准               | 用户确认 V3 IA + 设计主导授权                                                                                                                        |
+| 2026-07-13 | 允许 M1 dogfood 累计期间连续实施 M2              | 用户明确要求 M1/M2 连续完成，且不伪造日历证据                                                                                                        |
+| 2026-07-15 | M2 完成；M1 保持 1/3 open                        | M2 exit demo/QA 通过；M1 仅剩真实 dogfood 日期门槛                                                                                                   |
+| 2026-07-16 | Phase 3 进入部分实施                             | File/Terminal/Git 与模型工具循环已交付；Browser/UIA/安装分发仍待完成                                                                                 |
+| 2026-07-28 | Phase 3 工作区 P0/P1 切片完成                    | 递归 Pane、文件编辑、内容搜索与受控终端 Pane 已通过全仓及实窗门禁                                                                                    |
+| 2026-07-29 | Phase 3 工作区 P2 切片完成                       | 每轮 Skill 精确选择、懒上下文与冻结恢复已通过全仓及实窗门禁                                                                                          |
+| 2026-07-31 | Phase 3 Browser Worker P0 完成                   | P0.1-P0.5 已通过系统浏览器 Host、持久权限、Team 隔离与三路径真实重启 handoff E2E                                                                     |
+| 2026-07-31 | Windows UIA Worker 技术 Spike 完成               | 三方案真实 fixture 验证完成；推荐 Koffi 独立 Worker，等待用户确认后进入实现                                                                          |
+| 2026-07-31 | DesktopWorker P0.1-P0.6 完成                     | 已接线 UIA/Computer Use、durable command 与输入中断；Continue/Cancel 闭环仍待完成                                                                    |
+| 2026-08-01 | DesktopWorker P0.7 完成                          | 持久等待态安全查询与只读卡片已接线；Continue/Cancel 与真实恢复仍待完成                                                                               |
+| 2026-08-01 | DesktopWorker P0.8 完成                          | Continue/Cancel 与并发栅栏已接线；下一步为动作风险分级和真实冷重启 E2E                                                                               |
+| 2026-08-01 | DesktopWorker P0.9 完成                          | 五级动作风险与 Runtime 审批策略已收紧；下一步为真实 WPF 冷重启人工接管 E2E                                                                           |
+| 2026-08-01 | DesktopWorker P0.10 / P0 收口                    | 真实 WPF 中断、冷重启恢复、Continue/Cancel 与不重放正式 E2E 2/2 通过                                                                                 |
+| 2026-08-01 | Image P0.1 durable 管线完成                      | 专用 Images Adapter、受控落盘、引用 Artifact 与重启幂等完成；下一步 Renderer 展示                                                                    |
+| 2026-08-01 | Image P0.3 视觉审查闭环完成                      | 冻结选择、Runtime-only vision、多候选图片返工与达限暂停已形成有界闭环                                                                                |
+| 2026-08-01 | Windows Distribution P0.2 identity 完成          | packaged 身份、safeStorage pipe secret 与两轮冷启动复用通过；安装器 smoke 仍待完成                                                                   |
+| 2026-08-02 | Windows Distribution P0.2 / P0.3 发布基线更新    | NSIS lifecycle smoke、normal 压缩、品牌图标与现代 production deploy 已通过；剩余签名、更新、回滚和闭测清单                                           |
+| 2026-08-02 | Windows Distribution P0.3 updater 控制面完成     | Main-only 私有 feed、手动检查/下载/安装、安全投影与受控退出已接线；真实 feed、签名、差分与回滚仍待完成                                               |
+| 2026-08-02 | Windows Distribution P0.3.2 loopback feed E2E    | 真实 Electron driver 已通过版本矩阵、Bearer 请求和完整 installer SHA-512 成功/失败验收；真实 HTTPS installer 安装仍待完成                            |
+| 2026-08-02 | Windows Distribution P0.3.3 HTTPS/真实 NSIS 下载 | updater E2E 已切换受控 HTTPS，并通过 107,893,840 bytes 真实 installer 下载与缓存 SHA-512；下一步为真实 quitAndInstall 重启安装                       |
+| 2026-08-02 | Windows Distribution P0.3.4 差分安装 E2E         | unsigned fixture 已通过真实 `quitAndInstall`、Range/206 差分传输与 Runtime/identity/SQLite 连续性；仅剩正式签名与真实 private feed 演练              |
+| 2026-08-03 | Phase 3 本地工程门禁收口                         | 修复 identity 竞态与并发抖动，恢复 portable/update-feed 自包含发布链，automatic rollback 本地实现纳入现行路线图；仅剩外部证据                        |
+| 2026-08-05 | Browser Automation Studio 进入 P1.1              | 用户确认专用系统 Edge/Chrome 录制/回放，并要求 Profile 站点会话可见、可按站点清除；先统一 Runtime Profile 真源                                       |
+| 2026-08-05 | Browser Automation Studio P1.1 完成              | Runtime Profile 真源、脱敏站点会话清单、实时刷新、按站点清除与完整 Profile 删除已通过自动化门禁；下一步进入 P1.2 语义动作录制                        |
+| 2026-08-05 | Browser Automation Studio P1.2 完成              | 单 Page 主 Frame 语义录制、SQLite durable 草稿、实时步骤、敏感值占位、Profile 独占与冷启动中断恢复完成；下一步进入 P1.3 WorkflowVersion 与确定性回放 |
 
 ### Image P0.3（2026-08-01 更新）
 

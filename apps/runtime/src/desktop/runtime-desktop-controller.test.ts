@@ -149,6 +149,28 @@ describe('RuntimeDesktopController', () => {
       expect(
         controller.evaluatePermission({
           executionMode: 'workspace',
+          toolName: 'desktop_launch_app',
+          argumentsJson: JSON.stringify({ application: 'notepad.exe' }),
+        }),
+      ).toMatchObject({ decision: 'allow', risk: { level: 'display' } });
+      expect(
+        controller.evaluatePermission({
+          executionMode: 'ask',
+          toolName: 'desktop_launch_app',
+          argumentsJson: JSON.stringify({ application: 'notepad.exe' }),
+        }),
+      ).toMatchObject({ decision: 'approval-required', risk: { level: 'display' } });
+      expect(
+        controller.evaluatePermission({
+          executionMode: 'full-access',
+          toolName: 'desktop_launch_app',
+          argumentsJson: JSON.stringify({ application: 'D:\\Tools\\custom.exe' }),
+        }),
+      ).toMatchObject({ decision: 'approval-required', risk: { level: 'sensitive' } });
+
+      expect(
+        controller.evaluatePermission({
+          executionMode: 'workspace',
           toolName: 'desktop_invoke_element',
           argumentsJson: invokeArgs,
         }),

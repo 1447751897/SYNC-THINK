@@ -36,6 +36,102 @@ describe('projectRunProcess', () => {
     expect(view.cachedTokensCreated).toBe(0);
   });
 
+  it('accumulates distinct provider turns while de-duplicating updates for one request', () => {
+    const runId = 'run-multi-turn-usage' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-turn-1-initial' as EventId,
+        sequence: 1,
+        runId,
+        type: 'provider.usage',
+        payload: {
+          requestId: 'request-turn-1',
+          tokensIn: 100,
+          tokensOut: 10,
+          cachedTokensHit: 64,
+          cachedTokensCreated: 0,
+        },
+      }),
+      event({
+        id: 'event-turn-1-final' as EventId,
+        sequence: 2,
+        runId,
+        type: 'provider.usage',
+        payload: {
+          requestId: 'request-turn-1',
+          tokensIn: 120,
+          tokensOut: 12,
+          cachedTokensHit: 80,
+          cachedTokensCreated: 0,
+        },
+      }),
+      event({
+        id: 'event-turn-2' as EventId,
+        sequence: 3,
+        runId,
+        type: 'provider.usage',
+        payload: {
+          requestId: 'request-turn-2',
+          tokensIn: 200,
+          tokensOut: 20,
+          cachedTokensHit: 128,
+          cachedTokensCreated: 0,
+        },
+      }),
+    ]);
+
+    expect(view.tokensIn).toBe(320);
+    expect(view.tokensOut).toBe(32);
+    expect(view.cachedTokensHit).toBe(208);
+    expect(view.cachedTokensCreated).toBe(0);
+  });
+
+  it('labels a verified desktop application launch with its executable', () => {
+    const runId = 'run-launch-app' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-launch-requested' as EventId,
+        sequence: 1,
+        runId,
+        type: 'tool.requested',
+        payload: {
+          toolCallId: 'call-launch',
+          toolName: 'desktop_launch_app',
+          arguments: { application: 'notepad.exe' },
+        },
+      }),
+      event({
+        id: 'event-launch-completed' as EventId,
+        sequence: 2,
+        runId,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'call-launch',
+          toolName: 'desktop_launch_app',
+          result: JSON.stringify({
+            ok: true,
+            result: {
+              kind: 'app-launched',
+              window: {
+                processId: 42,
+                nativeWindowHandle: '0x1234',
+                title: 'Untitled - Notepad',
+              },
+              reusedExistingWindow: false,
+            },
+          }),
+        },
+      }),
+    ]);
+
+    expect(view.steps).toHaveLength(1);
+    expect(view.steps[0]).toMatchObject({
+      label: 'Launch · notepad.exe',
+      zh: '启动应用',
+      status: 'done',
+    });
+  });
+
   it('projects requested/completed tools once for a run and exposes file paths in titles', () => {
     const runId = 'run-1' as RunId;
     const events: Event[] = [

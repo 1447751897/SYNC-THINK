@@ -19,6 +19,56 @@ describe('desktop host contract', () => {
     expect(parseDesktopHostRequest(request)).toEqual(request);
   });
 
+  it('accepts a bounded application launch request and verified visible-window result', () => {
+    const action: DesktopAction = { kind: 'launch-app', application: 'notepad.exe' };
+    expect(parseDesktopHostRequest(createDesktopHostRequest('req-launch', action)).action).toEqual(
+      action,
+    );
+
+    expect(
+      parseDesktopHostResponse(
+        {
+          type: 'response',
+          protocolVersion: DESKTOP_HOST_PROTOCOL_VERSION,
+          requestId: 'req-launch',
+          ok: true,
+          result: {
+            kind: 'app-launched',
+            window: {
+              processId: 42,
+              nativeWindowHandle: '0x000000000001002a',
+              title: 'Untitled - Notepad',
+              appId: 'notepad.exe',
+            },
+            reusedExistingWindow: false,
+          },
+        },
+        'req-launch',
+      ),
+    ).toMatchObject({
+      ok: true,
+      result: { kind: 'app-launched', reusedExistingWindow: false },
+    });
+  });
+
+  it('rejects application launch arguments, protocols, and non-executable targets', () => {
+    for (const application of [
+      '',
+      'notepad.exe --help',
+      'https://example.com/app.exe',
+      'C:\\Windows\\System32\\notepad.com',
+    ]) {
+      expect(() =>
+        parseDesktopHostRequest({
+          type: 'request',
+          protocolVersion: DESKTOP_HOST_PROTOCOL_VERSION,
+          requestId: 'req-launch-invalid',
+          action: { kind: 'launch-app', application },
+        }),
+      ).toThrow(/desktop host request/i);
+    }
+  });
+
   it('requires an explicit truncation flag for window-list results', () => {
     expect(
       parseDesktopHostResponse(

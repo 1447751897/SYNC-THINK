@@ -117,6 +117,16 @@ import {
   type CancelDesktopCommandResponse,
   type ContinueBrowserHandoffResponse,
   type CancelBrowserHandoffResponse,
+  type ListBrowserProfilesResponse,
+  type CreateBrowserProfileResponse,
+  type RenameBrowserProfileResponse,
+  type DeleteBrowserProfileResponse,
+  type ListBrowserSiteSessionsResponse,
+  type ClearBrowserSiteSessionResponse,
+  type ListBrowserRecordingsResponse,
+  type GetBrowserRecordingResponse,
+  type StartBrowserRecordingResponse,
+  type StopBrowserRecordingResponse,
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   isComputerUsePluginEnabled as isComputerUsePluginSettingEnabled,
 } from '@sync-think/protocol';
@@ -406,6 +416,16 @@ import {
   parseConversationCompactPayload,
   parseConversationDecideToolApprovalPayload,
   parseConversationSubmitBrowserResultPayload,
+  parseListBrowserProfilesPayload,
+  parseCreateBrowserProfilePayload,
+  parseRenameBrowserProfilePayload,
+  parseDeleteBrowserProfilePayload,
+  parseListBrowserSiteSessionsPayload,
+  parseClearBrowserSiteSessionPayload,
+  parseListBrowserRecordingsPayload,
+  parseGetBrowserRecordingPayload,
+  parseStartBrowserRecordingPayload,
+  parseStopBrowserRecordingPayload,
   parseListWaitingBrowserHandoffsPayload,
   parseContinueBrowserHandoffPayload,
   parseCancelBrowserHandoffPayload,
@@ -434,6 +454,18 @@ import {
   RuntimeBrowserHandoffError,
   type RuntimeBrowserHandoffContext,
 } from './browser/runtime-browser-controller.js';
+import {
+  RuntimeBrowserProfileError,
+  RuntimeBrowserProfileService,
+} from './browser/runtime-browser-profile-service.js';
+import {
+  RuntimeBrowserProfileGate,
+  type BrowserProfileOperationGate,
+} from './browser/runtime-browser-profile-gate.js';
+import {
+  RuntimeBrowserRecordingError,
+  RuntimeBrowserRecordingService,
+} from './browser/runtime-browser-recording-service.js';
 import { RuntimeDesktopController } from './desktop/runtime-desktop-controller.js';
 
 import {
@@ -492,6 +524,8 @@ export interface RuntimeOptions {
   /** Shared Browser Host. Persistent Runtime supplies the production CDP Host. */
   browserHost?: BrowserHostLike;
   browserProfileId?: string;
+  /** Shared with production Browser execution so Profile maintenance fences every reservation. */
+  browserProfileGate?: BrowserProfileOperationGate;
   /** Existing local directory used for non-file browser actions without a bound Workspace. */
   browserFallbackWorkingDir?: string;
   /** Server-owned plan readiness lookup; clients cannot assert plan approval. */
@@ -640,6 +674,8 @@ export class Runtime {
   private readonly secureStore?: SecureStore;
   private readonly browserHost?: BrowserHostLike;
   private readonly browserController?: RuntimeBrowserController;
+  private readonly browserProfileService?: RuntimeBrowserProfileService;
+  private readonly browserRecordingService?: RuntimeBrowserRecordingService;
   private readonly desktopController?: RuntimeDesktopController;
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
@@ -780,6 +816,10 @@ export class Runtime {
     this.mcpStore = opts.mcpStore;
     this.secureStore = opts.secureStore;
     this.browserHost = opts.browserHost;
+    const browserProfileGate =
+      opts.browserHost && opts.browserStore
+        ? (opts.browserProfileGate ?? new RuntimeBrowserProfileGate())
+        : undefined;
     this.browserController =
       opts.browserHost && opts.browserStore
         ? new RuntimeBrowserController({
@@ -788,6 +828,22 @@ export class Runtime {
             profileId: opts.browserProfileId,
             fallbackWorkingDir: opts.browserFallbackWorkingDir ?? process.cwd(),
             leaseHost: opts.browserHost,
+            ...(browserProfileGate ? { profileGate: browserProfileGate } : {}),
+          })
+        : undefined;
+    this.browserProfileService =
+      opts.browserHost && opts.browserStore
+        ? new RuntimeBrowserProfileService({
+            store: opts.browserStore,
+            host: opts.browserHost,
+            ...(browserProfileGate ? { profileGate: browserProfileGate } : {}),
+          })
+        : undefined;
+    this.browserRecordingService =
+      opts.browserHost && opts.browserStore
+        ? new RuntimeBrowserRecordingService({
+            store: opts.browserStore,
+            host: opts.browserHost,
           })
         : undefined;
     this.desktopController = opts.desktopStore
@@ -1189,6 +1245,46 @@ export class Runtime {
         }
         if (frame.type === 'conversation.submitBrowserResult') {
           this.handleConversationSubmitBrowserResult(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.profile.list') {
+          this.handleListBrowserProfiles(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.profile.create') {
+          this.handleCreateBrowserProfile(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.profile.rename') {
+          this.handleRenameBrowserProfile(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.profile.delete') {
+          this.trackBackgroundTask(this.handleDeleteBrowserProfile(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.profile.listSiteSessions') {
+          this.trackBackgroundTask(this.handleListBrowserSiteSessions(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.profile.clearSiteSession') {
+          this.trackBackgroundTask(this.handleClearBrowserSiteSession(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.recording.list') {
+          this.handleListBrowserRecordings(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.recording.get') {
+          this.trackBackgroundTask(this.handleGetBrowserRecording(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.recording.start') {
+          this.trackBackgroundTask(this.handleStartBrowserRecording(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.recording.stop') {
+          this.trackBackgroundTask(this.handleStopBrowserRecording(socket, frame));
           return;
         }
         if (frame.type === 'desktop.command.listWaiting') {
@@ -15476,6 +15572,337 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     };
   }
 
+  private handleListBrowserProfiles(socket: Socket, frame: Frame): void {
+    const payload = parseListBrowserProfilesPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserProfileService) {
+      this.writeBrowserProfileCommandError(
+        socket,
+        frame,
+        new RuntimeBrowserProfileError(
+          'browser.profile_host_unavailable',
+          'Browser Profile services are not configured on this Runtime.',
+        ),
+      );
+      return;
+    }
+    try {
+      const response: ListBrowserProfilesResponse = {
+        profiles: this.browserProfileService.listProfiles(),
+      };
+      this.writeBrowserProfileResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserProfileCommandError(socket, frame, error);
+    }
+  }
+
+  private handleCreateBrowserProfile(socket: Socket, frame: Frame): void {
+    const payload = parseCreateBrowserProfilePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserProfileService) {
+      this.writeBrowserProfileUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: CreateBrowserProfileResponse = {
+        profile: this.browserProfileService.createProfile(payload),
+      };
+      this.writeBrowserProfileResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserProfileCommandError(socket, frame, error);
+    }
+  }
+
+  private handleRenameBrowserProfile(socket: Socket, frame: Frame): void {
+    const payload = parseRenameBrowserProfilePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserProfileService) {
+      this.writeBrowserProfileUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: RenameBrowserProfileResponse = {
+        profile: this.browserProfileService.renameProfile(payload),
+      };
+      this.writeBrowserProfileResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserProfileCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleDeleteBrowserProfile(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseDeleteBrowserProfilePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserProfileService) {
+      this.writeBrowserProfileUnavailable(socket, frame);
+      return;
+    }
+    try {
+      await this.browserProfileService.deleteProfile(payload);
+      const response: DeleteBrowserProfileResponse = {
+        profileId: payload.profileId,
+        deleted: true,
+      };
+      this.writeBrowserProfileResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserProfileCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleListBrowserSiteSessions(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseListBrowserSiteSessionsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserProfileService) {
+      this.writeBrowserProfileUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ListBrowserSiteSessionsResponse =
+        await this.browserProfileService.listSiteSessions(payload);
+      this.writeBrowserProfileResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserProfileCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleClearBrowserSiteSession(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseClearBrowserSiteSessionPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserProfileService) {
+      this.writeBrowserProfileUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ClearBrowserSiteSessionResponse =
+        await this.browserProfileService.clearSiteSession(payload);
+      this.writeBrowserProfileResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserProfileCommandError(socket, frame, error);
+    }
+  }
+
+  private writeBrowserProfileResponse(socket: Socket, frame: Frame, payload: unknown): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload,
+      }),
+    );
+  }
+
+  private writeBrowserProfileUnavailable(socket: Socket, frame: Frame): void {
+    this.writeBrowserProfileCommandError(
+      socket,
+      frame,
+      new RuntimeBrowserProfileError(
+        'browser.profile_host_unavailable',
+        'Browser Profile services are not configured on this Runtime.',
+      ),
+    );
+  }
+
+  private writeBrowserProfileCommandError(socket: Socket, frame: Frame, error: unknown): void {
+    const rawCode =
+      error instanceof RuntimeBrowserProfileError
+        ? error.code
+        : error && typeof error === 'object' && 'code' in error
+          ? String((error as { code?: unknown }).code)
+          : error instanceof Error
+            ? error.message.split(':', 1)[0]
+            : undefined;
+    const codeByInternalCode: Record<string, (typeof ErrorCode)[keyof typeof ErrorCode]> = {
+      'browser.profile_not_found': ErrorCode.BROWSER_PROFILE_NOT_FOUND,
+      'browser.profile-not-found': ErrorCode.BROWSER_PROFILE_NOT_FOUND,
+      'browser.profile_in_use': ErrorCode.BROWSER_PROFILE_IN_USE,
+      'browser.profile-in-use': ErrorCode.BROWSER_PROFILE_IN_USE,
+      'browser.profile_revision_conflict': ErrorCode.BROWSER_PROFILE_REVISION_CONFLICT,
+      'browser.default_profile_immutable': ErrorCode.BROWSER_DEFAULT_PROFILE_IMMUTABLE,
+      'browser.default-profile-immutable': ErrorCode.BROWSER_DEFAULT_PROFILE_IMMUTABLE,
+      'browser.site_session_not_found': ErrorCode.BROWSER_SITE_SESSION_NOT_FOUND,
+      'browser.profile_host_unavailable': ErrorCode.BROWSER_PROFILE_HOST_UNAVAILABLE,
+      'browser.profile-site-data-unsupported': ErrorCode.BROWSER_PROFILE_HOST_UNAVAILABLE,
+      'browser.profile-site-clear-unsupported': ErrorCode.BROWSER_PROFILE_HOST_UNAVAILABLE,
+      'browser.profile_delete_unsupported': ErrorCode.BROWSER_PROFILE_HOST_UNAVAILABLE,
+    };
+    const code =
+      (rawCode ? codeByInternalCode[rawCode] : undefined) ??
+      ErrorCode.BROWSER_PROFILE_OPERATION_FAILED;
+    const message = error instanceof Error ? error.message : 'Browser Profile command failed.';
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code,
+          message: message
+            .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+            .replace(/Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, 'Bearer [REDACTED]'),
+        },
+      }),
+    );
+  }
+
+  private handleListBrowserRecordings(socket: Socket, frame: Frame): void {
+    const payload = parseListBrowserRecordingsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserRecordingService) {
+      this.writeBrowserRecordingUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ListBrowserRecordingsResponse = {
+        recordings: this.browserRecordingService.listRecordings(payload),
+      };
+      this.writeBrowserRecordingResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserRecordingCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleGetBrowserRecording(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseGetBrowserRecordingPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserRecordingService) {
+      this.writeBrowserRecordingUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: GetBrowserRecordingResponse =
+        await this.browserRecordingService.getRecording(payload);
+      this.writeBrowserRecordingResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserRecordingCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleStartBrowserRecording(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseStartBrowserRecordingPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserRecordingService) {
+      this.writeBrowserRecordingUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: StartBrowserRecordingResponse = {
+        recording: await this.browserRecordingService.startRecording(payload),
+      };
+      this.writeBrowserRecordingResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserRecordingCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleStopBrowserRecording(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseStopBrowserRecordingPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserRecordingService) {
+      this.writeBrowserRecordingUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: StopBrowserRecordingResponse = {
+        recording: await this.browserRecordingService.stopRecording(payload),
+      };
+      this.writeBrowserRecordingResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserRecordingCommandError(socket, frame, error);
+    }
+  }
+
+  private writeBrowserRecordingResponse(socket: Socket, frame: Frame, payload: unknown): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload,
+      }),
+    );
+  }
+
+  private writeBrowserRecordingUnavailable(socket: Socket, frame: Frame): void {
+    this.writeBrowserRecordingCommandError(
+      socket,
+      frame,
+      new RuntimeBrowserRecordingError(
+        'browser.recording-host-unavailable',
+        'Browser recording is not configured on this Runtime.',
+      ),
+    );
+  }
+
+  private writeBrowserRecordingCommandError(socket: Socket, frame: Frame, error: unknown): void {
+    const rawCode = browserRecordingErrorCode(error);
+    const codeByInternalCode: Record<string, (typeof ErrorCode)[keyof typeof ErrorCode]> = {
+      'browser.recording-not-found': ErrorCode.BROWSER_RECORDING_NOT_FOUND,
+      'browser.recording_not_found': ErrorCode.BROWSER_RECORDING_NOT_FOUND,
+      'browser.profile_not_found': ErrorCode.BROWSER_PROFILE_NOT_FOUND,
+      'browser.profile-not-found': ErrorCode.BROWSER_PROFILE_NOT_FOUND,
+      'browser.profile_in_use': ErrorCode.BROWSER_PROFILE_IN_USE,
+      'browser.profile-in-use': ErrorCode.BROWSER_PROFILE_IN_USE,
+      'browser.recording_profile_in_use': ErrorCode.BROWSER_PROFILE_IN_USE,
+      'browser.profile_revision_conflict': ErrorCode.BROWSER_PROFILE_REVISION_CONFLICT,
+      'browser.profile-revision-conflict': ErrorCode.BROWSER_PROFILE_REVISION_CONFLICT,
+      'browser.recording-host-unavailable': ErrorCode.BROWSER_RECORDING_HOST_UNAVAILABLE,
+      'browser.recording-unsupported': ErrorCode.BROWSER_RECORDING_HOST_UNAVAILABLE,
+      'browser.recording_id_conflict': ErrorCode.BROWSER_RECORDING_CONFLICT,
+      'browser.recording_state_conflict': ErrorCode.BROWSER_RECORDING_CONFLICT,
+      'browser.recording-already-started': ErrorCode.BROWSER_RECORDING_CONFLICT,
+    };
+    const code =
+      (rawCode ? codeByInternalCode[rawCode] : undefined) ??
+      ErrorCode.BROWSER_RECORDING_OPERATION_FAILED;
+    const message = error instanceof Error ? error.message : 'Browser recording command failed.';
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code,
+          message: message
+            .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+            .replace(/Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, 'Bearer [REDACTED]'),
+        },
+      }),
+    );
+  }
+
   private handleListWaitingBrowserHandoffs(socket: Socket, frame: Frame): void {
     const payload = parseListWaitingBrowserHandoffsPayload(frame.payload);
     if (!payload) {
@@ -15536,6 +15963,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     try {
       const binding = this.resolveBrowserHandoffBinding(payload.handoffId, 'approved');
       const handoffDecision = await this.browserController!.continueHandoff(payload);
+      if (binding.handoff.reason === 'login' && this.browserProfileService) {
+        try {
+          this.browserProfileService.markLoginVerified({
+            profileId: binding.handoff.profileId,
+            origin: binding.handoff.siteOrigin,
+          });
+        } catch (error) {
+          throw new RuntimeBrowserHandoffError(
+            'browser.profile-operation-failed',
+            error instanceof Error ? error.message : 'Browser login verification failed.',
+          );
+        }
+      }
       const approvalDecision = this.scheduler!.decideApproval({
         approvalId: binding.approval.id,
         decision: 'approved',
@@ -15905,7 +16345,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const desktopPrompt = desktopToolsEnabled
       ? [
           'Computer Use tools are ENABLED for this turn.',
-          'Use this sequence: desktop_list_windows -> desktop_inspect_window -> desktop_resolve_selector -> one immediate desktop_read_element / desktop_focus_element / desktop_invoke_element / desktop_set_value.',
+          'Use this sequence: desktop_list_windows -> if the requested app has no visible window, desktop_launch_app -> desktop_inspect_window -> desktop_resolve_selector -> one immediate desktop_read_element / desktop_focus_element / desktop_invoke_element / desktop_set_value.',
+          'Use desktop_launch_app, never run_command, to open a GUI application. Report that an app opened only when desktop_launch_app returns app-launched with an exact visible window.',
           'After any UI change, inspect and resolve again. If a snapshot or accessibility revision is stale, do not guess, use coordinates, or reuse an old element index.',
           'Do not fall back to OCR, clipboard automation, SendInput, fuzzy selectors, or coordinate clicking.',
           executionMode === 'ask'
@@ -16479,6 +16920,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         : this.events.filter((event) => event.runId === run.runId);
       const lastActivityAt = events.at(-1)?.occurredAt;
       if (isDemoRunRecoveryExpired({ lastActivityAt, now })) {
+        this.browserController?.expireRunCommands(run.runId, now);
         this.persistDemoRunPaused(run.runId, {
           reason: 'recovery_expired',
           failedModelId: run.modelId,
@@ -16860,6 +17302,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const preserveBrowserSessions = (this.browserController?.listWaitingHandoffs().length ?? 0) > 0;
     await this.browserHost?.shutdown({ preserveSessions: preserveBrowserSessions });
   }
+}
+
+function browserRecordingErrorCode(error: unknown): string | undefined {
+  if (error instanceof RuntimeBrowserRecordingError) return error.code;
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = String((error as { code?: unknown }).code ?? '').trim();
+    if (code) return code;
+  }
+  if (error instanceof Error) {
+    const match = /^(browser\.[a-z0-9._-]{1,120})(?::|$)/u.exec(error.message.trim());
+    return match?.[1];
+  }
+  return undefined;
 }
 
 function parseDesktopWaitingResult(value: string): { commandId: string; code: string } | undefined {

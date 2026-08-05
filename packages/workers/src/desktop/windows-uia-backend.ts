@@ -1,5 +1,8 @@
+import { win32 } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import koffi from 'koffi';
 import type {
+  DesktopAppLaunchResult,
   DesktopBounds,
   DesktopElementSnapshot,
   DesktopProbeResult,
@@ -22,6 +25,11 @@ const DWMWA_CLOAKED = 14;
 const MAX_WINDOWS = 256;
 const MAX_WINDOW_TITLE_CODE_UNITS = 4_096;
 const MAX_UIA_STRING_CODE_UNITS = 8_192;
+const MAX_PROCESS_IMAGE_CODE_UNITS = 32_768;
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const SW_SHOWNORMAL = 1;
+const DESKTOP_APP_WINDOW_TIMEOUT_MS = 8_000;
+const DESKTOP_APP_WINDOW_POLL_MS = 100;
 const UIA_INVOKE_PATTERN_ID = 10_000;
 const UIA_VALUE_PATTERN_ID = 10_002;
 
@@ -210,6 +218,56 @@ export class KoffiWindowsUiaBackend implements WindowsUiaBackend {
       throw new Error('EnumWindows failed');
     }
     return { kind: 'window-list', windows, truncated };
+  }
+
+  async launchApp(application: string): Promise<DesktopAppLaunchResult> {
+    const beforeHandles = new Set(
+      this.listWindows().windows.map((window) => window.nativeWindowHandle.toLowerCase()),
+    );
+    const expectedProcessNames = processNamesForApplication(application);
+    const shell32 = koffi.load('shell32.dll');
+    const shellExecute = shell32.func(
+      'intptr_t __stdcall ShellExecuteW(void *hwnd, const char16_t *operation, const char16_t *file, const char16_t *parameters, const char16_t *directory, int showCommand)',
+    );
+    const launchResult = pointer(
+      shellExecute(null, 'open', application, null, null, SW_SHOWNORMAL),
+    );
+    if (launchResult <= 32n) {
+      throw new DesktopDriverError(
+        'desktop.app-launch-failed',
+        'Windows Shell could not start the requested application',
+        'acceptance',
+      );
+    }
+
+    const readProcessImageName = createProcessImageNameReader();
+    const deadline = Date.now() + DESKTOP_APP_WINDOW_TIMEOUT_MS;
+    do {
+      const matches = this.listWindows().windows.flatMap((window) => {
+        const processImageName = readProcessImageName(window.processId);
+        if (!processImageName || !expectedProcessNames.has(processImageName.toLowerCase()))
+          return [];
+        return [{ ...window, appId: processImageName }];
+      });
+      const window =
+        matches.find(
+          (candidate) => !beforeHandles.has(candidate.nativeWindowHandle.toLowerCase()),
+        ) ?? matches[0];
+      if (window) {
+        return {
+          kind: 'app-launched',
+          window,
+          reusedExistingWindow: beforeHandles.has(window.nativeWindowHandle.toLowerCase()),
+        };
+      }
+      if (Date.now() < deadline) await delay(DESKTOP_APP_WINDOW_POLL_MS);
+    } while (Date.now() < deadline);
+
+    throw new DesktopDriverError(
+      'desktop.app-window-not-found',
+      'Application launch did not produce a matching visible top-level window',
+      'acceptance',
+    );
   }
 
   inspectWindow(window: DesktopWindowIdentity, limits: DesktopTreeLimits): WindowsUiaInspection {
@@ -730,6 +788,37 @@ function readWindowTitle(
   return buffer.subarray(0, written * 2).toString('utf16le');
 }
 
+function processNamesForApplication(application: string): ReadonlySet<string> {
+  const requested = win32.basename(application).toLowerCase();
+  const aliases = DESKTOP_APP_PROCESS_ALIASES.get(requested) ?? [];
+  return new Set([requested, ...aliases]);
+}
+
+function createProcessImageNameReader(): (processId: number) => string | undefined {
+  const kernel32 = koffi.load('kernel32.dll');
+  const openProcess = kernel32.func(
+    'void * __stdcall OpenProcess(uint32_t desiredAccess, int inheritHandle, uint32_t processId)',
+  );
+  const queryFullProcessImageName = kernel32.func(
+    'int __stdcall QueryFullProcessImageNameW(void *process, uint32_t flags, _Out_ char16_t *buffer, _Inout_ uint32_t *size)',
+  );
+  const closeHandle = kernel32.func('int __stdcall CloseHandle(void *object)');
+  return (processId) => {
+    const processHandle = openProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, processId);
+    if (!processHandle) return undefined;
+    try {
+      const buffer = Buffer.alloc((MAX_PROCESS_IMAGE_CODE_UNITS + 1) * 2);
+      const size: unknown[] = [MAX_PROCESS_IMAGE_CODE_UNITS];
+      if (!Number(queryFullProcessImageName(processHandle, 0, buffer, size))) return undefined;
+      const codeUnits = Number(size[0]);
+      if (!Number.isSafeInteger(codeUnits) || codeUnits <= 0) return undefined;
+      return win32.basename(buffer.subarray(0, codeUnits * 2).toString('utf16le'));
+    } finally {
+      closeHandle(processHandle);
+    }
+  };
+}
+
 function isCloaked(dwmGetWindowAttribute: (...args: unknown[]) => unknown, hwnd: bigint): boolean {
   const value: unknown[] = [0];
   const result = Number(dwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, value, 4));
@@ -844,4 +933,8 @@ const CONTROL_TYPE_NAMES = new Map<number, string>([
   [50_038, 'Separator'],
   [50_039, 'SemanticZoom'],
   [50_040, 'AppBar'],
+]);
+
+const DESKTOP_APP_PROCESS_ALIASES = new Map<string, readonly string[]>([
+  ['calc.exe', ['calculatorapp.exe']],
 ]);

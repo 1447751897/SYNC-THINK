@@ -175,13 +175,72 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(within(requestTable).getByText(/缓存读取 12\.8k/)).toBeTruthy();
     expect(within(requestTable).getByText('缓存命中 91.4%')).toBeTruthy();
     expect(within(requestTable).getByText('输出 488')).toBeTruthy();
-    expect(screen.queryByText(/输入费 \$0\.006000/)).toBeNull();
+    expect(within(requestTable).getByText('成功')).toBeTruthy();
+    expect(screen.queryByText(/普通输入费 \$0\.006000/)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '查看 gpt-5 请求详情' }));
-    expect(await screen.findByText(/输入费 \$0\.006000/)).toBeTruthy();
+    expect(await screen.findByText(/普通输入费 \$0\.006000/)).toBeTruthy();
     expect(screen.getByText(/缓存读取费 \$0\.006400/)).toBeTruthy();
     expect(screen.getByRole('button', { name: '收起 gpt-5 请求详情' })).toBeTruthy();
     expect(screen.queryByText('详情记录')).toBeNull();
+  });
+
+  it('distinguishes unreported cache fields and excludes them from the hit-rate denominator', async () => {
+    runtime.getUsageSummary.mockResolvedValueOnce({
+      rows: [],
+      requests: [
+        {
+          requestId: 'request-reported',
+          occurredAt: '2026-08-04T09:31:00.000Z',
+          modelId: 'model-1',
+          providerId: 'provider-1',
+          displayName: 'gpt-5',
+          providerName: 'CODEX',
+          tokensIn: 1_000,
+          tokensOut: 10,
+          cachedTokensHit: 500,
+          cachedTokensCreated: 0,
+          totalTokens: 1_010,
+          status: 'success',
+        },
+        {
+          requestId: 'request-unreported',
+          occurredAt: '2026-08-04T09:30:00.000Z',
+          modelId: 'model-1',
+          providerId: 'provider-1',
+          displayName: 'gpt-5',
+          providerName: 'CODEX',
+          tokensIn: 9_000,
+          tokensOut: 20,
+          totalTokens: 9_020,
+          status: 'unknown',
+        },
+      ],
+      tools: [],
+      toolModels: [],
+      toolFailures: [],
+      pricing: [],
+      totalRequests: 2,
+      totalTokensIn: 10_000,
+      totalTokensOut: 30,
+      totalCachedTokensHit: 500,
+      totalCachedTokensCreated: 0,
+      totalCostByCurrency: {},
+      totalReasoningTokens: 0,
+      totalTokens: 10_030,
+    });
+
+    await renderSettings();
+    fireEvent.click(screen.getByRole('tab', { name: '使用统计' }));
+
+    expect(await screen.findByText('50.0%')).toBeTruthy();
+    const requestTable = screen.getByRole('table');
+    const unreportedRow = within(requestTable).getByText('输入 9.0k').closest('tr');
+    expect(unreportedRow).toBeTruthy();
+    expect(within(unreportedRow!).getByText('缓存读取 未上报')).toBeTruthy();
+    expect(within(unreportedRow!).getByText('缓存创建 未上报')).toBeTruthy();
+    expect(within(unreportedRow!).getByText('缓存命中 未上报')).toBeTruthy();
+    expect(within(unreportedRow!).getByText('未结束')).toBeTruthy();
   });
 
   it('shows direct-edit fields without the legacy edit and save controls', async () => {

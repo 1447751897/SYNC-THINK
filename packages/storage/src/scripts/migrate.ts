@@ -150,7 +150,131 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0035_review_image_selection_freeze',
     sql: reviewImageSelectionFreezeDdlSql(),
   },
+  {
+    name: '0036_browser_profile_site_sessions',
+    sql: browserProfileSiteSessionsDdlSql(),
+  },
+  {
+    name: '0037_browser_recording',
+    sql: browserRecordingDdlSql(),
+  },
 ];
+
+function browserRecordingDdlSql(): string {
+  return `
+CREATE TABLE browser_recording (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL REFERENCES browser_profile(id) ON DELETE RESTRICT,
+  owner_id TEXT NOT NULL,
+  lease_id TEXT,
+  page_id TEXT,
+  status TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  start_url TEXT,
+  current_url TEXT,
+  step_count INTEGER NOT NULL DEFAULT 0,
+  stop_reason TEXT,
+  error_code TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  stopped_at TEXT,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT browser_recording_status_check CHECK (
+    status IN ('starting', 'recording', 'stopping', 'stopped', 'failed', 'interrupted')
+  ),
+  CONSTRAINT browser_recording_revision_check CHECK (revision >= 1),
+  CONSTRAINT browser_recording_step_count_check CHECK (step_count BETWEEN 0 AND 200),
+  CONSTRAINT browser_recording_lease_pair_check CHECK (
+    (lease_id IS NULL AND page_id IS NULL) OR
+    (lease_id IS NOT NULL AND page_id IS NOT NULL)
+  ),
+  CONSTRAINT browser_recording_stop_reason_check CHECK (
+    stop_reason IS NULL OR stop_reason IN (
+      'user', 'step_limit', 'page_closed', 'browser_closed', 'runtime_restarted',
+      'start_failed', 'capture_failed'
+    )
+  )
+);
+CREATE INDEX browser_recording_profile_state_idx
+  ON browser_recording(profile_id, status, updated_at);
+CREATE UNIQUE INDEX browser_recording_one_active_profile_uidx
+  ON browser_recording(profile_id)
+  WHERE status IN ('starting', 'recording', 'stopping');
+
+CREATE TABLE browser_recording_step (
+  recording_id TEXT NOT NULL REFERENCES browser_recording(id) ON DELETE RESTRICT,
+  sequence INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (recording_id, sequence),
+  CONSTRAINT browser_recording_step_sequence_check CHECK (sequence BETWEEN 1 AND 200),
+  CONSTRAINT browser_recording_step_kind_check CHECK (
+    kind IN ('navigate', 'click', 'fill', 'select', 'check', 'press')
+  ),
+  CONSTRAINT browser_recording_step_payload_json_check CHECK (json_valid(payload_json)),
+  CONSTRAINT browser_recording_step_payload_size_check CHECK (
+    length(CAST(payload_json AS BLOB)) <= 16384
+  )
+);
+`;
+}
+
+function browserProfileSiteSessionsDdlSql(): string {
+  return `
+CREATE TABLE browser_profile (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_used_at TEXT,
+  deleted_at TEXT,
+  CONSTRAINT browser_profile_revision_check CHECK (revision >= 1),
+  CONSTRAINT browser_profile_default_check CHECK (is_default IN (0, 1))
+);
+CREATE INDEX browser_profile_active_idx
+  ON browser_profile(deleted_at, is_default, created_at);
+CREATE UNIQUE INDEX browser_profile_single_default_uidx
+  ON browser_profile(is_default) WHERE is_default = 1;
+INSERT INTO browser_profile (
+  id, name, revision, is_default, created_at, updated_at, last_used_at, deleted_at
+) VALUES (
+  'default', '默认浏览器', 1, 1,
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+  NULL, NULL
+);
+
+CREATE TABLE browser_site_session (
+  profile_id TEXT NOT NULL REFERENCES browser_profile(id) ON DELETE RESTRICT,
+  site_key TEXT NOT NULL,
+  origins_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  cookie_count INTEGER NOT NULL,
+  storage_bytes INTEGER NOT NULL,
+  storage_types_json TEXT NOT NULL,
+  last_seen_at TEXT,
+  last_verified_at TEXT,
+  last_checked_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (profile_id, site_key),
+  CONSTRAINT browser_site_session_origins_json_check CHECK (json_valid(origins_json)),
+  CONSTRAINT browser_site_session_storage_types_json_check CHECK (json_valid(storage_types_json)),
+  CONSTRAINT browser_site_session_state_check CHECK (
+    state IN ('data_present', 'verified', 'reauth_required')
+  ),
+  CONSTRAINT browser_site_session_cookie_count_check CHECK (cookie_count >= 0),
+  CONSTRAINT browser_site_session_storage_bytes_check CHECK (storage_bytes >= 0)
+);
+CREATE INDEX browser_site_session_profile_idx
+  ON browser_site_session(profile_id, updated_at);
+CREATE INDEX browser_command_profile_state_idx
+  ON browser_command(profile_id, state, updated_at);
+`;
+}
 
 function reviewImageSelectionFreezeDdlSql(): string {
   return `

@@ -70,6 +70,17 @@ export const CHAT_DESKTOP_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
   {
+    name: 'desktop_launch_app',
+    description:
+      'Launch one Windows .exe through the desktop host and return only after a matching visible top-level window is verified. Pass only an executable name such as notepad.exe or an absolute .exe path; command arguments and URLs are not accepted. Use this instead of run_command for GUI applications.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['application'],
+      properties: { application: { type: 'string', minLength: 1, maxLength: 1_024 } },
+    },
+  },
+  {
     name: 'desktop_inspect_window',
     description:
       'Inspect one exact window with bounded Windows UI Automation. Returns revisions and indexed elements. Use the exact window identity returned by desktop_list_windows.',
@@ -155,6 +166,7 @@ export const CHAT_DESKTOP_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
 
 export const CHAT_DESKTOP_TOOL_NAMES = new Set(CHAT_DESKTOP_TOOL_SCHEMAS.map((tool) => tool.name));
 export const CHAT_DESKTOP_MUTATING_TOOL_NAMES = new Set([
+  'desktop_launch_app',
   'desktop_focus_element',
   'desktop_invoke_element',
   'desktop_set_value',
@@ -228,6 +240,12 @@ export function assessChatDesktopToolRisk(
     return { level: 'observe', reasonCodes: ['observation'], approvalArguments };
   }
 
+  if (kind === 'launch-app') {
+    return isTrustedDisplayApplication(prepared.action.application)
+      ? { level: 'display', reasonCodes: ['trusted-app-launch'], approvalArguments }
+      : { level: 'sensitive', reasonCodes: ['application-launch'], approvalArguments };
+  }
+
   if (element?.isPassword && (kind === 'read-element' || kind === 'set-value')) {
     return {
       level: 'human-only',
@@ -285,14 +303,10 @@ function projectDesktopApprovalArguments(
   element?: DesktopElementSnapshot,
 ): Record<string, unknown> {
   const action = prepared.action;
-  const window =
-    action.kind === 'probe' || action.kind === 'list-windows'
-      ? undefined
-      : action.kind === 'inspect-window'
-        ? action.window
-        : action.target.window;
+  const window = desktopActionWindow(action);
   return {
     action: action.kind,
+    ...(action.kind === 'launch-app' ? { application: action.application } : {}),
     ...(window?.title ? { windowTitle: window.title } : {}),
     ...(window?.appId ? { appId: window.appId } : {}),
     ...(element
@@ -314,13 +328,15 @@ function desktopRiskTargetText(
   element?: DesktopElementSnapshot,
 ): string {
   const action = prepared.action;
-  const window =
-    action.kind === 'probe' || action.kind === 'list-windows'
-      ? undefined
-      : action.kind === 'inspect-window'
-        ? action.window
-        : action.target.window;
-  return [window?.title, window?.appId, element?.name, element?.automationId, element?.controlType]
+  const window = desktopActionWindow(action);
+  return [
+    action.kind === 'launch-app' ? action.application : undefined,
+    window?.title,
+    window?.appId,
+    element?.name,
+    element?.automationId,
+    element?.controlType,
+  ]
     .filter((value): value is string => typeof value === 'string' && value.length > 0)
     .join(' ');
 }
@@ -357,6 +373,9 @@ export function prepareChatDesktopTool(
 
 function normalizeOptionalDesktopStrings(args: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...args };
+  if (typeof normalized.application === 'string') {
+    normalized.application = normalized.application.trim();
+  }
   if (isRecord(normalized.window)) normalized.window = normalizeWindowIdentity(normalized.window);
   if (isRecord(normalized.target)) {
     const target = { ...normalized.target };
@@ -429,6 +448,8 @@ function desktopActionForTool(toolName: string, args: Record<string, unknown>): 
   switch (toolName) {
     case 'desktop_list_windows':
       return { kind: 'list-windows' };
+    case 'desktop_launch_app':
+      return { kind: 'launch-app', application: args.application as string };
     case 'desktop_inspect_window':
       return {
         kind: 'inspect-window',
@@ -473,9 +494,39 @@ function sanitizedDesktopArgs(action: DesktopAction): Record<string, unknown> {
 
 function desktopTargetIdentity(action: DesktopAction): string {
   if (action.kind === 'probe' || action.kind === 'list-windows') return `desktop:${action.kind}`;
+  if (action.kind === 'launch-app') {
+    return `desktop:launch-app:${action.application.toLowerCase()}`;
+  }
   const target = action.kind === 'inspect-window' ? { window: action.window } : action.target;
   return JSON.stringify(target);
 }
+
+function desktopActionWindow(action: DesktopAction): DesktopWindowIdentity | undefined {
+  if (action.kind === 'inspect-window') return action.window;
+  if (
+    action.kind === 'resolve-selector' ||
+    action.kind === 'read-element' ||
+    action.kind === 'focus-element' ||
+    action.kind === 'invoke-element' ||
+    action.kind === 'set-value'
+  ) {
+    return action.target.window;
+  }
+  return undefined;
+}
+
+function isTrustedDisplayApplication(application: string): boolean {
+  if (application.includes('\\') || application.includes('/')) return false;
+  return TRUSTED_DISPLAY_APPLICATIONS.has(application.toLowerCase());
+}
+
+const TRUSTED_DISPLAY_APPLICATIONS = new Set([
+  'notepad.exe',
+  'calc.exe',
+  'mspaint.exe',
+  'explorer.exe',
+  'snippingtool.exe',
+]);
 
 function elementAction(
   kind: 'read-element' | 'focus-element' | 'invoke-element',

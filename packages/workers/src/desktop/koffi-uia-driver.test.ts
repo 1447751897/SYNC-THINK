@@ -62,6 +62,11 @@ function createBackend() {
   return {
     probe: vi.fn(() => probeResult),
     listWindows: vi.fn(() => windowList),
+    launchApp: vi.fn(() => ({
+      kind: 'app-launched' as const,
+      window: { ...windowIdentity, appId: 'notepad.exe' },
+      reusedExistingWindow: false,
+    })),
     inspectWindow: vi.fn(() => inspection),
     acquireElement: vi.fn((_window, _limits, elementIndex) => ({
       inspection,
@@ -76,6 +81,20 @@ function createBackend() {
 }
 
 describe('KoffiUiaDriver', () => {
+  it('launches an application only through the backend visible-window verifier', async () => {
+    const backend = createBackend();
+    const driver = new KoffiUiaDriver(backend);
+
+    await expect(
+      driver.execute({ kind: 'launch-app', application: 'notepad.exe' }),
+    ).resolves.toEqual({
+      kind: 'app-launched',
+      window: { ...windowIdentity, appId: 'notepad.exe' },
+      reusedExistingWindow: false,
+    });
+    expect(backend.launchApp).toHaveBeenCalledWith('notepad.exe');
+  });
+
   it('routes list-windows through an injectable backend', async () => {
     const backend = createBackend();
     const driver = new KoffiUiaDriver(backend);

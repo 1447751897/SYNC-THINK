@@ -3,6 +3,7 @@ import type {
   DesktopAccessibilitySnapshot,
   DesktopAction,
   DesktopActionResult,
+  DesktopAppLaunchResult,
   DesktopElementSnapshot,
   DesktopElementTarget,
   DesktopProbeResult,
@@ -35,6 +36,7 @@ export interface WindowsUiaElementLease {
 export interface WindowsUiaBackend {
   probe(): DesktopProbeResult | Promise<DesktopProbeResult>;
   listWindows(): DesktopWindowListResult | Promise<DesktopWindowListResult>;
+  launchApp(application: string): DesktopAppLaunchResult | Promise<DesktopAppLaunchResult>;
   inspectWindow(
     window: DesktopWindowIdentity,
     limits: DesktopTreeLimits,
@@ -60,6 +62,8 @@ export class KoffiUiaDriver implements DesktopAutomationDriver {
         return this.backend.probe();
       case 'list-windows':
         return this.backend.listWindows();
+      case 'launch-app':
+        return this.backend.launchApp(action.application);
       case 'inspect-window':
         return createAccessibilitySnapshot(
           await this.backend.inspectWindow(

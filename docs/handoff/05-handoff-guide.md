@@ -1,3 +1,17 @@
+## Resume checkpoint（2026-08-05 17:44 · Browser Automation Studio P1.1 最终收口）
+
+- 当前分支 `feature/newmax-shell-rewrite`，P1.1 改动仍在未提交工作树；不要 reset、clean、覆盖式 checkout 或全仓格式化。
+- Runtime Profile 是唯一真源。Browser 页面已支持 Profile 创建、重命名、非默认删除、脱敏站点会话清单、实时刷新、按站点清除和清除后 SQLite 摘要同步。
+- Profile 站点摘要只保存域名、状态、计数和时间戳；Cookie 名值、Token、LocalStorage/IndexedDB 正文留在 Runtime 的 `browser-profiles/<profileId>`，不进入 Renderer、日志或审计投影。
+- 占用栅栏覆盖 Run、handoff、Page lease 和 lease 释放排空窗口；占用时 UI 与 Runtime 都拒绝刷新/清除/删除。默认 Profile 永久保留。
+- `RuntimeBrowserProfileService.listSiteSessions({ refresh: true })` 在调用 BrowserHost 前再次检查 command/lease，占用时返回 `browser.profile_in_use`，不要移除这层 Runtime 守卫。
+- Edge 143 兼容性要求：Storage 查询/清除必须使用 Page target CDP Session；没有 Page 时由维护服务创建并关闭临时 Page。Profile 刷新、清除、删除 IPC 使用 30 秒预算，普通 healthcheck 仍为 5 秒。
+- BrowserHost origin inventory 最多 512 条，由 Runtime 已知 origin、当前 Page 和 Cookie domain 派生；registrable domain 使用 `tldts@6.1.86`。裸 IPv6 站点键（如 `::1`）与 URL 方括号主机名都必须可清除；CDP 建连失败时临时 Page 必须回收。
+- 最新源码实例：Electron `43956`、Runtime `37228`、CDP `127.0.0.1:9333`，Pipe healthcheck 正常。证据目录 `.data/local-restart-20260805-125346-browser-profile`，最终截图 `profile-final-after-clear.png`；实窗刷新/清除后 UI 与 SQLite 均为空，测试专用 Edge 已关闭。
+- 最终门禁：Storage 36 files / 380 tests、Workers 15 files / 117 passed / 3 skipped、Runtime 70 files / 464 tests、Desktop 131 files / 868 tests；typecheck 20/20、lint 11/11、design tokens、强制 build 11/11（0 cached）、Prettier 与 `git diff --check` 全部通过。
+- 根测试在默认并发和全仓串行下会偶发既有 Workers/MCP、Runtime lease 时间或 Desktop updater watchdog 时序失败；对应包级受控复跑和失败文件单独复跑通过，P1.1 代码未触碰这些测试路径。
+- 下一任务是 P1.2：语义动作录制、实时步骤流和停止后的资源清理；不要提前把 Workflow 回放或定时任务标为已完成。
+
 ## Resume checkpoint（2026-08-04 · 内部无签名闭测链全绿）
 
 - 分支 `feature/newmax-shell-rewrite`，HEAD `5cc35a1`；累计改动仍在未提交工作树，禁止 reset、clean、覆盖式 checkout 和全仓格式化。
@@ -326,3 +340,26 @@ M1：in progress (Providers panel observable; Agents/Manifest next)
 ### 下一任务
 
 实现 retention/archive 离线治理：先 exact readonly manifest 和 portable archive/recovery set，再实现 durable executor、批次 cancel/resume、rollback 与 replay/projection consistency；只使用临时 fixture，不接 Runtime startup。
+
+## Resume checkpoint（2026-08-05 19:35 · Browser Automation Studio P1.2 代码收口）
+
+- 当前分支 `feature/newmax-shell-rewrite`、HEAD `9e5ee8d`；P1.1/P1.2 与此前累计改动仍在未提交工作树，禁止 reset、clean、覆盖式 checkout 或全仓格式化。
+- P1.2 已实现 `browser.recording.{list,get,start,stop}`、迁移 `0037_browser_recording`、每 Profile 独占 recording lease、主 Frame 语义步骤、实时快照轮询、停止清理和冷启动 `interrupted` 恢复。
+- 录制步骤只支持 `navigate/click/fill/select/check/Enter`；最多 200 步、单步 16 KiB。URL 去除 userinfo/query/hash，密码/OTP/支付/文件/contenteditable 保存秘密占位，binding 通过随机 capture token 与 trusted event 防伪造。
+- start 请求发出即全局锁定 Profile 切换和维护；30 秒请求超时不会自动解锁，Renderer 会通过 `recording.list` 对账。仅 Runtime 明确返回无活动录制时解除，未知状态保持 fail-closed。
+- Host acquireLease 被拒绝时只终结本次 intent，不关闭无关 Profile session；stop 失败会清理进程内去重句柄，允许同一 recording 重试且没有 unhandled rejection。
+- 当前定向证据：Storage 3 files / 73 tests、Workers BrowserHost 33/33、Runtime Recording Service 7/7、Desktop 录制/接线 4 files / 38 tests；Workers/Runtime/Desktop typecheck 与 lint、design token、`git diff --check` 已通过。
+- 尚未完成本轮包级全量、根级 typecheck/lint/token lint/强制 build 与最新源码实窗录制；这些是继续任务的直接下一步。不要生成 installer、提交或推送。
+- P1.3 才负责把确认后的草稿冻结为 WorkflowVersion，增加固定值/运行变量/秘密引用、编辑、确定性回放、失败定位和登录 handoff；不要把当前录制草稿描述为可重复任务。
+
+## Resume checkpoint（2026-08-05 21:00 · Browser Automation Studio P1.2 最终实窗收口）
+
+- 当前分支 `feature/newmax-shell-rewrite`、HEAD `9e5ee8d`；累计改动继续保留在未提交工作树，不要 reset、clean、覆盖式 checkout、全仓格式化、打包、提交或推送。
+- `RuntimeBrowserProfileService.listSiteSessions(refresh=true)` 必须在 `profileGate.runExclusive()` 释放后再生成 Profile summary。锁内生成会把本次刷新自身投影成 `inUse: true`，Renderer 随后会永久禁用刷新、清除、删除和再次录制。
+- 外部 command、durable recording 与 Page lease 仍必须返回稳定错误码 `browser.profile_in_use`，不得为修复自身假锁而绕过这些门禁。
+- DOM recorder 的文本 change 只排空仍存在的 debounce timer；Enter 已排空后，blur/change 不得重复记录 fill，否则后续 navigate 无法折叠进 press。select 的 trusted change 仍始终记录。
+- 最终包级证据：Storage 36/384、Workers 15 files / 124 passed / 3 skipped、Runtime 74/477、Desktop 133/897；根 typecheck 20/20、lint 11/11、design tokens、强制 build 11/11（0 cached）、Prettier 与 `git diff --check` 通过。
+- 根 `pnpm test --force --concurrency=1` 也以 20/20 Turbo tasks、0 cached 通过；保持受控串行可避免已知资源时序抖动。
+- 最终实窗证据位于 `.data/local-restart-20260805-204946-browser-recording-final`。正常录制为 10 步且覆盖六类动作；站点刷新/清除后可再次录制；关页得到 `interrupted/page_closed`；Profile 删除后目录、metadata、Edge 进程、站点摘要和活动录制均为空，敏感值无 SQLite 命中。
+- Electron `3452`、Runtime `33812`、CDP `127.0.0.1:9336` 保持运行；Pipe healthcheck 正常。一次性验收脚本必须使用 workspace managed Node `20.20.2`，以匹配 `better-sqlite3` 的 ABI；select 验收使用键盘事件，程序化 `selectOption()` 的非 trusted change 被安全边界拒绝是预期行为。
+- 下一任务是 P1.3 WorkflowVersion、变量/秘密引用、编辑和确定性回放。运行历史、失败定位、登录 handoff 与定时任务分别留在 P1.4/P1.5。

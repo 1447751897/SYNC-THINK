@@ -57,7 +57,8 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   },
   {
     name: 'run_command',
-    description: 'Run one executable without a shell in the bound project folder.',
+    description:
+      'Run one non-interactive executable without a shell in the bound project folder. Process exit does not verify a visible GUI window; use desktop_launch_app when Computer Use is enabled to open desktop applications.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -976,11 +977,13 @@ export function chatToolDeniedMessage(
   const normalized = normalizeChatExecutionMode(mode);
   if (CHAT_DESKTOP_MUTATING_TOOL_NAMES.has(toolName)) {
     const action =
-      toolName === 'desktop_set_value'
-        ? '修改桌面控件内容'
-        : toolName === 'desktop_invoke_element'
-          ? '触发桌面控件'
-          : '聚焦桌面控件';
+      toolName === 'desktop_launch_app'
+        ? '启动桌面应用'
+        : toolName === 'desktop_set_value'
+          ? '修改桌面控件内容'
+          : toolName === 'desktop_invoke_element'
+            ? '触发桌面控件'
+            : '聚焦桌面控件';
     return reason === 'denied'
       ? `用户拒绝了${action}。不要重试同一动作；说明原计划并等待用户指示。`
       : `当前权限为「询问批准」，${action}需要用户确认后才能执行。`;

@@ -29,6 +29,7 @@ describe('desktop chat tools', () => {
   it('exposes the bounded UIA observation and semantic action surface', () => {
     expect(CHAT_DESKTOP_TOOL_SCHEMAS.map((tool) => tool.name)).toEqual([
       'desktop_list_windows',
+      'desktop_launch_app',
       'desktop_inspect_window',
       'desktop_resolve_selector',
       'desktop_read_element',
@@ -37,6 +38,7 @@ describe('desktop chat tools', () => {
       'desktop_set_value',
     ]);
     expect([...CHAT_DESKTOP_MUTATING_TOOL_NAMES]).toEqual([
+      'desktop_launch_app',
       'desktop_focus_element',
       'desktop_invoke_element',
       'desktop_set_value',
@@ -59,6 +61,18 @@ describe('desktop chat tools', () => {
     expect(assessChatDesktopToolRisk(prepare('desktop_list_windows', {}))).toMatchObject({
       level: 'observe',
     });
+    expect(
+      assessChatDesktopToolRisk(prepare('desktop_launch_app', { application: 'notepad.exe' })),
+    ).toMatchObject({
+      level: 'display',
+      reasonCodes: ['trusted-app-launch'],
+      approvalArguments: { action: 'launch-app', application: 'notepad.exe' },
+    });
+    expect(
+      assessChatDesktopToolRisk(
+        prepare('desktop_launch_app', { application: 'D:\\Tools\\custom.exe' }),
+      ),
+    ).toMatchObject({ level: 'sensitive', reasonCodes: ['application-launch'] });
     expect(assessChatDesktopToolRisk(prepare('desktop_focus_element', { target }))).toMatchObject({
       level: 'display',
     });
@@ -170,6 +184,45 @@ describe('desktop chat tools', () => {
       target,
       value: 'secret via stdin',
     });
+  });
+
+  it('maps an application launch to the isolated DesktopWorker and rejects command arguments', async () => {
+    const worker = new RecordingDesktopWorker();
+    const result = JSON.parse(
+      await executeChatDesktopTool({
+        capabilityEnabled: true,
+        workspaceRoot: process.cwd(),
+        toolCall: {
+          id: 'launch-1',
+          name: 'desktop_launch_app',
+          argumentsJson: JSON.stringify({ application: 'notepad.exe' }),
+        },
+        worker,
+      }),
+    ) as { ok: boolean };
+
+    expect(result.ok).toBe(true);
+    expect(worker.calls[0]!.input.action).toEqual({
+      kind: 'launch-app',
+      application: 'notepad.exe',
+    });
+
+    const rejected = JSON.parse(
+      await executeChatDesktopTool({
+        capabilityEnabled: true,
+        toolCall: {
+          id: 'launch-2',
+          name: 'desktop_launch_app',
+          argumentsJson: JSON.stringify({ application: 'notepad.exe --help' }),
+        },
+        worker,
+      }),
+    ) as { ok: boolean; code: string };
+    expect(rejected).toMatchObject({
+      ok: false,
+      code: ErrorCode.DESKTOP_PROTOCOL_MALFORMED,
+    });
+    expect(worker.calls).toHaveLength(1);
   });
 
   it('omits blank optional desktop fields before strict host validation', async () => {

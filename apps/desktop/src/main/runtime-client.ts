@@ -36,11 +36,23 @@ export interface RuntimePipeClientOptions {
 }
 
 export const USAGE_SUMMARY_REQUEST_TIMEOUT_MS = 300_000;
+export const BROWSER_PROFILE_MAINTENANCE_REQUEST_TIMEOUT_MS = 30_000;
+export const BROWSER_RECORDING_REQUEST_TIMEOUT_MS = 30_000;
 const CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS = 120_000;
 
 export function resolveRuntimeRequestTimeoutMs(type: string, defaultTimeoutMs: number): number {
   if (type === 'usage.summary') return USAGE_SUMMARY_REQUEST_TIMEOUT_MS;
   if (type === 'conversation.compact') return CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS;
+  if (
+    type === 'browser.profile.listSiteSessions' ||
+    type === 'browser.profile.clearSiteSession' ||
+    type === 'browser.profile.delete'
+  ) {
+    return BROWSER_PROFILE_MAINTENANCE_REQUEST_TIMEOUT_MS;
+  }
+  if (type === 'browser.recording.start' || type === 'browser.recording.stop') {
+    return BROWSER_RECORDING_REQUEST_TIMEOUT_MS;
+  }
   return defaultTimeoutMs;
 }
 

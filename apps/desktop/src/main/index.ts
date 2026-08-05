@@ -144,6 +144,20 @@ import {
   parseListWaitingBrowserHandoffsPayload,
 } from '../browser-handoff-payloads.js';
 import {
+  parseClearBrowserSiteSessionPayload,
+  parseCreateBrowserProfilePayload,
+  parseDeleteBrowserProfilePayload,
+  parseListBrowserProfilesPayload,
+  parseListBrowserSiteSessionsPayload,
+  parseRenameBrowserProfilePayload,
+} from '../browser-profile-payloads.js';
+import {
+  parseGetBrowserRecordingPayload,
+  parseListBrowserRecordingsPayload,
+  parseStartBrowserRecordingPayload,
+  parseStopBrowserRecordingPayload,
+} from '../browser-recording-payloads.js';
+import {
   parseCancelDesktopCommandPayload,
   parseContinueDesktopCommandPayload,
   parseListWaitingDesktopCommandsPayload,
@@ -1815,6 +1829,86 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request(
       'desktop.command.cancel',
       parseCancelDesktopCommandPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-profile-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.profile.list',
+      parseListBrowserProfilesPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-profile-create', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.profile.create',
+      parseCreateBrowserProfilePayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-profile-rename', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.profile.rename',
+      parseRenameBrowserProfilePayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-profile-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.profile.delete',
+      parseDeleteBrowserProfilePayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-profile-list-site-sessions', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.profile.listSiteSessions',
+      parseListBrowserSiteSessionsPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-profile-clear-site-session', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.profile.clearSiteSession',
+      parseClearBrowserSiteSessionPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-recording-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.recording.list',
+      parseListBrowserRecordingsPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-recording-get', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.recording.get',
+      parseGetBrowserRecordingPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-recording-start', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.recording.start',
+      parseStartBrowserRecordingPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-recording-stop', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.recording.stop',
+      parseStopBrowserRecordingPayload(value),
     );
   });
   ipcMain.handle('runtime:browser-handoff-list-waiting', async (event, value: unknown) => {
