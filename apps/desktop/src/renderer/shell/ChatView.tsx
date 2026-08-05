@@ -3879,7 +3879,40 @@ function MetaHover({
 
 // ─── Thinking + tool process group (higher-level fold) ─────────────────────────
 
-function AssistantProcessGroup({
+export function formatAssistantProcessElapsed(
+  processView: RunProcessView | undefined,
+  active: boolean,
+  now: number = Date.now(),
+): string | undefined {
+  const durationMs = (() => {
+    if (active) {
+      const startedAt = Date.parse(processView?.startedAt ?? '');
+      return Number.isFinite(startedAt) && Number.isFinite(now) && now >= startedAt
+        ? now - startedAt
+        : undefined;
+    }
+    const startedAt = Date.parse(processView?.startedAt ?? '');
+    const completedAt = Date.parse(processView?.completedAt ?? '');
+    if (Number.isFinite(startedAt) && Number.isFinite(completedAt) && completedAt >= startedAt) {
+      return completedAt - startedAt;
+    }
+    return typeof processView?.durationMs === 'number' &&
+      Number.isFinite(processView.durationMs) &&
+      processView.durationMs >= 0
+      ? processView.durationMs
+      : undefined;
+  })();
+  if (durationMs === undefined) return undefined;
+  const totalSeconds = Math.floor(durationMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':')
+    : [minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
+}
+
+export function AssistantProcessGroup({
   reasoningText,
   processView,
   streaming,
@@ -3893,16 +3926,26 @@ function AssistantProcessGroup({
   const hasReasoning = Boolean(reasoningText?.trim());
   const stepCount = processView?.steps.length ?? 0;
   const changeCount = processView?.fileChanges.length ?? 0;
-  const hasContent = hasReasoning || stepCount > 0 || changeCount > 0 || Boolean(streaming);
+  const active = Boolean(streaming || processView?.running);
+  const hasContent = hasReasoning || stepCount > 0 || changeCount > 0 || active;
   const [open, setOpen] = useState(Boolean(streaming));
+  const [clockNow, setClockNow] = useState(() => Date.now());
 
   useEffect(() => {
     if (streaming) setOpen(true);
     else setOpen(false);
   }, [streaming]);
 
+  useEffect(() => {
+    setClockNow(Date.now());
+    if (!active || !processView?.startedAt) return;
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [active, processView?.startedAt]);
+
   if (!hasContent) return null;
 
+  const elapsed = formatAssistantProcessElapsed(processView, active, clockNow);
   const summaryParts = [
     hasReasoning ? '深度思考' : undefined,
     stepCount > 0 ? `${stepCount} 个工具步骤` : undefined,
@@ -3921,7 +3964,7 @@ function AssistantProcessGroup({
         aria-expanded={open}
       >
         <span className="shell-process-group__icon">
-          {streaming || processView?.running ? (
+          {active ? (
             <LoaderCircle size={14} className="shell-process-spin" />
           ) : processView?.errorCount ? (
             <FileWarning size={14} />
@@ -3930,7 +3973,10 @@ function AssistantProcessGroup({
           )}
         </span>
         <span className="shell-process-group__heading">
-          <strong>{streaming ? '正在思考与执行…' : '思考与执行过程'}</strong>
+          <strong>
+            {active ? '正在思考与执行…' : '思考与执行过程'}
+            {elapsed ? ` · ${elapsed}` : ''}
+          </strong>
           <small>{summaryParts.length > 0 ? summaryParts.join(' · ') : '准备中'}</small>
         </span>
         <ChevronDown size={15} className="shell-process-group__chevron" />

@@ -12,6 +12,7 @@ import type {
   ProviderToolSchema,
 } from '@sync-think/adapters';
 import {
+  COMPUTER_USE_PLUGIN_SETTING_KEY,
   decodeFrames,
   encodeFrame,
   parseConversationGetContextStatusResponse,
@@ -27,6 +28,7 @@ import {
   runMigrations,
   DEFAULT_CONVERSATION_AGENT_ID,
   SqliteAgentStore,
+  SqliteAppSettingStore,
   SqliteConversationStore,
   SqliteEventCheckpointStore,
   SqliteGlobalAgentStore,
@@ -438,14 +440,89 @@ function expectedSectionsFromProviderRequest(request: ProviderCallRequest) {
 }
 
 describe('conversation.getContextStatus runtime integration', () => {
+  it('counts Computer Use schemas on a cache miss without a project or Agent tools', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-context-status-desktop-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+    const stateStore = new SqliteEventCheckpointStore(connection.raw);
+    const workspaceStore = new SqliteWorkspaceStore(connection.raw);
+    const conversationStore = new SqliteConversationStore(connection.raw);
+    const appSettingStore = new SqliteAppSettingStore(connection.raw);
+    const workspaceId = 'workspace-context-status-desktop' as WorkspaceId;
+    workspaceStore.createWorkspace({
+      id: workspaceId,
+      name: 'Context Status Desktop',
+    });
+    const task = workspaceStore.createTask({
+      workspaceId,
+      title: 'Computer Use context status',
+      goal: 'Count enabled Desktop tool schemas',
+    });
+    const conversation = conversationStore.create({
+      target: { track: 'model', modelId: 'fake-mini' as never },
+      workspaceId,
+      title: 'Computer Use context status',
+      executionMode: 'full-access',
+    });
+    conversationStore.bindTask(conversation.id, task.taskId);
+    appSettingStore.set(COMPUTER_USE_PLUGIN_SETTING_KEY, { enabled: true });
+
+    const installId = `context-status-desktop-${randomBytes(6).toString('hex')}`;
+    const runtime = new Runtime({
+      installId,
+      allowNoToken: true,
+      stateStore,
+      workspaceStore,
+      conversationStore,
+      appSettingStore,
+      workspaceId,
+      checkpointRunId: `runtime-${installId}` as RunId,
+      demoProvider: new ContextRecordingAdapter(),
+    });
+    await runtime.start();
+    const socket = await connectRuntime(installId);
+    const inbox = createFrameInbox(socket);
+    try {
+      const hello = await inbox.send({
+        id: 'desktop-context-status-hello',
+        kind: 'request',
+        type: '__hello',
+        payload: {
+          protocolVersion: 2,
+          appVersion: '0.0.1',
+          installId,
+          nonce: randomBytes(8).toString('hex'),
+          features: ['conversation.getContextStatus'],
+        },
+      });
+      expect(hello.error).toBeUndefined();
+
+      const frame = await inbox.send({
+        id: 'desktop-context-status',
+        kind: 'request',
+        type: 'conversation.getContextStatus',
+        payload: { conversationId: conversation.id },
+      });
+      expect(frame.error).toBeUndefined();
+      const status = parseConversationGetContextStatusResponse(frame.payload);
+      expect(status.sections.find((section) => section.type === 'tools')?.tokens).toBeGreaterThan(
+        0,
+      );
+    } finally {
+      socket.destroy();
+      await runtime.stop();
+      connection.raw.close();
+    }
+  });
+
   it('uses task-indexed history for context status and compact maintenance', async () => {
     const harness = await createHarness(200);
     const listTaskEvents = vi.spyOn(harness.stateStore, 'listEventsByTask');
-    const listAllEvents = vi
-      .spyOn(harness.stateStore, 'listAllEvents')
-      .mockImplementation(() => {
-        throw new Error('global event history must not be materialized');
-      });
+    const listAllEvents = vi.spyOn(harness.stateStore, 'listAllEvents').mockImplementation(() => {
+      throw new Error('global event history must not be materialized');
+    });
     try {
       const status = await getContextStatus(harness, 'task-indexed-status');
       expect(status.modelId).toBeDefined();
@@ -559,9 +636,9 @@ describe('conversation.getContextStatus runtime integration', () => {
     try {
       expect(harness.adapter.calls).toHaveLength(0);
       const cacheMissStatus = await getContextStatus(harness, 'cache-miss-context-status');
-      expect(cacheMissStatus.sections.find((section) => section.type === 'tools')?.tokens).toBeGreaterThan(
-        0,
-      );
+      expect(
+        cacheMissStatus.sections.find((section) => section.type === 'tools')?.tokens,
+      ).toBeGreaterThan(0);
 
       await appendUserMessage(
         harness,

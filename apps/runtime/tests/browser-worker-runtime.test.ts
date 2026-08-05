@@ -3,18 +3,17 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type {
-  AdapterEvent,
-  ProviderAdapter,
-  ProviderCallRequest,
-} from '@sync-think/adapters';
+import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
 import { decodeFrames, encodeFrame, pipePathPortable, type Frame } from '@sync-think/protocol';
 import type { RunId, WorkspaceId } from '@sync-think/shared';
 import {
   openDatabaseAsync,
   runMigrations,
   SqliteBrowserStore,
+  SqliteConversationStore,
   SqliteEventCheckpointStore,
+  SqliteUnitOfWork,
+  SqliteWorkspaceStore,
 } from '@sync-think/storage';
 import {
   BrowserHostError,
@@ -157,14 +156,27 @@ describe('Runtime Browser Worker tool loop', () => {
     const connection = await openDatabaseAsync({ path: dbPath });
     const store = new SqliteEventCheckpointStore(connection.raw);
     const browserStore = new SqliteBrowserStore(connection.raw);
-    browserStore.upsertOriginGrant({
-      scopeType: 'workspace',
-      scopeId: workspaceId,
-      origin: 'https://example.test',
-      action: 'navigate',
-      decision: 'allow',
-      approvalId: 'test-preapproved',
+    const workspaceStore = new SqliteWorkspaceStore(connection.raw);
+    const conversationStore = new SqliteConversationStore(connection.raw);
+    const unitOfWork = new SqliteUnitOfWork(connection.raw);
+    workspaceStore.createWorkspace({
+      id: workspaceId,
+      name: 'Browser runtime',
+      folderPath: root,
+      allowedRoots: [root],
     });
+    const task = workspaceStore.createTask({
+      workspaceId,
+      title: 'Browser runtime',
+      goal: 'Exercise Browser full-access policy',
+    });
+    const conversation = conversationStore.create({
+      target: { track: 'model', modelId: 'fake-mini' as never },
+      workspaceId,
+      title: 'Browser runtime',
+      executionMode: 'full-access',
+    });
+    conversationStore.bindTask(conversation.id, task.taskId);
     const provider = new BrowserToolProvider();
     const browserHost = new RecordingBrowserHost();
     const runtime = new Runtime({
@@ -172,6 +184,9 @@ describe('Runtime Browser Worker tool loop', () => {
       allowNoToken: true,
       stateStore: store,
       browserStore,
+      workspaceStore,
+      conversationStore,
+      unitOfWork,
       workspaceId,
       checkpointRunId: `runtime-${installId}` as RunId,
       demoProvider: provider,
@@ -199,10 +214,14 @@ describe('Runtime Browser Worker tool loop', () => {
         kind: 'request',
         type: 'task.appendMessage',
         payload: {
-          threadId: 'thread-browser-worker',
+          threadId: task.threadId,
           expectedTaskVersion: 0,
           role: 'user',
-          text: 'Open the dashboard.',
+          text: [
+            '打开 "https://www.4399.com/"。',
+            '先在可见浏览器中打开页面，',
+            '然后读取页面标题。',
+          ].join('\n'),
           networkEnabled: true,
         },
       });
@@ -212,6 +231,7 @@ describe('Runtime Browser Worker tool loop', () => {
           store.listEvents(workspaceId, 0).some((event) => event.type === 'run.completed'),
         ),
       ).toBe(true);
+      expect(provider.requests[0]?.tools?.some((tool) => tool.name === 'browser_open')).toBe(true);
       expect(browserHost.executions).toHaveLength(1);
       expect(browserHost.executions[0]).toMatchObject({
         action: {
@@ -227,6 +247,7 @@ describe('Runtime Browser Worker tool loop', () => {
 
       const events = store.listEvents(workspaceId, 0);
       expect(events.some((event) => event.type === 'browser.command_requested')).toBe(false);
+      expect(events.some((event) => event.type === 'tool.approval_requested')).toBe(false);
       const intent = events.find((event) => event.type === 'browser.command.started');
       expect(intent?.payload).toMatchObject({
         toolName: 'browser_open',
@@ -236,14 +257,20 @@ describe('Runtime Browser Worker tool loop', () => {
       });
       expect(JSON.stringify(intent)).not.toContain('must-not-enter-audit');
       const completion = events.find(
-        (event) =>
-          event.type === 'tool.completed' && event.payload.toolName === 'browser_open',
+        (event) => event.type === 'tool.completed' && event.payload.toolName === 'browser_open',
       );
       expect(JSON.parse(String(completion?.payload.result ?? '{}'))).toMatchObject({
         ok: true,
         url: 'https://example.test/dashboard',
       });
       expect(JSON.stringify(completion)).not.toContain('completion-secret');
+      expect(
+        browserStore.resolveOriginDecision({
+          scopes: [{ scopeType: 'run', scopeId: String(intent?.runId) }],
+          origin: 'https://example.test',
+          action: 'navigate',
+        }),
+      ).toMatchObject({ decision: 'allow' });
     } finally {
       socket.destroy();
       await runtime.stop();
@@ -326,8 +353,7 @@ describe('Runtime Browser Worker tool loop', () => {
       const completion = store
         .listEvents(workspaceId, 0)
         .find(
-          (event) =>
-            event.type === 'tool.completed' && event.payload.toolName === 'browser_open',
+          (event) => event.type === 'tool.completed' && event.payload.toolName === 'browser_open',
         );
       const persisted = JSON.parse(String(completion?.payload.result ?? '{}')) as {
         error?: string;

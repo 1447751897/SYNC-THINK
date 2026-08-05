@@ -35,6 +35,15 @@ export interface RuntimePipeClientOptions {
   reconnectDelayMs?: number;
 }
 
+export const USAGE_SUMMARY_REQUEST_TIMEOUT_MS = 300_000;
+const CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS = 120_000;
+
+export function resolveRuntimeRequestTimeoutMs(type: string, defaultTimeoutMs: number): number {
+  if (type === 'usage.summary') return USAGE_SUMMARY_REQUEST_TIMEOUT_MS;
+  if (type === 'conversation.compact') return CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS;
+  return defaultTimeoutMs;
+}
+
 interface PendingRequest {
   resolve: (payload: unknown) => void;
   reject: (error: Error) => void;
@@ -447,8 +456,10 @@ export class RuntimePipeClient {
     const id = `desktop_${ulid()}`;
     // Compact may call the live model for a structured summary — allow far longer than the
     // default 5s IPC budget used for ordinary CRUD.
-    const defaultTimeout =
-      type === 'conversation.compact' ? 120_000 : (this.options.requestTimeoutMs ?? 5_000);
+    const defaultTimeout = resolveRuntimeRequestTimeoutMs(
+      type,
+      this.options.requestTimeoutMs ?? 5_000,
+    );
     const timeoutMs =
       typeof timeoutMsOverride === 'number' && timeoutMsOverride > 0
         ? timeoutMsOverride

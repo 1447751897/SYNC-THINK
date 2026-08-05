@@ -253,3 +253,124 @@
 - 验证通过：Adapters 8 files / 79 tests、Core 17 files / 180 tests、Runtime 5 files / 49 tests、Desktop chat-stream 1 file / 6 tests；Adapters/Core/Runtime/Desktop 类型检查通过，Adapters/Core/Runtime/Desktop 构建通过，Prettier 与 `git diff --check` 通过。本轮未生成安装包。
 - 最新闭环补测使用独立 `gpt-5.6-luna` 对话：联网 tools 形态前两轮均为 0；切换到固定无联网 tools 后首轮预热为 0，随后两轮分别读取 `2560/3102` 与 `2560/3141` 输入 Token，约 82% 命中。中转两轮都上报 `cache_write_tokens=0`，因此 UI 继续显示真实创建量 0，并以读取量/命中率作为主要健康指标。
 - 使用统计 UI 已改为模型/供应商合并列、四类 Token 常显、命中率摘要与逐行费用展开；1424x861、1024x720 以及浅深主题均完成实窗检查。下一步只需完成最终全量门禁和本地源码重启，不生成安装包。
+
+## 当前状态：2026-08-04 23:19 +08:00 · 使用统计卡死修复已重启待手测
+
+### 当前结论
+
+- 原错误 `Runtime request timed out: runtime.healthcheck` 已定位并修复。问题不是 Runtime 未启动，而是 16.87GB SQLite 上的同步使用统计 SQL 阻塞了 Runtime Pipe 事件循环。
+- 统计扫描已从 Runtime 主线程移入只读 Worker，并增加持久增量 sidecar。首次缓存构建完成后，统计页不再重复扫描约 198 万条 Event。
+- 当前本地源码实例已从最新强制构建产物重启；未生成 installer、portable 或 release artifact，未提交、未推送。
+
+### 实现与性能
+
+- 数据库：`.data/SYNC-THINK/sync-think.db`，16,873,340,928 bytes，约 1,986,942 条 Event。
+- 缓存：`.data/SYNC-THINK/usage-summary-cache-v1.json`，615,785 bytes；high-water rowid 为 1,986,942。
+- 首次真实只读扫描约 111,259 ms，主线程心跳持续 11 次；SQLite 文件大小和修改时间在扫描前后保持不变。
+- sidecar 增量读取约 216 ms；重启后的真实全量 `usage.summary` 为 182 ms，同时发出的 `runtime.healthcheck` 为 1 ms。
+- 全量统计返回 6 个模型、91 个请求、16 类工具和 37 条工具失败；近 7 天没有 `provider.usage` 记录，因此该范围返回 0 属于当前数据事实。
+
+### 验证与运行实例
+
+- Runtime：67 files / 447 tests passed。
+- Desktop：129 files / 855 tests passed。
+- Runtime / Desktop typecheck passed。
+- `pnpm exec turbo run build --force`：11/11 successful，0 cached。
+- 当前 Electron PID：11048；Runtime PID：97648；独立 Pipe probe 返回 `ok: true`。
+- 日志目录：`.data/restart-usage-summary-fix-20260804-231913`；stdout 已包含 `pipe ready`、`database ready`、`hello accepted`，stderr 为空。
+
+### 用户手测
+
+1. 打开“设置 → 模型 → 使用统计”。
+2. 依次切换“24 小时、7 天、30 天、全部”。
+3. “全部”应快速显示已有历史统计；24 小时和 7 天可能为空，这是当前数据库时间范围内没有使用记录。
+4. 重复关闭并打开统计页，页面应持续快速响应，主界面和其他对话操作不应被卡住。
+5. 不应再出现 `runtime.healthcheck` timeout；如仍有异常，保留当前窗口并检查上述重启日志目录。
+
+## 当前状态：2026-08-04 23:57 +08:00 · Browser / Computer Use 调用修复已重启待手测
+
+### 当前结论
+
+- “打开 4399”与 Computer Use 指令不执行的共同根因已经修复。故障发生在 Provider 请求前：多行、引号或多模态消息经过 JSON 序列化后，Context Snapshot 的来源校验无法再匹配原始文本，于是误报 `included source is absent from provider payload`。
+- 消息来源现在按结构化内容匹配；上下文一致性错误固定归类为 `protocol`，不再触发模型 fallback 风暴。
+- Computer Use 开启后，即使没有项目目录与 Agent tools，Context Status 也会正确包含 Desktop tool schemas。
+- 此次修复保留了上一轮使用统计 Worker、增量 sidecar 与 `usage.summary` 300 秒专用预算，没有回退到 Runtime 主线程同步扫描。
+
+### 自动验证
+
+- Runtime 定向测试：6 files / 29 tests passed，覆盖 Context Snapshot、Browser Host、Computer Use、Context Status 与使用统计异步缓存。
+- Desktop 定向测试：1 file / 1 test passed，确认仅 `usage.summary` 使用 300 秒预算，普通 `runtime.healthcheck` 仍为 5 秒。
+- Runtime / Desktop typecheck passed。
+- 目标文件 Prettier 与 `git diff --check` passed。
+- `pnpm exec turbo run build --force`：11/11 successful，0 cached。
+- 独立 `node scripts/pipe-client.mjs` 返回 `PIPE_SMOKE_OK`，实时 `runtime.healthcheck` 返回 `ok: true`。
+
+### 当前运行实例
+
+- Electron PID：`41004`；Runtime PID：`4444`；两者均处于 Responding 状态。
+- 日志目录：`.data/restart-browser-computer-use-fix-20260804-235706`。
+- stdout 已包含 `pipe ready`、`database ready`、`hello accepted`；stderr 为空。
+- 当前工作树保留本轮与使用统计修复，未提交、未推送；未生成 installer、portable 或 release artifact。
+
+### 用户手测
+
+1. 在对话中开启“联网”，发送：
+   ```text
+   打开 https://www.4399.com/
+   ```
+   预期：出现 `browser_open` requested/completed，并打开可见 Browser 页面。
+2. 在设置中开启 Computer Use，把当前对话权限设为“完全访问”，发送一个窗口枚举或读取任务。
+   预期：执行 `desktop_list_windows`；普通已解析的显示/读取动作不额外审批，敏感或 human-only 动作仍按动作策略进入审批。
+3. 再使用带换行、中文引号和英文双引号的 Computer Use 指令。
+   预期：不再出现 `included source is absent from provider payload`，Desktop 工具链继续执行。
+4. 打开“设置 → 模型 → 使用统计”并切换时间范围。
+   预期：页面保持响应，不再出现 `runtime.healthcheck` timeout。
+
+## 当前状态：2026-08-04 · Browser 完全访问与思考耗时已完成实机验证
+
+### 当前结论
+
+- Browser 在“完全访问”对话中不再停在审批等待态。策略需要审批时，Runtime 会自动创建仅当前 Run 有效的 origin grant，不发布审批弹窗事件；非完全访问模式仍按原策略处理。
+- Browser 与 Computer Use 都已从 SYNC-THINK 对话界面真实调用成功，不只是单元测试或模拟 Host。
+- “正在思考与执行”现在每秒显示已用时间，Run 完成后切换为“思考与执行过程”并冻结最终耗时。
+- 最新强制构建产物已经启动，当前实例保持运行供人工测试；未提交、未推送，也未生成发布产物。
+
+### 实机证据
+
+- Browser Run：`9R7WZ6Z1ZGFSV21SDWWB7034MT`。
+  - 指令：打开 `https://www.4399.com/`。
+  - Microsoft Edge 成功显示 4399 首页。
+  - Event 顺序为 `browser.command.started`、`tool.completed`、`run.completed`。
+  - `approval_request` 为空，没有 `tool.approval_requested`。
+  - SQLite 已持久化 `auto-full-access:9R7WZ6Z1ZGFSV21SDWWB7034MT:call_2SchiiUIwRcaKOHWY06vwYyB` 对应的 Run-scoped grant。
+  - 完成态耗时冻结为 `00:10`。
+- Computer Use Run：`0D1M07ZM5G32528DA1VS91FGMD`。
+  - 指令：列出当前可见窗口并返回 SYNC-THINK 标题。
+  - `desktop_list_windows` 真实执行并返回标题 `SYNC-THINK`。
+  - Event 顺序为 `desktop.command.started`、`tool.completed`、`run.completed`，审批记录为空。
+  - 完成态耗时冻结为 `00:09`。
+
+### 自动验证与运行实例
+
+- Runtime：4 files / 24 tests passed。
+- Desktop：4 files / 21 tests passed。
+- Runtime / Desktop typecheck passed。
+- `pnpm exec turbo run build --force`：11/11 successful，0 cached。
+- `pnpm selftest:browser-handoff`：continue、cancel-close-page、cancel-keep-open 全部通过。
+- `pnpm selftest:desktop-handoff`：continue、cancel 全部通过。
+- 当前开发 session：`83655`；Runtime PID：`61144`；Electron PID：`61212`；窗口标题：`SYNC-THINK`。
+- Pipe：`\\.\pipe\sync-think-dev-0001`；数据库：`D:\projects\SYNC-THINK\.data\SYNC-THINK\sync-think.db`。
+
+### 用户手测
+
+1. 把当前对话权限设为“完全访问”，开启 Browser 后发送：
+   ```text
+   打开 https://www.4399.com/
+   ```
+   预期：直接打开网页，不出现 Browser 审批弹窗。
+2. 开启 Computer Use 后发送：
+   ```text
+   列出当前可见窗口并告诉我 SYNC-THINK 窗口的标题
+   ```
+   预期：返回 `SYNC-THINK`，不额外等待审批。
+3. 观察运行中的“正在思考与执行 · MM:SS”每秒增长；完成后应变为“思考与执行过程 · MM:SS”，且时间停止增长。

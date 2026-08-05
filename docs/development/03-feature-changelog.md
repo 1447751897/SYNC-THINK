@@ -2427,3 +2427,33 @@ Desktop typecheck/build：passed
 - 同一 `gpt-5.6-luna` 对话的实时闭环验证显示：切换 tools 配置后的首轮为预热 miss，随后两轮分别读取 `2560/3102` 与 `2560/3141` 输入 Token，命中率约 82%；中转继续返回缓存创建 0，因此不合成不存在的 write usage。
 - 使用统计深浅主题、1424x861 与 1024x720 均完成实窗检查；请求表默认态、费用展开态与消息 Token 悬浮明细均可读且无布局溢出。
 - 本轮继续只使用本地源码构建与 Runtime/SQLite 实测，没有生成 installer、portable 或 release artifact。
+
+## 2026-08-04 · 16.87GB 数据库使用统计异步缓存修复
+
+- 根因确认：`usage.summary` 原先在 Runtime 主线程同步扫描约 198 万条 Event。首次统计会阻塞 Pipe 事件循环，Desktop 随后的 `runtime.healthcheck` 因 5 秒超时而显示 `RuntimeTransientError`。
+- 文件数据库的统计扫描现移入独立 Node Worker；Worker 使用 SQLite `readonly + query_only`，只投影 `provider.usage`、Run terminal 与 Tool request/terminal 六类事件。
+- 新增 `rowid + eventId + sequence` high-water fence 和 `usage-summary-cache-v1.json` sidecar：首次全量构建，后续只读取新增尾部；fence 不匹配时自动重建；并发范围查询共享同一个 refresh Promise。
+- 开发态 `.ts` Worker 使用 data URL bootstrap 与 `tsx/esm/api.tsImport()`，构建后的 `.js` Worker 继续使用原生 Node Worker；Worker 在任何未返回 snapshot 的退出路径都会 reject，避免永久悬挂。
+- Runtime 的 `usage.summary` handler 改为异步；Desktop 仅把该请求预算放宽到 300 秒，普通请求继续保持 5 秒，`conversation.compact` 继续保持 120 秒。
+- 真实数据库首次只读扫描耗时约 111 秒，期间主线程心跳持续；生成 615,785 bytes sidecar。后续真实全量统计约 182 ms，并发 `runtime.healthcheck` 约 1 ms，返回 6 个模型、91 个请求、16 类工具和 37 条工具失败。
+- 验证：Runtime 67 files / 447 tests、Desktop 129 files / 855 tests、两包 typecheck 通过；根级 `pnpm exec turbo run build --force` 为 11/11、0 cached。2026-08-04 23:19 +08:00 已重启本地源码实例，启动日志包含 `pipe ready`、`database ready`、`hello accepted`。
+
+## 2026-08-04 · Browser / Computer Use 上下文来源校验修复
+
+- 根因确认：Context Snapshot 原先通过 `JSON.stringify(messages).includes(source.content)` 判断消息来源是否进入 Provider 请求。包含换行、双引号或多模态文本的用户消息在 JSON 序列化后会被转义，导致来源被误判缺失，Browser 与 Computer Use 都会在 Provider 调用前以 `included source is absent from provider payload` 终止。
+- 消息来源校验改为结构化匹配：字符串消息直接检查原始 `message.content`，多模态消息逐项检查文本 part，不再依赖整个消息数组的 JSON 序列化结果。
+- 新增 `ContextSnapshotInvariantError` 并固定 `failureClass: protocol`，上下文一致性错误不再被归类为未知 Provider 故障，也不会触发无意义的模型 fallback 风暴。
+- `conversation.getContextStatus` 的 tools 判定补入 Computer Use 插件状态；即使当前对话没有项目目录、没有 Agent tools，只要插件已开启，Context Status 也会纳入 Desktop schemas。
+- Browser 回归使用多行中文、引号和 `https://www.4399.com/`，确认 Provider 收到 `browser_open` 且 Browser Host 执行；Computer Use 回归使用真实多行窗口/UIA 指令，确认 Provider 收到全部 `desktop_*` schemas。
+- 验证：Runtime 定向 6 files / 29 tests、Desktop timeout 1 file / 1 test、Runtime/Desktop typecheck、Prettier 与 `git diff --check` 均通过；根级 `pnpm exec turbo run build --force` 为 11/11、0 cached。
+- 2026-08-04 23:57 +08:00 已重启本地源码实例：Electron PID `41004`、Runtime PID `4444`；独立 Pipe probe 返回 `PIPE_SMOKE_OK`，日志包含 `pipe ready`、`database ready`、`hello accepted`，stderr 为空。未生成 installer、portable 或 release artifact，未提交、未推送。
+
+## 2026-08-04 · Browser 完全访问自动授权与思考耗时
+
+- Browser 工具在对话权限为 `full-access` 时，如果策略结果为 `approval-required`，Runtime 现在自动写入 Run-scoped origin grant，并使用 `auto-full-access:<runId>:<toolCallId>` 作为审批来源；不再发布 `tool.approval_requested`，其他权限模式继续保留原审批流程，Browser Controller 的二次权限校验不变。
+- 聊天中的“正在思考与执行”新增实时耗时：运行中每秒刷新，任务完成后按 `completedAt` 冻结；支持 `MM:SS`、`HH:MM:SS` 与异常时间戳保护。
+- Browser 实机验证通过：从 SYNC-THINK 发送“打开 `https://www.4399.com/`”，Microsoft Edge 成功打开目标页面，Run `9R7WZ6Z1ZGFSV21SDWWB7034MT` 完成且没有审批请求；SQLite 中存在对应 Run-scoped grant。
+- Computer Use 实机验证通过：执行 `desktop_list_windows` 后正确返回 SYNC-THINK 窗口标题；Run `0D1M07ZM5G32528DA1VS91FGMD` 完成且审批记录为空。
+- 两次完成态分别显示并冻结为“思考与执行过程 · 00:10”和“思考与执行过程 · 00:09”，数秒后未继续增长。
+- 验证：Runtime 4 files / 24 tests、Desktop 4 files / 21 tests、Runtime/Desktop typecheck、Browser handoff 三场景、Desktop handoff 两场景全部通过；`pnpm exec turbo run build --force` 为 11/11、0 cached。
+- 最新本地源码实例已重启并保持运行，Runtime PID `61144`、Electron PID `61212`，Pipe 为 `\\.\pipe\sync-think-dev-0001`。未生成 installer、portable 或 release artifact，未提交、未推送。

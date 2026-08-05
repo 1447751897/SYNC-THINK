@@ -411,7 +411,11 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<boo
   return predicate();
 }
 
-async function appendMessage(installId: string, threadId: string): Promise<Socket> {
+async function appendMessage(
+  installId: string,
+  threadId: string,
+  text = 'Inspect the desktop.',
+): Promise<Socket> {
   const socket = await connectRuntime(installId);
   const inbox = createFrameInbox(socket);
   await inbox.send({
@@ -434,7 +438,7 @@ async function appendMessage(installId: string, threadId: string): Promise<Socke
       threadId,
       expectedTaskVersion: 0,
       role: 'user',
-      text: 'Inspect the desktop.',
+      text,
     },
   });
   return socket;
@@ -1001,7 +1005,15 @@ describe('Runtime Computer Use plugin gate', () => {
       desktopWorker: new CompletedDesktopWorker(),
     });
     await runtime.start();
-    const socket = await appendMessage(installId, 'thread-computer-use-on');
+    const socket = await appendMessage(
+      installId,
+      'thread-computer-use-on',
+      [
+        '使用 Computer Use 操作标题包含“SYNC THINK Desktop Handoff Fixture [manual]”的窗口。',
+        '先枚举并检查窗口，再解析 automationId 为 InputText、controlType 为 Edit 的元素，',
+        '最后把值设置为 "manual-test"。',
+      ].join('\n'),
+    );
     try {
       expect(await waitFor(() => Boolean(provider.toolResult))).toBe(true);
       const firstRequest = provider.requests[0]!;

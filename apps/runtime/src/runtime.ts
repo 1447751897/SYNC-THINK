@@ -454,6 +454,7 @@ import * as queries from './commands/queries.js';
 import type { QueryContext } from './commands/query-context.js';
 import * as skillQueries from './commands/skill-queries.js';
 import type { SkillQueryContext } from './commands/skill-query-context.js';
+import type { UsageSummaryRawResult } from './usage-summary-cache.js';
 
 export interface RuntimeOptions {
   installId: string;
@@ -505,68 +506,7 @@ export interface RuntimeOptions {
   /** 0026: app-level KV settings (vision fallback, plan & act). */
   appSettingStore?: SqliteAppSettingStore;
   /** 0026+: usage rows, request log, and tool aggregates from durable runtime events. */
-  queryUsageSummary?: (sinceIso?: string) => {
-    rows: Array<{
-      modelId: string;
-      providerId?: string;
-      requests: number;
-      succeededRequests: number;
-      failedRequests: number;
-      tokensIn: number;
-      tokensOut: number;
-      cachedTokensHit?: number;
-      cachedTokensCreated?: number;
-      reasoningTokens: number;
-      totalTokens: number;
-      averageLatencyMs?: number;
-      lastUsedAt?: string;
-    }>;
-    requests: Array<{
-      requestId: string;
-      taskId?: string;
-      runId?: string;
-      stepId?: string;
-      agentContextThreadId?: string;
-      contextEpochId?: string;
-      occurredAt: string;
-      modelId: string;
-      providerId?: string;
-      providerModelId?: string;
-      purpose?: import('@sync-think/shared').ProviderUsagePurpose;
-      tokensIn: number;
-      tokensOut: number;
-      cachedTokensHit?: number;
-      cachedTokensCreated?: number;
-      reasoningTokens?: number;
-      totalTokens: number;
-      status: 'success' | 'failed' | 'unknown';
-      latencyMs?: number;
-      errorMessage?: string;
-    }>;
-    tools: Array<{
-      toolName: string;
-      calls: number;
-      successes: number;
-      failures: number;
-      successRate: number;
-      lastUsedAt?: string;
-    }>;
-    toolModels: Array<{
-      modelId: string;
-      providerId?: string;
-      calls: number;
-      successes: number;
-      failures: number;
-      successRate: number;
-    }>;
-    toolFailures: Array<{
-      occurredAt: string;
-      toolName: string;
-      modelId?: string;
-      conversationTitle?: string;
-      errorSummary: string;
-    }>;
-  };
+  queryUsageSummary?: (sinceIso?: string) => Promise<UsageSummaryRawResult>;
 }
 
 export interface RuntimeStateStore {
@@ -1120,7 +1060,7 @@ export class Runtime {
           return;
         }
         if (frame.type === 'usage.summary') {
-          this.handleUsageSummary(socket, frame);
+          void this.handleUsageSummary(socket, frame);
           return;
         }
         if (frame.type === 'agent.get') {
@@ -5223,7 +5163,7 @@ export class Runtime {
     }
   }
 
-  private handleUsageSummary(socket: Socket, frame: Frame): void {
+  private async handleUsageSummary(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseUsageSummaryPayload(frame.payload ?? {});
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
@@ -5238,7 +5178,7 @@ export class Runtime {
         typeof payload.sinceDays === 'number' && payload.sinceDays > 0
           ? new Date(Date.now() - payload.sinceDays * 24 * 60 * 60 * 1000).toISOString()
           : undefined;
-      const raw = this.queryUsageSummary(sinceIso);
+      const raw = await this.queryUsageSummary(sinceIso);
       // Enrich request and aggregate rows with catalog display names.
       const catalog = this.providerStore?.listProviders() ?? [];
       const providerNameById = new Map(
@@ -6375,7 +6315,9 @@ export class Runtime {
     const executionMode = this.resolveChatExecutionMode(input.threadId);
     const networkEnabled = prepared.run.networkEnabled === true;
     const agentToolsEnabled = Boolean(this.globalAgentStore);
-    const toolsEnabled = Boolean(workspaceRoot) || networkEnabled || agentToolsEnabled;
+    const desktopToolsEnabled = this.isComputerUsePluginEnabled();
+    const toolsEnabled =
+      Boolean(workspaceRoot) || networkEnabled || agentToolsEnabled || desktopToolsEnabled;
     const snapshot = this.buildDefaultProviderContextSnapshot(prepared.run, {
       messages,
       toolsEnabled,
@@ -12087,27 +12029,37 @@ export class Runtime {
                 const permission =
                   this.browserController.evaluatePermission(browserPermissionInput);
                 if (permission.decision === 'approval-required') {
-                  const approval = await this.requestChatToolApproval({
-                    runId,
-                    threadId: currentRun.threadId,
-                    workspaceRoot: workspaceRoot ?? '',
-                    executionMode,
-                    chatMessages,
-                    pendingToolCalls: [...pendingToolCalls],
-                    currentIndex: toolIndex,
-                    completedResults: [...completedResults],
-                    toolLoopRound,
-                    toolCall,
-                    signal: abort.signal,
-                  });
-                  if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
-                  this.browserController.recordPermissionDecision(
-                    browserPermissionInput,
-                    approval.decision === 'approve' ? 'allow' : 'deny',
-                    approval.approvalId,
-                  );
-                  if (approval.decision === 'approve') {
-                    browserApproval = { approvalId: approval.approvalId };
+                  if (normalizeChatExecutionMode(executionMode) === 'full-access') {
+                    const approvalId = `auto-full-access:${runId}:${toolCall.id}`;
+                    this.browserController.recordPermissionDecision(
+                      browserPermissionInput,
+                      'allow',
+                      approvalId,
+                    );
+                    browserApproval = { approvalId };
+                  } else {
+                    const approval = await this.requestChatToolApproval({
+                      runId,
+                      threadId: currentRun.threadId,
+                      workspaceRoot: workspaceRoot ?? '',
+                      executionMode,
+                      chatMessages,
+                      pendingToolCalls: [...pendingToolCalls],
+                      currentIndex: toolIndex,
+                      completedResults: [...completedResults],
+                      toolLoopRound,
+                      toolCall,
+                      signal: abort.signal,
+                    });
+                    if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+                    this.browserController.recordPermissionDecision(
+                      browserPermissionInput,
+                      approval.decision === 'approve' ? 'allow' : 'deny',
+                      approval.approvalId,
+                    );
+                    if (approval.decision === 'approve') {
+                      browserApproval = { approvalId: approval.approvalId };
+                    }
                   }
                 }
               } else if (

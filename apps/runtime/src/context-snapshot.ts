@@ -2,7 +2,8 @@
 import type { ContextSourceRef } from '@sync-think/shared';
 
 export const CONTEXT_COMPACT_THRESHOLD = 0.7 as const;
-export type ContextStatusSectionType = 'system' | 'agent' | 'project' | 'summary' | 'messages' | 'tools';
+export type ContextStatusSectionType =
+  'system' | 'agent' | 'project' | 'summary' | 'messages' | 'tools';
 export type ContextSourceDisposition = 'included' | 'audit-only';
 
 export interface ContextSnapshotSection {
@@ -52,6 +53,15 @@ export interface BuildContextSnapshotInput {
   tools?: readonly ProviderToolSchema[];
   sources: readonly ContextSnapshotSource[];
   compactedAt?: string;
+}
+
+export class ContextSnapshotInvariantError extends Error {
+  readonly failureClass = 'protocol' as const;
+
+  constructor(sourceId: string) {
+    super(`included source is absent from provider payload: ${sourceId}`);
+    this.name = 'ContextSnapshotInvariantError';
+  }
 }
 
 function estimateTextTokens(text: string): number {
@@ -116,7 +126,16 @@ function sourceIncludedInRequest(
 ): boolean {
   if (source.toolName) return tools.some((tool) => tool.name === source.toolName);
   if (!source.content) return source.section === 'messages';
-  if (source.section === 'messages') return JSON.stringify(messages).includes(source.content);
+  if (source.section === 'messages') {
+    return messages.some((message) => {
+      if (typeof message.content === 'string') {
+        return message.content.includes(source.content!);
+      }
+      return message.content.some(
+        (part) => typeof part.text === 'string' && part.text.includes(source.content!),
+      );
+    });
+  }
   if (source.section === 'tools') return JSON.stringify(tools).includes(source.content);
   return systemPrompt.includes(source.content);
 }
@@ -139,17 +158,18 @@ export class ContextSnapshotBuilder {
         ? message.content.map((part) => ({ ...part }))
         : message.content,
     }));
-    const tools = input.tools?.map((tool) => ({
-      ...tool,
-      inputSchema: structuredClone(tool.inputSchema),
-    })) ?? [];
+    const tools =
+      input.tools?.map((tool) => ({
+        ...tool,
+        inputSchema: structuredClone(tool.inputSchema),
+      })) ?? [];
 
     for (const source of input.sources) {
       if (
         source.disposition === 'included' &&
         !sourceIncludedInRequest(source, systemPrompt, messages, tools)
       ) {
-        throw new Error(`included source is absent from provider payload: ${source.id}`);
+        throw new ContextSnapshotInvariantError(source.id);
       }
     }
 
