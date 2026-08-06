@@ -311,7 +311,13 @@ describe('chat execution mode tool gating', () => {
   it('still exposes mutating tools under ask (they require user approval)', () => {
     const tools = toolsForExecutionMode('ask').map((t) => t.name);
     expect(tools).toEqual(
-      expect.arrayContaining(['read_file', 'list_files', 'write_file', 'run_command']),
+      expect.arrayContaining([
+        'read_file',
+        'list_files',
+        'search_files',
+        'write_file',
+        'run_command',
+      ]),
     );
     expect(isChatToolAllowed('ask', 'write_file')).toBe(true);
     expect(isChatToolAllowed('workspace', 'write_file')).toBe(true);

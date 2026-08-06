@@ -59,6 +59,25 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
     },
   },
   {
+    name: 'search_files',
+    description:
+      'Search file contents inside the bound project folder using a regular expression. Returns matching lines as path:line with optional surrounding context. Use this instead of running rg/grep — no shell needed. Ignores node_modules, .git, dist, and other build artifacts automatically.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['pattern'],
+      properties: {
+        pattern: { type: 'string', description: 'JavaScript regular expression source (no flags)' },
+        path: { type: 'string', description: 'Subdirectory to search, relative to the project folder (default: whole project)' },
+        caseInsensitive: { type: 'boolean', description: 'Match case-insensitively (default: false)' },
+        globInclude: { type: 'string', description: 'Only search files matching this glob, e.g. "**/*.ts"' },
+        globExclude: { type: 'string', description: 'Skip files matching this glob, e.g. "**/*.test.ts"' },
+        contextLines: { type: 'integer', minimum: 0, maximum: 5, description: 'Context lines before/after each match (default: 0)' },
+        maxResults: { type: 'integer', minimum: 1, maximum: 200, description: 'Max matches to report (default: 50)' },
+      },
+    },
+  },
+  {
     name: 'write_file',
     description: 'Atomically write one UTF-8 text file relative to the bound project folder.',
     inputSchema: {
@@ -963,6 +982,7 @@ export const CHAT_NETWORK_TOOL_NAMES = new Set(CHAT_NETWORK_TOOL_SCHEMAS.map((to
 export const CHAT_READ_ONLY_TOOL_NAMES = new Set([
   'read_file',
   'list_files',
+  'search_files',
   'git_status',
   'git_diff',
   'web_search',
@@ -2083,6 +2103,24 @@ export async function executeChatBuiltInTool(input: {
           token,
         );
         break;
+      case 'search_files':
+        events = new FileSystemWorker().exec(
+          {
+            workingDir: workspaceRoot,
+            action: {
+              kind: 'search',
+              relative: typeof args.path === 'string' ? args.path : '.',
+              pattern: String(args.pattern ?? ''),
+              caseInsensitive: args.caseInsensitive === true,
+              globInclude: typeof args.globInclude === 'string' ? args.globInclude : undefined,
+              globExclude: typeof args.globExclude === 'string' ? args.globExclude : undefined,
+              contextLines: typeof args.contextLines === 'number' ? args.contextLines : undefined,
+              maxResults: typeof args.maxResults === 'number' ? args.maxResults : undefined,
+            },
+          },
+          { ...token, timeoutMs: 60_000 },
+        );
+        break;
       case 'write_file':
         events = new FileSystemWorker().exec(
           {
@@ -2366,7 +2404,7 @@ async function collectWorkerResult(events: AsyncIterable<WorkerEvent>): Promise<
       failureClass: failure.failureClass,
       code: looksMissingBinary ? 'COMMAND_UNAVAILABLE' : undefined,
       hint: looksMissingBinary
-        ? 'This executable is not available. Prefer list_files / read_file / git_* tools instead of retrying.'
+        ? 'This executable is not available. Prefer built-in tools search_files / list_files / read_file / git_* instead of retrying.'
         : undefined,
     });
   }
