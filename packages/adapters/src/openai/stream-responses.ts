@@ -5,7 +5,11 @@ import type {
   ProviderToolCall,
 } from '../types.js';
 import { normalizeOpenAICompatibleBaseUrl, scrubSecrets } from './discover-models.js';
-import { normalizeReasoningEffort, shouldOmitReasoningEffort } from '../reasoning.js';
+import {
+  normalizeReasoningEffort,
+  shouldOmitReasoningEffort,
+  wireReasoningEffort,
+} from '../reasoning.js';
 import {
   closeResponseReader,
   createProviderCallControl,
@@ -442,7 +446,7 @@ export async function* streamOpenAIResponses(
     const level = normalizeReasoningEffort(request.reasoningEffort);
     if (level && !shouldOmitReasoningEffort(level)) {
       body.reasoning = {
-        effort: level === 'xhigh' || level === 'max' ? 'high' : level,
+        effort: wireReasoningEffort(level),
         summary: 'auto',
       };
     }

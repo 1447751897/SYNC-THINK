@@ -249,6 +249,26 @@ describe('streamOpenAIChatCompletions', () => {
     expect(bodyJson.enable_thinking).toBeUndefined();
   });
 
+  it("collapses 'auto' to a valid wire effort (OpenAI rejects 'auto')", async () => {
+    const body = sseStream(['data: [DONE]\n\n']);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(req({ modelId: 'gpt-5.5', reasoningEffort: 'auto' }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+    const bodyJson = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(bodyJson.reasoning_effort).toBe('high');
+    expect(bodyJson.enable_thinking).toBeUndefined();
+  });
+
   it('sends enable_thinking only to Qwen/GLM-style models', async () => {
     const body = sseStream(['data: [DONE]\n\n']);
     fetchMock.mockResolvedValue({

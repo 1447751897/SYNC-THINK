@@ -173,6 +173,11 @@ export interface ChatMessage {
 export function messageToChat(msg: Message): ChatMessage {
   const textBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'text');
   const text = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
+  const reasoningBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'reasoning');
+  const reasoningText = reasoningBlocks
+    .map((b: MessageBlock) => b.reasoningText ?? '')
+    .filter(Boolean)
+    .join('\n');
   const imageBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'image');
   const terminalPayload = (msg.blocks.find((block: MessageBlock) => block.type === 'error')
     ?.payload ?? {}) as Record<string, unknown>;
@@ -200,6 +205,7 @@ export function messageToChat(msg: Message): ChatMessage {
     id: String(msg.id),
     role,
     text,
+    reasoningText: reasoningText || undefined,
     images,
     timestamp: msg.createdAt ?? '',
     sequence: msg.sequence,
@@ -1475,7 +1481,9 @@ export function ChatView({
       },
     ) => {
       const api = bridge();
-      if (!api || (!text.trim() && images.length === 0) || sending) return;
+      // Interjection: sending during an active run is allowed — the runtime
+      // supersedes the old run (superseded-by-new-message) instead of blocking.
+      if (!api || (!text.trim() && images.length === 0)) return;
       // Freeze before auto-compaction or any IPC so menu changes cannot alter this Run.
       const skillVersionIds = resolveAppendSkillVersionIds(
         conversation.track,
@@ -1574,7 +1582,8 @@ export function ChatView({
             targetRef: conversation.targetRef,
             catalogModelIds: models.map((model) => model.modelId),
           }),
-          reasoningEffort: reasoningEffort === 'auto' ? undefined : reasoningEffort,
+          // 'auto' 原样透传：runtime 透传后由 adapters 映射为默认思考档（auto=开启思考）。
+          reasoningEffort,
           networkEnabled: netEnabled || undefined,
           skillVersionIds,
           images:
@@ -1648,7 +1657,6 @@ export function ChatView({
       refreshContextStatus,
       scheduleCompactDismiss,
       selectedSkillVersionIds,
-      sending,
     ],
   );
 
@@ -1963,7 +1971,8 @@ export function ChatView({
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || sending || compactingRef.current) return;
+    // Interjection: allow sending while a run is active (runtime supersedes it).
+    if ((!text && attachments.length === 0) || compactingRef.current) return;
 
     // NewMax: `/compact` manually compresses context without sending a chat turn.
     const slashCmd = parseSlashCommand(text);
@@ -2199,6 +2208,30 @@ export function ChatView({
     [updatePickersFromCaret],
   );
 
+  const handleStop = useCallback(async () => {
+    const api = bridge();
+    const runId = projected.activeRunId;
+    if (!api?.cancelRun || !runId || stopping) return;
+    setStopping(true);
+    try {
+      await api.cancelRun({ runId: runId as RunId });
+      setSending(false);
+    } catch (error) {
+      setLocalErrors((prev) => [
+        ...prev,
+        {
+          id: `err-stop-${Date.now()}`,
+          role: 'system',
+          tone: 'error',
+          text: `停止失败: ${error instanceof Error ? error.message : String(error)}`,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setStopping(false);
+    }
+  }, [projected.activeRunId, stopping]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // @-picker navigation takes priority while open.
@@ -2259,6 +2292,15 @@ export function ChatView({
         }
       }
 
+      // Esc while the model is streaming = stop generation (NewMax parity).
+      if (e.key === 'Escape' && !mention && !slash) {
+        if (projected.streaming && !stopping) {
+          e.preventDefault();
+          void handleStop();
+          return;
+        }
+      }
+
       if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
         void handleSend();
@@ -2268,14 +2310,17 @@ export function ChatView({
       closeMention,
       closeSlash,
       handleSend,
+      handleStop,
       mention,
       mentionFiles,
       mentionIndex,
+      projected.streaming,
       selectMentionFile,
       selectSlashCommand,
       slash,
       slashCommands,
       slashIndex,
+      stopping,
     ],
   );
 
@@ -2310,30 +2355,6 @@ export function ChatView({
     },
     [conversation.id, onConversationUpdated, permissionMode],
   );
-
-  const handleStop = useCallback(async () => {
-    const api = bridge();
-    const runId = projected.activeRunId;
-    if (!api?.cancelRun || !runId || stopping) return;
-    setStopping(true);
-    try {
-      await api.cancelRun({ runId: runId as RunId });
-      setSending(false);
-    } catch (error) {
-      setLocalErrors((prev) => [
-        ...prev,
-        {
-          id: `err-stop-${Date.now()}`,
-          role: 'system',
-          tone: 'error',
-          text: `停止失败: ${error instanceof Error ? error.message : String(error)}`,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setStopping(false);
-    }
-  }, [projected.activeRunId, stopping]);
 
   /**
    * Resolve the model currently in effect for this conversation.
@@ -3135,6 +3156,8 @@ export function ChatView({
                 </div>
               )}
 
+              {/* Interjection: the textarea stays editable while streaming — sending
+                  a new message supersedes the active run instead of blocking. */}
               <textarea
                 ref={inputRef}
                 className="shell-compose__input"
@@ -3154,7 +3177,7 @@ export function ChatView({
                   updatePickersFromCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
                 }
                 rows={1}
-                disabled={sending || compactProgress?.status === 'running'}
+                disabled={compactProgress?.status === 'running'}
               />
 
               <input
@@ -3317,8 +3340,9 @@ export function ChatView({
                     />
                   </div>
 
-                  {/* Send / Stop */}
-                  {canStop ? (
+                  {/* Stop (streaming) + Send — both available during streaming so
+                      the user can either stop or interject with a new message. */}
+                  {canStop && (
                     <button
                       type="button"
                       className="shell-compose__send is-stop"
@@ -3329,22 +3353,20 @@ export function ChatView({
                     >
                       <Square size={12} fill="currentColor" />
                     </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="shell-compose__send"
-                      onClick={() => void handleSend()}
-                      disabled={
-                        (!input.trim() && attachments.length === 0) ||
-                        sending ||
-                        compactProgress?.status === 'running'
-                      }
-                      title="发送 (Enter)"
-                      data-testid="compose-send"
-                    >
-                      <SendHorizonal size={15} />
-                    </button>
                   )}
+                  <button
+                    type="button"
+                    className="shell-compose__send"
+                    onClick={() => void handleSend()}
+                    disabled={
+                      (!input.trim() && attachments.length === 0) ||
+                      compactProgress?.status === 'running'
+                    }
+                    title="发送 (Enter)"
+                    data-testid="compose-send"
+                  >
+                    <SendHorizonal size={15} />
+                  </button>
                 </div>
               </div>
             </div>
@@ -3548,6 +3570,17 @@ const MessageBubble = memo(function MessageBubble({
                   </div>
                 }
               />
+              {message.text?.trim() ? (
+                <button
+                  type="button"
+                  className="ml-1.5 inline-flex items-center rounded p-0.5 text-text-faint transition-colors hover:bg-[color-mix(in_srgb,var(--color-text)_10%,transparent)] hover:text-text"
+                  onClick={() => void handleCopy()}
+                  title="复制"
+                  aria-label="复制我的消息"
+                >
+                  {copied ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -3935,6 +3968,14 @@ export function AssistantProcessGroup({
   const active = Boolean(streaming || processView?.running);
   const hasContent = hasReasoning || stepCount > 0 || changeCount > 0 || active;
   const [open, setOpen] = useState(Boolean(streaming));
+  // Folded-state preview: first ~64 chars of the thinking, so the collapsed
+  // bar shows what's inside instead of a bare label.
+  const preview = useMemo(() => {
+    const t = reasoningText?.trim();
+    if (!t) return undefined;
+    const single = t.replace(/\s+/g, ' ');
+    return single.length > 64 ? `${single.slice(0, 64)}…` : single;
+  }, [reasoningText]);
   const [clockNow, setClockNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -3984,6 +4025,11 @@ export function AssistantProcessGroup({
             {elapsed ? ` · ${elapsed}` : ''}
           </strong>
           <small>{summaryParts.length > 0 ? summaryParts.join(' · ') : '准备中'}</small>
+          {!open && preview ? (
+            <span className="shell-process-group__preview" title="点击展开查看思考全文">
+              {preview}
+            </span>
+          ) : null}
         </span>
         <ChevronDown size={15} className="shell-process-group__chevron" />
       </button>
@@ -4024,6 +4070,13 @@ function ReasoningBlock({ text, streaming }: { text?: string; streaming?: boolea
 
   if (!content && !streaming) return null;
 
+  const foldedPreview =
+    !open && !streaming && content
+      ? content.replace(/\s+/g, ' ').length > 48
+        ? `${content.replace(/\s+/g, ' ').slice(0, 48)}…`
+        : content.replace(/\s+/g, ' ')
+      : undefined;
+
   return (
     <div
       className={`shell-reasoning ${open ? 'is-open' : ''}`}
@@ -4034,9 +4087,13 @@ function ReasoningBlock({ text, streaming }: { text?: string; streaming?: boolea
         className="shell-reasoning__toggle"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        title={foldedPreview ? '点击展开查看思考全文' : undefined}
       >
         <Brain size={13} className="shell-reasoning__icon" />
         <span className="shell-reasoning__title">{streaming ? '深度思考中…' : '深度思考'}</span>
+        {foldedPreview ? (
+          <span className="shell-reasoning__preview">{foldedPreview}</span>
+        ) : null}
         <span className="shell-reasoning__chev" aria-hidden>
           {open ? '▾' : '▸'}
         </span>

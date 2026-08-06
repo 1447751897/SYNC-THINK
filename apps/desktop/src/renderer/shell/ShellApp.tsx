@@ -2280,6 +2280,93 @@ function SettingsModal({
   onCatalogChanged(): void;
 }) {
   const [dirty, setDirty] = useState(false);
+  const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number } | null>(null);
+  const dragSessionRef = useRef<{
+    startX: number;
+    startY: number;
+    baseDx: number;
+    baseDy: number;
+  } | null>(null);
+
+  // Restore the last dragged position (session-local convenience; keep in-memory if storage is unavailable).
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('sync-think-settings-pos');
+      if (raw) {
+        const pos = JSON.parse(raw) as { dx?: number; dy?: number };
+        if (typeof pos.dx === 'number' && typeof pos.dy === 'number') {
+          setDragOffset({ dx: pos.dx, dy: pos.dy });
+        }
+      }
+    } catch {
+      /* ignore storage failures */
+    }
+  }, []);
+
+  const clampDrag = useCallback((dx: number, dy: number) => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    return {
+      dx: Math.min(Math.max(dx, -w / 2 + 80), w / 2 - 80),
+      dy: Math.min(Math.max(dy, -h / 2 + 80), h / 2 - 80),
+    };
+  }, []);
+
+  const handleDragPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey) return;
+      const target = event.target as Element;
+      if (!(target instanceof Element)) return;
+      // Only the two top header rows act as the drag handle; interactive
+      // elements (buttons, inputs, the search box) keep their own behaviour.
+      if (target.closest('button, input, textarea, select, a, [role="button"], .settings-search')) {
+        return;
+      }
+      if (!target.closest('.settings-sidebar__header, .settings-content__topbar')) return;
+      event.preventDefault();
+      const base = dragOffset ?? { dx: 0, dy: 0 };
+      dragSessionRef.current = {
+        startX: event.clientX,
+        startY: event.clientY,
+        baseDx: base.dx,
+        baseDy: base.dy,
+      };
+      document.body.style.userSelect = 'none';
+      const onMove = (ev: PointerEvent) => {
+        const session = dragSessionRef.current;
+        if (!session) return;
+        setDragOffset(
+          clampDrag(
+            session.baseDx + ev.clientX - session.startX,
+            session.baseDy + ev.clientY - session.startY,
+          ),
+        );
+      };
+      const onUp = () => {
+        dragSessionRef.current = null;
+        document.body.style.userSelect = '';
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    },
+    [clampDrag, dragOffset],
+  );
+
+  // Persist the final position when the modal unmounts.
+  useEffect(
+    () => () => {
+      if (dragOffset) {
+        try {
+          localStorage.setItem('sync-think-settings-pos', JSON.stringify(dragOffset));
+        } catch {
+          /* ignore storage failures */
+        }
+      }
+    },
+    [dragOffset],
+  );
 
   const requestClose = () => {
     if (!canCloseSettings(dirty, (message) => confirm(message))) return;
@@ -2297,7 +2384,15 @@ function SettingsModal({
       <Dialog.Overlay className="settings-modal-backdrop" />
       <Dialog.Content
         className="settings-modal-positioner"
+        style={
+          dragOffset
+            ? {
+                transform: `translate(calc(-50% + ${dragOffset.dx}px), calc(-50% + ${dragOffset.dy}px))`,
+              }
+            : undefined
+        }
         aria-describedby={undefined}
+        onPointerDown={handleDragPointerDown}
         onEscapeKeyDown={(event) => {
           event.preventDefault();
           requestClose();

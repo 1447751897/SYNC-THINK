@@ -60,7 +60,8 @@ const EMPTY_DRAFT: DraftAgent = {
 };
 
 const REASONING_OPTIONS = [
-  { value: 'auto', label: '自动' },
+  { value: 'auto', label: '自动（默认开启思考）' },
+  { value: 'off', label: '关闭' },
   { value: 'low', label: '低' },
   { value: 'medium', label: '中' },
   { value: 'high', label: '高' },

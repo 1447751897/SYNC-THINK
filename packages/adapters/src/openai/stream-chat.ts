@@ -1,6 +1,10 @@
 ﻿import type { AdapterEvent, ProviderCallRequest, ProviderMessage } from '../types.js';
 import { scrubSecrets, normalizeOpenAICompatibleBaseUrl } from './discover-models.js';
-import { normalizeReasoningEffort, shouldOmitReasoningEffort } from '../reasoning.js';
+import {
+  normalizeReasoningEffort,
+  shouldOmitReasoningEffort,
+  wireReasoningEffort,
+} from '../reasoning.js';
 import type { FailureClass } from '@sync-think/shared';
 import {
   closeResponseReader,
@@ -214,7 +218,7 @@ export async function* streamOpenAIChatCompletions(
     ...(request.temperature !== undefined && !isOpenAiReasoningFamily
       ? { temperature: request.temperature }
       : {}),
-    ...(sendEffort ? { reasoning_effort: effortLevel } : {}),
+    ...(sendEffort ? { reasoning_effort: wireReasoningEffort(effortLevel ?? 'high') } : {}),
     ...(sendEffort && wantsEnableThinking ? { enable_thinking: true } : {}),
     ...(request.tools?.length
       ? {

@@ -25,22 +25,39 @@ export function normalizeReasoningEffort(
 /** True when adapters should omit thinking/reasoning request fields. */
 export function shouldOmitReasoningEffort(value: string | undefined | null): boolean {
   const level = normalizeReasoningEffort(value);
-  return !level || level === 'auto' || level === 'off' || level === 'none' || level === 'disabled';
+  return !level || level === 'off' || level === 'none' || level === 'disabled';
+}
+
+/**
+ * Map a product effort level to the value accepted on the wire.
+ * OpenAI-compatible APIs only accept low|medium|high for reasoning_effort
+ * (and Responses `reasoning.effort`); 'auto' / 'xhigh' / 'max' are product
+ * concepts and must be collapsed before sending, otherwise strict gateways
+ * (OpenAI, many relays) reject the request with 400.
+ */
+export function wireReasoningEffort(level: string): string {
+  if (level === 'auto' || level === 'xhigh' || level === 'max') return 'high';
+  return level;
 }
 
 /**
  * OpenAI-compatible chat/completions extras used by many gateways:
  * - reasoning_effort: low|medium|high|…
  * - enable_thinking / thinking: boolean for Claude-like proxies
+ *
+ * 'auto' means "product decides": send a sensible default effort so models
+ * that support thinking actually produce a reasoning trace. Gateways that
+ * don't support the keys ignore them.
  */
 export function openAiReasoningBodyFields(
   value: string | undefined | null,
 ): Record<string, unknown> {
   const level = normalizeReasoningEffort(value);
-  if (!level || shouldOmitReasoningEffort(level)) return {};
+  if (!level) return {};
   if (level === 'off') return { enable_thinking: false };
+  if (shouldOmitReasoningEffort(level)) return {};
   return {
-    reasoning_effort: level,
+    reasoning_effort: wireReasoningEffort(level),
     enable_thinking: true,
   };
 }

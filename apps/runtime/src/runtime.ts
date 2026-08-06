@@ -7206,6 +7206,9 @@ export class Runtime {
         userText: '[compact]',
         modelId: input.modelId,
         skillVersionIds: [],
+        // Compaction summarizes transcripts; thinking tokens are wasted here
+        // and push the 90s budget. 'off' is the explicit opt-out.
+        reasoningEffort: 'off',
       });
     } catch {
       return undefined;
@@ -11278,6 +11281,55 @@ export class Runtime {
     let demoRunId: RunId | undefined;
     let demoRun: DemoRunState | undefined;
     if (this.stateStore && payload.role === 'user' && this.canStartModelRun()) {
+      // Per-thread serialization: a new user message supersedes any in-flight
+      // run on the same thread. Without this, overlapping streams interleave
+      // events and two assistant turns fight over the same transcript.
+      const superseded = [...this.demoRuns.entries()].filter(
+        ([activeRunId, activeRun]) =>
+          activeRun.threadId === payload.threadId && this.inFlight.has(activeRunId),
+      );
+      for (const [supersededRunId, supersededRun] of superseded) {
+        this.demoRunAborts.get(supersededRunId)?.abort();
+        this.demoRunAborts.delete(supersededRunId);
+        for (const [approvalId, pending] of this.pendingToolApprovals) {
+          if (pending.runId !== supersededRunId) continue;
+          this.pendingToolApprovals.delete(approvalId);
+          this.emitToolApprovalDecided({
+            approvalId,
+            threadId: pending.threadId,
+            runId: pending.runId,
+            decision: 'deny',
+            reason: 'superseded-by-new-message',
+            toolCallId: pending.pendingToolCalls[pending.currentIndex]?.id,
+            toolName: pending.pendingToolCalls[pending.currentIndex]?.name,
+          });
+          pending.resolve('deny');
+        }
+        // Persist the superseded run's partial output (text + reasoning) as a
+        // cancelled message — interjecting must not discard the visible trace,
+        // matching manual-stop semantics.
+        this.persistAssistantTerminalMessage(supersededRunId as RunId, supersededRun, 'cancelled');
+        this.demoRuns.delete(supersededRunId);
+        const projectedRuns = new Map(this.demoRuns);
+        const event = this.persistProjectedEvent(
+          {
+            id: ulid() as Event['id'],
+            workspaceId: this.resolveEventWorkspaceId(payload.threadId),
+            runId: supersededRunId as RunId,
+            category: 'run',
+            type: 'run.cancelled',
+            occurredAt: new Date().toISOString(),
+            payload: {
+              threadId: payload.threadId,
+              reason: 'superseded-by-new-message',
+              assistantText: supersededRun.assistantText,
+              idempotencyKey: supersededRunId,
+            },
+          },
+          projectedRuns,
+        );
+        this.publishEvent(event);
+      }
       demoRunId = ulid() as RunId;
       const explicitModelId =
         typeof payload.modelId === 'string' && payload.modelId.trim()
@@ -11950,6 +12002,15 @@ export class Runtime {
             if (abort.signal.aborted || this.isAbortError(error)) return;
             const message = error instanceof Error ? error.message : 'provider stream failed';
             const failureClass = this.classifyThrownFailure(error);
+            console.error('[demo-run] provider error', {
+              runId,
+              failureClass,
+              message,
+              modelId: attemptRun?.modelId,
+              providerModelId: attemptRun?.providerModelId,
+              reasoningEffort: attemptRun?.reasoningEffort,
+              attempted: attemptRun?.attemptedModelIds,
+            });
             const outcome = this.tryContinueWithFallback(runId, attemptRun, failureClass, message);
             if (outcome === 'continued') continue;
             if (outcome === 'paused') return;
@@ -11958,6 +12019,12 @@ export class Runtime {
           }
 
           if (!stream) {
+            console.error('[demo-run] no provider adapter', {
+              runId,
+              providerId: attemptRun?.providerId,
+              credentialRefId: attemptRun?.credentialRefId,
+              protocol: attemptRun?.protocol,
+            });
             this.persistDemoRunFailure(
               runId,
               'protocol',
@@ -11987,6 +12054,13 @@ export class Runtime {
               const failureClass = adapterEvent.failureClass as FailureClass;
               const message =
                 typeof adapterEvent.message === 'string' ? adapterEvent.message : undefined;
+              console.error('[demo-run] provider error event', {
+                runId,
+                failureClass,
+                message,
+                modelId: currentRun?.providerModelId,
+                reasoningEffort: currentRun?.reasoningEffort,
+              });
               const outcome = this.tryContinueWithFallback(
                 runId,
                 currentRun,
@@ -13222,12 +13296,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       policyVersion: agentMeta.policyVersion,
     });
 
-    // Global agent reasoning default applies when Compose did not override.
+    // Reasoning effort resolution (lowest-precedence → highest):
+    // 1. explicit caller value (UI picker / Compose) wins;
+    // 2. else the bound global agent's configured effort (agent-track runs);
+    // 3. else product default 'auto' — adapters map it to a default thinking
+    //    effort, so unconfigured runs still produce a reasoning trace.
+    // 'off' remains the only way to explicitly disable thinking.
     const reasoningEffort =
       input.reasoningEffort ??
-      (globalAgent && globalAgent.reasoningEffort && globalAgent.reasoningEffort !== 'auto'
-        ? globalAgent.reasoningEffort
-        : undefined);
+      (globalAgent && globalAgent.reasoningEffort ? globalAgent.reasoningEffort : undefined) ??
+      'auto';
 
     const skillPromptBlocks = appliedSkills.map((skill) => this.formatSkillPromptBlock(skill));
     const skillPromptBySourceId = new Map(
@@ -14319,7 +14397,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
       const reasoningEffort =
         typeof args.reasoningEffort === 'string' &&
-        ['auto', 'low', 'medium', 'high'].includes(args.reasoningEffort)
+        ['auto', 'off', 'low', 'medium', 'high'].includes(args.reasoningEffort)
           ? args.reasoningEffort
           : undefined;
       try {
@@ -14417,7 +14495,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
       const nextReasoningEffort =
         typeof args.reasoningEffort === 'string' &&
-        ['auto', 'low', 'medium', 'high'].includes(args.reasoningEffort)
+        ['auto', 'off', 'low', 'medium', 'high'].includes(args.reasoningEffort)
           ? args.reasoningEffort
           : undefined;
       if (nextReasoningEffort !== undefined && nextReasoningEffort !== current.reasoningEffort) {
@@ -17074,7 +17152,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       agentCreationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
-      '- Prefer built-in tools list_files / read_file / git_status / git_diff. Do not call rg/ripgrep/fd/ag — they are often missing on Windows and will fail with ENOENT.',
+      '- Prefer built-in tools list_files / search_files / read_file / git_status / git_diff. search_files finds file contents by regex — do not call rg/ripgrep/fd/ag — they are often missing on Windows and will fail with ENOENT.',
       '- If a tool fails as unavailable, do not retry the same command; change approach or answer with what you already know.',
       '- Avoid long pure-exploration loops. After a few targeted looks, give the user a useful answer.',
     ].join('\n');
@@ -17424,12 +17502,22 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           ? run.assistantText
           : '';
     if (!assistantText.trim()) return;
+    const reasoningText =
+      typeof run.reasoningText === 'string' && run.reasoningText.trim()
+        ? run.reasoningText
+        : undefined;
     this.persistFinalChatMessage({
       // Deterministic id so resume/redelivery of run.completed stays idempotent.
       id: `asst-${runId}` as MessageId,
       threadId: run.threadId as ThreadId,
       role: 'assistant',
       text: assistantText,
+      blocks: [
+        { type: 'text', text: assistantText },
+        ...(reasoningText
+          ? [{ type: 'reasoning' as const, reasoningText }]
+          : []),
+      ],
       runId,
       modelId: run.modelId ? (run.modelId as ModelId) : undefined,
       credentialRefId: run.credentialRefId ? (run.credentialRefId as CredentialRefId) : undefined,
@@ -17446,6 +17534,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const assistantText = typeof run.assistantText === 'string' ? run.assistantText : '';
     if (!assistantText.trim()) return;
     const scrubbedMessage = this.scrubDiagnosticMessage(errorMessage);
+    const reasoningText =
+      typeof run.reasoningText === 'string' && run.reasoningText.trim()
+        ? run.reasoningText
+        : undefined;
     this.persistFinalChatMessage({
       id: `asst-${runId}` as MessageId,
       threadId: run.threadId as ThreadId,
@@ -17453,6 +17545,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       text: assistantText,
       blocks: [
         { type: 'text', text: assistantText },
+        // Keep whatever reasoning was produced before the stop — pausing
+        // mid-thought must not discard the visible trace.
+        ...(reasoningText ? [{ type: 'reasoning' as const, reasoningText }] : []),
         {
           type: 'error',
           payload: {
