@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 极简 ∞：单一流畅线条，无渐变无装饰 -->
+  <path d="M 416 256
+           c 0 -56 -32 -90 -88 -90
+           c -36 0 -64 16 -78 42
+           c -14 -26 -42 -42 -78 -42
+           c -56 0 -88 34 -88 90
+           c 0 56 32 90 88 90
+           c 36 0 64 -16 78 -42
+           c 14 26 42 42 78 42
+           c 56 0 88 -34 88 -90
+           z"
+        transform="translate(6,0)"
+        fill="none" stroke="#29b982" stroke-width="36"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

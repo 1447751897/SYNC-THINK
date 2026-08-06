@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="titleB descB">
+  <title id="titleB">SYNC-THINK — Pulse Core</title>
+  <desc id="descB">A user-controlled thinking core broadcasting synchronized pulses to model nodes</desc>
+  <defs>
+    <radialGradient id="bgGlowB" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#1c241e"/>
+      <stop offset="100%" stop-color="#0b0e0c"/>
+    </radialGradient>
+    <linearGradient id="ringGreenB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <linearGradient id="ringVioletB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <radialGradient id="coreB" cx="40%" cy="35%" r="80%">
+      <stop offset="0%" stop-color="#a7f3d0"/>
+      <stop offset="50%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </radialGradient>
+    <radialGradient id="haloCoreB" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#34d399" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#34d399" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="haloNodeB" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a5b4fc" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#a5b4fc" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glowB" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bgGlowB)"/>
+  <rect x="30" y="30" width="452" height="452" rx="88" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="2"/>
+
+  <!-- Core halo -->
+  <circle cx="256" cy="256" r="140" fill="url(#haloCoreB)"/>
+
+  <!-- Outer pulse ring (violet, gap at bottom) -->
+  <circle cx="256" cy="256" r="172" fill="none" stroke="#0a0d0b" stroke-width="34" stroke-linecap="round"
+          stroke-dasharray="1000 81" transform="rotate(78 256 256)"/>
+  <circle cx="256" cy="256" r="172" fill="none" stroke="url(#ringVioletB)" stroke-width="26" stroke-linecap="round"
+          stroke-dasharray="1000 81" transform="rotate(78 256 256)"/>
+
+  <!-- Inner pulse ring (green, gap at top) -->
+  <circle cx="256" cy="256" r="120" fill="none" stroke="#0a0d0b" stroke-width="42" stroke-linecap="round"
+          stroke-dasharray="680 74" transform="rotate(-78 256 256)"/>
+  <circle cx="256" cy="256" r="120" fill="none" stroke="url(#ringGreenB)" stroke-width="34" stroke-linecap="round"
+          stroke-dasharray="680 74" transform="rotate(-78 256 256)"/>
+
+  <!-- Model nodes at the ring gaps (exchanging context) -->
+  <circle cx="256" cy="83" r="20" fill="url(#haloNodeB)"/>
+  <circle cx="256" cy="83" r="20" fill="#818cf8" filter="url(#glowB)"/>
+  <circle cx="256" cy="83" r="8" fill="#e0e7ff"/>
+
+  <circle cx="256" cy="429" r="20" fill="url(#haloNodeB)"/>
+  <circle cx="256" cy="429" r="20" fill="#34d399" filter="url(#glowB)"/>
+  <circle cx="256" cy="429" r="8" fill="#d1fae5"/>
+
+  <!-- Thinking core -->
+  <circle cx="256" cy="256" r="54" fill="url(#coreB)" filter="url(#glowB)"/>
+  <circle cx="256" cy="256" r="54" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="2"/>
+  <circle cx="256" cy="256" r="19" fill="#ecfdf5"/>
+</svg>

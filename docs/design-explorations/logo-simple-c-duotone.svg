@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 双色 ∞：左绿右靛，粗线条无渐变，体现多模型协同但克制 -->
+  <defs>
+    <clipPath id="left-half"><rect x="0" y="0" width="252" height="512"/></clipPath>
+    <clipPath id="right-half"><rect x="252" y="0" width="260" height="512"/></clipPath>
+  </defs>
+  <g transform="translate(6,0)" fill="none" stroke-width="36"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 416 256
+             c 0 -56 -32 -90 -88 -90
+             c -36 0 -64 16 -78 42
+             c -14 -26 -42 -42 -78 -42
+             c -56 0 -88 34 -88 90
+             c 0 56 32 90 88 90
+             c 36 0 64 -16 78 -42
+             c 14 26 42 42 78 42
+             c 56 0 88 -34 88 -90
+             z" stroke="#29b982" clip-path="url(#left-half)"/>
+    <path d="M 416 256
+             c 0 -56 -32 -90 -88 -90
+             c -36 0 -64 16 -78 42
+             c -14 -26 -42 -42 -78 -42
+             c -56 0 -88 34 -88 90
+             c 0 56 32 90 88 90
+             c 36 0 64 -16 78 -42
+             c 14 26 42 42 78 42
+             c 56 0 88 -34 88 -90
+             z" stroke="#4f5bd5" clip-path="url(#right-half)"/>
+  </g>
+</svg>

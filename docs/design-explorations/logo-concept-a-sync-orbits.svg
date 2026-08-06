@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="titleA descA">
+  <title id="titleA">SYNC-THINK — Sync Orbits</title>
+  <desc id="descA">Multi-model nodes synchronizing along one continuous ribbon (infinity)</desc>
+  <defs>
+    <radialGradient id="bgGlowA" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#1c241e"/>
+      <stop offset="100%" stop-color="#0b0e0c"/>
+    </radialGradient>
+    <linearGradient id="ribbonA" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="55%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <radialGradient id="haloGreenA" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#6ee7b7" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#6ee7b7" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="haloBlueA" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#93c5fd" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#93c5fd" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="haloCoreA" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#4ade80" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#4ade80" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glowA" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bgGlowA)"/>
+  <rect x="30" y="30" width="452" height="452" rx="88" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="2"/>
+
+  <!-- Ribbon under-shadow (depth) -->
+  <path d="M 132 242 C 132 152, 214 150, 256 242 C 300 150, 380 152, 380 242" fill="none" stroke="#070a08" stroke-width="46" stroke-linecap="round"/>
+  <path d="M 132 270 C 132 360, 214 362, 256 270 C 300 362, 380 360, 380 270" fill="none" stroke="#070a08" stroke-width="46" stroke-linecap="round"/>
+
+  <!-- Continuous gradient ribbon -->
+  <path d="M 132 242 C 132 152, 214 150, 256 242 C 300 150, 380 152, 380 242" fill="none" stroke="url(#ribbonA)" stroke-width="36" stroke-linecap="round"/>
+  <path d="M 132 270 C 132 360, 214 362, 256 270 C 300 362, 380 360, 380 270" fill="none" stroke="url(#ribbonA)" stroke-width="36" stroke-linecap="round"/>
+
+  <!-- Halo glows -->
+  <circle cx="180" cy="176" r="86" fill="url(#haloGreenA)"/>
+  <circle cx="332" cy="336" r="86" fill="url(#haloBlueA)"/>
+  <circle cx="256" cy="256" r="100" fill="url(#haloCoreA)"/>
+
+  <!-- Model nodes -->
+  <circle cx="180" cy="176" r="31" fill="#34d399" filter="url(#glowA)"/>
+  <circle cx="180" cy="176" r="12" fill="#d1fae5"/>
+  <circle cx="332" cy="336" r="31" fill="#60a5fa" filter="url(#glowA)"/>
+  <circle cx="332" cy="336" r="12" fill="#e0f2fe"/>
+  <circle cx="256" cy="256" r="38" fill="#4ade80" filter="url(#glowA)"/>
+  <circle cx="256" cy="256" r="15" fill="#ecfdf5"/>
+</svg>

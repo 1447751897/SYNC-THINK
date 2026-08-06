@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 徽章式：深色圆角方块 + 白色 ∞ 线条，延续现有 logo 的方形结构但更克制 -->
+  <rect x="28" y="28" width="456" height="456" rx="108" fill="#161a26"/>
+  <g transform="translate(256,256) scale(0.82) translate(-250,-256)">
+    <path d="M 416 256
+             c 0 -56 -32 -90 -88 -90
+             c -36 0 -64 16 -78 42
+             c -14 -26 -42 -42 -78 -42
+             c -56 0 -88 34 -88 90
+             c 0 56 32 90 88 90
+             c 36 0 64 -16 78 -42
+             c 14 26 42 42 78 42
+             c 56 0 88 -34 88 -90
+             z"
+          transform="translate(6,0)"
+          fill="none" stroke="#ffffff" stroke-width="34"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

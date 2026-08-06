@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="titleC descC">
+  <title id="titleC">SYNC-THINK — Origami Knot</title>
+  <desc id="descC">A structured folded knot passing one thought between two model bands</desc>
+  <defs>
+    <radialGradient id="bgGlowC" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#1c241e"/>
+      <stop offset="100%" stop-color="#0b0e0c"/>
+    </radialGradient>
+    <linearGradient id="bandGreenC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="bandVioletC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <radialGradient id="sparkC" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fef3c7"/>
+      <stop offset="60%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </radialGradient>
+    <radialGradient id="haloSparkC" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#fbbf24" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glowC" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bgGlowC)"/>
+  <rect x="30" y="30" width="452" height="452" rx="88" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="2"/>
+
+  <!-- Left diamond band (green) -->
+  <g>
+    <polygon points="256,256 168,152 80,256 168,360" fill="url(#bandGreenC)"/>
+    <polygon points="256,256 168,152 80,256 168,360" fill="none" stroke="#07100b" stroke-width="14" stroke-linejoin="miter"/>
+    <!-- inner cutout -->
+    <polygon points="256,256 188,206 136,256 188,306" fill="#0b0e0c"/>
+    <!-- crease lines -->
+    <line x1="168" y1="152" x2="168" y2="360" stroke="#ffffff" stroke-opacity="0.18" stroke-width="5"/>
+    <line x1="118" y1="196" x2="224" y2="316" stroke="#0a1810" stroke-opacity="0.55" stroke-width="5"/>
+  </g>
+
+  <!-- Right diamond band (violet) -->
+  <g>
+    <polygon points="256,256 344,152 432,256 344,360" fill="url(#bandVioletC)"/>
+    <polygon points="256,256 344,152 432,256 344,360" fill="none" stroke="#0a0813" stroke-width="14" stroke-linejoin="miter"/>
+    <!-- inner cutout -->
+    <polygon points="256,256 324,206 376,256 324,306" fill="#0b0e0c"/>
+    <!-- crease lines -->
+    <line x1="344" y1="152" x2="344" y2="360" stroke="#ffffff" stroke-opacity="0.18" stroke-width="5"/>
+    <line x1="394" y1="196" x2="288" y2="316" stroke="#120f26" stroke-opacity="0.55" stroke-width="5"/>
+  </g>
+
+  <!-- Spark halo + spark at the knot crossing -->
+  <circle cx="256" cy="256" r="96" fill="url(#haloSparkC)"/>
+  <path d="M 256 196 Q 262 250 316 256 Q 262 262 256 316 Q 250 262 196 256 Q 250 250 256 196 Z"
+        fill="url(#sparkC)" filter="url(#glowC)"/>
+  <path d="M 256 196 Q 262 250 316 256 Q 262 262 256 316 Q 250 262 196 256 Q 250 250 256 196 Z"
+        fill="none" stroke="#fff7e0" stroke-opacity="0.6" stroke-width="3" stroke-linejoin="round"/>
+  <circle cx="256" cy="256" r="13" fill="#fef3c7"/>
+</svg>
