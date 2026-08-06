@@ -1,7 +1,10 @@
 import { BROWSER_RECORDING_MAX_URL_CHARS } from '@sync-think/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  parseApproveExecuteBrowserWorkflowPayload,
   parseCreateBrowserWorkflowDraftPayload,
+  parseCreateBrowserWorkflowRevisionDraftPayload,
+  parseExecuteBrowserWorkflowPayload,
   parseGetBrowserWorkflowPayload,
   parseListBrowserWorkflowsPayload,
   parseReviewBrowserWorkflowDraftPayload,
@@ -42,6 +45,12 @@ describe('Desktop Browser Workflow IPC payloads', () => {
       source: 'ai',
     });
     expect(
+      parseCreateBrowserWorkflowRevisionDraftPayload({
+        taskId: 'task-1',
+        expectedTaskRevision: 3,
+      }),
+    ).toEqual({ taskId: 'task-1', expectedTaskRevision: 3 });
+    expect(
       parseSubmitBrowserWorkflowDraftPayload({
         draftId: 'draft-1',
         recordingId: 'recording-1',
@@ -57,6 +66,35 @@ describe('Desktop Browser Workflow IPC payloads', () => {
       draftId: 'draft-1',
       decision: 'reject',
       note: 'Please record the final confirmation step.',
+    });
+    expect(parseExecuteBrowserWorkflowPayload({ taskId: 'task-1' })).toEqual({
+      taskId: 'task-1',
+    });
+    expect(
+      parseExecuteBrowserWorkflowPayload({
+        taskId: 'task-1',
+        variables: { keyword: ' cat names ' },
+      }),
+    ).toEqual({ taskId: 'task-1', variables: { keyword: ' cat names ' } });
+    expect(
+      parseApproveExecuteBrowserWorkflowPayload({
+        taskId: 'task-1',
+        origins: [' https://yucoder.cn ', 'https://example.test/', 'https://yucoder.cn'],
+      }),
+    ).toEqual({
+      taskId: 'task-1',
+      origins: ['https://yucoder.cn', 'https://example.test/'],
+    });
+    expect(
+      parseApproveExecuteBrowserWorkflowPayload({
+        taskId: 'task-1',
+        origins: ['https://yucoder.cn'],
+        variables: { keyword: 'cat' },
+      }),
+    ).toEqual({
+      taskId: 'task-1',
+      origins: ['https://yucoder.cn'],
+      variables: { keyword: 'cat' },
     });
   });
 
@@ -103,9 +141,40 @@ describe('Desktop Browser Workflow IPC payloads', () => {
     expect(() => parseListBrowserWorkflowsPayload({ limit: 101 })).toThrow();
     expect(() => parseGetBrowserWorkflowPayload({ taskId: 'task 1' })).toThrow();
     expect(() =>
+      parseCreateBrowserWorkflowRevisionDraftPayload({
+        taskId: 'task-1',
+        expectedTaskRevision: 0,
+      }),
+    ).toThrow();
+    expect(() =>
       parseSubmitBrowserWorkflowDraftPayload({
         draftId: 'draft-1',
         recordingId: 'recording-1',
+        extra: true,
+      }),
+    ).toThrow();
+    expect(() => parseExecuteBrowserWorkflowPayload(undefined)).toThrow();
+    expect(() => parseExecuteBrowserWorkflowPayload({ taskId: 'task 1' })).toThrow();
+    expect(() =>
+      parseExecuteBrowserWorkflowPayload({ taskId: 'task-1', variables: { keyword: 42 } }),
+    ).toThrow();
+    expect(() =>
+      parseApproveExecuteBrowserWorkflowPayload({ taskId: 'task-1', origins: [] }),
+    ).toThrow();
+    expect(() =>
+      parseApproveExecuteBrowserWorkflowPayload({ taskId: 'task-1', origins: ['ftp://x.test'] }),
+    ).toThrow();
+    expect(() =>
+      parseApproveExecuteBrowserWorkflowPayload({
+        taskId: 'task-1',
+        origins: ['https://yucoder.cn'],
+        variables: { keyword: 42 },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseApproveExecuteBrowserWorkflowPayload({
+        taskId: 'task-1',
+        origins: ['https://yucoder.cn'],
         extra: true,
       }),
     ).toThrow();

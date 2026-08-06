@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BROWSER_PROFILE_MAINTENANCE_REQUEST_TIMEOUT_MS,
   BROWSER_RECORDING_REQUEST_TIMEOUT_MS,
+  BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS,
   USAGE_SUMMARY_REQUEST_TIMEOUT_MS,
   resolveRuntimeRequestTimeoutMs,
 } from './runtime-client.js';
@@ -35,5 +36,15 @@ describe('RuntimePipeClient request timeout policy', () => {
     }
     expect(resolveRuntimeRequestTimeoutMs('browser.recording.list', 5_000)).toBe(5_000);
     expect(resolveRuntimeRequestTimeoutMs('browser.recording.get', 5_000)).toBe(5_000);
+  });
+
+  it('gives Workflow replay enough time to open the browser and run every step', () => {
+    for (const type of ['browser.workflow.execute', 'browser.workflow.approveAndExecute']) {
+      expect(resolveRuntimeRequestTimeoutMs(type, 5_000)).toBe(
+        BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS,
+      );
+    }
+    expect(resolveRuntimeRequestTimeoutMs('browser.workflow.list', 5_000)).toBe(5_000);
+    expect(resolveRuntimeRequestTimeoutMs('browser.workflow.get', 5_000)).toBe(5_000);
   });
 });

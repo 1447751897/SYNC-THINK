@@ -39,6 +39,13 @@ export const USAGE_SUMMARY_REQUEST_TIMEOUT_MS = 300_000;
 export const BROWSER_PROFILE_MAINTENANCE_REQUEST_TIMEOUT_MS = 30_000;
 export const BROWSER_RECORDING_REQUEST_TIMEOUT_MS = 30_000;
 const CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS = 120_000;
+/**
+ * Replay executes real browser steps (open system browser, navigate, click,
+ * fill). Each step can take up to 30s and the browser cold start can take
+ * additional time, so the IPC budget must be much larger than the 5s CRUD
+ * default.
+ */
+export const BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS = 300_000;
 
 export function resolveRuntimeRequestTimeoutMs(type: string, defaultTimeoutMs: number): number {
   if (type === 'usage.summary') return USAGE_SUMMARY_REQUEST_TIMEOUT_MS;
@@ -52,6 +59,12 @@ export function resolveRuntimeRequestTimeoutMs(type: string, defaultTimeoutMs: n
   }
   if (type === 'browser.recording.start' || type === 'browser.recording.stop') {
     return BROWSER_RECORDING_REQUEST_TIMEOUT_MS;
+  }
+  if (
+    type === 'browser.workflow.execute' ||
+    type === 'browser.workflow.approveAndExecute'
+  ) {
+    return BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS;
   }
   return defaultTimeoutMs;
 }

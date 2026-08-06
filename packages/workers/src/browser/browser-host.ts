@@ -23,6 +23,7 @@ import {
   BROWSER_RECORDING_MAX_STEPS,
   BROWSER_RECORDING_MAX_TEXT_CHARS,
   BROWSER_RECORDING_MAX_URL_CHARS,
+  type BrowserRecordingInputValue,
   type BrowserRecordingLocator,
   type BrowserRecordingStepInput,
 } from '@sync-think/shared';
@@ -1083,10 +1084,7 @@ function normalizeBrowserRecordingStep(step: BrowserRecordingStepInput): Browser
       return {
         kind: step.kind,
         locator: normalizeBrowserRecordingLocator(step.locator),
-        value:
-          step.value.kind === 'secret'
-            ? { kind: 'secret' }
-            : { kind: 'literal', value: normalizeBrowserRecordingText(step.value.value) },
+        value: normalizeBrowserRecordingInputValue(step.value),
       };
     case 'check':
       return {
@@ -1171,6 +1169,24 @@ function normalizeBrowserRecordingText(value: string): string {
     );
   }
   return text;
+}
+
+function normalizeBrowserRecordingInputValue(
+  value: BrowserRecordingInputValue,
+): BrowserRecordingInputValue {
+  if (value.kind === 'secret') return { kind: 'secret' };
+  if (value.kind === 'variable') {
+    const name = String(value.name ?? '').trim();
+    if (!name || name.length > BROWSER_RECORDING_MAX_LOCATOR_CHARS) {
+      throw new BrowserHostError(
+        'browser.recording-variable-invalid',
+        'Browser recording variable name is invalid',
+        'acceptance',
+      );
+    }
+    return { kind: 'variable', name };
+  }
+  return { kind: 'literal', value: normalizeBrowserRecordingText(value.value) };
 }
 
 function hasDisallowedAsciiControlCharacter(value: string, allowTextWhitespace = false): boolean {

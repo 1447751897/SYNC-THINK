@@ -165,6 +165,19 @@ export interface BrowserWorkflowVersionRecord {
   publishedAt: string;
 }
 
+export interface BrowserWorkflowReviewRecord {
+  id: string;
+  draftId: string;
+  decision: 'approve' | 'reject';
+  note?: string;
+  createdAt: string;
+}
+
+export interface BrowserWorkflowReviewPage {
+  reviews: BrowserWorkflowReviewRecord[];
+  truncated: boolean;
+}
+
 interface BrowserCommandRow {
   id: string;
   idempotency_key: string;
@@ -301,6 +314,14 @@ interface BrowserWorkflowVersionRow {
   published_at: string;
 }
 
+interface BrowserWorkflowReviewRow {
+  id: string;
+  draft_id: string;
+  decision: string;
+  note: string | null;
+  created_at: string;
+}
+
 export class SqliteBrowserStore {
   constructor(private readonly raw: BetterSQLite3Raw) {}
 
@@ -387,6 +408,9 @@ export class SqliteBrowserStore {
       .transaction(() => {
         if (this.hasActiveProfileRecording(id) || this.hasActiveProfileCommands(id)) {
           throw new Error('browser.profile_in_use');
+        }
+        if (this.hasAutomationTasksForProfile(id)) {
+          throw new Error('browser.profile_has_workflows');
         }
         const result = this.raw
           .prepare(
@@ -896,6 +920,69 @@ export class SqliteBrowserStore {
       .immediate();
   }
 
+  createWorkflowRevisionDraft(input: {
+    taskId: string;
+    expectedTaskRevision: number;
+    draftId?: string;
+    now?: string;
+  }): { task: BrowserAutomationTaskRecord; draft: BrowserWorkflowDraftRecord } {
+    const taskId = normalizeId(input.taskId, 'browser.task_id_invalid');
+    const expectedTaskRevision = normalizeRevision(input.expectedTaskRevision);
+    const draftId = normalizeId(
+      input.draftId ?? `browser-draft-${randomUUID()}`,
+      'browser.workflow_draft_id_invalid',
+    );
+    const now = normalizeNow(input.now);
+    return this.raw
+      .transaction(() => {
+        const task = this.getRequiredAutomationTask(taskId);
+        if (task.revision !== expectedTaskRevision) {
+          throw new Error('browser.task_revision_conflict');
+        }
+        const currentDraft = task.currentDraftId
+          ? this.getRequiredWorkflowDraft(task.currentDraftId)
+          : undefined;
+        if (
+          !task.publishedVersionId ||
+          task.status !== 'enabled' ||
+          currentDraft?.status !== 'approved'
+        ) {
+          throw new Error('browser.workflow_draft_state_conflict');
+        }
+        this.raw
+          .prepare(
+            `INSERT INTO browser_workflow_draft (
+               id, task_id, recording_id, status, revision, steps_json, step_count,
+               created_at, updated_at, submitted_at, reviewed_at
+             ) VALUES (?, ?, NULL, 'editing', 1, '[]', 0, ?, ?, NULL, NULL)`,
+          )
+          .run(draftId, taskId, now, now);
+        const updated = this.raw
+          .prepare(
+            `UPDATE browser_automation_task
+             SET status = 'draft', revision = revision + 1,
+                 current_draft_id = ?, updated_at = ?
+             WHERE id = ? AND revision = ?`,
+          )
+          .run(draftId, now, taskId, expectedTaskRevision);
+        if (updated.changes !== 1) throw new Error('browser.task_revision_conflict');
+        return {
+          task: this.getRequiredAutomationTask(taskId),
+          draft: this.getRequiredWorkflowDraft(draftId),
+        };
+      })
+      .immediate();
+  }
+
+  hasAutomationTasksForProfile(profileId: string): boolean {
+    const id = normalizeId(profileId, 'browser.profile_id_invalid');
+    return Boolean(
+      this.raw
+        .prepare('SELECT 1 FROM browser_automation_task WHERE profile_id = ? LIMIT 1')
+        .get(id),
+    );
+  }
+
   listAutomationTasks(
     input: {
       profileId?: string;
@@ -916,9 +1003,11 @@ export class SqliteBrowserStore {
     }
     if (input.query?.trim()) {
       const query = normalizeAutomationSearch(input.query);
-      clauses.push("(name LIKE ? ESCAPE '\\' OR instruction LIKE ? ESCAPE '\\')");
+      clauses.push(
+        "(name LIKE ? ESCAPE '\\' OR instruction LIKE ? ESCAPE '\\' OR start_url LIKE ? ESCAPE '\\')",
+      );
       const pattern = `%${escapeLike(query)}%`;
-      params.push(pattern, pattern);
+      params.push(pattern, pattern, pattern);
     }
     const limit = normalizeAutomationLimit(input.limit);
     const rows = this.raw
@@ -950,6 +1039,26 @@ export class SqliteBrowserStore {
     const row = this.raw.prepare(`${workflowVersionSelect()} WHERE id = ?`).get(versionId) as
       BrowserWorkflowVersionRow | undefined;
     return row ? mapWorkflowVersion(row) : undefined;
+  }
+
+  listWorkflowReviewsForTask(taskId: string): BrowserWorkflowReviewPage {
+    const id = normalizeId(taskId, 'browser.task_id_invalid');
+    this.getRequiredAutomationTask(id);
+    const rows = this.raw
+      .prepare(
+        `SELECT r.id, r.draft_id, r.decision, r.note, r.created_at
+         FROM browser_workflow_review r
+         JOIN browser_workflow_draft d ON d.id = r.draft_id
+         WHERE d.task_id = ?
+         ORDER BY r.created_at DESC, r.id DESC
+         LIMIT 101`,
+      )
+      .all(id) as BrowserWorkflowReviewRow[];
+    const truncated = rows.length > 100;
+    return {
+      reviews: rows.slice(0, 100).reverse().map(mapWorkflowReview),
+      truncated,
+    };
   }
 
   attachWorkflowDraftRecording(input: {
@@ -1921,6 +2030,14 @@ function normalizeRecordingInputValue(value: unknown) {
     assertExactObjectKeys(input, ['kind']);
     return { kind: 'secret' as const };
   }
+  if (input.kind === 'variable') {
+    assertExactObjectKeys(input, ['kind', 'name']);
+    const name = requireString(input.name).trim();
+    if (!name || name.length > BROWSER_RECORDING_MAX_LOCATOR_CHARS || hasAsciiControlCharacter(name)) {
+      throw new Error('browser.recording_value_invalid');
+    }
+    return { kind: 'variable' as const, name };
+  }
   if (input.kind === 'literal') {
     assertExactObjectKeys(input, ['kind', 'value']);
     const text = requireString(input.value);
@@ -2378,6 +2495,19 @@ function mapWorkflowVersion(row: BrowserWorkflowVersionRow): BrowserWorkflowVers
     stepCount: row.step_count,
     createdAt: row.created_at,
     publishedAt: row.published_at,
+  };
+}
+
+function mapWorkflowReview(row: BrowserWorkflowReviewRow): BrowserWorkflowReviewRecord {
+  if (row.decision !== 'approve' && row.decision !== 'reject') {
+    throw new Error('browser.workflow_review_record_invalid');
+  }
+  return {
+    id: row.id,
+    draftId: row.draft_id,
+    decision: row.decision,
+    ...(row.note ? { note: row.note } : {}),
+    createdAt: row.created_at,
   };
 }
 

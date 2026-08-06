@@ -6,6 +6,7 @@ import type {
   BrowserRecordingSummary,
   BrowserSiteSessionSummary,
   BrowserWorkflowDraftSummary,
+  BrowserWorkflowReviewSummary,
   BrowserWorkflowVersionSummary,
   GetBrowserRecordingPayload,
   GetBrowserRecordingResponse,
@@ -167,6 +168,42 @@ const enabledTask: BrowserAutomationTaskSummary = {
   updatedAt: '2026-08-05T04:13:00.000Z',
 };
 
+const approvedDraft: BrowserWorkflowDraftSummary = {
+  ...pendingDraft,
+  status: 'approved',
+  reviewedAt: '2026-08-05T04:13:00.000Z',
+  updatedAt: '2026-08-05T04:13:00.000Z',
+};
+
+const approvedReview: BrowserWorkflowReviewSummary = {
+  id: 'browser-review-weekly-report-v1',
+  draftId: approvedDraft.id,
+  decision: 'approve',
+  note: 'V1 审核通过。',
+  createdAt: '2026-08-05T04:13:00.000Z',
+};
+
+const revisionTask: BrowserAutomationTaskSummary = {
+  ...enabledTask,
+  status: 'draft',
+  revision: 4,
+  currentDraftId: 'browser-draft-weekly-report-v2',
+  updatedAt: '2026-08-05T05:00:00.000Z',
+};
+
+const revisionDraft: BrowserWorkflowDraftSummary = {
+  ...workflowDraft,
+  id: 'browser-draft-weekly-report-v2',
+  status: 'editing',
+  createdAt: '2026-08-05T05:00:00.000Z',
+  updatedAt: '2026-08-05T05:00:00.000Z',
+};
+
+const emptyWorkflowReviews = {
+  reviews: [] as BrowserWorkflowReviewSummary[],
+  reviewsTruncated: false,
+};
+
 function deferred<T>(): {
   promise: Promise<T>;
   resolve(value: T): void;
@@ -254,8 +291,10 @@ const api = {
     get: vi.fn(async (): Promise<GetBrowserWorkflowResponse> => ({
       task: draftTask,
       draft: workflowDraft,
+      ...emptyWorkflowReviews,
     })),
     createDraft: vi.fn(async () => ({ task: draftTask, draft: workflowDraft })),
+    createRevisionDraft: vi.fn(async () => ({ task: revisionTask, draft: revisionDraft })),
     submit: vi.fn(async () => ({ task: pendingTask, draft: pendingDraft })),
     review: vi.fn(async (): Promise<ReviewBrowserWorkflowDraftResponse> => ({
       task: enabledTask,
@@ -287,10 +326,17 @@ beforeEach(() => {
   api.browserRecording.start.mockReset().mockResolvedValue({ recording: activeRecording });
   api.browserRecording.stop.mockReset().mockResolvedValue({ recording: stoppedRecording });
   api.browserWorkflow.list.mockReset().mockResolvedValue({ tasks: [] });
-  api.browserWorkflow.get.mockReset().mockResolvedValue({ task: draftTask, draft: workflowDraft });
+  api.browserWorkflow.get.mockReset().mockResolvedValue({
+    task: draftTask,
+    draft: workflowDraft,
+    ...emptyWorkflowReviews,
+  });
   api.browserWorkflow.createDraft
     .mockReset()
     .mockResolvedValue({ task: draftTask, draft: workflowDraft });
+  api.browserWorkflow.createRevisionDraft
+    .mockReset()
+    .mockResolvedValue({ task: revisionTask, draft: revisionDraft });
   api.browserWorkflow.submit
     .mockReset()
     .mockResolvedValue({ task: pendingTask, draft: pendingDraft });
@@ -318,6 +364,7 @@ describe('BrowserStage Runtime Profiles', () => {
         limit: 100,
       }),
     );
+    expect(screen.getByPlaceholderText('搜索任务名称、目标或网址')).toBeTruthy();
     expect(screen.getByRole('button', { name: '自动化任务' }).getAttribute('aria-pressed')).toBe(
       'true',
     );
@@ -378,6 +425,23 @@ describe('BrowserStage Runtime Profiles', () => {
     expect(screen.getByRole('button', { name: '录制记录' }).getAttribute('aria-pressed')).toBe(
       'true',
     );
+  });
+
+  it('refreshes the task list when leaving a newly created draft without recording', async () => {
+    api.browserWorkflow.list
+      .mockResolvedValueOnce({ tasks: [] })
+      .mockResolvedValue({ tasks: [draftTask] });
+    render(<BrowserStage />);
+
+    await createManualWorkflowDraft();
+    fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
+
+    expect(await screen.findByTestId(`browser-workflow-task-${draftTask.id}`)).toBeTruthy();
+    expect(api.browserWorkflow.list).toHaveBeenLastCalledWith({
+      profileId: 'default',
+      limit: 100,
+    });
+    expect(api.browserWorkflow.list).toHaveBeenCalledTimes(2);
   });
 
   it('keeps a new workflow draft empty instead of showing an old Profile recording', async () => {
@@ -544,7 +608,11 @@ describe('BrowserStage Runtime Profiles', () => {
     };
     let newRecordingStopped = false;
     api.browserWorkflow.list.mockResolvedValue({ tasks: [draftTask] });
-    api.browserWorkflow.get.mockResolvedValue({ task: draftTask, draft: rejectedDraft });
+    api.browserWorkflow.get.mockResolvedValue({
+      task: draftTask,
+      draft: rejectedDraft,
+      ...emptyWorkflowReviews,
+    });
     api.browserRecording.list.mockResolvedValue({ recordings: [] });
     api.browserRecording.start.mockResolvedValueOnce({ recording: newRecording });
     api.browserRecording.stop.mockImplementationOnce(async () => {
@@ -613,6 +681,7 @@ describe('BrowserStage Runtime Profiles', () => {
     api.browserWorkflow.get.mockResolvedValueOnce({
       task: draftTask,
       draft: { ...workflowDraft, recordingId: reconciledRecording.id, revision: 2 },
+      ...emptyWorkflowReviews,
     });
     api.browserRecording.get.mockResolvedValue({
       recording: reconciledRecording,
@@ -638,11 +707,16 @@ describe('BrowserStage Runtime Profiles', () => {
       .mockResolvedValueOnce({ tasks: [pendingTask] })
       .mockResolvedValue({ tasks: [enabledTask] });
     api.browserWorkflow.get
-      .mockResolvedValueOnce({ task: pendingTask, draft: pendingDraft })
+      .mockResolvedValueOnce({
+        task: pendingTask,
+        draft: pendingDraft,
+        ...emptyWorkflowReviews,
+      })
       .mockResolvedValue({
         task: enabledTask,
         draft: { ...pendingDraft, status: 'approved' },
         version: publishedVersion,
+        ...emptyWorkflowReviews,
       });
     render(<BrowserStage />);
     fireEvent.click(await screen.findByRole('button', { name: '审核' }));
@@ -666,8 +740,16 @@ describe('BrowserStage Runtime Profiles', () => {
       .mockResolvedValueOnce({ tasks: [pendingTask] })
       .mockResolvedValue({ tasks: [draftTask] });
     api.browserWorkflow.get
-      .mockResolvedValueOnce({ task: pendingTask, draft: pendingDraft })
-      .mockResolvedValue({ task: draftTask, draft: rejectedDraft });
+      .mockResolvedValueOnce({
+        task: pendingTask,
+        draft: pendingDraft,
+        ...emptyWorkflowReviews,
+      })
+      .mockResolvedValue({
+        task: draftTask,
+        draft: rejectedDraft,
+        ...emptyWorkflowReviews,
+      });
     api.browserWorkflow.review.mockResolvedValueOnce({
       task: draftTask,
       draft: rejectedDraft,
@@ -688,6 +770,94 @@ describe('BrowserStage Runtime Profiles', () => {
     );
     expect(await screen.findByText('已驳回')).toBeTruthy();
     expect(await screen.findByRole('button', { name: /继续录制/ })).toBeTruthy();
+  });
+
+  it('opens an enabled task from its title and creates a V2 draft from the row action', async () => {
+    api.browserWorkflow.list
+      .mockResolvedValueOnce({ tasks: [enabledTask] })
+      .mockResolvedValue({ tasks: [revisionTask] });
+    api.browserWorkflow.get
+      .mockResolvedValueOnce({
+        task: enabledTask,
+        draft: approvedDraft,
+        version: publishedVersion,
+        reviews: [approvedReview],
+        reviewsTruncated: true,
+      })
+      .mockResolvedValueOnce({
+        task: enabledTask,
+        draft: approvedDraft,
+        version: publishedVersion,
+        reviews: [approvedReview],
+        reviewsTruncated: true,
+      })
+      .mockResolvedValue({
+        task: revisionTask,
+        draft: revisionDraft,
+        version: publishedVersion,
+        reviews: [approvedReview],
+        reviewsTruncated: true,
+      });
+    render(<BrowserStage />);
+
+    const taskRow = await screen.findByTestId(`browser-workflow-task-${enabledTask.id}`);
+    const titleButton = taskRow.querySelector('button');
+    expect(titleButton).toBeTruthy();
+    fireEvent.click(titleButton!);
+
+    expect(await screen.findByText('自动化任务详情')).toBeTruthy();
+    expect(screen.getByText('V1 审核通过。')).toBeTruthy();
+    expect(screen.getByText('仅显示最近 100 条审核记录')).toBeTruthy();
+    expect(api.browserWorkflow.createRevisionDraft).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '关闭任务详情' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /录制新版本/ }));
+    await waitFor(() =>
+      expect(api.browserWorkflow.createRevisionDraft).toHaveBeenCalledWith({
+        taskId: enabledTask.id,
+        expectedTaskRevision: enabledTask.revision,
+      }),
+    );
+    const recordingContext = await screen.findByTestId('browser-workflow-recording-context');
+    expect(recordingContext.textContent).toContain('提交每周销售报表');
+    expect((screen.getByTestId('browser-recording-start-url') as HTMLInputElement).value).toBe(
+      enabledTask.startUrl,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
+    expect(await screen.findByRole('button', { name: /继续录制/ })).toBeTruthy();
+    expect(api.browserWorkflow.createRevisionDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('reviews V2 from the current draft steps instead of the published V1 steps', async () => {
+    const pendingV2Draft: BrowserWorkflowDraftSummary = {
+      ...revisionDraft,
+      status: 'pending_review',
+      revision: 2,
+      steps: [{ kind: 'navigate', url: 'https://example.com/reports/v2-confirm' }],
+      stepCount: 1,
+      submittedAt: '2026-08-05T05:10:00.000Z',
+      updatedAt: '2026-08-05T05:10:00.000Z',
+    };
+    const pendingV2Task: BrowserAutomationTaskSummary = {
+      ...revisionTask,
+      status: 'pending_review',
+      revision: 5,
+      updatedAt: '2026-08-05T05:10:00.000Z',
+    };
+    api.browserWorkflow.list.mockResolvedValue({ tasks: [pendingV2Task] });
+    api.browserWorkflow.get.mockResolvedValue({
+      task: pendingV2Task,
+      draft: pendingV2Draft,
+      version: publishedVersion,
+      reviews: [approvedReview],
+      reviewsTruncated: false,
+    });
+    render(<BrowserStage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '审核' }));
+    expect(await screen.findByText('https://example.com/reports/v2-confirm')).toBeTruthy();
+    expect(screen.queryByText(/敏感值，运行时填写/)).toBeNull();
+    expect(screen.getByText('待审核 · 已发布 V1')).toBeTruthy();
   });
 
   it('starts a recording, polls its durable steps, and never renders a secret value', async () => {
@@ -1216,5 +1386,21 @@ describe('BrowserStage Runtime Profiles', () => {
     );
     await waitFor(() => expect(screen.queryByText('工作号')).toBeNull());
     expect(screen.queryByTestId('browser-profile-delete-default')).toBeNull();
+  });
+
+  it('closes Profile deletion and explains when automation tasks still reference it', async () => {
+    api.deleteBrowserProfile.mockRejectedValueOnce(new Error('browser.profile_has_workflows'));
+    render(<BrowserStage />);
+    await waitFor(() => expect(screen.getByText('工作号')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('browser-profile-delete-profile-work'));
+    fireEvent.click(screen.getByTestId('browser-confirm-danger'));
+
+    expect(
+      await screen.findByText(
+        '该 Profile 仍被自动化任务引用，当前需要保留。任务完成重绑或归档后才能删除。',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('删除 Browser Profile')).toBeNull();
+    expect(screen.getByText('工作号')).toBeTruthy();
   });
 });

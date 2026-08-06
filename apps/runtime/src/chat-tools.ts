@@ -514,6 +514,28 @@ export const CHAT_BROWSER_WORKFLOW_TOOL_SCHEMAS: readonly ProviderToolSchema[] =
       },
     },
   },
+  {
+    name: 'browser_workflow_execute',
+    description:
+      'Execute a published Browser Automation Workflow (an approved Version) against its Profile. Each navigation origin must already have a workflow-scope approval grant; if a grant is missing the tool returns approval-required before any browser side effect. If the Workflow references variables, pass their values in the variables object; if any variable is missing the tool returns the list of required variable names before any browser side effect. The steps replay on the persistent Profile page.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskId'],
+      properties: {
+        taskId: {
+          type: 'string',
+          description: 'Exact automation task id. The latest published Version of this task is executed.',
+        },
+        variables: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description:
+            'Optional variable values for variable-marked recorded inputs (e.g. {"keyword":"cat names"}).',
+        },
+      },
+    },
+  },
 ];
 
 export const CHAT_BROWSER_WORKFLOW_TOOL_NAMES = new Set(

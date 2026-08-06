@@ -144,10 +144,15 @@ import type {
   GetBrowserWorkflowResponse,
   CreateBrowserWorkflowDraftPayload,
   CreateBrowserWorkflowDraftResponse,
+  CreateBrowserWorkflowRevisionDraftPayload,
+  CreateBrowserWorkflowRevisionDraftResponse,
   SubmitBrowserWorkflowDraftPayload,
   SubmitBrowserWorkflowDraftResponse,
   ReviewBrowserWorkflowDraftPayload,
   ReviewBrowserWorkflowDraftResponse,
+  ApproveExecuteBrowserWorkflowPayload,
+  ExecuteBrowserWorkflowPayload,
+  ExecuteBrowserWorkflowResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -717,6 +722,11 @@ const api = {
           'runtime:browser-workflow-create-draft',
           payload,
         ) as Promise<CreateBrowserWorkflowDraftResponse>,
+      createRevisionDraft: (payload: CreateBrowserWorkflowRevisionDraftPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-create-revision-draft',
+          payload,
+        ) as Promise<CreateBrowserWorkflowRevisionDraftResponse>,
       submit: (payload: SubmitBrowserWorkflowDraftPayload) =>
         ipcRenderer.invoke(
           'runtime:browser-workflow-submit',
@@ -727,6 +737,16 @@ const api = {
           'runtime:browser-workflow-review',
           payload,
         ) as Promise<ReviewBrowserWorkflowDraftResponse>,
+      execute: (payload: ExecuteBrowserWorkflowPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-execute',
+          payload,
+        ) as Promise<ExecuteBrowserWorkflowResponse>,
+      approveAndExecute: (payload: ApproveExecuteBrowserWorkflowPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-approve-execute',
+          payload,
+        ) as Promise<ExecuteBrowserWorkflowResponse>,
     },
     listWaitingBrowserHandoffs: (payload: ListWaitingBrowserHandoffsPayload = {}) =>
       ipcRenderer.invoke(
@@ -969,6 +989,12 @@ const api = {
     notifyRendererReady: () => {
       ipcRenderer.send('desktop:renderer-ready');
     },
+    openHtmlInBrowser: (html: string) =>
+      ipcRenderer.invoke('desktop:open-html-file', html) as Promise<{
+        ok: boolean;
+        error: string | null;
+        path: string | null;
+      }>,
   },
   updates: {
     getState: () =>

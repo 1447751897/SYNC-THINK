@@ -1,6 +1,9 @@
 import type {
+  ApproveExecuteBrowserWorkflowPayload,
   BrowserAutomationTaskStatus,
   CreateBrowserWorkflowDraftPayload,
+  CreateBrowserWorkflowRevisionDraftPayload,
+  ExecuteBrowserWorkflowPayload,
   GetBrowserWorkflowPayload,
   ListBrowserWorkflowsPayload,
   ReviewBrowserWorkflowDraftPayload,
@@ -94,6 +97,23 @@ export function parseCreateBrowserWorkflowDraftPayload(
   };
 }
 
+export function parseCreateBrowserWorkflowRevisionDraftPayload(
+  value: unknown,
+): CreateBrowserWorkflowRevisionDraftPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'expectedTaskRevision']) ||
+    !validId(value.taskId) ||
+    !validPositiveInteger(value.expectedTaskRevision, Number.MAX_SAFE_INTEGER)
+  ) {
+    invalidPayload('create-browser-workflow-revision-draft');
+  }
+  return {
+    taskId: value.taskId.trim(),
+    expectedTaskRevision: value.expectedTaskRevision,
+  };
+}
+
 export function parseSubmitBrowserWorkflowDraftPayload(
   value: unknown,
 ): SubmitBrowserWorkflowDraftPayload {
@@ -127,6 +147,64 @@ export function parseReviewBrowserWorkflowDraftPayload(
     draftId: value.draftId.trim(),
     decision: value.decision,
     ...(typeof value.note === 'string' ? { note: value.note.trim() } : {}),
+  };
+}
+
+export function parseExecuteBrowserWorkflowPayload(value: unknown): ExecuteBrowserWorkflowPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'variables']) ||
+    !validId(value.taskId) ||
+    (value.variables !== undefined &&
+      (!isRecord(value.variables) ||
+        Object.entries(value.variables).some(
+          ([name, v]) => !name.trim() || typeof v !== 'string',
+        )))
+  ) {
+    invalidPayload('execute-browser-workflow');
+  }
+  const variables: Record<string, string> = {};
+  if (value.variables !== undefined) {
+    for (const [name, v] of Object.entries(value.variables)) {
+      variables[name] = String(v);
+    }
+  }
+  return {
+    taskId: value.taskId.trim(),
+    ...(Object.keys(variables).length > 0 ? { variables } : {}),
+  };
+}
+
+export function parseApproveExecuteBrowserWorkflowPayload(
+  value: unknown,
+): ApproveExecuteBrowserWorkflowPayload {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'origins', 'variables']) ||
+    !validId(value.taskId) ||
+    !Array.isArray(value.origins) ||
+    value.origins.length === 0 ||
+    value.origins.some((origin) => !validHttpUrl(origin)) ||
+    value.origins.length > 50 ||
+    (value.variables !== undefined &&
+      (!isRecord(value.variables) ||
+        Object.entries(value.variables).some(
+          ([name, v]) => !name.trim() || typeof v !== 'string',
+        )))
+  ) {
+    invalidPayload('approve-execute-browser-workflow');
+  }
+  const origins = [...new Set(value.origins.map((origin) => (origin as string).trim()))];
+  const variables: Record<string, string> = {};
+  if (value.variables !== undefined) {
+    for (const [name, v] of Object.entries(value.variables)) {
+      variables[name] = String(v);
+    }
+  }
+  return {
+    taskId: value.taskId.trim(),
+    origins,
+    ...(Object.keys(variables).length > 0 ? { variables } : {}),
   };
 }
 

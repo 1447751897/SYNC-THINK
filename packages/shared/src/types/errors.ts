@@ -71,6 +71,7 @@ export const ErrorCode = {
   DESKTOP_APP_WINDOW_NOT_FOUND: 'desktop.app-window-not-found',
   BROWSER_PROFILE_NOT_FOUND: 'browser.profile-not-found',
   BROWSER_PROFILE_IN_USE: 'browser.profile-in-use',
+  BROWSER_PROFILE_HAS_WORKFLOWS: 'browser.profile-has-workflows',
   BROWSER_PROFILE_REVISION_CONFLICT: 'browser.profile-revision-conflict',
   BROWSER_DEFAULT_PROFILE_IMMUTABLE: 'browser.default-profile-immutable',
   BROWSER_SITE_SESSION_NOT_FOUND: 'browser.site-session-not-found',

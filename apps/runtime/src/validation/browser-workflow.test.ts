@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseApproveExecuteBrowserWorkflowPayload,
   parseCreateBrowserWorkflowDraftPayload,
+  parseCreateBrowserWorkflowRevisionDraftPayload,
+  parseExecuteBrowserWorkflowPayload,
   parseGetBrowserWorkflowPayload,
   parseListBrowserWorkflowsPayload,
   parseReviewBrowserWorkflowDraftPayload,
@@ -41,6 +44,12 @@ describe('Browser workflow command validation', () => {
       source: 'ai',
     });
     expect(
+      parseCreateBrowserWorkflowRevisionDraftPayload({
+        taskId: 'task-1',
+        expectedTaskRevision: 3,
+      }),
+    ).toEqual({ taskId: 'task-1', expectedTaskRevision: 3 });
+    expect(
       parseSubmitBrowserWorkflowDraftPayload({
         draftId: 'draft-1',
         recordingId: 'recording-1',
@@ -57,12 +66,33 @@ describe('Browser workflow command validation', () => {
       decision: 'reject',
       note: 'Please record the final confirmation step.',
     });
+    expect(
+      parseExecuteBrowserWorkflowPayload({
+        taskId: 'task-1',
+        variables: { keyword: ' cat names ' },
+      }),
+    ).toEqual({ taskId: 'task-1', variables: { keyword: ' cat names ' } });
+    expect(
+      parseApproveExecuteBrowserWorkflowPayload({
+        taskId: 'task-1',
+        origins: [' https://yucoder.cn ', 'https://example.test/', 'https://yucoder.cn'],
+      }),
+    ).toEqual({
+      taskId: 'task-1',
+      origins: ['https://yucoder.cn', 'https://example.test/'],
+    });
   });
 
   it('rejects extra keys, invalid enums, oversized text, unsafe URLs, and empty notes', () => {
     expect(parseListBrowserWorkflowsPayload({ status: 'running' })).toBeUndefined();
     expect(parseListBrowserWorkflowsPayload({ query: 'x'.repeat(257) })).toBeUndefined();
     expect(parseGetBrowserWorkflowPayload({ taskId: 'task 1' })).toBeUndefined();
+    expect(
+      parseCreateBrowserWorkflowRevisionDraftPayload({
+        taskId: 'task-1',
+        expectedTaskRevision: 0,
+      }),
+    ).toBeUndefined();
     expect(
       parseCreateBrowserWorkflowDraftPayload({
         profileId: 'profile-1',
@@ -84,6 +114,26 @@ describe('Browser workflow command validation', () => {
         draftId: 'draft-1',
         decision: 'approve',
         note: '   ',
+      }),
+    ).toBeUndefined();
+    expect(
+      parseApproveExecuteBrowserWorkflowPayload({ taskId: 'task-1', origins: [] }),
+    ).toBeUndefined();
+    expect(
+      parseApproveExecuteBrowserWorkflowPayload({ taskId: 'task-1', origins: ['ftp://x.test'] }),
+    ).toBeUndefined();
+    expect(
+      parseApproveExecuteBrowserWorkflowPayload({
+        taskId: 'task-1',
+        origins: ['https://yucoder.cn'],
+        variables: { keyword: 42 },
+      }),
+    ).toBeUndefined();
+    expect(
+      parseApproveExecuteBrowserWorkflowPayload({
+        taskId: 'task-1',
+        origins: ['https://yucoder.cn'],
+        extra: true,
       }),
     ).toBeUndefined();
   });

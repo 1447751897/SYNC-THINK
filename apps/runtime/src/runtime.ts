@@ -130,8 +130,10 @@ import {
   type ListBrowserWorkflowsResponse,
   type GetBrowserWorkflowResponse,
   type CreateBrowserWorkflowDraftResponse,
+  type CreateBrowserWorkflowRevisionDraftResponse,
   type SubmitBrowserWorkflowDraftResponse,
   type ReviewBrowserWorkflowDraftResponse,
+  type ExecuteBrowserWorkflowResponse,
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   isComputerUsePluginEnabled as isComputerUsePluginSettingEnabled,
 } from '@sync-think/protocol';
@@ -436,8 +438,11 @@ import {
   parseListBrowserWorkflowsPayload,
   parseGetBrowserWorkflowPayload,
   parseCreateBrowserWorkflowDraftPayload,
+  parseCreateBrowserWorkflowRevisionDraftPayload,
   parseSubmitBrowserWorkflowDraftPayload,
   parseReviewBrowserWorkflowDraftPayload,
+  parseExecuteBrowserWorkflowPayload,
+  parseApproveExecuteBrowserWorkflowPayload,
   parseListWaitingBrowserHandoffsPayload,
   parseContinueBrowserHandoffPayload,
   parseCancelBrowserHandoffPayload,
@@ -482,6 +487,10 @@ import {
   RuntimeBrowserWorkflowError,
   RuntimeBrowserWorkflowService,
 } from './browser/runtime-browser-workflow-service.js';
+import {
+  BrowserWorkflowRunner,
+  BrowserWorkflowRunnerError,
+} from './browser/runtime-browser-workflow-runner.js';
 import { RuntimeDesktopController } from './desktop/runtime-desktop-controller.js';
 
 import {
@@ -693,6 +702,7 @@ export class Runtime {
   private readonly browserProfileService?: RuntimeBrowserProfileService;
   private readonly browserRecordingService?: RuntimeBrowserRecordingService;
   private readonly browserWorkflowService?: RuntimeBrowserWorkflowService;
+  private readonly browserWorkflowRunner?: BrowserWorkflowRunner;
   private readonly desktopController?: RuntimeDesktopController;
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
@@ -871,6 +881,16 @@ export class Runtime {
             : {}),
         })
       : undefined;
+    this.browserWorkflowRunner =
+      opts.browserHost && opts.browserStore
+        ? new BrowserWorkflowRunner({
+            store: opts.browserStore,
+            host: opts.browserHost,
+            ...(opts.browserFallbackWorkingDir
+              ? { fallbackWorkingDir: opts.browserFallbackWorkingDir }
+              : {}),
+          })
+        : undefined;
     this.desktopController = opts.desktopStore
       ? new RuntimeDesktopController({
           store: opts.desktopStore,
@@ -1324,12 +1344,24 @@ export class Runtime {
           this.handleCreateBrowserWorkflowDraft(socket, frame);
           return;
         }
+        if (frame.type === 'browser.workflow.createRevisionDraft') {
+          this.handleCreateBrowserWorkflowRevisionDraft(socket, frame);
+          return;
+        }
         if (frame.type === 'browser.workflow.submit') {
           this.handleSubmitBrowserWorkflowDraft(socket, frame);
           return;
         }
         if (frame.type === 'browser.workflow.review') {
           this.handleReviewBrowserWorkflowDraft(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.workflow.execute') {
+          this.trackBackgroundTask(this.handleExecuteBrowserWorkflow(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.workflow.approveAndExecute') {
+          this.trackBackgroundTask(this.handleApproveExecuteBrowserWorkflow(socket, frame));
           return;
         }
         if (frame.type === 'desktop.command.listWaiting') {
@@ -12376,11 +12408,22 @@ export class Runtime {
                   approval: browserApproval,
                 });
               } else if (CHAT_BROWSER_WORKFLOW_TOOL_NAMES.has(toolCall.name)) {
-                resultText = executeChatBrowserWorkflowTool({
-                  toolName: toolCall.name,
-                  argumentsJson: toolCall.argumentsJson,
-                  service: this.browserWorkflowService!,
-                });
+                if (toolCall.name === 'browser_workflow_execute') {
+                  resultText = await this.executeChatBrowserWorkflowReplay({
+                    runId,
+                    threadId: currentRun.threadId,
+                    toolCall,
+                    workspaceRoot,
+                    executionMode,
+                    signal: abort.signal,
+                  });
+                } else {
+                  resultText = executeChatBrowserWorkflowTool({
+                    toolName: toolCall.name,
+                    argumentsJson: toolCall.argumentsJson,
+                    service: this.browserWorkflowService!,
+                  });
+                }
               } else if (CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name)) {
                 resultText = await this.executeChatDesktopWorkerTool({
                   runId,
@@ -15405,6 +15448,154 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return result;
   }
 
+  /**
+   * Execute a published Browser Automation Workflow via the replay runner.
+   * Permission: the workflow's navigation origins must carry a workflow-scope
+   * allow grant. When a grant is missing, the tool returns approval-required
+   * (or, in full-access, records an auto grant) before any browser side effect.
+   */
+  private async executeChatBrowserWorkflowReplay(input: {
+    runId: RunId;
+    threadId: string;
+    toolCall: import('@sync-think/adapters').ProviderToolCall;
+    workspaceRoot?: string;
+    executionMode?: string;
+    signal: AbortSignal;
+  }): Promise<string> {
+    if (!this.browserWorkflowRunner || !this.browserWorkflowService) {
+      return JSON.stringify({
+        ok: false,
+        code: 'browser.workflow-runner-unavailable',
+        error: 'Browser Workflow replay is not configured on this Runtime.',
+        failureClass: 'unknown',
+      });
+    }
+    let parsed: { taskId?: unknown; variables?: unknown };
+    try {
+      parsed = JSON.parse(input.toolCall.argumentsJson || '{}') as {
+        taskId?: unknown;
+        variables?: unknown;
+      };
+    } catch {
+      return JSON.stringify({
+        ok: false,
+        code: 'browser.workflow-invalid-arguments',
+        error: 'browser_workflow_execute: arguments must be a JSON object.',
+        failureClass: 'acceptance',
+      });
+    }
+    const taskId = typeof parsed?.taskId === 'string' ? parsed.taskId.trim() : '';
+    if (!taskId) {
+      return JSON.stringify({
+        ok: false,
+        code: 'browser.workflow-task-id-required',
+        error: 'browser_workflow_execute: taskId is required.',
+        failureClass: 'acceptance',
+      });
+    }
+    let variables: Record<string, string> | undefined;
+    if (parsed.variables !== undefined) {
+      if (!isPlainRecord(parsed.variables)) {
+        return JSON.stringify({
+          ok: false,
+          code: 'browser.workflow-variables-invalid',
+          error: 'browser_workflow_execute: variables must be an object of string values.',
+          failureClass: 'acceptance',
+        });
+      }
+      const normalized: Record<string, string> = {};
+      for (const [name, value] of Object.entries(parsed.variables as Record<string, unknown>)) {
+        if (typeof value !== 'string' || name.trim().length === 0) {
+          return JSON.stringify({
+            ok: false,
+            code: 'browser.workflow-variables-invalid',
+            error: 'browser_workflow_execute: every variable must have a non-empty name and string value.',
+            failureClass: 'acceptance',
+          });
+        }
+        normalized[name] = value;
+      }
+      variables = normalized;
+    }
+    let workflow;
+    try {
+      workflow = this.browserWorkflowService.getWorkflow({ taskId });
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        code: 'browser.workflow-not-found',
+        error: error instanceof Error ? error.message : 'Browser Workflow not found.',
+        failureClass: 'unknown',
+      });
+    }
+    if (!workflow.version) {
+      return JSON.stringify({
+        ok: false,
+        code: 'browser.workflow-no-published-version',
+        error:
+          'This Browser Automation task has no published Version yet. Record it, submit for review, and approve it before executing.',
+        failureClass: 'acceptance',
+      });
+    }
+    const versionId = workflow.version.id;
+    let permission;
+    try {
+      permission = this.browserWorkflowRunner.checkPermissions(versionId, taskId);
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        code: error instanceof BrowserWorkflowRunnerError ? error.code : 'browser.workflow-permission-failed',
+        error: error instanceof Error ? error.message : 'Browser Workflow permission check failed.',
+        failureClass: 'permission',
+      });
+    }
+    if (!permission.allowed && permission.missingOrigins.length > 0) {
+      const fullAccess = normalizeChatExecutionMode(input.executionMode) === 'full-access';
+      if (!fullAccess) {
+        return JSON.stringify({
+          ok: false,
+          code: 'browser.workflow-origin-grant-required',
+          error: `This Workflow needs approval to navigate to: ${permission.missingOrigins.join(', ')}.`,
+          missingOrigins: permission.missingOrigins,
+          failureClass: 'permission',
+        });
+      }
+      this.browserWorkflowRunner.recordApproval(
+        taskId,
+        permission.missingOrigins,
+        `auto-full-access:workflow:${input.runId}:${input.toolCall.id}`,
+      );
+    }
+    try {
+      const result = await this.browserWorkflowRunner.replay({
+        workflowVersionId: versionId,
+        taskId,
+        profileId: workflow.task.profileId,
+        workspaceId: this.resolveEventWorkspaceId(input.threadId),
+        ownerId: input.threadId,
+        runId: input.runId,
+        capabilityToken: `workflow:${input.runId}:${input.toolCall.id}`,
+        signal: input.signal,
+        ...(variables ? { variables } : {}),
+      });
+      return JSON.stringify(result);
+    } catch (error) {
+      const isVariablesError =
+        error instanceof BrowserWorkflowRunnerError &&
+        error.code === 'browser.workflow-variables-required';
+      return JSON.stringify({
+        ok: false,
+        code: error instanceof BrowserWorkflowRunnerError ? error.code : 'browser.workflow-replay-failed',
+        error: error instanceof Error ? error.message : 'Browser Workflow replay failed.',
+        failureClass:
+          error instanceof BrowserWorkflowRunnerError ? error.failureClass : 'unknown',
+        ...(isVariablesError
+          ? { missingVariables: true, askUser: true }
+          : {}),
+      });
+    }
+  }
+
   /** Runtime-owned Browser Worker path. Renderer receives only completed URLs for preview. */
   private async executeChatBrowserWorkerTool(input: {
     runId: RunId;
@@ -15800,6 +15991,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       'browser.profile-not-found': ErrorCode.BROWSER_PROFILE_NOT_FOUND,
       'browser.profile_in_use': ErrorCode.BROWSER_PROFILE_IN_USE,
       'browser.profile-in-use': ErrorCode.BROWSER_PROFILE_IN_USE,
+      'browser.profile_has_workflows': ErrorCode.BROWSER_PROFILE_HAS_WORKFLOWS,
+      'browser.profile-has-workflows': ErrorCode.BROWSER_PROFILE_HAS_WORKFLOWS,
       'browser.profile_revision_conflict': ErrorCode.BROWSER_PROFILE_REVISION_CONFLICT,
       'browser.default_profile_immutable': ErrorCode.BROWSER_DEFAULT_PROFILE_IMMUTABLE,
       'browser.default-profile-immutable': ErrorCode.BROWSER_DEFAULT_PROFILE_IMMUTABLE,
@@ -16025,6 +16218,25 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
   }
 
+  private handleCreateBrowserWorkflowRevisionDraft(socket: Socket, frame: Frame): void {
+    const payload = parseCreateBrowserWorkflowRevisionDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: CreateBrowserWorkflowRevisionDraftResponse =
+        this.browserWorkflowService.createRevisionDraft(payload);
+      this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
   private handleSubmitBrowserWorkflowDraft(socket: Socket, frame: Frame): void {
     const payload = parseSubmitBrowserWorkflowDraftPayload(frame.payload);
     if (!payload) {
@@ -16058,6 +16270,234 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       const response: ReviewBrowserWorkflowDraftResponse =
         this.browserWorkflowService.reviewDraft(payload);
       this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleExecuteBrowserWorkflow(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseExecuteBrowserWorkflowPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService || !this.browserWorkflowRunner) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      let workflow;
+      try {
+        workflow = this.browserWorkflowService.getWorkflow({ taskId: payload.taskId });
+      } catch {
+        this.writeBrowserWorkflowResponse(socket, frame, {
+          ok: false,
+          taskId: payload.taskId,
+          stepCount: 0,
+          executedStepCount: 0,
+          steps: [],
+          errorCode: 'browser.workflow-not-found',
+          error: 'Browser Workflow not found.',
+        } satisfies ExecuteBrowserWorkflowResponse);
+        return;
+      }
+      if (!workflow.version) {
+        this.writeBrowserWorkflowResponse(socket, frame, {
+          ok: false,
+          taskId: payload.taskId,
+          stepCount: 0,
+          executedStepCount: 0,
+          steps: [],
+          errorCode: 'browser.workflow-no-published-version',
+          error:
+            'This Browser Automation task has no published Version yet. Record it, submit for review, and approve it before executing.',
+        } satisfies ExecuteBrowserWorkflowResponse);
+        return;
+      }
+      const versionId = workflow.version.id;
+      const taskId = workflow.task.id;
+      const profileId = workflow.task.profileId;
+      const workspaceId = this.workspaceId;
+      const ownerId = `workflow-execute:${taskId}`;
+      const signal = new AbortController().signal;
+      try {
+        // Pre-flight permission check: refuse to open the browser when any
+        // navigation origin lacks a workflow-scope allow grant. Report the
+        // missing origins so the UI can offer an explicit "approve & execute".
+        const permission = this.browserWorkflowRunner.checkPermissions(versionId, taskId);
+        if (!permission.allowed && permission.missingOrigins.length > 0) {
+          this.writeBrowserWorkflowResponse(socket, frame, {
+            ok: false,
+            taskId,
+            stepCount: 0,
+            executedStepCount: 0,
+            steps: [],
+            missingOrigins: permission.missingOrigins,
+            errorCode: 'browser.workflow-origin-grant-required',
+            error: `This Workflow needs approval to navigate to: ${permission.missingOrigins.join(', ')}.`,
+          } satisfies ExecuteBrowserWorkflowResponse);
+          return;
+        }
+        const result = await this.browserWorkflowRunner.replay({
+          workflowVersionId: versionId,
+          taskId,
+          profileId,
+          workspaceId,
+          ownerId,
+          capabilityToken: `workflow-execute:${taskId}:${frame.id}`,
+          signal,
+          ...(payload.variables ? { variables: payload.variables } : {}),
+        });
+        this.writeBrowserWorkflowResponse(socket, frame, {
+          ok: result.ok,
+          taskId,
+          ...(result.ok ? { versionId, profileId } : {}),
+          stepCount: result.stepCount,
+          executedStepCount: result.executedStepCount,
+          steps: result.steps.map((step) => ({
+            sequence: step.sequence,
+            ok: step.ok,
+            ...(step.actionKind ? { actionKind: step.actionKind } : {}),
+            ...(step.outputUrl ? { outputUrl: step.outputUrl } : {}),
+            ...(step.outputTitle ? { outputTitle: step.outputTitle } : {}),
+            ...(step.errorCode ? { errorCode: step.errorCode } : {}),
+            ...(step.error ? { error: step.error } : {}),
+          })),
+          ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+          ...(result.error ? { error: result.error } : {}),
+        } satisfies ExecuteBrowserWorkflowResponse);
+      } catch (error) {
+        const isVariables =
+          error instanceof BrowserWorkflowRunnerError &&
+          error.code === 'browser.workflow-variables-required';
+        this.writeBrowserWorkflowResponse(socket, frame, {
+          ok: false,
+          taskId,
+          stepCount: 0,
+          executedStepCount: 0,
+          steps: [],
+          ...(isVariables
+            ? { missingVariables: extractMissingVariables(error) }
+            : {}),
+          errorCode: error instanceof BrowserWorkflowRunnerError ? error.code : 'browser.workflow-replay-failed',
+          error: error instanceof Error ? error.message : 'Browser Workflow replay failed.',
+        } satisfies ExecuteBrowserWorkflowResponse);
+      }
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  /**
+   * Approve the listed origins for the workflow's navigate scope and then run
+   * the replay. This is the "approve & execute" path used by the workflow
+   * panel: the user explicitly granted these origins, so we record the grant
+   * and immediately continue into the same replay pipeline as plain execute.
+   */
+  private async handleApproveExecuteBrowserWorkflow(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseApproveExecuteBrowserWorkflowPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService || !this.browserWorkflowRunner) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      let workflow;
+      try {
+        workflow = this.browserWorkflowService.getWorkflow({ taskId: payload.taskId });
+      } catch {
+        this.writeBrowserWorkflowResponse(socket, frame, {
+          ok: false,
+          taskId: payload.taskId,
+          stepCount: 0,
+          executedStepCount: 0,
+          steps: [],
+          errorCode: 'browser.workflow-not-found',
+          error: 'Browser Workflow not found.',
+        } satisfies ExecuteBrowserWorkflowResponse);
+        return;
+      }
+      if (!workflow.version) {
+        this.writeBrowserWorkflowResponse(socket, frame, {
+          ok: false,
+          taskId: payload.taskId,
+          stepCount: 0,
+          executedStepCount: 0,
+          steps: [],
+          errorCode: 'browser.workflow-no-published-version',
+          error:
+            'This Browser Automation task has no published Version yet. Record it, submit for review, and approve it before executing.',
+        } satisfies ExecuteBrowserWorkflowResponse);
+        return;
+      }
+      const versionId = workflow.version.id;
+      const taskId = workflow.task.id;
+      const profileId = workflow.task.profileId;
+      const workspaceId = this.workspaceId;
+      const ownerId = `workflow-execute:${taskId}`;
+      const signal = new AbortController().signal;
+
+      // Validate the approved origins are a subset of the workflow's actual
+      // navigation origins; approving a foreign origin must be ignored.
+      const permission = this.browserWorkflowRunner.checkPermissions(versionId, taskId);
+      const allowedOrigins = new Set(permission.origins);
+      const validApprovals = payload.origins.filter((origin) => allowedOrigins.has(origin));
+      if (validApprovals.length > 0) {
+        this.browserWorkflowRunner.recordApproval(
+          taskId,
+          validApprovals,
+          `workflow-panel-approve:${frame.id}`,
+        );
+      }
+      try {
+        const result = await this.browserWorkflowRunner.replay({
+          workflowVersionId: versionId,
+          taskId,
+          profileId,
+          workspaceId,
+          ownerId,
+          capabilityToken: `workflow-approve-execute:${taskId}:${frame.id}`,
+          signal,
+          ...(payload.variables ? { variables: payload.variables } : {}),
+        });
+        this.writeBrowserWorkflowResponse(socket, frame, {
+          ok: result.ok,
+          taskId,
+          ...(result.ok ? { versionId, profileId } : {}),
+          stepCount: result.stepCount,
+          executedStepCount: result.executedStepCount,
+          steps: result.steps.map((step) => ({
+            sequence: step.sequence,
+            ok: step.ok,
+            ...(step.actionKind ? { actionKind: step.actionKind } : {}),
+            ...(step.outputUrl ? { outputUrl: step.outputUrl } : {}),
+            ...(step.outputTitle ? { outputTitle: step.outputTitle } : {}),
+            ...(step.errorCode ? { errorCode: step.errorCode } : {}),
+            ...(step.error ? { error: step.error } : {}),
+          })),
+          ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+          ...(result.error ? { error: result.error } : {}),
+        } satisfies ExecuteBrowserWorkflowResponse);
+      } catch (error) {
+        const isVariables =
+          error instanceof BrowserWorkflowRunnerError &&
+          error.code === 'browser.workflow-variables-required';
+        this.writeBrowserWorkflowResponse(socket, frame, {
+          ok: false,
+          taskId,
+          stepCount: 0,
+          executedStepCount: 0,
+          steps: [],
+          ...(isVariables
+            ? { missingVariables: extractMissingVariables(error) }
+            : {}),
+          errorCode: error instanceof BrowserWorkflowRunnerError ? error.code : 'browser.workflow-replay-failed',
+          error: error instanceof Error ? error.message : 'Browser Workflow replay failed.',
+        } satisfies ExecuteBrowserWorkflowResponse);
+      }
     } catch (error) {
       this.writeBrowserWorkflowCommandError(socket, frame, error);
     }
@@ -16101,6 +16541,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       'browser.workflow_recording_profile_mismatch': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
       'browser.workflow_recording_not_stopped': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
       'browser.workflow_steps_empty': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
+      'browser.task_revision_conflict': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
     };
     const code =
       (rawCode ? codeByInternalCode[rawCode] : undefined) ??
@@ -17546,6 +17987,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   }
 }
 
+function extractMissingVariables(error: unknown): string[] | undefined {
+  const message = error instanceof Error ? error.message : '';
+  const match = /variable\(s\):\s*([^.\n]+)/u.exec(message);
+  if (!match) return undefined;
+  return match[1]
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
 function browserRecordingErrorCode(error: unknown): string | undefined {
   if (error instanceof RuntimeBrowserRecordingError) return error.code;
   if (error && typeof error === 'object' && 'code' in error) {
@@ -17557,6 +18008,10 @@ function browserRecordingErrorCode(error: unknown): string | undefined {
     return match?.[1];
   }
   return undefined;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function browserWorkflowErrorCode(error: unknown): string | undefined {

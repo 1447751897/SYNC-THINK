@@ -255,6 +255,35 @@ describe('RuntimeBrowserProfileService', () => {
     }
   });
 
+  it('rejects Profile deletion while automation tasks still reference it', async () => {
+    const f = await fixture();
+    try {
+      const profile = f.service.createProfile({ name: '自动化账号' });
+      f.store.createAutomationTaskDraft({
+        profileId: profile.id,
+        name: 'Keep this Profile',
+        instruction: 'Keep the Profile available for this workflow.',
+        startUrl: 'https://example.test/profile-guard',
+        source: 'manual',
+      });
+
+      await expect(
+        f.service.deleteProfile({
+          profileId: profile.id,
+          expectedRevision: profile.revision,
+        }),
+      ).rejects.toMatchObject({ code: 'browser.profile_has_workflows' });
+      expect(f.store.getProfile(profile.id)).toMatchObject({
+        id: profile.id,
+        name: profile.name,
+        revision: profile.revision,
+      });
+      expect(f.host.deleteProfileData).not.toHaveBeenCalled();
+    } finally {
+      f.connection.raw.close();
+    }
+  });
+
   it('keeps a new command reservation behind Profile deletion', async () => {
     const profileGate = createTestProfileOperationGate();
     const f = await fixture({ profileGate });

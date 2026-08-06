@@ -455,6 +455,38 @@ describe('SqliteBrowserStore Browser Profile metadata and site-session projectio
       fixture.close();
     }
   });
+
+  it('keeps a Profile active while Browser automation tasks still reference it', async () => {
+    const fixture = await openStore();
+    try {
+      const profile = fixture.store.createProfile({
+        id: 'profile-with-workflows',
+        name: '自动化账号',
+        now: '2026-08-05T02:30:00.000Z',
+      });
+      fixture.store.createAutomationTaskDraft({
+        id: 'browser-task-profile-guard',
+        draftId: 'browser-draft-profile-guard',
+        profileId: profile.id,
+        name: 'Profile guard',
+        instruction: 'Keep the Profile while this task exists.',
+        startUrl: 'https://example.test/profile-guard',
+        source: 'manual',
+        now: '2026-08-05T02:31:00.000Z',
+      });
+
+      expect(() =>
+        fixture.store.softDeleteProfile({
+          id: profile.id,
+          expectedRevision: profile.revision,
+          now: '2026-08-05T02:32:00.000Z',
+        }),
+      ).toThrow('browser.profile_has_workflows');
+      expect(fixture.store.getProfile(profile.id)).toEqual(profile);
+    } finally {
+      fixture.close();
+    }
+  });
 });
 
 describe('SqliteBrowserStore durable Browser recordings', () => {
@@ -722,6 +754,9 @@ describe('SqliteBrowserStore Browser automation workflow lifecycle', () => {
       expect(fixture.store.listAutomationTasks({ query: 'support' })).toMatchObject([
         { id: 'browser-task-ai', profileId: workProfile.id },
       ]);
+      expect(fixture.store.listAutomationTasks({ query: 'support.example.test' })).toMatchObject([
+        { id: 'browser-task-ai', profileId: workProfile.id },
+      ]);
       expect(
         fixture.store.listAutomationTasks({ profileId: 'default', status: 'draft' }),
       ).toMatchObject([{ id: 'browser-task-manual' }]);
@@ -853,6 +888,21 @@ describe('SqliteBrowserStore Browser automation workflow lifecycle', () => {
         }),
       ).toEqual(approved);
       expect(fixture.store.getWorkflowVersion(approved.version!.id)).toEqual(approved.version);
+      expect(fixture.store.listWorkflowReviewsForTask(created.task.id)).toMatchObject({
+        truncated: false,
+        reviews: [
+          {
+            draftId: created.draft.id,
+            decision: 'reject',
+            note: 'Use the final submit button rather than the preview action.',
+          },
+          {
+            draftId: created.draft.id,
+            decision: 'approve',
+            note: 'Approved after rework.',
+          },
+        ],
+      });
       expect(() =>
         fixture.raw
           .prepare('UPDATE browser_workflow_version SET step_count = 1 WHERE id = ?')
@@ -863,6 +913,74 @@ describe('SqliteBrowserStore Browser automation workflow lifecycle', () => {
           .prepare('DELETE FROM browser_workflow_version WHERE id = ?')
           .run(approved.version!.id),
       ).toThrow('browser.workflow-version-immutable');
+
+      const revision = fixture.store.createWorkflowRevisionDraft({
+        taskId: created.task.id,
+        expectedTaskRevision: approved.task.revision,
+        draftId: 'browser-draft-review-v2',
+        now: '2026-08-05T05:08:00.000Z',
+      });
+      expect(revision).toMatchObject({
+        task: {
+          id: created.task.id,
+          status: 'draft',
+          currentDraftId: 'browser-draft-review-v2',
+          publishedVersionId: approved.version!.id,
+        },
+        draft: {
+          id: 'browser-draft-review-v2',
+          taskId: created.task.id,
+          status: 'editing',
+          steps: [],
+          stepCount: 0,
+        },
+      });
+      expect(() =>
+        fixture.store.createWorkflowRevisionDraft({
+          taskId: created.task.id,
+          expectedTaskRevision: approved.task.revision,
+          draftId: 'browser-draft-review-v2-duplicate',
+        }),
+      ).toThrow('browser.task_revision_conflict');
+
+      const v2Recording = createStoppedRecording(fixture.store, {
+        id: 'recording-workflow-review-v2',
+        startUrl: created.task.startUrl,
+        now: '2026-08-05T05:09:00.000Z',
+      });
+      fixture.store.attachWorkflowDraftRecording({
+        draftId: revision.draft.id,
+        recordingId: v2Recording.id,
+        now: '2026-08-05T05:09:30.000Z',
+      });
+      fixture.store.submitWorkflowDraft({
+        draftId: revision.draft.id,
+        recordingId: v2Recording.id,
+        now: '2026-08-05T05:10:00.000Z',
+      });
+      const approvedV2 = fixture.store.reviewWorkflowDraft({
+        draftId: revision.draft.id,
+        decision: 'approve',
+        note: 'Approved V2.',
+        now: '2026-08-05T05:11:00.000Z',
+      });
+      expect(approvedV2).toMatchObject({
+        task: {
+          status: 'enabled',
+          currentDraftId: revision.draft.id,
+          publishedVersionId: approvedV2.version!.id,
+        },
+        version: { versionNumber: 2, draftId: revision.draft.id },
+      });
+      expect(fixture.store.getWorkflowVersion(approved.version!.id)).toEqual(approved.version);
+      expect(fixture.store.listWorkflowReviewsForTask(created.task.id)).toMatchObject({
+        truncated: false,
+        reviews: [
+          { decision: 'reject', draftId: created.draft.id },
+          { decision: 'approve', draftId: created.draft.id },
+          { decision: 'approve', draftId: revision.draft.id, note: 'Approved V2.' },
+        ],
+      });
     } finally {
       fixture.close();
     }

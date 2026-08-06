@@ -24,6 +24,12 @@ const workflowCommands = [
     parser: 'parseCreateBrowserWorkflowDraftPayload',
   },
   {
+    method: 'createRevisionDraft',
+    channel: 'runtime:browser-workflow-create-revision-draft',
+    command: 'browser.workflow.createRevisionDraft',
+    parser: 'parseCreateBrowserWorkflowRevisionDraftPayload',
+  },
+  {
     method: 'submit',
     channel: 'runtime:browser-workflow-submit',
     command: 'browser.workflow.submit',
@@ -43,7 +49,7 @@ describe('Desktop Browser workflow wiring', () => {
     ({ channel, command, parser }) => {
       expect(mainSource).toMatch(
         new RegExp(
-          `ipcMain\\.handle\\('${escapeRegExp(channel)}'[\\s\\S]+?getRuntimeClient\\(\\)\\.request\\([\\s\\S]+?'${escapeRegExp(command)}'[\\s\\S]+?${parser}\\(value\\)`,
+          `ipcMain\\.handle\\(\\s*'${escapeRegExp(channel)}'[\\s\\S]+?getRuntimeClient\\(\\)\\.request\\([\\s\\S]+?'${escapeRegExp(command)}'[\\s\\S]+?${parser}\\(value\\)`,
         ),
       );
     },

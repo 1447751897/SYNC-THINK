@@ -21,7 +21,10 @@ export type BrowserRecordingLocator =
   | { strategy: 'role'; role: string; name?: string }
   | { strategy: 'label' | 'placeholder' | 'id' | 'name' | 'css'; value: string };
 
-export type BrowserRecordingInputValue = { kind: 'literal'; value: string } | { kind: 'secret' };
+export type BrowserRecordingInputValue =
+  | { kind: 'literal'; value: string }
+  | { kind: 'variable'; name: string }
+  | { kind: 'secret' };
 
 export type BrowserRecordingStepInput =
   | { kind: 'navigate'; url: string }

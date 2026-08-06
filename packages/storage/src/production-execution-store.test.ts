@@ -18,21 +18,29 @@ afterEach(() => {
 });
 
 function seed(raw: BetterSQLite3Raw) {
-  raw.prepare(
-    `INSERT INTO workspace (id, folder_path, name, created_at, updated_at)
+  raw
+    .prepare(
+      `INSERT INTO workspace (id, folder_path, name, created_at, updated_at)
      VALUES (?, 'D:\\production-execution', 'Production execution', 't0', 't0')`,
-  ).run(workspaceId);
-  raw.prepare(
-    `INSERT INTO task (
+    )
+    .run(workspaceId);
+  raw
+    .prepare(
+      `INSERT INTO task (
        id, workspace_id, title, goal, status, participation_mode,
        acceptance_criteria_json, version, created_at, updated_at
      ) VALUES (?, ?, 'Production execution', 'Fence effects', 'active',
        'automatic', '[]', 0, 't0', 't0')`,
-  ).run(taskId, workspaceId);
-  raw.prepare("INSERT INTO thread (id, task_id, created_at) VALUES ('thread-production-execution', ?, 't0')")
+    )
+    .run(taskId, workspaceId);
+  raw
+    .prepare(
+      "INSERT INTO thread (id, task_id, created_at) VALUES ('thread-production-execution', ?, 't0')",
+    )
     .run(taskId);
-  raw.prepare(
-    `INSERT INTO agent_version (
+  raw
+    .prepare(
+      `INSERT INTO agent_version (
        id, agent_id, version, name, role, developer_instructions, input_contract,
        output_contract, default_model_id, default_credential_group_id,
        pinned_credential_ref_id, pause_on_failure, fallback_model_ids_json,
@@ -41,18 +49,21 @@ function seed(raw: BetterSQLite3Raw) {
      ) VALUES (?, 'agent-production-execution', 1, 'Worker', 'worker', '', '', '',
        'model-production', 'group-production', NULL, 1, '[]', 'task', '[]', '[]',
        NULL, 'request', 't0')`,
-  ).run(agentVersionId);
+    )
+    .run(agentVersionId);
   const orchestration = new SqliteOrchestrationStore(raw);
   const draft = orchestration.createPlanDraft({
     taskId,
     title: 'Production execution',
-    steps: [{
-      id: 'production-step' as StepId,
-      title: 'Production step',
-      instructions: 'Execute once',
-      agentVersionId,
-      dependsOn: [],
-    }],
+    steps: [
+      {
+        id: 'production-step' as StepId,
+        title: 'Production step',
+        instructions: 'Execute once',
+        agentVersionId,
+        dependsOn: [],
+      },
+    ],
     now: '2026-07-14T00:00:00.000Z',
   });
   const graph = orchestration.approvePlan({
@@ -109,13 +120,15 @@ describe('SqliteProductionExecutionStore', () => {
       ).toMatchObject({ state: 'started', created: true });
 
       const result = {
-        outputVersions: [{
-          artifactName: 'Production output',
-          content: 'provider result',
-          mimeType: 'text/plain',
-          status: 'candidate' as const,
-          metadata: { modelId: 'model-production' },
-        }],
+        outputVersions: [
+          {
+            artifactName: 'Production output',
+            content: 'provider result',
+            mimeType: 'text/plain',
+            status: 'candidate' as const,
+            metadata: { modelId: 'model-production' },
+          },
+        ],
       };
       expect(
         store.completeProviderExecution({
@@ -157,14 +170,16 @@ describe('SqliteProductionExecutionStore', () => {
       };
       store.reserveProviderExecution(input);
       const result = {
-        outputVersions: [{
-          artifactName: 'Generated image',
-          contentRef: 'D:\\artifacts\\generated.png',
-          contentHash: 'a'.repeat(64),
-          mimeType: 'image/png',
-          status: 'candidate' as const,
-          metadata: { generationKind: 'image' },
-        }],
+        outputVersions: [
+          {
+            artifactName: 'Generated image',
+            contentRef: 'D:\\artifacts\\generated.png',
+            contentHash: 'a'.repeat(64),
+            mimeType: 'image/png',
+            status: 'candidate' as const,
+            metadata: { generationKind: 'image' },
+          },
+        ],
       };
       expect(store.completeProviderExecution({ ...input, result })).toMatchObject({ result });
       expect(store.getCompletedProviderExecution(input)?.result).toEqual(result);
@@ -172,17 +187,76 @@ describe('SqliteProductionExecutionStore', () => {
       const unsafeStore = store as unknown as {
         completeProviderExecution(input: unknown): unknown;
       };
-      for (const output of [
-        { artifactName: 'Missing', mimeType: 'image/png', status: 'candidate' },
-        { artifactName: 'Both', content: 'x', contentRef: 'D:\\x.png', contentHash: 'a'.repeat(64), mimeType: 'image/png', status: 'candidate' },
-        { artifactName: 'Remote', contentRef: 'https://cdn.test/x.png', contentHash: 'a'.repeat(64), mimeType: 'image/png', status: 'candidate' },
-        { artifactName: 'No hash', contentRef: 'D:\\x.png', mimeType: 'image/png', status: 'candidate' },
-      ]) {
-        expect(() => unsafeStore.completeProviderExecution({
-          ...input,
-          idempotencyKey: `invalid-${output.artifactName}`,
-          result: { outputVersions: [output] },
-        })).toThrow();
+      for (const [caseId, output] of [
+        ['missing', { artifactName: 'Missing', mimeType: 'image/png', status: 'candidate' }],
+        [
+          'both',
+          {
+            artifactName: 'Both',
+            content: 'x',
+            contentRef: 'D:\\x.png',
+            contentHash: 'a'.repeat(64),
+            mimeType: 'image/png',
+            status: 'candidate',
+          },
+        ],
+        [
+          'remote-http',
+          {
+            artifactName: 'Remote HTTP',
+            contentRef: 'https://cdn.test/x.png',
+            contentHash: 'a'.repeat(64),
+            mimeType: 'image/png',
+            status: 'candidate',
+          },
+        ],
+        [
+          'remote-file',
+          {
+            artifactName: 'Remote file',
+            contentRef: 'file://server/share/x.png',
+            contentHash: 'a'.repeat(64),
+            mimeType: 'image/png',
+            status: 'candidate',
+          },
+        ],
+        [
+          'artifact-space',
+          {
+            artifactName: 'Malformed artifact space',
+            contentRef: 'artifact://versions/version local',
+            contentHash: 'a'.repeat(64),
+            mimeType: 'image/png',
+            status: 'candidate',
+          },
+        ],
+        [
+          'artifact-brace',
+          {
+            artifactName: 'Malformed artifact brace',
+            contentRef: 'artifact://versions/version{local',
+            contentHash: 'a'.repeat(64),
+            mimeType: 'image/png',
+            status: 'candidate',
+          },
+        ],
+        [
+          'no-hash',
+          {
+            artifactName: 'No hash',
+            contentRef: 'D:\\x.png',
+            mimeType: 'image/png',
+            status: 'candidate',
+          },
+        ],
+      ] as const) {
+        expect(() =>
+          unsafeStore.completeProviderExecution({
+            ...input,
+            idempotencyKey: `invalid-${caseId}`,
+            result: { outputVersions: [output] },
+          }),
+        ).toThrow('provider.execution_result_invalid');
       }
     } finally {
       f.raw.close();
@@ -331,9 +405,9 @@ describe('SqliteProductionExecutionStore', () => {
       };
       store.createMcpActionIntent({ ...fence, now: '2026-07-14T00:09:00.000Z' });
 
-      expect(() =>
-        store.startMcpAction({ ...fence, now: '2026-07-14T00:10:00.000Z' }),
-      ).toThrow('mcp.action_fence_mismatch');
+      expect(() => store.startMcpAction({ ...fence, now: '2026-07-14T00:10:00.000Z' })).toThrow(
+        'mcp.action_fence_mismatch',
+      );
       expect(store.getMcpActionIntent(f.runId, f.step.id, fence.actionDigest)).toMatchObject({
         state: 'intent',
       });
@@ -355,13 +429,14 @@ describe('SqliteProductionExecutionStore', () => {
         actionDigest: 'c'.repeat(64),
       };
       store.createMcpActionIntent({ ...fence, now: '2026-07-14T00:09:00.000Z' });
-      expect(
-        store.startMcpAction({ ...fence, now: '2026-07-14T00:09:30.000Z' }),
-      ).toMatchObject({ state: 'started', startedNow: true });
+      expect(store.startMcpAction({ ...fence, now: '2026-07-14T00:09:30.000Z' })).toMatchObject({
+        state: 'started',
+        startedNow: true,
+      });
 
-      expect(() =>
-        store.completeMcpAction({ ...fence, now: '2026-07-14T00:11:00.000Z' }),
-      ).toThrow('mcp.action_fence_mismatch');
+      expect(() => store.completeMcpAction({ ...fence, now: '2026-07-14T00:11:00.000Z' })).toThrow(
+        'mcp.action_fence_mismatch',
+      );
       expect(
         f.raw
           .prepare(
@@ -390,12 +465,12 @@ describe('SqliteProductionExecutionStore', () => {
       };
       store.createMcpActionIntent({ ...fence, now: '2026-07-14T00:09:00.000Z' });
       store.startMcpAction({ ...fence, now: '2026-07-14T00:09:30.000Z' });
-      expect(
-        store.completeMcpAction({ ...fence, now: '2026-07-14T00:09:59.999Z' }),
-      ).toMatchObject({ state: 'completed' });
-      expect(
-        store.completeMcpAction({ ...fence, now: '2026-07-14T00:11:00.000Z' }),
-      ).toMatchObject({ state: 'completed' });
+      expect(store.completeMcpAction({ ...fence, now: '2026-07-14T00:09:59.999Z' })).toMatchObject({
+        state: 'completed',
+      });
+      expect(store.completeMcpAction({ ...fence, now: '2026-07-14T00:11:00.000Z' })).toMatchObject({
+        state: 'completed',
+      });
     } finally {
       f.raw.close();
     }

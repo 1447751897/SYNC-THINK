@@ -4,6 +4,7 @@ export * from './desktop/desktop-host-client.js';
 export * from './desktop/desktop-worker.js';
 export * from './browser/browser-host.js';
 export * from './browser/browser-worker.js';
+export * from './browser/recording-playback.js';
 export * from './file/file-worker.js';
 export * from './terminal/terminal-worker.js';
 export * from './git/git-worker.js';

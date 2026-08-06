@@ -109,13 +109,61 @@ describe('RuntimeBrowserWorkflowService', () => {
       const reviewed = f.service.reviewDraft({
         draftId: created.draft.id,
         decision: 'approve',
+        note: 'Approved V1.',
       });
       expect(reviewed).toMatchObject({
         task: { status: 'enabled', publishedVersionId: expect.any(String) },
         draft: { status: 'approved' },
         version: { versionNumber: 1, stepCount: 2 },
       });
-      expect(f.service.getWorkflow({ taskId: created.task.id })).toEqual(reviewed);
+      expect(f.service.getWorkflow({ taskId: created.task.id })).toMatchObject({
+        ...reviewed,
+        reviews: [
+          {
+            draftId: created.draft.id,
+            decision: 'approve',
+            note: 'Approved V1.',
+          },
+        ],
+        reviewsTruncated: false,
+      });
+
+      const revision = f.service.createRevisionDraft({
+        taskId: created.task.id,
+        expectedTaskRevision: reviewed.task.revision,
+      });
+      expect(revision).toMatchObject({
+        task: {
+          id: created.task.id,
+          status: 'draft',
+          publishedVersionId: reviewed.version!.id,
+        },
+        draft: { status: 'editing', steps: [], stepCount: 0 },
+      });
+      createStoppedRecording(f.store, 'workflow-recording-v2');
+      f.store.attachWorkflowDraftRecording({
+        draftId: revision.draft.id,
+        recordingId: 'workflow-recording-v2',
+      });
+      f.service.submitDraft({
+        draftId: revision.draft.id,
+        recordingId: 'workflow-recording-v2',
+      });
+      const reviewedV2 = f.service.reviewDraft({
+        draftId: revision.draft.id,
+        decision: 'approve',
+        note: 'Approved V2.',
+      });
+      expect(reviewedV2.version).toMatchObject({ versionNumber: 2 });
+      expect(f.service.getWorkflow({ taskId: created.task.id })).toMatchObject({
+        task: { publishedVersionId: reviewedV2.version!.id },
+        version: { versionNumber: 2 },
+        reviews: [
+          { draftId: created.draft.id, decision: 'approve', note: 'Approved V1.' },
+          { draftId: revision.draft.id, decision: 'approve', note: 'Approved V2.' },
+        ],
+        reviewsTruncated: false,
+      });
     } finally {
       f.connection.raw.close();
     }
@@ -150,6 +198,16 @@ describe('RuntimeBrowserWorkflowService', () => {
         draft: { status: 'rejected', reviewedAt: expect.any(String) },
       });
       expect(rejected.task).not.toHaveProperty('publishedVersionId');
+      expect(f.service.getWorkflow({ taskId: created.task.id })).toMatchObject({
+        reviews: [
+          {
+            draftId: created.draft.id,
+            decision: 'reject',
+            note: 'Add the confirmation step.',
+          },
+        ],
+        reviewsTruncated: false,
+      });
     } finally {
       f.connection.raw.close();
     }

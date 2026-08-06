@@ -101,6 +101,12 @@ export class RuntimeBrowserProfileService {
         );
       }
       this.assertProfileIdle(profile.id);
+      if (this.store.hasAutomationTasksForProfile(profile.id)) {
+        throw new RuntimeBrowserProfileError(
+          'browser.profile_has_workflows',
+          'The Browser Profile is still referenced by automation tasks.',
+        );
+      }
       if (!this.host.deleteProfileData) {
         throw new RuntimeBrowserProfileError(
           'browser.profile_delete_unsupported',

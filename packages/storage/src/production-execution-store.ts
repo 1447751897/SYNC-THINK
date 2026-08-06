@@ -8,6 +8,7 @@ import type {
   StepId,
 } from '@sync-think/shared';
 import type { BetterSQLite3Raw } from './connection.js';
+import { isLocalContentRef } from './local-content-ref.js';
 
 const MAX_RESULT_BYTES = 256 * 1024;
 const ID_RE = /^\S{1,256}$/;
@@ -541,7 +542,8 @@ function normalizeResult(value: ProductionExecutionResult): ProductionExecutionR
         if (
           output.contentHash !== undefined &&
           (!DIGEST_RE.test(output.contentHash) ||
-            createHash('sha256').update(output.content!, 'utf8').digest('hex') !== output.contentHash)
+            createHash('sha256').update(output.content!, 'utf8').digest('hex') !==
+              output.contentHash)
         ) {
           throw new Error('provider.execution_result_invalid');
         }
@@ -605,30 +607,6 @@ function isUsageNumber(value: unknown): value is number {
 
 function isOptionalUsageNumber(value: unknown): boolean {
   return value === undefined || isUsageNumber(value);
-}
-
-function isLocalContentRef(value: string): boolean {
-  if (
-    !value ||
-    value.trim() !== value ||
-    value.length > 4096 ||
-    [...value].some((character) => {
-      const codePoint = character.charCodeAt(0);
-      return codePoint <= 0x1f || codePoint === 0x7f;
-    })
-  ) {
-    return false;
-  }
-  if (/^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(value)) return true;
-  if (value.startsWith('/') && !value.startsWith('//')) return true;
-  if (/^artifact:\/\/[A-Za-z0-9][A-Za-z0-9._~!function mapProviderRow(row: ProviderRow): ProviderExecutionReservation {'()*+,;=:@%/-]*$/.test(value)) return true;
-  if (!value.toLowerCase().startsWith('file://')) return false;
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === 'file:' && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
-  } catch {
-    return false;
-  }
 }
 
 function mapProviderRow(row: ProviderRow): ProviderExecutionReservation {

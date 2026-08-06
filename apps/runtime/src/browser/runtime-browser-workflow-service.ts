@@ -1,6 +1,7 @@
 import type {
   BrowserAutomationTaskRecord,
   BrowserWorkflowDraftRecord,
+  BrowserWorkflowReviewRecord,
   BrowserWorkflowVersionRecord,
   SqliteBrowserStore,
 } from '@sync-think/storage';
@@ -8,9 +9,12 @@ import type {
   BrowserAutomationTaskSummary,
   BrowserProfileSummary,
   BrowserWorkflowDraftSummary,
+  BrowserWorkflowReviewSummary,
   BrowserWorkflowVersionSummary,
   CreateBrowserWorkflowDraftPayload,
   CreateBrowserWorkflowDraftResponse,
+  CreateBrowserWorkflowRevisionDraftPayload,
+  CreateBrowserWorkflowRevisionDraftResponse,
   GetBrowserWorkflowResponse,
   ListBrowserWorkflowsPayload,
   ReviewBrowserWorkflowDraftPayload,
@@ -80,10 +84,13 @@ export class RuntimeBrowserWorkflowService {
       const version = task.publishedVersionId
         ? this.store.getWorkflowVersion(task.publishedVersionId)
         : undefined;
+      const reviewPage = this.store.listWorkflowReviewsForTask(task.id);
       return {
         task: toPublicTask(task),
         ...(draft ? { draft: toPublicDraft(draft) } : {}),
         ...(version ? { version: toPublicVersion(version) } : {}),
+        reviews: reviewPage.reviews.map(toPublicReview),
+        reviewsTruncated: reviewPage.truncated,
       };
     });
   }
@@ -91,6 +98,18 @@ export class RuntimeBrowserWorkflowService {
   createDraft(input: CreateBrowserWorkflowDraftPayload): CreateBrowserWorkflowDraftResponse {
     return this.translateErrors(() => {
       const result = this.store.createAutomationTaskDraft(input);
+      return {
+        task: toPublicTask(result.task),
+        draft: toPublicDraft(result.draft),
+      };
+    });
+  }
+
+  createRevisionDraft(
+    input: CreateBrowserWorkflowRevisionDraftPayload,
+  ): CreateBrowserWorkflowRevisionDraftResponse {
+    return this.translateErrors(() => {
+      const result = this.store.createWorkflowRevisionDraft(input);
       return {
         task: toPublicTask(result.task),
         draft: toPublicDraft(result.draft),
@@ -142,7 +161,8 @@ export class RuntimeBrowserWorkflowService {
         internalCode === 'browser.workflow_recording_mismatch' ||
         internalCode === 'browser.workflow_recording_profile_mismatch' ||
         internalCode === 'browser.workflow_recording_not_stopped' ||
-        internalCode === 'browser.workflow_steps_empty'
+        internalCode === 'browser.workflow_steps_empty' ||
+        internalCode === 'browser.task_revision_conflict'
       ) {
         throw new RuntimeBrowserWorkflowError(
           'browser.workflow-conflict',
@@ -201,6 +221,16 @@ function toPublicVersion(version: BrowserWorkflowVersionRecord): BrowserWorkflow
     stepCount: version.stepCount,
     createdAt: version.createdAt,
     publishedAt: version.publishedAt,
+  };
+}
+
+function toPublicReview(review: BrowserWorkflowReviewRecord): BrowserWorkflowReviewSummary {
+  return {
+    id: review.id,
+    draftId: review.draftId,
+    decision: review.decision,
+    ...(review.note ? { note: review.note } : {}),
+    createdAt: review.createdAt,
   };
 }
 

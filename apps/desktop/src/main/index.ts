@@ -19,6 +19,7 @@ import {
 } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -159,8 +160,11 @@ import {
 } from '../browser-recording-payloads.js';
 import {
   parseCreateBrowserWorkflowDraftPayload,
+  parseCreateBrowserWorkflowRevisionDraftPayload,
+  parseExecuteBrowserWorkflowPayload,
   parseGetBrowserWorkflowPayload,
   parseListBrowserWorkflowsPayload,
+  parseApproveExecuteBrowserWorkflowPayload,
   parseReviewBrowserWorkflowDraftPayload,
   parseSubmitBrowserWorkflowDraftPayload,
 } from '../browser-workflow-payloads.js';
@@ -557,7 +561,15 @@ function createWindow(): void {
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
     const src = String(params.src ?? '');
-    if (src && !/^https?:\/\//i.test(src) && src !== 'about:blank') {
+    // Allow the interactive-HTML sandbox (data:text/html, see HtmlSandbox.tsx)
+    // alongside the trusted http(s)/about:blank set. data: of any other type
+    // (images, scripts, etc.) stays blocked.
+    if (
+      src &&
+      !/^https?:\/\//i.test(src) &&
+      src !== 'about:blank' &&
+      !/^data:text\/html(;|,)/i.test(src)
+    ) {
       event.preventDefault();
     }
   });
@@ -1088,6 +1100,28 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('desktop:update-install', async (event) => {
     assertRuntimeIpcSource(event);
     return getDesktopUpdateController().installUpdate();
+  });
+
+  // Open a rendered HTML block (from the chat sandbox) in the system browser.
+  // The snippet is written to a temp file so external links/relative assets
+  // behave like a real page; the file lives in the OS temp dir and is never
+  // added to any workspace.
+  ipcMain.handle('desktop:open-html-file', async (event, html: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (typeof html !== 'string' || html.length === 0 || html.length > 8 * 1024 * 1024) {
+      return { ok: false, error: 'invalid html payload' };
+    }
+    try {
+      const dir = path.join(tmpdir(), 'sync-think-html');
+      await fs.promises.mkdir(dir, { recursive: true });
+      const file = path.join(dir, `${randomUUID()}.html`);
+      await fs.promises.writeFile(file, html, 'utf-8');
+      const openErr = await shell.openPath(file);
+      if (openErr) return { ok: false, error: openErr };
+      return { ok: true, path: file };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'open failed' };
+    }
   });
 
   ipcMain.handle('runtime:connect', (event) => {
@@ -1942,6 +1976,17 @@ function setupRuntimeBridge(): void {
       parseCreateBrowserWorkflowDraftPayload(value),
     );
   });
+  ipcMain.handle(
+    'runtime:browser-workflow-create-revision-draft',
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'browser.workflow.createRevisionDraft',
+        parseCreateBrowserWorkflowRevisionDraftPayload(value),
+      );
+    },
+  );
   ipcMain.handle('runtime:browser-workflow-submit', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -1956,6 +2001,22 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request(
       'browser.workflow.review',
       parseReviewBrowserWorkflowDraftPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-workflow-execute', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.workflow.execute',
+      parseExecuteBrowserWorkflowPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-workflow-approve-execute', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.workflow.approveAndExecute',
+      parseApproveExecuteBrowserWorkflowPayload(value),
     );
   });
   ipcMain.handle('runtime:browser-handoff-list-waiting', async (event, value: unknown) => {

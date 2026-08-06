@@ -1,6 +1,8 @@
 import type {
   BrowserAutomationTaskStatus,
+  ApproveExecuteBrowserWorkflowPayload,
   CreateBrowserWorkflowDraftPayload,
+  CreateBrowserWorkflowRevisionDraftPayload,
   GetBrowserWorkflowPayload,
   ListBrowserWorkflowsPayload,
   ReviewBrowserWorkflowDraftPayload,
@@ -8,6 +10,9 @@ import type {
 } from '@sync-think/protocol';
 import { BROWSER_RECORDING_MAX_URL_CHARS } from '@sync-think/shared';
 import { hasOnlyKeys, isRecord } from './shared.js';
+
+const EXECUTE_VARIABLE_MAX_NAME_CHARS = 512;
+const EXECUTE_VARIABLE_MAX_VALUE_CHARS = 4_000;
 
 const TASK_STATUSES: readonly BrowserAutomationTaskStatus[] = [
   'draft',
@@ -80,6 +85,23 @@ export function parseCreateBrowserWorkflowDraftPayload(
   };
 }
 
+export function parseCreateBrowserWorkflowRevisionDraftPayload(
+  value: unknown,
+): CreateBrowserWorkflowRevisionDraftPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'expectedTaskRevision']) ||
+    !validId(value.taskId) ||
+    !validPositiveInteger(value.expectedTaskRevision, Number.MAX_SAFE_INTEGER)
+  ) {
+    return undefined;
+  }
+  return {
+    taskId: value.taskId.trim(),
+    expectedTaskRevision: value.expectedTaskRevision,
+  };
+}
+
 export function parseSubmitBrowserWorkflowDraftPayload(
   value: unknown,
 ): SubmitBrowserWorkflowDraftPayload | undefined {
@@ -97,10 +119,77 @@ export function parseSubmitBrowserWorkflowDraftPayload(
   };
 }
 
+export function parseExecuteBrowserWorkflowPayload(
+  value: unknown,
+): { taskId: string; variables?: Record<string, string> } | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'variables']) ||
+    !validId(value.taskId) ||
+    (value.variables !== undefined &&
+      (!isRecord(value.variables) ||
+        Object.entries(value.variables).some(
+          ([name, v]) =>
+            !name.trim() ||
+            name.length > EXECUTE_VARIABLE_MAX_NAME_CHARS ||
+            typeof v !== 'string' ||
+            v.length > EXECUTE_VARIABLE_MAX_VALUE_CHARS,
+        )))
+  ) {
+    return undefined;
+  }
+  const variables: Record<string, string> = {};
+  if (value.variables !== undefined) {
+    for (const [name, v] of Object.entries(value.variables)) {
+      variables[name] = String(v);
+    }
+  }
+  return {
+    taskId: value.taskId.trim(),
+    ...(Object.keys(variables).length > 0 ? { variables } : {}),
+  };
+}
+
+export function parseApproveExecuteBrowserWorkflowPayload(
+  value: unknown,
+): ApproveExecuteBrowserWorkflowPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['taskId', 'origins', 'variables']) ||
+    !validId(value.taskId) ||
+    !Array.isArray(value.origins) ||
+    value.origins.length === 0 ||
+    value.origins.some((origin) => !validHttpUrl(origin)) ||
+    value.origins.length > 50 ||
+    (value.variables !== undefined &&
+      (!isRecord(value.variables) ||
+        Object.entries(value.variables).some(
+          ([name, v]) =>
+            !name.trim() ||
+            name.length > EXECUTE_VARIABLE_MAX_NAME_CHARS ||
+            typeof v !== 'string' ||
+            v.length > EXECUTE_VARIABLE_MAX_VALUE_CHARS,
+        )))
+  ) {
+    return undefined;
+  }
+  const origins = [...new Set(value.origins.map((origin) => (origin as string).trim()))];
+  const variables: Record<string, string> = {};
+  if (value.variables !== undefined) {
+    for (const [name, v] of Object.entries(value.variables)) {
+      variables[name] = String(v);
+    }
+  }
+  return {
+    taskId: value.taskId.trim(),
+    origins,
+    ...(Object.keys(variables).length > 0 ? { variables } : {}),
+  };
+}
+
 export function parseReviewBrowserWorkflowDraftPayload(
   value: unknown,
-): ReviewBrowserWorkflowDraftPayload | undefined {
-  if (
+): ReviewBrowserWorkflowDraftPayload | undefined {  if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ['draftId', 'decision', 'note']) ||
     !validId(value.draftId) ||

@@ -741,7 +741,11 @@ describe('Browser Workflow chat tools', () => {
     return {
       listProfiles: () => profiles,
       listWorkflows: () => [task],
-      getWorkflow: (): GetBrowserWorkflowResponse => created,
+      getWorkflow: (): GetBrowserWorkflowResponse => ({
+        ...created,
+        reviews: [],
+        reviewsTruncated: false,
+      }),
       createDraft: () => created,
     };
   }
@@ -762,6 +766,7 @@ describe('Browser Workflow chat tools', () => {
       'browser_workflow_list',
       'browser_workflow_get',
       'browser_workflow_create_draft',
+      'browser_workflow_execute',
     ]);
     expect(CHAT_BROWSER_WORKFLOW_TOOL_NAMES.has('browser_workflow_list')).toBe(true);
     expect(
@@ -822,7 +827,12 @@ describe('Browser Workflow chat tools', () => {
         service,
       }),
     );
-    expect(detail).toEqual({ ok: true, ...created });
+    expect(detail).toEqual({
+      ok: true,
+      ...created,
+      reviews: [],
+      reviewsTruncated: false,
+    });
 
     const draftResult = JSON.parse(
       executeChatBrowserWorkflowTool({

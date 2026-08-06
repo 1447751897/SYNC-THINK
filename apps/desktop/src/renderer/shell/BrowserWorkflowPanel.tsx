@@ -5,7 +5,9 @@ import type {
   BrowserProfileSummary,
   BrowserWorkflowDraftStatus,
   BrowserWorkflowDraftSummary,
+  BrowserWorkflowReviewSummary,
   BrowserWorkflowVersionSummary,
+  ExecuteBrowserWorkflowResponse,
   GetBrowserWorkflowResponse,
 } from '@sync-think/protocol';
 import type { BrowserRecordingStepInput } from '@sync-think/shared';
@@ -16,11 +18,13 @@ import {
   CircleAlert,
   FileCheck2,
   Globe2,
+  History,
   ListChecks,
   LoaderCircle,
   MousePointerClick,
   Navigation,
   PencilLine,
+  Play,
   Plus,
   Radio,
   RefreshCw,
@@ -66,6 +70,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
   const [createSource, setCreateSource] = useState<BrowserAutomationSource>();
   const [reviewTarget, setReviewTarget] = useState<GetBrowserWorkflowResponse>();
   const [reviewNote, setReviewNote] = useState('');
+  const [executeTarget, setExecuteTarget] = useState<GetBrowserWorkflowResponse>();
 
   const loadTasks = useCallback(
     async (nextQuery = '', preserveFeedback = false) => {
@@ -87,7 +92,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
         const nextDetails: Record<string, GetBrowserWorkflowResponse> = {};
         detailResults.forEach((result, index) => {
           if (result.status === 'fulfilled') {
-            nextDetails[response.tasks[index]!.id] = result.value;
+            nextDetails[response.tasks[index]!.id] = normalizeWorkflowDetail(result.value);
           }
         });
         setDetailsByTaskId(nextDetails);
@@ -114,30 +119,67 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
     void loadTasks(nextQuery);
   }, [loadTasks, query]);
 
-  const openTask = useCallback(
-    async (task: BrowserAutomationTaskSummary, intent: 'view' | 'record') => {
-      setBusyAction(`open:${task.id}`);
+  const openExecute = useCallback(
+    async (task: BrowserAutomationTaskSummary) => {
+      setBusyAction(`task:${task.id}`);
       try {
-        const detail =
+        const detail = normalizeWorkflowDetail(
           detailsByTaskId[task.id] ??
-          (await workflowRuntime().browserWorkflow.get({
-            taskId: task.id,
-          }));
+            (await workflowRuntime().browserWorkflow.get({ taskId: task.id })),
+        );
         setDetailsByTaskId((current) => ({ ...current, [task.id]: detail }));
+        if (!detail.version) {
+          setFeedback({
+            kind: 'error',
+            text: '此任务还没有可执行的已发布版本。请先录制并审核发布。',
+          });
+          return;
+        }
+        setExecuteTarget(detail);
+      } catch (error) {
+        setFeedback({ kind: 'error', text: workflowErrorMessage(error) });
+      } finally {
+        setBusyAction(undefined);
+      }
+    },
+    [detailsByTaskId],
+  );
+
+  const openTask = useCallback(
+    async (task: BrowserAutomationTaskSummary, intent: 'view' | 'record' | 'revision') => {
+      setBusyAction(`task:${task.id}`);
+      try {
+        const detail = normalizeWorkflowDetail(
+          intent === 'revision' || !detailsByTaskId[task.id]
+            ? await workflowRuntime().browserWorkflow.get({ taskId: task.id })
+            : detailsByTaskId[task.id]!,
+        );
+        setDetailsByTaskId((current) => ({ ...current, [task.id]: detail }));
+        if (intent === 'revision') {
+          const response = await workflowRuntime().browserWorkflow.createRevisionDraft({
+            taskId: detail.task.id,
+            expectedTaskRevision: detail.task.revision,
+          });
+          const nextDetail = normalizeWorkflowDetail({
+            ...detail,
+            task: response.task,
+            draft: response.draft,
+          });
+          setTasks((current) =>
+            current.map((candidate) =>
+              candidate.id === response.task.id ? response.task : candidate,
+            ),
+          );
+          setDetailsByTaskId((current) => ({ ...current, [task.id]: nextDetail }));
+          onRecordWorkflow(toWorkflowDraftContext(response.task, response.draft));
+          return;
+        }
         if (intent === 'record') {
           if (!detail.draft) {
             setFeedback({ kind: 'error', text: '此任务当前没有可继续录制的草稿。' });
             return;
           }
-          onRecordWorkflow({
-            taskId: detail.task.id,
-            draftId: detail.draft.id,
-            taskName: detail.task.name,
-            startUrl: detail.task.startUrl,
-            source: detail.task.source,
-            status: detail.draft.status,
-            ...(detail.draft.recordingId ? { recordingId: detail.draft.recordingId } : {}),
-          });
+          onRecordWorkflow(toWorkflowDraftContext(detail.task, detail.draft));
           return;
         }
         setReviewTarget(detail);
@@ -199,7 +241,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
               data-testid="browser-workflow-search"
               className="h-8 w-full rounded-md border border-border bg-surface pl-8 pr-2.5 text-[11.5px] text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
               value={query}
-              placeholder="搜索任务名称或目标说明"
+              placeholder="搜索任务名称、目标或网址"
               maxLength={200}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
@@ -309,7 +351,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
         ) : null}
         {!loading && tasks.length > 0 ? (
           <div className="px-4 py-2" data-testid="browser-workflow-list">
-            <div className="grid h-8 grid-cols-[minmax(0,1.3fr)_minmax(180px,1fr)_100px_112px_92px] items-center gap-3 border-b border-border px-2 text-[10.5px] font-medium text-text-faint">
+            <div className="grid h-8 grid-cols-[minmax(0,1.3fr)_minmax(180px,1fr)_100px_112px_168px] items-center gap-3 border-b border-border px-2 text-[10.5px] font-medium text-text-faint">
               <span>任务</span>
               <span>目标</span>
               <span>来源</span>
@@ -321,8 +363,9 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
                 key={task.id}
                 task={task}
                 detail={detailsByTaskId[task.id]}
-                busy={busyAction === `open:${task.id}`}
+                busy={busyAction === `task:${task.id}`}
                 onOpen={(intent) => void openTask(task, intent)}
+                onExecute={(target) => void openExecute(target)}
               />
             ))}
           </div>
@@ -351,6 +394,21 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
         }}
         onReview={(decision) => void reviewDraft(decision)}
       />
+
+      <WorkflowExecuteDialog
+        detail={executeTarget}
+        busy={Boolean(busyAction)}
+        onOpenChange={(open) => {
+          if (!open && !busyAction) {
+            setExecuteTarget(undefined);
+          }
+        }}
+        onResult={(feedback) => {
+          setExecuteTarget(undefined);
+          setFeedback(feedback);
+          void loadTasks(appliedQuery, true);
+        }}
+      />
     </div>
   );
 }
@@ -359,24 +417,35 @@ function WorkflowTaskRow(props: {
   task: BrowserAutomationTaskSummary;
   detail?: GetBrowserWorkflowResponse;
   busy: boolean;
-  onOpen(intent: 'view' | 'record'): void;
+  onOpen(intent: 'view' | 'record' | 'revision'): void;
+  onExecute(task: BrowserAutomationTaskSummary): void;
 }): JSX.Element {
-  const { task, detail, busy, onOpen } = props;
+  const { task, detail, busy, onOpen, onExecute } = props;
   const state = workflowTaskState(task, detail?.draft, detail?.version);
   const StateIcon = state.icon;
   const canRecord = task.status === 'draft' && Boolean(detail?.draft);
+  const actionIntent =
+    task.status === 'pending_review'
+      ? 'view'
+      : task.status === 'enabled'
+        ? 'revision'
+        : canRecord
+          ? 'record'
+          : 'view';
+  const actionLabel =
+    task.status === 'pending_review'
+      ? '审核'
+      : task.status === 'enabled'
+        ? '录制新版本'
+        : canRecord
+          ? '继续录制'
+          : '查看';
   return (
     <div
       data-testid={`browser-workflow-task-${task.id}`}
-      className="grid min-h-[68px] grid-cols-[minmax(0,1.3fr)_minmax(180px,1fr)_100px_112px_92px] items-center gap-3 border-b border-border px-2 last:border-b-0 hover:bg-hover"
+      className="grid min-h-[68px] grid-cols-[minmax(0,1.3fr)_minmax(180px,1fr)_100px_112px_168px] items-center gap-3 border-b border-border px-2 last:border-b-0 hover:bg-hover"
     >
-      <button
-        type="button"
-        className="min-w-0 text-left"
-        onClick={() =>
-          onOpen(task.status === 'pending_review' ? 'view' : canRecord ? 'record' : 'view')
-        }
-      >
+      <button type="button" className="min-w-0 text-left" onClick={() => onOpen('view')}>
         <div className="truncate text-[11.5px] font-medium text-text">{task.name}</div>
         <div className="mt-1 flex min-w-0 items-center gap-1 text-[10.5px] text-text-faint">
           <Globe2 size={11} />
@@ -397,24 +466,35 @@ function WorkflowTaskRow(props: {
         </div>
         <div className="mt-1 truncate text-[10px] text-text-faint">{state.detail}</div>
       </div>
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-1.5">
+        {task.status === 'enabled' ? (
+          <button
+            type="button"
+            data-testid={`browser-workflow-execute-${task.id}`}
+            className="flex h-7 items-center gap-1 rounded-md bg-accent px-2 text-[10.5px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-45"
+            disabled={busy}
+            onClick={() => onExecute(task)}
+          >
+            {busy ? <LoaderCircle className="animate-spin" size={11} /> : <Play size={11} />}
+            执行
+          </button>
+        ) : null}
         <button
           type="button"
           className={clsx(
             'flex h-7 items-center gap-1 rounded-md px-2 text-[10.5px] font-medium disabled:opacity-45',
             task.status === 'pending_review'
               ? 'bg-warning/15 text-warning hover:bg-warning/20'
-              : canRecord
+              : task.status === 'enabled'
                 ? 'border border-border bg-surface text-text-secondary hover:bg-elevated hover:text-text'
-                : 'text-text-secondary hover:bg-elevated hover:text-text',
+                : canRecord
+                  ? 'border border-border bg-surface text-text-secondary hover:bg-elevated hover:text-text'
+                  : 'text-text-secondary hover:bg-elevated hover:text-text',
           )}
           disabled={busy}
-          onClick={() =>
-            onOpen(task.status === 'pending_review' ? 'view' : canRecord ? 'record' : 'view')
-          }
+          onClick={() => onOpen(actionIntent)}
         >
-          {busy ? <LoaderCircle className="animate-spin" size={11} /> : null}
-          {task.status === 'pending_review' ? '审核' : canRecord ? '继续录制' : '查看'}
+          {actionLabel}
           {!busy ? <ChevronRight size={11} /> : null}
         </button>
       </div>
@@ -607,7 +687,22 @@ function WorkflowReviewDialog(props: {
   const draft = detail?.draft;
   const version = detail?.version;
   const reviewing = draft?.status === 'pending_review';
-  const steps = version?.steps ?? draft?.steps ?? [];
+  const reviews = detail?.reviews ?? [];
+  const viewingUnpublishedDraft = Boolean(
+    draft && (!version || draft.id !== version.draftId || draft.status !== 'approved'),
+  );
+  const steps = viewingUnpublishedDraft
+    ? (draft?.steps ?? [])
+    : (version?.steps ?? draft?.steps ?? []);
+  const stepSourceLabel = reviewing
+    ? version
+      ? `V${version.versionNumber + 1} 待审草稿`
+      : '待审核草稿'
+    : viewingUnpublishedDraft
+      ? version
+        ? `V${version.versionNumber + 1} 编辑草稿`
+        : '当前草稿'
+      : '不可变发布版本';
   return (
     <Dialog.Root open={Boolean(detail)} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -640,14 +735,7 @@ function WorkflowReviewDialog(props: {
                 label="来源"
                 value={detail?.task.source === 'ai' ? 'AI 创建' : '手动创建'}
               />
-              <WorkflowMeta
-                label="状态"
-                value={
-                  version
-                    ? `已发布 · V${version.versionNumber}`
-                    : workflowDraftStatusLabel(draft?.status)
-                }
-              />
+              <WorkflowMeta label="状态" value={workflowDetailStatusLabel(detail)} />
               <WorkflowMeta label="步骤" value={`${steps.length} 步`} />
               <div className="col-span-2">
                 <WorkflowMeta label="目标说明" value={detail?.task.instruction ?? ''} />
@@ -656,9 +744,7 @@ function WorkflowReviewDialog(props: {
             <div className="px-5 py-4">
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-[11.5px] font-semibold text-text">录制步骤</h3>
-                <span className="text-[10.5px] text-text-faint">
-                  {version ? '不可变发布版本' : '待审核草稿'}
-                </span>
+                <span className="text-[10.5px] text-text-faint">{stepSourceLabel}</span>
               </div>
               {steps.length > 0 ? (
                 <div className="overflow-hidden rounded-md border border-border">
@@ -671,6 +757,10 @@ function WorkflowReviewDialog(props: {
                   暂无可查看步骤
                 </div>
               )}
+              <WorkflowReviewHistory
+                reviews={reviews}
+                truncated={detail?.reviewsTruncated ?? false}
+              />
               {reviewing ? (
                 <label className="mt-4 block">
                   <span className="mb-1.5 block text-[11px] font-medium text-text-secondary">
@@ -693,7 +783,9 @@ function WorkflowReviewDialog(props: {
             <div className="flex items-center gap-1.5 text-[10.5px] text-text-faint">
               {version ? <ShieldCheck size={12} /> : <CircleAlert size={12} />}
               {version
-                ? '发布版本不会被后续编辑覆盖'
+                ? viewingUnpublishedDraft
+                  ? `已发布 V${version.versionNumber} 保持不变，批准后才切换新版本`
+                  : '发布版本不会被后续编辑覆盖'
                 : reviewing
                   ? '批准后将创建新的不可变版本'
                   : '此草稿可继续录制'}
@@ -748,6 +840,281 @@ function WorkflowReviewDialog(props: {
   );
 }
 
+function WorkflowExecuteDialog(props: {
+  detail?: GetBrowserWorkflowResponse;
+  busy: boolean;
+  onOpenChange(open: boolean): void;
+  onResult(feedback: WorkflowFeedback): void;
+}): JSX.Element {
+  const { detail, busy, onOpenChange, onResult } = props;
+  const version = detail?.version;
+  const steps = version?.steps ?? [];
+  const variables = useMemo(() => {
+    const names: string[] = [];
+    const seen = new Set<string>();
+    for (const step of steps) {
+      if (step.kind !== 'fill') continue;
+      if (step.value.kind !== 'variable') continue;
+      const name = step.value.name.trim();
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        names.push(name);
+      }
+    }
+    return names;
+  }, [steps]);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<ExecuteBrowserWorkflowResponse>();
+  const [pendingOrigins, setPendingOrigins] = useState<string[] | undefined>();
+
+  useEffect(() => {
+    setValues({});
+    setRunning(false);
+    setResult(undefined);
+    setPendingOrigins(undefined);
+  }, [detail?.task.id, version?.id]);
+
+  const missing = variables.filter((name) => !(values[name] ?? '').trim());
+  const canStart = !running && variables.every((name) => (values[name] ?? '').trim().length > 0);
+  const needsApproval = Boolean(pendingOrigins && pendingOrigins.length > 0);
+
+  const run = useCallback(async () => {
+    if (!detail || !version) return;
+    setRunning(true);
+    setResult(undefined);
+    try {
+      const response = await workflowRuntime().browserWorkflow.execute({
+        taskId: detail.task.id,
+        ...(variables.length > 0 ? { variables: values } : {}),
+      });
+      if (response.ok) {
+        setResult(response);
+        setPendingOrigins(undefined);
+        onResult({
+          kind: 'success',
+          text: `任务「${detail.task.name}」执行完成（${response.executedStepCount}/${response.stepCount} 步）。`,
+        });
+      } else if (response.missingOrigins?.length) {
+        // Keep the dialog open so the approval banner and the
+        // "approve & execute" action can appear.
+        setResult(undefined);
+        setPendingOrigins(response.missingOrigins);
+      } else if (response.missingVariables?.length) {
+        // Keep the dialog open so the user can fill in the variables.
+        setResult(response);
+        setPendingOrigins(undefined);
+      } else {
+        setResult(response);
+        setPendingOrigins(undefined);
+        onResult({ kind: 'error', text: response.error ?? '执行失败。' });
+      }
+    } catch (error) {
+      onResult({ kind: 'error', text: workflowErrorMessage(error) });
+    } finally {
+      setRunning(false);
+    }
+  }, [detail, version, variables, values, onResult]);
+
+  const approveRun = useCallback(async () => {
+    if (!detail || !version) return;
+    if (!pendingOrigins || pendingOrigins.length === 0) return;
+    setRunning(true);
+    setResult(undefined);
+    try {
+      const response = await workflowRuntime().browserWorkflow.approveAndExecute({
+        taskId: detail.task.id,
+        origins: pendingOrigins,
+        ...(variables.length > 0 ? { variables: values } : {}),
+      });
+      setResult(response);
+      if (response.ok) {
+        setPendingOrigins(undefined);
+        onResult({
+          kind: 'success',
+          text: `已批准并执行：任务「${detail.task.name}」（${response.executedStepCount}/${response.stepCount} 步）。`,
+        });
+      } else if (response.missingVariables?.length) {
+        // Keep the dialog open so the user can fill in the remaining variables.
+        setPendingOrigins(undefined);
+      } else {
+        onResult({ kind: 'error', text: response.error ?? '执行失败。' });
+      }
+    } catch (error) {
+      onResult({ kind: 'error', text: workflowErrorMessage(error) });
+    } finally {
+      setRunning(false);
+    }
+  }, [detail, version, variables, values, pendingOrigins, onResult]);
+
+  return (
+    <Dialog.Root open={Boolean(detail)} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[min(720px,calc(100vh-32px))] w-[min(620px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl focus:outline-none">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-5 py-4">
+            <div className="min-w-0">
+              <Dialog.Title className="truncate text-[14px] font-semibold text-text">
+                执行自动化任务
+              </Dialog.Title>
+              <Dialog.Description className="mt-1 truncate text-[11.5px] text-text-faint">
+                {detail?.task.name}
+                {version ? ` · V${version.versionNumber} · ${version.stepCount} 步` : ''}
+              </Dialog.Description>
+            </div>
+            <Dialog.Close asChild>
+              <button
+                type="button"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-faint hover:bg-hover hover:text-text"
+                aria-label="关闭执行对话框"
+              >
+                <X size={14} />
+              </button>
+            </Dialog.Close>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            {variables.length > 0 ? (
+              <div className="mb-4">
+                <h3 className="mb-1.5 text-[11.5px] font-semibold text-text">需要填写的变量</h3>
+                <p className="mb-3 text-[10.5px] leading-4 text-text-faint">
+                  这些输入在录制时被标记为变量，每次执行可以填入不同值。
+                </p>
+                <div className="space-y-2.5">
+                  {variables.map((name) => (
+                    <label key={name} className="block">
+                      <span className="mb-1 block text-[11px] font-medium text-text-secondary">
+                        {name}
+                      </span>
+                      <input
+                        className="h-8 w-full rounded-md border border-border bg-elevated px-3 text-[11.5px] text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
+                        value={values[name] ?? ''}
+                        placeholder={`输入 ${name} 的值`}
+                        onChange={(event) =>
+                          setValues((current) => ({ ...current, [name]: event.target.value }))
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="mb-4 text-[11.5px] leading-5 text-text-secondary">
+                该任务没有变量，将直接按录制内容逐步执行。
+              </p>
+            )}
+
+            {needsApproval ? (
+              <div
+                data-testid="browser-workflow-approval-banner"
+                className="mb-4 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] leading-5"
+              >
+                <div className="flex items-center gap-1.5 font-medium text-warning">
+                  <ShieldCheck size={13} />
+                  此任务需要先获得以下站点授权
+                </div>
+                <div className="mt-2 space-y-1">
+                  {pendingOrigins?.map((origin) => (
+                    <div
+                      key={origin}
+                      className="flex items-center gap-1.5 text-text-secondary"
+                    >
+                      <Globe2 size={12} className="shrink-0 text-warning" />
+                      <span className="truncate">{origin}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-2 text-[10.5px] leading-4 text-text-faint">
+                  批准后，这些站点将记入本任务（Workflow 范围）的授权记录，后续执行无需再次批准。
+                </p>
+              </div>
+            ) : null}
+
+            {steps.length > 0 ? (
+              <div>
+                <h3 className="mb-1.5 text-[11.5px] font-semibold text-text">将执行的步骤</h3>
+                <div className="overflow-hidden rounded-md border border-border">
+                  {steps.map((step, index) => (
+                    <WorkflowStepRow key={index} index={index + 1} step={step} />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {result ? (
+              <div
+                data-testid="browser-workflow-execute-result"
+                className={clsx(
+                  'mt-4 rounded-md border px-3 py-2 text-[11px] leading-5',
+                  result.ok
+                    ? 'border-success/30 bg-success/10 text-success'
+                    : 'border-error/30 bg-error/10 text-error',
+                )}
+              >
+                <div className="font-medium">
+                  {result.ok
+                    ? `执行完成：${result.executedStepCount}/${result.stepCount} 步`
+                    : result.error ?? '执行失败'}
+                </div>
+                {result.steps.some((step) => !step.ok) ? (
+                  <div className="mt-2 space-y-1">
+                    {result.steps
+                      .filter((step) => !step.ok)
+                      .map((step) => (
+                        <div key={step.sequence} className="text-[10.5px] opacity-90">
+                          第 {step.sequence} 步：{step.error ?? '失败'}
+                        </div>
+                      ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-5 py-3">
+            <div className="text-[10.5px] text-text-faint">
+              执行会在持久浏览器页面逐步进行，请在窗口内观察。
+            </div>
+            <div className="flex items-center gap-2">
+              <Dialog.Close asChild>
+                <button
+                  type="button"
+                  className="h-8 rounded-md border border-border px-3 text-[11.5px] font-medium text-text-secondary hover:bg-hover hover:text-text"
+                  disabled={running}
+                >
+                  关闭
+                </button>
+              </Dialog.Close>
+              <button
+                type="button"
+                data-testid={needsApproval ? 'browser-workflow-approve-run' : 'browser-workflow-run'}
+                className="flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[11.5px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-45"
+                disabled={!canStart || busy}
+                onClick={() => void (needsApproval ? approveRun() : run())}
+              >
+                {running ? (
+                  <LoaderCircle className="animate-spin" size={13} />
+                ) : needsApproval ? (
+                  <ShieldCheck size={13} />
+                ) : (
+                  <Play size={13} />
+                )}
+                {running
+                  ? '执行中…'
+                  : needsApproval
+                    ? '批准并执行'
+                    : missing.length > 0
+                      ? `需填 ${missing.length} 个变量`
+                      : '开始执行'}
+              </button>
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 function WorkflowStepRow(props: { index: number; step: BrowserRecordingStepInput }): JSX.Element {
   const presentation = workflowStepPresentation(props.step);
   const Icon = presentation.icon;
@@ -764,6 +1131,55 @@ function WorkflowStepRow(props: { index: number; step: BrowserRecordingStepInput
         {presentation.detail}
       </div>
     </div>
+  );
+}
+
+function WorkflowReviewHistory(props: {
+  reviews: BrowserWorkflowReviewSummary[];
+  truncated: boolean;
+}): JSX.Element {
+  return (
+    <section className="mt-4 border-t border-border pt-4" aria-label="审核历史">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="flex items-center gap-1.5 text-[11.5px] font-semibold text-text">
+          <History size={13} />
+          审核历史
+        </h3>
+        {props.truncated ? (
+          <span className="text-[10px] text-text-faint">仅显示最近 100 条审核记录</span>
+        ) : null}
+      </div>
+      {props.reviews.length > 0 ? (
+        <div className="overflow-hidden rounded-md border border-border">
+          {props.reviews.map((review, index) => (
+            <div
+              key={review.id}
+              className="grid min-h-[48px] grid-cols-[minmax(112px,auto)_minmax(0,1fr)_auto] items-start gap-3 border-b border-border px-3 py-2 last:border-b-0"
+            >
+              <div
+                className={clsx(
+                  'flex items-center gap-1.5 text-[10.5px] font-medium',
+                  review.decision === 'approve' ? 'text-success' : 'text-error',
+                )}
+              >
+                {review.decision === 'approve' ? <Check size={12} /> : <X size={12} />}第{' '}
+                {index + 1} 次 · {review.decision === 'approve' ? '批准' : '驳回'}
+              </div>
+              <div className="min-w-0 whitespace-pre-wrap break-words text-[10.5px] leading-4 text-text-secondary">
+                {review.note ?? '未填写审核备注'}
+              </div>
+              <time className="whitespace-nowrap text-[10px] text-text-faint">
+                {formatWorkflowReviewTime(review.createdAt)}
+              </time>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="flex min-h-12 items-center justify-center rounded-md border border-dashed border-border text-[10.5px] text-text-faint">
+          暂无审核记录
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -801,7 +1217,9 @@ function workflowTaskState(
   if (task.status === 'pending_review') {
     return {
       label: '待审核',
-      detail: `${draft?.stepCount ?? 0} 步`,
+      detail: version
+        ? `V${version.versionNumber + 1} 候选 · ${draft?.stepCount ?? 0} 步`
+        : `${draft?.stepCount ?? 0} 步`,
       className: 'text-warning',
       icon: CircleAlert,
     };
@@ -833,14 +1251,16 @@ function workflowTaskState(
   if (draft?.status === 'rejected') {
     return {
       label: '已驳回',
-      detail: '等待重新录制',
+      detail: version ? `V${version.versionNumber + 1} 等待重新录制` : '等待重新录制',
       className: 'text-error',
       icon: RefreshCw,
     };
   }
   return {
-    label: '草稿',
-    detail: `${draft?.stepCount ?? 0} 步`,
+    label: version ? '新版本草稿' : '草稿',
+    detail: version
+      ? `基于 V${version.versionNumber} · ${draft?.stepCount ?? 0} 步`
+      : `${draft?.stepCount ?? 0} 步`,
     className: 'text-text-secondary',
     icon: PencilLine,
   };
@@ -866,18 +1286,14 @@ function workflowStepPresentation(step: BrowserRecordingStepInput): {
   if (step.kind === 'fill') {
     return {
       label: '填写',
-      detail: `${boundedText(locator)} · ${
-        step.value.kind === 'secret' ? '敏感值，运行时填写' : boundedText(step.value.value)
-      }`,
+      detail: `${boundedText(locator)} · ${recordingValueLabel(step.value)}`,
       icon: TextCursorInput,
     };
   }
   if (step.kind === 'select') {
     return {
       label: '选择',
-      detail: `${boundedText(locator)} · ${
-        step.value.kind === 'secret' ? '敏感值，运行时填写' : boundedText(step.value.value)
-      }`,
+      detail: `${boundedText(locator)} · ${recordingValueLabel(step.value)}`,
       icon: ListChecks,
     };
   }
@@ -896,6 +1312,68 @@ function workflowDraftStatusLabel(status?: BrowserWorkflowDraftSummary['status']
   if (status === 'approved') return '已批准';
   if (status === 'rejected') return '已驳回';
   return '编辑中';
+}
+
+function recordingValueLabel(
+  value: Extract<BrowserRecordingStepInput, { kind: 'fill' | 'select' }>['value'],
+): string {
+  if (value.kind === 'secret') return '敏感值，运行时填写';
+  if (value.kind === 'variable') return `变量 {{${value.name}}}`;
+  return boundedText(value.value);
+}
+
+function workflowDetailStatusLabel(detail?: GetBrowserWorkflowResponse): string {
+  if (!detail) return '';
+  const { task, draft, version } = detail;
+  if (task.status === 'pending_review') {
+    return version ? `待审核 · 已发布 V${version.versionNumber}` : '待审核';
+  }
+  if (task.status === 'draft') {
+    const draftStatus = workflowDraftStatusLabel(draft?.status);
+    return version ? `${draftStatus} · 已发布 V${version.versionNumber}` : draftStatus;
+  }
+  if (task.status === 'enabled') {
+    return version ? `已发布 · V${version.versionNumber}` : '已发布';
+  }
+  if (task.status === 'disabled') {
+    return version ? `已停用 · V${version.versionNumber}` : '已停用';
+  }
+  return version ? `运行失败 · V${version.versionNumber}` : '运行失败';
+}
+
+function normalizeWorkflowDetail(detail: GetBrowserWorkflowResponse): GetBrowserWorkflowResponse {
+  return {
+    ...detail,
+    reviews: detail.reviews ?? [],
+    reviewsTruncated: detail.reviewsTruncated ?? false,
+  };
+}
+
+function toWorkflowDraftContext(
+  task: BrowserAutomationTaskSummary,
+  draft: BrowserWorkflowDraftSummary,
+): BrowserWorkflowDraftContext {
+  return {
+    taskId: task.id,
+    draftId: draft.id,
+    taskName: task.name,
+    startUrl: task.startUrl,
+    source: task.source,
+    status: draft.status,
+    ...(draft.recordingId ? { recordingId: draft.recordingId } : {}),
+  };
+}
+
+function formatWorkflowReviewTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
 }
 
 function workflowHost(value: string): string {

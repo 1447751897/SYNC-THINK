@@ -139,8 +139,11 @@ export type CommandType =
   | 'browser.workflow.list'
   | 'browser.workflow.get'
   | 'browser.workflow.createDraft'
+  | 'browser.workflow.createRevisionDraft'
   | 'browser.workflow.submit'
   | 'browser.workflow.review'
+  | 'browser.workflow.execute'
+  | 'browser.workflow.approveAndExecute'
   | 'browser.handoff.listWaiting'
   | 'browser.handoff.continue'
   | 'browser.handoff.cancel'
@@ -3080,6 +3083,14 @@ export interface BrowserWorkflowVersionSummary {
   publishedAt: string;
 }
 
+export interface BrowserWorkflowReviewSummary {
+  id: string;
+  draftId: string;
+  decision: 'approve' | 'reject';
+  note?: string;
+  createdAt: string;
+}
+
 export interface ListBrowserWorkflowsPayload {
   profileId?: string;
   status?: BrowserAutomationTaskStatus;
@@ -3099,6 +3110,8 @@ export interface GetBrowserWorkflowResponse {
   task: BrowserAutomationTaskSummary;
   draft?: BrowserWorkflowDraftSummary;
   version?: BrowserWorkflowVersionSummary;
+  reviews: BrowserWorkflowReviewSummary[];
+  reviewsTruncated: boolean;
 }
 
 export interface CreateBrowserWorkflowDraftPayload {
@@ -3110,6 +3123,16 @@ export interface CreateBrowserWorkflowDraftPayload {
 }
 
 export interface CreateBrowserWorkflowDraftResponse {
+  task: BrowserAutomationTaskSummary;
+  draft: BrowserWorkflowDraftSummary;
+}
+
+export interface CreateBrowserWorkflowRevisionDraftPayload {
+  taskId: string;
+  expectedTaskRevision: number;
+}
+
+export interface CreateBrowserWorkflowRevisionDraftResponse {
   task: BrowserAutomationTaskSummary;
   draft: BrowserWorkflowDraftSummary;
 }
@@ -3134,6 +3157,43 @@ export interface ReviewBrowserWorkflowDraftResponse {
   task: BrowserAutomationTaskSummary;
   draft: BrowserWorkflowDraftSummary;
   version?: BrowserWorkflowVersionSummary;
+}
+
+export interface ExecuteBrowserWorkflowPayload {
+  taskId: string;
+  variables?: Record<string, string>;
+}
+
+export interface BrowserWorkflowReplayStepSummary {
+  sequence: number;
+  ok: boolean;
+  actionKind?: string;
+  outputUrl?: string;
+  outputTitle?: string;
+  errorCode?: string;
+  error?: string;
+}
+
+export interface ExecuteBrowserWorkflowResponse {
+  ok: boolean;
+  taskId: string;
+  versionId?: string;
+  profileId?: string;
+  stepCount: number;
+  executedStepCount: number;
+  steps: BrowserWorkflowReplayStepSummary[];
+  missingVariables?: string[];
+  /** Origins that still need approval before the workflow can run. */
+  missingOrigins?: string[];
+  errorCode?: string;
+  error?: string;
+}
+
+export interface ApproveExecuteBrowserWorkflowPayload {
+  taskId: string;
+  /** Origins the user is approving. Must be a subset of the workflow's navigation origins. */
+  origins: string[];
+  variables?: Record<string, string>;
 }
 
 export type BrowserHandoffReason =

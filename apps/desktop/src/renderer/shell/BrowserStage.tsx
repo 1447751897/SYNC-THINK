@@ -211,6 +211,7 @@ export function BrowserStage(): JSX.Element {
       setDeleteTarget(undefined);
       setFeedback({ kind: 'success', text: `已删除 Profile「${deleteTarget.name}」` });
     } catch (error) {
+      if (isProfileWorkflowReferenceError(error)) setDeleteTarget(undefined);
       setFeedback({ kind: 'error', text: browserProfileErrorMessage(error) });
     } finally {
       setBusyAction(undefined);
@@ -591,6 +592,7 @@ export function BrowserStage(): JSX.Element {
               onProfileRefresh={refreshProfilesAfterRecording}
               onExitWorkflow={() => {
                 setWorkflowDraft(undefined);
+                setWorkflowRefreshToken((current) => current + 1);
                 setView('tasks');
               }}
               onWorkflowSubmitted={() => {
@@ -615,7 +617,9 @@ export function BrowserStage(): JSX.Element {
         <p>
           将删除 Profile「{deleteTarget?.name}」及其专用浏览器目录中的 Cookie、站点存储和登录态。
         </p>
-        <p className="mt-2 text-text-faint">历史命令审计会保留，依赖任务下次运行时需要重新登录。</p>
+        <p className="mt-2 text-text-faint">
+          已有关联自动化任务时会保留该 Profile，避免录制草稿和已发布版本失去登录环境。
+        </p>
       </ConfirmDialog>
 
       <ConfirmDialog
@@ -1432,11 +1436,11 @@ function formatRecordingLocator(locator: BrowserRecordingLocator): string {
 }
 
 function recordingValueText(
-  value: { kind: 'literal'; value: string } | { kind: 'secret' },
+  value: Extract<BrowserRecordingStepInput, { kind: 'fill' | 'select' }>['value'],
 ): string {
-  return value.kind === 'secret'
-    ? '敏感值，运行时填写'
-    : `固定值 ${boundedDisplayText(value.value)}`;
+  if (value.kind === 'secret') return '敏感值，运行时填写';
+  if (value.kind === 'variable') return `变量 {{${value.name}}}`;
+  return `固定值 ${boundedDisplayText(value.value)}`;
 }
 
 function joinStepDetail(...parts: Array<string | undefined>): string {
@@ -1730,6 +1734,9 @@ function browserProfileErrorMessage(error: unknown): string {
   if (/Storage\.clearDataForOrigin|profile[-_. ]site[-_. ]clear/i.test(message)) {
     return '系统浏览器未能清除站点数据，请关闭该 Profile 的浏览器窗口后重试。';
   }
+  if (isProfileWorkflowReferenceError(error)) {
+    return '该 Profile 仍被自动化任务引用，当前需要保留。任务完成重绑或归档后才能删除。';
+  }
   if (/profile[-_. ]in[-_. ]use/i.test(message))
     return 'Profile 正在被任务使用，请先结束任务或人工接管。';
   if (/revision[-_. ]conflict/i.test(message)) return 'Profile 已被其他操作更新，请刷新后重试。';
@@ -1739,6 +1746,11 @@ function browserProfileErrorMessage(error: unknown): string {
     return '站点会话已变化，请刷新后重试。';
   if (/profile[-_. ]not[-_. ]found/i.test(message)) return 'Profile 已不存在，请刷新列表。';
   return message.trim() || '浏览器 Profile 操作失败，请稍后重试。';
+}
+
+function isProfileWorkflowReferenceError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /profile[-_. ]has[-_. ]workflows/i.test(message);
 }
 
 function browserRecordingErrorMessage(error: unknown): string {
