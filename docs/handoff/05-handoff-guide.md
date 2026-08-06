@@ -375,3 +375,23 @@ M1：in progress (Providers panel observable; Agents/Manifest next)
 - 当前只关闭 P1.3 的治理第一切片。固定值、运行变量、秘密引用编辑与确定性回放仍未完成；P1.4/P1.5 继续负责运行历史、失败定位、登录 handoff 与定时任务。
 - 最终证据：Storage 36 files / 387 tests；Workers 15 files / 124 passed / 3 skipped；Runtime 76 files / 490 tests；Desktop 135 files / 915 tests；根 typecheck 20/20、lint 11/11、design tokens、强制 build 11/11（0 cached）与 `git diff --check` 通过。
 - 最新源码已使用隔离目录 `.data/local-restart-20260805-224600-browser-workflow-p13` 启动：Electron PID `8144`、managed Runtime PID `102992`（Node `20.20.2`），窗口可见且响应；pipe/database/hello 与独立 healthcheck 正常，stderr 为空。未打包、未提交、未推送。
+
+## Resume checkpoint（2026-08-06 10:04 · Browser Automation Studio P1.3 生命周期收口进行中）
+
+- 当前分支 `feature/newmax-shell-rewrite`、基线 HEAD `5239407`；工作树包含 contentRef、Profile 引用保护、V2 Draft、审核历史、URL 搜索和 Desktop V2 UI 改动。禁止 reset、clean、覆盖式 checkout、全仓格式化或生成 installer。
+- `browser.workflow.createRevisionDraft` 只允许从 `enabled + publishedVersionId + current Draft approved` 创建下一版；Task 进入 `draft`，旧 `publishedVersionId` 保留到新 Draft 批准。不要把编辑期间的旧 V1 描述为已被覆盖。
+- `browser.workflow.get` 返回最近 100 条 Review，按时间正序并带 `reviewsTruncated`。Renderer 使用 `reviews ?? []` 兼容旧响应；V2 pending/rejected/editing 必须显示当前 Draft 步骤，不能优先显示旧 Version。
+- 所有自动化 Task 都阻止 Profile soft delete，Runtime Host 删除前与 Storage transaction 都会复核。稳定外部错误为 `browser.profile-has-workflows`；重绑/归档未实现前必须保留 Profile。
+- 已发布任务标题进入详情，行尾“录制新版本”创建 V2；创建后即使直接返回列表，也保持“新版本草稿/继续录制”，不得再次调用 createRevision。搜索覆盖名称、目标和网址。
+- 当前包级证据：Storage 36/389、Runtime 76/493、Desktop 135/926；定向和三包 typecheck 已通过。根级 lint、design token、强制 build、最终 diff/Prettier 与真实 Chrome/Edge 生命周期验收仍待完成。
+- 后续产品范围不变：步骤编辑、值绑定和确定性回放仍属 P1.3；运行历史/失败定位/login handoff 属于 P1.4，定时任务属于 P1.5。“让 AI 创建”入口继续保留，真正的模型创建当前仍由聊天 `browser_workflow_create_draft` 承担。
+
+## Resume checkpoint（2026-08-06 10:55 · Browser Automation Studio P1.3 生命周期最终收口）
+
+- 当前分支 `feature/newmax-shell-rewrite`、基线 HEAD `5239407`；30 个修改文件和未跟踪的 `packages/storage/src/local-content-ref.ts` 仍未提交。继续禁止 reset、clean、覆盖式 checkout、全仓格式化、打包或推送。
+- P1.3 治理切片已完成严格 contentRef、Profile 引用保护、V2 Draft、审核历史、URL 搜索、V2 审核 UI，以及新建 Draft 未录制直接返回时的列表刷新。`onExitWorkflow` 必须递增 Workflow refresh token，不能恢复为仅切 view。
+- Edge 143 实窗已完成 V1 批准 → V2 驳回 → 同一 Draft 重录 → V2 批准。V2 编辑/待审期间 V1 指针保持不变，最终 SQLite 同时保留 V1/V2；Profile 删除保护和审核备注可见性均通过。
+- 最终门禁为 Desktop 135 files / 927 tests；根 test 20/20、typecheck 20/20、lint 11/11、build 11/11，全部 0 cached，design tokens、Prettier、`git diff --check` 通过。第一次根 test 的 Workers Terminal 临时目录 `EBUSY` 已由单文件 8/8 和第二次根 test 全绿排除行为回归。
+- 最终源码实例使用 `.data/local-restart-20260806-101617-browser-workflow-v2`：Electron PID `23536`、Runtime PID `22000`、CDP `127.0.0.1:9342`，Pipe healthcheck 正常，stderr 只有 DevTools 监听行；保持运行供手测。
+- V2 批准时生命周期 Task 正确进入 `enabled` 并指向 V2；后续刷新验收留下一个空的下一版 Draft，所以当前 fixture 中 Task 为 `draft`、发布指针仍是 V2。不要直接改库清掉该 Draft；下一阶段应先设计取消/丢弃修订合同。
+- 下一任务仍是 P1.3 步骤编辑、固定值/运行变量/秘密引用绑定与确定性回放。取消 Draft、归档/删除、Profile 重绑、历史版本查看和列表 N+1 优化需要先形成产品/技术合同；P1.4/P1.5 不提前实现。

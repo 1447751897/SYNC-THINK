@@ -1186,3 +1186,7 @@ Computer Use built-in plugin
 8. “批准并发布”是产品级人类审核动作，不由 execution mode 自动满足，也不由 Agent 工具调用。当前没有提供对话审核/发布工具。
 9. BrowserHost 发现顺序固定为显式 `SYNC_THINK_BROWSER_EXECUTABLE`、Chrome、Edge；录制 Page 注入 closed Shadow DOM 状态浮层，`control-stop` binding 只负责停止录制且不会进入步骤流。
 10. 本切片只冻结可审核 WorkflowVersion，不声明其已经可执行。固定值、运行变量、秘密引用编辑和确定性回放继续属于 P1.3；运行历史、失败定位、登录 handoff 和定时任务分别属于 P1.4/P1.5。
+11. 已发布且启用的 Task 可通过 `browser.workflow.createRevisionDraft({ taskId, expectedTaskRevision })` 创建下一版空 Draft。事务把 Task 暂停为 `draft`，但继续保留旧 `publishedVersionId`；只有新 Draft 批准后才切换到递增的 `Vn`。驳回继续停留在同一新 Draft 上重录，旧发布版本始终不可变。
+12. 任何状态的自动化 Task 都会阻止其 Profile 被 soft delete。Runtime 在触发 Host 目录删除前预检，Storage 在同一 immediate transaction 内最终复核，并返回稳定错误 `browser.profile-has-workflows`；任务重绑或归档能力交付前，该 Profile 必须保留。
+13. `browser.workflow.get` 返回该 Task 最近 100 条 Review，查询先取最新记录，再按 `createdAt/id` 正序返回，并通过 `reviewsTruncated` 明示截断。任务搜索同时匹配 `name`、`instruction` 与已脱敏 `start_url`。
+14. Desktop 标题点击始终进入详情；已发布 Task 的单一行操作为“录制新版本”。待审 V2 优先展示当前 Draft 步骤而不是旧 V1，详情显示审核备注与历史；“批准并发布”继续保持人类动作。此扩展复用 `0038`，不新增迁移。

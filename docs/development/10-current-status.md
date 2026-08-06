@@ -532,3 +532,134 @@
 1. P1.3 后续：步骤编辑、固定值/运行变量/秘密引用绑定，以及已发布 WorkflowVersion 的确定性回放。
 2. P1.4：运行历史、逐步日志/截图、失败定位与登录 handoff。
 3. P1.5：手动启停的定时任务；条件、循环与 AI 自修复继续留在 P2。
+
+## 当前状态：2026-08-06 09:10 +08:00 · 已拉取远端 P1.3 第一切片并完成实现核查
+
+### 同步事实
+
+- 当前分支 `feature/newmax-shell-rewrite` 已从 `09b02ad` fast-forward 到远端最新 `5239407`（`feat: browser workflow feature and recording hardening`），与 `origin/feature/newmax-shell-rewrite` 的 ahead/behind 为 `0/0`；拉取后工作树干净。
+- 本次远端增量涉及 43 个文件，约 `+5476/-139`。主体是 Browser Workflow Task/Draft/Review/Version、Desktop 任务页、聊天工具、录制加固和迁移 `0038_browser_automation_workflow`。
+
+### 当前完成边界
+
+- P1.1 Profile/脱敏登录状态管理和 P1.2 语义录制保持完成；P1.3 只完成第一切片，不是完整自动化闭环。
+- 已实现 Task → Draft → Review → immutable WorkflowVersion 生命周期；录制必须已停止、至少一步且 Profile 匹配才能提交。批准会冻结脱敏步骤，SQLite trigger 禁止修改或删除已发布版本。
+- Desktop Browser 默认进入“自动化任务”，支持创建任务、绑定录制、提交审核、驳回重录、批准发布和查看 V1；对话工具支持 list/get/create AI Draft，但不暴露审核或发布能力。
+- BrowserHost 使用显式 executable → Chrome → Edge 的发现顺序，并在录制页显示计时、步骤数和停止浮层。
+
+### 尚未完成
+
+1. P1.3 后半段：步骤编辑、固定值、运行变量、秘密引用绑定，以及已发布 WorkflowVersion 的确定性执行/回放。当前“已发布”仅表示审核后冻结，不能运行。
+2. 现有公开 API 只能创建新 Task + Draft，没有为既有 Task 创建下一版 Draft 的入口；版本号递增逻辑存在，但产品路径目前只能到 V1。
+3. P1.4 的运行历史、逐步日志/截图、失败定位、登录 handoff，以及 P1.5 的手动启停定时任务均未开始；条件、循环和 AI 自修复仍在 P2。
+
+### 核查发现的风险与偏差
+
+1. **P0**：`packages/storage/src/production-execution-store.ts:624` 的 `isLocalContentRef()` artifact URI 白名单正则混入 `function mapProviderRow(...)` 文本，导致白名单被意外放宽。继续发布或扩展执行链前应先修复并补 malformed contentRef 回归测试。
+2. **P1**：Profile 删除采用 soft delete，但已有 Workflow Task 仍引用该 Profile；任务会从按活动 Profile 过滤的 Desktop 入口消失，且当前没有阻止删除、重绑或归档恢复策略。
+3. **P1**：任务页“让 AI 创建”按钮只是打开同一人工表单并写入 `source=ai`，不会调用模型；真正的 AI Draft 创建仅存在于聊天工具，UI 文案和行为需要统一。
+4. **P1**：Review note 会写入 SQLite，但 get API 不返回审核历史，驳回备注之后无法查看；聊天工具把 query 描述成支持 URL 搜索，Storage 实际只搜索 name/instruction。
+5. 当前证据覆盖单元/组件/接线测试、构建和源码健康启动，但没有记录一次真实 Chrome/Edge 的 Task → 录制 → 提交 → 驳回/批准 → SQLite 复核的 P1.3 端到端实窗验收。
+
+### 验证与运行状态
+
+- 提交 `5239407` 记录的验证为 8 个包共 2479 tests、根 build 11/11；状态文档另记录 Storage 387、Workers 124 passed/3 skipped、Runtime 490、Desktop 915，以及 typecheck 20/20、lint 11/11。本次没有重新运行包级/根级全量门禁。
+- 本次定向复跑通过：Storage browser-store `15/15`、Workers BrowserHost `36/36`、Runtime 3 files / `61/61`、Desktop workflow payload/wiring/BrowserStage 3 files / `49/49`。首次直接运行 Runtime 定向测试时，拉取前遗留的旧 `storage/dist` 缺少新方法并导致 4 项失败；按 Turbo 依赖图先执行 `pnpm exec turbo run build --filter=@sync-think/storage`（shared/storage 2/2）后全部通过，说明后续测试应从声明的 task graph 入口运行。
+- 上一轮隔离实例的 Electron PID `8144`、Runtime PID `102992` 当前均已退出；当前没有可用于继续手测的最新源码实例。
+- 本次没有生成 installer、portable 或 release artifact，也没有修改业务代码。
+
+### 建议继续顺序
+
+1. 先修复 P0 contentRef 正则并补边界测试。
+2. 收敛 P1.3 第一切片的产品生命周期：Profile 删除策略、既有任务新 Draft/V2 路径、审核历史、搜索合同和 AI 创建入口。
+3. 完成步骤编辑、值绑定和确定性回放，并补真实 Chrome/Edge 端到端实窗验收；之后再进入 P1.4/P1.5。
+
+## 当前状态：2026-08-06 10:04 +08:00 · Browser Automation Studio P1.3 生命周期收口进行中
+
+### 已完成代码
+
+- P0 contentRef 已统一为共享严格合同，Artifact/Production Execution 不再接受空格、花括号 artifact URI 或远程 `file://`。
+- Profile 有任何自动化 Task 引用时，Runtime 与 Storage 双层阻止删除并返回稳定错误；Desktop 会关闭确认框并显示保留原因。
+- 新增已发布 Task 的 V2 Draft API/IPC/UI：V1 在 V2 编辑和待审期间继续作为 `publishedVersionId`，V2 批准后才切换。
+- Workflow get 返回最近 100 条审核历史与截断标记；搜索覆盖任务名称、目标和网址。Desktop 显示审核备注，V2 待审优先显示当前 Draft 步骤，任务标题保持进入详情。
+
+### 当前验证
+
+- 定向：Storage `3 files / 42 tests`、Runtime Workflow/Profile/validation `3 files / 15 tests`、Runtime chat tools `55/55`、Desktop `3 files / 54 tests`。
+- 包级：Storage `36 files / 389 tests`、Runtime `76 files / 493 tests`、Desktop `135 files / 926 tests`，全部使用单包单 worker 通过。
+- Storage、Runtime、Desktop typecheck 通过；共享 Protocol/Storage/Workers 依赖产物已按 Turbo task graph 强制重建。
+- 根级 lint、design token、强制 build、Prettier/diff 最终复核和尚未启动的真实 Chrome/Edge 验收仍是当前任务，不生成 installer。
+
+### 明确边界
+
+1. 当前发布版本仍不能执行；步骤编辑、固定值/运行变量/秘密引用与确定性回放继续属于 P1.3 后续。
+2. Task 重绑/归档未实现，因此有关联任务的 Profile 当前必须保留。
+3. “让 AI 创建”入口按 Locked 设计保留；模型驱动创建当前由聊天工具完成，任务页入口仍只建立 AI 来源 Draft。
+
+## 当前状态：2026-08-06 10:36 +08:00 · 远端同步与 P1.3 进度复核
+
+### 同步结果
+
+- 已执行 `git fetch --prune origin` 和 `git pull --ff-only origin feature/newmax-shell-rewrite`；远端与本地 HEAD 均为 `5239407ecf6630ebbcf3fb533098ea04ccc5f38f`，ahead/behind 为 `0/0`，拉取结果为 `Already up to date`。
+- 当前工作树保留 P1.3 生命周期收口改动：30 个已修改文件、1 个未跟踪文件，tracked diff 约 `+1116/-195`。未跟踪的 `packages/storage/src/local-content-ref.ts` 是当前构建依赖，提交时必须一并纳入。
+
+### 当前完成边界
+
+- 远端 `5239407` 已交付 P1.3 第一切片：Task、Draft、Review、不可变 WorkflowVersion、V1 审核发布，以及 Desktop/Chat 查询和创建 Draft 的入口。
+- 当前未提交改动进一步补齐严格 contentRef 合同、Profile 自动化任务引用保护、V1 到 V2 Draft 生命周期、最近 100 条审核历史、URL 搜索与 Desktop V2 审核展示。
+- V2 编辑和待审期间继续保留旧 `publishedVersionId`；批准后才创建递增版本并切换指针。模型工具仍不具备审核或发布权限。
+
+### 本次验证
+
+- `pnpm exec turbo run test --force --concurrency=1`：20/20 Turbo tasks、0 cached，耗时 3 分 24 秒；Storage 389、Runtime 493、Desktop 926 等既有包级计数保持通过。
+- `pnpm exec turbo run typecheck --force`：20/20、0 cached；`pnpm exec turbo run build --force`：11/11、0 cached；`pnpm exec turbo run lint --force --continue`：11/11、0 cached。
+- `pnpm lint:tokens` 与 `git diff --check` 通过。Prettier 仅报告 `docs/product/06-roadmap.md` 的新增内容尚未格式化，本次状态分析未修改该文件。
+- 本次未安装依赖、未启动或重启产品实例、未生成 installer/portable/release artifact，也未提交或推送工作树。
+
+### 本地 Edge 实窗验收
+
+- 隔离实例 `.data/local-restart-20260806-101617-browser-workflow-v2` 正在运行，默认 Profile 的 Edge 143 CDP `127.0.0.1:50781` 可通过 `/json/version` 读取，Protocol 为 1.3。
+- `P13 V2 生命周期闭测` 已完成 V1 批准、V2 首次录制驳回、同一 V2 Draft 重录后批准。SQLite 保留 V1/V2 两条不可变 Version，最终 Task 为 `enabled`、`published_version_id` 指向 V2；3 次录制均为 `stopped/user`，各自 `step_count=stored_steps=3`。
+- Review 顺序为 V1 批准、V2 驳回、V2 批准。截图 `acceptance/02-v2-rejected-detail.png` 显示驳回时旧 V1 仍发布，`acceptance/03-v2-approved-detail.png` 显示最终切换 V2；界面未发现明显遮挡或文本溢出。
+- 非默认 Profile `关联保护闭测` 仍有 Task 引用且 `deleted_at IS NULL`。Desktop stderr 记录删除请求稳定返回 `browser.profile-has-workflows`，证明 Host 数据目录删除前的保护已触发；除此之外未见应用异常。
+
+### 剩余工作与风险
+
+1. 把已经通过的 V2 驳回、旧 V1 指针保持、重录再批准实窗路径固化成自动化回归；补超过 100 条 Review 的截断、排序和同时间 tie-break 测试，并处理 Roadmap 的 Prettier 差异。
+2. 评估任务列表逐项调用 `getWorkflow` 带来的 N+1 IPC/SQL；明确误建 V2 Draft 的取消/丢弃、任务归档/删除和 Profile 重绑策略。当前公开 API 也没有历史版本列表、按版本查看或回滚入口。
+3. P1.3 后半段仍包括步骤编辑、固定值/运行变量/秘密引用绑定与确定性回放。Task 在 V2 编辑期状态为 `draft`，后续执行资格必须明确按发布指针还是 Task 状态判断。
+4. P1.4 的运行历史、逐步日志/截图、失败定位和登录 handoff，以及 P1.5 定时任务尚未开始；Chrome 路径尚未单独复测，本次实窗证据来自 Edge 143。
+
+## 当前状态：2026-08-06 10:55 +08:00 · Browser Automation Studio P1.3 生命周期最终收口
+
+### 最终结论
+
+- P0 contentRef 严格合同、Profile 自动化任务引用保护、V1→V2 Draft 生命周期、最近 100 条审核历史、URL 搜索与 Desktop V2 UI 已完成自动门禁和真实 Edge 验收。
+- 实窗额外发现并修复新建 Draft 后未录制直接返回时列表不刷新的问题。`BrowserStage` 退出录制工作区会递增 Workflow 刷新令牌并重新读取 Runtime/SQLite；最终源码中“直接返回刷新闭测”无需手点刷新即可出现。
+- 当前仍只完成 P1.3 的治理与不可变版本切片。WorkflowVersion 不能执行；步骤编辑、固定值/运行变量/秘密引用绑定和确定性回放仍是后续切片。
+
+### 自动化门禁
+
+- 新增回归测试先在旧实现失败，再由最小刷新修复通过；`BrowserStage.test.tsx` 为 39/39。Desktop 包级为 135 files / 927 tests，typecheck、lint、design token 和 build 均通过。
+- 根 `pnpm typecheck --force` 为 20/20、`pnpm lint --force` 为 11/11、`pnpm lint:tokens` 通过、`pnpm exec turbo run build --force` 为 11/11，均为 0 cached。
+- 根测试第一次仅在 Workers Terminal 清理 Windows 临时目录时出现已知 `EBUSY`；目标文件复跑 8/8，第二次 `pnpm test --force --concurrency=1` 完整通过 20/20、0 cached。Prettier 和最终 diff check 通过。
+
+### Edge 与 SQLite 证据
+
+- 隔离目录为 `.data/local-restart-20260806-101617-browser-workflow-v2`。`P13 V2 生命周期闭测` 经过 V1 批准、V2 驳回、同一 V2 Draft 重录和批准；V2 批准事务结束时 Task 为 `enabled`，发布指针切到 V2。
+- 随后的最终 UI 刷新验收又创建了一个空的下一版 Draft。当前 fixture 中该 Task 因此为 `draft`、revision 9，但 `published_version_id` 仍稳定指向 V2，V1/V2 Version 都未变化。这是“误建修订后缺少取消/丢弃入口”的现成证据，不应直接改 SQLite 恢复状态。
+- V2 编辑、首次待审、驳回和第二次待审期间，发布指针始终指向 V1。V1/V2 步骤 SHA-256 分别为 `215cb41d4c906b7ffb46b6d686a95853812e9740b7202f934a1851d66f359ba2` 与 `1473061f46b049c823c6c09e986b2527eafbc3fc18dc3bd4d186f623bb10073b`；V1 未被修改。
+- 审核顺序为 V1 批准、V2 驳回、V2 批准；驳回备注和最终批准备注均可在详情查看。有关联 Task 的非默认 Profile 删除后确认框关闭、Profile/Task 保留并显示可行动提示；URL 命中与未命中搜索均通过。
+- 截图位于 `acceptance/01-browser-initial.png`、`02-v2-rejected-detail.png`、`03-v2-approved-detail.png`、`04-final-direct-return-refresh.png`。1424x861 的 DOM 指标始终为 `scrollWidth=clientWidth`、`scrollHeight=clientHeight`，未发现重叠、截断或页面级溢出。
+
+### 当前运行实例
+
+- 最终源码实例：Electron PID `23536`、managed Runtime PID `22000`、Electron CDP `127.0.0.1:9342`、Install ID `p13-v2-20260806-101617`。
+- Pipe `runtime.healthcheck` 返回 `ok: true`、`inFlightRuns: 0`；`desktop-final.stderr.log` 只有 DevTools 监听信息。实例保持运行供手测。
+- 本轮未生成 installer、portable 或 release artifact，未提交、未推送。
+
+### 下一任务
+
+1. P1.3 后续：步骤编辑、固定值/运行变量/秘密引用绑定和已发布 WorkflowVersion 的确定性回放。
+2. 在后续设计中明确误建 V2 Draft 的取消/丢弃、任务归档或删除、Profile 重绑与历史版本查看；同时评估任务列表逐项 get 的 N+1 成本。
+3. P1.4 再实现运行历史、逐步日志/截图、失败定位和登录 handoff；P1.5 实现手动启停定时任务。

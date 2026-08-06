@@ -2521,3 +2521,18 @@ Desktop typecheck/build：passed
 - 当前切片只完成任务治理和版本冻结。固定值、运行变量、秘密引用编辑与确定性回放仍属 P1.3 后续；运行历史、失败定位、登录 handoff 和定时任务留在 P1.4/P1.5。
 - 最终包级结果：Storage 36 files / 387 tests、Workers 15 files / 124 passed / 3 skipped、Runtime 76 files / 490 tests、Desktop 135 files / 915 tests；根 typecheck 20/20、lint 11/11、design tokens、强制 build 11/11（0 cached）和 `git diff --check` 通过。
 - 2026-08-05 22:46 +08:00 已使用隔离目录 `.data/local-restart-20260805-224600-browser-workflow-p13` 重启最新源码：Electron PID `8144`、Runtime PID `102992`，Pipe healthcheck 正常、窗口响应且 stderr 为空。未生成安装包，未提交、未推送。
+
+## 2026-08-06 · Browser Automation Studio P1.3 第一切片生命周期收口
+
+- 修复 Storage 的 local contentRef 白名单：Artifact 与 Production Execution 统一使用共享严格校验器，只接受受控 artifact URI、本地绝对路径或本机 `file://`，损坏正则曾放行的空格、花括号和远程 file URI 现在全部 fail-closed。
+- 新增 `browser.workflow.createRevisionDraft`。只有 `enabled + 已发布版本 + 当前 Draft approved + expectedTaskRevision 命中` 才能创建 V2；创建后 Task 暂停为 `draft`，V1 指针保留，V2 批准后才切换不可变 V2。
+- Profile soft delete 增加自动化任务引用保护；Runtime 在 Host 删除前预检，Storage 在事务内复核。Desktop 收到稳定错误后关闭确认框并解释 Profile 必须保留，不再留下可重复点击的无效删除弹窗。
+- `browser.workflow.get` 返回最近 100 条审核历史和 `reviewsTruncated`，按时间正序展示批准/驳回备注；任务搜索新增 `start_url`。聊天只读 get 同步获得审核历史，不增加模型审核或发布权限。
+- Desktop 已发布任务新增“录制新版本”，标题保持进入详情；创建 V2 后列表立即转为“新版本草稿”。V2 待审优先显示当前 Draft 步骤，并同时标明旧 V1 仍生效；审核历史、截断提示和“搜索任务名称、目标或网址”已接入。
+- 本轮未新增迁移或依赖。P1.3 的步骤编辑、固定值/运行变量/秘密引用和确定性执行仍未交付；任务重绑/归档前，有关联任务的 Profile 继续保留。
+- 已完成包级验证：Storage 36 files / 389 tests、Runtime 76 files / 493 tests、Desktop 135 files / 926 tests；三包 typecheck 通过，定向 Storage `42/42`、Runtime `15/15`、Desktop `54/54` 与 Runtime chat tools `55/55` 通过。根级 lint/build 与本地源码实窗将在最终收口后回填。
+- 实窗发现并修复新建 Draft 后直接“返回任务”仍显示创建前列表的问题：退出录制工作区时统一递增 Workflow 刷新令牌，从 Runtime/SQLite 重新读取真源；新增回归测试覆盖未录制直接返回，V2 直接返回测试同步改为真实的 V2 Draft 投影。
+- 最终 Edge 143 验收完成 V1 批准、V2 驳回、同一 Draft 重录与 V2 批准；V2 编辑/待审期间发布指针保持 V1，最终才切换 V2，V1 哈希保持不变。Profile 删除保护、审核备注顺序、URL 搜索和 1424x861 双主题布局均已实测。
+- 最终门禁：Desktop 135 files / 927 tests；根 test 20/20、typecheck 20/20、lint 11/11、build 11/11，全部 0 cached，design tokens、Prettier 与 diff check 通过。第一次根测试仅出现已知 Workers Terminal 临时目录 `EBUSY`，单文件 `8/8` 与第二次根测试完整通过。
+- 最新源码实例保持运行：Electron PID `23536`、Runtime PID `22000`、CDP `127.0.0.1:9342`，Pipe healthcheck 为 `ok` 且 `inFlightRuns=0`；最终 stderr 只有 DevTools 监听信息。未生成安装包，未提交、未推送。
+- 最终刷新验收后，隔离 fixture 的生命周期 Task 另有一个空的下一版 Draft，当前 Task 为 `draft` 但发布指针仍指向 V2；V1/V2 不可变记录保持。现有产品没有取消/丢弃修订入口，本轮保留该真实状态并将其列入后续合同，不直接修改数据库。
