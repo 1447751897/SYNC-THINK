@@ -1366,6 +1366,29 @@ function ShellAppInner() {
     [data.conversations, activeWorkspaceId],
   );
 
+  // Tracks with no active conversations collapse by default: the sidebar only
+  // auto-expands branches that actually have content. Branches WITH content are
+  // left alone so a user's manual collapse is never overridden.
+  useEffect(() => {
+    if (bootState !== 'ready') return;
+    const activeTracks = new Set<ConversationTrack>();
+    for (const conversation of visibleConversations) {
+      if (conversation.archivedAt) continue;
+      activeTracks.add(conversation.track);
+    }
+    setNav((current) => {
+      let changed = false;
+      const next = { ...current.expandedTracks };
+      for (const track of Object.keys(next) as ConversationTrack[]) {
+        if (!activeTracks.has(track) && next[track]) {
+          next[track] = false;
+          changed = true;
+        }
+      }
+      return changed ? { ...current, expandedTracks: next } : current;
+    });
+  }, [bootState, visibleConversations]);
+
   const activePaneLayout = useMemo(
     () =>
       activeWorkspaceId
@@ -1583,7 +1606,7 @@ function ShellAppInner() {
         )}
 
         <main
-          className="shell-board flex min-w-0 flex-1 flex-col overflow-hidden bg-surface"
+          className="shell-board flex min-w-0 flex-1 flex-col overflow-hidden bg-panel"
           data-testid="shell-stage"
         >
           {/* Workspace tabs live inside the stage board (NewMax mid-stage),

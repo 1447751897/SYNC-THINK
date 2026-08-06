@@ -28,10 +28,20 @@
    * made our shell read as "cold" next to the reference.
    */
   --color-page: #f2eee6;
+  --color-page-gutter: #e4e0d7;
   --color-sidebar: #f6f4ef;
   --color-surface: #faf9f5;
   --color-elevated: #f6f4ef;
   --color-overlay: #ffffff;
+
+  /* Light keeps the historical values so the palette is unchanged; dark mode
+     remaps these to the user's spec (see .dark). */
+  --color-panel: #faf9f5;
+  --color-chat: #faf9f5;
+  --color-recent: #faf9f5;
+  --color-stage-tabs: #f6f4ef;
+  --color-tab-active-border: #e7e4db;
+  --color-tab-active-fill: #d5d1c6;
 
   --color-border: #e7e4db;
   --color-border-strong: #d5d1c6;
@@ -81,7 +91,7 @@
   --radius-card: 12px;
   --radius-row: 8px;
   --radius-compose: 16px;
-  --sidebar-width: 252px;
+  --sidebar-width: 300px;
 }
 
 .dark {
@@ -92,10 +102,21 @@
    * cold blue-gray it used to be.
    */
   --color-page: #0d0d0c;
-  --color-sidebar: #141413;
-  --color-surface: #1a1a18;
-  --color-elevated: #141413;
+  --color-page-gutter: #2a2d2b;
+  --color-sidebar: #252726;
+  --color-surface: #343736;
+  --color-elevated: #252726;
   --color-overlay: #201f1d;
+
+  /* Dark palette per product spec: stage panel + tab strip #343736, chat canvas
+     #1e1f1f (selected tabs share it), inner boxes #2a2d2b, selected tab frame
+     #292b2b. */
+  --color-panel: #343736;
+  --color-chat: #1e1f1f;
+  --color-recent: #2a2d2b;
+  --color-stage-tabs: #343736;
+  --color-tab-active-border: #2a2d2b;
+  --color-tab-active-fill: #2a2d2b;
 
   --color-border: #2a2926;
   --color-border-strong: #3a3833;
@@ -1479,7 +1500,7 @@ body {
 .shell-compose__model-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   height: 30px;
   max-width: 170px;
   padding: 0 8px;
@@ -1489,12 +1510,20 @@ body {
   color: var(--color-text-secondary);
   font-size: 12px;
   cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
-.shell-compose__model-btn:hover,
-.shell-compose__model-btn[data-open='1'] {
-  background: var(--color-hover);
+.shell-compose__model-btn:hover:not([data-open='1']) {
+  background: color-mix(in srgb, var(--color-hover) 62%, transparent);
   color: var(--color-text);
+}
+
+.shell-compose__model-btn[data-open='1'] {
+  background: color-mix(in srgb, var(--color-accent-soft) 58%, var(--color-surface));
+  color: var(--color-accent-text);
 }
 
 .shell-compose__model-label {
@@ -2244,6 +2273,213 @@ body {
   color: inherit;
 }
 
+/* Mermaid chart blocks (lazily loaded vendor chunk, see mermaid-vendor.ts) */
+.shell-mermaid {
+  margin: 0 0 0.95em;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-elevated);
+  transition: border-color 180ms ease;
+}
+
+.shell-mermaid:hover {
+  border-color: color-mix(in srgb, var(--color-border-strong) 82%, transparent);
+}
+
+.shell-mermaid__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 70%, var(--color-elevated));
+}
+
+.shell-mermaid__canvas {
+  overflow-x: auto;
+  padding: 14px 16px 18px;
+  background: color-mix(in srgb, var(--color-surface) 30%, transparent);
+}
+
+.shell-mermaid__canvas svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+/* Loading / error states */
+.shell-mermaid--loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 72px;
+  color: var(--color-text-faint);
+  font-size: 12px;
+}
+
+.shell-mermaid__spinner {
+  animation: shell-mermaid-spin 900ms linear infinite;
+}
+
+@keyframes shell-mermaid-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.shell-mermaid--error {
+  padding: 12px 14px;
+}
+
+.shell-mermaid__error-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-error);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.shell-mermaid__error-head .shell-md-code__action {
+  margin-left: auto;
+}
+
+.shell-mermaid__error-msg {
+  margin-top: 8px;
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+}
+
+/* Interactive HTML sandbox (data: URL webview, see HtmlSandbox.tsx) */
+.shell-html {
+  margin: 0 0 0.95em;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-elevated);
+  transition: border-color 180ms ease;
+}
+
+.shell-html:hover {
+  border-color: color-mix(in srgb, var(--color-border-strong) 82%, transparent);
+}
+
+.shell-html__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 70%, var(--color-elevated));
+}
+
+.shell-html__bar-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.shell-html__collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.shell-html__collapse:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+/* 预览 / 源码 view switcher */
+.shell-html__view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.shell-html__view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.shell-html__view-tab:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.shell-html__view-tab.is-active {
+  background: color-mix(in srgb, var(--color-accent-soft) 62%, var(--color-elevated));
+  border-color: color-mix(in srgb, var(--color-accent) 34%, transparent);
+  color: var(--color-accent-strong);
+}
+
+.shell-html__error {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-error) 10%, var(--color-elevated));
+  color: var(--color-error);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.shell-html__webview {
+  display: block;
+  width: 100%;
+  /* Height is set inline from the measured guest content (MIN/MAX clamped).
+     The background follows the chat surface so short pages do not show a
+     white block in dark mode — guest pages with their own background win. */
+  background: var(--color-chat);
+}
+
+/* Source viewer for the embedded HTML */
+.shell-html__source {
+  background: var(--color-elevated);
+}
+
+.shell-html__source-pre {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-text);
+  background: var(--color-elevated);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .shell-md-table-wrap {
   margin: 0 0 0.95em;
   overflow: auto;
@@ -2355,7 +2591,11 @@ body {
   .shell-md-code__action,
   .shell-md-code__expand,
   .shell-md-code__collapse svg,
-  .shell-md-code__expand svg {
+  .shell-md-code__expand svg,
+  .shell-mermaid,
+  .shell-html,
+  .shell-mermaid__spinner {
+    animation: none;
     transition: none;
   }
 }
@@ -6613,8 +6853,14 @@ body {
  */
 .shell-boards {
   gap: var(--shell-board-gap);
+  /* Inset on all four edges: the boards float with breathing room from the
+     window edges (including top/bottom), while staying level with each other. */
   padding: var(--shell-board-inset);
   min-height: 0;
+  /* The window gutter is theme-aware: a mid-gray in dark (boards stay
+     near-black), a soft gray in light (boards stay light). Defined as a token
+     so theme presets can remap it later. */
+  background: var(--color-page-gutter);
 }
 
 .shell-board {
@@ -6647,7 +6893,7 @@ body {
      click-blocking sheet over the whole sidebar. */
   display: flex;
   min-height: 0;
-  min-width: var(--sidebar-width, 252px);
+  min-width: var(--sidebar-width, 300px);
   flex: 1;
   flex-direction: column;
 }
@@ -6663,26 +6909,66 @@ body {
 }
 
 /*
- * Workspace + conversation tab strips live inside the stage board.
- * The strip itself is slightly darker (elevated) so the active tab can
- * "pop" in surface colour and read as the board's own tab edge.
+ * The active path is carried by color: the selected workspace, selected
+ * conversation, and chat canvas all share the surface background. Everything
+ * else remains on the darker elevated navigation background.
  */
-.shell-workspace-tabs,
-.shell-conversation-tabs {
-  background: var(--color-elevated);
-  border-bottom: 1px solid var(--color-border);
+.shell-workspace-tabs {
+  background: var(--color-stage-tabs);
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
 }
 
-.shell-workspace-tab-active,
+/*
+ * The conversation tab strip shares the chat canvas colour (--color-chat) so
+ * the tab row and the message area read as one continuous surface. The
+ * selected tab's own frame (--color-tab-active-border) separates it from the
+ * canvas; unselected tabs stay transparent over the shared background.
+ */
+.shell-conversation-tabs {
+  background: var(--color-chat);
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+}
+
+.shell-workspace-tabs {
+  margin: 0;
+  border-top: 0;
+  border-bottom: 0;
+}
+
+.shell-conversation-tabs {
+  margin: 0;
+  border-top: 0;
+  border-bottom: 0;
+}
+
+/*
+ * Selected tabs are the first two links in the active path.
+ * The selected *workspace* tab keeps the chat colour (--color-chat) so it
+ * reads as the top edge of the active path — only its tab-active-border frame
+ * marks it. The selected *conversation* tab is a solid tab-active-border pill
+ * so it pops from the chat-coloured tab strip below it.
+ */
+.shell-workspace-tab-active {
+  position: relative;
+  z-index: 1;
+  border: 1px solid var(--color-tab-active-border);
+  background: var(--color-chat);
+}
+
 .shell-conversation-tab-active {
   position: relative;
   z-index: 1;
-  box-shadow: 0 1px 0 var(--color-surface);
+  border: 1px solid var(--color-tab-active-border);
+  background: var(--color-tab-active-fill);
 }
 
-.shell-conversation-tabs {
-  /* Second strip sits under workspace tabs; keep the seam soft. */
-  border-top: 0;
+.shell-workspace-tab-active + .shell-workspace-tab-active,
+.shell-conversation-tab-active + .shell-conversation-tab-active {
+  border-left: 1px solid var(--color-border);
 }
 
 /* ─── Sidebar tree ────────────────────────────────────────────────────────
@@ -6708,26 +6994,15 @@ body {
   border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
 }
 
-/* Recent-conversation rows: soft entrance, hover nudge, active accent bar. */
+/* Recent-conversation rows: soft entrance, hover nudge. */
 .st-conv-row {
   animation: st-conv-in var(--shell-motion-normal) var(--shell-ease-out) both;
 }
 
-.st-conv-row::before {
-  content: '';
-  position: absolute;
-  left: -1px;
-  top: 50%;
-  translate: 0 -50%;
-  width: 2.5px;
-  height: 0;
-  border-radius: 2px;
-  background: var(--color-accent);
-  transition: height var(--shell-motion-normal) var(--shell-ease);
-}
-
-.st-conv-row.shell-row-active::before {
-  height: 62%;
+/* Dark palette: only the *selected* conversation row sits on the chat color;
+   unselected rows stay transparent so the recent box shows through. */
+.dark .st-conv-row.shell-row-active {
+  background: var(--color-chat);
 }
 
 .st-conv-row:not(.shell-row-active):hover {
@@ -6784,6 +7059,99 @@ body {
 
 .st-chevron[data-open='true'] {
   transform: rotate(90deg);
+}
+
+/*
+ * Press feedback for clickable rows/buttons. Applied alongside .st-row-motion
+ * so hover colour and press scale compose. Disabled under reduced-motion.
+ */
+.st-press-motion {
+  transition:
+    transform var(--shell-motion-fast) var(--shell-ease),
+    box-shadow var(--shell-motion-fast) var(--shell-ease);
+}
+
+.st-press-motion:active {
+  transform: scale(0.98);
+}
+
+/*
+ * Primary nav items (新建对话 / 搜索 / 定时任务 / 浏览器 …):
+ * icon lifts to accent on hover, whole row nudges right by 1px, and the
+ * press feedback scales the row back in.
+ */
+.st-nav-item {
+  transition:
+    transform var(--shell-motion-fast) var(--shell-ease),
+    background var(--shell-motion-fast) var(--shell-ease),
+    color var(--shell-motion-fast) var(--shell-ease),
+    opacity var(--shell-motion-fast) var(--shell-ease);
+}
+
+.st-nav-item:hover {
+  transform: translateX(1px);
+}
+
+.st-nav-item:hover .st-nav-icon {
+  color: var(--color-accent);
+}
+
+.st-nav-item:active {
+  transform: translateX(1px) scale(0.98);
+}
+
+/* Selected nav / conversation rows read as a raised pill with an accent hint. */
+.st-conv-row.shell-row-active {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+/*
+ * Smooth disclosure animation for sidebar sections (最近对话 / 轨道 / 分组 /
+ * 归档). Uses the grid-rows 0fr→1fr trick so an auto-height region animates
+ * without measuring. Content stays mounted; height collapses to zero.
+ */
+.shell-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--shell-motion-normal) var(--shell-ease),
+    opacity var(--shell-motion-normal) var(--shell-ease);
+}
+
+.shell-collapse--open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.shell-collapse__inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Slim, quiet scrollbar for the sidebar conversation list. */
+.shell-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-border-strong) 60%, transparent) transparent;
+}
+
+.shell-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.shell-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.shell-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  background-color: color-mix(in srgb, var(--color-border-strong) 55%, transparent);
+}
+
+.shell-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-border-strong);
 }
 
 /* Popovers: workspace menu, row menus. */
@@ -7559,8 +7927,10 @@ body {
   .st-dialog-primary,
   .st-row-motion,
   .st-icon-motion,
+  .st-press-motion,
+  .st-nav-item,
   .st-chevron,
-  .st-conv-row::before {
+  .shell-collapse {
     transition: none;
   }
 
@@ -7568,7 +7938,10 @@ body {
     animation: none;
   }
 
-  .st-conv-row:not(.shell-row-active):hover {
+  .st-conv-row:not(.shell-row-active):hover,
+  .st-nav-item:hover,
+  .st-nav-item:active,
+  .st-press-motion:active {
     transform: none;
   }
 

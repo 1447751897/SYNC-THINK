@@ -83,7 +83,7 @@ const DEFAULT_CONVERSATION_GROUPS: ConversationGroupsByTrack = {
 
 export const SIDEBAR_WIDTH_MIN = 220;
 export const SIDEBAR_WIDTH_MAX = 420;
-export const SIDEBAR_WIDTH_DEFAULT = 252;
+export const SIDEBAR_WIDTH_DEFAULT = 300;
 
 export type RecentConversationSectionState = Record<'model' | 'agent' | 'team', boolean>;
 

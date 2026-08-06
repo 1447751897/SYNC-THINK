@@ -114,11 +114,11 @@ export function ConversationTabs(props: ConversationTabsProps) {
   return (
     <div
       data-testid="conversation-tabs"
-      className="shell-conversation-tabs flex h-9 shrink-0 items-end px-2"
+      className="shell-conversation-tabs flex h-9 shrink-0 items-start px-2 pt-1"
     >
       {/* Scrollable tab area is isolated from the right-side action group so
           the split / rail buttons stay visible even when many tabs overflow. */}
-      <div className="flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 items-start gap-0.5 overflow-x-auto">
       {tabs.map((conversation) => {
         const id = String(conversation.id);
         const active = id === props.activeId;
@@ -162,9 +162,9 @@ export function ConversationTabs(props: ConversationTabsProps) {
               props.onReorder?.(fromId, id);
             }}
             className={clsx(
-              'st-row-motion group relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[12.5px]',
+              'st-row-motion group relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
               active
-                ? 'shell-conversation-tab-active bg-surface font-medium text-text'
+                ? 'shell-conversation-tab-active font-medium text-text'
                 : 'text-text-secondary hover:bg-hover/70 hover:text-text',
               isDragging && 'opacity-50',
               isDropTarget && 'ring-1 ring-accent/50',
@@ -240,9 +240,9 @@ export function ConversationTabs(props: ConversationTabsProps) {
             data-testid={`file-tab-${file.path}`}
             data-active={active ? 'true' : 'false'}
             className={clsx(
-              'st-row-motion group relative flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[12.5px]',
+              'st-row-motion group relative flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
               active
-                ? 'shell-conversation-tab-active bg-surface font-medium text-text'
+                ? 'shell-conversation-tab-active font-medium text-text'
                 : 'text-text-secondary hover:bg-hover/70 hover:text-text',
             )}
           >
@@ -297,9 +297,9 @@ export function ConversationTabs(props: ConversationTabsProps) {
             data-testid={`terminal-tab-${terminal.terminalId}`}
             data-active={active ? 'true' : 'false'}
             className={clsx(
-              'st-row-motion group relative flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[12.5px]',
+              'st-row-motion group relative flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
               active
-                ? 'shell-conversation-tab-active bg-surface font-medium text-text'
+                ? 'shell-conversation-tab-active font-medium text-text'
                 : 'text-text-secondary hover:bg-hover/70 hover:text-text',
             )}
           >
@@ -339,7 +339,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
       <button
         type="button"
         data-testid="conversation-tab-new"
-        className="st-icon-motion mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-(--radius-row) text-text-secondary hover:bg-hover hover:text-text"
+        className="st-icon-motion mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-(--radius-row) text-text-secondary hover:bg-hover hover:text-text"
         title="新建对话"
         onClick={props.onNew}
       >
@@ -347,7 +347,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
       </button>
       </div>
 
-      <div className="mb-0.5 ml-2 flex shrink-0 items-center gap-0.5">
+      <div className="mt-0.5 ml-2 flex shrink-0 items-center gap-0.5">
         {props.onNewTerminal ? (
           <button
             type="button"

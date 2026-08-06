@@ -2746,7 +2746,7 @@ export function ChatView({
       {/* ─── Chat column ───────────────────────────────────────────── */}
       {/* min-w 从 360 降到 260：三栏（聊天列+文件分屏+右栏）同开时硬性下限
           之和必须小于中等窗口宽度，否则父容器 overflow:hidden 会裁掉行末的右栏。 */}
-      <div className="flex min-h-0 min-w-[260px] flex-1 flex-col overflow-hidden bg-surface">
+      <div className="flex min-h-0 min-w-[260px] flex-1 flex-col overflow-hidden bg-chat">
         {!hasProjectFolder ? (
           <div className="shell-warning-banner border-b px-4 py-2 text-[12px] leading-relaxed">
             当前对话没有绑定本地项目文件夹，所以 AI 不能读取工作区目录。 请先在工作区 Tab

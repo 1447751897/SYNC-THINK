@@ -114,7 +114,7 @@ export function TopBar(props: TopBarProps) {
   return (
     <header
       data-testid="shell-topbar"
-      className="shell-topbar shell-workspace-tabs relative flex h-9 shrink-0 items-end gap-0.5 bg-elevated px-2"
+      className="shell-topbar shell-workspace-tabs relative flex h-9 shrink-0 items-end gap-0 bg-panel px-2"
     >
       {props.sidebarCollapsed ? (
         <button
@@ -192,7 +192,7 @@ export function TopBar(props: TopBarProps) {
                                 {workspace.icon?.trim() || '📁'}
                               </span>
                               <span className="min-w-0 flex-1">
-                                <span className="block truncate text-[12.5px] text-text">
+                                <span className="block truncate text-[14px] text-text">
                                   {workspace.name}
                                 </span>
                                 {workspace.folderPath ? (
@@ -252,7 +252,7 @@ export function TopBar(props: TopBarProps) {
                   <button
                     type="button"
                     data-testid="workspace-new"
-                    className="st-row-motion flex w-full items-center gap-2 rounded-(--radius-row) px-2.5 py-1.5 text-[12.5px] text-text-secondary hover:bg-hover hover:text-text"
+                    className="st-row-motion flex w-full items-center gap-2 rounded-(--radius-row) px-2.5 py-1.5 text-[14px] text-text-secondary hover:bg-hover hover:text-text"
                     onClick={() => {
                       setMenuOpen(false);
                       setCreateOpen(true);
@@ -264,7 +264,7 @@ export function TopBar(props: TopBarProps) {
                   <button
                     type="button"
                     data-testid="workspace-open-folder"
-                    className="st-row-motion flex w-full items-center gap-2 rounded-(--radius-row) px-2.5 py-1.5 text-[12.5px] text-text-secondary hover:bg-hover hover:text-text"
+                    className="st-row-motion flex w-full items-center gap-2 rounded-(--radius-row) px-2.5 py-1.5 text-[14px] text-text-secondary hover:bg-hover hover:text-text"
                     onClick={() => {
                       setMenuOpen(false);
                       props.onOpenFolder();
@@ -358,9 +358,9 @@ function ProjectTab(props: {
             : props.title
       }
       className={clsx(
-        'st-row-motion relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-3 text-[12.5px]',
+        'st-row-motion relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
         props.active
-          ? 'shell-workspace-tab-active bg-surface font-medium text-text'
+          ? 'shell-workspace-tab-active font-medium text-text'
           : 'text-text-secondary hover:bg-hover/70 hover:text-text',
       )}
       onClick={props.onClick}
@@ -507,7 +507,7 @@ function WorkspaceFormDialog(props: {
             <button
               type="button"
               data-testid="workspace-form-browse"
-              className="st-row-motion h-[34px] shrink-0 rounded-(--radius-row) border border-border px-3 text-[12.5px] text-text-secondary hover:bg-hover"
+              className="st-row-motion h-[34px] shrink-0 rounded-(--radius-row) border border-border px-3 text-[14px] text-text-secondary hover:bg-hover"
               onClick={() => void browse()}
             >
               浏览
@@ -549,7 +549,7 @@ function WorkspaceFormDialog(props: {
         <div className="flex justify-end gap-2">
           <button
             type="button"
-            className="st-row-motion h-8 rounded-(--radius-row) px-3 text-[12.5px] text-text-secondary hover:bg-hover"
+            className="st-row-motion h-8 rounded-(--radius-row) px-3 text-[14px] text-text-secondary hover:bg-hover"
             onClick={props.onClose}
           >
             取消
@@ -558,7 +558,7 @@ function WorkspaceFormDialog(props: {
             type="button"
             data-testid="workspace-form-submit"
             disabled={submitting}
-            className="st-row-motion h-8 rounded-(--radius-row) bg-accent px-3 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="st-row-motion h-8 rounded-(--radius-row) bg-accent px-3 text-[14px] font-medium text-[var(--color-accent-fg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             onClick={() => void submit()}
           >
             {submitting ? '保存中…' : props.mode === 'create' ? '创建' : '保存'}

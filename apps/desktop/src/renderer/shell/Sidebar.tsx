@@ -31,6 +31,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import clsx from 'clsx';
+import syncThinkLogo from './assets/sync-think-logo.png';
 import type { Conversation, ConversationTrack, GlobalAgent, Team } from '@sync-think/shared';
 import type {
   ConversationGroupPreference,
@@ -146,7 +147,7 @@ export function Sidebar(props: SidebarProps) {
       data-testid="shell-sidebar"
       data-collapsed={collapsed ? 'true' : 'false'}
       className={clsx(
-        'shell-board shell-sidebar-panel relative flex min-h-0 shrink-0 flex-col bg-sidebar',
+        'shell-board shell-sidebar-panel relative flex min-h-0 shrink-0 flex-col border border-border bg-sidebar',
         collapsed && 'shell-sidebar-panel--collapsed',
       )}
       style={{
@@ -164,9 +165,18 @@ export function Sidebar(props: SidebarProps) {
       aria-hidden={collapsed}
     >
       {/* Body is width-locked for collapse animation; resize handle stays outside. */}
-      <div className="shell-sidebar-panel__body">
+      <div className="shell-sidebar-panel__body gap-2 px-2 py-2">
+        {/* Panel 1 — brand + primary nav. Rendered directly on the sidebar board
+            (no card, no hover frame). */}
+        <div className="shrink-0 px-2 py-1.5">
       {/* Header */}
-      <div className="flex h-10 shrink-0 items-center gap-2 px-3">
+      <div className="flex h-10 shrink-0 items-center gap-2 px-1">
+        <img
+          src={syncThinkLogo}
+          alt="Sync-Think"
+          draggable={false}
+          className="h-5 w-5 shrink-0 rounded-md object-contain"
+        />
         <span className="flex-1 truncate text-[13px] font-semibold tracking-tight text-text">
           Sync-Think
         </span>
@@ -181,7 +191,7 @@ export function Sidebar(props: SidebarProps) {
       </div>
 
       {/* Top actions */}
-      <div className="flex shrink-0 flex-col gap-0.5 px-2 pb-2">
+      <div className="flex shrink-0 flex-col gap-0.5">
         <ActionRow
           icon={<MessageSquarePlus size={15} />}
           label="新建对话"
@@ -230,12 +240,16 @@ export function Sidebar(props: SidebarProps) {
           onClick={() => props.onSelectStage('abilities')}
         />
       </div>
+      </div>
 
-      <div className="mx-2 h-px shrink-0 bg-border" />
+      {/* Panel 2 — conversation list (bright inner box on the dark board).
+          Height follows its content: expanding/collapsing a track or archive
+          grows/shrinks the box instead of it always filling the board. */}
+      <div className="flex min-h-0 flex-col rounded-(--radius-card) border border-border bg-recent px-2 pb-2 pt-1.5">
 
       {/* Search field (shown when search action focused or query non-empty) */}
       {(searchFocused || query) && (
-        <div className="relative shrink-0 px-2 py-1.5">
+        <div className="relative shrink-0 py-1.5">
           <Search
             size={12}
             className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-text-faint"
@@ -259,7 +273,7 @@ export function Sidebar(props: SidebarProps) {
       {props.multiSelect ? (
         <div
           data-testid="sidebar-multiselect-bar"
-          className="mx-2 mb-1 flex shrink-0 flex-wrap items-center gap-1 rounded-(--radius-row) border border-border bg-elevated px-2 py-1.5"
+          className="mb-1 flex shrink-0 flex-wrap items-center gap-1 rounded-(--radius-row) border border-border bg-surface px-2 py-1.5"
         >
           <span className="mr-1 text-[11px] text-text-secondary">
             已选 {props.selectedIds.size}
@@ -336,20 +350,22 @@ export function Sidebar(props: SidebarProps) {
       ) : null}
 
       {/* Tracks */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto">
         <button
           type="button"
           data-testid="recent-section-toggle"
-          className="st-row-motion flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
+          className="st-press-motion st-row-motion flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
           onClick={() => setRecentOpen((v) => !v)}
         >
           <ChevronRight size={13} className="st-chevron text-text-faint" data-open={recentOpen} />
-          <span className="flex-1 text-[12px] font-medium tracking-wide text-text-faint">
+          <span className="flex-1 text-[13px] font-semibold tracking-wide text-text-faint">
             最近对话
           </span>
         </button>
 
-        <div className="shell-tree-branch" hidden={!recentOpen}>
+        <div className={clsx('shell-collapse', recentOpen && 'shell-collapse--open')}>
+          <div className="shell-collapse__inner">
+        <div className="shell-tree-branch">
           {(Object.keys(TRACK_LABELS) as ConversationTrack[]).map((track) => {
           const TrackIcon = TRACK_ICONS[track];
           const expanded = props.nav.expandedTracks[track];
@@ -358,7 +374,7 @@ export function Sidebar(props: SidebarProps) {
           return (
             <div key={track} className="mb-0.5">
               <div
-                className="st-row-motion group flex h-7 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover"
+                className="st-press-motion st-row-motion group flex h-7 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover"
                 data-testid={`track-header-${track}`}
                 onClick={() => props.onToggleTrack(track)}
               >
@@ -368,7 +384,7 @@ export function Sidebar(props: SidebarProps) {
                   data-open={expanded}
                 />
                 <TrackIcon size={13} className="text-text-secondary" />
-                <span className="flex-1 text-[12.5px] text-text-secondary">
+                <span className="flex-1 text-[12px] text-text-secondary">
                   {TRACK_LABELS[track]}
                 </span>
                 <button
@@ -402,7 +418,8 @@ export function Sidebar(props: SidebarProps) {
                 </button>
               </div>
 
-              {expanded && (
+              <div className={clsx('shell-collapse', expanded && 'shell-collapse--open')}>
+                <div className="shell-collapse__inner">
                 <div className="shell-tree-branch">
                   {tree.groups.map(({ group, conversations: groupItems }) => (
                     <GroupBlock
@@ -455,14 +472,17 @@ export function Sidebar(props: SidebarProps) {
                   ))}
 
                   {tree.ungrouped.length === 0 && tree.groups.length === 0 ? (
-                    <div className="px-2 py-1 text-[11px] text-text-faint">
-                      {props.bootState === 'loading'
-                        ? '加载中…'
-                        : props.bootState === 'error'
-                          ? props.bootError || '连接失败'
-                          : query.trim()
-                            ? '无匹配'
-                            : '暂无对话'}
+                    <div className="flex flex-col items-center gap-1 px-2 py-2.5 text-center">
+                      <MessageSquare size={14} className="text-text-faint opacity-50" aria-hidden="true" />
+                      <div className="text-[11px] text-text-faint">
+                        {props.bootState === 'loading'
+                          ? '加载中…'
+                          : props.bootState === 'error'
+                            ? props.bootError || '连接失败'
+                            : query.trim()
+                              ? '无匹配'
+                              : '暂无对话'}
+                      </div>
                     </div>
                   ) : (
                     tree.ungrouped.map((c) => (
@@ -490,10 +510,13 @@ export function Sidebar(props: SidebarProps) {
                     ))
                   )}
                 </div>
-              )}
+                </div>
+                </div>
             </div>
           );
           })}
+        </div>
+          </div>
         </div>
 
         {(filteredArchived.length > 0 || archived.length > 0) && (
@@ -501,7 +524,7 @@ export function Sidebar(props: SidebarProps) {
             <button
               type="button"
               data-testid="archive-section-toggle"
-              className="st-row-motion group flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
+              className="st-press-motion st-row-motion group flex h-7 w-full cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 text-left hover:bg-hover"
               onClick={() => setArchiveOpen((v) => !v)}
             >
               <ChevronRight
@@ -513,7 +536,8 @@ export function Sidebar(props: SidebarProps) {
               <span className="flex-1 text-[12px] text-text-secondary">归档</span>
               <span className="text-[10.5px] text-text-faint">{filteredArchived.length}</span>
             </button>
-            {archiveOpen && (
+            <div className={clsx('shell-collapse', archiveOpen && 'shell-collapse--open')}>
+              <div className="shell-collapse__inner">
               <div className="ml-1">
                 {filteredArchived.length === 0 ? (
                   <div className="px-2 py-1 text-[11px] text-text-faint">
@@ -545,31 +569,57 @@ export function Sidebar(props: SidebarProps) {
                   ))
                 )}
               </div>
-            )}
+              </div>
+            </div>
           </div>
         )}
       </div>
+      </div>
 
-      {/* Bottom: settings + account only (B3) */}
-      <div className="shrink-0 border-t border-border px-2 py-2">
-        <button
-          data-testid="nav-settings"
-          className={clsx(
-            'st-row-motion flex h-8 w-full items-center gap-2 rounded-(--radius-row) px-2 text-[13px]',
-            props.settingsOpen
-              ? 'shell-row-active text-text'
-              : 'text-text-secondary hover:bg-hover hover:text-text',
-          )}
-          onClick={() => props.onSelectStage('settings')}
-        >
-          <Settings size={15} />
-          设置
-        </button>
-        <div className="mt-1 flex h-9 items-center gap-2 rounded-(--radius-row) px-2 text-text-secondary">
-          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-active text-[11px] font-medium text-text">
+      {/* Panel 3 — account row. Renders directly on the board and only floats
+          as a bright box on hover; clicking the box (or the gear) opens settings. */}
+      <div
+        className={clsx(
+          'mt-auto shrink-0 cursor-pointer rounded-(--radius-card) border px-2 py-1 transition-colors duration-150',
+          props.settingsOpen
+            ? 'border-border bg-recent'
+            : 'border-transparent hover:border-border hover:bg-recent',
+        )}
+        role="button"
+        tabIndex={0}
+        title="设置"
+        data-testid="sidebar-settings-box"
+        onClick={() => props.onSelectStage('settings')}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            props.onSelectStage('settings');
+          }
+        }}
+      >
+        <div className="flex h-9 items-center gap-2 rounded-(--radius-row) px-1 text-text-secondary">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-active text-[11px] font-medium text-text">
             U
           </div>
-          <span className="flex-1 truncate text-[12px]">本地用户</span>
+          <span className="min-w-0 flex-1 truncate text-[12px]">本地用户</span>
+          <button
+            type="button"
+            data-testid="nav-settings"
+            className={clsx(
+              'st-press-motion st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-(--radius-row)',
+              props.settingsOpen
+                ? 'shell-row-active text-text'
+                : 'text-text-secondary hover:bg-hover hover:text-text',
+            )}
+            title="设置"
+            aria-label="设置"
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onSelectStage('settings');
+            }}
+          >
+            <Settings size={15} className="st-nav-icon transition-colors duration-150" />
+          </button>
         </div>
       </div>
       </div>
@@ -606,7 +656,7 @@ function ActionRow(props: {
       type="button"
       data-testid={props.testId}
       className={clsx(
-        'st-row-motion flex h-8 w-full items-center gap-2 rounded-(--radius-row) px-2 text-[13px]',
+        'st-press-motion st-nav-item flex h-8 w-full items-center gap-2 rounded-(--radius-row) px-2 text-[13px]',
         props.active
           ? 'shell-row-active text-text'
           : props.accent
@@ -627,7 +677,7 @@ function ActionRow(props: {
       }}
       title={props.placeholder ? `${props.label}（即将推出）` : props.label}
     >
-      <span className={clsx(props.accent ? 'text-accent' : '')}>{props.icon}</span>
+      <span className={clsx('st-nav-icon transition-colors duration-150', props.accent ? 'text-accent' : '')}>{props.icon}</span>
       <span className="flex-1 text-left">{props.label}</span>
     </button>
   );
@@ -660,7 +710,7 @@ function GroupBlock(props: {
   const collapsed = props.group.collapsed === true;
   return (
     <div className="mb-0.5" data-testid={`group-${props.group.id}`}>
-      <div className="st-row-motion group flex h-6 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover">
+      <div className="st-press-motion st-row-motion group flex h-6 cursor-pointer items-center gap-1 rounded-(--radius-row) px-1.5 hover:bg-hover">
         <button
           type="button"
           className="flex flex-1 items-center gap-1 text-left"
@@ -703,7 +753,8 @@ function GroupBlock(props: {
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
       </div>
-      {!collapsed && (
+      <div className={clsx('shell-collapse', !collapsed && 'shell-collapse--open')}>
+        <div className="shell-collapse__inner">
         <div className="shell-tree-branch">
           {props.conversations.map((c) => (
             <ConversationRow
@@ -730,7 +781,8 @@ function GroupBlock(props: {
             />
           ))}
         </div>
-      )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -776,7 +828,7 @@ function ConversationRow(props: {
       data-testid={`conversation-${c.id}`}
       data-archived={props.archived ? '1' : '0'}
       className={clsx(
-        'st-row-motion st-conv-row group relative flex cursor-pointer flex-col rounded-(--radius-row) py-1.5 pl-2 pr-1',
+        'st-row-motion st-conv-row group relative flex cursor-pointer flex-col rounded-(--radius-row) py-1 pl-2 pr-1',
         props.active ? 'shell-row-active text-text' : 'text-text-secondary hover:bg-hover',
         props.archived && !props.active ? 'opacity-80' : '',
       )}
@@ -906,6 +958,7 @@ function ConversationRow(props: {
           </DropdownMenu.Root>
         )}
       </div>
+      {props.track !== 'model' ? (
       <div className="mt-0.5 flex min-w-0 items-center gap-1 pl-0.5 text-[11px] text-text-faint">
         <IdentityIcon size={10.5} className="shrink-0" aria-hidden="true" />
         <span className="shrink-0">{identity.kind}</span>
@@ -922,6 +975,7 @@ function ConversationRow(props: {
           </>
         ) : null}
       </div>
+      ) : null}
     </div>
   );
 }
