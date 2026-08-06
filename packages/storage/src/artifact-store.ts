@@ -24,17 +24,14 @@ import {
   type WorkspaceId,
 } from '@sync-think/shared';
 import type { BetterSQLite3Raw } from './connection.js';
+import { isLocalContentRef, MAX_LOCAL_CONTENT_REF_LENGTH } from './local-content-ref.js';
 
 const MAX_ID_LENGTH = 256;
 const MAX_NAME_LENGTH = 512;
-const MAX_CONTENT_REF_LENGTH = 4096;
 const MAX_METADATA_BYTES = 32 * 1024;
 const MAX_PARENT_VERSIONS = 32;
 const SHA256_REGEX = /^[0-9a-f]{64}$/;
 const MIME_REGEX = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/i;
-const WINDOWS_ABSOLUTE_PATH_REGEX = /^[a-z]:[\\/]/i;
-const UNC_ABSOLUTE_PATH_REGEX = /^\\\\[^\\/]+[\\/][^\\/]+/;
-const INTERNAL_ARTIFACT_REF_REGEX = /^artifact:\/\/[a-z0-9][a-z0-9._:/-]{0,1023}$/i;
 const MERGEABLE_RUN_STATES = new Set<RunState>(['running', 'reviewing', 'revising', 'paused']);
 const DEFAULT_ARTIFACT_LIST_LIMIT = 8;
 export const MAX_ARTIFACT_LIST_LIMIT = 8;
@@ -348,47 +345,6 @@ function requireHash(value: unknown, path: string, code: ArtifactDataErrorCode):
   return value;
 }
 
-function hasAsciiControlCharacter(value: string): boolean {
-  return [...value].some((character) => {
-    const codePoint = character.charCodeAt(0);
-    return codePoint <= 0x1f || codePoint === 0x7f;
-  });
-}
-
-function isLocalContentRef(value: string): boolean {
-  if (
-    !value ||
-    value.trim() !== value ||
-    value.length > MAX_CONTENT_REF_LENGTH ||
-    hasAsciiControlCharacter(value)
-  ) {
-    return false;
-  }
-  if (
-    WINDOWS_ABSOLUTE_PATH_REGEX.test(value) ||
-    UNC_ABSOLUTE_PATH_REGEX.test(value) ||
-    (value.startsWith('/') && !value.startsWith('//')) ||
-    INTERNAL_ARTIFACT_REF_REGEX.test(value)
-  ) {
-    return true;
-  }
-  if (!value.toLowerCase().startsWith('file://')) return false;
-  try {
-    const parsed = new URL(value);
-    return (
-      parsed.protocol === 'file:' &&
-      (parsed.hostname === '' || parsed.hostname === 'localhost') &&
-      parsed.username === '' &&
-      parsed.password === '' &&
-      parsed.pathname.startsWith('/') &&
-      parsed.search === '' &&
-      parsed.hash === ''
-    );
-  } catch {
-    return false;
-  }
-}
-
 function isJsonValue(value: unknown, depth = 0): value is JsonValue {
   if (depth > 16) return false;
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
@@ -606,7 +562,7 @@ function mapVersion(row: ArtifactVersionDbRow): ArtifactVersion {
   }
   if (
     row.content_ref !== null &&
-    (row.content_ref.length > MAX_CONTENT_REF_LENGTH || !isLocalContentRef(row.content_ref))
+    (row.content_ref.length > MAX_LOCAL_CONTENT_REF_LENGTH || !isLocalContentRef(row.content_ref))
   ) {
     throw new ArtifactDataError(
       'artifact.invalid_version',
