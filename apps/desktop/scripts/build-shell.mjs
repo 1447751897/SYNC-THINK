@@ -23,7 +23,7 @@ await esbuild.build({
   platform: 'browser',
   sourcemap: true,
   jsx: 'automatic',
-  loader: { '.tsx': 'tsx', '.ts': 'ts' },
+  loader: { '.tsx': 'tsx', '.ts': 'ts', '.png': 'dataurl', '.svg': 'dataurl' },
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'development'),
   },
@@ -39,6 +39,21 @@ await esbuild.build({
   platform: 'browser',
   sourcemap: true,
   loader: { '.ts': 'ts', '.css': 'css' },
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'development'),
+  },
+});
+
+// Mermaid is ~hundreds of KB; keep it out of the first-viewport shell bundle too.
+// MermaidChart mounts the vendor script lazily via mermaid-vendor-loader.
+await esbuild.build({
+  entryPoints: [join(shellSrc, 'mermaid-vendor.ts')],
+  outfile: join(outdir, 'mermaid-vendor.js'),
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  sourcemap: true,
+  loader: { '.ts': 'ts' },
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'development'),
   },

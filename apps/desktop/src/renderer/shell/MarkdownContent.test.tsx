@@ -80,4 +80,111 @@ describe('MarkdownContent', () => {
     expect(html).toContain('shell-md-cursor');
     expect(html).toContain('data-streaming="1"');
   });
+
+  it('renders a fenced mermaid block as a chart (loading state under SSR)', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```mermaid\nflowchart LR\n  A --> B\n```',
+      }),
+    );
+    expect(html).toContain('shell-mermaid');
+    expect(html).toContain('shell-mermaid__bar');
+    expect(html).toContain('正在渲染图表');
+  });
+
+  it('offers collapse + preview/source views on the mermaid card', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```mermaid\nflowchart LR\n  A --> B\n```',
+      }),
+    );
+    expect(html).toContain('shell-html__collapse');
+    expect(html).toContain('预览');
+    expect(html).toContain('源码');
+    expect(html).toContain('复制源码');
+  });
+
+  it('keeps a streaming mermaid block as code until the block completes', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```mermaid\nflowchart LR\n  A --',
+        streaming: true,
+      }),
+    );
+    expect(html).not.toContain('shell-mermaid');
+    expect(html).toContain('shell-md-code');
+  });
+
+  it('renders a fenced html block inside the sandbox webview', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```html\n<div id="app">Hello</div>\n```',
+      }),
+    );
+    expect(html).toContain('shell-html');
+    expect(html).toContain('data:text/html');
+    expect(html).toContain('html-sandbox');
+    // The sandbox injects a fill style so short pages paint their background
+    // across the whole stage instead of leaving an unfilled strip.
+    expect(html).toContain('min-height');
+  });
+
+  it('offers a preview/source view switcher on the html sandbox', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```html\n<p>hi</p>\n```',
+      }),
+    );
+    expect(html).toContain('shell-html__bar');
+    expect(html).toContain('预览');
+    expect(html).toContain('源码');
+    expect(html).toContain('刷新');
+    expect(html).toContain('复制');
+    expect(html).toContain('浏览器打开');
+    expect(html).toContain('shell-html__collapse');
+  });
+
+  it('keeps a streaming html block as code until the block completes', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```html\n<div id="app">Hello',
+        streaming: true,
+      }),
+    );
+    expect(html).not.toContain('shell-html');
+    expect(html).toContain('shell-md-code');
+  });
+
+  it('injects the fill style into the head of a complete html document', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```html\n<!DOCTYPE html>\n<html>\n<head><title>t</title></head>\n<body style="background:#222">x</body>\n</html>\n```',
+      }),
+    );
+    // The webview src is a percent-encoded data: URL — decode before asserting
+    // on the guest document structure.
+    const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
+    const decoded = decodeURIComponent(src);
+    const headPos = decoded.indexOf('</head>');
+    const fillPos = decoded.indexOf('min-height');
+    expect(headPos).toBeGreaterThan(-1);
+    expect(fillPos).toBeGreaterThan(-1);
+    expect(fillPos).toBeLessThan(headPos);
+  });
+
+  it('wraps a bare html fragment in a document with the fill style in the head', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```html\n<div id="app">Hello</div>\n```',
+      }),
+    );
+    const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
+    const decoded = decodeURIComponent(src);
+    const headPos = decoded.indexOf('<head>');
+    const fillPos = decoded.indexOf('min-height');
+    expect(headPos).toBeGreaterThan(-1);
+    expect(fillPos).toBeGreaterThan(-1);
+    expect(fillPos).toBeGreaterThan(headPos);
+    expect(fillPos).toBeLessThan(decoded.indexOf('<body>'));
+  });
 });

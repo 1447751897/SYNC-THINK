@@ -12,6 +12,8 @@ import {
   ChevronDown,
   Copy,
 } from 'lucide-react';
+import { MermaidChart } from './MermaidChart.js';
+import { HtmlSandbox } from './HtmlSandbox.js';
 
 interface MarkdownContentProps {
   text: string;
@@ -165,7 +167,7 @@ function markdownUrlTransform(url: string): string {
   return defaultUrlTransform(url);
 }
 
-function MarkdownRenderer({ text }: { text: string }) {
+function MarkdownRenderer({ text, streaming }: { text: string; streaming: boolean }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -189,6 +191,20 @@ function MarkdownRenderer({ text }: { text: string }) {
               </code>
             );
           }
+          if (language === 'mermaid' || language === 'mmd') {
+            // Streaming blocks are still being produced — keep them as code so
+            // the chart only mounts (and renders) once the block is complete.
+            if (streaming) {
+              return <CodeBlock language={language}>{children}</CodeBlock>;
+            }
+            return <MermaidChart code={raw.replace(/\n$/, '')} />;
+          }
+          if (language === 'html' || language === 'htm') {
+            if (streaming) {
+              return <CodeBlock language={language}>{children}</CodeBlock>;
+            }
+            return <HtmlSandbox code={raw} />;
+          }
           return <CodeBlock language={language}>{children}</CodeBlock>;
         },
         table: ({ children }) => (
@@ -203,7 +219,7 @@ function MarkdownRenderer({ text }: { text: string }) {
   );
 }
 
-function CollapsibleSection({ title, body }: { title: string; body: string }) {
+function CollapsibleSection({ title, body, streaming }: { title: string; body: string; streaming: boolean }) {
   const [expanded, setExpanded] = useState(true);
   return (
     <section className={`shell-md-section ${expanded ? 'is-expanded' : 'is-collapsed'}`}>
@@ -220,7 +236,7 @@ function CollapsibleSection({ title, body }: { title: string; body: string }) {
       </h2>
       <div className="shell-md-section__body" aria-hidden={!expanded}>
         <div className="shell-md-section__body-inner">
-          <MarkdownRenderer text={body} />
+          <MarkdownRenderer text={body} streaming={streaming} />
         </div>
       </div>
     </section>
@@ -244,9 +260,10 @@ export function MarkdownContent({ text, streaming = false, className }: Markdown
             key={`${index}:${section.title}`}
             title={section.title}
             body={section.body}
+            streaming={streaming}
           />
         ) : (
-          <MarkdownRenderer key={`intro:${index}`} text={section.body} />
+          <MarkdownRenderer key={`intro:${index}`} text={section.body} streaming={streaming} />
         ),
       )}
       {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}

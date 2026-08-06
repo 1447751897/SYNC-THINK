@@ -136,10 +136,15 @@ import type {
   GetBrowserWorkflowResponse,
   CreateBrowserWorkflowDraftPayload,
   CreateBrowserWorkflowDraftResponse,
+  CreateBrowserWorkflowRevisionDraftPayload,
+  CreateBrowserWorkflowRevisionDraftResponse,
   SubmitBrowserWorkflowDraftPayload,
   SubmitBrowserWorkflowDraftResponse,
   ReviewBrowserWorkflowDraftPayload,
   ReviewBrowserWorkflowDraftResponse,
+  ApproveExecuteBrowserWorkflowPayload,
+  ExecuteBrowserWorkflowPayload,
+  ExecuteBrowserWorkflowResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -463,12 +468,21 @@ declare global {
           createDraft(
             payload: CreateBrowserWorkflowDraftPayload,
           ): Promise<CreateBrowserWorkflowDraftResponse>;
+          createRevisionDraft(
+            payload: CreateBrowserWorkflowRevisionDraftPayload,
+          ): Promise<CreateBrowserWorkflowRevisionDraftResponse>;
           submit(
             payload: SubmitBrowserWorkflowDraftPayload,
           ): Promise<SubmitBrowserWorkflowDraftResponse>;
           review(
             payload: ReviewBrowserWorkflowDraftPayload,
           ): Promise<ReviewBrowserWorkflowDraftResponse>;
+          execute(
+            payload: ExecuteBrowserWorkflowPayload,
+          ): Promise<ExecuteBrowserWorkflowResponse>;
+          approveAndExecute(
+            payload: ApproveExecuteBrowserWorkflowPayload,
+          ): Promise<ExecuteBrowserWorkflowResponse>;
         };
         listWaitingBrowserHandoffs(
           payload?: ListWaitingBrowserHandoffsPayload,
@@ -604,6 +618,11 @@ declare global {
         onEvent(listener: (event: Event) => void): () => void;
         onOpenConversation(listener: (conversationId: string) => void): () => void;
         notifyRendererReady(): void;
+        openHtmlInBrowser(html: string): Promise<{
+          ok: boolean;
+          error: string | null;
+          path: string | null;
+        }>;
       };
       updates: {
         getState(): Promise<DesktopUpdateSnapshot>;

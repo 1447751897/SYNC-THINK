@@ -26,6 +26,7 @@ import {
   WalletCards,
 } from 'lucide-react';
 import clsx from 'clsx';
+import syncThinkLogo from './assets/sync-think-logo.png';
 import {
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   normalizeComputerUsePluginSetting,
@@ -687,7 +688,12 @@ function AboutSection() {
   return (
     <div className="settings-scroll settings-standard-pane">
       <div className="settings-about-head">
-        <div className="settings-app-mark">S</div>
+        <img
+          src={syncThinkLogo}
+          alt="Sync-Think"
+          draggable={false}
+          className="settings-app-mark object-contain"
+        />
         <div>
           <h2>Sync-Think</h2>
           <p>AI 工作助手 · 多智能体编排工作台</p>

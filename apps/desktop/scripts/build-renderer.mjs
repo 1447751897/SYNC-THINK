@@ -21,6 +21,8 @@ await esbuild.build({
     '.tsx': 'tsx',
     '.ts': 'ts',
     '.css': 'css',
+    '.png': 'dataurl',
+    '.svg': 'dataurl',
   },
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'development'),
