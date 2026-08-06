@@ -31,6 +31,7 @@ async function fixture() {
     ownerId: 'recording:pending',
   };
   let onMutation: ((mutation: BrowserRecordingMutation) => void | Promise<void>) | undefined;
+  let onStopRequested: (() => void | Promise<void>) | undefined;
   let onTerminated:
     ((reason: BrowserRecordingTerminationReason) => void | Promise<void>) | undefined;
   const host: BrowserHostLike = {
@@ -46,6 +47,7 @@ async function fixture() {
     }),
     startRecording: vi.fn(async (input) => {
       onMutation = input.onMutation;
+      onStopRequested = input.onStopRequested;
       onTerminated = input.onTerminated;
     }),
     stopRecording: vi.fn(async () => undefined),
@@ -62,11 +64,42 @@ async function fixture() {
     service,
     lease,
     emit: async (mutation: BrowserRecordingMutation) => onMutation?.(mutation),
+    requestStop: async () => onStopRequested?.(),
     terminate: async (reason: BrowserRecordingTerminationReason) => onTerminated?.(reason),
   };
 }
 
 describe('RuntimeBrowserRecordingService', () => {
+  it('binds a new recording to its workflow draft before acquiring the browser lease', async () => {
+    const f = await fixture();
+    try {
+      const workflow = f.store.createAutomationTaskDraft({
+        id: 'browser-task-runtime-binding',
+        draftId: 'browser-draft-runtime-binding',
+        profileId: 'default',
+        name: 'Runtime binding',
+        instruction: 'Bind the recording intent before Chrome starts.',
+        startUrl: 'https://example.test/runtime-binding',
+        source: 'manual',
+      });
+      const recording = await f.service.startRecording({
+        profileId: 'default',
+        expectedProfileRevision: 1,
+        startUrl: workflow.task.startUrl,
+        draftId: workflow.draft.id,
+      });
+
+      expect(f.store.getWorkflowDraft(workflow.draft.id)).toMatchObject({
+        recordingId: recording.id,
+        status: 'editing',
+        stepCount: 0,
+      });
+      expect(f.host.acquireLease).toHaveBeenCalledTimes(1);
+    } finally {
+      f.connection.raw.close();
+    }
+  });
+
   it('persists intent before the browser lease and returns only a sanitized public summary', async () => {
     const f = await fixture();
     try {
@@ -151,6 +184,27 @@ describe('RuntimeBrowserRecordingService', () => {
     }
   });
 
+  it('stops with the user reason when the in-page recording overlay requests it', async () => {
+    const f = await fixture();
+    try {
+      const recording = await f.service.startRecording({
+        profileId: 'default',
+        expectedProfileRevision: 1,
+      });
+      await f.requestStop();
+      await vi.waitFor(() =>
+        expect(f.store.getRecording(recording.id)).toMatchObject({
+          status: 'stopped',
+          stopReason: 'user',
+        }),
+      );
+      expect(f.host.stopRecording).toHaveBeenCalledWith(f.lease.leaseId);
+      expect(f.host.releaseLease).toHaveBeenCalledWith(f.lease.leaseId, { closePage: true });
+    } finally {
+      f.connection.raw.close();
+    }
+  });
+
   it('marks the draft interrupted and releases resources when the user closes the Page', async () => {
     const f = await fixture();
     try {
@@ -199,19 +253,78 @@ describe('RuntimeBrowserRecordingService', () => {
   it('compensates a Host start failure without leaving the Profile claimed', async () => {
     const f = await fixture();
     try {
+      const workflow = f.store.createAutomationTaskDraft({
+        id: 'browser-task-start-failure',
+        draftId: 'browser-draft-start-failure',
+        profileId: 'default',
+        name: 'Start failure',
+        instruction: 'Keep the failed recording bound for durable reconciliation.',
+        startUrl: 'https://example.test/start-failure',
+        source: 'manual',
+      });
       f.host.startRecording = vi.fn(async () => {
         throw Object.assign(new Error('driver unavailable'), {
           code: 'browser.recording-unsupported',
         });
       });
       await expect(
-        f.service.startRecording({ profileId: 'default', expectedProfileRevision: 1 }),
+        f.service.startRecording({
+          profileId: 'default',
+          expectedProfileRevision: 1,
+          draftId: workflow.draft.id,
+        }),
       ).rejects.toThrow('browser.recording-unsupported');
       expect(f.store.hasActiveProfileRecording('default')).toBe(false);
       expect(f.store.listRecordings('default')).toMatchObject([
         { status: 'failed', stopReason: 'start_failed' },
       ]);
+      const failed = f.store.listRecordings('default')[0]!;
+      expect(f.store.getWorkflowDraft(workflow.draft.id)).toMatchObject({
+        recordingId: failed.id,
+        status: 'editing',
+      });
       expect(f.host.releaseLease).toHaveBeenCalledWith(f.lease.leaseId, { closePage: true });
+    } finally {
+      f.connection.raw.close();
+    }
+  });
+
+  it('compensates a workflow/Profile binding mismatch before the Host is touched', async () => {
+    const f = await fixture();
+    try {
+      const workflow = f.store.createAutomationTaskDraft({
+        id: 'browser-task-profile-mismatch',
+        draftId: 'browser-draft-profile-mismatch',
+        profileId: 'default',
+        name: 'Profile mismatch',
+        instruction: 'Reject recordings created from another browser profile.',
+        startUrl: 'https://example.test/profile-mismatch',
+        source: 'manual',
+      });
+      const otherProfile = f.store.createProfile({
+        id: 'profile-runtime-other',
+        name: 'Runtime Other',
+      });
+
+      await expect(
+        f.service.startRecording({
+          profileId: otherProfile.id,
+          expectedProfileRevision: otherProfile.revision,
+          draftId: workflow.draft.id,
+        }),
+      ).rejects.toThrow('browser.workflow_recording_profile_mismatch');
+
+      expect(f.host.acquireLease).not.toHaveBeenCalled();
+      expect(f.store.listRecordings(otherProfile.id)).toMatchObject([
+        {
+          status: 'failed',
+          stopReason: 'start_failed',
+          errorCode: 'browser.workflow_recording_profile_mismatch',
+        },
+      ]);
+      const unchangedDraft = f.store.getWorkflowDraft(workflow.draft.id);
+      expect(unchangedDraft).toMatchObject({ status: 'editing' });
+      expect(unchangedDraft).not.toHaveProperty('recordingId');
     } finally {
       f.connection.raw.close();
     }

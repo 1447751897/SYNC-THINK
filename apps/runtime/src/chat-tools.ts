@@ -1,11 +1,24 @@
 import { randomUUID } from 'node:crypto';
 import type { ProviderMessage, ProviderToolCall, ProviderToolSchema } from '@sync-think/adapters';
+import type {
+  BrowserAutomationTaskSummary,
+  BrowserProfileSummary,
+  CreateBrowserWorkflowDraftPayload,
+  CreateBrowserWorkflowDraftResponse,
+  GetBrowserWorkflowResponse,
+  ListBrowserWorkflowsPayload,
+} from '@sync-think/protocol';
 import type { Event } from '@sync-think/shared';
 import {
   CHAT_DESKTOP_MUTATING_TOOL_NAMES,
   CHAT_DESKTOP_TOOL_NAMES,
   CHAT_DESKTOP_TOOL_SCHEMAS,
 } from './desktop-chat-tools.js';
+import {
+  parseCreateBrowserWorkflowDraftPayload,
+  parseGetBrowserWorkflowPayload,
+  parseListBrowserWorkflowsPayload,
+} from './validation/browser-workflow.js';
 
 export {
   CHAT_DESKTOP_MUTATING_TOOL_NAMES,
@@ -443,6 +456,179 @@ export const CHAT_PLAN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
 export const CHAT_PLAN_TOOL_NAMES = new Set(CHAT_PLAN_TOOL_SCHEMAS.map((tool) => tool.name));
 
 /**
+ * Browser Automation Studio tools operate on local Workflow metadata. They are
+ * independent from live browsing/network access: list/get are read-only, while
+ * create only creates an AI-source Draft that still needs recording and review.
+ */
+export const CHAT_BROWSER_WORKFLOW_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'browser_workflow_list',
+    description:
+      'List real Browser Automation tasks stored in SYNC-THINK, together with available Browser Profiles. Use this when the user asks which browser automation tasks/workflows exist.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        profileId: { type: 'string', description: 'Optional Browser Profile id filter.' },
+        status: {
+          type: 'string',
+          enum: ['draft', 'pending_review', 'enabled', 'disabled', 'failed'],
+        },
+        query: { type: 'string', description: 'Optional name/instruction/URL search text.' },
+        limit: { type: 'integer', minimum: 1, maximum: 100 },
+      },
+    },
+  },
+  {
+    name: 'browser_workflow_get',
+    description:
+      'Get one Browser Automation task with its current Draft and published immutable WorkflowVersion when present.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskId'],
+      properties: {
+        taskId: { type: 'string', description: 'Exact automation task id.' },
+      },
+    },
+  },
+  {
+    name: 'browser_workflow_create_draft',
+    description:
+      'Create an AI-source Browser Automation Draft. This does NOT record browser actions or publish a workflow; the user must record it in Browser Automation, submit it for review, and approve it before publishing.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name', 'instruction', 'startUrl'],
+      properties: {
+        profileId: {
+          type: 'string',
+          description: 'Optional Browser Profile id. Defaults to the default Profile.',
+        },
+        name: { type: 'string', description: 'Automation task title.' },
+        instruction: {
+          type: 'string',
+          description: 'Natural-language goal that the recording should accomplish.',
+        },
+        startUrl: { type: 'string', description: 'Absolute http(s) recording start URL.' },
+      },
+    },
+  },
+];
+
+export const CHAT_BROWSER_WORKFLOW_TOOL_NAMES = new Set(
+  CHAT_BROWSER_WORKFLOW_TOOL_SCHEMAS.map((tool) => tool.name),
+);
+
+export const CHAT_BROWSER_WORKFLOW_MUTATING_TOOL_NAMES = new Set(['browser_workflow_create_draft']);
+
+export interface ChatBrowserWorkflowService {
+  listProfiles(): readonly BrowserProfileSummary[];
+  listWorkflows(input: ListBrowserWorkflowsPayload): BrowserAutomationTaskSummary[];
+  getWorkflow(input: { taskId: string }): GetBrowserWorkflowResponse;
+  createDraft(input: CreateBrowserWorkflowDraftPayload): CreateBrowserWorkflowDraftResponse;
+}
+
+export function executeChatBrowserWorkflowTool(input: {
+  toolName: string;
+  argumentsJson: string;
+  service: ChatBrowserWorkflowService;
+}): string {
+  try {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(input.argumentsJson || '{}');
+    } catch {
+      return JSON.stringify({
+        ok: false,
+        error: `${input.toolName}: invalid JSON arguments.`,
+      });
+    }
+
+    if (input.toolName === 'browser_workflow_list') {
+      const payload = parseListBrowserWorkflowsPayload(raw);
+      if (!payload) {
+        return JSON.stringify({
+          ok: false,
+          error: 'browser_workflow_list: invalid arguments.',
+        });
+      }
+      const tasks = input.service.listWorkflows(payload);
+      const profiles = input.service.listProfiles();
+      return JSON.stringify({
+        ok: true,
+        tasks,
+        profiles,
+        taskCount: tasks.length,
+        note: 'These are stored Browser automation tasks, not open browser windows or recording sessions.',
+      });
+    }
+
+    if (input.toolName === 'browser_workflow_get') {
+      const payload = parseGetBrowserWorkflowPayload(raw);
+      if (!payload) {
+        return JSON.stringify({
+          ok: false,
+          error: 'browser_workflow_get: taskId is required.',
+        });
+      }
+      return JSON.stringify({
+        ok: true,
+        ...input.service.getWorkflow(payload),
+      });
+    }
+
+    if (input.toolName === 'browser_workflow_create_draft') {
+      const profiles = input.service.listProfiles();
+      const rawRecord =
+        raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? (raw as Record<string, unknown>)
+          : {};
+      const requestedProfileId =
+        typeof rawRecord.profileId === 'string' ? rawRecord.profileId.trim() : '';
+      const defaultProfile = profiles.find((profile) => profile.isDefault) ?? profiles[0];
+      const profileId = requestedProfileId || defaultProfile?.id;
+      if (!profileId) {
+        return JSON.stringify({
+          ok: false,
+          error:
+            'browser_workflow_create_draft: no Browser Profile is available. Create a Profile first.',
+        });
+      }
+      const payload = parseCreateBrowserWorkflowDraftPayload({
+        ...rawRecord,
+        profileId,
+        source: 'ai',
+      });
+      if (!payload) {
+        return JSON.stringify({
+          ok: false,
+          error:
+            'browser_workflow_create_draft: name, instruction, and an absolute http(s) startUrl are required.',
+        });
+      }
+      const created = input.service.createDraft(payload);
+      return JSON.stringify({
+        ok: true,
+        ...created,
+        nextStep:
+          'Open Browser Automation, record the workflow, then submit it for review before publishing.',
+      });
+    }
+
+    return JSON.stringify({
+      ok: false,
+      error: `Unknown Browser Workflow tool: ${input.toolName}`,
+    });
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Browser Workflow tool failed.',
+    });
+  }
+}
+
+/**
  * Browser tools drive a visible system Edge/Chrome through the Runtime-owned
  * Browser Worker. The Renderer webview only mirrors browser_open URLs as a
  * preview; it is not part of the automation authority path.
@@ -764,6 +950,8 @@ export const CHAT_READ_ONLY_TOOL_NAMES = new Set([
   'read_skill',
   'list_teams',
   'update_task_plan',
+  'browser_workflow_list',
+  'browser_workflow_get',
   // Browser panel tools: the page is operated in front of the user (visible,
   // stoppable), so click/type/read/screenshot are display-class, not gated.
   'browser_open',
@@ -809,6 +997,8 @@ export function toolsForExecutionMode(
     includeAgentTools?: boolean;
     /** Built-in Computer Use tools backed by Windows UI Automation. */
     includeDesktopTools?: boolean;
+    /** Local Browser Automation task/Draft tools. */
+    includeBrowserWorkflowTools?: boolean;
     /** Extra provider tools (e.g. MCP schemas) appended after built-ins. */
     extraTools?: readonly ProviderToolSchema[];
   } = {},
@@ -817,6 +1007,9 @@ export function toolsForExecutionMode(
   const tools: ProviderToolSchema[] = includeProject ? [...CHAT_BUILT_IN_TOOL_SCHEMAS] : [];
   // Task-plan tool is always available — pure UI signal, no workspace access.
   tools.push(...CHAT_PLAN_TOOL_SCHEMAS);
+  if (options.includeBrowserWorkflowTools) {
+    tools.push(...CHAT_BROWSER_WORKFLOW_TOOL_SCHEMAS);
+  }
   if (options.networkEnabled) {
     tools.push(...CHAT_NETWORK_TOOL_SCHEMAS);
     // Browser panel tool rides on the same 联网 switch — it displays public
@@ -930,6 +1123,9 @@ export function chatToolRequiresApproval(
   toolName: string,
 ): boolean {
   const normalized = normalizeChatExecutionMode(mode);
+  if (CHAT_BROWSER_WORKFLOW_MUTATING_TOOL_NAMES.has(toolName)) {
+    return normalized === 'ask';
+  }
   if (CHAT_AGENT_MUTATING_TOOL_NAMES.has(toolName)) {
     // Agent Library mutations require approval outside full-access.
     return normalized !== 'full-access';
@@ -944,7 +1140,11 @@ export function chatToolRequiresApproval(
 export function isChatToolAllowed(
   mode: string | undefined | null,
   toolName: string,
-  options: { networkEnabled?: boolean; desktopEnabled?: boolean } = {},
+  options: {
+    networkEnabled?: boolean;
+    desktopEnabled?: boolean;
+    browserWorkflowEnabled?: boolean;
+  } = {},
 ): boolean {
   // All built-in project tools are allowed once the user has approved (ask)
   // or when mode is workspace/full-access.
@@ -960,6 +1160,8 @@ export function isChatToolAllowed(
   if (CHAT_TEAM_TOOL_NAMES.has(toolName)) return true;
   // Task-plan tool: pure UI signal, always allowed.
   if (CHAT_PLAN_TOOL_NAMES.has(toolName)) return true;
+  // Browser Automation Studio tools are local and do not depend on networking.
+  if (options.browserWorkflowEnabled && CHAT_BROWSER_WORKFLOW_TOOL_NAMES.has(toolName)) return true;
   // Browser panel tool: gated by the same 联网 switch as web tools.
   if (options.networkEnabled && CHAT_BROWSER_TOOL_NAMES.has(toolName)) return true;
   // Desktop tools exist only while the built-in Computer Use plugin is enabled.
@@ -975,6 +1177,11 @@ export function chatToolDeniedMessage(
   reason: 'denied' | 'blocked' = 'denied',
 ): string {
   const normalized = normalizeChatExecutionMode(mode);
+  if (toolName === 'browser_workflow_create_draft') {
+    return reason === 'denied'
+      ? '用户拒绝了创建浏览器自动化草稿。不要重试；把任务名称、目标和起始网址整理给用户，让其手动到「浏览器自动化」创建。'
+      : '当前权限为「询问批准」，创建浏览器自动化草稿需要用户确认后才能执行。';
+  }
   if (CHAT_DESKTOP_MUTATING_TOOL_NAMES.has(toolName)) {
     const action =
       toolName === 'desktop_launch_app'
@@ -1058,6 +1265,25 @@ export function summarizeToolCallForApproval(
         ? args.file
         : undefined;
   const command = typeof args.command === 'string' ? args.command : undefined;
+  if (toolName === 'browser_workflow_create_draft') {
+    const name = typeof args.name === 'string' ? args.name.trim() : '';
+    const startUrl = typeof args.startUrl === 'string' ? args.startUrl.trim() : '';
+    let site = startUrl;
+    try {
+      site = new URL(startUrl).hostname || startUrl;
+    } catch {
+      // Keep the bounded raw value for a useful approval summary.
+    }
+    return {
+      title: name ? `创建浏览器自动化草稿「${name}」` : '创建浏览器自动化草稿',
+      detail: [
+        site ? `站点：${site.slice(0, 120)}` : '',
+        '仅创建草稿，仍需录制、提交审核并批准后才会发布',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
   if (toolName === 'write_file') {
     const content = typeof args.content === 'string' ? args.content : '';
     const lines = content.split(/\r?\n/).length;

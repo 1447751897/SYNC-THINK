@@ -26,6 +26,7 @@
   ArtifactVersionId,
   ArtifactVersionSummary,
   BrowserRecordingStatus,
+  BrowserRecordingStepInput,
   BrowserRecordingStepRecord,
   BrowserRecordingStopReason,
 } from '@sync-think/shared';
@@ -135,6 +136,11 @@ export type CommandType =
   | 'browser.recording.get'
   | 'browser.recording.start'
   | 'browser.recording.stop'
+  | 'browser.workflow.list'
+  | 'browser.workflow.get'
+  | 'browser.workflow.createDraft'
+  | 'browser.workflow.submit'
+  | 'browser.workflow.review'
   | 'browser.handoff.listWaiting'
   | 'browser.handoff.continue'
   | 'browser.handoff.cancel'
@@ -3009,6 +3015,7 @@ export interface StartBrowserRecordingPayload {
   profileId: string;
   expectedProfileRevision: number;
   startUrl?: string;
+  draftId?: string;
 }
 
 export interface StartBrowserRecordingResponse {
@@ -3021,6 +3028,112 @@ export interface StopBrowserRecordingPayload {
 
 export interface StopBrowserRecordingResponse {
   recording: BrowserRecordingSummary;
+}
+
+export type BrowserAutomationSource = 'manual' | 'ai';
+
+export type BrowserAutomationTaskStatus =
+  'draft' | 'pending_review' | 'enabled' | 'disabled' | 'failed';
+
+export type BrowserWorkflowDraftStatus = 'editing' | 'pending_review' | 'approved' | 'rejected';
+
+export interface BrowserAutomationTaskSummary {
+  id: string;
+  profileId: string;
+  name: string;
+  instruction: string;
+  startUrl: string;
+  source: BrowserAutomationSource;
+  status: BrowserAutomationTaskStatus;
+  revision: number;
+  currentDraftId?: string;
+  publishedVersionId?: string;
+  lastRunAt?: string;
+  successCount: number;
+  failureCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrowserWorkflowDraftSummary {
+  id: string;
+  taskId: string;
+  recordingId?: string;
+  status: BrowserWorkflowDraftStatus;
+  revision: number;
+  steps: BrowserRecordingStepInput[];
+  stepCount: number;
+  createdAt: string;
+  updatedAt: string;
+  submittedAt?: string;
+  reviewedAt?: string;
+}
+
+export interface BrowserWorkflowVersionSummary {
+  id: string;
+  taskId: string;
+  draftId: string;
+  versionNumber: number;
+  steps: BrowserRecordingStepInput[];
+  stepCount: number;
+  createdAt: string;
+  publishedAt: string;
+}
+
+export interface ListBrowserWorkflowsPayload {
+  profileId?: string;
+  status?: BrowserAutomationTaskStatus;
+  query?: string;
+  limit?: number;
+}
+
+export interface ListBrowserWorkflowsResponse {
+  tasks: BrowserAutomationTaskSummary[];
+}
+
+export interface GetBrowserWorkflowPayload {
+  taskId: string;
+}
+
+export interface GetBrowserWorkflowResponse {
+  task: BrowserAutomationTaskSummary;
+  draft?: BrowserWorkflowDraftSummary;
+  version?: BrowserWorkflowVersionSummary;
+}
+
+export interface CreateBrowserWorkflowDraftPayload {
+  profileId: string;
+  name: string;
+  instruction: string;
+  startUrl: string;
+  source: BrowserAutomationSource;
+}
+
+export interface CreateBrowserWorkflowDraftResponse {
+  task: BrowserAutomationTaskSummary;
+  draft: BrowserWorkflowDraftSummary;
+}
+
+export interface SubmitBrowserWorkflowDraftPayload {
+  draftId: string;
+  recordingId: string;
+}
+
+export interface SubmitBrowserWorkflowDraftResponse {
+  task: BrowserAutomationTaskSummary;
+  draft: BrowserWorkflowDraftSummary;
+}
+
+export interface ReviewBrowserWorkflowDraftPayload {
+  draftId: string;
+  decision: 'approve' | 'reject';
+  note?: string;
+}
+
+export interface ReviewBrowserWorkflowDraftResponse {
+  task: BrowserAutomationTaskSummary;
+  draft: BrowserWorkflowDraftSummary;
+  version?: BrowserWorkflowVersionSummary;
 }
 
 export type BrowserHandoffReason =

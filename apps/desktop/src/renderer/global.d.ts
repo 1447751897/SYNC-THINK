@@ -130,6 +130,16 @@ import type {
   StartBrowserRecordingResponse,
   StopBrowserRecordingPayload,
   StopBrowserRecordingResponse,
+  ListBrowserWorkflowsPayload,
+  ListBrowserWorkflowsResponse,
+  GetBrowserWorkflowPayload,
+  GetBrowserWorkflowResponse,
+  CreateBrowserWorkflowDraftPayload,
+  CreateBrowserWorkflowDraftResponse,
+  SubmitBrowserWorkflowDraftPayload,
+  SubmitBrowserWorkflowDraftResponse,
+  ReviewBrowserWorkflowDraftPayload,
+  ReviewBrowserWorkflowDraftResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -446,6 +456,19 @@ declare global {
           get(payload: GetBrowserRecordingPayload): Promise<GetBrowserRecordingResponse>;
           start(payload: StartBrowserRecordingPayload): Promise<StartBrowserRecordingResponse>;
           stop(payload: StopBrowserRecordingPayload): Promise<StopBrowserRecordingResponse>;
+        };
+        browserWorkflow: {
+          list(payload?: ListBrowserWorkflowsPayload): Promise<ListBrowserWorkflowsResponse>;
+          get(payload: GetBrowserWorkflowPayload): Promise<GetBrowserWorkflowResponse>;
+          createDraft(
+            payload: CreateBrowserWorkflowDraftPayload,
+          ): Promise<CreateBrowserWorkflowDraftResponse>;
+          submit(
+            payload: SubmitBrowserWorkflowDraftPayload,
+          ): Promise<SubmitBrowserWorkflowDraftResponse>;
+          review(
+            payload: ReviewBrowserWorkflowDraftPayload,
+          ): Promise<ReviewBrowserWorkflowDraftResponse>;
         };
         listWaitingBrowserHandoffs(
           payload?: ListWaitingBrowserHandoffsPayload,

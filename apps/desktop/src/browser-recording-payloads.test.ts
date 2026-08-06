@@ -29,11 +29,13 @@ describe('Desktop Browser Recording IPC payloads', () => {
         profileId: 'profile-1',
         expectedProfileRevision: 3,
         startUrl: ' https://example.test/path?query=kept-until-runtime ',
+        draftId: ' browser-draft-1 ',
       }),
     ).toEqual({
       profileId: 'profile-1',
       expectedProfileRevision: 3,
       startUrl: 'https://example.test/path?query=kept-until-runtime',
+      draftId: 'browser-draft-1',
     });
     expect(
       parseStartBrowserRecordingPayload({ profileId: 'profile-1', expectedProfileRevision: 1 }),
@@ -79,6 +81,15 @@ describe('Desktop Browser Recording IPC payloads', () => {
   it('rejects malformed identifiers and extra keys', () => {
     for (const profileId of ['', 'profile 1', 'profile\n1', 'i'.repeat(257)]) {
       expect(() => parseListBrowserRecordingsPayload({ profileId })).toThrow();
+    }
+    for (const draftId of ['', 'draft 1', 'draft\n1', 'i'.repeat(257)]) {
+      expect(() =>
+        parseStartBrowserRecordingPayload({
+          profileId: 'profile-1',
+          expectedProfileRevision: 1,
+          draftId,
+        }),
+      ).toThrow();
     }
     expect(() => parseListBrowserRecordingsPayload(undefined)).toThrow();
     expect(() =>

@@ -60,6 +60,7 @@ export class RuntimeBrowserRecordingService {
     profileId: string;
     expectedProfileRevision: number;
     startUrl?: string;
+    draftId?: string;
   }): Promise<BrowserRecordingSummary> {
     if (!this.host.startRecording || !this.host.stopRecording) {
       throw new RuntimeBrowserRecordingError(
@@ -78,6 +79,12 @@ export class RuntimeBrowserRecordingService {
     });
     let lease: Awaited<ReturnType<BrowserHostLike['acquireLease']>> | undefined;
     try {
+      if (input.draftId) {
+        this.store.attachWorkflowDraftRecording({
+          draftId: input.draftId,
+          recordingId: intent.id,
+        });
+      }
       lease = await this.host.acquireLease({
         profileId: intent.profileId,
         ownerId,
@@ -94,6 +101,12 @@ export class RuntimeBrowserRecordingService {
         ...(started.startUrl ? { startUrl: started.startUrl } : {}),
         maxSteps: BROWSER_RECORDING_MAX_STEPS,
         onMutation: (mutation) => this.enqueueMutation(started.id, mutation),
+        onStopRequested: () => {
+          void this.runStop(started.id, {
+            status: 'stopped',
+            stopReason: 'user',
+          });
+        },
         onTerminated: (reason) => {
           void this.handleHostTermination(started.id, reason);
         },
@@ -303,6 +316,10 @@ function errorCode(error: unknown, fallback: string): string {
   if (error && typeof error === 'object' && 'code' in error) {
     const code = String((error as { code?: unknown }).code ?? '').trim();
     if (/^browser\.[a-z0-9._-]{1,120}$/u.test(code)) return code;
+  }
+  if (error instanceof Error) {
+    const code = /^(browser\.[a-z0-9._-]{1,120})(?::|$)/u.exec(error.message.trim())?.[1];
+    if (code) return code;
   }
   return fallback;
 }

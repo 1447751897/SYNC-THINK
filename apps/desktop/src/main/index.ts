@@ -158,6 +158,13 @@ import {
   parseStopBrowserRecordingPayload,
 } from '../browser-recording-payloads.js';
 import {
+  parseCreateBrowserWorkflowDraftPayload,
+  parseGetBrowserWorkflowPayload,
+  parseListBrowserWorkflowsPayload,
+  parseReviewBrowserWorkflowDraftPayload,
+  parseSubmitBrowserWorkflowDraftPayload,
+} from '../browser-workflow-payloads.js';
+import {
   parseCancelDesktopCommandPayload,
   parseContinueDesktopCommandPayload,
   parseListWaitingDesktopCommandsPayload,
@@ -1909,6 +1916,46 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request(
       'browser.recording.stop',
       parseStopBrowserRecordingPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-workflow-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.workflow.list',
+      parseListBrowserWorkflowsPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-workflow-get', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.workflow.get',
+      parseGetBrowserWorkflowPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-workflow-create-draft', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.workflow.createDraft',
+      parseCreateBrowserWorkflowDraftPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-workflow-submit', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.workflow.submit',
+      parseSubmitBrowserWorkflowDraftPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:browser-workflow-review', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'browser.workflow.review',
+      parseReviewBrowserWorkflowDraftPayload(value),
     );
   });
   ipcMain.handle('runtime:browser-handoff-list-waiting', async (event, value: unknown) => {

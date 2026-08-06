@@ -1,11 +1,17 @@
 /** @vitest-environment jsdom */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type {
+  BrowserAutomationTaskSummary,
   BrowserProfileSummary,
   BrowserRecordingSummary,
   BrowserSiteSessionSummary,
+  BrowserWorkflowDraftSummary,
+  BrowserWorkflowVersionSummary,
+  GetBrowserRecordingPayload,
+  GetBrowserRecordingResponse,
+  GetBrowserWorkflowResponse,
+  ReviewBrowserWorkflowDraftResponse,
 } from '@sync-think/protocol';
-import type { BrowserRecordingStepRecord } from '@sync-think/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserStage } from './BrowserStage.js';
 
@@ -91,6 +97,76 @@ const interruptedRecording: BrowserRecordingSummary = {
   updatedAt: '2026-08-05T04:11:00.000Z',
 };
 
+const draftTask: BrowserAutomationTaskSummary = {
+  id: 'browser-task-weekly-report',
+  profileId: 'default',
+  name: '提交每周销售报表',
+  instruction: '打开销售后台并提交本周销售报表。',
+  startUrl: 'https://example.com/reports',
+  source: 'manual',
+  status: 'draft',
+  revision: 1,
+  currentDraftId: 'browser-draft-weekly-report',
+  successCount: 0,
+  failureCount: 0,
+  createdAt: '2026-08-05T04:00:00.000Z',
+  updatedAt: '2026-08-05T04:00:00.000Z',
+};
+
+const workflowDraft: BrowserWorkflowDraftSummary = {
+  id: 'browser-draft-weekly-report',
+  taskId: draftTask.id,
+  status: 'editing',
+  revision: 1,
+  steps: [],
+  stepCount: 0,
+  createdAt: '2026-08-05T04:00:00.000Z',
+  updatedAt: '2026-08-05T04:00:00.000Z',
+};
+
+const pendingTask: BrowserAutomationTaskSummary = {
+  ...draftTask,
+  status: 'pending_review',
+  revision: 2,
+  updatedAt: '2026-08-05T04:12:00.000Z',
+};
+
+const pendingDraft: BrowserWorkflowDraftSummary = {
+  ...workflowDraft,
+  recordingId: activeRecording.id,
+  status: 'pending_review',
+  revision: 2,
+  steps: [
+    {
+      kind: 'fill',
+      locator: { strategy: 'label', value: '登录密码' },
+      value: { kind: 'secret' },
+    },
+  ],
+  stepCount: 1,
+  submittedAt: '2026-08-05T04:12:00.000Z',
+  updatedAt: '2026-08-05T04:12:00.000Z',
+};
+
+const publishedVersion: BrowserWorkflowVersionSummary = {
+  id: 'browser-version-weekly-report-v1',
+  taskId: draftTask.id,
+  draftId: workflowDraft.id,
+  versionNumber: 1,
+  steps: pendingDraft.steps,
+  stepCount: 1,
+  createdAt: '2026-08-05T04:13:00.000Z',
+  publishedAt: '2026-08-05T04:13:00.000Z',
+};
+
+const enabledTask: BrowserAutomationTaskSummary = {
+  ...pendingTask,
+  status: 'enabled',
+  revision: 3,
+  publishedVersionId: publishedVersion.id,
+  updatedAt: '2026-08-05T04:13:00.000Z',
+};
+
 function deferred<T>(): {
   promise: Promise<T>;
   resolve(value: T): void;
@@ -103,6 +179,22 @@ function deferred<T>(): {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+async function createManualWorkflowDraft(): Promise<void> {
+  await waitFor(() => expect(screen.getByText('还没有自动化任务')).toBeTruthy());
+  fireEvent.click(screen.getByTestId('browser-workflow-create-manual'));
+  fireEvent.change(screen.getByTestId('browser-workflow-name'), {
+    target: { value: draftTask.name },
+  });
+  fireEvent.change(screen.getByTestId('browser-workflow-instruction'), {
+    target: { value: draftTask.instruction },
+  });
+  fireEvent.change(screen.getByTestId('browser-workflow-start-url'), {
+    target: { value: draftTask.startUrl },
+  });
+  fireEvent.click(screen.getByTestId('browser-workflow-create-submit'));
+  await screen.findByTestId('browser-workflow-recording-context');
 }
 
 const api = {
@@ -137,10 +229,7 @@ const api = {
   browserRecording: {
     list: vi.fn(async () => ({ recordings: [] as BrowserRecordingSummary[] })),
     get: vi.fn(
-      async (): Promise<{
-        recording: BrowserRecordingSummary;
-        steps: BrowserRecordingStepRecord[];
-      }> => ({
+      async (_payload: GetBrowserRecordingPayload): Promise<GetBrowserRecordingResponse> => ({
         recording: activeRecording,
         steps: [
           {
@@ -159,6 +248,20 @@ const api = {
     ),
     start: vi.fn(async () => ({ recording: activeRecording })),
     stop: vi.fn(async () => ({ recording: stoppedRecording })),
+  },
+  browserWorkflow: {
+    list: vi.fn(async () => ({ tasks: [] as BrowserAutomationTaskSummary[] })),
+    get: vi.fn(async (): Promise<GetBrowserWorkflowResponse> => ({
+      task: draftTask,
+      draft: workflowDraft,
+    })),
+    createDraft: vi.fn(async () => ({ task: draftTask, draft: workflowDraft })),
+    submit: vi.fn(async () => ({ task: pendingTask, draft: pendingDraft })),
+    review: vi.fn(async (): Promise<ReviewBrowserWorkflowDraftResponse> => ({
+      task: enabledTask,
+      draft: { ...pendingDraft, status: 'approved' as const },
+      version: publishedVersion,
+    })),
   },
 };
 
@@ -183,6 +286,19 @@ beforeEach(() => {
   });
   api.browserRecording.start.mockReset().mockResolvedValue({ recording: activeRecording });
   api.browserRecording.stop.mockReset().mockResolvedValue({ recording: stoppedRecording });
+  api.browserWorkflow.list.mockReset().mockResolvedValue({ tasks: [] });
+  api.browserWorkflow.get.mockReset().mockResolvedValue({ task: draftTask, draft: workflowDraft });
+  api.browserWorkflow.createDraft
+    .mockReset()
+    .mockResolvedValue({ task: draftTask, draft: workflowDraft });
+  api.browserWorkflow.submit
+    .mockReset()
+    .mockResolvedValue({ task: pendingTask, draft: pendingDraft });
+  api.browserWorkflow.review.mockReset().mockResolvedValue({
+    task: enabledTask,
+    draft: { ...pendingDraft, status: 'approved' },
+    version: publishedVersion,
+  });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: { runtime: api },
@@ -192,10 +308,19 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('BrowserStage Runtime Profiles', () => {
-  it('loads Runtime Profiles and cached sanitized site sessions without mounting a webview', async () => {
+  it('loads Profiles, automation tasks, and cached sessions without mounting a webview', async () => {
     render(<BrowserStage />);
     expect(screen.getByText('浏览器自动化')).toBeTruthy();
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
+    await waitFor(() =>
+      expect(api.browserWorkflow.list).toHaveBeenCalledWith({
+        profileId: 'default',
+        limit: 100,
+      }),
+    );
+    expect(screen.getByRole('button', { name: '自动化任务' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
     await waitFor(() => expect(screen.getByText('example.com')).toBeTruthy());
     expect(screen.getByText('已验证登录')).toBeTruthy();
     expect(screen.getByText(/2 Cookie/)).toBeTruthy();
@@ -206,23 +331,369 @@ describe('BrowserStage Runtime Profiles', () => {
     expect(document.querySelector('webview')).toBeNull();
   });
 
-  it('exposes only the implemented login-state and recording views', async () => {
+  it('defaults to automation tasks and preserves login-state and recording views', async () => {
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
+    expect(screen.getByRole('button', { name: '自动化任务' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '登录状态' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    expect(screen.getByRole('button', { name: '录制记录' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '登录状态' }));
+    expect(screen.getByTestId('browser-site-session-refresh')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     await waitFor(() =>
       expect(api.browserRecording.list).toHaveBeenCalledWith({ profileId: 'default', limit: 20 }),
     );
     expect(screen.getByTestId('browser-recording-start-url')).toBeTruthy();
     expect(screen.getByTestId('browser-recording-start')).toBeTruthy();
-    expect(screen.queryByText('自动化任务')).toBeNull();
+  });
+
+  it('creates a manual workflow draft and enters the task recording workspace', async () => {
+    render(<BrowserStage />);
+    await waitFor(() => expect(screen.getByText('还没有自动化任务')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('browser-workflow-create-manual'));
+    fireEvent.change(screen.getByTestId('browser-workflow-name'), {
+      target: { value: '提交每周销售报表' },
+    });
+    fireEvent.change(screen.getByTestId('browser-workflow-instruction'), {
+      target: { value: '打开销售后台并提交本周销售报表。' },
+    });
+    fireEvent.change(screen.getByTestId('browser-workflow-start-url'), {
+      target: { value: 'https://example.com/reports' },
+    });
+    fireEvent.click(screen.getByTestId('browser-workflow-create-submit'));
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.createDraft).toHaveBeenCalledWith({
+        profileId: 'default',
+        name: '提交每周销售报表',
+        instruction: '打开销售后台并提交本周销售报表。',
+        startUrl: 'https://example.com/reports',
+        source: 'manual',
+      }),
+    );
+    expect(await screen.findByTestId('browser-workflow-recording-context')).toBeTruthy();
+    expect((screen.getByTestId('browser-recording-start-url') as HTMLInputElement).value).toBe(
+      'https://example.com/reports',
+    );
+    expect(screen.getByRole('button', { name: '录制记录' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+  });
+
+  it('keeps a new workflow draft empty instead of showing an old Profile recording', async () => {
+    api.browserRecording.list.mockResolvedValue({ recordings: [stoppedRecording] });
+    api.browserRecording.get.mockResolvedValue({
+      recording: stoppedRecording,
+      steps: [
+        {
+          recordingId: stoppedRecording.id,
+          sequence: 1,
+          step: { kind: 'navigate', url: 'https://example.com/old' },
+          recordedAt: stoppedRecording.updatedAt,
+          updatedAt: stoppedRecording.updatedAt,
+        },
+      ],
+    });
+    render(<BrowserStage />);
+
+    await createManualWorkflowDraft();
+
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('');
+    expect(screen.getByRole('combobox').textContent).toContain('暂无记录');
+    expect(screen.queryByTestId('browser-workflow-submit')).toBeNull();
+    expect(screen.queryByText('https://example.com/old')).toBeNull();
+  });
+
+  it('restores only the recording persisted on an editing workflow draft', async () => {
+    const workflowRecording = {
+      ...stoppedRecording,
+      id: 'recording-workflow-durable',
+      startUrl: draftTask.startUrl,
+      currentUrl: draftTask.startUrl,
+    };
+    const draftWithRecording = {
+      ...workflowDraft,
+      recordingId: workflowRecording.id,
+    };
+    api.browserWorkflow.createDraft.mockResolvedValueOnce({
+      task: draftTask,
+      draft: draftWithRecording,
+    });
+    api.browserRecording.list.mockResolvedValue({
+      recordings: [{ ...stoppedRecording, id: 'recording-unrelated' }],
+    });
+    api.browserRecording.get.mockImplementation(
+      async ({
+        recordingId,
+      }: GetBrowserRecordingPayload): Promise<GetBrowserRecordingResponse> => ({
+        recording:
+          recordingId === workflowRecording.id
+            ? workflowRecording
+            : { ...stoppedRecording, id: recordingId },
+        steps: [
+          {
+            recordingId,
+            sequence: 1,
+            step: { kind: 'navigate', url: 'https://example.com/restored' },
+            recordedAt: stoppedRecording.updatedAt,
+            updatedAt: stoppedRecording.updatedAt,
+          },
+        ],
+      }),
+    );
+    render(<BrowserStage />);
+
+    await createManualWorkflowDraft();
+
+    await waitFor(() =>
+      expect(api.browserRecording.get).toHaveBeenCalledWith({
+        recordingId: workflowRecording.id,
+        afterSequence: 0,
+        limit: 200,
+      }),
+    );
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(workflowRecording.id);
+    expect(screen.getByTestId('browser-workflow-submit')).toBeTruthy();
+    expect(screen.queryByText('recording-unrelated')).toBeNull();
+  });
+
+  it('keeps an unrelated active Profile recording locked without binding it to a new draft', async () => {
+    api.browserRecording.list.mockResolvedValue({ recordings: [activeRecording] });
+    api.browserRecording.get.mockResolvedValue({ recording: activeRecording, steps: [] });
+    render(<BrowserStage />);
+
+    await createManualWorkflowDraft();
+
+    await waitFor(() =>
+      expect((screen.getByTestId('browser-recording-start') as HTMLButtonElement).disabled).toBe(
+        true,
+      ),
+    );
+    expect(screen.queryByTestId('browser-recording-stop')).toBeNull();
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('');
+    expect(screen.queryByTestId('browser-workflow-submit')).toBeNull();
+  });
+
+  it('submits the final durable recording steps for workflow review', async () => {
+    render(<BrowserStage />);
+    await waitFor(() => expect(screen.getByText('还没有自动化任务')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('browser-workflow-create-manual'));
+    fireEvent.change(screen.getByTestId('browser-workflow-name'), {
+      target: { value: draftTask.name },
+    });
+    fireEvent.change(screen.getByTestId('browser-workflow-instruction'), {
+      target: { value: draftTask.instruction },
+    });
+    fireEvent.change(screen.getByTestId('browser-workflow-start-url'), {
+      target: { value: draftTask.startUrl },
+    });
+    fireEvent.click(screen.getByTestId('browser-workflow-create-submit'));
+    await screen.findByTestId('browser-workflow-recording-context');
+    const startButton = screen.getByTestId('browser-recording-start');
+    await waitFor(() => expect((startButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(startButton);
+    await waitFor(() =>
+      expect(api.browserRecording.start).toHaveBeenCalledWith({
+        profileId: 'default',
+        expectedProfileRevision: 1,
+        draftId: workflowDraft.id,
+        startUrl: draftTask.startUrl,
+      }),
+    );
+    const stopButton = await screen.findByTestId('browser-recording-stop');
+    fireEvent.click(stopButton);
+    await waitFor(() =>
+      expect(api.browserRecording.stop).toHaveBeenCalledWith({
+        recordingId: activeRecording.id,
+      }),
+    );
+    fireEvent.click(await screen.findByTestId('browser-workflow-submit'));
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.submit).toHaveBeenCalledWith({
+        draftId: workflowDraft.id,
+        recordingId: activeRecording.id,
+      }),
+    );
+    expect(screen.getByRole('button', { name: '自动化任务' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+  });
+
+  it('requires a rejected workflow to bind a new recording before resubmission', async () => {
+    const oldRecording = {
+      ...stoppedRecording,
+      id: 'recording-rejected-old',
+      startUrl: draftTask.startUrl,
+    };
+    const newRecording = {
+      ...activeRecording,
+      id: 'recording-rejected-new',
+      startUrl: draftTask.startUrl,
+    };
+    const newStoppedRecording = {
+      ...stoppedRecording,
+      id: newRecording.id,
+      startUrl: draftTask.startUrl,
+    };
+    const rejectedDraft = {
+      ...pendingDraft,
+      recordingId: oldRecording.id,
+      status: 'rejected' as const,
+      revision: 3,
+    };
+    let newRecordingStopped = false;
+    api.browserWorkflow.list.mockResolvedValue({ tasks: [draftTask] });
+    api.browserWorkflow.get.mockResolvedValue({ task: draftTask, draft: rejectedDraft });
+    api.browserRecording.list.mockResolvedValue({ recordings: [] });
+    api.browserRecording.start.mockResolvedValueOnce({ recording: newRecording });
+    api.browserRecording.stop.mockImplementationOnce(async () => {
+      newRecordingStopped = true;
+      return { recording: newStoppedRecording };
+    });
+    api.browserRecording.get.mockImplementation(
+      async ({ recordingId }: GetBrowserRecordingPayload): Promise<GetBrowserRecordingResponse> => {
+        const recording =
+          recordingId === oldRecording.id
+            ? oldRecording
+            : newRecordingStopped
+              ? newStoppedRecording
+              : newRecording;
+        return {
+          recording,
+          steps: [
+            {
+              recordingId,
+              sequence: 1,
+              step: { kind: 'navigate', url: draftTask.startUrl },
+              recordedAt: recording.updatedAt,
+              updatedAt: recording.updatedAt,
+            },
+          ],
+        };
+      },
+    );
+    render(<BrowserStage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /继续录制/ }));
+    await waitFor(() =>
+      expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(oldRecording.id),
+    );
+    expect(screen.queryByTestId('browser-workflow-submit')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('browser-recording-start'));
+    await waitFor(() =>
+      expect(api.browserRecording.start).toHaveBeenCalledWith({
+        profileId: defaultProfile.id,
+        expectedProfileRevision: defaultProfile.revision,
+        draftId: rejectedDraft.id,
+        startUrl: draftTask.startUrl,
+      }),
+    );
+    fireEvent.click(await screen.findByTestId('browser-recording-stop'));
+    fireEvent.click(await screen.findByTestId('browser-workflow-submit'));
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.submit).toHaveBeenCalledWith({
+        draftId: rejectedDraft.id,
+        recordingId: newRecording.id,
+      }),
+    );
+  });
+
+  it('reconciles a timed-out workflow start from the recording persisted on its draft', async () => {
+    const reconciledRecording = {
+      ...activeRecording,
+      id: 'recording-workflow-reconciled',
+      startUrl: draftTask.startUrl,
+    };
+    api.browserRecording.start.mockRejectedValueOnce(
+      new Error('Runtime request timed out: browser.recording.start'),
+    );
+    api.browserWorkflow.get.mockResolvedValueOnce({
+      task: draftTask,
+      draft: { ...workflowDraft, recordingId: reconciledRecording.id, revision: 2 },
+    });
+    api.browserRecording.get.mockResolvedValue({
+      recording: reconciledRecording,
+      steps: [],
+    });
+    render(<BrowserStage />);
+
+    await createManualWorkflowDraft();
+    fireEvent.click(screen.getByTestId('browser-recording-start'));
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.get).toHaveBeenCalledWith({
+        taskId: draftTask.id,
+      }),
+    );
+    expect(await screen.findByTestId('browser-recording-stop')).toBeTruthy();
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(reconciledRecording.id);
+    expect(api.browserRecording.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('reviews a pending workflow and publishes immutable version V1', async () => {
+    api.browserWorkflow.list
+      .mockResolvedValueOnce({ tasks: [pendingTask] })
+      .mockResolvedValue({ tasks: [enabledTask] });
+    api.browserWorkflow.get
+      .mockResolvedValueOnce({ task: pendingTask, draft: pendingDraft })
+      .mockResolvedValue({
+        task: enabledTask,
+        draft: { ...pendingDraft, status: 'approved' },
+        version: publishedVersion,
+      });
+    render(<BrowserStage />);
+    fireEvent.click(await screen.findByRole('button', { name: '审核' }));
+    expect(await screen.findByText('审核自动化任务')).toBeTruthy();
+    expect(screen.getByText(/敏感值，运行时填写/)).toBeTruthy();
+    fireEvent.click(screen.getByTestId('browser-workflow-approve'));
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.review).toHaveBeenCalledWith({
+        draftId: pendingDraft.id,
+        decision: 'approve',
+      }),
+    );
+    expect(await screen.findByText(/已发布为 V1/)).toBeTruthy();
+    expect(await screen.findByText('已发布')).toBeTruthy();
+  });
+
+  it('rejects a pending workflow and exposes the re-record action', async () => {
+    const rejectedDraft = { ...pendingDraft, status: 'rejected' as const, revision: 3 };
+    api.browserWorkflow.list
+      .mockResolvedValueOnce({ tasks: [pendingTask] })
+      .mockResolvedValue({ tasks: [draftTask] });
+    api.browserWorkflow.get
+      .mockResolvedValueOnce({ task: pendingTask, draft: pendingDraft })
+      .mockResolvedValue({ task: draftTask, draft: rejectedDraft });
+    api.browserWorkflow.review.mockResolvedValueOnce({
+      task: draftTask,
+      draft: rejectedDraft,
+    });
+    render(<BrowserStage />);
+    fireEvent.click(await screen.findByRole('button', { name: '审核' }));
+    fireEvent.change(screen.getByTestId('browser-workflow-review-note'), {
+      target: { value: '重新录制提交按钮后的确认步骤。' },
+    });
+    fireEvent.click(screen.getByTestId('browser-workflow-reject'));
+
+    await waitFor(() =>
+      expect(api.browserWorkflow.review).toHaveBeenCalledWith({
+        draftId: pendingDraft.id,
+        decision: 'reject',
+        note: '重新录制提交按钮后的确认步骤。',
+      }),
+    );
+    expect(await screen.findByText('已驳回')).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /继续录制/ })).toBeTruthy();
   });
 
   it('starts a recording, polls its durable steps, and never renders a secret value', async () => {
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     fireEvent.change(screen.getByTestId('browser-recording-start-url'), {
       target: { value: 'https://example.com/start?token=renderer-secret' },
     });
@@ -256,7 +727,7 @@ describe('BrowserStage Runtime Profiles', () => {
     api.browserRecording.start.mockReturnValueOnce(startRequest.promise);
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     const startButton = (await screen.findByTestId('browser-recording-start')) as HTMLButtonElement;
     await waitFor(() => expect(startButton.disabled).toBe(false));
     fireEvent.click(startButton);
@@ -295,7 +766,7 @@ describe('BrowserStage Runtime Profiles', () => {
     const renameInput = screen.getByTestId('browser-profile-rename-input-default');
     fireEvent.change(renameInput, { target: { value: '稍后重命名' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     fireEvent.click(startButton);
 
     await waitFor(() =>
@@ -352,7 +823,7 @@ describe('BrowserStage Runtime Profiles', () => {
     );
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     const startButton = (await screen.findByTestId('browser-recording-start')) as HTMLButtonElement;
     await waitFor(() => expect(startButton.disabled).toBe(false));
     fireEvent.click(startButton);
@@ -374,7 +845,7 @@ describe('BrowserStage Runtime Profiles', () => {
     );
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     const startButton = (await screen.findByTestId('browser-recording-start')) as HTMLButtonElement;
     await waitFor(() => expect(startButton.disabled).toBe(false));
     fireEvent.click(startButton);
@@ -398,7 +869,7 @@ describe('BrowserStage Runtime Profiles', () => {
     );
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     const startButton = (await screen.findByTestId('browser-recording-start')) as HTMLButtonElement;
     await waitFor(() => expect(startButton.disabled).toBe(false));
     fireEvent.click(startButton);
@@ -421,7 +892,7 @@ describe('BrowserStage Runtime Profiles', () => {
     );
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     const startButton = (await screen.findByTestId('browser-recording-start')) as HTMLButtonElement;
     await waitFor(() => expect(startButton.disabled).toBe(false));
     fireEvent.click(startButton);
@@ -448,7 +919,7 @@ describe('BrowserStage Runtime Profiles', () => {
       api.browserRecording.get.mockReturnValueOnce(pollRequest.promise);
       render(<BrowserStage />);
       await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-      fireEvent.click(screen.getByRole('button', { name: '录制' }));
+      fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
       const startButton = (await screen.findByTestId(
         'browser-recording-start',
       )) as HTMLButtonElement;
@@ -463,10 +934,30 @@ describe('BrowserStage Runtime Profiles', () => {
     },
   );
 
+  it('shows stopped feedback when the page overlay stops an active recording', async () => {
+    const pollRequest = deferred<{
+      recording: BrowserRecordingSummary;
+      steps: [];
+    }>();
+    api.browserRecording.get.mockReturnValueOnce(pollRequest.promise);
+    render(<BrowserStage />);
+    await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
+    const startButton = (await screen.findByTestId('browser-recording-start')) as HTMLButtonElement;
+    await waitFor(() => expect(startButton.disabled).toBe(false));
+    fireEvent.click(startButton);
+    expect(await screen.findByText('录制已开始')).toBeTruthy();
+
+    await act(async () => pollRequest.resolve({ recording: stoppedRecording, steps: [] }));
+
+    expect(await screen.findByText('录制已停止')).toBeTruthy();
+    expect(screen.queryByText('录制已开始')).toBeNull();
+  });
+
   it('stops an active recording and releases the Profile selection lock', async () => {
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     fireEvent.click(screen.getByTestId('browser-recording-start'));
     await waitFor(() => expect(screen.getByTestId('browser-recording-stop')).toBeTruthy());
     fireEvent.click(screen.getByTestId('browser-recording-stop'));
@@ -510,7 +1001,7 @@ describe('BrowserStage Runtime Profiles', () => {
     api.browserRecording.stop.mockResolvedValueOnce({ recording: finalRecording });
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     fireEvent.click(screen.getByTestId('browser-recording-start'));
     await waitFor(() => expect(api.browserRecording.get).toHaveBeenCalled());
     api.browserRecording.get.mockResolvedValue({ recording: finalRecording, steps: finalSteps });
@@ -533,7 +1024,7 @@ describe('BrowserStage Runtime Profiles', () => {
     api.browserRecording.stop.mockRejectedValueOnce(new Error('Browser cleanup timed out'));
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getAllByText('默认浏览器')).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
 
     const stopButton = (await screen.findByTestId('browser-recording-stop')) as HTMLButtonElement;
     expect(stopButton.disabled).toBe(false);
@@ -551,7 +1042,7 @@ describe('BrowserStage Runtime Profiles', () => {
     api.browserRecording.list.mockResolvedValueOnce({ recordings: [activeRecording] });
     render(<BrowserStage />);
     await waitFor(() => expect(api.browserRecording.get).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: '录制' }));
+    fireEvent.click(screen.getByRole('button', { name: '录制记录' }));
     expect(await screen.findByTestId('browser-recording-stop')).toBeTruthy();
     expect(screen.getByText('录制中')).toBeTruthy();
   });
@@ -591,6 +1082,7 @@ describe('BrowserStage Runtime Profiles', () => {
   it('refreshes the selected Profile explicitly', async () => {
     render(<BrowserStage />);
     await waitFor(() => expect(screen.getByText('example.com')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '登录状态' }));
     fireEvent.click(screen.getByTestId('browser-site-session-refresh'));
     await waitFor(() =>
       expect(api.listBrowserSiteSessions).toHaveBeenCalledWith({
@@ -633,6 +1125,7 @@ describe('BrowserStage Runtime Profiles', () => {
     await waitFor(() => expect(screen.getByText('工作号')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '选择 Profile 工作号' }));
     await waitFor(() => expect(screen.getByText('Profile 使用中')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '登录状态' }));
     expect((screen.getByTestId('browser-site-session-refresh') as HTMLButtonElement).disabled).toBe(
       true,
     );

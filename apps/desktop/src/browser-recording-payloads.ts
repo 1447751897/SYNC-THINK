@@ -15,11 +15,12 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
 }
 
 function validId(value: unknown): value is string {
+  const normalized = typeof value === 'string' ? value.trim() : '';
   return (
     typeof value === 'string' &&
-    value.trim().length > 0 &&
-    value.length <= 256 &&
-    !/\s/u.test(value)
+    normalized.length > 0 &&
+    normalized.length <= 256 &&
+    !/\s/u.test(normalized)
   );
 }
 
@@ -69,9 +70,10 @@ export function parseGetBrowserRecordingPayload(value: unknown): GetBrowserRecor
 export function parseStartBrowserRecordingPayload(value: unknown): StartBrowserRecordingPayload {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['profileId', 'expectedProfileRevision', 'startUrl']) ||
+    !hasOnlyKeys(value, ['profileId', 'expectedProfileRevision', 'startUrl', 'draftId']) ||
     !validId(value.profileId) ||
     !validPositiveInteger(value.expectedProfileRevision) ||
+    (value.draftId !== undefined && !validId(value.draftId)) ||
     (value.startUrl !== undefined && !validRecordingUrl(value.startUrl))
   ) {
     invalidPayload('start-browser-recording');
@@ -80,6 +82,7 @@ export function parseStartBrowserRecordingPayload(value: unknown): StartBrowserR
     profileId: value.profileId.trim(),
     expectedProfileRevision: value.expectedProfileRevision,
     ...(typeof value.startUrl === 'string' ? { startUrl: value.startUrl.trim() } : {}),
+    ...(typeof value.draftId === 'string' ? { draftId: value.draftId.trim() } : {}),
   };
 }
 

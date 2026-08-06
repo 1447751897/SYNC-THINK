@@ -35,7 +35,7 @@ SYNC-THINK/
 | Main services     | `project-content-search.ts`、`project-file-editor.ts`、`project-terminal.ts`、`project-terminal-registry.ts`           | 搜索、文件读写/监听、命令解析/cwd 校验、终端会话唯一性                                                                |
 | Updater/recovery  | `desktop-updater.ts`、`electron-updater-driver.ts`、`desktop-update-recovery-store.ts`、`desktop-update-rollback-*.ts` | Main-only feed 控制、bounded failure evidence、healthy installer 登记、rollback intent/health/outcome 与独立 watchdog |
 | Preload           | `apps/desktop/src/preload/index.ts`                                                                                    | 在 sandbox/contextIsolation 下暴露最小 typed bridge，转发 terminal 事件并返回 disposer                                |
-| IPC contract      | `apps/desktop/src/workspace-tools-contract.ts`、`renderer/global.d.ts`                                                 | Renderer 可见 payload/result/event 类型；不得暴露 Node 或 secret                                                      |
+| IPC contract      | `apps/desktop/src/workspace-tools-contract.ts`、`browser-workflow-payloads.ts`、`renderer/global.d.ts`                 | Renderer 可见 payload/result/event 类型；Browser Workflow 变更需额外严格校验，不得暴露 Node 或 secret                 |
 | Renderer shell    | `apps/desktop/src/renderer/shell/ShellApp.tsx`                                                                         | 顶层目录、Workspace/会话状态、Pane 快照提交和各页面装配                                                               |
 | Pane model        | `pane-layout.ts`、`WorkspacePaneHost.tsx`、`ConversationTabs.tsx`                                                      | 递归布局、焦点、Tab 资源、恢复/迁移和最多两路 ChatView 挂载                                                           |
 | Resource views    | `ChatView.tsx`、`FilePane.tsx`、`TerminalPane.tsx`                                                                     | 对话、文件编辑、终端三类 Pane 内容；临时状态留在 Renderer                                                             |
@@ -53,7 +53,7 @@ Main 或 Preload 发生变化后必须完整重启 Electron；只刷新 Renderer
 - `packages/protocol/src/skill-selection.ts` 规范化每轮 SkillVersion ID；`packages/core/src/run-skill-selection.ts` 负责 allowlist 子集、归档和审批规则，保持无 I/O、可单测。
 - `packages/storage` 的 Skill list 查询只投影 metadata；完整正文只由 Runtime 通过精确 SkillVersion ID 读取，不进入 Renderer 目录响应。
 - `packages/workers` 负责最小权限执行。`terminal/terminal-worker.ts` 定义命令能力与输出上限，`process-runner.ts` 负责 spawn、流式读取、超时/取消和进程树清理。
-- `packages/workers/src/browser/browser-host.ts` 负责系统浏览器发现/启动、CDP、Profile Session、Page lease、同 Page 队列、Profile 站点数据查询/清除与具体 Playwright 动作；registrable domain 由 `tldts` Public Suffix List 解析，Storage 操作固定走 Page target CDP，不读取 `storageState()`；`browser-worker.ts` 只把 capability token、路径与事件合同接到共享 Host。
+- `packages/workers/src/browser/browser-host.ts` 负责系统浏览器发现/启动、CDP、Profile Session、Page lease、同 Page 队列、Profile 站点数据查询/清除与具体 Playwright 动作；浏览器候选顺序为显式 executable、Chrome、Edge；registrable domain 由 `tldts` Public Suffix List 解析，Storage 操作固定走 Page target CDP，不读取 `storageState()`；`browser-worker.ts` 只把 capability token、路径与事件合同接到共享 Host。
 - `apps/runtime/src/browser/runtime-browser-controller.ts` 把聊天 `browser_*` 参数映射为 Worker action，使用 `SqliteBrowserStore` 持久化 origin grant、command 与人工 handoff，并保证 Runtime 的脱敏意图先于 Worker 副作用；Page lease 与浏览器进程仍由 `BrowserHost` 管理。
 - `packages/core` 保持无 I/O 的领域规则；`packages/adapters` 隔离 Provider 差异；`packages/ui-kit` 只承载可复用产品组件，不持有 Desktop 业务生命周期。
 
@@ -158,6 +158,22 @@ BrowserStage 录制视图
 
 `packages/shared/src/types/browser-recording.ts` 是状态、步骤和上限合同；迁移 `0037_browser_recording` 是 durable 真源。`apps/runtime/src/browser/runtime-browser-recording-service.ts` 负责 intent-before-side-effect、停止幂等、mutation 排空和冷启动 `interrupted` 恢复；`packages/workers/src/browser/browser-host.ts` 负责单 Page 主 Frame 捕获、稳定定位器候选、URL/敏感值脱敏、随机 capture token 与 Profile 独占。P1.2 不创建 WorkflowVersion，也不执行录制步骤。
 
+Browser Automation Studio 的任务与审核链路：
+
+```text
+BrowserWorkflowPanel / BrowserStage Draft recording context
+  -> Desktop browser-workflow-payloads strict validation
+  -> Runtime browser.workflow.{list,get,createDraft,submit,review}
+  -> RuntimeBrowserWorkflowService
+  -> SqliteBrowserStore
+       browser_automation_task
+       browser_workflow_draft
+       browser_workflow_review
+       immutable browser_workflow_version
+```
+
+对话工具 `browser_workflow_list/get/create_draft` 复用同一 Runtime service；模型只能查询或创建 `source=ai` 的 Draft。Renderer 的“批准并发布”是唯一发布入口，execution mode 不替代 Review。迁移 `0038_browser_automation_workflow` 和 SQLite update/delete trigger 是 WorkflowVersion 的不可变真源；确定性执行器尚未接入。
+
 ### Windows 更新与自动 rollback
 
 ```text
@@ -190,6 +206,8 @@ NSIS `apps/desktop/build/installer.nsh` 负责把每个已安装版本的 instal
 | 浏览器 Profile/Cookie                                     | Runtime 数据目录中的专用系统浏览器 Profile；SQLite 只保存 Profile 元数据与脱敏站点摘要，不保存 Cookie/Token/存储正文              |
 | Browser origin grant、command 与人工 handoff              | SQLite durable store；重启后按 revision/ownership fence 恢复，不重放未知副作用                                                    |
 | Browser Session/Page lease                                | 当前 Runtime/BrowserHost 生命周期；durable handoff 只保存恢复所需的有界 lease checkpoint，继续前重新验证 ownership                |
+| Browser recording                                         | SQLite durable intent、终态与脱敏语义步骤；活动捕获、Page 与 lease 只在 Runtime/BrowserHost 生命周期中存在                        |
+| Browser Automation Task/Draft/Review/WorkflowVersion      | SQLite durable store；Draft 可返工，Review 追加记录，已发布 WorkflowVersion 由 trigger 保证不可更新/删除                          |
 | 生成图片正文                                              | Runtime 受控 GeneratedImageStore；SQLite/Renderer 只保存 contentRef/hash 和 opaque preview 投影                                   |
 | Updater failure evidence                                  | `<userData>/diagnostics/desktop-updater-recovery.json`，最多 20 条脱敏记录                                                        |
 | Automatic rollback                                        | `%LOCALAPPDATA%\sync-think-updater\recovery` 下的 installer、healthy release、intent、health、attempt 与 outcome；不进入 Renderer |

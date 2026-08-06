@@ -158,7 +158,106 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0037_browser_recording',
     sql: browserRecordingDdlSql(),
   },
+  {
+    name: '0038_browser_automation_workflow',
+    sql: browserAutomationWorkflowDdlSql(),
+  },
 ];
+
+function browserAutomationWorkflowDdlSql(): string {
+  return `
+CREATE TABLE browser_automation_task (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL REFERENCES browser_profile(id) ON DELETE RESTRICT,
+  name TEXT NOT NULL,
+  instruction TEXT NOT NULL,
+  start_url TEXT NOT NULL,
+  source TEXT NOT NULL,
+  status TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  current_draft_id TEXT,
+  published_version_id TEXT,
+  last_run_at TEXT,
+  success_count INTEGER NOT NULL DEFAULT 0,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT browser_automation_task_source_check CHECK (source IN ('manual', 'ai')),
+  CONSTRAINT browser_automation_task_status_check CHECK (
+    status IN ('draft', 'pending_review', 'enabled', 'disabled', 'failed')
+  ),
+  CONSTRAINT browser_automation_task_revision_check CHECK (revision >= 1),
+  CONSTRAINT browser_automation_task_run_count_check CHECK (
+    success_count >= 0 AND failure_count >= 0
+  )
+);
+CREATE INDEX browser_automation_task_profile_idx
+  ON browser_automation_task(profile_id, status, updated_at);
+
+CREATE TABLE browser_workflow_draft (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES browser_automation_task(id) ON DELETE RESTRICT,
+  recording_id TEXT REFERENCES browser_recording(id) ON DELETE RESTRICT,
+  status TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  steps_json TEXT NOT NULL DEFAULT '[]',
+  step_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  submitted_at TEXT,
+  reviewed_at TEXT,
+  CONSTRAINT browser_workflow_draft_status_check CHECK (
+    status IN ('editing', 'pending_review', 'approved', 'rejected')
+  ),
+  CONSTRAINT browser_workflow_draft_revision_check CHECK (revision >= 1),
+  CONSTRAINT browser_workflow_draft_steps_json_check CHECK (json_valid(steps_json)),
+  CONSTRAINT browser_workflow_draft_step_count_check CHECK (step_count BETWEEN 0 AND 200)
+);
+CREATE INDEX browser_workflow_draft_task_idx
+  ON browser_workflow_draft(task_id, updated_at);
+
+CREATE TABLE browser_workflow_version (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES browser_automation_task(id) ON DELETE RESTRICT,
+  draft_id TEXT NOT NULL REFERENCES browser_workflow_draft(id) ON DELETE RESTRICT,
+  version_number INTEGER NOT NULL,
+  steps_json TEXT NOT NULL,
+  step_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  published_at TEXT NOT NULL,
+  CONSTRAINT browser_workflow_version_number_check CHECK (version_number >= 1),
+  CONSTRAINT browser_workflow_version_steps_json_check CHECK (json_valid(steps_json)),
+  CONSTRAINT browser_workflow_version_step_count_check CHECK (step_count BETWEEN 1 AND 200)
+);
+CREATE UNIQUE INDEX browser_workflow_version_task_number_uidx
+  ON browser_workflow_version(task_id, version_number);
+CREATE UNIQUE INDEX browser_workflow_version_draft_uidx
+  ON browser_workflow_version(draft_id);
+CREATE TRIGGER browser_workflow_version_update_guard
+BEFORE UPDATE ON browser_workflow_version
+BEGIN
+  SELECT RAISE(ABORT, 'browser.workflow-version-immutable');
+END;
+CREATE TRIGGER browser_workflow_version_delete_guard
+BEFORE DELETE ON browser_workflow_version
+BEGIN
+  SELECT RAISE(ABORT, 'browser.workflow-version-immutable');
+END;
+
+CREATE TABLE browser_workflow_review (
+  id TEXT PRIMARY KEY,
+  draft_id TEXT NOT NULL REFERENCES browser_workflow_draft(id) ON DELETE RESTRICT,
+  decision TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  CONSTRAINT browser_workflow_review_decision_check CHECK (
+    decision IN ('approve', 'reject')
+  )
+);
+CREATE INDEX browser_workflow_review_draft_idx
+  ON browser_workflow_review(draft_id, created_at);
+`;
+}
 
 function browserRecordingDdlSql(): string {
   return `

@@ -24,11 +24,13 @@ describe('Browser recording command validation', () => {
         profileId: 'profile-1',
         expectedProfileRevision: 3,
         startUrl: ' https://example.test/path?query=kept-until-service ',
+        draftId: ' browser-draft-1 ',
       }),
     ).toEqual({
       profileId: 'profile-1',
       expectedProfileRevision: 3,
       startUrl: 'https://example.test/path?query=kept-until-service',
+      draftId: 'browser-draft-1',
     });
     expect(parseStopBrowserRecordingPayload({ recordingId: 'recording-1' })).toEqual({
       recordingId: 'recording-1',
@@ -53,6 +55,13 @@ describe('Browser recording command validation', () => {
         profileId: 'profile-1',
         expectedProfileRevision: 1,
         startUrl: 'file:///C:/secret.txt',
+      }),
+    ).toBeUndefined();
+    expect(
+      parseStartBrowserRecordingPayload({
+        profileId: 'profile-1',
+        expectedProfileRevision: 1,
+        draftId: 'draft 1',
       }),
     ).toBeUndefined();
     expect(

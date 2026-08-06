@@ -127,6 +127,11 @@ import {
   type GetBrowserRecordingResponse,
   type StartBrowserRecordingResponse,
   type StopBrowserRecordingResponse,
+  type ListBrowserWorkflowsResponse,
+  type GetBrowserWorkflowResponse,
+  type CreateBrowserWorkflowDraftResponse,
+  type SubmitBrowserWorkflowDraftResponse,
+  type ReviewBrowserWorkflowDraftResponse,
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   isComputerUsePluginEnabled as isComputerUsePluginSettingEnabled,
 } from '@sync-think/protocol';
@@ -278,6 +283,7 @@ import {
   buildLocalCompactSummary,
   CHAT_AGENT_TOOL_NAMES,
   CHAT_BROWSER_TOOL_NAMES,
+  CHAT_BROWSER_WORKFLOW_TOOL_NAMES,
   CHAT_DESKTOP_TOOL_NAMES,
   CHAT_PLAN_TOOL_NAMES,
   CHAT_SKILL_TOOL_NAMES,
@@ -294,6 +300,7 @@ import {
   parseMcpProviderToolName,
   resolveToolLoopProviderPolicy,
   executeChatBuiltInTool,
+  executeChatBrowserWorkflowTool,
   executeChatDesktopTool,
   executeChatPlanTool,
   foldLongToolOutputsInMessages,
@@ -426,6 +433,11 @@ import {
   parseGetBrowserRecordingPayload,
   parseStartBrowserRecordingPayload,
   parseStopBrowserRecordingPayload,
+  parseListBrowserWorkflowsPayload,
+  parseGetBrowserWorkflowPayload,
+  parseCreateBrowserWorkflowDraftPayload,
+  parseSubmitBrowserWorkflowDraftPayload,
+  parseReviewBrowserWorkflowDraftPayload,
   parseListWaitingBrowserHandoffsPayload,
   parseContinueBrowserHandoffPayload,
   parseCancelBrowserHandoffPayload,
@@ -466,6 +478,10 @@ import {
   RuntimeBrowserRecordingError,
   RuntimeBrowserRecordingService,
 } from './browser/runtime-browser-recording-service.js';
+import {
+  RuntimeBrowserWorkflowError,
+  RuntimeBrowserWorkflowService,
+} from './browser/runtime-browser-workflow-service.js';
 import { RuntimeDesktopController } from './desktop/runtime-desktop-controller.js';
 
 import {
@@ -676,6 +692,7 @@ export class Runtime {
   private readonly browserController?: RuntimeBrowserController;
   private readonly browserProfileService?: RuntimeBrowserProfileService;
   private readonly browserRecordingService?: RuntimeBrowserRecordingService;
+  private readonly browserWorkflowService?: RuntimeBrowserWorkflowService;
   private readonly desktopController?: RuntimeDesktopController;
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
@@ -846,6 +863,14 @@ export class Runtime {
             host: opts.browserHost,
           })
         : undefined;
+    this.browserWorkflowService = opts.browserStore
+      ? new RuntimeBrowserWorkflowService({
+          store: opts.browserStore,
+          ...(this.browserProfileService
+            ? { listProfiles: () => this.browserProfileService!.listProfiles() }
+            : {}),
+        })
+      : undefined;
     this.desktopController = opts.desktopStore
       ? new RuntimeDesktopController({
           store: opts.desktopStore,
@@ -1285,6 +1310,26 @@ export class Runtime {
         }
         if (frame.type === 'browser.recording.stop') {
           this.trackBackgroundTask(this.handleStopBrowserRecording(socket, frame));
+          return;
+        }
+        if (frame.type === 'browser.workflow.list') {
+          this.handleListBrowserWorkflows(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.workflow.get') {
+          this.handleGetBrowserWorkflow(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.workflow.createDraft') {
+          this.handleCreateBrowserWorkflowDraft(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.workflow.submit') {
+          this.handleSubmitBrowserWorkflowDraft(socket, frame);
+          return;
+        }
+        if (frame.type === 'browser.workflow.review') {
+          this.handleReviewBrowserWorkflowDraft(socket, frame);
           return;
         }
         if (frame.type === 'desktop.command.listWaiting') {
@@ -6412,8 +6457,13 @@ export class Runtime {
     const networkEnabled = prepared.run.networkEnabled === true;
     const agentToolsEnabled = Boolean(this.globalAgentStore);
     const desktopToolsEnabled = this.isComputerUsePluginEnabled();
+    const browserWorkflowToolsEnabled = Boolean(this.browserWorkflowService);
     const toolsEnabled =
-      Boolean(workspaceRoot) || networkEnabled || agentToolsEnabled || desktopToolsEnabled;
+      Boolean(workspaceRoot) ||
+      networkEnabled ||
+      agentToolsEnabled ||
+      desktopToolsEnabled ||
+      browserWorkflowToolsEnabled;
     const snapshot = this.buildDefaultProviderContextSnapshot(prepared.run, {
       messages,
       toolsEnabled,
@@ -11811,8 +11861,13 @@ export class Runtime {
       // a bound project folder �?only a configured global agent store.
       const agentToolsEnabled = Boolean(this.globalAgentStore);
       const desktopToolsEnabled = this.isComputerUsePluginEnabled();
+      const browserWorkflowToolsEnabled = Boolean(this.browserWorkflowService);
       const toolsEnabled =
-        Boolean(workspaceRoot) || networkEnabled || agentToolsEnabled || desktopToolsEnabled;
+        Boolean(workspaceRoot) ||
+        networkEnabled ||
+        agentToolsEnabled ||
+        desktopToolsEnabled ||
+        browserWorkflowToolsEnabled;
       const pendingToolCalls: import('@sync-think/adapters').ProviderToolCall[] = [];
       let toolLoopRound = 0;
       const MAX_TOOL_ROUNDS = 8;
@@ -12111,6 +12166,7 @@ export class Runtime {
                 isChatToolAllowed(executionMode, toolCall.name, {
                   networkEnabled,
                   desktopEnabled: desktopCapabilityEnabled,
+                  browserWorkflowEnabled: Boolean(this.browserWorkflowService),
                 })
               ) {
                 const browserPermissionInput = {
@@ -12164,6 +12220,7 @@ export class Runtime {
                 isChatToolAllowed(executionMode, toolCall.name, {
                   networkEnabled,
                   desktopEnabled: desktopCapabilityEnabled,
+                  browserWorkflowEnabled: Boolean(this.browserWorkflowService),
                 })
               ) {
                 const permission = this.desktopController.evaluatePermission({
@@ -12232,7 +12289,8 @@ export class Runtime {
                   CHAT_AGENT_TOOL_NAMES.has(toolCall.name) ||
                   CHAT_SKILL_TOOL_NAMES.has(toolCall.name) ||
                   CHAT_TEAM_TOOL_NAMES.has(toolCall.name) ||
-                  CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name);
+                  CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name) ||
+                  CHAT_BROWSER_WORKFLOW_TOOL_NAMES.has(toolCall.name);
                 if (!workspaceRoot && !canRunWithoutWorkspace) {
                   const deniedText = JSON.stringify({
                     ok: false,
@@ -12280,6 +12338,7 @@ export class Runtime {
                 !isChatToolAllowed(executionMode, toolCall.name, {
                   networkEnabled,
                   desktopEnabled: desktopCapabilityEnabled,
+                  browserWorkflowEnabled: Boolean(this.browserWorkflowService),
                 })
               ) {
                 const deniedText = JSON.stringify({
@@ -12315,6 +12374,12 @@ export class Runtime {
                   workspaceRoot,
                   signal: abort.signal,
                   approval: browserApproval,
+                });
+              } else if (CHAT_BROWSER_WORKFLOW_TOOL_NAMES.has(toolCall.name)) {
+                resultText = executeChatBrowserWorkflowTool({
+                  toolName: toolCall.name,
+                  argumentsJson: toolCall.argumentsJson,
+                  service: this.browserWorkflowService!,
                 });
               } else if (CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name)) {
                 resultText = await this.executeChatDesktopWorkerTool({
@@ -15903,6 +15968,160 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
   }
 
+  private handleListBrowserWorkflows(socket: Socket, frame: Frame): void {
+    const payload = parseListBrowserWorkflowsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ListBrowserWorkflowsResponse = {
+        tasks: this.browserWorkflowService.listWorkflows(payload),
+      };
+      this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private handleGetBrowserWorkflow(socket: Socket, frame: Frame): void {
+    const payload = parseGetBrowserWorkflowPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: GetBrowserWorkflowResponse = this.browserWorkflowService.getWorkflow(payload);
+      this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private handleCreateBrowserWorkflowDraft(socket: Socket, frame: Frame): void {
+    const payload = parseCreateBrowserWorkflowDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: CreateBrowserWorkflowDraftResponse =
+        this.browserWorkflowService.createDraft(payload);
+      this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSubmitBrowserWorkflowDraft(socket: Socket, frame: Frame): void {
+    const payload = parseSubmitBrowserWorkflowDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: SubmitBrowserWorkflowDraftResponse =
+        this.browserWorkflowService.submitDraft(payload);
+      this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private handleReviewBrowserWorkflowDraft(socket: Socket, frame: Frame): void {
+    const payload = parseReviewBrowserWorkflowDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.browserWorkflowService) {
+      this.writeBrowserWorkflowUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ReviewBrowserWorkflowDraftResponse =
+        this.browserWorkflowService.reviewDraft(payload);
+      this.writeBrowserWorkflowResponse(socket, frame, response);
+    } catch (error) {
+      this.writeBrowserWorkflowCommandError(socket, frame, error);
+    }
+  }
+
+  private writeBrowserWorkflowResponse(socket: Socket, frame: Frame, payload: unknown): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload,
+      }),
+    );
+  }
+
+  private writeBrowserWorkflowUnavailable(socket: Socket, frame: Frame): void {
+    this.writeBrowserWorkflowCommandError(
+      socket,
+      frame,
+      new RuntimeBrowserWorkflowError(
+        'browser.workflow-unavailable',
+        'Browser workflow storage is not configured on this Runtime.',
+      ),
+    );
+  }
+
+  private writeBrowserWorkflowCommandError(socket: Socket, frame: Frame, error: unknown): void {
+    const rawCode = browserWorkflowErrorCode(error);
+    const codeByInternalCode: Record<string, (typeof ErrorCode)[keyof typeof ErrorCode]> = {
+      'browser.workflow-not-found': ErrorCode.BROWSER_WORKFLOW_NOT_FOUND,
+      'browser.workflow_not_found': ErrorCode.BROWSER_WORKFLOW_NOT_FOUND,
+      'browser.task_not_found': ErrorCode.BROWSER_WORKFLOW_NOT_FOUND,
+      'browser.workflow_draft_not_found': ErrorCode.BROWSER_WORKFLOW_NOT_FOUND,
+      'browser.workflow_version_not_found': ErrorCode.BROWSER_WORKFLOW_NOT_FOUND,
+      'browser.recording_not_found': ErrorCode.BROWSER_RECORDING_NOT_FOUND,
+      'browser.profile_not_found': ErrorCode.BROWSER_PROFILE_NOT_FOUND,
+      'browser.workflow-conflict': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
+      'browser.workflow_draft_state_conflict': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
+      'browser.workflow_recording_mismatch': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
+      'browser.workflow_recording_profile_mismatch': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
+      'browser.workflow_recording_not_stopped': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
+      'browser.workflow_steps_empty': ErrorCode.BROWSER_WORKFLOW_CONFLICT,
+    };
+    const code =
+      (rawCode ? codeByInternalCode[rawCode] : undefined) ??
+      ErrorCode.BROWSER_WORKFLOW_OPERATION_FAILED;
+    const message = error instanceof Error ? error.message : 'Browser workflow command failed.';
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code,
+          message: message
+            .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+            .replace(/Bearer\s+[A-Za-z0-9._~\-+/=]+/gi, 'Bearer [REDACTED]'),
+        },
+      }),
+    );
+  }
+
   private handleListWaitingBrowserHandoffs(socket: Socket, frame: Frame): void {
     const payload = parseListWaitingBrowserHandoffsPayload(frame.payload);
     if (!payload) {
@@ -16317,18 +16536,23 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
     const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
     const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
+    const browserWorkflowToolsEnabled = Boolean(
+      options.toolsEnabled && this.browserWorkflowService,
+    );
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
         networkEnabled ||
         agentToolsEnabled ||
         desktopToolsEnabled ||
+        browserWorkflowToolsEnabled ||
         mcpExtra.tools.length > 0)
         ? toolsForExecutionMode(executionMode, {
             networkEnabled,
             includeProjectTools: hasProjectTools,
             includeAgentTools: agentToolsEnabled,
             includeDesktopTools: desktopToolsEnabled,
+            includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
             extraTools: mcpExtra.tools,
           })
         : undefined;
@@ -16392,10 +16616,23 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       '- Titles: short imperative Chinese, ≤20 chars. Do not use it for trivial single-step answers.',
       '- This tool only updates the progress UI — it never touches files and needs no approval.',
     ].join('\n');
+    const browserWorkflowPrompt = browserWorkflowToolsEnabled
+      ? [
+          'Browser Automation Workflow tools are ENABLED (browser_workflow_list, browser_workflow_get, browser_workflow_create_draft):',
+          '- When the user asks which browser tasks/workflows exist, call browser_workflow_list. Automation tasks are stored Workflows, not open browser windows and not Browser Recording sessions.',
+          '- browser_workflow_create_draft creates only an AI-source Draft. It does not operate the browser, record steps, submit review, approve, or publish.',
+          '- After creating a Draft, tell the user to open「浏览器自动化」, record the workflow, submit it for review, and approve it before an immutable WorkflowVersion is published.',
+          '- Never bypass the review flow or claim a Draft is recorded/published.',
+          executionMode === 'ask'
+            ? '- Permission mode is ask: creating a Draft pauses for user approval; list/get remain read-only.'
+            : '- Permission mode is workspace/full-access: creating a Draft executes directly, while recording and publish review remain separate product gates.',
+        ].join('\n')
+      : 'Browser Automation Workflow tools are unavailable in this Runtime.';
     const productBoundaryPrompt = [
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
       agentCreationPrompt,
       planToolPrompt,
+      browserWorkflowPrompt,
       '- Prefer built-in tools list_files / read_file / git_status / git_diff. Do not call rg/ripgrep/fd/ag — they are often missing on Windows and will fail with ENOENT.',
       '- If a tool fails as unavailable, do not retry the same command; change approach or answer with what you already know.',
       '- Avoid long pure-exploration loops. After a few targeted looks, give the user a useful answer.',
@@ -16493,12 +16730,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
     const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
     const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
+    const browserWorkflowToolsEnabled = Boolean(
+      options.toolsEnabled && this.browserWorkflowService,
+    );
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
         networkEnabled ||
         agentToolsEnabled ||
         desktopToolsEnabled ||
+        browserWorkflowToolsEnabled ||
         mcpExtra.tools.length > 0)
         ? [
             ...toolsForExecutionMode(executionMode, {
@@ -16506,6 +16747,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               includeProjectTools: hasProjectTools,
               includeAgentTools: agentToolsEnabled,
               includeDesktopTools: desktopToolsEnabled,
+              includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
               extraTools: mcpExtra.tools,
             }),
           ]
@@ -17306,6 +17548,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
 function browserRecordingErrorCode(error: unknown): string | undefined {
   if (error instanceof RuntimeBrowserRecordingError) return error.code;
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = String((error as { code?: unknown }).code ?? '').trim();
+    if (code) return code;
+  }
+  if (error instanceof Error) {
+    const match = /^(browser\.[a-z0-9._-]{1,120})(?::|$)/u.exec(error.message.trim());
+    return match?.[1];
+  }
+  return undefined;
+}
+
+function browserWorkflowErrorCode(error: unknown): string | undefined {
+  if (error instanceof RuntimeBrowserWorkflowError) return error.code;
   if (error && typeof error === 'object' && 'code' in error) {
     const code = String((error as { code?: unknown }).code ?? '').trim();
     if (code) return code;

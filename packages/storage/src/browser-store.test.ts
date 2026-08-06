@@ -14,6 +14,7 @@ afterEach(() => {
 
 async function openStore(): Promise<{
   store: SqliteBrowserStore;
+  raw: Awaited<ReturnType<typeof openDatabaseAsync>>['raw'];
   close(): void;
 }> {
   const root = mkdtempSync(join(tmpdir(), 'sync-think-browser-store-'));
@@ -23,6 +24,7 @@ async function openStore(): Promise<{
   const connection = await openDatabaseAsync({ path });
   return {
     store: new SqliteBrowserStore(connection.raw),
+    raw: connection.raw,
     close: () => connection.raw.close(),
   };
 }
@@ -49,6 +51,52 @@ function reserveCompletedBrowserCommand(store: SqliteBrowserStore) {
     { leaseId: 'lease-1', pageId: 'page-1' },
     '2026-07-31T00:00:03.000Z',
   );
+}
+
+function createStoppedRecording(
+  store: SqliteBrowserStore,
+  input: {
+    id: string;
+    profileId?: string;
+    startUrl?: string;
+    now: string;
+  },
+) {
+  const profileId = input.profileId ?? 'default';
+  const recording = store.createRecording({
+    id: input.id,
+    profileId,
+    ownerId: `recording:${input.id}`,
+    expectedProfileRevision: store.getProfile(profileId)?.revision ?? 1,
+    startUrl: input.startUrl ?? 'https://example.test/start',
+    now: input.now,
+  });
+  store.markRecordingStarted({
+    id: recording.id,
+    leaseId: `lease-${input.id}`,
+    pageId: `page-${input.id}`,
+    currentUrl: input.startUrl ?? 'https://example.test/start',
+    now: input.now,
+  });
+  store.appendRecordingStep({
+    recordingId: recording.id,
+    step: { kind: 'navigate', url: input.startUrl ?? 'https://example.test/start' },
+    recordedAt: input.now,
+  });
+  store.appendRecordingStep({
+    recordingId: recording.id,
+    step: {
+      kind: 'click',
+      locator: { strategy: 'role', role: 'button', name: 'Continue' },
+    },
+    recordedAt: input.now,
+  });
+  store.beginRecordingStop(recording.id, { stopReason: 'user', now: input.now });
+  return store.finishRecording(recording.id, {
+    status: 'stopped',
+    stopReason: 'user',
+    now: input.now,
+  });
 }
 
 describe('SqliteBrowserStore durable human handoff', () => {
@@ -620,6 +668,319 @@ describe('SqliteBrowserStore durable Browser recordings', () => {
       expect(
         fixture.store.listRecordingSteps(recording.id, { afterSequence: 0, limit: 200 }),
       ).toEqual([]);
+    } finally {
+      fixture.close();
+    }
+  });
+});
+
+describe('SqliteBrowserStore Browser automation workflow lifecycle', () => {
+  it('creates searchable manual and AI task drafts with profile and status filters', async () => {
+    const fixture = await openStore();
+    try {
+      const workProfile = fixture.store.createProfile({
+        id: 'profile-workflow',
+        name: 'Workflow profile',
+        now: '2026-08-05T04:00:00.000Z',
+      });
+      const manual = fixture.store.createAutomationTaskDraft({
+        id: 'browser-task-manual',
+        draftId: 'browser-draft-manual',
+        profileId: 'default',
+        name: 'Publish weekly report',
+        instruction: 'Open the report page and publish the newest draft.',
+        startUrl: 'https://reports.example.test/drafts',
+        source: 'manual',
+        now: '2026-08-05T04:01:00.000Z',
+      });
+      fixture.store.createAutomationTaskDraft({
+        id: 'browser-task-ai',
+        draftId: 'browser-draft-ai',
+        profileId: workProfile.id,
+        name: 'Check support inbox',
+        instruction: 'Review the support inbox and open urgent conversations.',
+        startUrl: 'https://support.example.test/inbox',
+        source: 'ai',
+        now: '2026-08-05T04:02:00.000Z',
+      });
+
+      expect(manual).toMatchObject({
+        task: {
+          id: 'browser-task-manual',
+          currentDraftId: 'browser-draft-manual',
+          status: 'draft',
+          source: 'manual',
+        },
+        draft: {
+          id: 'browser-draft-manual',
+          taskId: 'browser-task-manual',
+          status: 'editing',
+          stepCount: 0,
+          steps: [],
+        },
+      });
+      expect(fixture.store.listAutomationTasks({ query: 'support' })).toMatchObject([
+        { id: 'browser-task-ai', profileId: workProfile.id },
+      ]);
+      expect(
+        fixture.store.listAutomationTasks({ profileId: 'default', status: 'draft' }),
+      ).toMatchObject([{ id: 'browser-task-manual' }]);
+      expect(fixture.store.getAutomationTask('browser-task-manual')).toEqual(manual.task);
+      expect(fixture.store.getWorkflowDraft('browser-draft-manual')).toEqual(manual.draft);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('freezes stopped recording steps for review, supports rework, and publishes one immutable version', async () => {
+    const fixture = await openStore();
+    try {
+      const created = fixture.store.createAutomationTaskDraft({
+        id: 'browser-task-review',
+        draftId: 'browser-draft-review',
+        profileId: 'default',
+        name: 'Submit expense form',
+        instruction: 'Open the expense form, fill the approved values, and submit it.',
+        startUrl: 'https://expenses.example.test/new',
+        source: 'ai',
+        now: '2026-08-05T05:00:00.000Z',
+      });
+      const recording = createStoppedRecording(fixture.store, {
+        id: 'recording-workflow-review',
+        startUrl: created.task.startUrl,
+        now: '2026-08-05T05:01:00.000Z',
+      });
+      expect(
+        fixture.store.attachWorkflowDraftRecording({
+          draftId: created.draft.id,
+          recordingId: recording.id,
+          now: '2026-08-05T05:01:30.000Z',
+        }),
+      ).toMatchObject({
+        recordingId: recording.id,
+        status: 'editing',
+        stepCount: 0,
+      });
+
+      const submitted = fixture.store.submitWorkflowDraft({
+        draftId: created.draft.id,
+        recordingId: recording.id,
+        now: '2026-08-05T05:02:00.000Z',
+      });
+      expect(submitted).toMatchObject({
+        task: { status: 'pending_review' },
+        draft: {
+          status: 'pending_review',
+          recordingId: recording.id,
+          stepCount: 2,
+        },
+      });
+      expect(
+        fixture.store.submitWorkflowDraft({
+          draftId: created.draft.id,
+          recordingId: recording.id,
+          now: '2026-08-05T05:02:30.000Z',
+        }),
+      ).toEqual(submitted);
+
+      const rejected = fixture.store.reviewWorkflowDraft({
+        draftId: created.draft.id,
+        decision: 'reject',
+        note: 'Use the final submit button rather than the preview action.',
+        now: '2026-08-05T05:03:00.000Z',
+      });
+      expect(rejected).toMatchObject({
+        task: { status: 'draft' },
+        draft: { status: 'rejected' },
+      });
+
+      expect(() =>
+        fixture.store.submitWorkflowDraft({
+          draftId: created.draft.id,
+          recordingId: recording.id,
+          now: '2026-08-05T05:03:30.000Z',
+        }),
+      ).toThrow('browser.workflow_draft_state_conflict');
+
+      const rerecording = createStoppedRecording(fixture.store, {
+        id: 'recording-workflow-review-rework',
+        startUrl: created.task.startUrl,
+        now: '2026-08-05T05:04:00.000Z',
+      });
+      const reboundDraft = fixture.store.attachWorkflowDraftRecording({
+        draftId: created.draft.id,
+        recordingId: rerecording.id,
+        now: '2026-08-05T05:04:30.000Z',
+      });
+      expect(reboundDraft).toMatchObject({
+        recordingId: rerecording.id,
+        status: 'editing',
+        stepCount: 0,
+      });
+      expect(reboundDraft).not.toHaveProperty('submittedAt');
+      expect(reboundDraft).not.toHaveProperty('reviewedAt');
+      const resubmitted = fixture.store.submitWorkflowDraft({
+        draftId: created.draft.id,
+        recordingId: rerecording.id,
+        now: '2026-08-05T05:05:00.000Z',
+      });
+      expect(resubmitted.draft.status).toBe('pending_review');
+
+      const approved = fixture.store.reviewWorkflowDraft({
+        draftId: created.draft.id,
+        decision: 'approve',
+        note: 'Approved after rework.',
+        now: '2026-08-05T05:06:00.000Z',
+      });
+      expect(approved).toMatchObject({
+        task: {
+          status: 'enabled',
+          publishedVersionId: expect.stringMatching(/^browser-version-/),
+        },
+        draft: { status: 'approved', stepCount: 2 },
+        version: {
+          taskId: created.task.id,
+          draftId: created.draft.id,
+          versionNumber: 1,
+          stepCount: 2,
+        },
+      });
+      expect(
+        fixture.store.reviewWorkflowDraft({
+          draftId: created.draft.id,
+          decision: 'approve',
+          now: '2026-08-05T05:07:00.000Z',
+        }),
+      ).toEqual(approved);
+      expect(fixture.store.getWorkflowVersion(approved.version!.id)).toEqual(approved.version);
+      expect(() =>
+        fixture.raw
+          .prepare('UPDATE browser_workflow_version SET step_count = 1 WHERE id = ?')
+          .run(approved.version!.id),
+      ).toThrow('browser.workflow-version-immutable');
+      expect(() =>
+        fixture.raw
+          .prepare('DELETE FROM browser_workflow_version WHERE id = ?')
+          .run(approved.version!.id),
+      ).toThrow('browser.workflow-version-immutable');
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('rejects submission until the recording has stopped and contains durable steps', async () => {
+    const fixture = await openStore();
+    try {
+      const created = fixture.store.createAutomationTaskDraft({
+        id: 'browser-task-active-recording',
+        draftId: 'browser-draft-active-recording',
+        profileId: 'default',
+        name: 'Active recording guard',
+        instruction: 'Capture the browser flow after it has completed.',
+        startUrl: 'https://example.test/active',
+        source: 'manual',
+      });
+      const recording = fixture.store.createRecording({
+        id: 'recording-active-workflow',
+        profileId: 'default',
+        ownerId: 'recording:recording-active-workflow',
+        expectedProfileRevision: 1,
+        startUrl: created.task.startUrl,
+      });
+      fixture.store.markRecordingStarted({
+        id: recording.id,
+        leaseId: 'lease-active-workflow',
+        pageId: 'page-active-workflow',
+      });
+      fixture.store.appendRecordingStep({
+        recordingId: recording.id,
+        step: { kind: 'navigate', url: created.task.startUrl },
+      });
+      fixture.store.attachWorkflowDraftRecording({
+        draftId: created.draft.id,
+        recordingId: recording.id,
+      });
+
+      expect(() =>
+        fixture.store.submitWorkflowDraft({
+          draftId: created.draft.id,
+          recordingId: recording.id,
+        }),
+      ).toThrow('browser.workflow_recording_not_stopped');
+      expect(fixture.store.getWorkflowDraft(created.draft.id)).toMatchObject({
+        status: 'editing',
+        stepCount: 0,
+      });
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it('binds only matching recordings to editable drafts and blocks rebinding terminal review states', async () => {
+    const fixture = await openStore();
+    try {
+      const created = fixture.store.createAutomationTaskDraft({
+        id: 'browser-task-recording-binding',
+        draftId: 'browser-draft-recording-binding',
+        profileId: 'default',
+        name: 'Recording binding guard',
+        instruction: 'Bind only the recording started for this exact workflow draft.',
+        startUrl: 'https://example.test/binding',
+        source: 'manual',
+      });
+      const otherProfile = fixture.store.createProfile({
+        id: 'browser-profile-other',
+        name: 'Other Profile',
+      });
+      const wrongProfileRecording = fixture.store.createRecording({
+        id: 'recording-wrong-profile',
+        profileId: otherProfile.id,
+        ownerId: 'recording:recording-wrong-profile',
+        expectedProfileRevision: otherProfile.revision,
+      });
+      expect(() =>
+        fixture.store.attachWorkflowDraftRecording({
+          draftId: created.draft.id,
+          recordingId: wrongProfileRecording.id,
+        }),
+      ).toThrow('browser.workflow_recording_profile_mismatch');
+
+      const recording = createStoppedRecording(fixture.store, {
+        id: 'recording-binding-review',
+        startUrl: created.task.startUrl,
+        now: '2026-08-05T06:00:00.000Z',
+      });
+      fixture.store.attachWorkflowDraftRecording({
+        draftId: created.draft.id,
+        recordingId: recording.id,
+      });
+      expect(() =>
+        fixture.store.submitWorkflowDraft({
+          draftId: created.draft.id,
+          recordingId: wrongProfileRecording.id,
+        }),
+      ).toThrow('browser.workflow_recording_mismatch');
+      fixture.store.submitWorkflowDraft({
+        draftId: created.draft.id,
+        recordingId: recording.id,
+      });
+      expect(() =>
+        fixture.store.attachWorkflowDraftRecording({
+          draftId: created.draft.id,
+          recordingId: recording.id,
+        }),
+      ).toThrow('browser.workflow_draft_state_conflict');
+
+      fixture.store.reviewWorkflowDraft({
+        draftId: created.draft.id,
+        decision: 'approve',
+      });
+      expect(() =>
+        fixture.store.attachWorkflowDraftRecording({
+          draftId: created.draft.id,
+          recordingId: recording.id,
+        }),
+      ).toThrow('browser.workflow_draft_state_conflict');
     } finally {
       fixture.close();
     }

@@ -132,6 +132,7 @@ export type BrowserRecordingTerminationReason =
 export interface BrowserPageRecordingOptions {
   maxSteps: number;
   onMutation(mutation: BrowserRecordingMutation): void | Promise<void>;
+  onStopRequested(): void | Promise<void>;
   onTerminated(reason: BrowserRecordingTerminationReason): void | Promise<void>;
 }
 
@@ -214,6 +215,7 @@ export interface BrowserHostLike {
     startUrl?: string;
     maxSteps: number;
     onMutation(mutation: BrowserRecordingMutation): void | Promise<void>;
+    onStopRequested(): void | Promise<void>;
     onTerminated(reason: BrowserRecordingTerminationReason): void | Promise<void>;
   }): Promise<void>;
   stopRecording?(leaseId: string): Promise<void>;
@@ -503,6 +505,7 @@ export class BrowserHost implements BrowserHostLike {
     startUrl?: string;
     maxSteps: number;
     onMutation(mutation: BrowserRecordingMutation): void | Promise<void>;
+    onStopRequested(): void | Promise<void>;
     onTerminated(reason: BrowserRecordingTerminationReason): void | Promise<void>;
   }): Promise<void> {
     const lease = this.leases.get(input.leaseId);
@@ -559,6 +562,10 @@ export class BrowserHost implements BrowserHostLike {
           onMutation: async (mutation) => {
             if (this.recordingTerminations.get(lease.leaseId) !== terminate) return;
             await input.onMutation(normalizeBrowserRecordingMutation(mutation));
+          },
+          onStopRequested: () => {
+            if (this.recordingTerminations.get(lease.leaseId) !== terminate) return;
+            void Promise.resolve(input.onStopRequested()).catch(() => undefined);
           },
           onTerminated: terminate,
         });
@@ -1701,31 +1708,31 @@ function browserCandidates(
     if (base) candidates.push({ kind, executablePath: join(base, ...parts) });
   };
   if (platform === 'win32') {
-    add('edge', env['ProgramFiles(x86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe');
-    add('edge', env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe');
-    add('edge', env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe');
     add('chrome', env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe');
     add('chrome', env.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe');
     add('chrome', env['ProgramFiles(x86)'], 'Google', 'Chrome', 'Application', 'chrome.exe');
+    add('edge', env['ProgramFiles(x86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe');
+    add('edge', env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe');
+    add('edge', env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe');
   } else if (platform === 'darwin') {
     candidates.push(
-      {
-        kind: 'edge',
-        executablePath: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-      },
       {
         kind: 'chrome',
         executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
       },
+      {
+        kind: 'edge',
+        executablePath: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      },
     );
   } else {
     candidates.push(
-      { kind: 'edge', executablePath: '/usr/bin/microsoft-edge' },
-      { kind: 'edge', executablePath: '/usr/bin/microsoft-edge-stable' },
       { kind: 'chrome', executablePath: '/usr/bin/google-chrome' },
       { kind: 'chrome', executablePath: '/usr/bin/google-chrome-stable' },
       { kind: 'chrome', executablePath: '/usr/bin/chromium' },
       { kind: 'chrome', executablePath: '/usr/bin/chromium-browser' },
+      { kind: 'edge', executablePath: '/usr/bin/microsoft-edge' },
+      { kind: 'edge', executablePath: '/usr/bin/microsoft-edge-stable' },
     );
   }
   return candidates;
@@ -2407,6 +2414,14 @@ export function browserRecordingInstallScript(bindingName: string, captureToken:
     const binding = globalThis[${serializedBindingName}];
     if (typeof binding !== 'function') return;
     const timers = new Map();
+    let overlayHost = null;
+    let overlayTimer = null;
+    let overlayMountPending = false;
+    let overlayStartedAt = Date.now();
+    let overlayStepCount = 0;
+    let overlayStepNode = null;
+    let overlayDurationNode = null;
+    let overlayStopButton = null;
     const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 512);
     const escapeCss = (value) => globalThis.CSS?.escape
       ? globalThis.CSS.escape(String(value))
@@ -2496,7 +2511,110 @@ export function browserRecordingInstallScript(bindingName: string, captureToken:
         element.labels?.[0]?.innerText
       ].map(clean).join(' '));
     };
-    const emit = (payload) => Promise.resolve(binding({ ...payload, captureToken: recordingToken })).catch(() => undefined);
+    const renderDuration = () => {
+      if (!overlayDurationNode) return;
+      const elapsed = Math.max(0, Math.floor((Date.now() - overlayStartedAt) / 1000));
+      const minutes = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const seconds = String(elapsed % 60).padStart(2, '0');
+      overlayDurationNode.textContent = minutes + ':' + seconds;
+    };
+    const renderStepCount = () => {
+      if (overlayStepNode) overlayStepNode.textContent = String(overlayStepCount);
+    };
+    const emit = (payload) => Promise.resolve(binding({ ...payload, captureToken: recordingToken }))
+      .then((result) => {
+        if (payload.kind !== 'control-stop') {
+          const nextCount = Number(result?.stepCount);
+          overlayStepCount = Number.isFinite(nextCount)
+            ? Math.max(overlayStepCount, nextCount)
+            : overlayStepCount + 1;
+          renderStepCount();
+        }
+        return result;
+      })
+      .catch(() => undefined);
+    const mountOverlay = () => {
+      if (overlayHost || typeof document.createElement !== 'function') return;
+      if (!document.documentElement) {
+        if (!overlayMountPending) {
+          overlayMountPending = true;
+          document.addEventListener('DOMContentLoaded', mountOverlay, { once: true });
+        }
+        return;
+      }
+      if (overlayMountPending) {
+        document.removeEventListener('DOMContentLoaded', mountOverlay);
+        overlayMountPending = false;
+      }
+      overlayHost = document.createElement('div');
+      overlayHost.id = '__sync-think-recording-overlay';
+      overlayHost.style.cssText = 'all:initial;position:fixed;right:18px;bottom:18px;z-index:2147483647;';
+      const root = overlayHost.attachShadow?.({ mode: 'closed' }) || overlayHost;
+      const panel = document.createElement('div');
+      panel.setAttribute('role', 'status');
+      panel.style.cssText = [
+        'display:flex',
+        'align-items:center',
+        'gap:12px',
+        'min-width:260px',
+        'box-sizing:border-box',
+        'padding:12px 12px 12px 14px',
+        'border:1px solid rgba(255,255,255,.14)',
+        'border-radius:14px',
+        'background:rgba(20,22,28,.94)',
+        'box-shadow:0 18px 50px rgba(0,0,0,.34)',
+        'backdrop-filter:blur(16px)',
+        'color:#f8fafc',
+        'font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
+      ].join(';');
+      const dot = document.createElement('span');
+      dot.style.cssText = 'width:9px;height:9px;border-radius:999px;background:#ff4d5e;box-shadow:0 0 0 5px rgba(255,77,94,.14);flex:none;';
+      const copy = document.createElement('div');
+      copy.style.cssText = 'display:flex;min-width:0;flex:1;flex-direction:column;gap:2px;';
+      const title = document.createElement('strong');
+      title.textContent = 'SYNC-THINK 录制中';
+      title.style.cssText = 'font-size:13px;font-weight:650;color:#fff;';
+      const meta = document.createElement('span');
+      meta.style.cssText = 'font-size:11px;color:#aeb6c4;';
+      overlayDurationNode = document.createElement('span');
+      overlayStepNode = document.createElement('span');
+      overlayStepNode.textContent = '0';
+      meta.append(overlayDurationNode, document.createTextNode(' · '), overlayStepNode, document.createTextNode(' 步'));
+      copy.append(title, meta);
+      overlayStopButton = document.createElement('button');
+      overlayStopButton.type = 'button';
+      overlayStopButton.textContent = '结束录制';
+      overlayStopButton.style.cssText = [
+        'appearance:none',
+        'border:1px solid rgba(255,255,255,.16)',
+        'border-radius:9px',
+        'background:#f8fafc',
+        'color:#17191f',
+        'padding:7px 10px',
+        'font:600 12px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+        'cursor:pointer'
+      ].join(';');
+      overlayStopButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (overlayStopButton.disabled) return;
+        overlayStopButton.disabled = true;
+        overlayStopButton.textContent = '正在结束…';
+        overlayStopButton.style.cursor = 'wait';
+        void emit({ kind: 'control-stop' }).then((result) => {
+          if (result?.accepted !== false) return;
+          overlayStopButton.disabled = false;
+          overlayStopButton.textContent = '结束录制';
+          overlayStopButton.style.cursor = 'pointer';
+        });
+      }, true);
+      panel.append(dot, copy, overlayStopButton);
+      root.append(panel);
+      document.documentElement.append(overlayHost);
+      renderDuration();
+      renderStepCount();
+      overlayTimer = setInterval(renderDuration, 1000);
+    };
     const targetFrom = (event) => {
       const target = event.composedPath?.()[0] || event.target;
       return target instanceof Element ? target : null;
@@ -2541,6 +2659,7 @@ export function browserRecordingInstallScript(bindingName: string, captureToken:
     };
     const onClick = (event) => {
       if (!event.isTrusted) return;
+      if (overlayStopButton && event.composedPath?.().includes(overlayStopButton)) return;
       const element = targetFrom(event)?.closest?.('button,a,input[type="button"],input[type="submit"],input[type="reset"],[role="button"],[role="link"]');
       const locator = element ? locatorFor(element) : null;
       if (locator) emit({ kind: 'click', locator });
@@ -2556,6 +2675,7 @@ export function browserRecordingInstallScript(bindingName: string, captureToken:
     document.addEventListener('change', onChange, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('keydown', onKeyDown, true);
+    mountOverlay();
     globalThis.__syncThinkRecorder = {
       bindingName: ${serializedBindingName},
       async uninstall(token) {
@@ -2564,6 +2684,14 @@ export function browserRecordingInstallScript(bindingName: string, captureToken:
         document.removeEventListener('change', onChange, true);
         document.removeEventListener('click', onClick, true);
         document.removeEventListener('keydown', onKeyDown, true);
+        if (overlayMountPending) {
+          document.removeEventListener('DOMContentLoaded', mountOverlay);
+          overlayMountPending = false;
+        }
+        if (overlayTimer) clearInterval(overlayTimer);
+        overlayTimer = null;
+        overlayHost?.remove?.();
+        overlayHost = null;
         const pending = [];
         for (const [element, timer] of timers) {
           clearTimeout(timer);
@@ -2703,9 +2831,20 @@ export class PlaywrightDriverPage implements BrowserDriverPage {
     try {
       await this.page.exposeBinding(bindingName, async (source, payload: unknown) => {
         if (source.frame !== this.page.mainFrame() || !state.accepting) return;
+        if (
+          payload &&
+          typeof payload === 'object' &&
+          !Array.isArray(payload) &&
+          (payload as Record<string, unknown>).captureToken === captureToken &&
+          (payload as Record<string, unknown>).kind === 'control-stop'
+        ) {
+          void Promise.resolve(state.options.onStopRequested()).catch(() => undefined);
+          return { accepted: true, stepCount: state.stepCount };
+        }
         const step = projectBrowserRecordingDomEvent(payload, captureToken);
         if (step) this.queueRecordingStep(state, step);
         await state.mutationTail;
+        return { accepted: Boolean(step), stepCount: state.stepCount };
       });
       this.page.on('framenavigated', state.navigationHandler);
       const installScript = browserRecordingInstallScript(bindingName, captureToken);

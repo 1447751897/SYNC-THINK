@@ -250,6 +250,7 @@ async function openLegacyConflictStore() {
       '0035_review_image_selection_freeze',
       '0036_browser_profile_site_sessions',
       '0037_browser_recording',
+      '0038_browser_automation_workflow',
     ]);
     await runMigrations(dbPath);
   } finally {

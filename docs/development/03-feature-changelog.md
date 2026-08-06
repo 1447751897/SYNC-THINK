@@ -2510,3 +2510,14 @@ Desktop typecheck/build：passed
 - 根 `pnpm test --force --concurrency=1` 最终为 20/20 Turbo tasks、0 cached，确认全部标准测试入口在本轮源码上通过。
 - 真实 Edge 验收在 `.data/local-restart-20260805-204946-browser-recording-final` 通过：正常录制 10 步并覆盖六类动作，刷新/清除后可再次录制，关页形成 `interrupted/page_closed`，Profile 删除后无活动录制、站点摘要、Profile 目录、metadata 或相关 Edge 进程。
 - SQLite 和 UI 均未出现测试密码、敏感富文本或 URL userinfo/query/hash；三张 1424x861 截图无页面级溢出。最新 Electron `3452`、Runtime `33812` 保持运行；未生成安装包，未提交、未推送。
+
+## 2026-08-05 · Browser Automation Studio P1.3 第一切片：任务、审核与不可变版本
+
+- 新增迁移 `0038_browser_automation_workflow`，以 `browser_automation_task`、`browser_workflow_draft`、`browser_workflow_review` 和 `browser_workflow_version` 建立 Task → Draft → Review → Version 状态机；WorkflowVersion 由 SQLite trigger 保证不可更新或删除。
+- 新增 `browser.workflow.{list,get,createDraft,submit,review}` Runtime 命令及 Desktop Main/Preload/Renderer 严格接线。只有已停止、至少一步且 Profile 匹配的录制可提交；驳回后可重新录制，批准后发布递增编号的不可变 `Vn`。
+- Browser 页面默认进入“自动化任务”，支持搜索、手动创建、“让 AI 创建”、录制上下文、提交审核、查看脱敏步骤、驳回重录、批准发布和不可变版本详情；已发布任务暂不展示运行或调度入口。
+- 对话新增 `browser_workflow_list`、`browser_workflow_get`、`browser_workflow_create_draft`。AI 只创建 `source=ai` Draft；`ask` 模式保留普通工具审批，`workspace/full-access` 可直接创建 Draft，但所有模式都必须由用户在任务页显式审核发布。
+- BrowserHost 改为显式 executable → Chrome → Edge 的发现顺序。录制页面右下角注入 closed Shadow DOM 浮层，实时显示 `MM:SS · N 步` 并允许点击“结束录制”；浮层交互不会进入录制步骤。
+- 当前切片只完成任务治理和版本冻结。固定值、运行变量、秘密引用编辑与确定性回放仍属 P1.3 后续；运行历史、失败定位、登录 handoff 和定时任务留在 P1.4/P1.5。
+- 最终包级结果：Storage 36 files / 387 tests、Workers 15 files / 124 passed / 3 skipped、Runtime 76 files / 490 tests、Desktop 135 files / 915 tests；根 typecheck 20/20、lint 11/11、design tokens、强制 build 11/11（0 cached）和 `git diff --check` 通过。
+- 2026-08-05 22:46 +08:00 已使用隔离目录 `.data/local-restart-20260805-224600-browser-workflow-p13` 重启最新源码：Electron PID `8144`、Runtime PID `102992`，Pipe healthcheck 正常、窗口响应且 stderr 为空。未生成安装包，未提交、未推送。

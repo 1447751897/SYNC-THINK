@@ -257,6 +257,8 @@ M1 完成日期：2026-07-15（用户将 dogfood 门槛改为 1 天；有效 1/1
   - [x] P1.1：Runtime Profile 真源、脱敏站点会话清单、按站点清除与完整 Profile 删除。
   - [x] P1.2：专用系统浏览器语义动作录制、实时脱敏步骤流、异常终态恢复与停止后清理。
   - [ ] P1.3：WorkflowVersion、固定值/运行变量/秘密引用、编辑和确定性回放。
+    - [x] 第一切片：自动化 Task、手动/AI Draft、录制提交、人类审核、驳回重录与不可变 WorkflowVersion；Browser 默认任务页、Chrome-first 和网页录制浮层同步完成。
+    - [ ] 后续切片：步骤编辑、固定值/运行变量/秘密引用绑定，以及已发布 WorkflowVersion 的确定性回放。
   - [ ] P1.4：运行历史、逐步日志/截图、失败定位与登录 handoff。
   - [ ] P1.5：手动启停的定时任务；条件、循环与 AI 自修复留在 P2。
 - [x] Windows UI Automation Worker 与人工接管回退。

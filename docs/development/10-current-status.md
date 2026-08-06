@@ -509,3 +509,26 @@
 
 1. P1.3：把确认后的录制草稿冻结为 WorkflowVersion，增加固定值/运行变量/秘密引用、编辑和确定性回放。
 2. P1.4/P1.5 继续负责运行历史、失败定位、登录 handoff 与手动启停定时任务；P1.2 草稿本身仍不可调度执行。
+
+## 当前状态：2026-08-05 22:46 +08:00 · Browser Automation Studio P1.3 第一切片最终构建与重启
+
+### 当前结论
+
+- Browser 页默认视图已切换为“自动化任务”，支持手动/AI 创建 Task Draft、进入录制工作区、提交审核、驳回重录和批准发布不可变 `WorkflowVersion`。
+- 自动化生命周期真源为 SQLite 的 Task/Draft/Review/Version；批准后的版本不可更新或删除。当前版本冻结的是脱敏语义步骤，尚未接入确定性执行器。
+- BrowserHost 已改为 Chrome 优先、Edge 回退；录制页面右下角提供“录制中”浮层、时长、步骤数和“结束录制”按钮。
+- 对话模型可以查询真实自动化任务并创建 AI 来源 Draft。`ask` 模式的创建工具需要普通审批，`workspace/full-access` 可直接创建 Draft；发布仍必须由用户在任务页显式批准。
+
+### 当前验证
+
+- 定向验证：Runtime 3 files / 67 tests、Desktop 3 files / 43 tests，Runtime/Desktop typecheck 均通过。
+- 包级全量：Storage 36 files / 387 tests；Workers 15 files / 124 passed / 3 skipped；Runtime 76 files / 490 tests；Desktop 135 files / 915 tests。
+- 根级门禁：typecheck 20/20、lint 11/11、design tokens、强制 build 11/11（0 cached）和 `git diff --check` 均通过。
+- 最新源码已使用隔离目录 `.data/local-restart-20260805-224600-browser-workflow-p13` 重启：Electron PID `8144`、managed Runtime PID `102992`（Node `20.20.2`），窗口可见且 Responding；pipe/database/hello 与独立 `runtime.healthcheck` 均正常，stderr 为空。
+- 未生成 installer、portable 或 release artifact；未提交、未推送。
+
+### 后续范围
+
+1. P1.3 后续：步骤编辑、固定值/运行变量/秘密引用绑定，以及已发布 WorkflowVersion 的确定性回放。
+2. P1.4：运行历史、逐步日志/截图、失败定位与登录 handoff。
+3. P1.5：手动启停的定时任务；条件、循环与 AI 自修复继续留在 P2。

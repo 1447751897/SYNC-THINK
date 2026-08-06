@@ -155,6 +155,132 @@ export const browserRecordingStep = sqliteTable(
   }),
 );
 
+export const browserAutomationTask = sqliteTable(
+  'browser_automation_task',
+  {
+    id: text('id').primaryKey(),
+    profileId: text('profile_id')
+      .notNull()
+      .references(() => browserProfile.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    instruction: text('instruction').notNull(),
+    startUrl: text('start_url').notNull(),
+    source: text('source').notNull(),
+    status: text('status').notNull(),
+    revision: integer('revision').notNull().default(1),
+    currentDraftId: text('current_draft_id'),
+    publishedVersionId: text('published_version_id'),
+    lastRunAt: text('last_run_at'),
+    successCount: integer('success_count').notNull().default(0),
+    failureCount: integer('failure_count').notNull().default(0),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({
+    byProfile: index('browser_automation_task_profile_idx').on(t.profileId, t.status, t.updatedAt),
+    statusCheck: check(
+      'browser_automation_task_status_check',
+      sql`${t.status} IN ('draft', 'pending_review', 'enabled', 'disabled', 'failed')`,
+    ),
+    sourceCheck: check(
+      'browser_automation_task_source_check',
+      sql`${t.source} IN ('manual', 'ai')`,
+    ),
+    revisionCheck: check('browser_automation_task_revision_check', sql`${t.revision} >= 1`),
+  }),
+);
+
+export const browserWorkflowDraft = sqliteTable(
+  'browser_workflow_draft',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => browserAutomationTask.id, { onDelete: 'restrict' }),
+    recordingId: text('recording_id').references(() => browserRecording.id, {
+      onDelete: 'restrict',
+    }),
+    status: text('status').notNull(),
+    revision: integer('revision').notNull().default(1),
+    stepsJson: text('steps_json').notNull().default('[]'),
+    stepCount: integer('step_count').notNull().default(0),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    submittedAt: text('submitted_at'),
+    reviewedAt: text('reviewed_at'),
+  },
+  (t) => ({
+    byTask: index('browser_workflow_draft_task_idx').on(t.taskId, t.updatedAt),
+    statusCheck: check(
+      'browser_workflow_draft_status_check',
+      sql`${t.status} IN ('editing', 'pending_review', 'approved', 'rejected')`,
+    ),
+    revisionCheck: check('browser_workflow_draft_revision_check', sql`${t.revision} >= 1`),
+    stepsJsonCheck: check(
+      'browser_workflow_draft_steps_json_check',
+      sql`json_valid(${t.stepsJson})`,
+    ),
+    stepCountCheck: check(
+      'browser_workflow_draft_step_count_check',
+      sql`${t.stepCount} BETWEEN 0 AND 200`,
+    ),
+  }),
+);
+
+export const browserWorkflowVersion = sqliteTable(
+  'browser_workflow_version',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => browserAutomationTask.id, { onDelete: 'restrict' }),
+    draftId: text('draft_id')
+      .notNull()
+      .references(() => browserWorkflowDraft.id, { onDelete: 'restrict' }),
+    versionNumber: integer('version_number').notNull(),
+    stepsJson: text('steps_json').notNull(),
+    stepCount: integer('step_count').notNull(),
+    createdAt: text('created_at').notNull(),
+    publishedAt: text('published_at').notNull(),
+  },
+  (t) => ({
+    taskVersion: uniqueIndex('browser_workflow_version_task_number_uidx').on(
+      t.taskId,
+      t.versionNumber,
+    ),
+    draft: uniqueIndex('browser_workflow_version_draft_uidx').on(t.draftId),
+    stepsJsonCheck: check(
+      'browser_workflow_version_steps_json_check',
+      sql`json_valid(${t.stepsJson})`,
+    ),
+    versionCheck: check('browser_workflow_version_number_check', sql`${t.versionNumber} >= 1`),
+    stepCountCheck: check(
+      'browser_workflow_version_step_count_check',
+      sql`${t.stepCount} BETWEEN 1 AND 200`,
+    ),
+  }),
+);
+
+export const browserWorkflowReview = sqliteTable(
+  'browser_workflow_review',
+  {
+    id: text('id').primaryKey(),
+    draftId: text('draft_id')
+      .notNull()
+      .references(() => browserWorkflowDraft.id, { onDelete: 'restrict' }),
+    decision: text('decision').notNull(),
+    note: text('note'),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => ({
+    byDraft: index('browser_workflow_review_draft_idx').on(t.draftId, t.createdAt),
+    decisionCheck: check(
+      'browser_workflow_review_decision_check',
+      sql`${t.decision} IN ('approve', 'reject')`,
+    ),
+  }),
+);
+
 export const browserCommand = sqliteTable(
   'browser_command',
   {

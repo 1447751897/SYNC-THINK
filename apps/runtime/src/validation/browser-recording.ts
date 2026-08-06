@@ -7,8 +7,15 @@ import type {
 } from '@sync-think/protocol';
 import { hasOnlyKeys, isRecord } from './shared.js';
 
-const validId = (value: unknown): value is string =>
-  typeof value === 'string' && value.trim().length > 0 && value.length <= 256 && !/\s/u.test(value);
+const validId = (value: unknown): value is string => {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return (
+    typeof value === 'string' &&
+    normalized.length > 0 &&
+    normalized.length <= 256 &&
+    !/\s/u.test(normalized)
+  );
+};
 
 const validPositiveInteger = (value: unknown, max = Number.MAX_SAFE_INTEGER): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= max;
@@ -57,9 +64,10 @@ export function parseStartBrowserRecordingPayload(
 ): StartBrowserRecordingPayload | undefined {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['profileId', 'expectedProfileRevision', 'startUrl']) ||
+    !hasOnlyKeys(value, ['profileId', 'expectedProfileRevision', 'startUrl', 'draftId']) ||
     !validId(value.profileId) ||
     !validPositiveInteger(value.expectedProfileRevision) ||
+    (value.draftId !== undefined && !validId(value.draftId)) ||
     (value.startUrl !== undefined && !validRecordingUrl(value.startUrl))
   ) {
     return undefined;
@@ -68,6 +76,7 @@ export function parseStartBrowserRecordingPayload(
     profileId: value.profileId.trim(),
     expectedProfileRevision: value.expectedProfileRevision,
     ...(typeof value.startUrl === 'string' ? { startUrl: value.startUrl.trim() } : {}),
+    ...(typeof value.draftId === 'string' ? { draftId: value.draftId.trim() } : {}),
   };
 }
 

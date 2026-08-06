@@ -363,3 +363,15 @@ M1：in progress (Providers panel observable; Agents/Manifest next)
 - 最终实窗证据位于 `.data/local-restart-20260805-204946-browser-recording-final`。正常录制为 10 步且覆盖六类动作；站点刷新/清除后可再次录制；关页得到 `interrupted/page_closed`；Profile 删除后目录、metadata、Edge 进程、站点摘要和活动录制均为空，敏感值无 SQLite 命中。
 - Electron `3452`、Runtime `33812`、CDP `127.0.0.1:9336` 保持运行；Pipe healthcheck 正常。一次性验收脚本必须使用 workspace managed Node `20.20.2`，以匹配 `better-sqlite3` 的 ABI；select 验收使用键盘事件，程序化 `selectOption()` 的非 trusted change 被安全边界拒绝是预期行为。
 - 下一任务是 P1.3 WorkflowVersion、变量/秘密引用、编辑和确定性回放。运行历史、失败定位、登录 handoff 与定时任务分别留在 P1.4/P1.5。
+
+## Resume checkpoint（2026-08-05 22:46 · Browser Automation Studio P1.3 第一切片最终收口）
+
+- 当前分支 `feature/newmax-shell-rewrite`、HEAD `09b02ad`；累计未提交改动必须继续保留，禁止 reset、clean、覆盖式 checkout、全仓格式化、打包、提交或推送。
+- 迁移 `0038_browser_automation_workflow` 与 `SqliteBrowserStore` 已实现 Task/Draft/Review/WorkflowVersion。Task 新建同时创建 Draft；submit 只接受 stopped、非空且 Profile 匹配的录制；reject 可重录；approve 发布递增且不可变的版本。
+- Runtime 新增 `runtime-browser-workflow-service.ts` 和 `browser.workflow.{list,get,createDraft,submit,review}`；Desktop Main/Preload、`browser-workflow-payloads.ts`、`BrowserWorkflowPanel.tsx` 与 `BrowserStage.tsx` 已接线。
+- Browser 页面默认“自动化任务”；列表支持搜索、手动/AI Draft、录制、提交、审核、驳回重录与查看发布版本。敏感输入保持占位，已发布版本不展示尚未实现的运行/调度按钮。
+- 对话工具为 `browser_workflow_list/get/create_draft`。list/get 只读；create_draft 在 ask 模式走普通审批，在 workspace/full-access 直接创建，但强制 `source=ai` 且不提供 submit/review/publish 工具。
+- BrowserHost 发现顺序为显式 executable、Chrome、Edge；录制 Page 右下角 closed Shadow DOM 浮层通过 `control-stop` binding 停止录制，浮层点击不进入步骤流。
+- 当前只关闭 P1.3 的治理第一切片。固定值、运行变量、秘密引用编辑与确定性回放仍未完成；P1.4/P1.5 继续负责运行历史、失败定位、登录 handoff 与定时任务。
+- 最终证据：Storage 36 files / 387 tests；Workers 15 files / 124 passed / 3 skipped；Runtime 76 files / 490 tests；Desktop 135 files / 915 tests；根 typecheck 20/20、lint 11/11、design tokens、强制 build 11/11（0 cached）与 `git diff --check` 通过。
+- 最新源码已使用隔离目录 `.data/local-restart-20260805-224600-browser-workflow-p13` 启动：Electron PID `8144`、managed Runtime PID `102992`（Node `20.20.2`），窗口可见且响应；pipe/database/hello 与独立 healthcheck 正常，stderr 为空。未打包、未提交、未推送。

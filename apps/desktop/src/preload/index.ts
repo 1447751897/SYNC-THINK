@@ -138,6 +138,16 @@ import type {
   StartBrowserRecordingResponse,
   StopBrowserRecordingPayload,
   StopBrowserRecordingResponse,
+  ListBrowserWorkflowsPayload,
+  ListBrowserWorkflowsResponse,
+  GetBrowserWorkflowPayload,
+  GetBrowserWorkflowResponse,
+  CreateBrowserWorkflowDraftPayload,
+  CreateBrowserWorkflowDraftResponse,
+  SubmitBrowserWorkflowDraftPayload,
+  SubmitBrowserWorkflowDraftResponse,
+  ReviewBrowserWorkflowDraftPayload,
+  ReviewBrowserWorkflowDraftResponse,
   PeekContextPacketPayload,
   PeekContextPacketResponse,
   AmendContextPacketPayload,
@@ -690,6 +700,33 @@ const api = {
           'runtime:browser-recording-stop',
           payload,
         ) as Promise<StopBrowserRecordingResponse>,
+    },
+    browserWorkflow: {
+      list: (payload: ListBrowserWorkflowsPayload = {}) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-list',
+          payload,
+        ) as Promise<ListBrowserWorkflowsResponse>,
+      get: (payload: GetBrowserWorkflowPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-get',
+          payload,
+        ) as Promise<GetBrowserWorkflowResponse>,
+      createDraft: (payload: CreateBrowserWorkflowDraftPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-create-draft',
+          payload,
+        ) as Promise<CreateBrowserWorkflowDraftResponse>,
+      submit: (payload: SubmitBrowserWorkflowDraftPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-submit',
+          payload,
+        ) as Promise<SubmitBrowserWorkflowDraftResponse>,
+      review: (payload: ReviewBrowserWorkflowDraftPayload) =>
+        ipcRenderer.invoke(
+          'runtime:browser-workflow-review',
+          payload,
+        ) as Promise<ReviewBrowserWorkflowDraftResponse>,
     },
     listWaitingBrowserHandoffs: (payload: ListWaitingBrowserHandoffsPayload = {}) =>
       ipcRenderer.invoke(

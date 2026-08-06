@@ -1,5 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import type {
+  BrowserAutomationSource,
   BrowserProfileSummary,
   BrowserRecordingSummary,
   BrowserSiteSessionSummary,
@@ -35,9 +36,10 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
+import { BrowserWorkflowPanel, type BrowserWorkflowDraftContext } from './BrowserWorkflowPanel.js';
 
 type Feedback = { kind: 'success' | 'error'; text: string };
-type BrowserView = 'sessions' | 'recording';
+type BrowserView = 'tasks' | 'sessions' | 'recordings';
 
 export function BrowserStage(): JSX.Element {
   const [profiles, setProfiles] = useState<BrowserProfileSummary[]>([]);
@@ -55,8 +57,10 @@ export function BrowserStage(): JSX.Element {
   const [renameValue, setRenameValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<BrowserProfileSummary>();
   const [clearTarget, setClearTarget] = useState<BrowserSiteSessionSummary>();
-  const [view, setView] = useState<BrowserView>('sessions');
+  const [view, setView] = useState<BrowserView>('tasks');
   const [recordingLockedProfileId, setRecordingLockedProfileId] = useState<string>();
+  const [workflowDraft, setWorkflowDraft] = useState<BrowserWorkflowDraftContext>();
+  const [workflowRefreshToken, setWorkflowRefreshToken] = useState(0);
   const sessionRequest = useRef(0);
   const newInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -140,6 +144,7 @@ export function BrowserStage(): JSX.Element {
     if (!activeProfileId) return;
     setSessions([]);
     setCheckedAt(undefined);
+    setWorkflowDraft(undefined);
     void loadSessions(activeProfileId, false);
   }, [activeProfileId, loadSessions]);
 
@@ -431,11 +436,15 @@ export function BrowserStage(): JSX.Element {
             </div>
             <p className="mt-0.5 truncate text-[11px] text-text-faint">
               {activeProfile
-                ? view === 'sessions'
-                  ? `${sessions.length} 个站点会话${checkedAt ? ` · 检查于 ${formatDateTime(checkedAt)}` : ''}`
-                  : recordingLockedProfileId === activeProfile.id
-                    ? '系统浏览器正在记录语义动作'
-                    : '录制记录保存在当前 Runtime Profile'
+                ? view === 'tasks'
+                  ? '创建、录制、审核并发布可复用的浏览器任务'
+                  : view === 'sessions'
+                    ? `${sessions.length} 个站点会话${checkedAt ? ` · 检查于 ${formatDateTime(checkedAt)}` : ''}`
+                    : recordingLockedProfileId === activeProfile.id
+                      ? '系统浏览器正在记录语义动作'
+                      : workflowDraft
+                        ? `正在编辑任务「${workflowDraft.taskName}」`
+                        : '录制记录保存在当前 Runtime Profile'
                 : '选择一个 Profile 查看登录状态'}
             </p>
           </div>
@@ -447,8 +456,9 @@ export function BrowserStage(): JSX.Element {
             >
               {(
                 [
+                  ['tasks', '自动化任务'],
                   ['sessions', '登录状态'],
-                  ['recording', '录制'],
+                  ['recordings', '录制记录'],
                 ] as const
               ).map(([value, label]) => (
                 <button
@@ -515,6 +525,22 @@ export function BrowserStage(): JSX.Element {
           </div>
         ) : null}
 
+        {activeProfile ? (
+          <div
+            className={clsx('min-h-0 flex-1', view !== 'tasks' && 'hidden')}
+            aria-hidden={view !== 'tasks'}
+          >
+            <BrowserWorkflowPanel
+              key={activeProfile.id}
+              profile={activeProfile}
+              refreshToken={workflowRefreshToken}
+              onRecordWorkflow={(context) => {
+                setWorkflowDraft(context);
+                setView('recordings');
+              }}
+            />
+          </div>
+        ) : null}
         <div
           className={clsx('min-h-0 flex-1 overflow-y-auto', view !== 'sessions' && 'hidden')}
           aria-hidden={view !== 'sessions'}
@@ -554,14 +580,24 @@ export function BrowserStage(): JSX.Element {
         </div>
         {activeProfile ? (
           <div
-            className={clsx('min-h-0 flex-1', view !== 'recording' && 'hidden')}
-            aria-hidden={view !== 'recording'}
+            className={clsx('min-h-0 flex-1', view !== 'recordings' && 'hidden')}
+            aria-hidden={view !== 'recordings'}
           >
             <RecordingPanel
-              key={activeProfile.id}
+              key={`${activeProfile.id}:${workflowDraft?.draftId ?? 'history'}`}
               profile={activeProfile}
+              workflowDraft={workflowDraft}
               onActivityChange={handleRecordingActivityChange}
               onProfileRefresh={refreshProfilesAfterRecording}
+              onExitWorkflow={() => {
+                setWorkflowDraft(undefined);
+                setView('tasks');
+              }}
+              onWorkflowSubmitted={() => {
+                setWorkflowDraft(undefined);
+                setWorkflowRefreshToken((current) => current + 1);
+                setView('tasks');
+              }}
             />
           </div>
         ) : null}
@@ -611,24 +647,49 @@ export function BrowserStage(): JSX.Element {
 
 function RecordingPanel(props: {
   profile: BrowserProfileSummary;
+  workflowDraft?: {
+    taskId: string;
+    draftId: string;
+    taskName: string;
+    startUrl: string;
+    source: BrowserAutomationSource;
+    status: BrowserWorkflowDraftContext['status'];
+    recordingId?: string;
+  };
   onActivityChange(profileId: string, active: boolean): void;
   onProfileRefresh(): void;
+  onExitWorkflow(): void;
+  onWorkflowSubmitted(taskId: string): void;
 }): JSX.Element {
-  const { profile, onActivityChange, onProfileRefresh } = props;
+  const {
+    profile,
+    workflowDraft,
+    onActivityChange,
+    onProfileRefresh,
+    onExitWorkflow,
+    onWorkflowSubmitted,
+  } = props;
   const [recordings, setRecordings] = useState<BrowserRecordingSummary[]>([]);
   const [selectedRecordingId, setSelectedRecordingId] = useState<string>();
   const [snapshot, setSnapshot] = useState<{
     recording: BrowserRecordingSummary;
     steps: BrowserRecordingStepRecord[];
   }>();
-  const [startUrl, setStartUrl] = useState('');
+  const [startUrl, setStartUrl] = useState(workflowDraft?.startUrl ?? '');
   const [loading, setLoading] = useState(true);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
-  const [busyAction, setBusyAction] = useState<'start' | 'stop'>();
+  const [busyAction, setBusyAction] = useState<'start' | 'stop' | 'submit'>();
   const [feedback, setFeedback] = useState<Feedback>();
-  const [startReconciliation, setStartReconciliation] = useState<Feedback>();
+  const [startReconciliation, setStartReconciliation] = useState<{
+    feedback: Feedback;
+    previousWorkflowRecordingId?: string;
+  }>();
+  const [profileActiveRecordingId, setProfileActiveRecordingId] = useState<string>();
   const snapshotRequest = useRef(0);
   const activityRef = useRef(false);
+  const profileActiveRecordingIdRef = useRef<string>();
+  const workflowRecordingId = useRef<string>();
+  const workflowMode = Boolean(workflowDraft);
 
   const publishActivity = useCallback(
     (active: boolean) => {
@@ -643,14 +704,29 @@ function RecordingPanel(props: {
 
   const applySnapshot = useCallback(
     (next: { recording: BrowserRecordingSummary; steps: BrowserRecordingStepRecord[] }) => {
+      const wasActiveRecording = profileActiveRecordingIdRef.current === next.recording.id;
       setSnapshot(next);
-      setRecordings((current) => upsertRecording(current, next.recording));
-      publishActivity(isActiveRecording(next.recording.status));
+      setRecordings((current) =>
+        workflowMode ? [next.recording] : upsertRecording(current, next.recording),
+      );
+      if (isActiveRecording(next.recording.status)) {
+        profileActiveRecordingIdRef.current = next.recording.id;
+        setProfileActiveRecordingId(next.recording.id);
+        publishActivity(true);
+      } else if (profileActiveRecordingIdRef.current === next.recording.id) {
+        profileActiveRecordingIdRef.current = undefined;
+        setProfileActiveRecordingId(undefined);
+        publishActivity(false);
+      }
       if (isAbnormalTerminalRecording(next.recording.status)) {
         setFeedback((current) => (current?.kind === 'success' ? undefined : current));
+      } else if (next.recording.status === 'stopped' && wasActiveRecording) {
+        setFeedback((current) =>
+          current?.kind === 'error' ? current : { kind: 'success', text: '录制已停止' },
+        );
       }
     },
-    [publishActivity],
+    [publishActivity, workflowMode],
   );
 
   const selectRecording = useCallback(
@@ -685,17 +761,37 @@ function RecordingPanel(props: {
       setRecordings([]);
       setSelectedRecordingId(undefined);
       setSnapshot(undefined);
-      setStartUrl('');
+      setStartUrl(workflowDraft?.startUrl ?? '');
       setStartReconciliation(undefined);
+      profileActiveRecordingIdRef.current = undefined;
+      setProfileActiveRecordingId(undefined);
+      workflowRecordingId.current =
+        workflowDraft?.status === 'editing' ? workflowDraft.recordingId : undefined;
       try {
         const response = await browserRuntime().browserRecording.list({
           profileId: profile.id,
           limit: 20,
         });
         if (cancelled) return;
-        setRecordings(response.recordings);
         const active = response.recordings.find((recording) => isActiveRecording(recording.status));
+        profileActiveRecordingIdRef.current = active?.id;
+        setProfileActiveRecordingId(active?.id);
         publishActivity(Boolean(active));
+        if (workflowDraft) {
+          setRecordings([]);
+          const recordingId = workflowDraft.recordingId;
+          if (!recordingId) return;
+          setSelectedRecordingId(recordingId);
+          const details = await browserRuntime().browserRecording.get({
+            recordingId,
+            afterSequence: 0,
+            limit: 200,
+          });
+          if (cancelled) return;
+          applySnapshot(details);
+          return;
+        }
+        setRecordings(response.recordings);
         const selected = active ?? response.recordings[0];
         if (!selected) return;
         setSelectedRecordingId(selected.id);
@@ -718,13 +814,12 @@ function RecordingPanel(props: {
     return () => {
       cancelled = true;
     };
-  }, [applySnapshot, profile.id, publishActivity]);
+  }, [applySnapshot, profile.id, publishActivity, workflowDraft]);
 
   const activeRecording = useMemo(
     () => recordings.find((recording) => isActiveRecording(recording.status)),
     [recordings],
   );
-  const activeRecordingId = activeRecording?.id;
   const selectedRecording = useMemo(
     () => recordings.find((recording) => recording.id === selectedRecordingId),
     [recordings, selectedRecordingId],
@@ -734,19 +829,29 @@ function RecordingPanel(props: {
   const currentSteps = selectedSnapshot?.steps ?? ([] as BrowserRecordingStepRecord[]);
 
   useEffect(() => {
-    if (!activeRecordingId) return;
+    if (!profileActiveRecordingId) return;
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
       try {
         const response = await browserRuntime().browserRecording.get({
-          recordingId: activeRecordingId,
+          recordingId: profileActiveRecordingId,
           afterSequence: 0,
           limit: 200,
         });
         if (cancelled) return;
-        setSelectedRecordingId(activeRecordingId);
-        applySnapshot(response);
+        if (
+          !workflowDraft ||
+          workflowDraft.recordingId === profileActiveRecordingId ||
+          workflowRecordingId.current === profileActiveRecordingId
+        ) {
+          setSelectedRecordingId(profileActiveRecordingId);
+          applySnapshot(response);
+        } else if (!isActiveRecording(response.recording.status)) {
+          profileActiveRecordingIdRef.current = undefined;
+          setProfileActiveRecordingId(undefined);
+          publishActivity(false);
+        }
       } catch (error) {
         if (!cancelled) {
           setFeedback({ kind: 'error', text: browserRecordingErrorMessage(error) });
@@ -760,7 +865,7 @@ function RecordingPanel(props: {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeRecordingId, applySnapshot]);
+  }, [applySnapshot, profileActiveRecordingId, publishActivity, workflowDraft]);
 
   useEffect(() => {
     if (!startReconciliation) return;
@@ -768,6 +873,38 @@ function RecordingPanel(props: {
     let timer: number | undefined;
     const reconcile = async () => {
       try {
+        if (workflowDraft) {
+          const workflow = await browserRuntime().browserWorkflow.get({
+            taskId: workflowDraft.taskId,
+          });
+          if (cancelled) return;
+          const recordingId = workflow.draft?.recordingId;
+          if (!recordingId || recordingId === startReconciliation.previousWorkflowRecordingId) {
+            setStartReconciliation(undefined);
+            profileActiveRecordingIdRef.current = undefined;
+            setProfileActiveRecordingId(undefined);
+            publishActivity(false);
+            setFeedback(startReconciliation.feedback);
+            return;
+          }
+          const details = await browserRuntime().browserRecording.get({
+            recordingId,
+            afterSequence: 0,
+            limit: 200,
+          });
+          if (cancelled) return;
+          workflowRecordingId.current = recordingId;
+          setSelectedRecordingId(recordingId);
+          setStartUrl(details.recording.startUrl ?? '');
+          applySnapshot(details);
+          setStartReconciliation(undefined);
+          setFeedback(
+            isActiveRecording(details.recording.status)
+              ? { kind: 'success', text: '录制已开始' }
+              : startReconciliation.feedback,
+          );
+          return;
+        }
         const response = await browserRuntime().browserRecording.list({
           profileId: profile.id,
           limit: 20,
@@ -777,14 +914,18 @@ function RecordingPanel(props: {
         setRecordings(response.recordings);
         setStartReconciliation(undefined);
         if (active) {
+          profileActiveRecordingIdRef.current = active.id;
+          setProfileActiveRecordingId(active.id);
           setSelectedRecordingId(active.id);
           setSnapshot(undefined);
           setStartUrl(active.startUrl ?? '');
           publishActivity(true);
           setFeedback({ kind: 'success', text: '录制已开始' });
         } else {
+          profileActiveRecordingIdRef.current = undefined;
+          setProfileActiveRecordingId(undefined);
           publishActivity(false);
-          setFeedback(startReconciliation);
+          setFeedback(startReconciliation.feedback);
         }
       } catch {
         if (!cancelled) timer = window.setTimeout(reconcile, 500);
@@ -795,10 +936,10 @@ function RecordingPanel(props: {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [profile.id, publishActivity, startReconciliation]);
+  }, [applySnapshot, profile.id, publishActivity, startReconciliation, workflowDraft]);
 
   const startRecording = useCallback(async () => {
-    if (busyAction || activeRecording) return;
+    if (busyAction || activeRecording || profileActiveRecordingId) return;
     const candidateUrl = startUrl.trim();
     if (candidateUrl && !isHttpUrl(candidateUrl)) {
       setFeedback({ kind: 'error', text: '请输入有效的 HTTP 或 HTTPS 起始网址。' });
@@ -812,12 +953,18 @@ function RecordingPanel(props: {
       const response = await browserRuntime().browserRecording.start({
         profileId: profile.id,
         expectedProfileRevision: profile.revision,
+        ...(workflowDraft ? { draftId: workflowDraft.draftId } : {}),
         ...(candidateUrl ? { startUrl: candidateUrl } : {}),
       });
-      setRecordings((current) => upsertRecording(current, response.recording));
+      setRecordings((current) =>
+        workflowDraft ? [response.recording] : upsertRecording(current, response.recording),
+      );
       setSelectedRecordingId(response.recording.id);
       setSnapshot({ recording: response.recording, steps: [] });
       setStartUrl(response.recording.startUrl ?? '');
+      if (workflowDraft) workflowRecordingId.current = response.recording.id;
+      profileActiveRecordingIdRef.current = response.recording.id;
+      setProfileActiveRecordingId(response.recording.id);
       setStartReconciliation(undefined);
       publishActivity(true);
       setFeedback({ kind: 'success', text: '录制已开始' });
@@ -827,6 +974,36 @@ function RecordingPanel(props: {
         text: browserRecordingErrorMessage(error),
       };
       try {
+        if (workflowDraft) {
+          const workflow = await browserRuntime().browserWorkflow.get({
+            taskId: workflowDraft.taskId,
+          });
+          const recordingId = workflow.draft?.recordingId;
+          if (recordingId && recordingId !== workflowDraft.recordingId) {
+            const details = await browserRuntime().browserRecording.get({
+              recordingId,
+              afterSequence: 0,
+              limit: 200,
+            });
+            workflowRecordingId.current = recordingId;
+            setSelectedRecordingId(recordingId);
+            setStartUrl(details.recording.startUrl ?? '');
+            applySnapshot(details);
+            setStartReconciliation(undefined);
+            setFeedback(
+              isActiveRecording(details.recording.status)
+                ? { kind: 'success', text: '录制已开始' }
+                : failureFeedback,
+            );
+          } else {
+            profileActiveRecordingIdRef.current = undefined;
+            setProfileActiveRecordingId(undefined);
+            setStartReconciliation(undefined);
+            publishActivity(false);
+            setFeedback(failureFeedback);
+          }
+          return;
+        }
         const response = await browserRuntime().browserRecording.list({
           profileId: profile.id,
           limit: 20,
@@ -834,6 +1011,8 @@ function RecordingPanel(props: {
         const active = response.recordings.find((recording) => isActiveRecording(recording.status));
         setRecordings(response.recordings);
         if (active) {
+          profileActiveRecordingIdRef.current = active.id;
+          setProfileActiveRecordingId(active.id);
           setSelectedRecordingId(active.id);
           setSnapshot(undefined);
           publishActivity(true);
@@ -841,18 +1020,33 @@ function RecordingPanel(props: {
           setStartReconciliation(undefined);
           setFeedback({ kind: 'success', text: '录制已开始' });
         } else {
+          profileActiveRecordingIdRef.current = undefined;
+          setProfileActiveRecordingId(undefined);
           setStartReconciliation(undefined);
           publishActivity(false);
           setFeedback(failureFeedback);
         }
       } catch {
-        setStartReconciliation(failureFeedback);
+        setStartReconciliation({
+          feedback: failureFeedback,
+          previousWorkflowRecordingId: workflowDraft?.recordingId,
+        });
         setFeedback(failureFeedback);
       }
     } finally {
       setBusyAction(undefined);
     }
-  }, [activeRecording, busyAction, profile.id, profile.revision, publishActivity, startUrl]);
+  }, [
+    activeRecording,
+    busyAction,
+    applySnapshot,
+    profile.id,
+    profile.revision,
+    profileActiveRecordingId,
+    publishActivity,
+    startUrl,
+    workflowDraft,
+  ]);
 
   const stopRecording = useCallback(async () => {
     if (!activeRecording || busyAction) return;
@@ -891,13 +1085,71 @@ function RecordingPanel(props: {
     }
   }, [activeRecording, applySnapshot, busyAction, snapshot]);
 
+  const submitWorkflow = useCallback(async () => {
+    if (
+      !workflowDraft ||
+      !currentRecording ||
+      currentRecording.status !== 'stopped' ||
+      currentSteps.length < 1 ||
+      busyAction
+    ) {
+      return;
+    }
+    if (workflowRecordingId.current !== currentRecording.id) {
+      setFeedback({ kind: 'error', text: '请选择本次任务对应的录制记录后再提交。' });
+      return;
+    }
+    setBusyAction('submit');
+    setFeedback(undefined);
+    try {
+      await browserRuntime().browserWorkflow.submit({
+        draftId: workflowDraft.draftId,
+        recordingId: currentRecording.id,
+      });
+      onWorkflowSubmitted(workflowDraft.taskId);
+    } catch (error) {
+      setFeedback({ kind: 'error', text: browserWorkflowErrorMessage(error) });
+    } finally {
+      setBusyAction(undefined);
+    }
+  }, [busyAction, currentRecording, currentSteps.length, onWorkflowSubmitted, workflowDraft]);
+
   const status = recordingStatus(currentRecording?.status);
   const StatusIcon = status.icon;
-  const startBlocked = (profile.inUse || activityRef.current) && !activeRecording;
+  const startBlocked =
+    (profile.inUse || activityRef.current || Boolean(profileActiveRecordingId)) && !activeRecording;
   const terminalNote = currentRecording ? recordingTerminalNote(currentRecording) : undefined;
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="browser-recording-panel">
+      {workflowDraft ? (
+        <div
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-accent/30 bg-accent-soft px-4 py-2"
+          data-testid="browser-workflow-recording-context"
+        >
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-[11.5px] font-medium text-text">
+                {workflowDraft.taskName}
+              </span>
+              <span className="shrink-0 text-[10px] text-accent-text">
+                {workflowDraft.source === 'ai' ? 'AI 草稿' : '手动草稿'}
+              </span>
+            </div>
+            <div className="mt-0.5 text-[10.5px] text-text-faint">
+              完成录制并检查步骤后，提交给你审核。
+            </div>
+          </div>
+          <button
+            type="button"
+            className="h-7 shrink-0 rounded-md px-2.5 text-[10.5px] font-medium text-text-secondary hover:bg-hover hover:text-text disabled:opacity-45"
+            disabled={Boolean(activeRecording) || Boolean(busyAction)}
+            onClick={onExitWorkflow}
+          >
+            返回任务
+          </button>
+        </div>
+      ) : null}
       <div className="shrink-0 border-b border-border bg-elevated px-4 py-3">
         <div className="flex items-end gap-2">
           <label className="min-w-0 flex-1">
@@ -984,6 +1236,25 @@ function RecordingPanel(props: {
           <span className="shrink-0 text-[10.5px] tabular-nums text-text-faint">
             {currentRecording?.stepCount ?? 0}/200 步
           </span>
+          {workflowDraft &&
+          currentRecording?.status === 'stopped' &&
+          workflowRecordingId.current === currentRecording.id &&
+          currentSteps.length > 0 ? (
+            <button
+              type="button"
+              data-testid="browser-workflow-submit"
+              className="flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-accent px-2.5 text-[10.5px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-45"
+              disabled={busyAction === 'submit'}
+              onClick={() => void submitWorkflow()}
+            >
+              {busyAction === 'submit' ? (
+                <LoaderCircle className="animate-spin" size={12} />
+              ) : (
+                <ShieldCheck size={12} />
+              )}
+              提交审核
+            </button>
+          ) : null}
         </div>
 
         {feedback ? (
@@ -1487,6 +1758,20 @@ function browserRecordingErrorMessage(error: unknown): string {
     return '该 Profile 已有进行中的录制。';
   }
   return message.trim() || '浏览器录制操作失败，请稍后重试。';
+}
+
+function browserWorkflowErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/workflow-not-found|not[-_. ]found/i.test(message)) {
+    return '自动化任务或草稿已不存在，请刷新后重试。';
+  }
+  if (/workflow-conflict|state[-_. ]conflict|not[-_. ]stopped/i.test(message)) {
+    return '当前录制还不能提交，请确认录制已停止且包含有效步骤。';
+  }
+  if (/request timed out: browser\.workflow/i.test(message)) {
+    return '提交审核超时，请确认 Runtime 正常后重试。';
+  }
+  return message || '自动化任务操作失败，请重试。';
 }
 
 function browserRuntime(): NonNullable<Window['syncThink']>['runtime'] {

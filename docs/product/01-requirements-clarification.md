@@ -186,7 +186,12 @@
 10. 录制开始前先持久化 intent 并独占 Profile；录制期间禁止切换或维护 Profile。停止、页面关闭、浏览器退出和 Runtime 重启都必须形成明确终态并释放 Page lease。
 11. 导航 URL 在离开 BrowserHost 前移除 userinfo、query 和 hash；密码、OTP、支付、文件与 contenteditable 等敏感输入只保存秘密占位，不保存正文。
 12. 单次录制最多 200 步，单步结构化 payload 最多 16 KiB；来自网页的 DOM binding payload 必须经过随机 capture token、主 Frame、类型、大小与定位器校验。
-13. P1.2 只交付可检查的录制草稿和实时步骤流；WorkflowVersion、变量/秘密引用、编辑、确定性回放、运行历史和定时任务分别留在 P1.3-P1.5。
+13. Browser 页面默认进入“自动化任务”，并继续提供“登录状态 / 录制记录”分段视图；系统浏览器发现顺序固定为显式可执行文件覆盖、Chrome、Edge 回退。
+14. 录制期间网页右下角必须显示独立 Shadow DOM 浮层，包含“录制中”、持续时间、步骤数和“结束录制”；浮层交互不得被记录为网页步骤。
+15. 自动化任务创建分为手动来源与 AI 来源。两者都只先创建 Task + 可编辑 Draft，并进入同一录制工作区；AI 不直接操作浏览器、不自动提交审核或发布。
+16. 已停止且至少包含一步、并与 Task Profile 匹配的录制才可提交审核。驳回后 Draft 可重新录制；批准后生成递增编号且不可更新/删除的 WorkflowVersion。
+17. Execution mode 只控制“AI 创建 Draft”这类工具调用是否需要普通审批；发布审批始终是人类显式动作，不因 workspace/full-access 自动跳过。
+18. P1.3 第一切片只交付 Task/Draft/Review/不可变 WorkflowVersion 的治理闭环。固定值、运行变量、秘密引用编辑和确定性回放仍属于 P1.3 后续；运行历史、失败定位、登录 handoff 与定时任务分别留在 P1.4-P1.5。
 
 ## 8. 验收标准
 

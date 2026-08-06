@@ -17,4 +17,5 @@ export * from './validation/misc.js';
 export * from './validation/browser-handoff.js';
 export * from './validation/browser-profile.js';
 export * from './validation/browser-recording.js';
+export * from './validation/browser-workflow.js';
 export * from './validation/desktop-command.js';

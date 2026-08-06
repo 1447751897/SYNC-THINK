@@ -191,10 +191,13 @@ describe('0017_reviewer_rework migration', () => {
     const names = MIGRATIONS.map((migration) => migration.name);
     const frozenIndex = names.indexOf('0016_production_execution');
     const reviewerReworkIndex = names.indexOf('0017_reviewer_rework');
-    const latestIndex = names.indexOf('0037_browser_recording');
+    const browserRecordingIndex = names.indexOf('0037_browser_recording');
+    const latestIndex = names.indexOf('0038_browser_automation_workflow');
 
     expect(frozenIndex).toBeGreaterThanOrEqual(0);
     expect(reviewerReworkIndex).toBe(frozenIndex + 1);
+    expect(browserRecordingIndex).toBe(names.indexOf('0036_browser_profile_site_sessions') + 1);
+    expect(latestIndex).toBe(browserRecordingIndex + 1);
     expect(latestIndex).toBe(names.length - 1);
     expect(names.slice(frozenIndex, reviewerReworkIndex + 2)).toEqual([
       '0016_production_execution',

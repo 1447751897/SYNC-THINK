@@ -1159,3 +1159,30 @@ Computer Use built-in plugin
 5. stop 先 CAS 到 `stopping`，停止事件接收、排空 mutation、关闭 exact Page、释放 lease，再写终态；重复 stop 复用同一操作。Page 关闭、Browser 关闭和捕获失败形成明确终态，冷启动把遗留非终态录制清理为 `interrupted/runtime_restarted`。
 6. Desktop 暴露 `browser.recording.{list,get,start,stop}` 四条严格 IPC；start/stop 使用 30 秒预算，list/get 保持短预算。Renderer 通过有界快照轮询展示实时步骤，start 未知结果必须先向 Runtime 对账再决定是否解锁。
 7. 回滚边界：可移除录制 UI/API 和 `0037` 之后的业务入口而不影响既有 `browser_*` command 与 P1.1 Profile；P1.2 草稿不被调度器执行。WorkflowVersion、变量、秘密引用、编辑与回放留在 P1.3。
+
+### TD-038：Browser Automation Task / Draft / Review / Immutable WorkflowVersion（2026-08-05）
+
+状态：已采用，P1.3 第一切片已完成。
+
+技术需求：把 P1.2 的独立录制草稿提升为用户可识别、可审核、可版本化的自动化任务，同时允许对话 Agent 查询任务并创建 AI 来源 Draft，但不得让 execution mode 或模型自动越过发布审核。
+
+方案对比：
+
+| 方案                                              | 优点                                       | 缺点                                     | 结论   |
+| ------------------------------------------------- | ------------------------------------------ | ---------------------------------------- | ------ |
+| 录制停止即覆盖可执行 Workflow                     | 路径短                                     | 无审核、无历史边界、修改会污染已发布版本 | 不采用 |
+| Task 直接保存一份可变 steps JSON                  | 表结构简单                                 | 无法表达驳回重录和不可变发布版本         | 不采用 |
+| Task + Draft + Review + immutable WorkflowVersion | 生命周期清晰，可审计，可为后续回放冻结输入 | 对象和状态机更多                         | 采用   |
+
+采用合同：
+
+1. 迁移 `0038_browser_automation_workflow` 新增 `browser_automation_task`、`browser_workflow_draft`、`browser_workflow_review` 与 `browser_workflow_version`。Task 状态固定为 `draft/pending_review/enabled/disabled/failed`，Draft 状态固定为 `editing/pending_review/approved/rejected`。
+2. 新建 Task 必须在同一事务内创建 `editing` Draft。来源只允许 `manual/ai`；AI 入口只影响来源与普通工具审批，不产生更高发布权限。
+3. `browser.workflow.submit` 只接受已停止、至少一步、Profile 与 Task 匹配的录制，并复制已经过 Storage 再校验的脱敏步骤进入 Draft；不保存录制时的敏感正文。
+4. Reject 写入独立 Review 记录并让 Task 回到 `draft`、Draft 进入 `rejected`，随后允许为同一 Draft 重新录制和再次提交。Approve 写入 Review 后创建该 Task 下递增编号的 WorkflowVersion，并把 Task 指向已发布版本。
+5. WorkflowVersion 的步骤与版本号写入后不可更新或删除；SQLite trigger 是最终不可变边界。后续编辑必须创建新的 Draft/Version，不覆盖历史发布事实。
+6. Desktop 默认显示“自动化任务”，通过 `browser.workflow.{list,get,createDraft,submit,review}` 严格 IPC 读取和变更真源；审核步骤始终脱敏，已发布版本明确显示 `Vn`。
+7. 对话只暴露 `browser_workflow_list`、`browser_workflow_get`、`browser_workflow_create_draft`。list/get 只读；create_draft 在 `ask` 模式请求普通审批，在 `workspace/full-access` 直接创建，但只得到 AI Draft。
+8. “批准并发布”是产品级人类审核动作，不由 execution mode 自动满足，也不由 Agent 工具调用。当前没有提供对话审核/发布工具。
+9. BrowserHost 发现顺序固定为显式 `SYNC_THINK_BROWSER_EXECUTABLE`、Chrome、Edge；录制 Page 注入 closed Shadow DOM 状态浮层，`control-stop` binding 只负责停止录制且不会进入步骤流。
+10. 本切片只冻结可审核 WorkflowVersion，不声明其已经可执行。固定值、运行变量、秘密引用编辑和确定性回放继续属于 P1.3；运行历史、失败定位、登录 handoff 和定时任务分别属于 P1.4/P1.5。

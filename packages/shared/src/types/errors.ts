@@ -80,6 +80,9 @@ export const ErrorCode = {
   BROWSER_RECORDING_CONFLICT: 'browser.recording-conflict',
   BROWSER_RECORDING_HOST_UNAVAILABLE: 'browser.recording-host-unavailable',
   BROWSER_RECORDING_OPERATION_FAILED: 'browser.recording-operation-failed',
+  BROWSER_WORKFLOW_NOT_FOUND: 'browser.workflow-not-found',
+  BROWSER_WORKFLOW_CONFLICT: 'browser.workflow-conflict',
+  BROWSER_WORKFLOW_OPERATION_FAILED: 'browser.workflow-operation-failed',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

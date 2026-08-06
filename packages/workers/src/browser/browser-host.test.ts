@@ -359,7 +359,7 @@ function fakeSessionFactory(state?: {
 }
 
 describe('system browser discovery and safe output paths', () => {
-  it('prefers an explicit executable, then Edge, then Chrome', () => {
+  it('prefers an explicit executable, then Chrome, then Edge', () => {
     const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
     const chrome = 'C:/Users/test/AppData/Local/Google/Chrome/Application/chrome.exe';
     const existing = new Set([edge, chrome, 'D:/portable/chrome.exe']);
@@ -376,13 +376,13 @@ describe('system browser discovery and safe output paths', () => {
       kind: 'chrome',
       executablePath: 'D:/portable/chrome.exe',
     });
-    const discoveredEdge = discoverSystemBrowser(common);
-    expect(discoveredEdge.kind).toBe('edge');
-    expect(discoveredEdge.executablePath.replaceAll('\\', '/')).toBe(edge);
-    existing.delete(edge);
     const discoveredChrome = discoverSystemBrowser(common);
     expect(discoveredChrome.kind).toBe('chrome');
     expect(discoveredChrome.executablePath.replaceAll('\\', '/')).toBe(chrome);
+    existing.delete(chrome);
+    const discoveredEdge = discoverSystemBrowser(common);
+    expect(discoveredEdge.kind).toBe('edge');
+    expect(discoveredEdge.executablePath.replaceAll('\\', '/')).toBe(edge);
   });
 
   it('keeps Profile and screenshot paths below their configured roots', () => {
@@ -741,6 +741,127 @@ describe('BrowserHost Profile sessions and Page leases', () => {
     });
     expect(captured[2]).toMatchObject({ value: 'pro', sensitive: false });
     expect(captured[4]).toMatchObject({ sensitive: true });
+  });
+
+  it('mounts the recording overlay after DOMContentLoaded and stops from its control', async () => {
+    type EventHandler = (event?: { preventDefault(): void; stopPropagation(): void }) => void;
+    class FakeNode {
+      readonly children: FakeNode[] = [];
+      readonly style = { cssText: '' };
+      readonly attributes = new Map<string, string>();
+      readonly listeners = new Map<string, EventHandler>();
+      parent?: FakeNode;
+      id = '';
+      textContent = '';
+      type = '';
+      disabled = false;
+      removed = false;
+
+      constructor(readonly tagName: string) {}
+
+      setAttribute(name: string, value: string): void {
+        this.attributes.set(name, value);
+      }
+
+      append(...nodes: FakeNode[]): void {
+        for (const node of nodes) {
+          node.parent = this;
+          this.children.push(node);
+        }
+      }
+
+      attachShadow(): FakeNode {
+        return this;
+      }
+
+      addEventListener(name: string, handler: EventHandler): void {
+        this.listeners.set(name, handler);
+      }
+
+      remove(): void {
+        this.removed = true;
+        if (this.parent) {
+          this.parent.children.splice(this.parent.children.indexOf(this), 1);
+          this.parent = undefined;
+        }
+      }
+    }
+
+    const documentListeners = new Map<string, Set<EventHandler>>();
+    const root = new FakeNode('HTML');
+    const document = {
+      documentElement: null as FakeNode | null,
+      createElement: (tagName: string) => new FakeNode(tagName.toUpperCase()),
+      createTextNode: (text: string) => {
+        const node = new FakeNode('#text');
+        node.textContent = text;
+        return node;
+      },
+      addEventListener: (name: string, handler: EventHandler) => {
+        const handlers = documentListeners.get(name) ?? new Set<EventHandler>();
+        handlers.add(handler);
+        documentListeners.set(name, handlers);
+      },
+      removeEventListener: (name: string, handler: EventHandler) => {
+        documentListeners.get(name)?.delete(handler);
+      },
+      querySelectorAll: () => [],
+    };
+    const captured: Array<Record<string, unknown>> = [];
+    const context = {
+      document,
+      Element: FakeNode,
+      HTMLInputElement: class extends FakeNode {},
+      HTMLSelectElement: class extends FakeNode {},
+      CSS: { escape: (value: string) => value },
+      Map,
+      Promise,
+      String,
+      setTimeout,
+      clearTimeout,
+      setInterval: vi.fn(() => 1),
+      clearInterval: vi.fn(),
+      __record: async (payload: Record<string, unknown>) => {
+        captured.push(payload);
+        return { accepted: true, stepCount: 0 };
+      },
+    } as Record<string, unknown>;
+
+    runInNewContext(browserRecordingInstallScript('__record', 'overlay-token'), context);
+    expect(documentListeners.get('DOMContentLoaded')?.size).toBe(1);
+    expect(root.children).toHaveLength(0);
+
+    document.documentElement = root;
+    documentListeners.get('DOMContentLoaded')?.forEach((handler) => handler());
+
+    const overlay = root.children.find((node) => node.id === '__sync-think-recording-overlay');
+    expect(overlay).toBeTruthy();
+    const descendants = (node: FakeNode): FakeNode[] => [
+      node,
+      ...node.children.flatMap(descendants),
+    ];
+    const nodes = descendants(overlay!);
+    expect(nodes.map((node) => node.textContent).join('')).toContain('SYNC-THINK 录制中');
+    expect(nodes.map((node) => node.textContent).join('')).toContain('0 步');
+    const stopButton = nodes.find((node) => node.textContent === '结束录制');
+    expect(stopButton).toBeTruthy();
+    stopButton?.listeners.get('click')?.({
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(captured).toContainEqual({
+      kind: 'control-stop',
+      captureToken: 'overlay-token',
+    });
+
+    const recorder = context.__syncThinkRecorder as {
+      uninstall(token: string): Promise<boolean>;
+    };
+    await expect(recorder.uninstall('overlay-token')).resolves.toBe(true);
+    expect(overlay?.removed).toBe(true);
+    expect(documentListeners.get('DOMContentLoaded')?.size ?? 0).toBe(0);
   });
 
   it('rejects forged recording binding payloads without the per-recording capture token', () => {

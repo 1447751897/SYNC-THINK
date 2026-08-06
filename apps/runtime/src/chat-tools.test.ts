@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
+import type {
+  BrowserAutomationTaskSummary,
+  BrowserProfileSummary,
+  CreateBrowserWorkflowDraftResponse,
+  GetBrowserWorkflowResponse,
+} from '@sync-think/protocol';
 import {
   buildChatMessagesFromEvents,
   buildCompactSummaryUserPrompt,
@@ -17,6 +23,7 @@ import {
   resolveToolLoopProviderPolicy,
   splitHistoryForCompact,
   toolsForExecutionMode,
+  type ChatBrowserWorkflowService,
   wrapModelCompactSummary,
 } from './chat-tools.js';
 
@@ -675,6 +682,212 @@ describe('network tools', () => {
       networkEnabled: false,
     });
     expect(JSON.parse(disabled).ok).toBe(false);
+  });
+});
+
+describe('Browser Workflow chat tools', () => {
+  const profiles: BrowserProfileSummary[] = [
+    {
+      id: 'profile-secondary',
+      name: 'Secondary',
+      revision: 2,
+      isDefault: false,
+      inUse: false,
+      siteCount: 1,
+      createdAt: '2026-08-05T00:00:00.000Z',
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+    {
+      id: 'default',
+      name: 'Default',
+      revision: 1,
+      isDefault: true,
+      inUse: false,
+      siteCount: 3,
+      createdAt: '2026-08-05T00:00:00.000Z',
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+  ];
+  const task: BrowserAutomationTaskSummary = {
+    id: 'task-1',
+    profileId: 'default',
+    name: 'Export monthly report',
+    instruction: 'Export the monthly report.',
+    startUrl: 'https://example.test/reports',
+    source: 'ai',
+    status: 'draft',
+    revision: 1,
+    currentDraftId: 'draft-1',
+    successCount: 0,
+    failureCount: 0,
+    createdAt: '2026-08-05T00:00:00.000Z',
+    updatedAt: '2026-08-05T00:00:00.000Z',
+  };
+  const created: CreateBrowserWorkflowDraftResponse = {
+    task,
+    draft: {
+      id: 'draft-1',
+      taskId: task.id,
+      status: 'editing',
+      revision: 1,
+      steps: [],
+      stepCount: 0,
+      createdAt: '2026-08-05T00:00:00.000Z',
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+  };
+
+  function workflowService(): ChatBrowserWorkflowService {
+    return {
+      listProfiles: () => profiles,
+      listWorkflows: () => [task],
+      getWorkflow: (): GetBrowserWorkflowResponse => created,
+      createDraft: () => created,
+    };
+  }
+
+  it('exposes local Workflow tools independently from networking and project tools', async () => {
+    const { CHAT_BROWSER_WORKFLOW_TOOL_NAMES } = await import('./chat-tools.js');
+    const disabled = toolsForExecutionMode('workspace', {
+      includeProjectTools: false,
+    }).map((tool) => tool.name);
+    expect(disabled).not.toContain('browser_workflow_list');
+
+    const enabled = toolsForExecutionMode('workspace', {
+      includeProjectTools: false,
+      includeBrowserWorkflowTools: true,
+    }).map((tool) => tool.name);
+    expect(enabled).toEqual([
+      'update_task_plan',
+      'browser_workflow_list',
+      'browser_workflow_get',
+      'browser_workflow_create_draft',
+    ]);
+    expect(CHAT_BROWSER_WORKFLOW_TOOL_NAMES.has('browser_workflow_list')).toBe(true);
+    expect(
+      isChatToolAllowed('workspace', 'browser_workflow_list', {
+        browserWorkflowEnabled: true,
+      }),
+    ).toBe(true);
+    expect(
+      isChatToolAllowed('workspace', 'browser_workflow_list', {
+        browserWorkflowEnabled: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('approval-gates only AI Draft creation in ask mode', () => {
+    expect(chatToolRequiresApproval('ask', 'browser_workflow_list')).toBe(false);
+    expect(chatToolRequiresApproval('ask', 'browser_workflow_get')).toBe(false);
+    expect(chatToolRequiresApproval('ask', 'browser_workflow_create_draft')).toBe(true);
+    expect(chatToolRequiresApproval('workspace', 'browser_workflow_create_draft')).toBe(false);
+    expect(chatToolRequiresApproval('full-access', 'browser_workflow_create_draft')).toBe(false);
+  });
+
+  it('lists real automation tasks and available Browser Profiles', async () => {
+    const { executeChatBrowserWorkflowTool } = await import('./chat-tools.js');
+    const result = JSON.parse(
+      executeChatBrowserWorkflowTool({
+        toolName: 'browser_workflow_list',
+        argumentsJson: JSON.stringify({
+          status: 'draft',
+          query: 'monthly',
+          limit: 12,
+        }),
+        service: workflowService(),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      tasks: [task],
+      profiles,
+      taskCount: 1,
+      note: expect.stringContaining('automation tasks'),
+    });
+  });
+
+  it('gets one Workflow and creates an AI-source Draft on the default Profile', async () => {
+    const { executeChatBrowserWorkflowTool } = await import('./chat-tools.js');
+    const service = workflowService();
+    let createInput: unknown;
+    service.createDraft = (input) => {
+      createInput = input;
+      return created;
+    };
+
+    const detail = JSON.parse(
+      executeChatBrowserWorkflowTool({
+        toolName: 'browser_workflow_get',
+        argumentsJson: JSON.stringify({ taskId: task.id }),
+        service,
+      }),
+    );
+    expect(detail).toEqual({ ok: true, ...created });
+
+    const draftResult = JSON.parse(
+      executeChatBrowserWorkflowTool({
+        toolName: 'browser_workflow_create_draft',
+        argumentsJson: JSON.stringify({
+          name: 'Export monthly report',
+          instruction: 'Export the monthly report.',
+          startUrl: 'https://example.test/reports?token=secret#section',
+        }),
+        service,
+      }),
+    );
+    expect(createInput).toEqual({
+      profileId: 'default',
+      name: 'Export monthly report',
+      instruction: 'Export the monthly report.',
+      startUrl: 'https://example.test/reports?token=secret#section',
+      source: 'ai',
+    });
+    expect(draftResult).toMatchObject({
+      ok: true,
+      task,
+      draft: created.draft,
+      nextStep: expect.stringContaining('record'),
+    });
+    expect(draftResult).not.toHaveProperty('recorded');
+    expect(draftResult).not.toHaveProperty('published');
+  });
+
+  it('returns bounded validation errors without calling the Workflow service', async () => {
+    const { executeChatBrowserWorkflowTool } = await import('./chat-tools.js');
+    const service = workflowService();
+    let called = false;
+    service.createDraft = () => {
+      called = true;
+      return created;
+    };
+    const invalid = JSON.parse(
+      executeChatBrowserWorkflowTool({
+        toolName: 'browser_workflow_create_draft',
+        argumentsJson: JSON.stringify({
+          name: '',
+          instruction: 'Export it.',
+          startUrl: 'file:///tmp/report',
+        }),
+        service,
+      }),
+    );
+    expect(invalid.ok).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('summarizes AI Draft creation for the approval card', async () => {
+    const { summarizeToolCallForApproval } = await import('./chat-tools.js');
+    const summary = summarizeToolCallForApproval(
+      'browser_workflow_create_draft',
+      JSON.stringify({
+        name: 'Export monthly report',
+        instruction: 'Export the monthly report.',
+        startUrl: 'https://example.test/reports',
+      }),
+    );
+    expect(summary.title).toContain('Export monthly report');
+    expect(summary.detail).toContain('example.test');
+    expect(summary.detail).toContain('草稿');
   });
 });
 
