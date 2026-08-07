@@ -77,7 +77,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<boo
 class FallbackRecordingAdapter implements ProviderAdapter {
   readonly protocol = 'openai-chat' as const;
   readonly calls: ProviderCallRequest[] = [];
-  private failedFirstCall = false;
+  private failedCalls = 0;
 
   constructor(private readonly onFirstCall: () => void) {}
 
@@ -87,9 +87,9 @@ class FallbackRecordingAdapter implements ProviderAdapter {
 
   async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
     this.calls.push({ ...request, apiKey: '[present]' });
-    if (!this.failedFirstCall) {
-      this.failedFirstCall = true;
-      this.onFirstCall();
+    if (this.failedCalls < 6) {
+      this.failedCalls += 1;
+      if (this.failedCalls === 1) this.onFirstCall();
       yield { type: 'error', failureClass: 'rate-limit', message: 'retry on fallback' };
       return;
     }
@@ -209,6 +209,7 @@ async function expectUnauthorizedSelectionRejected(options: {
   const runtime = new Runtime({
     installId,
     allowNoToken: true,
+    modelRetryBaseDelayMs: 0,
     workspaceId,
     checkpointRunId: `runtime-${installId}` as RunId,
     ...(stateStore ? { stateStore } : {}),
@@ -341,6 +342,8 @@ describe('per-turn Skill selection', () => {
       const runtime = new Runtime({
         installId,
         allowNoToken: true,
+    modelRetryBaseDelayMs: 0,
+        modelRetryBaseDelayMs: 0,
         stateStore,
         workspaceId,
         checkpointRunId,
@@ -532,6 +535,7 @@ describe('per-turn Skill selection', () => {
     const runtime = new Runtime({
       installId,
       allowNoToken: true,
+    modelRetryBaseDelayMs: 0,
       stateStore,
       workspaceId,
       checkpointRunId: `runtime-${installId}` as RunId,
@@ -594,8 +598,11 @@ describe('per-turn Skill selection', () => {
         },
       });
       expect(selected.error).toBeUndefined();
-      expect(await waitFor(() => adapter.calls.length >= 2)).toBe(true);
-      for (const call of adapter.calls.slice(0, 2)) {
+      // The primary model retries in place 5 times (6 failed attempts) before
+      // the fallback walk runs the 7th call. All calls must use the frozen
+      // per-turn selection (skillB), never the agent's mutated skillIds.
+      expect(await waitFor(() => adapter.calls.length >= 7)).toBe(true);
+      for (const call of adapter.calls) {
         expect(String(call.systemPrompt)).toContain('BETA_SKILL_BODY');
         expect(String(call.systemPrompt)).not.toContain('ALPHA_SKILL_BODY');
       }
@@ -642,9 +649,11 @@ describe('per-turn Skill selection', () => {
         },
       });
       expect(empty.error).toBeUndefined();
-      expect(await waitFor(() => adapter.calls.length >= 3)).toBe(true);
-      expect(String(adapter.calls[2]!.systemPrompt)).not.toContain('ALPHA_SKILL_BODY');
-      expect(String(adapter.calls[2]!.systemPrompt)).not.toContain('BETA_SKILL_BODY');
+      // First turn consumed 7 calls (6 failed attempts + 1 success after the
+      // fallback); the no-skill turn is call index 7.
+      expect(await waitFor(() => adapter.calls.length >= 8)).toBe(true);
+      expect(String(adapter.calls[7]!.systemPrompt)).not.toContain('ALPHA_SKILL_BODY');
+      expect(String(adapter.calls[7]!.systemPrompt)).not.toContain('BETA_SKILL_BODY');
 
       const prepEmptyBody = await inbox.send({
         id: 'prep-empty-body',

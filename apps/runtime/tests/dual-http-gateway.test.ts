@@ -374,6 +374,7 @@ describe('dual local HTTP OpenAI-compatible gateways (live multi-provider M1 evi
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       discoveryByProtocol: {
         'openai-chat': new OpenAIChatAdapter({ timeoutMs: 8_000 }),
       },
@@ -569,6 +570,7 @@ describe('dual local HTTP OpenAI-compatible gateways (live multi-provider M1 evi
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       discoveryByProtocol: {
         'openai-chat': new OpenAIChatAdapter({ timeoutMs: 8_000 }),
       },

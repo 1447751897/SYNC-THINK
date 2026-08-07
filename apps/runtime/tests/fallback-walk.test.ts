@@ -253,11 +253,11 @@ class AlwaysFailProvider implements ProviderAdapter {
   }
 }
 
-/** Emits a retryable failure once per model, then terminates a pre-fix cycle safely. */
+/** Always fails with a retryable class so the in-place retry budget is spent
+ *  before the fallback circuit opens (no acceptance cliff mid-retry). */
 class RepeatGuardFailProvider implements ProviderAdapter {
   readonly protocol = 'openai-chat' as const;
   readonly calls: string[] = [];
-  private readonly seen = new Set<string>();
 
   async discoverModels(): Promise<string[]> {
     return ['alpha-model', 'beta-model', 'gamma-model'];
@@ -265,14 +265,10 @@ class RepeatGuardFailProvider implements ProviderAdapter {
 
   async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
     this.calls.push(request.modelId);
-    const repeated = this.seen.has(request.modelId);
-    this.seen.add(request.modelId);
     yield {
       type: 'error',
-      failureClass: repeated ? 'acceptance' : 'timeout',
-      message: repeated
-        ? `cycle guard repeated ${request.modelId}`
-        : `retryable failure on ${request.modelId}`,
+      failureClass: 'timeout',
+      message: `retryable failure on ${request.modelId}`,
     };
   }
 }
@@ -291,6 +287,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       demoProvider: adapter,
     });
     await session.runtime.start();
@@ -390,8 +387,17 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     const completed = await reader.waitForEvent((t) => t === 'run.completed', 8_000);
 
     // Provider called default (alpha) then fallback (beta); never gamma.
-    // Prefer event evidence, but adapter call order is authoritative for the walk.
-    expect(adapter.calls).toEqual(['alpha-model', 'beta-model']);
+    // In-place retry budget (5) is spent on alpha first, then the walk moves
+    // to beta: 6 alpha attempts + 1 beta attempt, never gamma.
+    expect(adapter.calls).toEqual([
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'beta-model',
+    ]);
     expect(fallbackSelected ?? completed).toBeDefined();
     expect(completed).toBeDefined();
 
@@ -401,7 +407,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     expect(blob.includes(beta.modelId) || blob.includes('beta-model')).toBe(true);
     expect(blob).not.toContain('sk-fallback-test-key');
     expect(adapter.calls[0]).toBe('alpha-model');
-    expect(adapter.calls[1]).toBe('beta-model');
+    expect(adapter.calls[6]).toBe('beta-model');
     if (fallbackSelected) {
       const fbBlob = JSON.stringify(fallbackSelected);
       expect(fbBlob.includes('agentFallback') || fbBlob.includes('run.fallback.selected')).toBe(
@@ -463,6 +469,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       demoProvider: adapter,
     });
     await session.runtime.start();
@@ -560,7 +567,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     expect(fallbackSelected).toBeDefined();
     expect(eventInner(fallbackSelected!).toProviderModelId).toBe('beta-model');
     expect(completed).toBeDefined();
-    expect(adapter.calls).toEqual(['alpha-model', 'beta-model']);
+    expect(adapter.calls).toEqual(['alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','beta-model']);
 
     reader.close();
     sock.destroy();
@@ -580,6 +587,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       demoProvider: adapter,
     });
     await session.runtime.start();
@@ -685,7 +693,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     expect(eventType(terminal!)).toBe('run.paused');
     expect(eventInner(terminal!).reason).toBe('no_fallback_configured');
     expect(unexpectedFallback).toBeUndefined();
-    expect(adapter.calls).toEqual(['alpha-model', 'beta-model']);
+    expect(adapter.calls).toEqual(['alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','beta-model','beta-model','beta-model','beta-model','beta-model','beta-model']);
 
     reader.close();
     sock.destroy();
@@ -705,6 +713,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       demoProvider: adapter,
     });
     await session.runtime.start();
@@ -792,11 +801,11 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
 
     const paused = await reader.waitForEvent((t) => t === 'run.paused', 8_000);
     // Default + one fallback attempted; no third silent model.
-    expect(adapter.calls).toEqual(['alpha-model', 'beta-model']);
+    expect(adapter.calls).toEqual(['alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','beta-model','beta-model','beta-model','beta-model','beta-model','beta-model']);
     expect(paused).toBeDefined();
     const blob = JSON.stringify(paused);
     expect(blob.includes('fallback_exhausted') || eventType(paused!) === 'run.paused').toBe(true);
-    expect(adapter.calls.length).toBe(2);
+    expect(adapter.calls.length).toBe(12);
 
     reader.close();
     sock.destroy();
@@ -816,6 +825,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       demoProvider: adapter,
     });
     await session.runtime.start();
@@ -938,6 +948,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       demoProvider: adapter,
     });
     await session.runtime.start();

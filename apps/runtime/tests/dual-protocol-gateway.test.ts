@@ -444,6 +444,7 @@ describe('dual-protocol OpenAI + Anthropic live gateways', () => {
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       discoveryByProtocol: {
         'openai-chat': new OpenAIChatAdapter({ timeoutMs: 8_000 }),
         'anthropic-messages': new AnthropicMessagesAdapter({ timeoutMs: 8_000 }),
@@ -647,6 +648,7 @@ describe('dual-protocol OpenAI + Anthropic live gateways', () => {
       dbPath,
       secureStoreKeyPath: secureKey,
       allowNoToken: true,
+      modelRetryBaseDelayMs: 0,
       discoveryByProtocol: {
         'openai-chat': new OpenAIChatAdapter({ timeoutMs: 8_000 }),
         'anthropic-messages': new AnthropicMessagesAdapter({ timeoutMs: 8_000 }),

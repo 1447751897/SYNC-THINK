@@ -228,6 +228,8 @@ import {
   defaultCcSwitchDbPath,
   loadCcSwitchProviderRows,
   workspaceIconFromPrefs,
+  workspaceSortOrderFromPrefs,
+  workspaceHiddenFromPrefs,
 } from '@sync-think/storage';
 import { mapCcSwitchProviderRow, toCcSwitchPreviewItem } from '@sync-think/core';
 import type { SecureStore } from '@sync-think/secure-store';
@@ -273,10 +275,12 @@ import {
   createDemoProviderRequest,
   createDemoRun,
   isDemoRunRecoveryExpired,
+  MODEL_RETRY_MAX,
   parseDemoRuns,
   projectAdapterEvent,
   serializeDemoRun,
   serializeDemoRuns,
+  shouldRetrySameModel,
   type DemoProvider,
   type DemoRunState,
 } from './demo-run.js';
@@ -566,6 +570,11 @@ export interface RuntimeOptions {
   appSettingStore?: SqliteAppSettingStore;
   /** 0026+: usage rows, request log, and tool aggregates from durable runtime events. */
   queryUsageSummary?: (sinceIso?: string) => Promise<UsageSummaryRawResult>;
+  /**
+   * Base delay (ms) for the same-model in-place retry backoff
+   * (500ms * 2^attempt, capped at 8s). Tests inject 0 to skip the wait.
+   */
+  modelRetryBaseDelayMs?: number;
 }
 
 export interface RuntimeStateStore {
@@ -677,6 +686,7 @@ export class Runtime {
   private readonly workspaceId: WorkspaceId;
   private readonly checkpointRunId: RunId;
   private readonly demoProvider?: DemoProvider;
+  private readonly modelRetryBaseDelayMs: number;
   private readonly providerStore?: SqliteProviderStore;
   private readonly appSettingStore?: SqliteAppSettingStore;
   private readonly queryUsageSummary?: RuntimeOptions['queryUsageSummary'];
@@ -761,6 +771,7 @@ export class Runtime {
     this.workspaceId = opts.workspaceId ?? ('workspace-dev' as WorkspaceId);
     this.checkpointRunId = opts.checkpointRunId ?? (`runtime-${opts.installId}` as RunId);
     this.demoProvider = opts.demoProvider;
+    this.modelRetryBaseDelayMs = Math.max(0, opts.modelRetryBaseDelayMs ?? 500);
     this.providerStore = opts.providerStore;
     this.appSettingStore = opts.appSettingStore;
     this.queryUsageSummary = opts.queryUsageSummary;
@@ -2196,6 +2207,8 @@ export class Runtime {
         name: payload.name,
         folderPath: payload.folderPath,
         icon: payload.icon,
+        sortOrder: payload.sortOrder,
+        hidden: payload.hidden,
         allowedRoots: undefined,
       });
       const response: UpdateWorkspaceResponse = {
@@ -5539,6 +5552,8 @@ export class Runtime {
       folderPath: workspace.folderPath,
       name: workspace.name,
       icon: workspaceIconFromPrefs(workspace.uiPrefsJson),
+      sortOrder: workspaceSortOrderFromPrefs(workspace.uiPrefsJson),
+      hidden: workspaceHiddenFromPrefs(workspace.uiPrefsJson),
       createdAt: workspace.createdAt,
       updatedAt: workspace.updatedAt,
     };
@@ -12011,6 +12026,30 @@ export class Runtime {
               reasoningEffort: attemptRun?.reasoningEffort,
               attempted: attemptRun?.attemptedModelIds,
             });
+            // In-place retry on the same model: a stream-establishment failure
+            // (nothing emitted yet) with a transient/timeout/rate-limit class
+            // retries up to MODEL_RETRY_MAX times with exponential backoff.
+            // The run keeps its retry budget across the outer-loop continuation,
+            // so all five attempts happen before any fallback-model switch.
+            if (
+              shouldRetrySameModel({
+                failureClass,
+                retryCount: this.demoRuns.get(runId)?.retryCount ?? 0,
+                hasOutput: Boolean(
+                  this.demoRuns.get(runId)?.assistantText ||
+                    this.demoRuns.get(runId)?.reasoningText,
+                ),
+              })
+            ) {
+              const retryCount = (this.demoRuns.get(runId)?.retryCount ?? 0) + 1;
+              this.updateDemoRun(runId, { retryCount });
+              console.warn(
+                `[demo-run] retrying same model (${retryCount}/${MODEL_RETRY_MAX})`,
+                { runId, modelId: attemptRun?.providerModelId, failureClass },
+              );
+              await this.sleepForModelRetry(runId, retryCount - 1);
+              continue;
+            }
             const outcome = this.tryContinueWithFallback(runId, attemptRun, failureClass, message);
             if (outcome === 'continued') continue;
             if (outcome === 'paused') return;
@@ -12061,6 +12100,26 @@ export class Runtime {
                 modelId: currentRun?.providerModelId,
                 reasoningEffort: currentRun?.reasoningEffort,
               });
+              // In-place retry on the same model: only when nothing has been
+              // emitted yet (no text/reasoning deltas), so a retry can never
+              // duplicate partial output.
+              if (
+                shouldRetrySameModel({
+                  failureClass,
+                  retryCount: currentRun.retryCount ?? 0,
+                  hasOutput: Boolean(currentRun.assistantText || currentRun.reasoningText),
+                })
+              ) {
+                const retryCount = (currentRun.retryCount ?? 0) + 1;
+                this.updateDemoRun(runId, { retryCount });
+                console.warn(
+                  `[demo-run] retrying same model (${retryCount}/${MODEL_RETRY_MAX})`,
+                  { runId, modelId: currentRun.providerModelId, failureClass },
+                );
+                resumeAfterFallback = true;
+                await this.sleepForModelRetry(runId, retryCount - 1);
+                break;
+              }
               const outcome = this.tryContinueWithFallback(
                 runId,
                 currentRun,
@@ -12121,6 +12180,13 @@ export class Runtime {
                   }
                 })(),
               };
+            }
+
+            // First successful event from this model: clear the in-place retry
+            // budget. The stream is now healthy and any later failure happens
+            // after output has started, where retries are disabled anyway.
+            if ((currentRun.retryCount ?? 0) > 0) {
+              this.updateDemoRun(runId, { retryCount: 0 });
             }
 
             const projectedRuns = new Map(this.demoRuns);
@@ -13456,6 +13522,36 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
    * 2) Agent-configured fallbackModelIds (§5.3).
    * Never silent-swaps models; pauses when both chains are empty or exhausted.
    */
+  /** Merge fields into the in-memory run state (used by the in-place retry bookkeeping). */
+  private updateDemoRun(runId: RunId, patch: Partial<DemoRunState>): void {
+    const run = this.demoRuns.get(runId);
+    if (!run) return;
+    this.demoRuns.set(runId, { ...run, ...patch });
+  }
+
+  private sleepForModelRetry(runId: RunId, retryIndex: number): Promise<void> {
+    const delayMs =
+      this.modelRetryBaseDelayMs <= 0
+        ? 0
+        : Math.min(8_000, this.modelRetryBaseDelayMs * 2 ** retryIndex);
+    const abort = this.demoRunAborts.get(runId);
+    return new Promise((resolve) => {
+      if (abort?.signal.aborted) {
+        resolve();
+        return;
+      }
+      const onAbort = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        abort?.signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, delayMs);
+      abort?.signal.addEventListener('abort', onAbort);
+    });
+  }
+
   private tryContinueWithFallback(
     runId: RunId,
     run: DemoRunState,
@@ -13807,6 +13903,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       nextAdapterEventIndex: 0,
       assistantText: '',
       reasoningText: '',
+      // A fresh model gets a fresh retry budget.
+      retryCount: 0,
       useFakeProvider: useFake,
     };
   }

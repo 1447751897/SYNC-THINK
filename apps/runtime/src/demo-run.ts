@@ -1,14 +1,47 @@
 import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
 import type { ContextSnapshot, ContextSnapshotSource } from './context-snapshot.js';
+import { isRetryable } from '@sync-think/shared';
 import type {
   Event,
   EventCategory,
+  FailureClass,
   ModelResolutionSource,
   ProtocolFamily,
   RunId,
 } from '@sync-think/shared';
 
 export const DEMO_RUN_RECOVERY_MAX_AGE_MS = 5 * 60 * 1_000;
+
+/** Max in-place retries on the same model before the fallback chain takes over. */
+export const MODEL_RETRY_MAX = 5;
+/** Base delay for the retry backoff (500ms, 1s, 2s, 4s, 8s — capped). */
+export const MODEL_RETRY_BASE_DELAY_MS = 500;
+export const MODEL_RETRY_MAX_DELAY_MS = 8_000;
+
+/**
+ * Whether a failed provider call should be retried in place on the same model.
+ * Retries only make sense when nothing was emitted yet (a retry after partial
+ * output would duplicate text/tool calls) and the failure class is a
+ * transient network/timeout/rate-limit issue (auth/protocol errors won't heal
+ * by retrying — those go straight to the fallback chain).
+ */
+export function shouldRetrySameModel(input: {
+  failureClass: FailureClass;
+  retryCount: number;
+  hasOutput: boolean;
+}): boolean {
+  if (input.hasOutput) return false;
+  if (!isRetryable(input.failureClass)) return false;
+  return input.retryCount < MODEL_RETRY_MAX;
+}
+
+/** Exponential backoff delay for the retry at the given index (capped). */
+export function retryDelayForModel(retryCount: number): number {
+  return Math.min(
+    MODEL_RETRY_MAX_DELAY_MS,
+    MODEL_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, retryCount),
+  );
+}
 
 export function isDemoRunRecoveryExpired(input: {
   lastActivityAt?: string;
@@ -68,6 +101,12 @@ export interface DemoRunState {
   attemptedModelIds: string[];
   /** Durable Provider-scoped failure count used by the fallback circuit breaker. */
   providerFailureCounts?: Record<string, number>;
+  /**
+   * In-place retries already spent on the *current* model (0..MODEL_RETRY_MAX).
+   * Reset to 0 when a stream successfully produces its first event, when the
+   * run rebinds to a fallback model, and never counts across tool-loop turns.
+   */
+  retryCount?: number;
   /** Skill bodies injected into system prompt for this run. */
   skillPromptBlocks?: string[];
   /** Per-turn request before Context budget/amendment filtering. */
@@ -483,6 +522,17 @@ function parseDemoRun(value: unknown): DemoRunState {
   };
   const attemptedModelIds = stringArray(run.attemptedModelIds, 256) ?? [];
   if (!attemptedModelIds.includes(modelId)) attemptedModelIds.push(modelId);
+  const retryCount = (() => {
+    if (
+      typeof run.retryCount !== 'number' ||
+      !Number.isInteger(run.retryCount) ||
+      run.retryCount < 0 ||
+      run.retryCount > MODEL_RETRY_MAX
+    ) {
+      return undefined;
+    }
+    return run.retryCount;
+  })();
   const providerFailureCounts = (() => {
     if (!run.providerFailureCounts || typeof run.providerFailureCounts !== 'object') {
       return undefined;
@@ -571,6 +621,7 @@ function parseDemoRun(value: unknown): DemoRunState {
     fallbackModelIds: stringArray(run.fallbackModelIds),
     attemptedModelIds: Array.from(new Set(attemptedModelIds)),
     providerFailureCounts,
+    retryCount,
     requestedSkillVersionIds: stringArray(run.requestedSkillVersionIds, 8),
     skillVersionIds: stringArray(run.skillVersionIds, 8),
     skillSnapshots,
