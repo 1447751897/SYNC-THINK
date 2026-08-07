@@ -29,6 +29,10 @@ export interface WorkspaceRecord {
   name: string;
   policyId?: string;
   uiPrefsJson?: string;
+  /** Custom sort position in the folder tab row (from ui prefs). */
+  sortOrder?: number;
+  /** Hidden from the folder tab row (from ui prefs). */
+  hidden?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -46,12 +50,20 @@ export interface UpdateWorkspaceInput {
   folderPath?: string;
   /** Icon glyph. null clears; undefined keeps current. */
   icon?: string | null;
+  /** Custom sort position in the folder tab row. undefined keeps current. */
+  sortOrder?: number;
+  /** Hide from the folder tab row. undefined keeps current. */
+  hidden?: boolean;
   allowedRoots?: readonly string[];
   now?: string;
 }
 
 export interface WorkspaceUiPrefs {
   icon?: string;
+  /** Custom sort position in the folder tab row. */
+  sortOrder?: number;
+  /** Hidden from the folder tab row (data untouched). */
+  hidden?: boolean;
 }
 
 export interface CreateTaskInput {
@@ -223,7 +235,16 @@ export class SqliteWorkspaceStore {
          ORDER BY created_at ASC, id ASC`,
       )
       .all() as WorkspaceRow[];
-    return rows.map(mapWorkspace);
+    // Custom sort positions (uiPrefsJson.sortOrder) win; workspaces without a
+    // position fall back to creation order and trail the positioned ones.
+    return rows.map(mapWorkspace).sort((a, b) => {
+      const ao = a.sortOrder;
+      const bo = b.sortOrder;
+      if (ao !== undefined && bo !== undefined) return ao - bo;
+      if (ao !== undefined) return -1;
+      if (bo !== undefined) return 1;
+      return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+    });
   }
 
   getWorkspace(workspaceId: WorkspaceId): WorkspaceRecord | undefined {
@@ -270,6 +291,13 @@ export class SqliteWorkspaceStore {
         const icon = input.icon === null ? undefined : String(input.icon).trim() || undefined;
         if (icon) prefs.icon = icon;
         else delete prefs.icon;
+      }
+      if (input.sortOrder !== undefined) {
+        prefs.sortOrder =
+          Number.isFinite(input.sortOrder) ? Math.trunc(input.sortOrder) : undefined;
+      }
+      if (input.hidden !== undefined) {
+        prefs.hidden = input.hidden;
       }
       const uiPrefsJson = serializeWorkspaceUiPrefs(prefs);
 
@@ -828,6 +856,8 @@ function mapWorkspace(row: WorkspaceRow): WorkspaceRecord {
     name: row.name,
     policyId: row.policy_id ?? undefined,
     uiPrefsJson: row.ui_prefs_json ?? undefined,
+    sortOrder: workspaceSortOrderFromPrefs(row.ui_prefs_json ?? undefined),
+    hidden: workspaceHiddenFromPrefs(row.ui_prefs_json ?? undefined),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -842,7 +872,20 @@ export function parseWorkspaceUiPrefs(raw: string | undefined): WorkspaceUiPrefs
       typeof (parsed as { icon?: unknown }).icon === 'string'
         ? String((parsed as { icon: string }).icon).trim()
         : '';
-    return icon ? { icon } : {};
+    const sortOrder =
+      typeof (parsed as { sortOrder?: unknown }).sortOrder === 'number' &&
+      Number.isFinite((parsed as { sortOrder: number }).sortOrder)
+        ? Math.trunc((parsed as { sortOrder: number }).sortOrder)
+        : undefined;
+    const hidden =
+      typeof (parsed as { hidden?: unknown }).hidden === 'boolean'
+        ? (parsed as { hidden: boolean }).hidden
+        : undefined;
+    return {
+      ...(icon ? { icon } : {}),
+      ...(sortOrder !== undefined ? { sortOrder } : {}),
+      ...(hidden !== undefined ? { hidden } : {}),
+    };
   } catch {
     return {};
   }
@@ -850,12 +893,28 @@ export function parseWorkspaceUiPrefs(raw: string | undefined): WorkspaceUiPrefs
 
 export function serializeWorkspaceUiPrefs(prefs: WorkspaceUiPrefs): string | null {
   const icon = prefs.icon?.trim();
-  if (!icon) return null;
-  return JSON.stringify({ icon });
+  const sortOrder =
+    typeof prefs.sortOrder === 'number' && Number.isFinite(prefs.sortOrder)
+      ? Math.trunc(prefs.sortOrder)
+      : undefined;
+  const out: Record<string, unknown> = {};
+  if (icon) out.icon = icon;
+  if (sortOrder !== undefined) out.sortOrder = sortOrder;
+  if (prefs.hidden !== undefined) out.hidden = prefs.hidden;
+  if (Object.keys(out).length === 0) return null;
+  return JSON.stringify(out);
 }
 
 export function workspaceIconFromPrefs(uiPrefsJson: string | undefined): string | undefined {
   return parseWorkspaceUiPrefs(uiPrefsJson).icon;
+}
+
+export function workspaceSortOrderFromPrefs(uiPrefsJson: string | undefined): number | undefined {
+  return parseWorkspaceUiPrefs(uiPrefsJson).sortOrder;
+}
+
+export function workspaceHiddenFromPrefs(uiPrefsJson: string | undefined): boolean {
+  return parseWorkspaceUiPrefs(uiPrefsJson).hidden === true;
 }
 
 function mapTask(row: TaskRow, threadId: ThreadId): TaskRecord {

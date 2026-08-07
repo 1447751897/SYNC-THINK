@@ -100,10 +100,20 @@ export function parseUpdateWorkspacePayload(value: unknown): UpdateWorkspacePayl
   if (value.icon !== undefined && value.icon !== null) {
     if (typeof value.icon !== 'string' || value.icon.length > 32) return undefined;
   }
+  if (value.sortOrder !== undefined) {
+    if (typeof value.sortOrder !== 'number' || !Number.isFinite(value.sortOrder)) {
+      return undefined;
+    }
+  }
+  if (value.hidden !== undefined) {
+    if (typeof value.hidden !== 'boolean') return undefined;
+  }
   if (
     value.name === undefined &&
     value.folderPath === undefined &&
-    value.icon === undefined
+    value.icon === undefined &&
+    value.sortOrder === undefined &&
+    value.hidden === undefined
   ) {
     return undefined;
   }
@@ -117,6 +127,11 @@ export function parseUpdateWorkspacePayload(value: unknown): UpdateWorkspacePayl
         : typeof value.icon === 'string'
           ? value.icon.trim() || null
           : undefined,
+    sortOrder:
+      typeof value.sortOrder === 'number' && Number.isFinite(value.sortOrder)
+        ? Math.trunc(value.sortOrder)
+        : undefined,
+    hidden: typeof value.hidden === 'boolean' ? value.hidden : undefined,
   };
 }
 

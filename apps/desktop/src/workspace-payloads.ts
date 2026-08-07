@@ -108,7 +108,23 @@ export function parseUpdateWorkspacePayload(value: unknown): UpdateWorkspacePayl
       throw new Error('Invalid update-workspace payload');
     }
   }
-  if (value.name === undefined && value.folderPath === undefined && value.icon === undefined) {
+  if (value.sortOrder !== undefined) {
+    if (typeof value.sortOrder !== 'number' || !Number.isFinite(value.sortOrder)) {
+      throw new Error('Invalid update-workspace payload');
+    }
+  }
+  if (value.hidden !== undefined) {
+    if (typeof value.hidden !== 'boolean') {
+      throw new Error('Invalid update-workspace payload');
+    }
+  }
+  if (
+    value.name === undefined &&
+    value.folderPath === undefined &&
+    value.icon === undefined &&
+    value.sortOrder === undefined &&
+    value.hidden === undefined
+  ) {
     throw new Error('Invalid update-workspace payload');
   }
   return {
@@ -121,6 +137,11 @@ export function parseUpdateWorkspacePayload(value: unknown): UpdateWorkspacePayl
         : typeof value.icon === 'string'
           ? value.icon.trim() || null
           : undefined,
+    sortOrder:
+      typeof value.sortOrder === 'number' && Number.isFinite(value.sortOrder)
+        ? Math.trunc(value.sortOrder)
+        : undefined,
+    hidden: typeof value.hidden === 'boolean' ? value.hidden : undefined,
   };
 }
 

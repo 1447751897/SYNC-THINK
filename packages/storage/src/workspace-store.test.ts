@@ -7,7 +7,7 @@ import { ulid, type Event } from '@sync-think/shared';
 import { openDatabaseAsync, type BetterSQLite3Raw } from './connection.js';
 import { SqliteEventCheckpointStore } from './runtime-state-store.js';
 import { runMigrations } from './scripts/migrate.js';
-import { SqliteWorkspaceStore } from './workspace-store.js';
+import { SqliteWorkspaceStore, workspaceIconFromPrefs } from './workspace-store.js';
 
 const tempDirs: string[] = [];
 
@@ -716,6 +716,99 @@ describe('SqliteWorkspaceStore task version source of truth', () => {
       ).toBe(2);
       expect(store.getTask(first.taskId)?.version).toBe(5);
       expect(store.getTask(second.taskId)?.version).toBe(11);
+    } finally {
+      close();
+    }
+  });
+
+  it('persists custom sortOrder and lists workspaces in that order', async () => {
+    const { store, close } = await openStore();
+    try {
+      const a = store.createWorkspace({ name: 'Alpha' });
+      const b = store.createWorkspace({ name: 'Beta' });
+      const c = store.createWorkspace({ name: 'Gamma' });
+      // Natural creation order: a, b, c. Reorder to c, a, b.
+      store.updateWorkspace({ workspaceId: c.id, sortOrder: 0 });
+      store.updateWorkspace({ workspaceId: a.id, sortOrder: 1 });
+      store.updateWorkspace({ workspaceId: b.id, sortOrder: 2 });
+      expect(
+        store.listWorkspaces().map((w) => w.id),
+      ).toEqual([c.id, a.id, b.id]);
+    } finally {
+      close();
+    }
+  });
+
+  it('trails workspaces without sortOrder behind positioned ones by creation order', async () => {
+    const { store, close } = await openStore();
+    try {
+      const a = store.createWorkspace({ name: 'Alpha' });
+      const b = store.createWorkspace({ name: 'Beta' });
+      const c = store.createWorkspace({ name: 'Gamma' });
+      store.updateWorkspace({ workspaceId: c.id, sortOrder: 0 });
+      expect(
+        store.listWorkspaces().map((w) => w.id),
+      ).toEqual([c.id, a.id, b.id]);
+    } finally {
+      close();
+    }
+  });
+
+  it('keeps icon and sortOrder together in ui prefs', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Iconic' });
+      const withIcon = store.updateWorkspace({
+        workspaceId: workspace.id,
+        icon: '🚀',
+        sortOrder: 3,
+      });
+      expect(store.listWorkspaces()).toEqual([
+        expect.objectContaining({
+          id: workspace.id,
+          name: 'Iconic',
+          sortOrder: 3,
+        }),
+      ]);
+      // Updating the icon alone must not drop sortOrder and vice versa.
+      store.updateWorkspace({ workspaceId: workspace.id, icon: '🧠' });
+      const refreshed = store.listWorkspaces().find((w) => w.id === workspace.id);
+      expect(refreshed?.sortOrder).toBe(3);
+      void withIcon;
+    } finally {
+      close();
+    }
+  });
+
+  it('persists hidden flag without deleting the workspace', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Sneaky' });
+      const hidden = store.updateWorkspace({ workspaceId: workspace.id, hidden: true });
+      expect(hidden.hidden).toBe(true);
+      // The row still exists with all its data — hidden is a display-only flag.
+      expect(store.listWorkspaces()).toEqual([
+        expect.objectContaining({ id: workspace.id, name: 'Sneaky', hidden: true }),
+      ]);
+      // Unhide clears the flag and keeps everything else intact.
+      const shown = store.updateWorkspace({ workspaceId: workspace.id, hidden: false });
+      expect(shown.hidden).toBe(false);
+      expect(store.getWorkspace(workspace.id)?.name).toBe('Sneaky');
+    } finally {
+      close();
+    }
+  });
+
+  it('keeps icon and hidden together in ui prefs', async () => {
+    const { store, close } = await openStore();
+    try {
+      const workspace = store.createWorkspace({ name: 'Iconic Hidden' });
+      store.updateWorkspace({ workspaceId: workspace.id, icon: '🚀', hidden: true });
+      // Updating the icon alone must not drop hidden and vice versa.
+      store.updateWorkspace({ workspaceId: workspace.id, icon: '🧠' });
+      const refreshed = store.listWorkspaces().find((w) => w.id === workspace.id);
+      expect(refreshed?.hidden).toBe(true);
+      expect(workspaceIconFromPrefs(refreshed?.uiPrefsJson)).toBe('🧠');
     } finally {
       close();
     }

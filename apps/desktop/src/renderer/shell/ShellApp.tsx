@@ -1036,6 +1036,50 @@ function ShellAppInner() {
     [refresh],
   );
 
+  /** Hide/unhide a workspace in the folder tab row (data untouched). */
+  const handleSetWorkspaceHidden = useCallback(
+    async (workspaceId: string, hidden: boolean): Promise<boolean> => {
+      const api = bridge();
+      if (!api?.updateWorkspace) return false;
+      try {
+        await api.updateWorkspace({
+          workspaceId: workspaceId as WorkspaceId,
+          hidden,
+        });
+        await refresh();
+        return true;
+      } catch (err) {
+        throw err instanceof Error ? err : new Error(String(err));
+      }
+    },
+    [refresh],
+  );
+
+  /** Persist a custom folder-tab order after drag reordering. */
+  const handleReorderWorkspaces = useCallback(
+    async (orderedIds: string[]): Promise<boolean> => {
+      const api = bridge();
+      if (!api?.updateWorkspace) return false;
+      const indexById = new Map(orderedIds.map((id, index) => [id, index]));
+      const writes: Promise<unknown>[] = [];
+      for (const workspace of data.workspaces) {
+        const desired = indexById.get(workspace.workspaceId);
+        if (desired === undefined || workspace.sortOrder === desired) continue;
+        writes.push(
+          api.updateWorkspace({
+            workspaceId: workspace.workspaceId as WorkspaceId,
+            sortOrder: desired,
+          }),
+        );
+      }
+      if (writes.length === 0) return true;
+      await Promise.all(writes);
+      await refresh();
+      return true;
+    },
+    [data.workspaces, refresh],
+  );
+
   const handleDeleteWorkspace = useCallback(
     async (workspaceId: string): Promise<boolean> => {
       const api = bridge();
@@ -1619,6 +1663,8 @@ function ShellAppInner() {
             onOpenFolder={() => void handleOpenFolder()}
             onCreateWorkspace={handleCreateWorkspace}
             onUpdateWorkspace={handleUpdateWorkspace}
+            onReorderWorkspaces={handleReorderWorkspaces}
+            onSetWorkspaceHidden={handleSetWorkspaceHidden}
             onDeleteWorkspace={handleDeleteWorkspace}
             onToggleSidebar={() => setNav((n) => toggleSidebar(n))}
             onPickFolder={handlePickFolder}
@@ -2397,7 +2443,21 @@ function SettingsModal({
           event.preventDefault();
           requestClose();
         }}
+        onFocusOutside={(event) => {
+          // 点击应用级确认框会令焦点移出设置弹窗；若不拦截，
+          // Radix modal 默认行为是直接关闭设置弹窗。
+          event.preventDefault();
+        }}
         onPointerDownOutside={(event) => {
+          // 应用级确认框/提示框（DialogProvider）渲染在设置弹窗之外，
+          // 点击它们不应被视为“点击弹窗外部”而关闭设置。
+          if (
+            typeof document !== 'undefined' &&
+            document.querySelector('[data-testid="app-dialog"]')?.contains(event.target as Node)
+          ) {
+            event.preventDefault();
+            return;
+          }
           event.preventDefault();
           requestClose();
         }}

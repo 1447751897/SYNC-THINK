@@ -239,6 +239,10 @@ export interface WorkspaceSummary {
   name: string;
   /** Optional emoji / short icon glyph (stored in ui prefs). */
   icon?: string;
+  /** Custom sort position in the folder tab row (stored in ui prefs). */
+  sortOrder?: number;
+  /** Hidden from the folder tab row (stored in ui prefs; data untouched). */
+  hidden?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -257,6 +261,16 @@ export interface UpdateWorkspacePayload {
    * Stored in workspace.ui_prefs_json.
    */
   icon?: string | null;
+  /**
+   * Custom sort position in the folder tab row. Omit to keep current.
+   * Stored in workspace.ui_prefs_json.
+   */
+  sortOrder?: number;
+  /**
+   * Hide from the folder tab row (does not delete the workspace or its data).
+   * Omit to keep current. Stored in workspace.ui_prefs_json.
+   */
+  hidden?: boolean;
 }
 
 export interface UpdateWorkspaceResponse {

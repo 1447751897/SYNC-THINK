@@ -15,6 +15,23 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { WorkspaceSummary } from '@sync-think/protocol';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 const WORKSPACE_ICON_PRESETS = ['📁', '💼', '🧠', '🚀', '📦', '🛠', '📚', '🧪', '🏠', '⭐'] as const;
 
@@ -36,6 +53,16 @@ export interface TopBarProps {
     folderPath?: string;
     icon?: string | null;
   }): Promise<boolean>;
+  /**
+   * Persist a custom folder-tab order after drag reordering.
+   * orderedIds = workspace ids in their new display order.
+   */
+  onReorderWorkspaces?(orderedIds: string[]): Promise<boolean> | void;
+  /**
+   * Hide/unhide a workspace in the folder tab row (data untouched).
+   * true = remove from the row; false = show again.
+   */
+  onSetWorkspaceHidden?(workspaceId: string, hidden: boolean): Promise<boolean> | void;
   onDeleteWorkspace(workspaceId: string): Promise<boolean>;
   onToggleSidebar(): void;
   onOpenTerminal?(): void;
@@ -56,6 +83,44 @@ export function TopBar(props: TopBarProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuStyle, setMenuStyle] = useState<React.CSSProperties | null>(null);
+
+  // Local display order for drag reordering; follows props when not dragging.
+  // Hidden workspaces are excluded from the row (they live in the menu only).
+  const visibleWorkspaces = props.workspaces.filter((w) => !w.hidden);
+  const hiddenWorkspaces = props.workspaces.filter((w) => w.hidden);
+  const [orderIds, setOrderIds] = useState<string[]>(() =>
+    visibleWorkspaces.map((w) => w.workspaceId),
+  );
+  const isDraggingRef = useRef(false);
+  useEffect(() => {
+    if (isDraggingRef.current) return;
+    setOrderIds(props.workspaces.filter((w) => !w.hidden).map((w) => w.workspaceId));
+  }, [props.workspaces]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const handleDragStart = () => {
+    isDraggingRef.current = true;
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    isDraggingRef.current = false;
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setOrderIds((current) => {
+      const activeId = String(active.id);
+      const overId = String(over.id);
+      const oldIndex = current.indexOf(activeId);
+      const newIndex = current.indexOf(overId);
+      if (oldIndex < 0 || newIndex < 0) return current;
+      const next = arrayMove(current, oldIndex, newIndex);
+      void props.onReorderWorkspaces?.(next);
+      return next;
+    });
+  };
 
   useLayoutEffect(() => {
     if (!menuOpen) {
@@ -114,7 +179,7 @@ export function TopBar(props: TopBarProps) {
   return (
     <header
       data-testid="shell-topbar"
-      className="shell-topbar shell-workspace-tabs relative flex h-9 shrink-0 items-end gap-0 bg-panel px-2"
+      className="shell-topbar shell-workspace-tabs relative flex h-9 shrink-0 items-end gap-0 px-2"
     >
       {props.sidebarCollapsed ? (
         <button
@@ -128,18 +193,42 @@ export function TopBar(props: TopBarProps) {
       ) : null}
 
       <div className="flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto">
-        {props.workspaces.map((workspace) => (
-          <ProjectTab
-            key={workspace.workspaceId}
-            label={workspace.name}
-            icon={workspace.icon}
-            title={workspace.folderPath}
-            active={props.activeWorkspaceId === workspace.workspaceId}
-            running={props.workspaceActivity?.get(workspace.workspaceId)?.running ?? false}
-            unread={props.workspaceActivity?.get(workspace.workspaceId)?.unread ?? false}
-            onClick={() => props.onSelectWorkspace(workspace.workspaceId)}
-          />
-        ))}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onDragCancel={() => {
+            isDraggingRef.current = false;
+          }}
+        >
+          <SortableContext items={orderIds} strategy={horizontalListSortingStrategy}>
+            {orderIds.map((workspaceId) => {
+              const workspace = props.workspaces.find(
+                (w) => w.workspaceId === workspaceId,
+              );
+              if (!workspace) return null;
+              return (
+                <SortableProjectTab
+                  key={workspace.workspaceId}
+                  workspaceId={workspace.workspaceId}
+                  label={workspace.name}
+                  icon={workspace.icon}
+                  title={workspace.folderPath}
+                  active={props.activeWorkspaceId === workspace.workspaceId}
+                  running={
+                    props.workspaceActivity?.get(workspace.workspaceId)?.running ?? false
+                  }
+                  unread={
+                    props.workspaceActivity?.get(workspace.workspaceId)?.unread ?? false
+                  }
+                  onClick={() => props.onSelectWorkspace(workspace.workspaceId)}
+                  onHide={() => props.onSetWorkspaceHidden?.(workspace.workspaceId, true)}
+                />
+              );
+            })}
+          </SortableContext>
+        </DndContext>
 
         <div className="relative mb-0.5 shrink-0">
           <button
@@ -166,10 +255,10 @@ export function TopBar(props: TopBarProps) {
                   onMouseDown={(e) => e.stopPropagation()}
                 >
                   <div className="max-h-[280px] overflow-y-auto">
-                    {props.workspaces.length === 0 ? (
+                    {visibleWorkspaces.length === 0 ? (
                       <div className="px-2.5 py-3 text-[12px] text-text-faint">暂无工作区</div>
                     ) : (
-                      props.workspaces.map((workspace) => {
+                      visibleWorkspaces.map((workspace) => {
                         const isActive = workspace.workspaceId === props.activeWorkspaceId;
                         return (
                           <div
@@ -247,6 +336,59 @@ export function TopBar(props: TopBarProps) {
                       })
                     )}
                   </div>
+
+                  {hiddenWorkspaces.length > 0 ? (
+                    <>
+                      <div className="px-2.5 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-text-faint">
+                        已隐藏
+                      </div>
+                      <div className="max-h-[160px] overflow-y-auto">
+                        {hiddenWorkspaces.map((workspace) => (
+                          <div
+                            key={workspace.workspaceId}
+                            data-testid={`workspace-hidden-item-${workspace.workspaceId}`}
+                            className="st-row-motion group flex w-full items-start gap-2 rounded-(--radius-row) px-2 py-1.5"
+                          >
+                            <button
+                              type="button"
+                              className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                              title={`重新显示 ${workspace.name}`}
+                              onClick={() => {
+                                setMenuOpen(false);
+                                props.onSetWorkspaceHidden?.(workspace.workspaceId, false);
+                              }}
+                            >
+                              <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center text-[13px] leading-none opacity-50">
+                                {workspace.icon?.trim() || '📁'}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-[14px] text-text-secondary">
+                                  {workspace.name}
+                                </span>
+                                {workspace.folderPath ? (
+                                  <span
+                                    className="block truncate text-[10.5px] text-text-faint"
+                                    title={workspace.folderPath}
+                                  >
+                                    {workspace.folderPath}
+                                  </span>
+                                ) : (
+                                  <span className="block text-[10.5px] text-text-faint">
+                                    未绑定路径
+                                  </span>
+                                )}
+                              </span>
+                              <span className="mt-0.5 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                                <span className="flex h-6 w-6 items-center justify-center rounded text-text-faint hover:bg-surface hover:text-text">
+                                  <X size={12} />
+                                </span>
+                              </span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
 
                   <div className="my-1 h-px bg-border" />
                   <button
@@ -345,10 +487,21 @@ function ProjectTab(props: {
   running?: boolean;
   /** 该工作区有已完成但未查看的任务 → 静态未读圆点。 */
   unread?: boolean;
+  dragging?: boolean;
+  /** Drag transform from dnd-kit; applied as a visual offset while dragging. */
+  dragTransform?: string | undefined;
   onClick(): void;
+  /** Hide this workspace from the folder row (data untouched). */
+  onHide?(): void;
+  sortableProps?: {
+    ref(node: HTMLButtonElement | null): void;
+    attributes: Record<string, unknown>;
+    listeners: Record<string, unknown>;
+  };
 }) {
   return (
     <button
+      ref={props.sortableProps?.ref}
       data-testid={`project-tab-${props.label}`}
       title={
         props.running
@@ -357,38 +510,111 @@ function ProjectTab(props: {
             ? `${props.title ?? props.label} · 有已完成任务待查看`
             : props.title
       }
+      {...props.sortableProps?.attributes}
+      {...props.sortableProps?.listeners}
       className={clsx(
-        'st-row-motion relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+        'st-row-motion group relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
         props.active
           ? 'shell-workspace-tab-active font-medium text-text'
           : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+        props.dragging && 'z-50 opacity-70',
       )}
-      onClick={props.onClick}
+      style={{
+        ...(props.dragTransform
+          ? { transform: props.dragTransform, transition: 'transform 150ms ease' }
+          : {}),
+      }}
     >
-      <span
-        className={clsx(
-          'flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[12px] leading-none',
-          props.active ? 'text-text-secondary' : 'text-text-faint',
-        )}
-        aria-hidden
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+        onClick={props.onClick}
       >
-        {props.icon?.trim() || '📁'}
-      </span>
-      <span className="truncate">{props.label}</span>
-      {props.running ? (
         <span
-          className="shell-activity-dot shell-activity-dot--running"
-          data-testid={`workspace-running-${props.label}`}
-          aria-label="有任务正在运行"
-        />
-      ) : props.unread ? (
+          className={clsx(
+            'flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[12px] leading-none',
+            props.active ? 'text-text-secondary' : 'text-text-faint',
+          )}
+          aria-hidden
+        >
+          {props.icon?.trim() || '📁'}
+        </span>
+        <span className="truncate">{props.label}</span>
+        {props.running ? (
+          <span
+            className="shell-activity-dot shell-activity-dot--running"
+            data-testid={`workspace-running-${props.label}`}
+            aria-label="有任务正在运行"
+          />
+        ) : props.unread ? (
+          <span
+            className="shell-activity-dot shell-activity-dot--unread"
+            data-testid={`workspace-unread-${props.label}`}
+            aria-label="有已完成任务待查看"
+          />
+        ) : null}
+      </button>
+      {props.onHide ? (
         <span
-          className="shell-activity-dot shell-activity-dot--unread"
-          data-testid={`workspace-unread-${props.label}`}
-          aria-label="有已完成任务待查看"
-        />
+          className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint opacity-0 transition-opacity hover:bg-hover hover:text-text group-hover:opacity-100"
+          role="button"
+          tabIndex={0}
+          aria-label={`从文件夹行移除 ${props.label}`}
+          title="从文件夹行移除"
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onHide?.();
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            e.stopPropagation();
+            props.onHide?.();
+          }}
+        >
+          <X size={11} />
+        </span>
       ) : null}
     </button>
+  );
+}
+
+function SortableProjectTab(props: {
+  workspaceId: string;
+  label: string;
+  icon?: string;
+  title?: string;
+  active: boolean;
+  running?: boolean;
+  unread?: boolean;
+  onClick(): void;
+  onHide?(): void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({
+    id: props.workspaceId,
+  });
+  return (
+    <ProjectTab
+      label={props.label}
+      icon={props.icon}
+      title={props.title}
+      active={props.active}
+      running={props.running}
+      unread={props.unread}
+      dragging={isDragging}
+      dragTransform={
+        transform
+          ? CSS.Transform.toString({ ...transform, scaleX: 1, scaleY: 1 })
+          : undefined
+      }
+      onClick={props.onClick}
+      onHide={props.onHide}
+      sortableProps={{
+        ref: setNodeRef,
+        attributes: attributes as unknown as Record<string, unknown>,
+        listeners: listeners as unknown as Record<string, unknown>,
+      }}
+    />
   );
 }
 

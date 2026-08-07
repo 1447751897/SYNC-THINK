@@ -17,6 +17,22 @@ import {
 import clsx from 'clsx';
 import type { Conversation, ConversationTrack } from '@sync-think/shared';
 import type { PaneSplitDirection } from './pane-layout.js';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 export interface ConversationTabsProps {
   paneId?: string;
@@ -67,8 +83,6 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const tabs = props.openIds
     .map((id) => byId.get(id))
     .filter((c): c is Conversation => Boolean(c));
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   /** Tab context menu (right-click) — { id, x, y } anchored at cursor. */
   const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   /** Split picker dropdown anchored at the strip-right split button. */
@@ -102,6 +116,19 @@ export function ConversationTabs(props: ConversationTabsProps) {
   ];
   const paneSuffix = props.paneId ? `-${props.paneId}` : '';
   const canSplit = props.canSplit !== false;
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const handleTabDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    props.onTabDragStateChange?.(null);
+    if (!over || active.id === over.id) return;
+    props.onReorder?.(String(active.id), String(over.id));
+  };
+
   const requestSplit = (direction: PaneSplitDirection) => {
     if (!canSplit) return;
     if (splitCandidates.length === 1) {
@@ -119,117 +146,47 @@ export function ConversationTabs(props: ConversationTabsProps) {
       {/* Scrollable tab area is isolated from the right-side action group so
           the split / rail buttons stay visible even when many tabs overflow. */}
       <div className="flex min-w-0 flex-1 items-start gap-0.5 overflow-x-auto">
-      {tabs.map((conversation) => {
-        const id = String(conversation.id);
-        const active = id === props.activeId;
-        const label = conversation.title?.trim() || '新对话';
-        const Icon = TRACK_TAB_ICON[conversation.track] ?? MessageSquare;
-        const isDragging = draggingId === id;
-        const isDropTarget = dropTargetId === id && draggingId && draggingId !== id;
-        return (
-          <div
-            key={id}
-            data-testid={`conversation-tab-${id}`}
-            data-active={active ? 'true' : 'false'}
-            draggable={Boolean(props.onReorder)}
-            onDragStart={(e) => {
-              if (!props.onReorder) return;
-              setDraggingId(id);
-              e.dataTransfer.effectAllowed = 'move';
-              e.dataTransfer.setData('text/plain', id);
-              props.onTabDragStateChange?.(id);
-            }}
-            onDragEnd={() => {
-              setDraggingId(null);
-              setDropTargetId(null);
-              props.onTabDragStateChange?.(null);
-            }}
-            onDragOver={(e) => {
-              if (!props.onReorder || !draggingId || draggingId === id) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'move';
-              setDropTargetId(id);
-            }}
-            onDragLeave={() => {
-              setDropTargetId((current) => (current === id ? null : current));
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              const fromId = e.dataTransfer.getData('text/plain') || draggingId;
-              setDraggingId(null);
-              setDropTargetId(null);
-              if (!fromId || fromId === id) return;
-              props.onReorder?.(fromId, id);
-            }}
-            className={clsx(
-              'st-row-motion group relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
-              active
-                ? 'shell-conversation-tab-active font-medium text-text'
-                : 'text-text-secondary hover:bg-hover/70 hover:text-text',
-              isDragging && 'opacity-50',
-              isDropTarget && 'ring-1 ring-accent/50',
-              props.onReorder && 'cursor-grab active:cursor-grabbing',
-            )}
-            onContextMenu={(e) => {
-              // Context menu lives on the whole tab (not just the title button)
-              // so right-clicking icon/close-area works too.
-              if (!props.onOpenInSplit) return;
-              e.preventDefault();
-              e.stopPropagation();
-              setCtxMenu({ id, x: e.clientX, y: e.clientY });
-            }}
-          >
-            <Icon
-              size={12}
-              className={clsx(
-                'shrink-0',
-                active ? 'text-text-secondary' : 'text-text-faint',
-              )}
-              aria-hidden
-            />
-            <button
-              type="button"
-              className="min-w-0 flex-1 truncate text-left"
-              title={props.onOpenInSplit ? `${label}（右键更多操作）` : label}
-              onClick={() => props.onSelect(id)}
-              onDoubleClick={() => props.onRename?.(id, label)}
-            >
-              {label}
-            </button>
-            {props.splitId === id ? (
-              <Columns2 size={11} className="shrink-0 text-accent" aria-label="已在分屏中" />
-            ) : null}
-            {props.conversationActivity?.get(id)?.running ? (
-              <span
-                className="shell-activity-dot shell-activity-dot--running"
-                data-testid={`conversation-running-${id}`}
-                aria-label="正在运行"
-              />
-            ) : props.conversationActivity?.get(id)?.unread ? (
-              <span
-                className="shell-activity-dot shell-activity-dot--unread"
-                data-testid={`conversation-unread-${id}`}
-                aria-label="已完成待查看"
-              />
-            ) : null}
-            <button
-              type="button"
-              data-testid={`conversation-tab-close-${id}`}
-              className={clsx(
-                'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
-                active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
-              )}
-              title="关闭标签"
-              onClick={(e) => {
-                e.stopPropagation();
-                props.onClose(id);
-              }}
-            >
-              <X size={11} />
-            </button>
-          </div>
-        );
-      })}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={(event) => props.onTabDragStateChange?.(String(event.active.id))}
+          onDragEnd={handleTabDragEnd}
+          onDragCancel={() => props.onTabDragStateChange?.(null)}
+        >
+          <SortableContext items={tabs.map((c) => String(c.id))} strategy={horizontalListSortingStrategy}>
+            {tabs.map((conversation) => {
+              const id = String(conversation.id);
+              const active = id === props.activeId;
+              const label = conversation.title?.trim() || '新对话';
+              const Icon = TRACK_TAB_ICON[conversation.track] ?? MessageSquare;
+              return (
+                <SortableConversationTab
+                  key={id}
+                  conversationId={id}
+                  label={label}
+                  icon={<Icon size={12} aria-hidden />}
+                  active={active}
+                  activeIconClass={active ? 'text-text-secondary' : 'text-text-faint'}
+                  splitId={props.splitId}
+                  running={props.conversationActivity?.get(id)?.running ?? false}
+                  unread={props.conversationActivity?.get(id)?.unread ?? false}
+                  onSelect={() => props.onSelect(id)}
+                  onClose={() => props.onClose(id)}
+                  onRename={() => props.onRename?.(id, label)}
+                  onContextMenu={(e) => {
+                    // Context menu lives on the whole tab (not just the title button)
+                    // so right-clicking icon/close-area works too.
+                    if (!props.onOpenInSplit) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setCtxMenu({ id, x: e.clientX, y: e.clientY });
+                  }}
+                  hasSplitAction={Boolean(props.onOpenInSplit)}
+                />
+              );
+            })}
+          </SortableContext>
+        </DndContext>
 
       {(props.fileTabs ?? []).map((file) => {
         const active = file.path === props.activeFilePath;
@@ -515,6 +472,99 @@ export function ConversationTabs(props: ConversationTabsProps) {
           </button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function SortableConversationTab(props: {
+  conversationId: string;
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+  activeIconClass: string;
+  splitId?: string;
+  running: boolean;
+  unread: boolean;
+  hasSplitAction: boolean;
+  onSelect(): void;
+  onClose(): void;
+  onRename(): void;
+  onContextMenu(e: React.MouseEvent): void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({
+    id: props.conversationId,
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid={`conversation-tab-${props.conversationId}`}
+      data-active={props.active ? 'true' : 'false'}
+      className={clsx(
+        'st-row-motion group relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+        props.active
+          ? 'shell-conversation-tab-active font-medium text-text'
+          : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+        isDragging && 'z-50 opacity-70',
+        'cursor-grab active:cursor-grabbing',
+      )}
+      style={{
+        ...(transform
+          ? {
+              transform: CSS.Transform.toString({ ...transform, scaleX: 1, scaleY: 1 }),
+              transition: 'transform 150ms ease',
+            }
+          : {}),
+      }}
+      {...attributes}
+      {...listeners}
+      onContextMenu={props.onContextMenu}
+    >
+      <span
+        className={clsx('flex h-3.5 w-3.5 shrink-0 items-center justify-center', props.activeIconClass)}
+        aria-hidden
+      >
+        {props.icon}
+      </span>
+      <button
+        type="button"
+        className="min-w-0 flex-1 truncate text-left"
+        title={props.hasSplitAction ? `${props.label}（右键更多操作）` : props.label}
+        onClick={props.onSelect}
+        onDoubleClick={props.onRename}
+      >
+        {props.label}
+      </button>
+      {props.splitId === props.conversationId ? (
+        <Columns2 size={11} className="shrink-0 text-accent" aria-label="已在分屏中" />
+      ) : null}
+      {props.running ? (
+        <span
+          className="shell-activity-dot shell-activity-dot--running"
+          data-testid={`conversation-running-${props.conversationId}`}
+          aria-label="正在运行"
+        />
+      ) : props.unread ? (
+        <span
+          className="shell-activity-dot shell-activity-dot--unread"
+          data-testid={`conversation-unread-${props.conversationId}`}
+          aria-label="已完成待查看"
+        />
+      ) : null}
+      <button
+        type="button"
+        data-testid={`conversation-tab-close-${props.conversationId}`}
+        className={clsx(
+          'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+          props.active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+        )}
+        title="关闭标签"
+        onClick={(e) => {
+          e.stopPropagation();
+          props.onClose();
+        }}
+      >
+        <X size={11} />
+      </button>
     </div>
   );
 }
