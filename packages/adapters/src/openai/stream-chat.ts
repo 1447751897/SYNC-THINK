@@ -126,6 +126,78 @@ function messageContentToString(message: ProviderMessage): string {
     .join('');
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Read only provider-explicit, human-readable reasoning text. Encrypted,
+ * signature, and redacted details are deliberately ignored: they are transport
+ * metadata, not a displayable reasoning summary.
+ */
+function readableReasoningValue(value: unknown, depth = 0): string {
+  if (depth > 4) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map((entry) => readableReasoningValue(entry, depth + 1)).join('');
+  }
+  const record = asRecord(value);
+  if (!record) return '';
+  const type = typeof record.type === 'string' ? record.type.toLowerCase() : '';
+  if (/(encrypted|signature|redacted)/.test(type)) return '';
+  for (const key of ['text', 'summary', 'reasoning', 'thinking', 'analysis', 'content']) {
+    const text = readableReasoningValue(record[key], depth + 1);
+    if (text) return text;
+  }
+  return '';
+}
+
+function reasoningTextFromContainer(value: unknown): string {
+  const record = asRecord(value);
+  if (!record) return '';
+  for (const key of [
+    'reasoning_content',
+    'reasoning',
+    'thinking',
+    'analysis',
+    'reasoning_details',
+  ]) {
+    const text = readableReasoningValue(record[key]);
+    if (text) return text;
+  }
+  return '';
+}
+
+function chatContentChannels(value: unknown): { text: string; reasoning: string } {
+  if (typeof value === 'string') return { text: value, reasoning: '' };
+  const parts = Array.isArray(value) ? value : value ? [value] : [];
+  let text = '';
+  let reasoning = '';
+  for (const part of parts) {
+    if (typeof part === 'string') {
+      text += part;
+      continue;
+    }
+    const record = asRecord(part);
+    if (!record) continue;
+    const type = typeof record.type === 'string' ? record.type.toLowerCase() : '';
+    if (/(reasoning|thinking|analysis)/.test(type)) {
+      reasoning += readableReasoningValue(record);
+      continue;
+    }
+    const visible =
+      typeof record.text === 'string'
+        ? record.text
+        : typeof record.content === 'string'
+          ? record.content
+          : '';
+    text += visible;
+  }
+  return { text, reasoning };
+}
+
 function classifyHttpFailure(status: number, snippet: string): ProviderCallError {
   if (status === 401 || status === 403) {
     return new ProviderCallError(`Provider auth failed (${status})${snippet}`, 'auth', status);
@@ -377,10 +449,13 @@ function parseCompletionChunk(
     error?: { message?: string; type?: string };
     choices?: Array<{
       delta?: {
-        content?: string | null;
+        content?: unknown;
         /** OpenAI o-series / many gateways: reasoning stream channel. */
-        reasoning_content?: string | null;
-        reasoning?: string | null;
+        reasoning_content?: unknown;
+        reasoning?: unknown;
+        thinking?: unknown;
+        analysis?: unknown;
+        reasoning_details?: unknown;
         role?: string;
         tool_calls?: Array<{
           index?: number;
@@ -389,9 +464,12 @@ function parseCompletionChunk(
         }>;
       };
       message?: {
-        content?: string | null;
-        reasoning_content?: string | null;
-        reasoning?: string | null;
+        content?: unknown;
+        reasoning_content?: unknown;
+        reasoning?: unknown;
+        thinking?: unknown;
+        analysis?: unknown;
+        reasoning_details?: unknown;
         tool_calls?: Array<{
           id?: string;
           function?: { name?: string; arguments?: string };
@@ -437,30 +515,24 @@ function parseCompletionChunk(
 
   const events: AdapterEvent[] = [];
 
-  const reasoningDelta =
-    (typeof choice.delta?.reasoning_content === 'string' && choice.delta.reasoning_content) ||
-    (typeof choice.delta?.reasoning === 'string' && choice.delta.reasoning) ||
-    '';
+  const deltaChannels = chatContentChannels(choice.delta?.content);
+  const reasoningDelta = reasoningTextFromContainer(choice.delta) || deltaChannels.reasoning;
   if (reasoningDelta.length > 0) {
     events.push({ type: 'reasoning-delta', text: reasoningDelta });
   }
 
-  const deltaText = choice.delta?.content;
-  if (typeof deltaText === 'string' && deltaText.length > 0) {
-    events.push({ type: 'text-delta', text: deltaText });
+  if (deltaChannels.text.length > 0) {
+    events.push({ type: 'text-delta', text: deltaChannels.text });
   }
 
   // Non-delta message content (some proxies).
-  const messageReasoning =
-    (typeof choice.message?.reasoning_content === 'string' && choice.message.reasoning_content) ||
-    (typeof choice.message?.reasoning === 'string' && choice.message.reasoning) ||
-    '';
+  const messageChannels = chatContentChannels(choice.message?.content);
+  const messageReasoning = reasoningTextFromContainer(choice.message) || messageChannels.reasoning;
   if (messageReasoning.length > 0) {
     events.push({ type: 'reasoning-delta', text: messageReasoning });
   }
-  const messageText = choice.message?.content;
-  if (typeof messageText === 'string' && messageText.length > 0) {
-    events.push({ type: 'text-delta', text: messageText });
+  if (messageChannels.text.length > 0) {
+    events.push({ type: 'text-delta', text: messageChannels.text });
   }
 
   if (events.length > 0 && !choice.finish_reason) {
@@ -527,7 +599,12 @@ async function* emitFromJsonCompletion(text: string, apiKey: string): AsyncItera
     error?: { message?: string };
     choices?: Array<{
       message?: {
-        content?: string;
+        content?: unknown;
+        reasoning_content?: unknown;
+        reasoning?: unknown;
+        thinking?: unknown;
+        analysis?: unknown;
+        reasoning_details?: unknown;
         tool_calls?: Array<{
           id?: string;
           function?: { name?: string; arguments?: string };
@@ -548,11 +625,16 @@ async function* emitFromJsonCompletion(text: string, apiKey: string): AsyncItera
   if (root.usage) {
     yield toUsageEvent(root.usage);
   }
-  const content = root.choices?.[0]?.message?.content;
-  if (typeof content === 'string' && content.length > 0) {
-    yield { type: 'text-delta', text: content };
+  const message = root.choices?.[0]?.message;
+  const channels = chatContentChannels(message?.content);
+  const reasoning = reasoningTextFromContainer(message) || channels.reasoning;
+  if (reasoning.length > 0) {
+    yield { type: 'reasoning-delta', text: reasoning };
   }
-  const toolCalls = root.choices?.[0]?.message?.tool_calls ?? [];
+  if (channels.text.length > 0) {
+    yield { type: 'text-delta', text: channels.text };
+  }
+  const toolCalls = message?.tool_calls ?? [];
   for (const [index, call] of toolCalls.entries()) {
     if (!call.function?.name) continue;
     yield {

@@ -249,7 +249,37 @@ describe('streamOpenAIChatCompletions', () => {
     expect(bodyJson.enable_thinking).toBeUndefined();
   });
 
-  it("collapses 'auto' to a valid wire effort (OpenAI rejects 'auto')", async () => {
+  it('accepts gateway reasoning aliases and content blocks without exposing redacted data', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":"先核对需求"},{"type":"reasoning.encrypted","data":"secret"}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":[{"type":"thinking","text":"再选择结构"},{"type":"text","text":"答案"}]}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req({ reasoningEffort: 'high' }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { type: 'reasoning-delta', text: '先核对需求' },
+        { type: 'reasoning-delta', text: '再选择结构' },
+        { type: 'text-delta', text: '答案' },
+      ]),
+    );
+    expect(JSON.stringify(events)).not.toContain('secret');
+  });
+
+  it('collapses \'auto\' to a valid wire effort (OpenAI rejects \'auto\')', async () => {
     const body = sseStream(['data: [DONE]\n\n']);
     fetchMock.mockResolvedValue({
       ok: true,
@@ -515,6 +545,36 @@ describe('streamOpenAIChatCompletions', () => {
       totalTokens: 18,
     });
     expect(events[events.length - 1]).toMatchObject({ type: 'finished' });
+  });
+
+  it('parses non-stream reasoning alongside visible content', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () =>
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: 'solid reply',
+                analysis: 'checked the constraints',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+        }),
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+    expect(events).toContainEqual({
+      type: 'reasoning-delta',
+      text: 'checked the constraints',
+    });
+    expect(textFromEvents(events)).toContain('solid reply');
   });
 
   it('OpenAIChatAdapter.call delegates to stream', async () => {
