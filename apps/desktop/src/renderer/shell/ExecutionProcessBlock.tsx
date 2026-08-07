@@ -387,10 +387,8 @@ export function FileChangesCard({
   onOpenChange?: (path: string) => void;
   onExpandRail?: () => void;
 }) {
-  // Single-file runs expand body by default (NewMax glance); multi-file stays list-first.
-  const [expandedPath, setExpandedPath] = useState<string | null>(
-    view.fileChanges.length === 1 ? view.fileChanges[0]?.path ?? null : null,
-  );
+  // File changes stay folded by default; the user expands a file to see its preview.
+  const [expandedPath, setExpandedPath] = useState<string | null>(null);
 
   if (view.fileChanges.length === 0) return null;
 

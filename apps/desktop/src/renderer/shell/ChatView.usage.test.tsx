@@ -123,4 +123,79 @@ describe('ChatView reply usage details', () => {
     const tooltip = await screen.findByRole('tooltip');
     expect(within(tooltip).getAllByText('未上报')).toHaveLength(2);
   });
+
+  it('collapses a long user message and expands on demand', async () => {
+    const longText = '这是一条超长的用户消息。'.repeat(200);
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [
+        {
+          id: 'user-long',
+          threadId: 'thread-usage',
+          role: 'user',
+          sequence: 0,
+          createdAt: '2026-08-04T09:00:00.000Z',
+          blocks: [{ type: 'text', text: longText }],
+        } as unknown as Message,
+      ],
+      hasMore: false,
+    });
+    // jsdom reports scrollHeight 0 — simulate a message taller than the cap.
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get: () => 500,
+    });
+    try {
+      render(
+        <ChatView
+          conversation={conversation}
+          modelName="GPT-5"
+          models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+          eventHistory={[]}
+          onTitleUpdated={vi.fn()}
+        />,
+      );
+
+      // Default collapsed: toggle shows 显示更多.
+      const expand = await screen.findByRole('button', { name: /显示更多/ });
+      expect(expand).toBeTruthy();
+      // Clicking expands the message.
+      fireEvent.click(expand);
+      expect(await screen.findByRole('button', { name: /收起/ })).toBeTruthy();
+      // Collapse again.
+      fireEvent.click(screen.getByRole('button', { name: /收起/ }));
+      expect(await screen.findByRole('button', { name: /显示更多/ })).toBeTruthy();
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', original);
+      else delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+    }
+  });
+
+  it('does not show the toggle for short user messages', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [
+        {
+          id: 'user-short',
+          threadId: 'thread-usage',
+          role: 'user',
+          sequence: 0,
+          createdAt: '2026-08-04T09:00:00.000Z',
+          blocks: [{ type: 'text', text: '短消息' }],
+        } as unknown as Message,
+      ],
+      hasMore: false,
+    });
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('短消息')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /显示更多|收起/ })).toBeNull();
+  });
 });

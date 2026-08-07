@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 
 /**
@@ -125,6 +125,19 @@ function DialogSurface(props: {
 }) {
   const { dialog } = props;
 
+  // 应用级确认框是全局最高模态。Radix 设置弹窗（modal）在 document 上挂
+  // 了 pointerdown/click 捕获监听来检测“点击弹窗外部”——确认框渲染在设置
+  // 弹窗之外，任何对确认框的 pointerdown 都会被误判为 outside 并关闭设置
+  // 弹窗。这里在 document 捕获阶段拦截所有 pointerdown，让 Radix 的检测
+  // 从源头收不到事件（确认框打开期间，其余 UI 已被遮罩盖住，无副作用）。
+  useEffect(() => {
+    const intercept = (event: PointerEvent) => {
+      event.stopPropagation();
+    };
+    document.addEventListener('pointerdown', intercept, true);
+    return () => document.removeEventListener('pointerdown', intercept, true);
+  }, []);
+
   const backdropClose = () => {
     // Only alerts dismiss on backdrop; confirm/prompt require an explicit choice.
     if (dialog.kind === 'alert') {
@@ -135,7 +148,7 @@ function DialogSurface(props: {
 
   return (
     <div
-      className="st-backdrop-in fixed inset-0 z-[210] flex items-center justify-center bg-black/50 backdrop-blur-[2px]"
+      className="st-backdrop-in pointer-events-auto fixed inset-0 z-[11000] flex items-center justify-center bg-black/50 backdrop-blur-[2px]"
       data-testid="app-dialog"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) backdropClose();

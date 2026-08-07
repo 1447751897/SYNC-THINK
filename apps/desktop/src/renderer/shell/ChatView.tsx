@@ -16,6 +16,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  ChevronUp,
   Copy,
   FileCode2,
   FileWarning,
@@ -3427,6 +3428,64 @@ export function ChatView({
 
 // ─── Message Bubble ───────────────────────────────────────────────────────────
 
+/**
+ * Collapsible user-message text. Messages taller than USER_TEXT_COLLAPSE_HEIGHT
+ * are collapsed by default with a height cap; the 显示更多 / 收起 toggle sits at
+ * the bottom-left of the bubble. Short messages render as-is.
+ */
+const USER_TEXT_COLLAPSE_HEIGHT = 160;
+
+const CollapsibleUserText = memo(function CollapsibleUserText({
+  text,
+}: {
+  text: string;
+}) {
+  const [collapsed, setCollapsed] = useState(true);
+  const [overflowing, setOverflowing] = useState(false);
+  const innerRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const el = innerRef.current;
+    if (!el) return;
+    // Inner is rendered at natural height; compare against the collapse cap.
+    setOverflowing(el.scrollHeight > USER_TEXT_COLLAPSE_HEIGHT);
+  }, [text]);
+
+  const expanded = !collapsed || !overflowing;
+  return (
+    <div className="shell-user-text">
+      <div
+        ref={innerRef}
+        className="shell-user-text__inner"
+        data-collapsed={!expanded}
+        style={expanded ? undefined : { maxHeight: USER_TEXT_COLLAPSE_HEIGHT }}
+      >
+        {text}
+      </div>
+      {overflowing ? (
+        <button
+          type="button"
+          className="shell-user-text__toggle"
+          onClick={() => setCollapsed((value) => !value)}
+          aria-expanded={expanded}
+        >
+          {expanded ? (
+            <>
+              <ChevronUp size={12} />
+              <span>收起</span>
+            </>
+          ) : (
+            <>
+              <ChevronDown size={12} />
+              <span>显示更多</span>
+            </>
+          )}
+        </button>
+      ) : null}
+    </div>
+  );
+});
+
 const MessageBubble = memo(function MessageBubble({
   message,
   processView,
@@ -3551,9 +3610,7 @@ const MessageBubble = memo(function MessageBubble({
                 ))}
               </div>
             ) : null}
-            {message.text ? (
-              <div className="whitespace-pre-wrap break-words">{message.text}</div>
-            ) : null}
+            {message.text ? <CollapsibleUserText text={message.text} /> : null}
           </div>
           {clockLabel ? (
             <div className="shell-msg-meta shell-msg-meta--user">
@@ -3965,8 +4022,16 @@ export function AssistantProcessGroup({
   const hasReasoning = Boolean(reasoningText?.trim());
   const stepCount = processView?.steps.length ?? 0;
   const changeCount = processView?.fileChanges.length ?? 0;
-  const active = Boolean(streaming || processView?.running);
-  const hasContent = hasReasoning || stepCount > 0 || changeCount > 0 || active;
+  const completed = Boolean(processView?.completedAt);
+  const lifecycleActive = Boolean(processView?.startedAt && !processView?.completedAt);
+  const active = Boolean(streaming || processView?.running || lifecycleActive);
+  const hasLifecycle = Boolean(processView?.startedAt || completed);
+  const hasDetails = hasReasoning || stepCount > 0 || changeCount > 0;
+  // Keep the application-owned run summary even when a provider withholds its
+  // reasoning trace. This mirrors NewMax's process card without fabricating or
+  // exposing hidden chain-of-thought: live runs show an observable status, and
+  // completed runs retain duration plus an explicit "no summary provided" note.
+  const hasContent = hasDetails || active || hasLifecycle;
   const [open, setOpen] = useState(Boolean(streaming));
   // Folded-state preview: first ~64 chars of the thinking, so the collapsed
   // bar shows what's inside instead of a bare label.
@@ -3994,7 +4059,7 @@ export function AssistantProcessGroup({
 
   const elapsed = formatAssistantProcessElapsed(processView, active, clockNow);
   const summaryParts = [
-    hasReasoning ? '深度思考' : undefined,
+    hasReasoning ? '深度思考' : completed ? '模型未提供思考摘要' : undefined,
     stepCount > 0 ? `${stepCount} 个工具步骤` : undefined,
     changeCount > 0 ? `${changeCount} 个文件变更` : undefined,
   ].filter(Boolean);
@@ -4033,7 +4098,16 @@ export function AssistantProcessGroup({
         </span>
         <ChevronDown size={15} className="shell-process-group__chevron" />
       </button>
-      {open ? <div className="shell-process-group__body">{children}</div> : null}
+      {open ? (
+        <div className="shell-process-group__body">
+          {children}
+          {!active && !hasDetails && completed ? (
+            <div className="shell-process-group__empty">
+              本轮已完成。供应商未返回可展示的思考摘要。
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

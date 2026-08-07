@@ -170,6 +170,10 @@ describe('MarkdownContent', () => {
     expect(headPos).toBeGreaterThan(-1);
     expect(fillPos).toBeGreaterThan(-1);
     expect(fillPos).toBeLessThan(headPos);
+    // The viewport meta keeps the guest layout width tied to the webview
+    // element so the preview layout matches a real browser tab.
+    expect(decoded).toContain('name="viewport"');
+    expect(decoded.indexOf('name="viewport"')).toBeLessThan(headPos);
   });
 
   it('wraps a bare html fragment in a document with the fill style in the head', () => {
@@ -186,5 +190,6 @@ describe('MarkdownContent', () => {
     expect(fillPos).toBeGreaterThan(-1);
     expect(fillPos).toBeGreaterThan(headPos);
     expect(fillPos).toBeLessThan(decoded.indexOf('<body>'));
+    expect(decoded).toContain('name="viewport"');
   });
 });

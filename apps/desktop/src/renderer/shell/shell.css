@@ -2773,6 +2773,13 @@ body {
   margin-bottom: 0;
 }
 
+.shell-process-group__empty {
+  padding: 7px 8px;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
 /*
  * Inside the fold the per-step cards lose their own border/background and
  * become plain rows — one container, many rows, instead of nested cards.
@@ -3495,6 +3502,62 @@ body {
   width: fit-content;
   overflow-wrap: break-word;
   word-break: break-word;
+}
+
+/* Collapsible long user messages: > 160px tall collapse with a height cap,
+   with a 显示更多 / 收起 toggle at the bottom-left of the bubble. */
+.shell-user-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+}
+
+.shell-user-text__inner {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  transition: max-height 180ms ease;
+}
+
+.shell-user-text__inner[data-collapsed='true']::after {
+  /* Soft fade hinting that the message continues below the fold. */
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 28px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--color-elevated) 88%, var(--color-text) 12%)
+  );
+  border-radius: 0 0 16px 16px;
+  pointer-events: none;
+  opacity: 1;
+}
+
+.shell-user-text__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.shell-user-text__toggle:hover {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: var(--color-text);
 }
 
 .shell-msg-meta {
@@ -4694,7 +4757,7 @@ body {
   flex: 0 0 234px;
   flex-direction: column;
   border-right: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: var(--color-chat);
 }
 
 .model-enabled-list__header {
@@ -6183,11 +6246,12 @@ body {
   flex: 0 0 auto;
   align-items: center;
   gap: 1px;
-  opacity: 0;
+  opacity: 0.45;
   transition: opacity var(--model-motion-fast) var(--model-ease-standard);
 }
 .model-priority-row:hover .model-priority-row__actions,
-.model-priority-row:focus-within .model-priority-row__actions {
+.model-priority-row:focus-within .model-priority-row__actions,
+.model-priority-row__actions:focus-within {
   opacity: 1;
 }
 .model-priority-row__actions button {
@@ -6966,33 +7030,18 @@ body {
  * The active path is carried by color: the selected workspace, selected
  * conversation, and chat canvas all share the surface background. Everything
  * else remains on the darker elevated navigation background.
+ *
+ * The workspace tab strip is a single uniform surface (--color-stage-tabs):
+ * the left tab area and the right command area share the same background so
+ * the whole row reads as one bar. In dark mode stage-tabs equals the main
+ * panel colour, so unselected tabs melt into the panel; the selected tab's
+ * own frame (--color-chat + tab-active-border) marks the active path.
  */
 .shell-workspace-tabs {
-  background: linear-gradient(
-    to right,
-    var(--color-elevated) 0%,
-    var(--color-elevated) 45%,
-    var(--color-panel) 45%,
-    var(--color-panel) 100%
-  );
+  background: var(--color-stage-tabs);
   border-radius: 0;
   border-left: 0;
   border-right: 0;
-}
-
-/*
- * Dark topbar is two-tone per product spec: the tab side sits on
- * --color-recent, the command side on --color-chat. Light mode keeps the
- * same split with the beige ramp (elevated → panel).
- */
-.dark .shell-workspace-tabs {
-  background: linear-gradient(
-    to right,
-    var(--color-recent) 0%,
-    var(--color-recent) 45%,
-    var(--color-chat) 45%,
-    var(--color-chat) 100%
-  );
 }
 
 /*

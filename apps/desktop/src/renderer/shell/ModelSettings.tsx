@@ -66,6 +66,7 @@ import type {
 } from '@sync-think/protocol';
 import { splitProviderUsageTokens } from '@sync-think/shared';
 import type { RendererUpdateProviderPayload } from '../../provider-payloads.js';
+import { useDialog } from './Dialog.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -248,6 +249,7 @@ export const ModelSettings = forwardRef<
     onDirtyChange?: (dirty: boolean) => void;
   }
 >(function ModelSettings({ onCatalogChanged, onDirtyChange }, ref) {
+  const dialog = useDialog();
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [operation, setOperation] = useState<UiOperation | null>(null);
@@ -1103,10 +1105,15 @@ export const ModelSettings = forwardRef<
     [completeSettings],
   );
 
-  const confirmDiscardChanges = useCallback(() => {
+  const confirmDiscardChanges = useCallback(async (): Promise<boolean> => {
     if (!hasTransientDraft) return true;
-    return confirm('当前有未提交的模型配置草稿，确认放弃并继续吗？');
-  }, [hasTransientDraft]);
+    return dialog.confirm({
+      title: '放弃未提交的修改',
+      message: '当前有未提交的模型配置草稿，确认放弃并继续吗？',
+      confirmText: '放弃',
+      danger: false,
+    });
+  }, [hasTransientDraft, dialog]);
 
   if (loading) {
     return (
@@ -1136,8 +1143,9 @@ export const ModelSettings = forwardRef<
             aria-selected={modelTab === id}
             className={modelTab === id ? 'is-active' : undefined}
             onClick={() => {
-              if (!confirmDiscardChanges()) return;
-              setModelTab(id as typeof modelTab);
+              void confirmDiscardChanges().then((ok) => {
+                if (ok) setModelTab(id as typeof modelTab);
+              });
             }}
           >
             <Icon size={13} aria-hidden="true" />
@@ -1179,11 +1187,13 @@ export const ModelSettings = forwardRef<
                   title="添加模型"
                   disabled={operation?.kind === 'create-provider'}
                   onClick={() => {
-                    if (!confirmDiscardChanges()) return;
-                    setLastSelectedId(selectedId);
-                    setDetailView('provider');
-                    setShowCreate(true);
-                    setSelectedId(null);
+                    void confirmDiscardChanges().then((ok) => {
+                      if (!ok) return;
+                      setLastSelectedId(selectedId);
+                      setDetailView('provider');
+                      setShowCreate(true);
+                      setSelectedId(null);
+                    });
                   }}
                 >
                   <Plus size={15} />
@@ -1222,11 +1232,13 @@ export const ModelSettings = forwardRef<
                             }
                             busy={providerListBusy}
                             onSelect={() => {
-                              if (!confirmDiscardChanges()) return;
-                              setShowCreate(false);
-                              setDetailView('provider');
-                              setSelectedId(provider.providerId);
-                              setLastSelectedId(provider.providerId);
+                              void confirmDiscardChanges().then((ok) => {
+                                if (!ok) return;
+                                setShowCreate(false);
+                                setDetailView('provider');
+                                setSelectedId(provider.providerId);
+                                setLastSelectedId(provider.providerId);
+                              });
                             }}
                             onDisable={() => handleToggleEnabled(provider, false)}
                           />
@@ -1262,11 +1274,13 @@ export const ModelSettings = forwardRef<
                   className={clsx('model-enabled-list__add', showCreate && 'is-active')}
                   disabled={operation?.kind === 'create-provider'}
                   onClick={() => {
-                    if (!confirmDiscardChanges()) return;
-                    setLastSelectedId(selectedId);
-                    setDetailView('provider');
-                    setShowCreate(true);
-                    setSelectedId(null);
+                    void confirmDiscardChanges().then((ok) => {
+                      if (!ok) return;
+                      setLastSelectedId(selectedId);
+                      setDetailView('provider');
+                      setShowCreate(true);
+                      setSelectedId(null);
+                    });
                   }}
                 >
                   <Plus size={13} /> 添加模型
@@ -1339,9 +1353,11 @@ export const ModelSettings = forwardRef<
                   className={detailView === 'vision' ? 'is-active' : undefined}
                   aria-pressed={detailView === 'vision'}
                   onClick={() => {
-                    if (!confirmDiscardChanges()) return;
-                    setShowCreate(false);
-                    setDetailView('vision');
+                    void confirmDiscardChanges().then((ok) => {
+                      if (!ok) return;
+                      setShowCreate(false);
+                      setDetailView('vision');
+                    });
                   }}
                 >
                   <Image size={13} />
@@ -1352,9 +1368,11 @@ export const ModelSettings = forwardRef<
                   className={detailView === 'plan-act' ? 'is-active' : undefined}
                   aria-pressed={detailView === 'plan-act'}
                   onClick={() => {
-                    if (!confirmDiscardChanges()) return;
-                    setShowCreate(false);
-                    setDetailView('plan-act');
+                    void confirmDiscardChanges().then((ok) => {
+                      if (!ok) return;
+                      setShowCreate(false);
+                      setDetailView('plan-act');
+                    });
                   }}
                 >
                   <Sparkles size={13} />
@@ -1410,6 +1428,7 @@ export const ModelSettings = forwardRef<
                   <ProviderDetail
                     provider={selected}
                     operation={operation}
+                    dialog={dialog}
                     connectionTest={connectionTests[selected.providerId] ?? EMPTY_CONNECTION_TEST}
                     onUpdateProvider={async (providerId, patch) => {
                       const ok = await handleUpdateProvider(providerId, patch);
@@ -1810,6 +1829,7 @@ function SecretInput({
 function ProviderDetail({
   provider,
   operation,
+  dialog,
   connectionTest,
   onUpdateProvider,
   onAddCredential,
@@ -1829,6 +1849,7 @@ function ProviderDetail({
 }: {
   provider: ProviderSummary;
   operation: UiOperation | null;
+  dialog: ReturnType<typeof useDialog>;
   connectionTest: ConnectionTestState;
   onUpdateProvider: (
     providerId: string,
@@ -2018,9 +2039,16 @@ function ProviderDetail({
                 onReveal={onRevealCredential}
                 onStage={(apiKey) => onStageCredentialSecret(credential.credentialRefId, apiKey)}
                 onRemove={() => {
-                  if (confirm('确认删除该 API 密钥？')) {
-                    onRemoveCredential(provider.providerId, credential.credentialRefId);
-                  }
+                  void dialog
+                    .confirm({
+                      title: '删除 API 密钥',
+                      message: `确定删除密钥「${credential.label ?? credential.credentialRefId}」吗？删除后该密钥的请求将无法使用。`,
+                      confirmText: '删除',
+                      danger: true,
+                    })
+                    .then((ok) => {
+                      if (ok) onRemoveCredential(provider.providerId, credential.credentialRefId);
+                    });
                 }}
               />
             ))
@@ -2076,7 +2104,7 @@ function ProviderDetail({
             <span className="model-newmax-section__label">
               模型优先级（{models.length || '至少添加一个'}）
             </span>
-            <small>主模型失败后按顺序尝试备用模型</small>
+            <small>主模型失败后按顺序尝试备用模型 · 悬停行尾的垃圾桶图标可删除模型</small>
           </div>
         </div>
         {models.length === 0 ? (
@@ -2113,9 +2141,14 @@ function ProviderDetail({
                     busy={busy}
                     onMove={(direction) => onMoveModel(provider, model.modelId, direction)}
                     onRemove={() => {
-                      if (confirm(`确认移除模型「${model.displayName}」？`)) {
-                        onRemoveModel(provider.providerId, model.modelId);
-                      }
+                      void dialog.confirm({
+                        title: '删除模型',
+                        message: `确定删除模型「${model.displayName}」吗？删除后需要重新添加才能使用，不会影响其他模型。`,
+                        confirmText: '删除',
+                        danger: true,
+                      }).then((ok) => {
+                        if (ok) onRemoveModel(provider.providerId, model.modelId);
+                      });
                     }}
                     onPin={(credentialId) => onPinCredential(provider, model.modelId, credentialId)}
                     onSaveContext={(contextWindow) =>
@@ -2767,7 +2800,7 @@ function SortableModelRow({
         <button
           type="button"
           className="is-danger"
-          title="移除模型"
+          title="删除模型"
           disabled={busy}
           onClick={onRemove}
         >

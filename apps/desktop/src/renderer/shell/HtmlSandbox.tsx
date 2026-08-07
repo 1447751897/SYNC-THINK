@@ -15,11 +15,27 @@
 //   paints the whole webview canvas with the chat-surface colour so short pages
 //   cannot show a white strip, and `body{min-height:100vh}` makes the page's
 //   own background fill the viewport instead of stopping at the content height.
+// - a `<meta name="viewport">` keeps the guest layout viewport tied to the
+//   webview element width, so the preview layout matches a real browser tab.
 // - the webview height follows the measured guest content (clamped), so short
 //   pages collapse to their real height instead of leaving an empty stage.
 // - an IntersectionObserver re-measures when the webview scrolls into view,
 //   because the shell uses content-visibility on message items: an off-screen
 //   webview loads late and misses its dom-ready/did-finish-load events.
+//
+// Scale alignment (why the preview can otherwise look bigger/smaller than the
+// rendered page):
+// - the guest is a separate renderer whose devicePixelRatio can differ from
+//   the host on Windows display scaling (125%/150%). When host DPR != guest
+//   DPR, 1 CSS px means different physical sizes on screen, so the embedded
+//   page renders at a different scale than the host UI around it.
+// - on dom-ready we read the guest DPR and call webview.setZoomFactor(hostDpr /
+//   guestDpr), which makes guest CSS pixels exactly as big as host CSS pixels.
+//   All measurements below then hold in host CSS pixels directly.
+// - the measure script uses body.getBoundingClientRect().height (the real
+//   rendered height) instead of documentElement rects, which equal the
+//   viewport height on short pages and would pin the stage to its current
+//   height — the "preview bigger than the page" symptom.
 //
 // Card chrome: the block is a collapsible card with a header bar that offers
 // 预览 (default live view) / 源码 (source view) tabs, 复制 and 浏览器打开.
@@ -75,35 +91,42 @@ function readChatBackground(): string {
  * the document (head or before the first <body>): a style appended after
  * `</html>` is silently dropped by the HTML parser, which was the root cause
  * of the white/unfilled strip for complete documents.
+ *
+ * A viewport meta is also injected so the guest layout viewport matches the
+ * webview element width (like a real browser tab) instead of using whatever
+ * default viewport the webview picks.
  */
 function buildSandboxSource(code: string, fallbackBg: string): string {
   const fill =
     '<style>html,body{margin:0}html{background-color:' +
     fallbackBg +
     '}body{min-height:100vh}</style>';
+  const viewport =
+    '<meta name="viewport" content="width=device-width, initial-scale=1">';
+  const headExtras = `${viewport}${fill}`;
   const source = code.replace(/\n$/, '');
 
-  const intoHead = (doc: string) => doc.replace(/<\/head>/i, `${fill}</head>`);
+  const intoHead = (doc: string) => doc.replace(/<\/head>/i, `${headExtras}</head>`);
   const intoBody = (doc: string) =>
-    doc.replace(/<body[^>]*>/i, (match) => `${fill}${match}`);
+    doc.replace(/<body[^>]*>/i, (match) => `${headExtras}${match}`);
 
   if (/<\/html>\s*$/i.test(source)) {
     const withHead = intoHead(source);
     if (withHead !== source) return toDataUrl(withHead);
     const withBody = intoBody(source);
     if (withBody !== source) return toDataUrl(withBody);
-    return toDataUrl(source.replace(/<\/html>/i, `${fill}</html>`));
+    return toDataUrl(source.replace(/<\/html>/i, `${headExtras}</html>`));
   }
   if (/<html[\s>]/i.test(source) || /<!doctype/i.test(source)) {
     const withHead = intoHead(source);
     if (withHead !== source) return toDataUrl(withHead);
     const withBody = intoBody(source);
     if (withBody !== source) return toDataUrl(withBody);
-    return toDataUrl(`${source}\n${fill}`);
+    return toDataUrl(`${source}\n${headExtras}`);
   }
-  // Bare fragment — wrap it in a full document with the fill in the head.
+  // Bare fragment — wrap it in a full document with the viewport + fill in the head.
   return toDataUrl(
-    `<!DOCTYPE html><html><head><meta charset="utf-8">${fill}</head><body>${source}</body></html>`,
+    `<!DOCTYPE html><html><head><meta charset="utf-8">${headExtras}</head><body>${source}</body></html>`,
   );
 }
 
@@ -114,6 +137,7 @@ function toDataUrl(html: string): string {
 interface HtmlSandboxWebview {
   reload?: () => void;
   executeJavaScript?: (code: string) => Promise<unknown>;
+  setZoomFactor?: (factor: number) => Promise<void> | void;
   addEventListener?: (
     event: 'dom-ready' | 'did-finish-load',
     listener: () => void,
@@ -124,15 +148,22 @@ interface HtmlSandboxWebview {
   ) => void;
 }
 
-/** Height-measuring script run inside the guest document. */
+/** Read the guest document's devicePixelRatio (CSS-px per physical px). */
+const READ_DPR_SCRIPT = `(() => window.devicePixelRatio || 1)()`;
+
+/**
+ * Height-measuring script run inside the guest document.
+ *
+ * body.getBoundingClientRect().height is the *rendered* height of the content
+ * box, which is exactly what the preview frame should occupy — documentElement
+ * scroll/offset/client heights all fall back to the *viewport* height on short
+ * pages, which would pin the frame to its current height and make the preview
+ * area bigger than the actual page.
+ */
 const MEASURE_SCRIPT = `(() => {
-  const d = document.documentElement;
   const b = document.body;
-  return Math.max(
-    d.scrollHeight, d.offsetHeight, d.clientHeight,
-    b ? b.scrollHeight : 0,
-    b ? b.offsetHeight : 0
-  );
+  const h = b ? b.getBoundingClientRect().height : 0;
+  return Math.max(h, b ? b.scrollHeight : 0);
 })()`;
 
 export function HtmlSandbox({ code }: HtmlSandboxProps) {
@@ -170,12 +201,48 @@ export function HtmlSandbox({ code }: HtmlSandboxProps) {
       });
   }, []);
 
+  /**
+   * Align the guest's CSS-pixel scale with the host's. The webview is a
+   * separate renderer whose devicePixelRatio can differ from the host on
+   * Windows display scaling (125%/150%): with host DPR != guest DPR, the
+   * embedded page renders at a different physical scale than the UI around
+   * it — the "preview size does not match the rendered page" symptom.
+   * setZoomFactor(hostDpr / guestDpr) makes one guest CSS px exactly one host
+   * CSS px, so the preview frame, page layout and measured heights all agree.
+   */
+  const alignScale = useCallback(() => {
+    const el = webviewRef.current as HtmlSandboxWebview | null;
+    if (
+      !el ||
+      typeof el.executeJavaScript !== 'function' ||
+      typeof el.setZoomFactor !== 'function'
+    ) {
+      return;
+    }
+    const hostDpr =
+      typeof window !== 'undefined' && window.devicePixelRatio > 0
+        ? window.devicePixelRatio
+        : 1;
+    el.executeJavaScript(READ_DPR_SCRIPT)
+      .then((guestDpr) => {
+        const ratio = Number(guestDpr);
+        if (!Number.isFinite(ratio) || ratio <= 0) return;
+        return el.setZoomFactor?.(hostDpr / ratio);
+      })
+      .catch(() => {
+        /* guest page unavailable — scale stays as-is */
+      });
+  }, []);
+
   // Measure at every meaningful load milestone, and once more shortly after
-  // dom-ready for async content (images, fonts, layout shifts).
+  // dom-ready for async content (images, fonts, layout shifts). Scale is
+  // aligned on dom-ready, before the first measurement, so measured heights
+  // are already in host CSS pixels.
   useEffect(() => {
     const el = webviewRef.current as HtmlSandboxWebview | null;
     if (!el || typeof el.addEventListener !== 'function') return;
     const listener = () => {
+      alignScale();
       measure();
       window.setTimeout(measure, 400);
     };
@@ -185,24 +252,26 @@ export function HtmlSandbox({ code }: HtmlSandboxProps) {
       el.removeEventListener?.('dom-ready', listener);
       el.removeEventListener?.('did-finish-load', listener);
     };
-  }, [measure]);
+  }, [alignScale, measure]);
 
   // The shell uses content-visibility on message items: an off-screen webview
   // only starts loading when scrolled into view, by which time dom-ready may
-  // have fired and been missed. Re-measure whenever the webview becomes
-  // visible so late-loaded pages still get their real height.
+  // have fired and been missed. Re-align scale and re-measure whenever the
+  // webview becomes visible so late-loaded pages still get their real height
+  // and scale.
   useEffect(() => {
     const el = webviewRef.current as HtmlSandboxWebview | null;
     if (!el || typeof IntersectionObserver === 'undefined') return;
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) {
+        alignScale();
         measure();
         window.setTimeout(measure, 300);
       }
     });
     observer.observe(el as unknown as Element);
     return () => observer.disconnect();
-  }, [measure]);
+  }, [alignScale, measure]);
 
   const handleCopy = useCallback(async () => {
     try {

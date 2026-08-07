@@ -35,7 +35,9 @@ describe('AssistantProcessGroup elapsed clock', () => {
       </AssistantProcessGroup>,
     );
 
-    expect(screen.getByRole('button').textContent).toContain('正在思考与执行… · 00:05');
+    const toggle = screen.getByRole('button');
+    expect(toggle.textContent).toContain('正在思考与执行… · 00:05');
+    expect(toggle.textContent).not.toContain('模型未提供思考摘要');
 
     act(() => {
       vi.advanceTimersByTime(1_000);
@@ -63,6 +65,26 @@ describe('AssistantProcessGroup elapsed clock', () => {
       vi.advanceTimersByTime(5_000);
     });
     expect(screen.getByRole('button').textContent).toContain('思考与执行过程 · 00:08');
+  });
+
+  it('keeps a completed process summary when the provider exposes no reasoning text', () => {
+    const completed = processView({
+      running: false,
+      completedAt: '2026-08-04T00:00:08.000Z',
+      durationMs: 8_000,
+    });
+
+    render(
+      <AssistantProcessGroup processView={completed}>
+        <div />
+      </AssistantProcessGroup>,
+    );
+
+    const toggle = screen.getByRole('button');
+    expect(toggle.textContent).toContain('思考与执行过程 · 00:08');
+    expect(toggle.textContent).toContain('模型未提供思考摘要');
+    act(() => toggle.click());
+    expect(screen.getByText('本轮已完成。供应商未返回可展示的思考摘要。')).toBeTruthy();
   });
 
   it('omits an invalid clock instead of rendering a bogus value', () => {

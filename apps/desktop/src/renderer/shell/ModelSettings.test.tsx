@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ProviderSummary } from '@sync-think/protocol';
+import { DialogProvider } from './Dialog.js';
 import { ModelSettings } from './ModelSettings.js';
 
 const provider: ProviderSummary = {
@@ -159,7 +160,11 @@ afterEach(() => {
 });
 
 async function renderSettings(onDirtyChange = vi.fn()) {
-  render(<ModelSettings onDirtyChange={onDirtyChange} />);
+  render(
+    <DialogProvider>
+      <ModelSettings onDirtyChange={onDirtyChange} />
+    </DialogProvider>,
+  );
   await screen.findByDisplayValue('CODEX');
   return onDirtyChange;
 }
@@ -297,7 +302,9 @@ describe('ModelSettings NewMax provider detail', () => {
     await renderSettings();
     fireEvent.click(screen.getByRole('button', { name: '图片识别 Fallback' }));
 
-    expect(screen.getByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { name: '图片识别 Fallback' }),
+    ).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
     fireEvent.click(screen.getByRole('switch'));
 
@@ -313,7 +320,9 @@ describe('ModelSettings NewMax provider detail', () => {
     await renderSettings();
     fireEvent.click(screen.getByRole('button', { name: '规划 & 执行模型' }));
 
-    expect(screen.getByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { name: '规划 & 执行模型' }),
+    ).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
     fireEvent.click(screen.getByRole('switch'));
 
