@@ -120,6 +120,70 @@ describe('SqliteMessageStore', () => {
     }
   });
 
+  it('round-trips reasoning blocks and rejects non-string reasoningText', async () => {
+    const { store, close } = await openStore();
+    try {
+      const input: Message = {
+        ...message(1),
+        blocks: [{ type: 'reasoning', reasoningText: 'inspect the durable handoff' }],
+      };
+      expect(store.createFinalMessage(input)).toEqual(input);
+      expect(store.getMessage(input.id)).toEqual(input);
+
+      expect(() =>
+        store.append({
+          ...message(2),
+          blocks: [
+            {
+              type: 'reasoning',
+              reasoningText: 42 as unknown as string,
+            },
+          ],
+        }),
+      ).toThrow(/reasoningText must be a string/);
+    } finally {
+      close();
+    }
+  });
+
+  it('round-trips commentary blocks with ordered timeline segments', async () => {
+    const { store, close } = await openStore();
+    try {
+      const input: Message = {
+        ...message(1),
+        blocks: [
+          {
+            type: 'commentary',
+            text: '先检查项目结构，再运行相关测试。',
+            payload: {
+              commentarySegments: [
+                {
+                  id: 'commentary-1',
+                  text: '先检查项目结构。',
+                  startedAt: '2026-08-08T01:02:03.000Z',
+                  completedAt: '2026-08-08T01:02:04.000Z',
+                  afterSequence: 12,
+                },
+                {
+                  id: 'commentary-2',
+                  text: '再运行相关测试。',
+                  startedAt: '2026-08-08T01:02:05.000Z',
+                  afterSequence: 15,
+                },
+              ],
+            },
+          },
+          { type: 'text', text: '检查完成。' },
+        ],
+      };
+
+      expect(store.createFinalMessage(input)).toEqual(input);
+      expect(store.getMessage(input.id)).toEqual(input);
+    } finally {
+      close();
+    }
+  });
+
   it('makes identical message-id retries idempotent and rejects changed content or sequence reuse', async () => {
     const { raw, store, close } = await openStore();
     try {

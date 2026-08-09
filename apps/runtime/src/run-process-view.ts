@@ -379,7 +379,9 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
       event.type === 'run.paused'
     ) {
       completedAt = event.occurredAt;
-      if (event.type === 'run.completed') terminalStepStatus = 'done';
+      if (event.type === 'run.completed' || event.type === 'run.paused') {
+        terminalStepStatus = 'done';
+      }
       if (event.type === 'run.failed' || event.type === 'run.cancelled') {
         terminalStepStatus = 'error';
       }
@@ -500,6 +502,9 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
                 ? (extractToolResultError(payload.result ?? payload.output) ??
                   resultSummary.preview)
                 : undefined,
+        sequence: event.sequence,
+        startedAt: event.occurredAt,
+        ...((completed || failed) ? { completedAt: event.occurredAt } : {}),
         occurredAt: event.occurredAt,
       });
       if (completed && (toolName === 'write_file' || toolName === 'edit_file') && built.path) {
@@ -515,6 +520,7 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
 
     if (failed) {
       existing.status = 'error';
+      existing.completedAt = event.occurredAt;
       existing.error =
         typeof payload.error === 'string'
           ? payload.error
@@ -525,6 +531,7 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
       const summary = summarizeResult(toolName, payload.result ?? payload.output, argsForSummary);
       const resultFailed = isToolResultFailure(payload.result ?? payload.output, summary);
       existing.status = existing.status === 'error' || resultFailed ? 'error' : 'done';
+      existing.completedAt = event.occurredAt;
       existing.preview = summary.preview ?? existing.preview;
       existing.exitCode = summary.exitCode ?? existing.exitCode;
       if (resultFailed && !existing.error) {
@@ -555,6 +562,10 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
     } else if (requested) {
       existing.status =
         existing.status === 'done' || existing.status === 'error' ? existing.status : 'running';
+      existing.sequence = Math.min(existing.sequence ?? event.sequence, event.sequence);
+      if (!existing.startedAt || event.sequence <= (existing.sequence ?? event.sequence)) {
+        existing.startedAt = event.occurredAt;
+      }
     }
 
     // Prefer richer labels/args if a later event carries them.
@@ -601,6 +612,17 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
       const base = prev.label.replace(/ ×\d+$/, '');
       prev.label = `${base} ×${prev.count}`;
       prev.preview = step.preview ?? prev.preview;
+      prev.sequence = Math.min(
+        prev.sequence ?? Number.POSITIVE_INFINITY,
+        step.sequence ?? Number.POSITIVE_INFINITY,
+      );
+      if (!Number.isFinite(prev.sequence)) prev.sequence = undefined;
+      if (!prev.startedAt || (step.startedAt && step.startedAt < prev.startedAt)) {
+        prev.startedAt = step.startedAt;
+      }
+      if (step.completedAt && (!prev.completedAt || step.completedAt > prev.completedAt)) {
+        prev.completedAt = step.completedAt;
+      }
       prev.occurredAt = step.occurredAt ?? prev.occurredAt;
       continue;
     }

@@ -18,6 +18,7 @@ import {
   parseWorkspacePaneLayout,
   parseWorkspacePaneLayouts,
   pruneWorkspacePaneLayout,
+  replaceConversationInPane,
   reorderPaneTabs,
   setSplitRatio,
   splitPaneWithConversation,
@@ -77,6 +78,33 @@ describe('workspace pane layout', () => {
     const reopened = openConversationInPane(reordered, 'c1');
     expect(paneConversationIds(reopened)).toEqual(['c3', 'c1', 'c2']);
     expect(focusedConversationId(reopened)).toBe('c1');
+  });
+
+  it('replaces a temporary conversation in place without changing tab order or focus', () => {
+    const initial = createWorkspacePaneLayout('ws-a', ['c1', 'draft:ws-a:1', 'c2'], 'draft:ws-a:1');
+    const paneId = rootPaneId(initial);
+    const replaced = replaceConversationInPane(initial, 'draft:ws-a:1', 'created-conversation');
+
+    expect(
+      replaced.panes[paneId]?.tabs
+        .filter((tab) => tab.type === 'conversation')
+        .map((tab) => tab.conversationId),
+    ).toEqual(['c1', 'created-conversation', 'c2']);
+    expect(replaced.panes[paneId]?.activeTabId).toBe('conversation:created-conversation');
+    expect(focusedConversationId(replaced)).toBe('created-conversation');
+  });
+
+  it('does not duplicate the replacement conversation when it is already open', () => {
+    const initial = createWorkspacePaneLayout(
+      'ws-a',
+      ['c1', 'draft:ws-a:1', 'created-conversation'],
+      'draft:ws-a:1',
+    );
+    const paneId = rootPaneId(initial);
+    const replaced = replaceConversationInPane(initial, 'draft:ws-a:1', 'created-conversation');
+
+    expect(paneConversationIds(replaced)).toEqual(['c1', 'created-conversation']);
+    expect(replaced.panes[paneId]?.activeTabId).toBe('conversation:created-conversation');
   });
 
   it('clamps split ratios and supports keyboard-sized adjustments', () => {

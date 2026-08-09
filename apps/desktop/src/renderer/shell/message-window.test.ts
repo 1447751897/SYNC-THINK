@@ -83,11 +83,21 @@ describe('message windowing', () => {
     ).toBe(true);
     expect(
       resolveBottomPinState({
-        currentlyPinned: true,
+        currentlyPinned: false,
         distanceFromBottom: 120,
         userIntent: null,
       }),
     ).toBe(false);
+  });
+
+  it('keeps an existing bottom pin while streaming layout growth creates temporary distance', () => {
+    expect(
+      resolveBottomPinState({
+        currentlyPinned: true,
+        distanceFromBottom: 2_400,
+        userIntent: null,
+      }),
+    ).toBe(true);
   });
 
   it('releases bottom pinning on the first explicit upward gesture', () => {

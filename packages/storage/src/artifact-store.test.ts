@@ -251,6 +251,8 @@ async function openLegacyConflictStore() {
       '0036_browser_profile_site_sessions',
       '0037_browser_recording',
       '0038_browser_automation_workflow',
+      '0039_capability_enablement',
+      '0040_capability_governance',
     ]);
     await runMigrations(dbPath);
   } finally {

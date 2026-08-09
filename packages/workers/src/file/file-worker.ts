@@ -109,7 +109,7 @@ const SEARCH_IGNORED_DIRS = new Set([
 
 /** Convert a brace/glob pattern into a path RegExp ('**' crosses segments). */
 export function globToRegExp(glob: string): RegExp {
-  let pattern = glob.replace(/\\/g, '/').replace(/^\.\//, '');
+  const pattern = glob.replace(/\\/g, '/').replace(/^\.\//, '');
   let out = '';
   let i = 0;
   while (i < pattern.length) {

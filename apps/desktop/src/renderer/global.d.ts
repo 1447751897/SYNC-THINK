@@ -68,10 +68,32 @@ import type {
   ListSkillsResponse,
   DeleteSkillPayload,
   DeleteSkillResponse,
+  SetSkillEnabledPayload,
+  SetSkillEnabledResponse,
   RegisterMcpServerPayload,
   RegisterMcpServerResponse,
   ListMcpServersPayload,
   ListMcpServersResponse,
+  SetMcpServerEnabledPayload,
+  SetMcpServerEnabledResponse,
+  CapabilityWorkspaceListPayload,
+  CapabilityWorkspaceListResponse,
+  CapabilityWorkspaceSetActivePayload,
+  CapabilityWorkspaceSetActiveResponse,
+  CapabilityGovernanceListPayload,
+  CapabilityGovernanceListResponse,
+  SaveSkillPublishDraftPayload,
+  SaveSkillPublishDraftResponse,
+  ListSkillPublishDraftsPayload,
+  ListSkillPublishDraftsResponse,
+  GetSkillPublishDraftPayload,
+  GetSkillPublishDraftResponse,
+  SubmitSkillPublishDraftPayload,
+  SubmitSkillPublishDraftResponse,
+  PreviewCapabilityOrganizePayload,
+  PreviewCapabilityOrganizeResponse,
+  GetLatestCapabilityOrganizePayload,
+  GetLatestCapabilityOrganizeResponse,
   ProbeMcpPolicyPayload,
   ProbeMcpPolicyResponse,
   RequestMcpToolPayload,
@@ -418,17 +440,48 @@ declare global {
         importSkill(payload: ImportSkillPayload): Promise<ImportSkillResponse>;
         listSkills(payload?: ListSkillsPayload): Promise<ListSkillsResponse>;
         deleteSkill(payload: DeleteSkillPayload): Promise<DeleteSkillResponse>;
+        setSkillEnabled(payload: SetSkillEnabledPayload): Promise<SetSkillEnabledResponse>;
         getSkill(
           payload: import('@sync-think/protocol').GetSkillPayload,
         ): Promise<import('@sync-think/protocol').GetSkillResponse>;
         fetchSkillMd(payload: { url: string }): Promise<{ url: string; skillMd: string }>;
         registerMcpServer(payload: RegisterMcpServerPayload): Promise<RegisterMcpServerResponse>;
         listMcpServers(payload?: ListMcpServersPayload): Promise<ListMcpServersResponse>;
+        setMcpServerEnabled(
+          payload: SetMcpServerEnabledPayload,
+        ): Promise<SetMcpServerEnabledResponse>;
         probeMcpPolicy(payload?: ProbeMcpPolicyPayload): Promise<ProbeMcpPolicyResponse>;
         requestMcpTool(payload: RequestMcpToolPayload): Promise<RequestMcpToolResponse>;
         probeMcpSpawn(payload?: ProbeMcpSpawnPayload): Promise<ProbeMcpSpawnResponse>;
         callMcpTool(payload: CallMcpToolPayload): Promise<CallMcpToolResponse>;
         refreshMcpTools(payload: RefreshMcpToolsPayload): Promise<RefreshMcpToolsResponse>;
+        listCapabilityWorkspaceActivations(
+          payload: CapabilityWorkspaceListPayload,
+        ): Promise<CapabilityWorkspaceListResponse>;
+        setCapabilityWorkspaceActive(
+          payload: CapabilityWorkspaceSetActivePayload,
+        ): Promise<CapabilityWorkspaceSetActiveResponse>;
+        listCapabilityGovernance(
+          payload: CapabilityGovernanceListPayload,
+        ): Promise<CapabilityGovernanceListResponse>;
+        saveSkillPublishDraft(
+          payload: SaveSkillPublishDraftPayload,
+        ): Promise<SaveSkillPublishDraftResponse>;
+        listSkillPublishDrafts(
+          payload?: ListSkillPublishDraftsPayload,
+        ): Promise<ListSkillPublishDraftsResponse>;
+        getSkillPublishDraft(
+          payload: GetSkillPublishDraftPayload,
+        ): Promise<GetSkillPublishDraftResponse>;
+        submitSkillPublishDraft(
+          payload: SubmitSkillPublishDraftPayload,
+        ): Promise<SubmitSkillPublishDraftResponse>;
+        previewCapabilityOrganize(
+          payload: PreviewCapabilityOrganizePayload,
+        ): Promise<PreviewCapabilityOrganizeResponse>;
+        getLatestCapabilityOrganize(
+          payload: GetLatestCapabilityOrganizePayload,
+        ): Promise<GetLatestCapabilityOrganizeResponse>;
         listWaitingDesktopCommands(
           payload?: ListWaitingDesktopCommandsPayload,
         ): Promise<ListWaitingDesktopCommandsResponse>;

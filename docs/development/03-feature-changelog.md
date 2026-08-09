@@ -1,3 +1,119 @@
+## 2026-08-09：Skill / MCP 治理与分屏工作台收口
+
+### Changed
+
+- 能力治理明确拆分全局发现、Workspace Compose 调用和 Agent 默认注入三条路径：全局开启后可发现；Workspace 未激活时 Compose `/` 不展示且不可调用；Workspace 激活后 Compose 才能选择；Agent 则默认注入自身绑定的 Skill，不依赖所在 Workspace 的激活关系。
+- Runtime、Compose、MCP dispatch 和能力中心共用全局启用、Workspace 激活、Agent 绑定三层判断；全局停用只阻断实际调用，不删除 Workspace 激活关系或 Agent 绑定。
+- 对话行保留 `+` 按钮，菜单新增“新建对话 / 新建终端 / 网页浏览”；点击后直接在当前 Pane 创建对应内容，不自动进入分屏。
+- “文件”和“工作区”合并为“工作区文件”，新增独立分屏打开/隐藏按钮；对话、终端、网页、文件和工作区文件均支持拖拽到其他 Pane。
+- 分屏、拖拽目标、面板打开/关闭加入过渡动画，浅色/深色主题 token、窄窗口适配和 `prefers-reduced-motion` 分支同步补齐。
+
+### Verification
+
+- 能力治理与 Compose/Agent 注入定向回归、分屏布局与拖拽交互回归共 65 项通过。
+- TypeScript 检查通过；Desktop build 通过。
+- Electron `capturePage()` 视觉矩阵 10 个用例通过，覆盖浅色、深色和 760px 窄窗口。
+
+### Boundary
+
+- `.codex` 下的本地截图与根目录 `sync-think-arch.html` 为本地证据/临时产物，不作为本阶段代码提交内容。
+
+## 2026-08-08：执行中待处理需求与显式插话
+
+### Changed
+
+- Run 执行期间 Composer 保持可输入。点击发送后，新需求先进入输入框上方的“待处理需求”区，而不是立即创建正式消息；队列支持 FIFO 序号、附件摘要、编辑、删除和显式“插话”。
+- 待处理需求按 Conversation 隔离并版本化保存到 Renderer `localStorage`，同时冻结入队时的模型、推理档位、联网开关、Skill 版本和附件快照。未派发草稿不进入 Message/Event、Provider 上下文或 Token 统计。
+- 当前 Run 进入 terminal 并完成持久化后，Renderer 自动派发队首；派发成功后才从草稿队列移除。自动派发失败会保留草稿并停止循环重试，用户可点击“重试”再次发送。
+- 点击“插话”会立即沿用现有正式发消息链路。Runtime 通过 `superseded-by-new-message` 取消同 Thread 的旧 Run，新用户消息随即启动新 Run；队列中其他需求保持原有顺序。
+- 被插话中止的助手 commentary 和部分 final answer 继续持久化。下一轮恢复 Provider 历史时先插入“上一轮回答已被用户中止”的 system 边界，再恢复中止前的用户可见部分，防止模型把残缺回答误判为完整终态。
+
+### Fixed
+
+- 将队列派发锁从 ChatView 单一布尔值改为按 Conversation 保存的 token 化状态，修复自动派发尚未完成时切换到其他对话再返回，会把同一草稿发送两次的问题。
+- 旧对话的异步发送结果现在只更新原 Conversation。`threadId`、乐观消息、标题、发送错误、自动压缩状态和输入框焦点不会再污染用户当前浏览的其他对话。
+- 跨对话后台派发失败会保留在原对话队列，并在返回原对话时恢复失败与重试状态；当前对话不会出现来自后台对话的错误提示。
+
+### Verification
+
+- Desktop 队列单元与 ChatView 集成回归覆盖：执行中入队、编辑、删除、显式插话、terminal 后 FIFO、失败保留与重试、重连去重、跨对话切换去重、后台失败隔离。
+- Runtime 上下文历史回归覆盖：cancelled assistant 的 commentary/final 恢复以及中止边界注入。
+
+## 2026-08-08：逐帧流式输出、上下文统计与连接状态收口
+
+### Changed
+
+- Desktop transient stream 改为由 `requestAnimationFrame` 逐帧消费：单次 paint 限制消费帧数与文字字符数，工具、Terminal 和终态作为批次边界，避免 Provider 已流式返回但页面仍按整段跳出的假流式体验。
+- 对话区增加 Codex 风格的左侧消息导航轨道：刻度按消息在完整会话中的实际位置分布，hover/focus 展示角色、正文摘要、commentary/运行状态与时间，点击后把目标消息定位到阅读视口上方约 25% 的统一阅读焦点。
+- 消息导航跳转会主动解除自动贴底；后续流式内容仍继续增长，但不会立即把用户从已跳转的历史消息拉回末尾。当前阅读消息使用更长刻度高亮，键盘焦点与 `aria-current` 同步。
+- 每轮助手回复恢复独立的耗时、模型与 Token 统计；commentary-only 轮次也保留统计。`provider.usage` 以 Provider `requestId` 去重，同一请求的渐进 usage 对各字段取最大值，没有 `requestId` 时按事件视为独立请求。
+- 上下文指标拆分为两个口径：当前上下文占用表示最近一次请求实际送入模型的输入 Token，会话累计消耗表示当前会话全部 Provider 请求的输入与输出 Token 总和；工具栏同时提供精确 Token 数值。
+- Runtime 连接层增加重试进度回调；重连、连接失败、同模型 retry 与 fallback 模型切换均以明确状态显示。活跃回复期间状态附着于当前助手轮次，无活跃回复时显示独立状态行，恢复连接后自动清除。
+
+### Fixed
+
+- 修复流式队列在一次调度中被同步清空、工具副作用早于对应文字帧执行的问题；队列未清空时持续申请下一帧，用户现在能看到内容稳定增长。
+- 修复导航点击锚点与当前阅读项判定焦点不一致的问题。跳转与滚动高亮现在共用 25% 阅读焦点，历史用户消息与相邻助手消息距离较近时，点击项不会在滚动稳定后被下一条消息抢走高亮。
+- 修复会话累计 Token 串入其他任务的问题。历史 usage 即使没有直接 `taskId/threadId`，也会通过两遍建立的 `runId → taskId/threadId` 与 `threadId → taskId` 索引回溯归属；明确属于其他任务或完全无法归属的歧义 usage 不再计入当前会话。
+- 新产生的 `provider.usage` 直接携带 `threadId`，关键 context/run/provider/tool 事件写入顶层 `taskId`，降低后续历史恢复时的归属歧义。
+
+### Verification
+
+- Adapters 定向回归：3 files / 61 tests；Runtime 定向回归：4 files / 22 tests；Desktop 流式、usage 与消息导航定向回归：5 files / 36 tests。
+- 根级 `pnpm test`：20/20 Turbo tasks；Desktop 141 files / 990 tests，Runtime 77 files / 511 tests。
+- 根级 `pnpm typecheck`：20/20 tasks；根级 `pnpm build`：11/11 tasks。
+- Electron 视觉矩阵：10/10 场景通过，覆盖重连与 fallback 状态、短文本完整展示、流式内容跟随最新位置，以及 commentary 与折叠工具组按真实顺序混排。
+- 实机证据目录：`.data/phase3-visual/stream-usage-connection-final/`。
+
+## 2026-08-08：Codex-style commentary / tools / final_answer 协议收口
+
+### Changed
+
+- Runtime、Storage、Adapters 与 Desktop 的普通执行语义统一为 `assistant commentary → tool call/result → assistant commentary → final_answer`。OpenAI Responses 原生保留 phase；Chat Completions 与 Anthropic 仅在 serializer 层做协议降级，不污染内部 canonical history。
+- 普通聊天 UI 现在只把 commentary 作为用户可见执行说明。Provider reasoning、reasoning summary 与 encrypted reasoning 继续保留在诊断、导出、兼容恢复和上下文连续性链路中，但不再渲染为“思考过程”，也不再产生 reasoning-only 空助手行。
+- 执行过程按真实 sequence 混排 commentary 与工具调用。连续工具默认折叠为一个“调用了 N 个工具”区块，组内每个工具可单独展开；移除步骤 `HH:mm:ss`，仅保留顶层整体耗时。
+- Runtime 的 Codex-style developer prompt 要求 commentary 跟随最新用户消息语言，在有意义的工具工作前后给出简短说明，并把 terminal response 与 commentary 分离。Provider 未返回 commentary 时只展示真实工具，不在客户端伪造文字。
+
+### Fixed
+
+- 修复 fallback 切换后 SQLite 最终 assistant message 丢失失败模型已展示 commentary 的问题。切换现在会关闭旧 segment、保留 commentary，并清除部分 final answer、legacy pending text、reasoning 与未完成工具；备用模型从新 segment 继续。
+- 修复 transient reset/reconnect、终态交接和 durable message 到达期间 commentary 被空快照或旧快照覆盖的问题；已展示内容保持单调，不消失也不重复。
+- 删除旧 `ReasoningBlock` 和 `.shell-reasoning*` 展示层，reasoning-only durable message 不再留下空白助手气泡；terminal-only 错误消息仍正常显示。
+- 修复 Windows 下 MCP/Terminal 取消收尾竞态：共享幂等的进程树终止器会合并重复终止请求，并在发出 `completed` 或清理临时目录前等待 `taskkill`、子进程关闭和 PID 消失，消除 Turbo 并发测试中的残留进程与偶发 `EBUSY`。
+
+### Verification
+
+- 根级 `pnpm test`：20/20 Turbo tasks 成功；Desktop 140 files / 981 tests、Runtime 77 files / 511 tests、Workers 16 files / 146 passed / 3 skipped。
+- Workers 全量测试通过；MCP + Terminal 竞态定向测试连续三轮均为 2 files / 21 tests。
+- 根级 `pnpm typecheck`：20/20 tasks 成功；`pnpm build`：11/11 tasks 成功。
+- `git diff --check` 通过；仅保留 3 个工作区既有 CRLF→LF 提示，无空白错误。
+
+## 2026-08-07：历史 Run 状态对账与执行过程折叠改造
+
+### Fixed
+
+- 修复 Desktop 重连后仅凭历史 `run.started` 推导活动状态、在终态事件缺失时让任务永久显示“正在运行”的问题。Runtime health 现在同时返回当前活动 Run ID 集合与 durable Event sequence；Desktop 仅在 Runtime 明确确认后忽略边界内的孤儿开始事件，并同时用于任务列表与当前对话 streaming 投影。
+- 执行过程改为单层、默认折叠的披露行；streaming 开始或结束不再覆盖用户的展开选择。展开后直接显示紧凑工具横条与完整“深度思考”，不再嵌套第二层思考折叠。
+- 执行耗时改为自然中文格式（如 `5秒`、`1分33秒`、`1小时2分3秒`）；工具类型图标位于左侧，完成/运行/失败状态固定在横条右侧。
+- 流式内容跟随由内部 Reasoning 区迁移到唯一的执行过程滚动容器；用户向上滚动后停止强制跟随，回到底部后恢复，避免双层滚动与展开后跟随失效。
+- transient terminal 不再立即卸载助手草稿，而是保留当前正文与 reasoning，直到同一 Run 的 durable assistant message 已从 Message Store 到达；消除终态刷新期间的短暂空白和页面跳动。
+- 上游在输出任何正文/reasoning 前失败时，terminal 现在会立即清理仅由 process frame 创建的空助手草稿，不再等待实际不会产生的 durable assistant message；已有正文或 reasoning 的失败草稿仍会保留到 durable 状态完成交接。
+- reset/reconnect snapshot 改为按同一 Run 单调合并，空快照或晚到的旧快照不会覆盖已显示的较新 reasoning；工具 process frame 也不会再清空文字思考。
+- Message Store、Runtime 与 Desktop 补齐 reasoning-only 消息链路；OpenAI Responses Adapter 同时提取流式 reasoning delta 和 completed/non-stream reasoning summary，并对已流式内容去重。
+- 思考片段与工具调用改为同一条执行时间线，按 Runtime durable boundary 和实际时间交错展示“思考 → 工具及结果 → 后续思考”，每个节点显示 `HH:mm:ss`；不再把全部工具与全部思考分成两个聚合区域。
+- Runtime 为 reasoning 记录工具边界前后的有界分段，并把 `sequence / startedAt / completedAt` 投影到工具步骤；终止、取消、失败和重连恢复均保留并封口最后一段思考。Provider 未返回 reasoning 通道时仍只显示真实工具步骤。
+- 对话级自动滚动不再由 `sending` 或 streaming 状态翻转额外触发，只在消息集合实际变化时执行，并继续尊重用户上滚意图。
+
+### Verification
+
+- Desktop 定向 Vitest：9 个测试文件、88 个测试通过；Runtime 定向 Vitest：2 个测试文件、8 个测试通过。
+- `pnpm --filter @sync-think/runtime typecheck` 与 `pnpm --filter @sync-think/desktop typecheck` 通过。
+- Runtime lint 通过；Desktop lint 为 0 errors，仅保留 `BrowserWorkflowPanel.tsx:851` 与 `ChatView.tsx:2045` 两个既有 Hook warning；`pnpm lint:tokens`、Prettier 与 `git diff --check` 通过。
+- Phase 3 capture 脚本测试 4/4 通过；8-case 明暗主题视觉矩阵全部生成并通过 manifest 校验，证据目录为 `.data/phase3-visual/run-state-fix-final`。
+- `pnpm build` 11/11 成功。
+- reasoning 持续展示补充回归：Desktop 4 文件 / 24 项、Runtime 1 文件 / 11 项、Storage 1 文件 / 7 项、Responses Adapter 1 文件 / 12 项全部通过；Desktop、Runtime、Storage、Adapter typecheck 通过；最终 `pnpm build` 11/11 成功。
+- 空 terminal draft 卡住补充回归：Desktop 6 文件 / 60 项通过；根级 `pnpm typecheck` 20/20、`pnpm build` 11/11 通过；新实例 Runtime healthcheck 为 `inFlightRuns=0`，pipe/database/hello ready，启动 stderr 为空。
+
 ## 2026-08-04：内部无签名闭测发布链最终收口
 
 ### Fixed
@@ -2536,3 +2652,118 @@ Desktop typecheck/build：passed
 - 最终门禁：Desktop 135 files / 927 tests；根 test 20/20、typecheck 20/20、lint 11/11、build 11/11，全部 0 cached，design tokens、Prettier 与 diff check 通过。第一次根测试仅出现已知 Workers Terminal 临时目录 `EBUSY`，单文件 `8/8` 与第二次根测试完整通过。
 - 最新源码实例保持运行：Electron PID `23536`、Runtime PID `22000`、CDP `127.0.0.1:9342`，Pipe healthcheck 为 `ok` 且 `inFlightRuns=0`；最终 stderr 只有 DevTools 监听信息。未生成安装包，未提交、未推送。
 - 最终刷新验收后，隔离 fixture 的生命周期 Task 另有一个空的下一版 Draft，当前 Task 为 `draft` 但发布指针仍指向 V2；V1/V2 不可变记录保持。现有产品没有取消/丢弃修订入口，本轮保留该真实状态并将其列入后续合同，不直接修改数据库。
+
+## 2026-08-08 · 重连提示、文本块完整展示与思考跟随修复
+
+- Runtime 在同模型重试时新增并持久化 `run.retrying`，携带当前次数、最大次数、模型和失败分类；既有 `run.fallback.selected` 继续作为备用模型切换真源。
+- 对话中的当前助手轮次新增“正在重新连接 N/M”和“正在切换备用模型：A → B”状态；同 Run 恢复输出或进入完成、失败、取消、暂停终态后自动撤下。
+- Markdown fenced code/text 块只在超过展开阈值时应用折叠高度；短文本块恢复自然高度，修复内容被截断但没有展开按钮的问题。
+- 执行过程改用布局阶段跟随最新思考内容，并区分用户上滚和内容增长产生的滚动事件；用户上滚暂停，回到底部或重新展开后恢复。
+- 定向验证通过：Desktop 核心回归 3 files / 32 tests、最终视觉场景回归 4 files / 37 tests，Runtime fallback 1 file / 6 tests，Phase 3 capture 脚本 4/4。
+- 最终门禁：根级 `pnpm typecheck` 20/20 tasks、`pnpm build` 11/11 tasks、Electron 视觉矩阵 10/10 通过；真实渲染证据位于 `.data/phase3-visual/connection-scroll-fix-final/`，其中短文本块末行完整可见，luna 流式思考最新标记保持在可视区域底部。
+
+## 2026-08-08 · 思考文字段落恢复与工具调用分组
+
+- 根因确认：OpenAI Chat 兼容适配器把结构化 `reasoning_details` 数组和 `content` 中的多个 reasoning block 使用空字符串直接拼接，导致 Provider 返回的可展示 reasoning summary 丢失段落边界；历史消息仅依赖 persisted `reasoningSegments` 恢复时又执行了一次无分隔聚合。
+- Adapter 现在只对结构化 reasoning 非空块使用双换行连接，普通字符串 delta 和跨 SSE frame 增量继续原样传递；visible content 与 reasoning 通道仍严格分离。
+- 执行时间线改为先按 durable sequence 或时间排序，再把相邻工具压缩为“调用了 N 个工具”的默认折叠组；展开工具组后显示全部工具和各自时间，每个工具仍可独立展开详情。
+- Provider reasoning summary 从 `<pre>` 裸文本改为轻量 Markdown 渲染，支持段落、强调、列表和行内代码；Provider 没有返回 reasoning 通道时仍只展示真实工具调用。
+- 新增 Adapter、durable 消息恢复、时间线排序、工具组两级折叠、Markdown 和 Phase 3 视觉 fixture 回归。
+
+## 2026-08-08 · Responses 实时流、消息导航与上下文用量恢复
+
+- OpenAI Responses 的无显式 phase 正文不再进入仅用于兼容的 legacy 文本缓冲，而是直接映射为 `assistant-message-delta(final_answer)`；思考 commentary 与最终总结均通过统一的瞬态展示队列按可读节奏逐步渲染。
+- Adapter 按 `item_id` 与 `output_index` 跟踪 assistant message item，并额外按 `commentary/final_answer` phase 汇总真实 live delta。真实网关即使在 `response.completed` 中改写终态 item 身份，也只会补发该 phase 尚未流出的文本后缀；完整重复的终态快照不会再生成幽灵 start/end 或把最终总结追加第二遍，同时纯终态返回的多个合法 message 仍会完整保留。
+- 对话正文左侧新增 Codex 风格消息导航轨道：hover/focus 展示角色、时间、摘要与状态，点击定位对应消息，当前阅读项跟随滚动高亮；用户点击历史消息后会暂停自动贴底，回到底部后恢复流式跟随。
+- 导航轨道改由整条 rail 根据鼠标纵坐标选择最近的视觉 tick，解决长对话中相邻 10px 命中区重叠、后渲染消息抢占 hover/click 的问题；键盘焦点与 Enter 定位仍保留，滚轮经过轨道时继续转发给对话视口。
+- 乐观用户消息在 durable 同 ID 消息进入投影的同一 render 内即从展示集合剔除，不再等待后续 effect 清理；消除了导航重复 key、消息数量瞬时增加和对应的布局闪跳。
+- 自动贴底改为区分“流式内容增长”和“用户主动滚动”：已贴底时，思考或总结持续增长不会因距离突然变大而解除 bottom pin；只有明确向上滚动才暂停跟随，返回底部后恢复。
+- 单轮回复 Token footer 恢复按真实 Provider `requestId` 累计展示；会话总上下文按当前 task/thread/run 索引隔离统计，progressive usage 对同一请求取最大快照、对多个请求求和，避免重复累计和串入其他任务。
+- 请求日志补齐真实 Provider、模型、requestId、输入/输出、reasoning、缓存与总 Token；OpenAI Chat/Responses 开启 usage stream，Anthropic usage 继续归一化到统一合同。
+- 使用统计的请求详情改为“请求信息 / Token 明细 / 费用明细”三段紧凑布局，真实展示 requestId、Task/Run/Step、Provider ID、Provider 模型、请求用途、reasoning Token 与总 Token；长标识允许换行，不再只展开费用或被表格省略。
+- 历史 Run 的 process snapshot 在桥接重启或旧版本短暂返回 `null/undefined` 时保持已有 Map，不再因访问空 process 导致整个 `ChatView` 卸载，单轮 Token、失败原因和流式内容因此能够持续保留。
+- 自动化验证：Adapters 8 files / 108 tests、Runtime 全量测试、Desktop 142 files / 1002 tests 全部通过；根级 typecheck 20/20、build 11/11 通过。新增覆盖“网关改写 completed item 身份”和“相邻导航 tick 命中区重叠”的回归测试，确认最终总结只输出并持久化一份、导航 hover/click 始终选择最近视觉项。
+
+## 2026-08-08 · 对话导航纵向紧凑布局修复
+
+- 根因确认：导航宽度与按钮命中区虽然已经缩小，但刻度纵坐标仍按助手消息在完整正文中的真实 DOM 高度映射；长回答因此会把相邻轮次拉开，视觉上仍像稀疏滚动刻度。
+- 导航现在只为助手轮次生成刻度，前置用户提问合并到对应助手轮次的 hover 摘要；整组刻度始终在可视轨道内垂直居中，间距随助手轮次数量连续递减，超长对话则继续等比压缩到安全边界内。
+- 视觉位置与定位位置正式解耦：刻度排列不再受回答高度影响，点击后仍重新测量目标消息的真实 DOM 坐标并执行多帧定位校正，不降低长消息与虚拟化消息的跳转准确性。
+- 整条 rail 的 hover 只在距最近刻度 `6px` 内生效，避免紧凑按钮相邻时命中区互相覆盖，也避免轨道剩余空白持续选中最后一个导航项。
+- 当前阅读轮次使用更长的强调色刻度与克制光晕；滚动时按统一阅读焦点更新，点击定位稳定期间暂停重新判定，避免高亮闪烁或被相邻轮次抢占。
+- 新增少量/中量/大量轮次居中与密度递减、超长轨道压缩、相邻刻度 hover/click、跳转前后坐标稳定及滚动高亮回归。
+
+## 2026-08-08：上下文口径、插话模型与执行终态一致性修复
+
+### Changed
+
+- 上下文入口明确拆分“当前上下文窗口”和“会话累计 Token”：当前窗口按当前选中模型查询 `estimatedUsedTokens/contextWindow`，会话累计按当前 Task/Thread 的 `provider.usage` requestId 去重汇总输入与输出；Provider 尚未上报 usage 时显示“尚未上报”，不再伪装成 `0`。
+- 待处理需求仍保留正文、附件、推理强度、联网与 Skill 的入队快照，但模型在正式派发时读取界面当前选择。用户先切换到 GPT-5.6 Luna、再点击“插话”或等待自动派发时，请求模型与当前选中状态保持一致。
+- “完全访问”“思考强度”“模型选择”的 hover、展开和选中态统一为更清晰的背景、边框、内描边与强调文字；模型选项补充 `menuitemradio/aria-checked` 语义。
+
+### Fixed
+
+- Durable `run.completed/run.failed/run.cancelled/run.paused` 现在按最高 sequence 覆盖陈旧的 `process.running` 快照，停止 spinner、冻结完成时间和耗时，并把残留 running 工具归并为 done/error，修复任务终态后仍长期显示“执行中”的问题。
+- `ChatView` 的历史消息、活动任务和执行过程统一使用终态校正后的 Run Process 投影，避免不同区域分别读取旧快照而出现状态不一致。
+- 切换模型后立即按目标模型刷新上下文窗口容量，避免 Luna 等不同窗口容量的模型仍显示切换前模型数据。
+
+### Verification
+
+- 定向回归通过：Desktop `10 files / 84 tests`，Runtime `3 files / 24 tests`；覆盖上下文模型隔离、Task 累计 usage、插话派发模型、Run 终态投影、残留工具归并和菜单选中态。
+- 类型与构建通过：`@sync-think/desktop typecheck`、`@sync-think/runtime typecheck`、`@sync-think/protocol build` 均成功；根级 `pnpm build` 为 `11/11 tasks successful`，`git diff --check` 通过。
+- Luna 真源验收：内部模型 `GJHCY9YA6JYMBF27ZM1VGZYNM5` 映射 Provider 模型 `gpt-5.6-luna`，上下文窗口 `400000`；当前窗口估算 `8627 / 400000`（`2.15675%`），压缩阈值 `70%`。
+- Task `XP1B4HZV6C3HQR793JS7KNKP8X` 的累计用量按 12 个 requestId 去重后为输入 `82504`、输出 `1141`、总计 `83645`、缓存命中 `49152`、reasoning `570`。
+- 插话模型切换实测：原任务继续使用 `gpt-5.6-luna`；切换到 `gpt-5.6-sol` 后点击插话，新 Run `66FQ6HZRWX6ENR3F7B1M73JF97` 的实际 `providerModelId` 为 `gpt-5.6-sol`，并以 `run.completed` 正常结束。
+- 取消终态实测：Run `ZKN17HZFP66PWY0M3ED2F0KAY6` 收到 durable `run.cancelled`；Runtime 查询为 `health.ok=true`、`inFlightRuns=0`，确认界面不应继续显示“执行中”。
+- 最新源码实例保持运行：Electron PID `37516`、Runtime PID `130200`、CDP `127.0.0.1:9333`；日志仅包含 DevTools 监听、Runtime pipe/database ready 与 hello accepted，未发现新增异常。
+
+## 2026-08-08：智能体/小队视觉统一、新会话草稿与模型分类添加流程
+
+### Changed
+
+- 智能体与小队列表统一接入 `.shell-library-*` 视觉规范：卡片高度、标题与描述对齐、空描述占位、操作按钮、hover、选中态和移动端单列布局保持一致；绿色仅用于主操作，中性背景用于普通选中和悬停反馈。
+- 智能体详情页和小队详情页统一输入框、下拉框、文本框、子面板、边框、阴影与 focus 状态；智能体详情弹窗补充 `role="dialog"`、`aria-modal` 和动态 `aria-label`。
+- 设置弹窗移除 `translate(-50%, -50%)` 居中方式，改为 `inset: 0; margin: auto; transform: none`，拖动位置使用整数偏移，降低 Windows 125% 缩放下文字落在半像素导致的模糊。
+- “添加模型”先进入服务商目录，再按推荐服务、国内服务、聚合平台、海外平台和本地模型分类选择；支持服务商模板预填、自定义供应商、NewMax Gateway 与 CC Switch 导入，并允许从配置表单返回目录或取消恢复原供应商。
+
+### Fixed
+
+- 新建会话不再进入独占空白状态，而是在当前工作区的现有会话列表中直接插入本地 `draft:*` 草稿；历史会话始终可见，同工作区重复新建时复用已有空草稿。
+- 草稿首次发送消息时才创建 Runtime 正式会话，并在列表原位置替换草稿 ID；首轮发送前关闭草稿只清理本地状态，不产生无效持久化会话。
+- 修复智能体/小队列表页与详情页之间颜色、背景、选中状态和布局对齐不一致的问题；补齐详情弹窗、串行/并行模式切换和“开始对话”按钮的交互回归。
+
+### Verification
+
+- 定向回归通过：Desktop `6 files / 70 tests`，覆盖智能体、小队、模型设置、新会话草稿、视觉 fixture 与设置页。
+- Desktop 全量回归通过：`146 files / 1050 tests`。
+- `@sync-think/desktop typecheck` 与 `@sync-think/desktop build` 均通过，关键文件 `git diff --check` 无空白错误。
+- 最新源码实例已重启：Electron PID `22432`、Runtime PID `122684`；窗口标题为 `SYNC-THINK`、`Responding=true`、`IsHung=false`，Pipe healthcheck 返回 `ok=true` 且 `inFlightRuns=0`。启动日志位于 `.data/local-restart-20260808-041322-ui-unification/`。
+
+## 2026-08-09 · TD-040 Skill / MCP 能力治理与能力中心收口
+
+### Changed
+
+- Storage 新增 Skill/MCP 能力治理数据层：支持全局启用状态、Workspace 激活关系、Agent 绑定投影、能力来源与版本信息，以及按能力和 Workspace 记录调用用量。
+- Runtime 新增能力治理命令与严格 payload 校验，执行前按“全局启用、当前 Workspace 激活、Agent 绑定”三层规则计算有效能力集合；全局停用只阻断调用，不删除 Workspace 激活关系或 Agent 绑定。
+- Compose 的 `/` Skill 入口改为只展示当前有效的 Agent/Team owner 绑定、全局启用且已在当前 Workspace 激活的 Skill，并继续保留每轮最多 8 项和临时覆盖规则。
+- Desktop 新增能力中心，统一承载 Skill 与 MCP 列表、市场/我的切换、搜索、来源与状态筛选、Workspace 激活、全局启用、Agent 绑定、最近 45 天调用统计和失败计数。
+- Skill 市场编辑支持创建本地派生版本并保留市场来源关系；新增本地发布草稿的保存、列表、详情和编辑回填。
+- “一键整理”只生成只读检查报告，列出未使用、未激活、有问题和上下文占用较高的能力，不自动删除、停用或改变绑定。
+
+### Fixed
+
+- MCP 工具目录与实际 dispatch 统一接入同一套三层治理规则，不再只依据安装状态或 Agent 绑定绕过 Workspace 激活。
+- 能力用量按稳定幂等标识去重，成功、失败、取消均计入调用次数，失败额外计入问题计数。
+- 暂未开放市场发布渠道时，提交本地草稿返回稳定的 `channel-unavailable` 结果，并保留草稿内容供后续编辑；不伪造审核或已发布状态。
+
+### Verification
+
+- Desktop 能力中心定向回归：3 files / 13 tests。
+- Runtime chat tools 与能力治理定向回归：2 files / 64 tests。
+- `pnpm test --force --concurrency=1`：20/20 Turbo tasks 通过；Runtime 80 files / 526 tests，Storage 37 files / 406 tests。
+- `pnpm typecheck`：20/20 tasks 通过；`pnpm lint`：11/11 tasks 通过；`pnpm lint:tokens` 与 `git diff --check` 通过；`pnpm build`：11/11 tasks 通过。
+
+### Boundary
+
+- 当前市场目录与发布提交仍是本地能力：发布草稿可编辑和保存，真实市场渠道尚未开放。
+- 整理报告保持只读；已安装能力的删除、Workspace 关系删除和 Agent 绑定删除不由本轮“一键整理”执行。

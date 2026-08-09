@@ -18,10 +18,11 @@ describe('run process renderer wiring', () => {
   it('loads and stores one projected process object per run', () => {
     expect(chatViewSource).toContain('runProcessById');
     expect(chatViewSource).toContain('.getConversationRunProcess({ runId })');
-    expect(chatViewSource).toContain('updateRunProcess(event.snapshot.process)');
+    expect(chatViewSource).toContain('process: event.snapshot.process');
+    expect(chatViewSource).toContain('if (item.process) updateRunProcess(item.process)');
     expect(chatViewSource).toContain('updateRunProcess(frame.process)');
     expect(chatViewSource).toContain(
-      'processView={msg.runId ? runProcessById.get(msg.runId) : undefined}',
+      'processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}',
     );
   });
 
@@ -44,7 +45,7 @@ describe('run process renderer wiring', () => {
     expect(processBlockSource).not.toContain('projectExecutionProcess');
     expect(rightRailSource).not.toContain('projectExecutionProcess');
     expect(processBlockSource).toContain('view: RunProcessView');
-    expect(processBlockSource).toContain('<StepCard');
+    expect(processBlockSource).toContain('<ExecutionProcessStepCard');
     expect(processBlockSource).toContain('view.fileChanges.map');
   });
 
@@ -59,6 +60,16 @@ describe('run process renderer wiring', () => {
     expect(chatViewSource).toContain('transientFrameQueueRef');
     expect(chatViewSource).toContain('transientFrameFlushRef');
     expect(chatViewSource).toContain('window.requestAnimationFrame(flushTransientFrames)');
-    expect(chatViewSource).toContain('applyTransientConversationFrames');
+    expect(chatViewSource).toContain('takeConversationDisplayQueueBatch');
+    expect(chatViewSource).toContain('maxTextCharacters: 24');
+    expect(chatViewSource).toContain('applyConversationStreamOperations');
+    expect(chatViewSource).toContain('lastTransientSequenceRef.current = Math.max');
+  });
+
+  it('does not let durable terminal events overtake a healthy transient stream', () => {
+    expect(chatViewSource).toContain('if (transientStreamHealthyRef.current) return;');
+    expect(chatViewSource).not.toContain(
+      "batch.operations.filter((operation) => operation.type === 'run.terminal')",
+    );
   });
 });

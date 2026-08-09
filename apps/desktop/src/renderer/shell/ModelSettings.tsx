@@ -31,12 +31,14 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
+  ArrowLeft,
   ArrowDown,
   ArrowUp,
   BarChart3,
   Bot,
   Check,
   ChevronDown,
+  Database,
   Gauge,
   GripVertical,
   Image,
@@ -48,9 +50,11 @@ import {
   Plus,
   Eye,
   EyeOff,
+  Download,
   RefreshCw,
   Search,
   Server,
+  Settings2,
   Sparkles,
   Trash2,
   Video,
@@ -59,7 +63,10 @@ import {
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import type {
+  CcSwitchImportPreviewItem,
+  ImportCcSwitchResponse,
   ModelPricingEntry,
+  PreviewCcSwitchImportResponse,
   ProviderModelSummary,
   ProviderSummary,
   UsageSummaryResponse,
@@ -163,6 +170,383 @@ const EMPTY_CREATE: CreateDraft = {
   supportsDiscovery: true,
 };
 
+type ProviderCatalogCategory =
+  | 'recommended'
+  | 'domestic'
+  | 'aggregator'
+  | 'overseas'
+  | 'local';
+
+type CreateProviderStep = 'catalog' | 'form' | 'cc-switch';
+
+interface ProviderCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  action: 'form' | 'cc-switch';
+  endpointMode?: 'builtin' | 'custom';
+  badge?: string;
+  draft?: Partial<CreateDraft>;
+}
+
+const PROVIDER_CATALOG_CATEGORIES: Array<{
+  id: ProviderCatalogCategory;
+  label: string;
+}> = [
+  { id: 'recommended', label: '推荐服务' },
+  { id: 'domestic', label: '国内服务' },
+  { id: 'aggregator', label: '聚合平台' },
+  { id: 'overseas', label: '海外平台' },
+  { id: 'local', label: '本地模型' },
+];
+
+const CUSTOM_PROVIDER_ITEM: ProviderCatalogItem = {
+  id: 'custom',
+  name: '自定义供应商',
+  description: '配置自定义 API 兼容的供应商',
+  action: 'form',
+  endpointMode: 'custom',
+  draft: EMPTY_CREATE,
+};
+
+const CC_SWITCH_ITEM: ProviderCatalogItem = {
+  id: 'cc-switch',
+  name: '从 CC Switch 导入',
+  description: '读取本机 CC Switch 中已配置的供应商',
+  action: 'cc-switch',
+};
+
+const PROVIDER_CATALOG: Record<ProviderCatalogCategory, ProviderCatalogItem[]> = {
+  recommended: [
+    {
+      id: 'newmax-gateway',
+      name: 'NewMax Gateway',
+      description: '统一网关入口，连接现有 NewMax 兼容服务',
+      action: 'form',
+      badge: '推荐',
+      draft: {
+        name: 'NewMax Gateway',
+        baseUrl: 'https://',
+        protocol: 'openai-chat',
+        supportsDiscovery: true,
+      },
+    },
+    CUSTOM_PROVIDER_ITEM,
+    CC_SWITCH_ITEM,
+  ],
+  domestic: [
+    {
+      id: 'minimax-cn',
+      name: 'MiniMax',
+      description: 'MiniMax 国内 API，支持文本与编程模型',
+      action: 'form',
+      draft: {
+        name: 'MiniMax',
+        baseUrl: 'https://api.minimax.chat/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'kimi-coding',
+      name: 'Kimi Coding Plan',
+      description: 'Kimi 智能编程增强版',
+      action: 'form',
+      draft: { name: 'Kimi Coding Plan', baseUrl: 'https://', protocol: 'openai-chat' },
+    },
+    {
+      id: 'moonshot',
+      name: 'Moonshot',
+      description: '月之暗面开放平台，按量付费',
+      action: 'form',
+      draft: {
+        name: 'Moonshot',
+        baseUrl: 'https://api.moonshot.cn/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'zhipu',
+      name: '智谱',
+      description: '智谱 GLM 开放平台',
+      action: 'form',
+      draft: {
+        name: '智谱',
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'deepseek',
+      name: 'DeepSeek',
+      description: 'DeepSeek 官方 API，按量付费',
+      action: 'form',
+      draft: {
+        name: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'bailian-coding',
+      name: '百炼 Coding Plan',
+      description: '阿里云百炼面向 Qwen 模型的 Coding Plan',
+      action: 'form',
+      draft: {
+        name: '百炼 Coding Plan',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'stepfun',
+      name: '阶跃星辰',
+      description: '阶跃星辰 API，可调用 Step 系列模型',
+      action: 'form',
+      draft: {
+        name: '阶跃星辰',
+        baseUrl: 'https://api.stepfun.com/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'bailing',
+      name: '百聆',
+      description: '百聆 API，可调用 Ling 系列模型',
+      action: 'form',
+      draft: { name: '百聆', baseUrl: 'https://', protocol: 'openai-chat' },
+    },
+    {
+      id: 'longcat',
+      name: 'Longcat',
+      description: '长上下文优化服务',
+      action: 'form',
+      draft: { name: 'Longcat', baseUrl: 'https://', protocol: 'openai-chat' },
+    },
+    {
+      id: 'xiaomi-mimo',
+      name: '小米 MiMo',
+      description: '小米 MiMo 模型平台',
+      action: 'form',
+      draft: { name: '小米 MiMo', baseUrl: 'https://', protocol: 'openai-chat' },
+    },
+    CUSTOM_PROVIDER_ITEM,
+    CC_SWITCH_ITEM,
+  ],
+  aggregator: [
+    {
+      id: 'volcengine-ark',
+      name: '火山方舟',
+      description: '通过火山方舟接入豆包模型',
+      action: 'form',
+      draft: {
+        name: '火山方舟',
+        baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'siliconflow-cn',
+      name: '硅基流动中国',
+      description: '面向国内开源模型的硅基流动中国端点',
+      action: 'form',
+      draft: {
+        name: '硅基流动中国',
+        baseUrl: 'https://api.siliconflow.cn/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'modelscope',
+      name: 'ModelScope',
+      description: '阿里云魔搭推理服务',
+      action: 'form',
+      draft: {
+        name: 'ModelScope',
+        baseUrl: 'https://api-inference.modelscope.cn/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'gptnb',
+      name: 'GPTNB',
+      description: '多模型聚合服务',
+      action: 'form',
+      draft: { name: 'GPTNB', baseUrl: 'https://', protocol: 'openai-chat' },
+    },
+    {
+      id: 'pipellm',
+      name: 'Pipellm',
+      description: '多模型聚合与兼容转发服务',
+      action: 'form',
+      draft: { name: 'Pipellm', baseUrl: 'https://', protocol: 'openai-chat' },
+    },
+    {
+      id: 'anthropic-gateway',
+      name: 'Anthropic 兼容网关',
+      description: '通过第三方 Anthropic 兼容网关使用 Claude',
+      action: 'form',
+      draft: {
+        name: 'Anthropic 兼容网关',
+        baseUrl: 'https://',
+        protocol: 'anthropic-messages',
+        supportsDiscovery: false,
+      },
+    },
+    CUSTOM_PROVIDER_ITEM,
+    CC_SWITCH_ITEM,
+  ],
+  overseas: [
+    {
+      id: 'openai',
+      name: 'OpenAI',
+      description: 'OpenAI 官方 API，可使用 GPT 与 Codex 模型',
+      action: 'form',
+      draft: {
+        name: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1',
+        protocol: 'openai-responses',
+      },
+    },
+    {
+      id: 'chatgpt-subscription',
+      name: 'ChatGPT 订阅',
+      description: '通过兼容网关连接 ChatGPT Plus / Pro 订阅',
+      action: 'form',
+      draft: { name: 'ChatGPT 订阅', baseUrl: 'https://', protocol: 'openai-responses' },
+    },
+    {
+      id: 'supergrok',
+      name: 'SuperGrok',
+      description: '通过兼容网关连接 SuperGrok 服务',
+      action: 'form',
+      draft: { name: 'SuperGrok', baseUrl: 'https://', protocol: 'openai-chat' },
+    },
+    {
+      id: 'antigravity',
+      name: 'Antigravity',
+      description: '通过兼容网关连接 Antigravity 服务',
+      action: 'form',
+      draft: { name: 'Antigravity', baseUrl: 'https://', protocol: 'openai-chat' },
+    },
+    {
+      id: 'gemini-api',
+      name: 'Gemini API',
+      description: 'Google AI Studio 的 OpenAI 兼容 API',
+      action: 'form',
+      draft: {
+        name: 'Gemini API',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'opencode-go',
+      name: 'OpenCode Go',
+      description: '低成本编程模型订阅服务',
+      action: 'form',
+      draft: { name: 'OpenCode Go', baseUrl: 'https://', protocol: 'openai-chat' },
+    },
+    {
+      id: 'opencode-go-anthropic',
+      name: 'OpenCode Go（Anthropic）',
+      description: 'OpenCode Go 的 Anthropic 兼容渠道',
+      action: 'form',
+      draft: {
+        name: 'OpenCode Go（Anthropic）',
+        baseUrl: 'https://',
+        protocol: 'anthropic-messages',
+        supportsDiscovery: false,
+      },
+    },
+    {
+      id: 'anthropic',
+      name: 'Anthropic',
+      description: 'Anthropic 官方 API，原生支持 Claude 系列模型',
+      action: 'form',
+      draft: {
+        name: 'Anthropic',
+        baseUrl: 'https://api.anthropic.com/v1',
+        protocol: 'anthropic-messages',
+        supportsDiscovery: false,
+      },
+    },
+    {
+      id: 'minimax-global',
+      name: 'MiniMax 国际',
+      description: '面向海外用户的 MiniMax 国际端点',
+      action: 'form',
+      draft: {
+        name: 'MiniMax 国际',
+        baseUrl: 'https://api.minimax.io/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'z-ai',
+      name: 'Z.ai',
+      description: '面向 GLM 模型的 Z.ai 国际端点',
+      action: 'form',
+      draft: {
+        name: 'Z.ai',
+        baseUrl: 'https://api.z.ai/api/paas/v4',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'openrouter',
+      name: 'OpenRouter',
+      description: '海外多模型聚合与统一 API',
+      action: 'form',
+      draft: {
+        name: 'OpenRouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'siliconflow-global',
+      name: 'SiliconFlow',
+      description: '硅基流动海外端点',
+      action: 'form',
+      draft: {
+        name: 'SiliconFlow',
+        baseUrl: 'https://api.siliconflow.com/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    CUSTOM_PROVIDER_ITEM,
+    CC_SWITCH_ITEM,
+  ],
+  local: [
+    {
+      id: 'ollama',
+      name: 'Ollama',
+      description: '本地运行开源模型，默认连接 11434 端口',
+      action: 'form',
+      draft: {
+        name: 'Ollama',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        protocol: 'openai-chat',
+        apiKey: 'ollama-local',
+      },
+    },
+    {
+      id: 'lm-studio',
+      name: 'LM Studio',
+      description: '连接 LM Studio 本地 OpenAI 兼容服务器',
+      action: 'form',
+      draft: {
+        name: 'LM Studio',
+        baseUrl: 'http://127.0.0.1:1234/v1',
+        protocol: 'openai-chat',
+        apiKey: 'lm-studio-local',
+      },
+    },
+    CUSTOM_PROVIDER_ITEM,
+    CC_SWITCH_ITEM,
+  ],
+};
+
 function bridge() {
   return window.syncThink?.runtime;
 }
@@ -263,7 +647,18 @@ export const ModelSettings = forwardRef<
   const [disabledOpen, setDisabledOpen] = useState(false);
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [createStep, setCreateStep] = useState<CreateProviderStep>('catalog');
+  const [catalogCategory, setCatalogCategory] =
+    useState<ProviderCatalogCategory>('recommended');
   const [createDraft, setCreateDraft] = useState<CreateDraft>(EMPTY_CREATE);
+  const [createTemplate, setCreateTemplate] = useState<ProviderCatalogItem | null>(null);
+  const [ccSwitchPreview, setCcSwitchPreview] =
+    useState<PreviewCcSwitchImportResponse | null>(null);
+  const [selectedCcSwitchIds, setSelectedCcSwitchIds] = useState<string[]>([]);
+  const [ccSwitchLoading, setCcSwitchLoading] = useState(false);
+  const [ccSwitchImporting, setCcSwitchImporting] = useState(false);
+  const [modelTab, setModelTab] = useState<'text' | 'image' | 'video' | 'voice' | 'usage'>('text');
+  const [detailView, setDetailView] = useState<'provider' | 'vision' | 'plan-act'>('provider');
   const [visionFallback, setVisionFallback] = useState<VisionFallbackSetting>({
     enabled: false,
     modelId: null,
@@ -388,8 +783,14 @@ export const ModelSettings = forwardRef<
       const name = createDraft.name.trim();
       const baseUrl = createDraft.baseUrl.trim();
       const apiKey = createDraft.apiKey.trim();
+      const usesCustomEndpoint = createTemplate?.endpointMode === 'custom';
       if (!name) throw new Error('请填写供应商名称');
-      if (!baseUrl || baseUrl === 'https://') throw new Error('请填写 Base URL');
+      if (usesCustomEndpoint && (!baseUrl || baseUrl === 'https://')) {
+        throw new Error('请填写 Base URL');
+      }
+      if (!usesCustomEndpoint && (!baseUrl || baseUrl === 'https://')) {
+        throw new Error('该服务商模板尚未配置连接地址');
+      }
       if (!apiKey) throw new Error('请填写 API Key，并先复制到剪贴板');
       await navigator.clipboard.writeText(apiKey);
       const result = await api.createProvider({
@@ -400,6 +801,8 @@ export const ModelSettings = forwardRef<
       });
       setCreateDraft(EMPTY_CREATE);
       setShowCreate(false);
+      setCreateStep('catalog');
+      setCreateTemplate(null);
       setSelectedId(result.provider.providerId);
       setLastSelectedId(result.provider.providerId);
       await load();
@@ -408,6 +811,117 @@ export const ModelSettings = forwardRef<
         `已创建 ${result.provider.name} · 发现 ${result.discoveredModelCount} 个模型`,
       );
     });
+
+  const restoreProviderSelection = useCallback(() => {
+    const restoreId =
+      lastSelectedId && providers.some((provider) => provider.providerId === lastSelectedId)
+        ? lastSelectedId
+        : (providers[0]?.providerId ?? null);
+    setSelectedId(restoreId);
+  }, [lastSelectedId, providers]);
+
+  const resetCreateState = useCallback(() => {
+    setCreateStep('catalog');
+    setCatalogCategory('recommended');
+    setCreateDraft(EMPTY_CREATE);
+    setCreateTemplate(null);
+    setCcSwitchPreview(null);
+    setSelectedCcSwitchIds([]);
+    setCcSwitchLoading(false);
+    setCcSwitchImporting(false);
+  }, []);
+
+  const openCreateCatalog = useCallback(() => {
+    setLastSelectedId(selectedId);
+    setDetailView('provider');
+    setShowCreate(true);
+    setCreateStep('catalog');
+    setCatalogCategory('recommended');
+    setCreateDraft(EMPTY_CREATE);
+    setCreateTemplate(null);
+    setCcSwitchPreview(null);
+    setSelectedCcSwitchIds([]);
+    setSelectedId(null);
+  }, [selectedId]);
+
+  const cancelCreateFlow = useCallback(() => {
+    setShowCreate(false);
+    resetCreateState();
+    restoreProviderSelection();
+  }, [resetCreateState, restoreProviderSelection]);
+
+  const openProviderTemplate = useCallback((item: ProviderCatalogItem) => {
+    setCreateDraft({ ...EMPTY_CREATE, ...(item.draft ?? {}) });
+    setCreateTemplate(item);
+    setCreateStep('form');
+  }, []);
+
+  const openCcSwitchImport = useCallback(async () => {
+    const api = bridge();
+    setCreateStep('cc-switch');
+    setCreateTemplate(null);
+    setCcSwitchLoading(true);
+    setCcSwitchPreview(null);
+    setSelectedCcSwitchIds([]);
+    setError(null);
+    try {
+      if (!api?.previewCcSwitchImport) throw new Error('Runtime 未连接，无法读取 CC Switch');
+      const preview = await api.previewCcSwitchImport({});
+      setCcSwitchPreview(preview);
+      setSelectedCcSwitchIds(
+        preview.items.filter((item) => item.importable).map((item) => item.sourceId),
+      );
+    } catch (e) {
+      const message = e instanceof Error ? e.message : '读取 CC Switch 配置失败';
+      setError(message);
+      showToast('error', message);
+    } finally {
+      setCcSwitchLoading(false);
+    }
+  }, [showToast]);
+
+  const handleCcSwitchImport = useCallback(async () => {
+    if (selectedCcSwitchIds.length === 0 || ccSwitchImporting) return;
+    const api = bridge();
+    setCcSwitchImporting(true);
+    setError(null);
+    try {
+      if (!api?.importCcSwitch) throw new Error('Runtime 未连接，无法导入 CC Switch');
+      const result: ImportCcSwitchResponse = await api.importCcSwitch({
+        sourceIds: selectedCcSwitchIds,
+      });
+      const firstImported = result.results.find((item) => item.ok && item.providerId);
+      const summary = `CC Switch 导入完成 · 成功 ${result.importedCount} · 失败 ${result.failedCount}`;
+      if (!firstImported?.providerId) {
+        const details = result.results
+          .filter((item) => !item.ok)
+          .slice(0, 3)
+          .map((item) => `${item.name ?? item.sourceId}：${item.error ?? '导入失败'}`)
+          .join('；');
+        throw new Error(details || summary);
+      }
+      await load();
+      setShowCreate(false);
+      resetCreateState();
+      setSelectedId(firstImported.providerId);
+      setLastSelectedId(firstImported.providerId);
+      showToast('success', summary);
+      onCatalogChanged?.();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : '导入 CC Switch 失败';
+      setError(message);
+      showToast('error', message);
+    } finally {
+      setCcSwitchImporting(false);
+    }
+  }, [
+    ccSwitchImporting,
+    load,
+    onCatalogChanged,
+    resetCreateState,
+    selectedCcSwitchIds,
+    showToast,
+  ]);
 
   const persistProviderOrder = useCallback(
     async (orderedEnabled: ProviderSummary[], previousProviders = providers) => {
@@ -979,10 +1493,9 @@ export const ModelSettings = forwardRef<
     );
   };
 
-  const [modelTab, setModelTab] = useState<'text' | 'image' | 'video' | 'voice' | 'usage'>('text');
-  const [detailView, setDetailView] = useState<'provider' | 'vision' | 'plan-act'>('provider');
   const createDraftDirty =
     showCreate &&
+    createStep === 'form' &&
     (Boolean(createDraft.name.trim()) ||
       createDraft.baseUrl !== EMPTY_CREATE.baseUrl ||
       createDraft.protocol !== EMPTY_CREATE.protocol ||
@@ -1189,10 +1702,7 @@ export const ModelSettings = forwardRef<
                   onClick={() => {
                     void confirmDiscardChanges().then((ok) => {
                       if (!ok) return;
-                      setLastSelectedId(selectedId);
-                      setDetailView('provider');
-                      setShowCreate(true);
-                      setSelectedId(null);
+                      openCreateCatalog();
                     });
                   }}
                 >
@@ -1276,10 +1786,7 @@ export const ModelSettings = forwardRef<
                   onClick={() => {
                     void confirmDiscardChanges().then((ok) => {
                       if (!ok) return;
-                      setLastSelectedId(selectedId);
-                      setDetailView('provider');
-                      setShowCreate(true);
-                      setSelectedId(null);
+                      openCreateCatalog();
                     });
                   }}
                 >
@@ -1386,7 +1893,7 @@ export const ModelSettings = forwardRef<
               <div
                 key={
                   showCreate
-                    ? 'create-provider'
+                    ? `create-provider-${createStep}`
                     : detailView === 'provider'
                       ? (selected?.providerId ?? 'empty-provider')
                       : detailView
@@ -1394,22 +1901,67 @@ export const ModelSettings = forwardRef<
                 className="model-settings-detail__transition"
               >
                 {showCreate ? (
-                  <CreateProviderForm
-                    draft={createDraft}
-                    busy={operation?.kind === 'create-provider'}
-                    onChange={setCreateDraft}
-                    onSubmit={handleCreate}
-                    onCancel={() => {
-                      setShowCreate(false);
-                      setCreateDraft(EMPTY_CREATE);
-                      const restoreId =
-                        lastSelectedId &&
-                        providers.some((provider) => provider.providerId === lastSelectedId)
-                          ? lastSelectedId
-                          : (providers[0]?.providerId ?? null);
-                      setSelectedId(restoreId);
-                    }}
-                  />
+                  createStep === 'catalog' ? (
+                    <ProviderCatalog
+                      category={catalogCategory}
+                      onCategoryChange={setCatalogCategory}
+                      onSelect={(item) => {
+                        if (item.action === 'cc-switch') {
+                          void openCcSwitchImport();
+                          return;
+                        }
+                        openProviderTemplate(item);
+                      }}
+                      onCancel={cancelCreateFlow}
+                    />
+                  ) : createStep === 'cc-switch' ? (
+                    <CcSwitchImportPanel
+                      preview={ccSwitchPreview}
+                      selectedIds={selectedCcSwitchIds}
+                      loading={ccSwitchLoading}
+                      importing={ccSwitchImporting}
+                      onBack={() => {
+                        setCreateStep('catalog');
+                        setCcSwitchPreview(null);
+                        setSelectedCcSwitchIds([]);
+                        setError(null);
+                      }}
+                      onCancel={cancelCreateFlow}
+                      onRetry={() => void openCcSwitchImport()}
+                      onToggle={(sourceId) => {
+                        setSelectedCcSwitchIds((current) =>
+                          current.includes(sourceId)
+                            ? current.filter((id) => id !== sourceId)
+                            : [...current, sourceId],
+                        );
+                      }}
+                      onToggleAll={(checked) => {
+                        setSelectedCcSwitchIds(
+                          checked
+                            ? (ccSwitchPreview?.items
+                                .filter((item) => item.importable)
+                                .map((item) => item.sourceId) ?? [])
+                            : [],
+                        );
+                      }}
+                      onImport={() => void handleCcSwitchImport()}
+                    />
+                  ) : (
+                    <CreateProviderForm
+                      draft={createDraft}
+                      template={createTemplate ?? undefined}
+                      busy={operation?.kind === 'create-provider'}
+                      onChange={setCreateDraft}
+                      onSubmit={handleCreate}
+                      onBackToCatalog={() => {
+                        setCreateStep('catalog');
+                        setCreateDraft(EMPTY_CREATE);
+                        setCreateTemplate(null);
+                        setError(null);
+                      }}
+                      onCancel={cancelCreateFlow}
+                    />
+                  )
                 ) : detailView === 'vision' ? (
                   <VisionFallbackPanel
                     allModels={allModels}
@@ -1458,7 +2010,7 @@ export const ModelSettings = forwardRef<
                     onPinCredential={handlePinCredential}
                   />
                 ) : (
-                  <EmptyDetail onAdd={() => setShowCreate(true)} />
+                  <EmptyDetail onAdd={openCreateCatalog} />
                 )}
               </div>
             </div>
@@ -1492,35 +2044,374 @@ export const ModelSettings = forwardRef<
   );
 });
 
+function ProviderCatalog({
+  category,
+  onCategoryChange,
+  onSelect,
+  onCancel,
+}: {
+  category: ProviderCatalogCategory;
+  onCategoryChange: (category: ProviderCatalogCategory) => void;
+  onSelect: (item: ProviderCatalogItem) => void;
+  onCancel: () => void;
+}) {
+  const items = PROVIDER_CATALOG[category];
+  return (
+    <section className="model-provider-catalog" aria-labelledby="model-provider-catalog-title">
+      <header className="model-provider-catalog__header">
+        <div>
+          <h2 id="model-provider-catalog-title">添加模型</h2>
+          <p>先选择服务商类型，再填写对应的连接配置。</p>
+        </div>
+        <button type="button" aria-label="取消添加模型" onClick={onCancel}>
+          <X size={16} />
+        </button>
+      </header>
+
+      <div className="model-provider-catalog__tabs" role="tablist" aria-label="模型服务商分类">
+        {PROVIDER_CATALOG_CATEGORIES.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={category === item.id}
+            className={clsx(
+              'model-provider-catalog__tab',
+              category === item.id && 'model-provider-catalog__tab--active',
+            )}
+            onClick={() => onCategoryChange(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="model-provider-catalog__grid" role="tabpanel">
+        {items.map((item) => {
+          const templateReady =
+            item.action !== 'form' ||
+            item.endpointMode === 'custom' ||
+            Boolean(item.draft?.baseUrl && item.draft.baseUrl !== 'https://');
+          return (
+            <button
+              key={`${category}-${item.id}`}
+              type="button"
+              className="model-provider-card"
+              disabled={!templateReady}
+              title={
+                templateReady
+                  ? undefined
+                  : '该服务商暂未内置固定连接地址，请使用“自定义供应商”添加'
+              }
+              onClick={() => onSelect(item)}
+            >
+              <ProviderBrandIcon providerId={item.id} providerName={item.name} />
+              <span className="model-provider-card__copy">
+                <strong>
+                  {item.name}
+                  {item.badge ? (
+                    <span className="model-provider-card__badge">{item.badge}</span>
+                  ) : null}
+                </strong>
+                <small>
+                  {templateReady
+                    ? item.description
+                    : `${item.description} · 固定连接地址待接入`}
+                </small>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const PROVIDER_BRAND_GLYPHS: Record<string, string> = {
+  'newmax-gateway': 'N',
+  'minimax-cn': 'M',
+  'kimi-coding': 'K',
+  moonshot: '◐',
+  zhipu: 'Z',
+  deepseek: 'D',
+  'bailian-coding': 'Q',
+  stepfun: 'S',
+  bailing: 'B',
+  longcat: 'L',
+  'xiaomi-mimo': 'M',
+  'volcengine-ark': 'V',
+  'siliconflow-cn': 'S',
+  modelscope: 'M',
+  gptnb: 'G',
+  pipellm: 'P',
+  'anthropic-gateway': 'A',
+  openai: 'AI',
+  'chatgpt-subscription': 'C',
+  supergrok: 'G',
+  antigravity: 'A',
+  'gemini-api': 'G',
+  'opencode-go': 'O',
+  'opencode-go-anthropic': 'O',
+  anthropic: 'A',
+  'minimax-global': 'M',
+  'z-ai': 'Z',
+  openrouter: 'O',
+  'siliconflow-global': 'S',
+  ollama: 'O',
+  'lm-studio': 'LM',
+};
+
+function ProviderBrandIcon({
+  providerId,
+  providerName,
+  testIdPrefix = 'provider-icon',
+}: {
+  providerId: string;
+  providerName: string;
+  testIdPrefix?: string;
+}) {
+  const specialIcon =
+    providerId === 'custom' ? (
+      <Settings2 size={15} />
+    ) : providerId === 'cc-switch' ? (
+      <Download size={15} />
+    ) : null;
+  return (
+    <span
+      className="model-provider-card__icon model-provider-brand-icon"
+      data-brand={providerId}
+      data-testid={`${testIdPrefix}-${providerId}`}
+      aria-hidden="true"
+    >
+      {specialIcon ?? PROVIDER_BRAND_GLYPHS[providerId] ?? providerName.slice(0, 1).toUpperCase()}
+    </span>
+  );
+}
+
+function CcSwitchImportPanel({
+  preview,
+  selectedIds,
+  loading,
+  importing,
+  onBack,
+  onCancel,
+  onRetry,
+  onToggle,
+  onToggleAll,
+  onImport,
+}: {
+  preview: PreviewCcSwitchImportResponse | null;
+  selectedIds: string[];
+  loading: boolean;
+  importing: boolean;
+  onBack: () => void;
+  onCancel: () => void;
+  onRetry: () => void;
+  onToggle: (sourceId: string) => void;
+  onToggleAll: (checked: boolean) => void;
+  onImport: () => void;
+}) {
+  const importableItems = preview?.items.filter((item) => item.importable) ?? [];
+  const allSelected =
+    importableItems.length > 0 &&
+    importableItems.every((item) => selectedIds.includes(item.sourceId));
+
+  return (
+    <section className="model-cc-switch" aria-labelledby="model-cc-switch-title">
+      <header className="model-provider-form__header">
+        <button type="button" aria-label="返回服务商目录" onClick={onBack} disabled={importing}>
+          <ArrowLeft size={16} />
+        </button>
+        <div>
+          <h2 id="model-cc-switch-title">从 CC Switch 导入</h2>
+          <p>选择要迁移到 SYNC-THINK 的本机供应商配置。</p>
+        </div>
+        <button type="button" aria-label="取消添加模型源" onClick={onCancel} disabled={importing}>
+          <X size={16} />
+        </button>
+      </header>
+
+      {loading ? (
+        <div className="model-cc-switch__loading" role="status">
+          <Loader2 size={17} className="model-settings-spin" />
+          正在读取 CC Switch 配置…
+        </div>
+      ) : preview ? (
+        <>
+          <div className="model-cc-switch__summary">
+            <div>
+              <strong>CC Switch 配置</strong>
+              <span title={preview.dbPath}>{preview.dbPath}</span>
+            </div>
+            <label>
+              <input
+                type="checkbox"
+                aria-label="全选可导入配置"
+                checked={allSelected}
+                disabled={importableItems.length === 0 || importing}
+                onChange={(event) => onToggleAll(event.target.checked)}
+              />
+              全选可导入项
+            </label>
+          </div>
+
+          <div className="model-cc-switch__list">
+            {preview.items.length > 0 ? (
+              preview.items.map((item) => (
+                <CcSwitchImportRow
+                  key={item.sourceId}
+                  item={item}
+                  checked={selectedIds.includes(item.sourceId)}
+                  disabled={importing}
+                  onToggle={() => onToggle(item.sourceId)}
+                />
+              ))
+            ) : (
+              <div className="model-cc-switch__empty">
+                <Database size={22} />
+                <strong>没有找到可读取的配置</strong>
+                <span>确认本机已安装并配置 CC Switch 后重试。</span>
+              </div>
+            )}
+          </div>
+
+          <footer className="model-cc-switch__footer">
+            <span>
+              可导入 {preview.importableCount} 项 · 跳过 {preview.skippedCount} 项 · 已选{' '}
+              {selectedIds.length} 项
+            </span>
+            <div>
+              <button type="button" onClick={onCancel} disabled={importing}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="is-primary"
+                disabled={selectedIds.length === 0 || importing}
+                onClick={onImport}
+              >
+                {importing ? <Loader2 size={14} className="model-settings-spin" /> : null}
+                {importing ? '正在导入…' : `导入 ${selectedIds.length} 项`}
+              </button>
+            </div>
+          </footer>
+        </>
+      ) : (
+        <div className="model-cc-switch__empty">
+          <Database size={22} />
+          <strong>CC Switch 配置读取失败</strong>
+          <span>检查本机数据库状态后可以再次尝试。</span>
+          <button type="button" onClick={onRetry}>
+            <RefreshCw size={13} /> 重新读取
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CcSwitchImportRow({
+  item,
+  checked,
+  disabled,
+  onToggle,
+}: {
+  item: CcSwitchImportPreviewItem;
+  checked: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  const visibleModels = item.models.slice(0, 3);
+  const hiddenModelCount = Math.max(0, item.models.length - visibleModels.length);
+
+  return (
+    <label
+      className={clsx(
+        'model-cc-switch__item',
+        checked && 'is-selected',
+        !item.importable && 'is-disabled',
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled || !item.importable}
+        onChange={onToggle}
+      />
+      <span className="model-provider-card__icon" aria-hidden="true">
+        {item.name.slice(0, 1).toUpperCase()}
+      </span>
+      <span className="model-cc-switch__item-copy">
+        <strong>{item.name}</strong>
+        <small>
+          {item.baseUrl ?? '未配置 Base URL'} · {item.models.length} 个模型 ·{' '}
+          {item.hasSecret ? '包含密钥' : '缺少密钥'}
+        </small>
+        {visibleModels.length > 0 ? (
+          <span className="model-cc-switch__item-models" title={item.models.join('\n')}>
+            {visibleModels.join(' · ')}
+            {hiddenModelCount > 0 ? ` · +${hiddenModelCount}` : ''}
+          </span>
+        ) : null}
+        {item.warnings.length > 0 ? <em>{item.warnings.join('；')}</em> : null}
+      </span>
+    </label>
+  );
+}
+
 function CreateProviderForm({
   draft,
+  template,
   busy,
   onChange,
   onSubmit,
+  onBackToCatalog,
   onCancel,
 }: {
   draft: CreateDraft;
+  template?: ProviderCatalogItem;
   busy: boolean;
   onChange: (d: CreateDraft) => void;
   onSubmit: () => void;
+  onBackToCatalog: () => void;
   onCancel: () => void;
 }) {
+  const isCustomEndpoint = template?.endpointMode === 'custom';
+  const templateLabel = template?.name;
   return (
-    <div className="border-b border-border px-6 py-5">
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Server size={16} className="text-accent-text" />
-          <h2 className="text-[15px] font-semibold text-text">添加模型源</h2>
+    <section className="model-provider-form" aria-labelledby="model-provider-form-title">
+      <header className="model-provider-form__header">
+        <button
+          type="button"
+          aria-label="返回服务商目录"
+          onClick={onBackToCatalog}
+          disabled={busy}
+        >
+          <ArrowLeft size={16} />
+        </button>
+        <div className="model-provider-form__identity">
+          {template ? (
+            <ProviderBrandIcon
+              providerId={template.id}
+              providerName={template.name}
+              testIdPrefix="provider-form-icon"
+            />
+          ) : null}
+          <div>
+            <h2 id="model-provider-form-title">添加模型源</h2>
+            <p>{templateLabel ? `正在配置 ${templateLabel}` : '填写供应商连接信息'}</p>
+          </div>
         </div>
         <button
           type="button"
-          className="rounded-lg p-1.5 text-text-faint hover:bg-hover"
+          aria-label="取消添加模型源"
           onClick={onCancel}
+          disabled={busy}
         >
-          <X size={15} />
+          <X size={16} />
         </button>
-      </div>
-      <div className="grid max-w-[520px] gap-3">
+      </header>
+      <div className="model-provider-form__body">
         <Field label="名称">
           <input
             className="st-field-input"
@@ -1530,15 +2421,23 @@ function CreateProviderForm({
             onChange={(e) => onChange({ ...draft, name: e.target.value })}
           />
         </Field>
-        <Field label="Base URL">
-          <input
-            className="st-field-input font-mono text-[12.5px]"
-            value={draft.baseUrl}
-            placeholder="https://api.openai.com/v1"
-            disabled={busy}
-            onChange={(e) => onChange({ ...draft, baseUrl: e.target.value })}
-          />
-        </Field>
+        {isCustomEndpoint ? (
+          <Field label="Base URL">
+            <input
+              className="st-field-input font-mono text-[12.5px]"
+              data-testid="provider-base-url"
+              value={draft.baseUrl}
+              placeholder="https://api.openai.com/v1"
+              disabled={busy}
+              onChange={(e) => onChange({ ...draft, baseUrl: e.target.value })}
+            />
+          </Field>
+        ) : (
+          <div className="model-provider-form__builtin-endpoint">
+            <Server size={15} aria-hidden="true" />
+            <span>连接地址已由 {templateLabel ?? '服务商'} 模板内置</span>
+          </div>
+        )}
         <Field label="API 格式">
           <ProtocolSelector
             protocol={draft.protocol}
@@ -1563,10 +2462,10 @@ function CreateProviderForm({
           />
           创建后自动发现模型（/models）
         </label>
-        <div className="flex gap-2 pt-1">
+        <div className="model-provider-form__actions">
           <button
             type="button"
-            className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-[var(--color-accent-fg)] hover:opacity-90 disabled:opacity-50"
+            className="is-primary"
             disabled={busy}
             onClick={onSubmit}
           >
@@ -1574,7 +2473,6 @@ function CreateProviderForm({
           </button>
           <button
             type="button"
-            className="rounded-lg border border-border px-4 py-2 text-[13px] text-text-secondary hover:bg-hover"
             disabled={busy}
             onClick={onCancel}
           >
@@ -1582,7 +2480,7 @@ function CreateProviderForm({
           </button>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -2141,14 +3039,16 @@ function ProviderDetail({
                     busy={busy}
                     onMove={(direction) => onMoveModel(provider, model.modelId, direction)}
                     onRemove={() => {
-                      void dialog.confirm({
-                        title: '删除模型',
-                        message: `确定删除模型「${model.displayName}」吗？删除后需要重新添加才能使用，不会影响其他模型。`,
-                        confirmText: '删除',
-                        danger: true,
-                      }).then((ok) => {
-                        if (ok) onRemoveModel(provider.providerId, model.modelId);
-                      });
+                      void dialog
+                        .confirm({
+                          title: '删除模型',
+                          message: `确定删除模型「${model.displayName}」吗？删除后需要重新添加才能使用，不会影响其他模型。`,
+                          confirmText: '删除',
+                          danger: true,
+                        })
+                        .then((ok) => {
+                          if (ok) onRemoveModel(provider.providerId, model.modelId);
+                        });
                     }}
                     onPin={(credentialId) => onPinCredential(provider, model.modelId, credentialId)}
                     onSaveContext={(contextWindow) =>
@@ -3435,7 +4335,7 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
                       aria-expanded={isExpanded}
                       aria-controls={detailsId}
                       aria-label={`${isExpanded ? '收起' : '查看'} ${displayName} 请求详情`}
-                      title={isExpanded ? '收起费用明细' : '展开费用明细'}
+                      title={isExpanded ? '收起请求详情' : '展开请求详情'}
                       onClick={() => setExpandedRequestId(isExpanded ? null : row.requestId)}
                     >
                       <ChevronDown size={13} />
@@ -3455,41 +4355,156 @@ function UsageRequestTable({ rows }: { rows: UsageSummaryResponse['requests'] })
                 {isExpanded ? (
                   <tr className="usage-request-details" id={detailsId}>
                     <td colSpan={6}>
-                      <div className="usage-request-detail-grid">
-                        <strong>费用明细</strong>
-                        {row.estimatedCostBreakdown ? (
-                          <>
-                            <span>
-                              普通输入费{' '}
-                              {formatCurrencyDetail(row.estimatedCostBreakdown.input, row.currency)}
-                            </span>
-                            <span>
-                              缓存读取费{' '}
-                              {formatCurrencyDetail(
-                                row.estimatedCostBreakdown.cacheRead,
-                                row.currency,
-                              )}
-                            </span>
-                            <span>
-                              缓存创建费{' '}
-                              {formatCurrencyDetail(
-                                row.estimatedCostBreakdown.cacheWrite,
-                                row.currency,
-                              )}
-                            </span>
-                            <span>
-                              输出费{' '}
-                              {formatCurrencyDetail(
-                                row.estimatedCostBreakdown.output,
-                                row.currency,
-                              )}
-                            </span>
-                          </>
-                        ) : (
-                          <span>供应商未返回费用拆分</span>
-                        )}
+                      <div
+                        className="usage-request-detail-sections"
+                        data-testid={`usage-request-details-${row.requestId}`}
+                      >
+                        <section className="usage-request-detail-section">
+                          <strong className="usage-request-detail-title">请求信息</strong>
+                          <dl className="usage-request-detail-list">
+                            <div>
+                              <dt>请求 ID</dt>
+                              <dd className="usage-request-detail-id" title={row.requestId}>
+                                {row.requestId}
+                              </dd>
+                            </div>
+                            {row.taskId ? (
+                              <div>
+                                <dt>任务 ID</dt>
+                                <dd className="usage-request-detail-id" title={row.taskId}>
+                                  {row.taskId}
+                                </dd>
+                              </div>
+                            ) : null}
+                            {row.runId ? (
+                              <div>
+                                <dt>运行 ID</dt>
+                                <dd className="usage-request-detail-id" title={row.runId}>
+                                  {row.runId}
+                                </dd>
+                              </div>
+                            ) : null}
+                            {row.stepId ? (
+                              <div>
+                                <dt>步骤 ID</dt>
+                                <dd className="usage-request-detail-id" title={row.stepId}>
+                                  {row.stepId}
+                                </dd>
+                              </div>
+                            ) : null}
+                            <div>
+                              <dt>Provider</dt>
+                              <dd>
+                                {row.providerName ?? row.providerId ?? '-'}
+                                {row.providerName && row.providerId ? ` · ${row.providerId}` : ''}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Provider 模型</dt>
+                              <dd className="usage-request-detail-id">
+                                {row.providerModelId ?? row.modelId}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>请求用途</dt>
+                              <dd>{formatUsagePurpose(row.purpose)}</dd>
+                            </div>
+                          </dl>
+                        </section>
+
+                        <section className="usage-request-detail-section">
+                          <strong className="usage-request-detail-title">Token 明细</strong>
+                          <dl className="usage-request-detail-list is-token-list">
+                            <div>
+                              <dt>普通输入</dt>
+                              <dd>{formatTokenCount(tokens.inputTokens)}</dd>
+                            </div>
+                            <div>
+                              <dt>缓存读取</dt>
+                              <dd>
+                                {cacheReadReported
+                                  ? formatTokenCount(tokens.cacheReadTokens)
+                                  : '未上报'}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>缓存创建</dt>
+                              <dd>
+                                {cacheWriteReported
+                                  ? formatTokenCount(tokens.cacheWriteTokens)
+                                  : '未上报'}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>推理 Token</dt>
+                              <dd>
+                                {typeof row.reasoningTokens === 'number'
+                                  ? formatTokenCount(row.reasoningTokens)
+                                  : '未上报'}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>输出</dt>
+                              <dd>{formatTokenCount(tokens.outputTokens)}</dd>
+                            </div>
+                            <div>
+                              <dt>总 Token</dt>
+                              <dd>{formatTokenCount(row.totalTokens)}</dd>
+                            </div>
+                          </dl>
+                        </section>
+
+                        <section className="usage-request-detail-section">
+                          <strong className="usage-request-detail-title">费用明细</strong>
+                          {row.estimatedCostBreakdown ? (
+                            <dl className="usage-request-detail-list is-cost-list">
+                              <div>
+                                <dt>普通输入费</dt>
+                                <dd>
+                                  {formatCurrencyDetail(
+                                    row.estimatedCostBreakdown.input,
+                                    row.currency,
+                                  )}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>缓存读取费</dt>
+                                <dd>
+                                  {formatCurrencyDetail(
+                                    row.estimatedCostBreakdown.cacheRead,
+                                    row.currency,
+                                  )}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>缓存创建费</dt>
+                                <dd>
+                                  {formatCurrencyDetail(
+                                    row.estimatedCostBreakdown.cacheWrite,
+                                    row.currency,
+                                  )}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt>输出费</dt>
+                                <dd>
+                                  {formatCurrencyDetail(
+                                    row.estimatedCostBreakdown.output,
+                                    row.currency,
+                                  )}
+                                </dd>
+                              </div>
+                            </dl>
+                          ) : (
+                            <span className="usage-request-detail-empty">供应商未返回费用拆分</span>
+                          )}
+                        </section>
+
                         {row.errorMessage ? (
-                          <span className="usage-error">{row.errorMessage}</span>
+                          <div className="usage-request-detail-error usage-error">
+                            <strong>失败原因</strong>
+                            <span>{row.errorMessage}</span>
+                          </div>
                         ) : null}
                       </div>
                     </td>
@@ -3978,4 +4993,23 @@ function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+function formatUsagePurpose(purpose: UsageSummaryResponse['requests'][number]['purpose']): string {
+  switch (purpose) {
+    case 'compaction':
+      return '上下文压缩';
+    case 'delegation':
+      return '任务委派';
+    case 'review':
+      return '结果审核';
+    case 'revision':
+      return '任务返修';
+    case 'summary':
+      return '最终总结';
+    case 'normal':
+      return '普通对话';
+    default:
+      return '未上报';
+  }
 }

@@ -7,6 +7,12 @@ import type { WorkerToken } from './types.js';
 import { isPathInside } from './types.js';
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
+const PROCESS_TREE_TERMINATION_TIMEOUT_MS = 5_000;
+const WINDOWS_PROCESS_RELEASE_POLL_MS = 25;
+const processTreeTerminationRequests = new WeakMap<
+  ChildProcessWithoutNullStreams,
+  Promise<void>
+>();
 
 export interface BoundedProcessResult {
   stdout: string;
@@ -212,9 +218,9 @@ export async function runBoundedProcess(
       finish();
     });
   });
-  await terminationPromise;
   clearTimeout(timer);
   token.signal?.removeEventListener('abort', onAbort);
+  await terminationPromise;
   const finalStdout = stdoutDecoder.end();
   if (finalStdout) listeners?.onStdout?.(finalStdout);
   const finalStderr = stderrDecoder.end();
@@ -233,7 +239,20 @@ export async function runBoundedProcess(
   };
 }
 
-async function terminateProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+export function terminateProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const existing = processTreeTerminationRequests.get(child);
+  if (existing) return existing;
+
+  const request = terminateProcessTreeOnce(child);
+  processTreeTerminationRequests.set(child, request);
+  return request;
+}
+
+async function terminateProcessTreeOnce(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  const pid = child.pid;
+  const closePromise = waitForChildClose(child);
   const killDirectChild = () => {
     try {
       child.kill('SIGKILL');
@@ -243,15 +262,17 @@ async function terminateProcessTree(child: ChildProcessWithoutNullStreams): Prom
   };
   if (process.platform !== 'win32') {
     try {
-      if (child.pid) process.kill(-child.pid, 'SIGKILL');
+      if (pid) process.kill(-pid, 'SIGKILL');
       else killDirectChild();
     } catch {
       killDirectChild();
     }
+    await closePromise;
     return;
   }
-  if (!child.pid) {
+  if (!pid) {
     killDirectChild();
+    await closePromise;
     return;
   }
   await new Promise<void>((resolveTermination) => {
@@ -271,9 +292,9 @@ async function terminateProcessTree(child: ChildProcessWithoutNullStreams): Prom
         // The taskkill helper already exited.
       }
       finish(false);
-    }, 5_000);
+    }, PROCESS_TREE_TERMINATION_TIMEOUT_MS);
     try {
-      killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+      killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
         shell: false,
         windowsHide: true,
         stdio: 'ignore',
@@ -284,6 +305,42 @@ async function terminateProcessTree(child: ChildProcessWithoutNullStreams): Prom
       finish(false);
     }
   });
+  await closePromise;
+  await waitForProcessRelease(pid);
+}
+
+function waitForChildClose(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null || !child.pid) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolveClose) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('close', finish);
+      child.removeListener('error', finish);
+      resolveClose();
+    };
+    const timer = setTimeout(finish, PROCESS_TREE_TERMINATION_TIMEOUT_MS);
+    child.once('close', finish);
+    child.once('error', finish);
+  });
+}
+
+async function waitForProcessRelease(pid: number): Promise<void> {
+  const deadline = Date.now() + PROCESS_TREE_TERMINATION_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise<void>((resolveDelay) => {
+      setTimeout(resolveDelay, WINDOWS_PROCESS_RELEASE_POLL_MS);
+    });
+  }
 }
 
 function spawnFailure(message: string): BoundedProcessResult {

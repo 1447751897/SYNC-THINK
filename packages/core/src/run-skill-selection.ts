@@ -1,11 +1,17 @@
 export interface RunSkillRecordSnapshot {
   id: string;
+  enabled: boolean;
   archived: boolean;
   permissionApproved: boolean;
 }
 
 export interface ResolveRunSkillSelectionInput {
   allowlistedSkillVersionIds: readonly string[];
+  /**
+   * Skill versions inherited from the bound Agent/Team. These are kept in the
+   * final run selection even when the composer sends no extra Skill ids.
+   */
+  inheritedSkillVersionIds?: readonly string[];
   /** Undefined preserves the older client behavior of using the full allowlist. */
   selectedSkillVersionIds?: readonly string[];
   getSkill(skillVersionId: string): RunSkillRecordSnapshot | undefined;
@@ -34,28 +40,37 @@ export function resolveRunSkillSelection(
   input: ResolveRunSkillSelectionInput,
 ): ResolvedRunSkillSelection {
   const allowlisted = uniqueIds(input.allowlistedSkillVersionIds);
-  const requested =
+  const inherited =
+    input.inheritedSkillVersionIds === undefined
+      ? []
+      : uniqueIds(input.inheritedSkillVersionIds);
+  const selected =
     input.selectedSkillVersionIds === undefined
-      ? [...allowlisted]
+      ? undefined
       : uniqueIds(input.selectedSkillVersionIds);
-  if (requested.length > 8) {
+  const requested = selected === undefined ? [...allowlisted] : selected;
+  const effective =
+    input.inheritedSkillVersionIds === undefined
+      ? [...requested]
+      : uniqueIds([...inherited, ...(selected ?? [])]);
+  if (effective.length > 8) {
     throw new Error('A run may use at most 8 Skill versions');
   }
-  const allowlist = new Set(allowlisted);
-
-  for (const id of requested) {
-    if (!allowlist.has(id)) {
-      throw new Error(`Skill version is not allowlisted for this Agent: ${id}`);
+  const allowed = new Set(allowlisted);
+  for (const id of effective) {
+    if (!allowed.has(id)) {
+      throw new Error(`Skill version is not on this run's allowlist: ${id}`);
     }
     const skill = input.getSkill(id);
     if (!skill) throw new Error(`Skill version not found: ${id}`);
     if (skill.archived) throw new Error(`Skill version is archived: ${id}`);
+    if (!skill.enabled) throw new Error(`Skill version is not enabled: ${id}`);
     if (!skill.permissionApproved) throw new Error(`Skill version is not approved: ${id}`);
   }
 
   return {
     requestedSkillVersionIds: requested,
-    skillVersionIds: requested,
+    skillVersionIds: effective,
     inheritedAgentAllowlist: input.selectedSkillVersionIds === undefined,
   };
 }

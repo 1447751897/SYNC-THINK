@@ -26,12 +26,16 @@ describe('DesktopHostClient', () => {
     HOST_FIXTURE_TEST_TIMEOUT_MS,
   );
 
-  it('hard-stops a host that exceeds the capability timeout', async () => {
-    const client = new DesktopHostClient({ hostEntryPath: fixtures('desktop-host-hang.mjs') });
-    await expect(
-      client.execute({ kind: 'probe' }, process.cwd(), token({ timeoutMs: 20 })),
-    ).rejects.toMatchObject({ code: 'desktop.timeout', failureClass: 'timeout' });
-  });
+  it(
+    'hard-stops a host that exceeds the capability timeout',
+    async () => {
+      const client = new DesktopHostClient({ hostEntryPath: fixtures('desktop-host-hang.mjs') });
+      await expect(
+        client.execute({ kind: 'probe' }, process.cwd(), token({ timeoutMs: 20 })),
+      ).rejects.toMatchObject({ code: 'desktop.timeout', failureClass: 'timeout' });
+    },
+    HOST_FIXTURE_TEST_TIMEOUT_MS,
+  );
 
   it(
     'classifies malformed output as a handshake failure',

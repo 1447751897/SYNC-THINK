@@ -154,8 +154,19 @@ export type CommandType =
   | 'skill.list'
   | 'skill.get'
   | 'skill.delete'
+  | 'skill.setEnabled'
   | 'mcp.register'
   | 'mcp.list'
+  | 'mcp.setEnabled'
+  | 'capability.workspace.list'
+  | 'capability.workspace.setActive'
+  | 'capability.governance.list'
+  | 'capability.publishDraft.save'
+  | 'capability.publishDraft.list'
+  | 'capability.publishDraft.get'
+  | 'capability.publishDraft.submit'
+  | 'capability.organize.preview'
+  | 'capability.organize.getLatest'
   | 'mcp.policy.probe'
   | 'mcp.tool.request'
   | 'mcp.spawn.probe'
@@ -199,6 +210,8 @@ export interface HealthcheckResponse {
   protocolVersion: number;
   features: Feature[];
   inFlightRuns: number;
+  inFlightRunIds: string[];
+  eventSequence: number;
 }
 
 export interface CreateWorkspacePayload {
@@ -494,8 +507,33 @@ export interface UnsubscribeConversationTransientStreamPayload {
   streamId: string;
 }
 
-export type ConversationTransientFrameKind = 'text' | 'reasoning' | 'process' | 'terminal';
+export type ConversationTransientFrameKind =
+  | 'text'
+  | 'commentary'
+  | 'reasoning'
+  | 'process'
+  | 'terminal';
 export type ConversationTransientTerminalState = 'completed' | 'failed' | 'cancelled';
+
+/**
+ * One contiguous user-visible assistant commentary fragment between durable
+ * execution boundaries. `afterSequence` identifies the latest durable event
+ * that had happened when the fragment started, which lets Desktop interleave it
+ * with projected tool steps without persisting every provider token as an Event.
+ */
+export interface CommentaryTimelineSegment {
+  id: string;
+  text: string;
+  startedAt: string;
+  completedAt?: string;
+  afterSequence?: number;
+}
+
+/**
+ * Legacy persisted provider reasoning-summary segment. New user-visible
+ * execution timelines use CommentaryTimelineSegment instead.
+ */
+export type ReasoningTimelineSegment = CommentaryTimelineSegment;
 
 /** Short-lived output frame. It is never written to the durable event store. */
 export interface ConversationTransientFrame {
@@ -505,6 +543,8 @@ export interface ConversationTransientFrame {
   streamSequence: number;
   kind: ConversationTransientFrameKind;
   textDelta?: string;
+  /** Latest durable Runtime event sequence when this transient frame was emitted. */
+  afterSequence?: number;
   terminalState?: ConversationTransientTerminalState;
   errorMessage?: string;
   /** Already-projected run-local process snapshot; never raw durable events. */
@@ -518,7 +558,12 @@ export interface ConversationTransientSnapshot {
   /** Latest thread cursor represented by this snapshot. */
   streamSequence: number;
   text: string;
+  commentaryText?: string;
+  commentarySegments?: CommentaryTimelineSegment[];
+  /** Provider reasoning summary kept for diagnostics and legacy recovery only. */
   reasoningText?: string;
+  /** Legacy provider reasoning timeline kept for backward-compatible snapshots. */
+  reasoningSegments?: ReasoningTimelineSegment[];
   process?: RunProcessView;
   updatedAt: string;
 }
@@ -1101,6 +1146,8 @@ export interface SetSettingResponse {
 export interface UsageSummaryPayload {
   /** Restrict to the trailing N days; omit for all time. */
   sinceDays?: number;
+  /** Restrict provider request usage to one durable Task. */
+  taskId?: string;
 }
 
 export interface UsageSummaryRow {
@@ -1809,6 +1856,8 @@ export interface CreateAgentVersionResponse {
 
 // --- Skill library (SKILL.md import subset 搂9.2) ---
 
+export type SkillOriginType = 'local' | 'market' | 'derived';
+
 export interface SkillVersionSummary {
   skillVersionId: string;
   skillId: string;
@@ -1819,12 +1868,28 @@ export interface SkillVersionSummary {
   contentFingerprint: string;
   hasScripts: boolean;
   warnings: string[];
+  /** Global Compose/runtime availability. */
+  enabled: boolean;
+  /** Installation lineage used by the capability center. */
+  originType: SkillOriginType;
+  /** Stable source pointer, for example market://skills/project-bootstrap. */
+  originRef?: string;
+  /** Immutable market/local version this local derived copy was created from. */
+  derivedFromSkillVersionId?: string;
   createdAt: string;
 }
 
 export interface ImportSkillPayload {
   /** Full SKILL.md source text (frontmatter + body). */
   skillMd: string;
+  /** Defaults to local. Market edits must be imported as derived. */
+  originType?: SkillOriginType;
+  /** Stable source pointer for market and derived versions. */
+  originRef?: string;
+  /** Required when originType is derived. */
+  derivedFromSkillVersionId?: string;
+  /** Preserve the immutable Skill family when creating a new local version. */
+  skillId?: string;
 }
 
 /** Permission surface change between skill versions (搂9.3 reapproval). */
@@ -1852,6 +1917,8 @@ export interface ImportSkillResponse {
 
 export interface ListSkillsPayload {
   limit?: number;
+  /** Current workspace for ordinary Compose and "/" discovery. */
+  workspaceId?: string;
   /** Exact immutable versions for an Agent picker; metadata only, max Agent allowlist size. */
   skillVersionIds?: string[];
 }
@@ -1883,6 +1950,15 @@ export interface DeleteSkillResponse {
   skillVersionId: string;
 }
 
+export interface SetSkillEnabledPayload {
+  skillVersionId: string;
+  enabled: boolean;
+}
+
+export interface SetSkillEnabledResponse {
+  skill: SkillVersionSummary;
+}
+
 // --- MCP server registry (搂9.3 authz skeleton; register does not spawn) ---
 
 export interface McpToolSchemaSummary {
@@ -1898,6 +1974,8 @@ export interface McpServerSummary {
   endpoint: string;
   tools: McpToolSchemaSummary[];
   trusted: boolean;
+  /** Global availability for automatic MCP discovery. */
+  enabled: boolean;
   maxOutputBytes: number;
   timeoutMs: number;
   notes: string;
@@ -1928,6 +2006,194 @@ export interface ListMcpServersPayload {
 
 export interface ListMcpServersResponse {
   servers: McpServerSummary[];
+}
+
+export interface SetMcpServerEnabledPayload {
+  mcpServerId: string;
+  enabled: boolean;
+}
+
+export interface SetMcpServerEnabledResponse {
+  server: McpServerSummary;
+}
+
+// --- Capability governance (global enablement ∩ workspace activation ∩ Agent binding) ---
+
+export type GovernedCapabilityType = 'skill' | 'mcp';
+
+export interface CapabilityWorkspaceActivationSummary {
+  capabilityType: GovernedCapabilityType;
+  capabilityId: string;
+  workspaceId: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CapabilityWorkspaceListPayload {
+  workspaceId: string;
+  capabilityType?: GovernedCapabilityType;
+}
+
+export interface CapabilityWorkspaceListResponse {
+  activations: CapabilityWorkspaceActivationSummary[];
+}
+
+export interface CapabilityWorkspaceSetActivePayload {
+  workspaceId: string;
+  capabilityType: GovernedCapabilityType;
+  capabilityId: string;
+  active: boolean;
+}
+
+export interface CapabilityWorkspaceSetActiveResponse {
+  activation: CapabilityWorkspaceActivationSummary;
+}
+
+export interface CapabilityUsageSummary {
+  capabilityType: GovernedCapabilityType;
+  capabilityId: string;
+  callCount: number;
+  successCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  problemCount: number;
+  contextTokens: number;
+  lastUsedAt?: string;
+}
+
+export interface GovernedSkillSummary {
+  skill: SkillVersionSummary;
+  workspaceActive: boolean;
+  usage: CapabilityUsageSummary;
+}
+
+export interface GovernedMcpServerSummary {
+  server: McpServerSummary;
+  workspaceActive: boolean;
+  usage: CapabilityUsageSummary;
+}
+
+export interface CapabilityGovernanceListPayload {
+  workspaceId: string;
+  /** Deterministic tests and diagnostics; production callers omit it. */
+  now?: string;
+}
+
+export interface CapabilityGovernanceListResponse {
+  workspaceId: string;
+  windowDays: 45;
+  skills: GovernedSkillSummary[];
+  mcpServers: GovernedMcpServerSummary[];
+}
+
+export interface SkillPublishAttachmentSummary {
+  name: string;
+  size: number;
+}
+
+export interface SkillPublishDraftSummary {
+  id: string;
+  skillVersionId: string;
+  skillId: string;
+  displayName: string;
+  description: string;
+  skillMd: string;
+  category: string;
+  version: string;
+  icon: string;
+  attachments: SkillPublishAttachmentSummary[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SaveSkillPublishDraftPayload {
+  id?: string;
+  skillVersionId: string;
+  skillId: string;
+  displayName: string;
+  description: string;
+  skillMd: string;
+  category: string;
+  version: string;
+  icon: string;
+  attachments?: SkillPublishAttachmentSummary[];
+}
+
+export interface SaveSkillPublishDraftResponse {
+  draft: SkillPublishDraftSummary;
+}
+
+export interface ListSkillPublishDraftsPayload {
+  skillId?: string;
+  limit?: number;
+}
+
+export interface ListSkillPublishDraftsResponse {
+  drafts: SkillPublishDraftSummary[];
+}
+
+export interface GetSkillPublishDraftPayload {
+  id: string;
+}
+
+export interface GetSkillPublishDraftResponse {
+  draft: SkillPublishDraftSummary;
+}
+
+export interface SubmitSkillPublishDraftPayload {
+  id: string;
+}
+
+export interface SubmitSkillPublishDraftResponse {
+  submitted: false;
+  reason: 'channel-unavailable';
+  message: string;
+  draft: SkillPublishDraftSummary;
+}
+
+export interface CapabilityOrganizeCategoriesSummary {
+  unused: string[];
+  inactive: string[];
+  problematic: string[];
+  contextWarning: string[];
+  highContext: string[];
+}
+
+export interface CapabilityOrganizeReportSummary {
+  id: string;
+  workspaceId: string;
+  contextBudgetTokens: number;
+  categories: CapabilityOrganizeCategoriesSummary;
+  summary: {
+    capabilityCount: number;
+    unusedCount: number;
+    inactiveCount: number;
+    problematicCount: number;
+    contextWarningCount: number;
+    highContextCount: number;
+  };
+  createdAt: string;
+}
+
+export interface PreviewCapabilityOrganizePayload {
+  workspaceId: string;
+  contextBudgetTokens: number;
+  /** Deterministic tests and diagnostics; production callers omit it. */
+  now?: string;
+}
+
+export interface PreviewCapabilityOrganizeResponse {
+  report: CapabilityOrganizeReportSummary;
+  readOnly: true;
+}
+
+export interface GetLatestCapabilityOrganizePayload {
+  workspaceId: string;
+}
+
+export interface GetLatestCapabilityOrganizeResponse {
+  report?: CapabilityOrganizeReportSummary;
 }
 
 // --- MCP process policy probe (搂9.3 size/timeout/untrusted/audit; no real spawn) ---
@@ -2683,6 +2949,8 @@ export interface ContextStatusSection {
 
 export interface ConversationGetContextStatusPayload {
   conversationId: import('@sync-think/shared').ConversationId;
+  /** Optional compose-time model override used to calculate the current window capacity. */
+  modelId?: string;
 }
 
 export interface ConversationGetContextStatusResponse {
@@ -2716,6 +2984,13 @@ export interface ExecutionProcessStep {
   exitCode?: number;
   error?: string;
   count?: number;
+  /** First durable event sequence represented by this projected step. */
+  sequence?: number;
+  /** First observed tool boundary. */
+  startedAt?: string;
+  /** Terminal tool boundary, when reported. */
+  completedAt?: string;
+  /** Latest observed boundary retained for backwards compatibility. */
   occurredAt?: string;
 }
 

@@ -1274,6 +1274,15 @@ describe('RuntimePipeClient', () => {
                       runId: 'run-transient-client',
                       streamSequence: 3,
                       text: 'snapshot answer',
+                      commentaryText: '正在恢复执行。',
+                      commentarySegments: [
+                        {
+                          id: 'commentary-1',
+                          text: '正在恢复执行。',
+                          startedAt: '2026-07-27T00:00:01.000Z',
+                          afterSequence: 2,
+                        },
+                      ],
                       reasoningText: 'snapshot thought',
                       updatedAt: '2026-07-27T00:00:01.000Z',
                     },
@@ -1290,8 +1299,9 @@ describe('RuntimePipeClient', () => {
                         threadId: 'thread-transient-client',
                         runId: 'run-transient-client',
                         streamSequence: 3,
-                        kind: 'reasoning',
-                        textDelta: 'think',
+                        kind: 'commentary',
+                        textDelta: '正在恢复执行。',
+                        afterSequence: 2,
                         occurredAt: '2026-07-27T00:00:01.000Z',
                       },
                     ],
@@ -1303,14 +1313,15 @@ describe('RuntimePipeClient', () => {
                   type: 'conversation.transientFrame',
                   payload: {
                     streamId: 'transient-client-test',
-                    frame: {
-                      threadId: 'thread-transient-client',
-                      runId: 'run-transient-client',
-                      streamSequence: 3,
-                      kind: 'reasoning',
-                      textDelta: 'duplicate',
-                      occurredAt: '2026-07-27T00:00:01.000Z',
-                    },
+                      frame: {
+                        threadId: 'thread-transient-client',
+                        runId: 'run-transient-client',
+                        streamSequence: 3,
+                        kind: 'commentary',
+                        textDelta: 'duplicate',
+                        afterSequence: 2,
+                        occurredAt: '2026-07-27T00:00:01.000Z',
+                      },
                   },
                 }),
                 encodeFrame({
@@ -1355,7 +1366,18 @@ describe('RuntimePipeClient', () => {
     const sequences: number[] = [];
     const resets: Array<{
       latest: number;
-      snapshot?: { text: string; reasoningText?: string; streamSequence: number };
+      snapshot?: {
+        text: string;
+        commentaryText?: string;
+        commentarySegments?: Array<{
+          id: string;
+          text: string;
+          startedAt: string;
+          afterSequence?: number;
+        }>;
+        reasoningText?: string;
+        streamSequence: number;
+      };
     }> = [];
 
     try {
@@ -1374,6 +1396,15 @@ describe('RuntimePipeClient', () => {
             runId: 'run-transient-client',
             streamSequence: 3,
             text: 'snapshot answer',
+            commentaryText: '正在恢复执行。',
+            commentarySegments: [
+              {
+                id: 'commentary-1',
+                text: '正在恢复执行。',
+                startedAt: '2026-07-27T00:00:01.000Z',
+                afterSequence: 2,
+              },
+            ],
             reasoningText: 'snapshot thought',
             updatedAt: '2026-07-27T00:00:01.000Z',
           },

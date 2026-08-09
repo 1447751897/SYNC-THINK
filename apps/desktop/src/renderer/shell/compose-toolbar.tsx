@@ -118,7 +118,7 @@ export function estimateContextWindow(modelId: string | undefined): number {
 
 export function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
-  if (n >= 1000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
   return String(n);
 }
 
@@ -463,7 +463,9 @@ export function SkillPickerMenu(props: {
       </div>
       <div className="shell-menu__scroll">
         {props.loading ? (
-          <div className="shell-menu__empty" role="status">正在加载 Skill…</div>
+          <div className="shell-menu__empty" role="status">
+            正在加载 Skill…
+          </div>
         ) : props.error ? (
           <div className="shell-menu__empty text-error" role="alert">
             <div>{props.error}</div>
@@ -479,7 +481,7 @@ export function SkillPickerMenu(props: {
             ) : null}
           </div>
         ) : props.options.length === 0 ? (
-          <div className="shell-menu__empty">当前智能体未装备 Skill</div>
+          <div className="shell-menu__empty">当前工作区没有已激活 Skill</div>
         ) : (
           props.options.map((skill) => {
             const active = selected.has(skill.skillVersionId);
@@ -500,7 +502,8 @@ export function SkillPickerMenu(props: {
                 </span>
                 <div className="shell-menu__item-text">
                   <div className="shell-menu__item-title">
-                    {skill.name} <span className="font-normal text-text-faint">@{skill.version}</span>
+                    {skill.name}{' '}
+                    <span className="font-normal text-text-faint">@{skill.version}</span>
                   </div>
                   {skill.description ? (
                     <div className="shell-menu__item-desc">{skill.description}</div>
@@ -636,6 +639,8 @@ export function ModelPickerMenu(props: {
                               return (
                                 <DropdownMenu.Item
                                   key={model.modelId}
+                                  role="menuitemradio"
+                                  aria-checked={active}
                                   className={`shell-menu__item shell-menu__item--model ${
                                     active ? 'is-active' : ''
                                   }`}
@@ -675,10 +680,25 @@ const CONTEXT_SECTION_LABELS: Record<ContextStatusSectionType, string> = {
   system: '系统指令',
   agent: '智能体 / 小队',
   project: '项目上下文',
-  summary: '压缩摘要',
-  messages: '消息',
-  tools: '工具',
+  summary: '已保存摘要',
+  messages: '消息历史',
+  tools: '工具定义',
 };
+
+function formatContextTimestamp(value: string | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  const now = new Date();
+  return new Intl.DateTimeFormat('zh-CN', {
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' as const }),
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+}
 
 /**
  * Context occupancy ring. Hover shows a NewMax-style "上下文窗口" card.
@@ -691,6 +711,10 @@ export function ContextRing(props: {
   limit: number;
   /** Runtime-computed ratio; may exceed 1 when the request is over the window. */
   usageRatio?: number;
+  /** Runtime-owned auto-compact threshold (currently 70%). */
+  compactThreshold?: number;
+  /** Timestamp of the latest successful durable context compact. */
+  compactedAt?: string;
   /** Audit-only Runtime breakdown. It contains category names and token counts only. */
   sections?: ContextStatusSection[];
   /** 本会话累计时长（ms），tooltip 里展示。 */
@@ -716,15 +740,31 @@ export function ContextRing(props: {
   const dash = `${(visualRatio * c).toFixed(2)} ${c.toFixed(2)}`;
   const pct = Math.round(rawRatio * 100);
   const sections = props.sections ?? [];
+  const compactThreshold =
+    typeof props.compactThreshold === 'number' &&
+    Number.isFinite(props.compactThreshold) &&
+    props.compactThreshold > 0
+      ? Math.min(1, props.compactThreshold)
+      : 0.7;
+  const compactPct = Math.round(compactThreshold * 100);
+  const compactAtTokens =
+    props.limit > 0 ? Math.max(0, Math.round(props.limit * compactThreshold)) : 0;
+  const tokensUntilCompact = Math.max(0, compactAtTokens - props.used);
+  const compactThresholdReached = compactAtTokens > 0 && props.used >= compactAtTokens;
+  const compactedAtLabel = formatContextTimestamp(props.compactedAt);
   const usedLabel = formatTokenCount(props.used);
   const limitLabel = formatTokenCount(props.limit);
   const remaining = Math.max(0, props.limit - props.used);
   const remainingLabel = formatTokenCount(remaining);
-  // 会话累计（跨全部轮次的总消耗），与「当前上下文占用」是两个口径：
-  // 占用 = 最近一次请求的 input tokens（提示词+全部历史，即模型此刻真实
-  // 看到的内容量）；累计 = 本会话所有轮次 in+out 之和，只增不减。
-  const sessionTokens = props.sessionTokens ?? 0;
-  const sessionTokensLabel = sessionTokens > 0 ? formatTokenCount(sessionTokens) : null;
+  const compactAtLabel = formatTokenCount(compactAtTokens);
+  const tokensUntilCompactLabel = formatTokenCount(tokensUntilCompact);
+  const exactTokenTitle = (tokens: number) =>
+    `${Math.max(0, Math.round(tokens)).toLocaleString('en-US')} Token`;
+  // 会话累计（跨全部轮次的总消耗），与「当前上下文窗口」是两个口径：
+  // 窗口 = Runtime 当前准备提供给模型的完整上下文；累计 = 本会话所有
+  // Provider 请求的 in+out 之和。没有 usage 事件时必须保留“未上报”语义。
+  const sessionTokensLabel =
+    props.sessionTokens === undefined ? undefined : formatTokenCount(props.sessionTokens);
   const sessionDurationLabel = (() => {
     const ms = props.sessionDurationMs ?? 0;
     if (ms <= 0) return null;
@@ -753,16 +793,23 @@ export function ContextRing(props: {
 
   let tipStyle: React.CSSProperties | undefined;
   if (open && anchor && typeof window !== 'undefined') {
-    const tipW = 220;
+    const tipW = Math.min(292, Math.max(0, window.innerWidth - 16));
     const left = Math.max(8, Math.min(anchor.right - tipW, window.innerWidth - tipW - 8));
     tipStyle = {
       position: 'fixed',
       left,
       bottom: window.innerHeight - anchor.top + 8,
       width: tipW,
+      maxHeight: Math.max(180, anchor.top - 16),
       zIndex: 10000,
     };
   }
+  const occupancyColor =
+    rawRatio >= 0.9
+      ? 'var(--color-error)'
+      : rawRatio >= compactThreshold
+        ? 'var(--color-warning)'
+        : 'var(--color-accent)';
 
   return (
     <>
@@ -772,11 +819,13 @@ export function ContextRing(props: {
         className="shell-compose__ctx"
         data-testid="context-ring"
         aria-label={`上下文 ${usedLabel} / ${limitLabel}（约 ${pct}%）`}
+        aria-expanded={open}
         title={props.title}
         onMouseEnter={show}
         onMouseLeave={hide}
         onFocus={show}
         onBlur={hide}
+        onClick={show}
       >
         <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
           <circle
@@ -792,7 +841,7 @@ export function ContextRing(props: {
             cy="11"
             r={r}
             fill="none"
-            stroke={rawRatio > 0.9 ? 'var(--color-error)' : 'var(--color-accent)'}
+            stroke={occupancyColor}
             strokeWidth="2.2"
             strokeDasharray={dash}
             strokeLinecap="round"
@@ -810,30 +859,96 @@ export function ContextRing(props: {
               onMouseEnter={cancelClose}
               onMouseLeave={hide}
             >
-              <div className="shell-ctx-tooltip__title">上下文窗口</div>
+              <div className="shell-ctx-tooltip__header">
+                <div>
+                  <div className="shell-ctx-tooltip__title">当前上下文窗口</div>
+                  <div className="shell-ctx-tooltip__subtitle">
+                    当前模型实际可见的完整上下文窗口
+                  </div>
+                </div>
+                <strong className="shell-ctx-tooltip__headline">
+                  {usedLabel}
+                  <span> / {limitLabel}</span>
+                </strong>
+              </div>
+              <div
+                className="shell-ctx-tooltip__bar"
+                role="progressbar"
+                aria-label="当前对话上下文容量"
+                aria-valuemin={0}
+                aria-valuemax={Math.max(0, props.limit)}
+                aria-valuenow={Math.max(0, Math.min(props.used, props.limit || props.used))}
+              >
+                <div
+                  className="shell-ctx-tooltip__bar-fill"
+                  style={{
+                    width: `${visualRatio * 100}%`,
+                    background: occupancyColor,
+                  }}
+                />
+                <span
+                  className="shell-ctx-tooltip__bar-threshold"
+                  style={{ left: `${compactThreshold * 100}%` }}
+                  title={`自动压缩阈值：${compactPct}%`}
+                  aria-hidden="true"
+                />
+              </div>
+              <div
+                className="shell-ctx-tooltip__status"
+                data-state={compactThresholdReached ? 'threshold' : 'healthy'}
+              >
+                <span aria-hidden="true" />
+                {compactThresholdReached
+                  ? '已达到阈值，发送下一条消息前会自动压缩'
+                  : `达到 ${compactPct}% 时，在发送下一条消息前自动压缩`}
+              </div>
               <div className="shell-ctx-tooltip__row">
                 <span>当前占用</span>
-                <strong>
+                <strong data-testid="context-used-value" title={exactTokenTitle(props.used)}>
                   {usedLabel}
                   <span className="shell-ctx-tooltip__pct"> · {pct}%</span>
                 </strong>
               </div>
               <div className="shell-ctx-tooltip__row">
-                <span>上限</span>
-                <strong>{limitLabel}</strong>
+                <span>容量上限</span>
+                <strong title={exactTokenTitle(props.limit)}>{limitLabel}</strong>
               </div>
               <div className="shell-ctx-tooltip__row">
-                <span>剩余</span>
-                <strong>{remainingLabel}</strong>
+                <span>窗口剩余</span>
+                <strong title={exactTokenTitle(remaining)}>{remainingLabel}</strong>
+              </div>
+              <div className="shell-ctx-tooltip__row">
+                <span>自动压缩</span>
+                <strong title={exactTokenTitle(compactAtTokens)}>
+                  {compactAtLabel}
+                  <span className="shell-ctx-tooltip__pct"> · {compactPct}%</span>
+                </strong>
+              </div>
+              <div className="shell-ctx-tooltip__row">
+                <span>距离压缩</span>
+                <strong
+                  data-testid="context-compact-distance"
+                  title={
+                    compactThresholdReached
+                      ? '已达到自动压缩阈值'
+                      : exactTokenTitle(tokensUntilCompact)
+                  }
+                >
+                  {compactThresholdReached ? '已达阈值' : tokensUntilCompactLabel}
+                </strong>
+              </div>
+              <div className="shell-ctx-tooltip__row">
+                <span>最近压缩</span>
+                <strong data-testid="context-compacted-at">{compactedAtLabel ?? '尚未发生'}</strong>
               </div>
               <div className="shell-ctx-tooltip__hint">
-                占用 = 最近一次请求送入模型的内容量（含全部历史），随对话增长
+                当前占用来自 Runtime 将发送给模型的完整对话上下文，不是单条回复的 Token。
               </div>
               {sections.length > 0 ? (
                 <>
                   <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
                   <div className="shell-ctx-tooltip__title shell-ctx-tooltip__title--section">
-                    本次上下文构成
+                    当前对话上下文构成
                   </div>
                   {sections.map((section) => (
                     <div
@@ -842,34 +957,38 @@ export function ContextRing(props: {
                       data-testid={`context-section-${section.type}`}
                     >
                       <span>{CONTEXT_SECTION_LABELS[section.type]}</span>
-                      <strong>{formatTokenCount(section.tokens)}</strong>
+                      <strong title={exactTokenTitle(section.tokens)}>
+                        {formatTokenCount(section.tokens)}
+                      </strong>
                     </div>
                   ))}
                 </>
               ) : null}
-              {sessionTokensLabel || sessionDurationLabel ? (
-                <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
-              ) : null}
-              {sessionTokensLabel ? (
-                <div className="shell-ctx-tooltip__row">
-                  <span>会话累计消耗</span>
-                  <strong>{sessionTokensLabel}</strong>
-                </div>
-              ) : null}
+              <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
+              <div className="shell-ctx-tooltip__title shell-ctx-tooltip__title--section">
+                会话累计
+              </div>
+              <div className="shell-ctx-tooltip__row">
+                <span>累计 Token 消耗</span>
+                <strong
+                  data-testid="context-session-tokens"
+                  title={
+                    props.sessionTokens === undefined
+                      ? undefined
+                      : exactTokenTitle(props.sessionTokens)
+                  }
+                >
+                  {sessionTokensLabel ?? '尚未上报'}
+                </strong>
+              </div>
               {sessionDurationLabel ? (
                 <div className="shell-ctx-tooltip__row">
                   <span>会话时长</span>
                   <strong>{sessionDurationLabel}</strong>
                 </div>
               ) : null}
-              <div className="shell-ctx-tooltip__bar" aria-hidden="true">
-                <div
-                  className="shell-ctx-tooltip__bar-fill"
-                  style={{
-                    width: `${visualRatio * 100}%`,
-                    background: rawRatio > 0.9 ? 'var(--color-error)' : 'var(--color-accent)',
-                  }}
-                />
+              <div className="shell-ctx-tooltip__hint">
+                累计消耗是全部轮次的输入与输出之和，与当前窗口占用分开统计。
               </div>
             </div>,
             document.body,
@@ -891,6 +1010,8 @@ export function ModelTrigger(props: {
       type="button"
       className="shell-compose__model-btn"
       data-open={props.open ? '1' : '0'}
+      aria-haspopup="menu"
+      aria-expanded={props.open}
       onClick={props.onClick}
       title="切换模型"
     >

@@ -34,6 +34,23 @@ function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function reasoningFromEvents(events: Awaited<ReturnType<typeof collect>>): string {
+  return events
+    .filter((event) => event.type === 'reasoning-delta')
+    .map((event) => (event.type === 'reasoning-delta' ? event.text : ''))
+    .join('');
+}
+
+function assistantMessageText(
+  events: Awaited<ReturnType<typeof collect>>,
+  phase: 'commentary' | 'final_answer',
+): string {
+  return events
+    .filter((event) => event.type === 'assistant-message-delta' && event.phase === phase)
+    .map((event) => (event.type === 'assistant-message-delta' ? event.text : ''))
+    .join('');
+}
+
 describe('joinResponsesUrl', () => {
   it('appends /responses once and normalizes host-only gateways to /v1', () => {
     expect(joinResponsesUrl('https://api.openai.com/v1')).toBe(
@@ -90,6 +107,165 @@ describe('streamOpenAIResponses', () => {
     const body = JSON.parse((init as { body: string }).body);
     expect(body).toMatchObject({ model: 'gpt-5-mini', stream: true, instructions: 'Be concise.' });
     expect(body.input[0]).toMatchObject({ role: 'user', content: 'hello responses' });
+  });
+
+  it('streams unphased Responses text as final_answer and deduplicates the phased terminal snapshot', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.output_text.delta","output_index":0,"delta":"第一段，"}\n\n',
+        'data: {"type":"response.output_text.delta","output_index":0,"delta":"第二段。"}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[{"id":"msg-final","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"第一段，第二段。"}]}]}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+
+    expect(assistantMessageText(events, 'final_answer')).toBe('第一段，第二段。');
+    expect(events.filter((event) => event.type === 'text-delta')).toHaveLength(0);
+    expect(events.map((event) => event.type)).toEqual([
+      'assistant-message-start',
+      'assistant-message-delta',
+      'assistant-message-delta',
+      'assistant-message-end',
+      'finished',
+    ]);
+  });
+
+  it('emits only the unseen suffix when an identifier-free delta is followed by a full snapshot', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[{"id":"msg-final","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Hello world"}]}]}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+
+    expect(assistantMessageText(events, 'final_answer')).toBe('Hello world');
+    expect(
+      events
+        .filter((event) => event.type === 'assistant-message-delta')
+        .map((event) => (event.type === 'assistant-message-delta' ? event.text : '')),
+    ).toEqual(['Hello', ' world']);
+  });
+
+  it('deduplicates a completed final-answer snapshot when the gateway rewrites its item identity', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.output_item.added","output_index":7,"item":{"id":"msg-stream","type":"message","role":"assistant","phase":"final_answer","content":[]}}\n\n',
+        'data: {"type":"response.output_text.delta","item_id":"msg-stream","output_index":7,"delta":"第一段，"}\n\n',
+        'data: {"type":"response.output_text.delta","item_id":"msg-stream","output_index":7,"delta":"第二段。"}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[{"id":"msg-snapshot","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"第一段，第二段。"}]}]}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+
+    expect(assistantMessageText(events, 'final_answer')).toBe('第一段，第二段。');
+    expect(
+      events
+        .filter((event) => event.type === 'assistant-message-delta')
+        .map((event) => (event.type === 'assistant-message-delta' ? event.text : '')),
+    ).toEqual(['第一段，', '第二段。']);
+    expect(events.filter((event) => event.type === 'assistant-message-start')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'assistant-message-end')).toHaveLength(1);
+  });
+
+  it('recovers a reasoning summary from the completed Responses payload', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"Checked the stream lifecycle."}]}]}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+    expect(reasoningFromEvents(events)).toBe('Checked the stream lifecycle.');
+    expect(events.at(-1)).toEqual({ type: 'finished', reason: 'stop' });
+  });
+
+  it('does not duplicate a reasoning summary already emitted as deltas', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"Already streamed."}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"Already streamed."}]}]}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+    expect(reasoningFromEvents(events)).toBe('Already streamed.');
+    expect(events.filter((event) => event.type === 'reasoning-delta')).toHaveLength(1);
+  });
+
+  it('preserves Codex commentary and final-answer phases around tool calls', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: sseStream([
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg-commentary-1","type":"message","role":"assistant","phase":"commentary","content":[]}}\n\n',
+        'data: {"type":"response.output_text.delta","item_id":"msg-commentary-1","output_index":0,"delta":"先检查代码。"}\n\n',
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg-commentary-1","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"先检查代码。"}]}}\n\n',
+        'data: {"type":"response.function_call_arguments.done","call_id":"call-read","name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}\n\n',
+        'data: {"type":"response.output_item.added","output_index":2,"item":{"id":"msg-commentary-2","type":"message","role":"assistant","phase":"commentary","content":[]}}\n\n',
+        'data: {"type":"response.output_text.delta","item_id":"msg-commentary-2","output_index":2,"delta":"读取后继续验证。"}\n\n',
+        'data: {"type":"response.output_item.done","output_index":2,"item":{"id":"msg-commentary-2","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"读取后继续验证。"}]}}\n\n',
+        'data: {"type":"response.output_item.added","output_index":3,"item":{"id":"msg-final","type":"message","role":"assistant","phase":"final_answer","content":[]}}\n\n',
+        'data: {"type":"response.output_text.delta","item_id":"msg-final","output_index":3,"delta":"已经完成。"}\n\n',
+        'data: {"type":"response.output_item.done","output_index":3,"item":{"id":"msg-final","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"已经完成。"}]}}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      ]),
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+
+    expect(assistantMessageText(events, 'commentary')).toBe('先检查代码。读取后继续验证。');
+    expect(assistantMessageText(events, 'final_answer')).toBe('已经完成。');
+    expect(events.map((event) => event.type)).toEqual([
+      'assistant-message-start',
+      'assistant-message-delta',
+      'assistant-message-end',
+      'tool-call',
+      'assistant-message-start',
+      'assistant-message-delta',
+      'assistant-message-end',
+      'assistant-message-start',
+      'assistant-message-delta',
+      'assistant-message-end',
+      'finished',
+    ]);
   });
 
   it('forwards provider-managed prompt cache identity without unsupported retention', async () => {
@@ -207,6 +383,77 @@ describe('streamOpenAIResponses', () => {
     });
   });
 
+  it('preserves Codex assistant phases and message/tool ordering in Responses history', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ status: 'completed', output: [] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIResponses(
+        req({
+          messages: [
+            { role: 'user', content: '检查文件' },
+            {
+              role: 'assistant',
+              phase: 'commentary',
+              content: '我先读取关键文件。',
+            },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCall: {
+                    id: 'call-read',
+                    name: 'read_file',
+                    argumentsJson: '{"path":"README.md"}',
+                  },
+                },
+              ],
+            },
+            { role: 'tool', toolCallId: 'call-read', content: '{"content":"hello"}' },
+            {
+              role: 'assistant',
+              phase: 'final_answer',
+              content: '读取完成。',
+            },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const requestBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(requestBody.input).toEqual([
+      { role: 'user', content: '检查文件' },
+      {
+        role: 'assistant',
+        phase: 'commentary',
+        content: '我先读取关键文件。',
+      },
+      {
+        type: 'function_call',
+        call_id: 'call-read',
+        name: 'read_file',
+        arguments: '{"path":"README.md"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call-read',
+        output: '{"content":"hello"}',
+      },
+      {
+        role: 'assistant',
+        phase: 'final_answer',
+        content: '读取完成。',
+      },
+    ]);
+  });
+
   it('serializes multimodal user images as Responses input_image parts', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
@@ -263,6 +510,80 @@ describe('streamOpenAIResponses', () => {
     expect(textFromEvents(events)).toBe('solid response');
     expect(events).toContainEqual({ type: 'usage', tokensIn: 4, tokensOut: 3 });
     expect(events.at(-1)).toEqual({ type: 'finished', reason: 'stop' });
+  });
+
+  it('extracts a reasoning summary from a non-stream Responses JSON fallback', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () =>
+        JSON.stringify({
+          status: 'completed',
+          output: [
+            {
+              type: 'reasoning',
+              content: [{ type: 'reasoning_text', text: 'Persist this summary.' }],
+            },
+          ],
+        }),
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+    expect(reasoningFromEvents(events)).toBe('Persist this summary.');
+    expect(events.at(-1)).toEqual({ type: 'finished', reason: 'stop' });
+  });
+
+  it('classifies completed assistant messages by phase without promoting reasoning to commentary', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () =>
+        JSON.stringify({
+          status: 'completed',
+          output: [
+            {
+              id: 'reasoning-1',
+              type: 'reasoning',
+              summary: [{ type: 'summary_text', text: 'Internal diagnostic summary.' }],
+            },
+            {
+              id: 'commentary-1',
+              type: 'message',
+              role: 'assistant',
+              phase: 'commentary',
+              content: [{ type: 'output_text', text: '我先检查消息链路。' }],
+            },
+            {
+              type: 'function_call',
+              call_id: 'call-1',
+              name: 'read_file',
+              arguments: '{"path":"README.md"}',
+            },
+            {
+              id: 'final-1',
+              type: 'message',
+              role: 'assistant',
+              phase: 'final_answer',
+              content: [{ type: 'output_text', text: '检查完成。' }],
+            },
+          ],
+        }),
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+
+    expect(reasoningFromEvents(events)).toBe('Internal diagnostic summary.');
+    expect(assistantMessageText(events, 'commentary')).toBe('我先检查消息链路。');
+    expect(assistantMessageText(events, 'final_answer')).toBe('检查完成。');
+    expect(assistantMessageText(events, 'commentary')).not.toContain('Internal diagnostic summary.');
   });
 
   it('maps auth errors without leaking the API key', async () => {

@@ -28,9 +28,18 @@ describe('parseConversationGetRunProcessPayload', () => {
 
 
 describe('parseConversationGetContextStatusPayload', () => {
-  it('accepts one bounded non-empty conversation id', () => {
+  it('accepts a bounded conversation id and optional model override', () => {
     expect(parseConversationGetContextStatusPayload({ conversationId: 'conv-1' })).toEqual({
       conversationId: 'conv-1',
+    });
+    expect(
+      parseConversationGetContextStatusPayload({
+        conversationId: 'conv-1',
+        modelId: 'provider/model-luna',
+      }),
+    ).toEqual({
+      conversationId: 'conv-1',
+      modelId: 'provider/model-luna',
     });
   });
 
@@ -42,6 +51,9 @@ describe('parseConversationGetContextStatusPayload', () => {
     { conversationId: '' },
     { conversationId: '   ' },
     { conversationId: 1 },
+    { conversationId: 'conv-1', modelId: '' },
+    { conversationId: 'conv-1', modelId: 1 },
+    { conversationId: 'conv-1', modelId: 'x'.repeat(257) },
     { conversationId: 'conv-1', extra: true },
     { conversationId: 'x'.repeat(129) },
   ])('rejects malformed payload %#', (payload) => {

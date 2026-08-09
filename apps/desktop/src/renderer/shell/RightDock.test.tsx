@@ -27,6 +27,8 @@ describe('RightDock project content search', () => {
     expect(preview.getAttribute('data-partition')).toBe('browser-preview');
     expect(preview.getAttribute('data-register-for-automation')).toBe('false');
     expect(screen.getByRole('button', { name: '预览' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '工作区文件' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '工作区' })).toBeNull();
   });
 
   it('switches from filename search to bounded content matches and opens the exact line', async () => {
@@ -79,5 +81,34 @@ describe('RightDock project content search', () => {
     expect(screen.getByText('const marker = "Needle";')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /src\/app\.ts.*7.*17/i }));
     expect(onOpenFile).toHaveBeenCalledWith('src/app.ts', { line: 7, column: 17 });
+  });
+
+  it('keeps legacy files/workspace initial tabs inside the unified workspace files panel', () => {
+    const { rerender } = render(
+      <RightDock
+        projectFolder="C:/workspace"
+        initialTab="workspace"
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('workspace-files-panel')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '文件' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Git' }).getAttribute('aria-selected')).toBe('false');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Git' }));
+    expect(screen.getByRole('tab', { name: 'Git' }).getAttribute('aria-selected')).toBe('true');
+
+    rerender(
+      <RightDock
+        projectFolder="C:/workspace"
+        initialTab="files"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '工作区文件' }).getAttribute('data-active')).toBe(
+      'true',
+    );
+    expect(screen.getByRole('tab', { name: '文件' }).getAttribute('aria-selected')).toBe('true');
   });
 });

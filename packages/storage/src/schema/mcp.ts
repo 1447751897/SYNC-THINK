@@ -18,6 +18,8 @@ export const mcpServer = sqliteTable(
     toolsJson: text('tools_json').notNull().default('[]'),
     /** Explicit trust flag recorded for audit; default untrusted. */
     trusted: integer('trusted', { mode: 'boolean' }).notNull().default(false),
+    /** Global model-tool availability. Registration and enablement are separate. */
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
     /** Size/timeout policy stubs (documented; not enforced on real spawn yet). */
     maxOutputBytes: integer('max_output_bytes').notNull().default(65536),
     timeoutMs: integer('timeout_ms').notNull().default(15000),
@@ -27,6 +29,7 @@ export const mcpServer = sqliteTable(
   },
   (t) => ({
     byName: index('mcp_server_name_idx').on(t.name),
+    byEnabled: index('mcp_server_enabled_idx').on(t.enabled, t.createdAt),
   }),
 );
 export type McpServerRow = typeof mcpServer.$inferSelect;

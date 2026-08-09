@@ -1,144 +1,164 @@
 import { describe, expect, it } from 'vitest';
+import type { RunId } from '@sync-think/shared';
 import {
-  createDemoProviderRequest,
+  appendCommentaryTimelineDelta,
+  closeCommentaryTimelineSegment,
   createDemoRun,
-  isDemoRunRecoveryExpired,
+  parseDemoRuns,
   projectAdapterEvent,
-  serializeDemoRuns,
+  serializeDemoRun,
 } from './demo-run.js';
 
-describe('demo-run reasoning', () => {
-  it('forwards reasoningEffort into provider request', () => {
-    const run = createDemoRun('run-1' as never, 'thread-1', 'hello', {
-      reasoningEffort: 'medium',
+function run() {
+  return createDemoRun(
+    'run-reasoning-timeline' as RunId,
+    'thread-reasoning-timeline',
+    'test reasoning timeline',
+  );
+}
+
+describe('DemoRun commentary timeline', () => {
+  it('merges consecutive deltas at the same durable boundary', () => {
+    const first = appendCommentaryTimelineDelta(run(), {
+      textDelta: '先检查',
+      occurredAt: '2026-08-08T01:02:03.000Z',
+      afterSequence: 10,
     });
-    const req = createDemoProviderRequest(run);
-    expect(req.reasoningEffort).toBe('medium');
+    const second = appendCommentaryTimelineDelta(first, {
+      textDelta: '工作区。',
+      occurredAt: '2026-08-08T01:02:04.000Z',
+      afterSequence: 10,
+    });
+
+    expect(second.commentarySegments).toEqual([
+      {
+        id: 'commentary-10-0',
+        text: '先检查工作区。',
+        startedAt: '2026-08-08T01:02:03.000Z',
+        afterSequence: 10,
+      },
+    ]);
   });
 
-  it('uses one stable provider cache identity for every turn in the same model thread', () => {
-    const first = createDemoRun('run-cache-1' as never, 'thread-cache', 'first', {
-      providerId: 'provider-openai',
-      modelId: 'model-gpt',
-      providerModelId: 'gpt-5.6-sol',
-      useFakeProvider: false,
+  it('starts a new segment after a durable tool boundary and closes the previous segment', () => {
+    const first = appendCommentaryTimelineDelta(run(), {
+      textDelta: '先读取文件。',
+      occurredAt: '2026-08-08T01:02:03.000Z',
+      afterSequence: 10,
     });
-    const second = createDemoRun('run-cache-2' as never, 'thread-cache', 'second', {
-      providerId: 'provider-openai',
-      modelId: 'model-gpt',
-      providerModelId: 'gpt-5.6-sol',
-      useFakeProvider: false,
+    const closed = closeCommentaryTimelineSegment(first, '2026-08-08T01:02:04.000Z');
+    const second = appendCommentaryTimelineDelta(closed, {
+      textDelta: '读取后继续分析。',
+      occurredAt: '2026-08-08T01:02:05.000Z',
+      afterSequence: 12,
     });
 
-    expect(createDemoProviderRequest(first).promptCache).toEqual(
-      createDemoProviderRequest(second).promptCache,
-    );
-    expect(createDemoProviderRequest(first).promptCache).toMatchObject({
-      key: 'sync-think:provider-openai:model-gpt:thread-cache',
-      strategy: 'automatic',
-    });
-    expect(createDemoProviderRequest(first).promptCache?.key).not.toContain('run-cache');
+    expect(second.commentarySegments).toEqual([
+      {
+        id: 'commentary-10-0',
+        text: '先读取文件。',
+        startedAt: '2026-08-08T01:02:03.000Z',
+        completedAt: '2026-08-08T01:02:04.000Z',
+        afterSequence: 10,
+      },
+      {
+        id: 'commentary-12-1',
+        text: '读取后继续分析。',
+        startedAt: '2026-08-08T01:02:05.000Z',
+        afterSequence: 12,
+      },
+    ]);
   });
 
-  it('expires only cold-start recovery runs whose durable activity is too old', () => {
-    expect(
-      isDemoRunRecoveryExpired({
-        lastActivityAt: '2026-08-04T08:00:00.000Z',
-        now: '2026-08-04T08:05:01.000Z',
-      }),
-    ).toBe(true);
-    expect(
-      isDemoRunRecoveryExpired({
-        lastActivityAt: '2026-08-04T08:00:00.000Z',
-        now: '2026-08-04T08:04:59.000Z',
-      }),
-    ).toBe(false);
+  it('restores old checkpoints without timeline segments', () => {
+    const legacy = serializeDemoRun(run());
+    delete (legacy as { commentarySegments?: unknown }).commentarySegments;
+
+    expect(parseDemoRuns([legacy])[0]?.commentarySegments).toEqual([]);
   });
 
-  it('projects reasoning-delta without mixing into assistantText', () => {
-    const run = createDemoRun('run-1' as never, 'thread-1', 'hello');
-    const step1 = projectAdapterEvent(run, {
-      type: 'reasoning-delta',
-      text: '先分析问题。',
-    });
-    expect(step1.type).toBe('message.reasoning_delta');
-    expect(step1.payload.textDelta).toBe('先分析问题。');
-    expect(step1.nextRun?.reasoningText).toBe('先分析问题。');
-    expect(step1.nextRun?.assistantText).toBe('');
-
-    const step2 = projectAdapterEvent(step1.nextRun!, {
-      type: 'text-delta',
-      text: '结论如下。',
-    });
-    expect(step2.type).toBe('message.delta');
-    expect(step2.nextRun?.assistantText).toBe('结论如下。');
-    expect(step2.nextRun?.reasoningText).toBe('先分析问题。');
-
-    const done = projectAdapterEvent(step2.nextRun!, { type: 'finished', reason: 'stop' });
-    expect(done.type).toBe('run.completed');
-    expect(done.payload.assistantText).toBe('结论如下。');
-    expect(done.payload.reasoningText).toBe('先分析问题。');
-  });
-
-  it('projects cache and reasoning usage into the durable provider usage event', () => {
-    const run = createDemoRun('run-usage' as never, 'thread-usage', 'hello');
-    const projected = projectAdapterEvent(run, {
-      type: 'usage',
-      tokensIn: 100,
-      tokensOut: 20,
-      cachedTokensHit: 70,
-      cachedTokensCreated: 10,
-      reasoningTokens: 8,
-      totalTokens: 120,
-    });
-
-    expect(projected.type).toBe('provider.usage');
-    expect(projected.payload).toMatchObject({
-      tokensIn: 100,
-      tokensOut: 20,
-      cachedTokensHit: 70,
-      cachedTokensCreated: 10,
-      reasoningTokens: 8,
-      totalTokens: 120,
-    });
-  });
-
-  it('never includes image data or the full run snapshot in durable delta payloads', () => {
-    const run = createDemoRun('run-image' as never, 'thread-image', 'describe', {
-      images: [
-        {
-          name: 'screen.png',
-          mimeType: 'image/png',
-          dataUrl: 'data:image/png;base64,AAAA',
-        },
-      ],
-    });
-    const projected = projectAdapterEvent(run, { type: 'text-delta', text: 'ok' });
-
-    expect(projected.nextRun?.images?.[0]?.dataUrl).toContain('data:image/');
-    expect(projected.payload).not.toHaveProperty('run');
-    expect(JSON.stringify(projected.payload)).not.toContain('data:image/');
-    expect(JSON.stringify(serializeDemoRuns(new Map([[run.runId, run]])))).not.toContain(
-      'data:image/',
-    );
-  });
-
-  it('keeps 1000 delta payload bytes linear instead of repeating growing run snapshots', () => {
-    let run = createDemoRun('run-long' as never, 'thread-long', 'stream');
-    let durablePayloadBytes = 0;
-    const delta = '0123456789';
-
-    for (let index = 0; index < 1_000; index++) {
-      const projected = projectAdapterEvent(run, {
-        type: index % 2 === 0 ? 'text-delta' : 'reasoning-delta',
-        text: delta,
+  it('keeps the checkpoint timeline bounded by segment count and total text size', () => {
+    let current = run();
+    for (let index = 0; index < 300; index++) {
+      current = appendCommentaryTimelineDelta(current, {
+        textDelta: `${String(index).padStart(3, '0')}:${'x'.repeat(1_000)}`,
+        occurredAt: new Date(Date.UTC(2026, 7, 8, 1, 2, index)).toISOString(),
+        afterSequence: index,
       });
-      durablePayloadBytes += Buffer.byteLength(JSON.stringify(projected.payload));
-      expect(projected.payload).not.toHaveProperty('run');
-      run = projected.nextRun!;
     }
 
-    expect(run.assistantText.length + run.reasoningText.length).toBe(10_000);
-    expect(durablePayloadBytes).toBeLessThan(250_000);
+    const segments = current.commentarySegments ?? [];
+    expect(segments.length).toBeLessThanOrEqual(128);
+    expect(segments.reduce((total, segment) => total + segment.text.length, 0)).toBeLessThanOrEqual(
+      120_000,
+    );
+    expect(segments.at(-1)?.text).toContain('299:');
+  });
+
+  it('keeps commentary, final answer, and provider reasoning in separate channels', () => {
+    const commentary = projectAdapterEvent(run(), {
+      type: 'assistant-message-delta',
+      phase: 'commentary',
+      itemId: 'msg-commentary',
+      text: '我先检查工作区。',
+    });
+    const finalAnswer = projectAdapterEvent(commentary.nextRun!, {
+      type: 'assistant-message-delta',
+      phase: 'final_answer',
+      itemId: 'msg-final',
+      text: '检查完成。',
+    });
+    const reasoning = projectAdapterEvent(finalAnswer.nextRun!, {
+      type: 'reasoning-delta',
+      text: 'internal summary',
+    });
+
+    expect(reasoning.nextRun).toMatchObject({
+      commentaryText: '我先检查工作区。',
+      assistantText: '检查完成。',
+      reasoningText: 'internal summary',
+    });
+    expect(commentary.type).toBe('message.commentary_delta');
+    expect(finalAnswer.type).toBe('message.delta');
+    expect(reasoning.type).toBe('message.reasoning_delta');
+  });
+
+  it('attaches stable provider request metadata to usage events', () => {
+    const usageRun = createDemoRun(
+      'run-usage-metadata' as RunId,
+      'thread-usage-metadata',
+      'test usage metadata',
+      {
+        modelId: 'model-catalog-id',
+        providerModelId: 'gpt-5.6-luna',
+        providerId: 'provider-openai',
+        useFakeProvider: false,
+      },
+    );
+
+    const projection = projectAdapterEvent(
+      usageRun,
+      {
+        type: 'usage',
+        tokensIn: 120,
+        tokensOut: 30,
+        totalTokens: 150,
+      },
+      { requestId: 'chat-request-1' },
+    );
+
+    expect(projection).toMatchObject({
+      category: 'provider',
+      type: 'provider.usage',
+      payload: {
+        requestId: 'chat-request-1',
+        providerId: 'provider-openai',
+        providerModelId: 'gpt-5.6-luna',
+        purpose: 'normal',
+        tokensIn: 120,
+        tokensOut: 30,
+        totalTokens: 150,
+      },
+    });
   });
 });

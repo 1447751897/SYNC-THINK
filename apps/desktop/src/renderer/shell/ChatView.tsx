@@ -55,9 +55,12 @@ import type {
   ConversationListMessagesResponse,
   ConversationTransientFrame,
   BrowserHandoffSummary,
+  CommentaryTimelineSegment,
   DesktopWaitingCommandSummary,
   ConversationTransientSnapshot,
   RunProcessView,
+  SkillVersionSummary,
+  UsageSummaryResponse,
   WorkspaceSummary,
 } from '@sync-think/protocol';
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
@@ -83,6 +86,15 @@ import {
   type MessageImage,
 } from './compose-mention.js';
 import {
+  createQueuedComposeRequest,
+  enqueueQueuedComposeRequest,
+  readQueuedComposeRequests,
+  removeQueuedComposeRequest,
+  updateQueuedComposeRequest,
+  writeQueuedComposeRequests,
+  type QueuedComposeRequest,
+} from './compose-request-queue.js';
+import {
   detectSlashQuery,
   filterSlashCommands,
   formatCompactElapsed,
@@ -97,8 +109,8 @@ import {
 import {
   resolveAppendSkillVersionIds,
   resolveConversationSkillOwner,
-  resolveDefaultComposeSkillVersionIds,
 } from './compose-skill-selection.js';
+import { ComposeRequestQueue } from './ComposeRequestQueue.js';
 import { compressImageDataUrl } from './image-compress.js';
 import {
   ContextRing,
@@ -113,11 +125,8 @@ import {
   type ReasoningEffort,
 } from './compose-toolbar.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
-import {
-  ExecutionProcessBlock,
-  FileChangesCard,
-  formatExecutionStepTitle,
-} from './ExecutionProcessBlock.js';
+import { FileChangesCard, formatExecutionStepTitle } from './ExecutionProcessBlock.js';
+import { ExecutionTimeline } from './ExecutionTimeline.js';
 import {
   formatCompactCount,
   formatCompactDuration,
@@ -127,33 +136,56 @@ import {
   formatRunModelLabel,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import {
+  buildAssistantTurnNavigationItems,
+  ConversationMinimapRail,
+  type ConversationNavigationItem,
+} from './ConversationMinimapRail.js';
 import { executeBrowserCommand } from './browser-commands.js';
 import {
   applyConversationStreamOperations,
   collectConversationStreamBatch,
   isRunTerminalEventType,
   projectConversationRunActivity,
+  selectLatestRunConnectionStatus,
   selectLatestRunPauseNotice,
   type ConversationStreamDraft,
 } from './chat-stream.js';
-import { applyTransientConversationFrames } from './chat-transient-stream.js';
+import {
+  buildConversationSnapshotDisplayQueue,
+  mergeTransientConversationDraft,
+  reconcileTransientConversationDraft,
+  takeConversationDisplayQueueBatch,
+  type ConversationDisplayQueueItem,
+} from './chat-transient-stream.js';
+import { projectConversationUsageMetrics } from './chat-usage.js';
 import {
   inferNativeScrollIntent,
   resolveBottomPinState,
   shouldRestorePrependAnchor,
 } from './message-window.js';
-import { updateRunProcessMap } from './run-process-state.js';
+import {
+  projectRunTerminalEvents,
+  reconcileRunProcessTerminal,
+  updateRunProcessMap,
+} from './run-process-state.js';
 import {
   readConversationModelOverride,
   writeConversationModelOverride,
 } from '../ui-preferences.js';
+import type { RunActivityAuthority } from '../run-activity-authority.js';
 
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   text: string;
-  /** Extended thinking / reasoning channel (never mixed into text). */
-  reasoningText?: string;
+  /** User-visible assistant progress, separate from the final answer. */
+  commentaryText?: string;
+  /** Ordered commentary fragments interleaved with durable tool boundaries. */
+  commentarySegments?: CommentaryTimelineSegment[];
+  /** Transient reconnect or fallback transition shown with the live assistant turn. */
+  processStatus?: string;
+  processStatusState?: NonNullable<RuntimeConnectionNotice>['state'];
   /** Local image previews attached to this bubble (optimistic / UI only). */
   images?: MessageImage[];
   /** Visual tone for system notices — never treat all system as error. */
@@ -170,15 +202,49 @@ export interface ChatMessage {
   globalAgentName?: string;
 }
 
+export type RuntimeConnectionNotice =
+  { state: 'retrying'; text: string } | { state: 'failed'; text: string } | null;
+
 /** Convert a durable Message from the store into the UI ChatMessage shape. */
 export function messageToChat(msg: Message): ChatMessage {
   const textBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'text');
   const text = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
-  const reasoningBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'reasoning');
-  const reasoningText = reasoningBlocks
-    .map((b: MessageBlock) => b.reasoningText ?? '')
+  const commentaryBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'commentary');
+  const persistedCommentaryText = commentaryBlocks
+    .map((b: MessageBlock) => b.text ?? '')
     .filter(Boolean)
     .join('\n');
+  const commentarySegments = commentaryBlocks.flatMap((block) => {
+    const payload = (block.payload ?? {}) as Record<string, unknown>;
+    if (!Array.isArray(payload.commentarySegments)) return [];
+    return payload.commentarySegments.flatMap((candidate): CommentaryTimelineSegment[] => {
+      if (!candidate || typeof candidate !== 'object') return [];
+      const record = candidate as Record<string, unknown>;
+      if (
+        typeof record.id !== 'string' ||
+        typeof record.text !== 'string' ||
+        typeof record.startedAt !== 'string'
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: record.id,
+          text: record.text,
+          startedAt: record.startedAt,
+          ...(typeof record.completedAt === 'string' ? { completedAt: record.completedAt } : {}),
+          ...(typeof record.afterSequence === 'number' && Number.isFinite(record.afterSequence)
+            ? { afterSequence: record.afterSequence }
+            : {}),
+        },
+      ];
+    });
+  });
+  const commentaryText =
+    persistedCommentaryText ||
+    (commentarySegments.length > 0
+      ? commentarySegments.map((segment) => segment.text).join('\n\n')
+      : '');
   const imageBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'image');
   const terminalPayload = (msg.blocks.find((block: MessageBlock) => block.type === 'error')
     ?.payload ?? {}) as Record<string, unknown>;
@@ -206,7 +272,8 @@ export function messageToChat(msg: Message): ChatMessage {
     id: String(msg.id),
     role,
     text,
-    reasoningText: reasoningText || undefined,
+    commentaryText: commentaryText || undefined,
+    commentarySegments: commentarySegments.length > 0 ? commentarySegments : undefined,
     images,
     timestamp: msg.createdAt ?? '',
     sequence: msg.sequence,
@@ -217,6 +284,33 @@ export function messageToChat(msg: Message): ChatMessage {
     // sequence carried via id ordering; globalAgent fields are not in the store Message model
     // but could be enriched later if needed.
   };
+}
+
+export function shouldDisplayChatMessage(message: ChatMessage): boolean {
+  return (
+    message.text.trim().length > 0 ||
+    Boolean(message.commentaryText?.trim()) ||
+    Boolean(message.commentarySegments?.some((segment) => segment.text.trim())) ||
+    Boolean(message.images?.length) ||
+    Boolean(message.terminalState)
+  );
+}
+
+/**
+ * Hide an optimistic user bubble in the same render that its durable copy
+ * arrives. The cleanup effect still removes it from state afterwards, but
+ * rendering must not wait one extra commit or the message rail briefly sees
+ * duplicate ids and the conversation height jumps.
+ */
+export function filterPendingUserMessagesForDisplay(
+  pendingMessages: readonly ChatMessage[],
+  durableMessages: readonly ChatMessage[],
+): ChatMessage[] {
+  if (pendingMessages.length === 0 || durableMessages.length === 0) {
+    return [...pendingMessages];
+  }
+  const durableIds = new Set(durableMessages.map((message) => message.id));
+  return pendingMessages.filter((message) => !durableIds.has(message.id));
 }
 
 type CompactProgressStatus = 'running' | 'success' | 'noop' | 'failure';
@@ -242,6 +336,21 @@ interface PendingToolApproval {
   decided?: 'approve' | 'deny';
 }
 
+interface QueueDispatchAttempt {
+  requestId: string;
+  token: symbol;
+}
+
+interface QueueBlockedRequest {
+  requestId: string;
+  error: string;
+}
+
+interface QueueDispatchState {
+  dispatching?: QueueDispatchAttempt;
+  blocked?: QueueBlockedRequest;
+}
+
 export type { PermissionMode, ReasoningEffort };
 
 interface ChatViewProps {
@@ -255,8 +364,12 @@ interface ChatViewProps {
   workspaces?: readonly WorkspaceSummary[];
   /** Shell-level durable event history (connect snapshot + live events). */
   eventHistory: readonly Event[];
+  /** Runtime-owned boundary used to reconcile replayed orphan run starts. */
+  runActivityAuthority?: RunActivityAuthority;
   /** Increments after every Runtime connect/reconnect so durable UI state is re-queried. */
   runtimeConnectionRevision?: number;
+  /** Shell transport state; intentionally transient and never persisted as a message. */
+  runtimeConnectionNotice?: RuntimeConnectionNotice;
   onTitleUpdated: (title: string) => void;
   /** Fired after permission mode is persisted so the shell can refresh the conversation list. */
   onConversationUpdated?: () => void;
@@ -295,7 +408,9 @@ export function ChatView({
   teams = [],
   workspaces = [],
   eventHistory,
+  runActivityAuthority,
   runtimeConnectionRevision = 0,
+  runtimeConnectionNotice,
   onTitleUpdated,
   onConversationUpdated,
   initialSkillVersionIds,
@@ -308,13 +423,10 @@ export function ChatView({
     () => resolveConversationSkillOwner(conversation, agents, teams),
     [agents, conversation, teams],
   );
-  const defaultSkillVersionIds = useMemo(
-    () => resolveDefaultComposeSkillVersionIds(conversation, agents, teams),
-    [agents, conversation, teams],
-  );
-  const skillSelectionScopeKey = `${String(conversation.id)}\0${conversation.track}\0${String(
-    conversation.targetRef,
-  )}\0${String(skillOwner?.id ?? '')}\0${defaultSkillVersionIds.join('\0')}`;
+  const defaultSkillVersionIds = useMemo<string[]>(() => [], []);
+  const skillSelectionScopeKey = `${String(conversation.id)}\0${String(
+    conversation.workspaceId ?? '',
+  )}\0${conversation.track}\0${String(conversation.targetRef)}`;
   const skillSelectionScopeKeyRef = useRef(skillSelectionScopeKey);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -389,7 +501,7 @@ export function ChatView({
   }, []);
   useEffect(() => () => clearRunProcessRetryState(), [clearRunProcessRetryState]);
   const loadedMessagesConversationIdRef = useRef<string | undefined>(undefined);
-  const updateRunProcess = useCallback((process: RunProcessView) => {
+  const updateRunProcess = useCallback((process: RunProcessView | null | undefined) => {
     setRunProcessById((previous) => updateRunProcessMap(previous, process));
   }, []);
   const [hasMore, setHasMore] = useState(false);
@@ -404,11 +516,15 @@ export function ChatView({
   const contextStatusRef = useRef<ConversationGetContextStatusResponse | null>(null);
   contextStatusRef.current = contextStatus;
   const contextStatusLoadGenerationRef = useRef(0);
+  /** Durable Task-wide provider usage; null means the event projection is the fallback. */
+  const [durableUsageSummary, setDurableUsageSummary] = useState<UsageSummaryResponse | null>(null);
+  const usageSummaryLoadGenerationRef = useRef(0);
   /** Streaming message accumulated from the transient stream (durable delta is fallback only). */
   const [streamingMessage, setStreamingMessage] = useState<ChatMessage | null>(null);
   const transientDraftRef = useRef<ConversationStreamDraft | null>(null);
-  const transientFrameQueueRef = useRef<ConversationTransientFrame[]>([]);
+  const transientFrameQueueRef = useRef<ConversationDisplayQueueItem[]>([]);
   const transientFrameFlushRef = useRef<number | null>(null);
+  const transientTerminalEffectsRef = useRef<(runId: string) => void>(() => undefined);
   /** Last durable event sequence consumed by the fallback streaming bridge. */
   const lastConsumedEventSequenceRef = useRef(0);
   /** Thread-local transient cursor, preserved across Runtime reconnects within this ChatView. */
@@ -436,9 +552,10 @@ export function ChatView({
               id: `streaming-${draft.runId ?? fallbackSequence}`,
               role: 'assistant',
               text: draft.text,
-              reasoningText: draft.reasoningText,
+              commentaryText: draft.commentaryText,
+              commentarySegments: draft.commentarySegments,
               timestamp: draft.timestamp,
-              streaming: true,
+              streaming: !draft.terminal,
               runId: draft.runId,
             }
           : null,
@@ -448,17 +565,60 @@ export function ChatView({
   );
   const flushTransientFrames = useCallback(() => {
     transientFrameFlushRef.current = null;
-    const frames = transientFrameQueueRef.current.splice(0);
-    if (!threadId || frames.length === 0) return;
-    const next = applyTransientConversationFrames({
-      current: transientDraftRef.current,
-      frames,
-      threadId,
-      afterStreamSequence: lastTransientSequenceRef.current,
+    const queued = transientFrameQueueRef.current;
+    if (!threadId || queued.length === 0) return;
+    const batch = takeConversationDisplayQueueBatch(queued, {
+      maxFrames: 6,
+      maxTextCharacters: 24,
     });
-    lastTransientSequenceRef.current = next.lastStreamSequence;
-    renderTransientDraft(next.draft, next.lastStreamSequence);
-  }, [renderTransientDraft, threadId]);
+    queued.splice(0, queued.length, ...batch.remaining);
+    let nextDraft = applyConversationStreamOperations(transientDraftRef.current, batch.operations);
+    for (const item of batch.completed) {
+      if (item.source === 'snapshot') {
+        nextDraft = mergeTransientConversationDraft(nextDraft, item.draft);
+        lastTransientSequenceRef.current = Math.max(
+          lastTransientSequenceRef.current,
+          item.streamSequence,
+        );
+        if (item.process) updateRunProcess(item.process);
+        if (item.refreshDurable) {
+          transientTerminalEffectsRef.current(String(item.draft?.runId ?? ''));
+        }
+        continue;
+      }
+      if (item.source === 'durable') {
+        if (item.operation.type === 'run.terminal') {
+          transientTerminalEffectsRef.current(String(item.operation.runId ?? ''));
+        }
+        continue;
+      }
+
+      const frame = item.frame;
+      lastTransientSequenceRef.current = Math.max(
+        lastTransientSequenceRef.current,
+        frame.streamSequence,
+      );
+      if (frame.process) {
+        updateRunProcess(frame.process);
+      } else if (frame.kind === 'terminal') {
+        inFlightRunProcessesRef.current.delete(String(frame.runId));
+        setRunProcessById((previous) => {
+          if (!previous.has(frame.runId)) return previous;
+          const updated = new Map(previous);
+          updated.delete(frame.runId);
+          return updated;
+        });
+      }
+      if (frame.kind === 'terminal') {
+        transientTerminalEffectsRef.current(String(frame.runId));
+      }
+    }
+    renderTransientDraft(nextDraft, lastTransientSequenceRef.current);
+
+    if (queued.length > 0 && transientFrameFlushRef.current === null) {
+      transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
+    }
+  }, [renderTransientDraft, threadId, updateRunProcess]);
   /** Active @-mention query (null = picker closed). */
   const [mention, setMention] = useState<MentionQuery | null>(null);
   const [mentionFiles, setMentionFiles] = useState<
@@ -469,8 +629,28 @@ export function ChatView({
   /** Active / slash-command query (null = menu closed). Mutually exclusive with @. */
   const [slash, setSlash] = useState<SlashQuery | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [slashSkills, setSlashSkills] = useState<SkillVersionSummary[]>([]);
+  const [slashSkillsLoading, setSlashSkillsLoading] = useState(false);
   /** Selected @-files / images shown as chips (NewMax style). */
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
+  /** Composer-only drafts. They do not become messages or Provider context until dispatched. */
+  const [queuedComposeRequests, setQueuedComposeRequests] = useState<QueuedComposeRequest[]>(() =>
+    readQueuedComposeRequests(String(conversation.id)),
+  );
+  const [dispatchingQueuedRequestId, setDispatchingQueuedRequestId] = useState<
+    string | undefined
+  >();
+  const [blockedQueuedRequestId, setBlockedQueuedRequestId] = useState<string | undefined>();
+  const [queuedRequestDispatchError, setQueuedRequestDispatchError] = useState<
+    string | undefined
+  >();
+  /**
+   * Queue dispatch ownership is conversation-scoped. A single boolean lock is
+   * insufficient because this ChatView instance survives conversation switches:
+   * clearing that lock on navigation lets the same persisted draft dispatch twice
+   * when the user returns before appendMessage settles.
+   */
+  const queuedDispatchByConversationRef = useRef(new Map<string, QueueDispatchState>());
   /** Exact immutable Skill versions used by normal Composer sends in this conversation. */
   const [selectedSkillVersionIds, setSelectedSkillVersionIds] = useState<string[]>(() =>
     resolveAppendSkillVersionIds(
@@ -513,6 +693,17 @@ export function ChatView({
   const identityBtnRef = useRef<HTMLButtonElement>(null);
   const [mentionPopStyle, setMentionPopStyle] = useState<React.CSSProperties | null>(null);
   const [slashPopStyle, setSlashPopStyle] = useState<React.CSSProperties | null>(null);
+  const commitQueuedComposeRequests = useCallback(
+    (update: (current: readonly QueuedComposeRequest[]) => QueuedComposeRequest[]): void => {
+      const conversationId = String(conversation.id);
+      setQueuedComposeRequests((current) => {
+        const next = update(current);
+        writeQueuedComposeRequests(conversationId, next);
+        return next;
+      });
+    },
+    [conversation.id],
+  );
   useEffect(() => {
     if (initialSkillVersionIds !== undefined) {
       onInitialSkillSelectionConsumed?.(String(conversation.id));
@@ -522,9 +713,9 @@ export function ChatView({
   useEffect(() => {
     if (skillSelectionScopeKeyRef.current === skillSelectionScopeKey) return;
     skillSelectionScopeKeyRef.current = skillSelectionScopeKey;
-    setSelectedSkillVersionIds(defaultSkillVersionIds);
+    setSelectedSkillVersionIds([]);
     setMenu(null);
-  }, [defaultSkillVersionIds, skillSelectionScopeKey]);
+  }, [skillSelectionScopeKey]);
 
   // Reset local compose state when switching conversations.
   useEffect(() => {
@@ -558,6 +749,8 @@ export function ChatView({
     setInitialLoaded(false);
     contextStatusLoadGenerationRef.current += 1;
     setContextStatus(null);
+    usageSummaryLoadGenerationRef.current += 1;
+    setDurableUsageSummary(null);
     transientDraftRef.current = null;
     transientFrameQueueRef.current.length = 0;
     if (transientFrameFlushRef.current !== null) {
@@ -577,6 +770,13 @@ export function ChatView({
     setSlash(null);
     setSlashIndex(0);
     setAttachments([]);
+    const conversationId = String(conversation.id);
+    const queuedDispatchState = queuedDispatchByConversationRef.current.get(conversationId);
+    setQueuedComposeRequests(readQueuedComposeRequests(conversationId));
+    setDispatchingQueuedRequestId(queuedDispatchState?.dispatching?.requestId);
+    setBlockedQueuedRequestId(queuedDispatchState?.blocked?.requestId);
+    setQueuedRequestDispatchError(queuedDispatchState?.blocked?.error);
+    clearCompactDismissTimer();
     setCompactProgress(null);
     setMenu(null);
     setPermissionMode((conversation.executionMode as PermissionMode) || 'full-access');
@@ -586,7 +786,12 @@ export function ChatView({
     bottomPinIntentRef.current = null;
     lastTouchClientYRef.current = null;
     // Right-rail open state is owned by the stage; do not force-close it on switch.
-  }, [clearRunProcessRetryState, conversation.id, conversation.executionMode]);
+  }, [
+    clearCompactDismissTimer,
+    clearRunProcessRetryState,
+    conversation.id,
+    conversation.executionMode,
+  ]);
 
   // Resolve threadId from the bound task so we can project history for this conversation.
   useEffect(() => {
@@ -656,9 +861,17 @@ export function ChatView({
           return false;
         }
         loadedMessagesConversationIdRef.current = conversationId;
-        const converted = res.messages
-          .map(messageToChat)
-          .filter((m) => m.text.trim().length > 0 || Boolean(m.images?.length));
+        const converted = res.messages.map(messageToChat).filter(shouldDisplayChatMessage);
+        const durableAssistantRunIds = converted
+          .filter((message) => message.role === 'assistant' && Boolean(message.runId))
+          .map((message) => message.runId as string);
+        const reconciledDraft = reconcileTransientConversationDraft(
+          transientDraftRef.current,
+          durableAssistantRunIds,
+        );
+        if (reconciledDraft !== transientDraftRef.current) {
+          renderTransientDraft(reconciledDraft, lastTransientSequenceRef.current);
+        }
         if (cursor !== undefined) {
           // Prepend older messages and de-duplicate defensive retries. Durable
           // sequence is the canonical order, not async response arrival order.
@@ -693,17 +906,23 @@ export function ChatView({
         }
       }
     },
-    [conversation.id],
+    [conversation.id, renderTransientDraft],
   );
 
   const refreshContextStatus = useCallback(async (): Promise<void> => {
     const api = bridge();
     if (!api?.getConversationContextStatus) return;
     const conversationId = String(conversation.id);
+    const requestedModelId =
+      modelOverride.trim() ||
+      (conversation.track === 'model' ? String(conversation.targetRef ?? '').trim() : '');
     const generation = (contextStatusLoadGenerationRef.current += 1);
     try {
       const response = parseConversationGetContextStatusResponse(
-        await api.getConversationContextStatus({ conversationId: conversation.id }),
+        await api.getConversationContextStatus({
+          conversationId: conversation.id,
+          ...(requestedModelId ? { modelId: requestedModelId } : {}),
+        }),
       );
       if (
         activeConversationIdRef.current === conversationId &&
@@ -714,7 +933,46 @@ export function ChatView({
     } catch {
       // Keep the last validated snapshot on transient IPC/runtime failures.
     }
-  }, [conversation.id]);
+  }, [conversation.id, conversation.targetRef, conversation.track, modelOverride]);
+
+  const refreshDurableUsageSummary = useCallback(async (): Promise<void> => {
+    const api = bridge();
+    const conversationId = String(conversation.id);
+    const taskId = conversation.taskId ? String(conversation.taskId).trim() : '';
+    const generation = (usageSummaryLoadGenerationRef.current += 1);
+    if (!api?.getUsageSummary || !taskId) {
+      if (
+        activeConversationIdRef.current === conversationId &&
+        usageSummaryLoadGenerationRef.current === generation
+      ) {
+        setDurableUsageSummary(null);
+      }
+      return;
+    }
+    try {
+      const response = await api.getUsageSummary({ taskId });
+      if (
+        activeConversationIdRef.current === conversationId &&
+        usageSummaryLoadGenerationRef.current === generation
+      ) {
+        setDurableUsageSummary(response);
+      }
+    } catch {
+      if (
+        activeConversationIdRef.current === conversationId &&
+        usageSummaryLoadGenerationRef.current === generation
+      ) {
+        // A failed durable query falls back to the bounded in-memory event projection.
+        setDurableUsageSummary(null);
+      }
+    }
+  }, [conversation.id, conversation.taskId]);
+
+  transientTerminalEffectsRef.current = () => {
+    void loadMessages();
+    void refreshContextStatus();
+    void refreshDurableUsageSummary();
+  };
 
   // Load initial durable messages and the Runtime-owned context snapshot.
   useEffect(() => {
@@ -722,6 +980,11 @@ export function ChatView({
     void loadMessages();
     void refreshContextStatus();
   }, [conversation.id, threadId, loadMessages, refreshContextStatus]);
+
+  // Provider usage is Task-scoped and independent from thread resolution.
+  useEffect(() => {
+    void refreshDurableUsageSummary();
+  }, [refreshDurableUsageSummary, runtimeConnectionRevision]);
 
   // Lightweight streaming/activeRunId detection from eventHistory.
   // This only scans run lifecycle events (O(n) but no message text building).
@@ -749,10 +1012,20 @@ export function ChatView({
             events: eventHistory,
             threadId,
             taskId: conversation.taskId ? String(conversation.taskId) : undefined,
+            authority: runActivityAuthority,
           })
         : { streaming: false, activeRunId: undefined },
-    [conversation.taskId, eventHistory, threadId],
+    [conversation.taskId, eventHistory, runActivityAuthority, threadId],
   );
+  const runTerminalById = useMemo(() => projectRunTerminalEvents(eventHistory), [eventHistory]);
+  const displayRunProcessById = useMemo(() => {
+    const display = new Map<string, RunProcessView>();
+    for (const [runId, process] of runProcessById) {
+      display.set(runId, reconcileRunProcessTerminal(process, runTerminalById.get(runId)));
+    }
+    return display;
+  }, [runProcessById, runTerminalById]);
+  const runIsActive = sending || projected.streaming || Boolean(projected.activeRunId);
 
   const pausedRunNotice = useMemo(
     () =>
@@ -765,6 +1038,71 @@ export function ChatView({
         : undefined,
     [conversation.taskId, eventHistory, threadId],
   );
+
+  const runConnectionStatus = useMemo(
+    () =>
+      threadId
+        ? selectLatestRunConnectionStatus({
+            events: eventHistory,
+            threadId,
+            taskId: conversation.taskId ? String(conversation.taskId) : undefined,
+            activeRunId: projected.activeRunId,
+            streamingMessage,
+          })
+        : undefined,
+    [conversation.taskId, eventHistory, projected.activeRunId, streamingMessage, threadId],
+  );
+
+  const visibleStreamingMessage = useMemo<ChatMessage | null>(() => {
+    const attachRuntimeNotice = Boolean(
+      runtimeConnectionNotice && (streamingMessage || projected.streaming || runConnectionStatus),
+    );
+    const statusText = attachRuntimeNotice
+      ? runtimeConnectionNotice?.text
+      : runConnectionStatus?.text;
+    if (!statusText) return streamingMessage;
+    const statusRunId =
+      runConnectionStatus?.runId ?? projected.activeRunId ?? streamingMessage?.runId;
+    if (
+      streamingMessage &&
+      (!statusRunId || !streamingMessage.runId || streamingMessage.runId === statusRunId)
+    ) {
+      return {
+        ...streamingMessage,
+        runId: streamingMessage.runId ?? statusRunId,
+        processStatus: statusText,
+        ...(attachRuntimeNotice && runtimeConnectionNotice
+          ? { processStatusState: runtimeConnectionNotice.state }
+          : {}),
+      };
+    }
+    if (!runConnectionStatus && !attachRuntimeNotice) return streamingMessage;
+    return {
+      id:
+        runConnectionStatus?.id ??
+        `runtime-connection-${runtimeConnectionNotice?.state ?? 'status'}`,
+      role: 'assistant',
+      text: '',
+      processStatus: statusText,
+      ...(attachRuntimeNotice && runtimeConnectionNotice
+        ? { processStatusState: runtimeConnectionNotice.state }
+        : {}),
+      timestamp: runConnectionStatus?.timestamp ?? new Date().toISOString(),
+      streaming: true,
+      runId: statusRunId,
+    };
+  }, [
+    projected.activeRunId,
+    projected.streaming,
+    runConnectionStatus,
+    runtimeConnectionNotice,
+    streamingMessage,
+  ]);
+
+  const standaloneRuntimeConnectionNotice =
+    runtimeConnectionNotice && !streamingMessage && !projected.streaming && !runConnectionStatus
+      ? runtimeConnectionNotice
+      : null;
 
   const browserHandoffLifecycleRevision = useMemo(() => {
     let revision = 0;
@@ -980,73 +1318,67 @@ export function ChatView({
             transientFrameFlushRef.current = null;
           }
           const latestStreamSequence = event.latestStreamSequence ?? 0;
-          lastTransientSequenceRef.current = latestStreamSequence;
           if (event.snapshot && event.snapshot.threadId === threadId) {
             transientFallbackOnlyRef.current = false;
             transientStreamHealthyRef.current = true;
-            if (event.snapshot.process) updateRunProcess(event.snapshot.process);
-            renderTransientDraft(
-              {
-                runId: event.snapshot.runId,
-                text: event.snapshot.text,
-                reasoningText: event.snapshot.reasoningText,
-                timestamp: event.snapshot.updatedAt,
-              },
-              latestStreamSequence,
+            frameQueue.push(
+              ...buildConversationSnapshotDisplayQueue({
+                current: transientDraftRef.current,
+                incoming: {
+                  runId: event.snapshot.runId,
+                  text: event.snapshot.text,
+                  commentaryText: event.snapshot.commentaryText,
+                  commentarySegments: event.snapshot.commentarySegments,
+                  timestamp: event.snapshot.updatedAt,
+                },
+                streamSequence: latestStreamSequence,
+                process: event.snapshot.process,
+              }),
             );
           } else {
             transientFallbackOnlyRef.current = false;
             transientStreamHealthyRef.current = true;
-            renderTransientDraft(null, latestStreamSequence);
-            void loadMessages();
+            frameQueue.push(
+              ...buildConversationSnapshotDisplayQueue({
+                current: transientDraftRef.current,
+                incoming: null,
+                streamSequence: latestStreamSequence,
+                refreshDurable: true,
+              }),
+            );
+          }
+          if (transientFrameFlushRef.current === null) {
+            transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
           }
           return;
         }
         const frame = event.frame;
         if (!frame) return;
         if (transientFallbackOnlyRef.current) {
-          if (frame.kind === 'terminal') {
-            inFlightRunProcessesRef.current.delete(String(frame.runId));
-            setRunProcessById((previous) => {
-              if (!previous.has(frame.runId)) return previous;
-              const next = new Map(previous);
-              next.delete(frame.runId);
-              return next;
-            });
-          }
           lastTransientSequenceRef.current = Math.max(
             lastTransientSequenceRef.current,
             frame.streamSequence,
           );
           if (frame.kind === 'terminal') {
-            void loadMessages();
-            void refreshContextStatus();
+            if (frame.process) {
+              updateRunProcess(frame.process);
+            } else {
+              inFlightRunProcessesRef.current.delete(String(frame.runId));
+              setRunProcessById((previous) => {
+                if (!previous.has(frame.runId)) return previous;
+                const next = new Map(previous);
+                next.delete(frame.runId);
+                return next;
+              });
+            }
+            transientTerminalEffectsRef.current(String(frame.runId));
           }
           return;
         }
         transientStreamHealthyRef.current = true;
-        if (frame.process) updateRunProcess(frame.process);
-        else if (frame.kind === 'terminal') {
-          inFlightRunProcessesRef.current.delete(String(frame.runId));
-          setRunProcessById((previous) => {
-            if (!previous.has(frame.runId)) return previous;
-            const next = new Map(previous);
-            next.delete(frame.runId);
-            return next;
-          });
-        }
-        frameQueue.push(frame);
-        if (frame.kind === 'process' || frame.kind === 'terminal') {
-          if (transientFrameFlushRef.current !== null) {
-            window.cancelAnimationFrame(transientFrameFlushRef.current);
-          }
-          flushTransientFrames();
-        } else if (transientFrameFlushRef.current === null) {
+        frameQueue.push({ source: 'transient', frame, offset: 0 });
+        if (transientFrameFlushRef.current === null) {
           transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
-        }
-        if (frame.kind === 'terminal') {
-          void loadMessages();
-          void refreshContextStatus();
         }
       },
     );
@@ -1079,8 +1411,10 @@ export function ChatView({
   ]);
 
   // Streaming via durable events is now a compatibility/failure fallback.
-  // Terminal events are always consumed so final Message Store refresh remains
-  // correct even while transient is healthy.
+  // While transient is healthy it owns the complete visible order, including
+  // the terminal boundary. If the subscription later fails we rewind the
+  // durable cursor to zero and replay this thread, so durable terminal events
+  // never overtake transient text that has not reached the renderer yet.
   useEffect(() => {
     if (!threadId) return;
     if (threadConversationIdRef.current !== String(conversation.id)) return;
@@ -1094,47 +1428,24 @@ export function ChatView({
     if (batch.maxSeenSequence === lastConsumedEventSequenceRef.current) return;
 
     lastConsumedEventSequenceRef.current = batch.maxSeenSequence;
+    if (transientStreamHealthyRef.current) return;
     if (batch.operations.length > 0) {
-      const operations = transientStreamHealthyRef.current
-        ? batch.operations.filter((operation) => operation.type === 'run.terminal')
-        : batch.operations;
-      if (operations.length === 0 && !batch.sawTerminalEvent) return;
-      setStreamingMessage((previous) => {
-        const current = previous
-          ? {
-              runId: previous.runId,
-              text: previous.text,
-              reasoningText: previous.reasoningText,
-              timestamp: previous.timestamp,
-            }
-          : null;
-        const next = applyConversationStreamOperations(current, operations);
-        transientDraftRef.current = next;
-        return next
-          ? {
-              id: `streaming-${next.runId ?? batch.maxSeenSequence}`,
-              role: 'assistant',
-              text: next.text,
-              reasoningText: next.reasoningText,
-              timestamp: next.timestamp,
-              streaming: true,
-              runId: next.runId,
-            }
-          : null;
-      });
-    }
-    if (batch.sawTerminalEvent) {
-      // The runtime persists a successful final message before publishing
-      // run.completed. Failed/cancelled runs still refresh terminal state.
-      void loadMessages();
-      void refreshContextStatus();
+      transientFrameQueueRef.current.push(
+        ...batch.operations.map((operation): ConversationDisplayQueueItem => ({
+          source: 'durable',
+          operation,
+          offset: 0,
+        })),
+      );
+      if (transientFrameFlushRef.current === null) {
+        transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
+      }
     }
   }, [
     conversation.id,
     conversation.taskId,
     eventHistory,
-    loadMessages,
-    refreshContextStatus,
+    flushTransientFrames,
     threadId,
     transientFallbackEpoch,
   ]);
@@ -1240,6 +1551,11 @@ export function ChatView({
     setPendingUserMessages((prev) => prev.filter((message) => !durableUserIds.has(message.id)));
   }, [pendingUserMessages.length, loadedMessages]);
 
+  const pendingUserMessagesForDisplay = useMemo(
+    () => filterPendingUserMessagesForDisplay(pendingUserMessages, loadedMessages),
+    [loadedMessages, pendingUserMessages],
+  );
+
   // Clear "sending" once the run leaves the streaming state (or fails via local error).
   useEffect(() => {
     if (!sending && !stopping) return;
@@ -1290,19 +1606,19 @@ export function ChatView({
 
     // Pending user bubbles: virtual sequence before the streaming turn so a
     // just-sent prompt is always visually followed by the thinking panel.
-    for (let i = 0; i < pendingUserMessages.length; i++) {
+    for (let i = 0; i < pendingUserMessagesForDisplay.length; i++) {
       stamped.push({
-        value: pendingUserMessages[i]!,
+        value: pendingUserMessagesForDisplay[i]!,
         seq: nextVirtualSeq++,
         tie: 10_000 + i,
       });
     }
 
     // Streaming assistant turn: virtual sequence after the pending bubbles.
-    if (streamingMessage) {
+    if (visibleStreamingMessage) {
       // Keep the streaming slot's sequence stable across re-merges by hashing
       // on its runId so older-arriving frames don't reshuffle it.
-      stamped.push({ value: streamingMessage, seq: nextVirtualSeq++, tie: 20_000 });
+      stamped.push({ value: visibleStreamingMessage, seq: nextVirtualSeq++, tie: 20_000 });
     }
 
     // Local errors and the latest durable pause notice render after the live turn.
@@ -1326,7 +1642,39 @@ export function ChatView({
 
     stamped.sort((a, b) => (a.seq !== b.seq ? a.seq - b.seq : a.tie - b.tie));
     return stamped.map((s) => s.value);
-  }, [localErrors, loadedMessages, pausedRunNotice, pendingUserMessages, streamingMessage]);
+  }, [
+    localErrors,
+    loadedMessages,
+    pausedRunNotice,
+    pendingUserMessagesForDisplay,
+    visibleStreamingMessage,
+  ]);
+
+  const navigationItems = useMemo<ConversationNavigationItem[]>(
+    () =>
+      buildAssistantTurnNavigationItems(
+        messages.filter(shouldDisplayChatMessage).map((message) => ({
+          id: message.id,
+          role: message.role,
+          text: message.text,
+          commentaryText: message.commentaryText,
+          processStatus: message.processStatus,
+          timestamp: message.timestamp,
+        })),
+      ),
+    [messages],
+  );
+
+  const handleNavigateMessage = useCallback((_messageId: string, targetScrollTop: number) => {
+    const scroller = messagesScrollRef.current;
+    if (!scroller) return;
+    stickToBottomRef.current = false;
+    bottomPinIntentRef.current = null;
+    userScrollRevisionRef.current += 1;
+    programmaticScrollTargetRef.current = targetScrollTop;
+    scroller.scrollTop = targetScrollTop;
+    lastObservedScrollTopRef.current = targetScrollTop;
+  }, []);
 
   // Keep every fetched durable message mounted. History is still paginated in
   // 50-message pages, but native scrolling must not compete with virtual spacer
@@ -1334,8 +1682,8 @@ export function ChatView({
   const visibleDurableMessages = loadedMessages;
   const liveMessages = useMemo(() => {
     const result: ChatMessage[] = [];
-    result.push(...pendingUserMessages);
-    if (streamingMessage) result.push(streamingMessage);
+    result.push(...pendingUserMessagesForDisplay);
+    if (visibleStreamingMessage) result.push(visibleStreamingMessage);
     result.push(...localErrors);
     if (pausedRunNotice) {
       result.push({
@@ -1348,7 +1696,7 @@ export function ChatView({
       });
     }
     return result;
-  }, [localErrors, pausedRunNotice, pendingUserMessages, streamingMessage]);
+  }, [localErrors, pausedRunNotice, pendingUserMessagesForDisplay, visibleStreamingMessage]);
 
   const capturePrependAnchor = useCallback((scroller: HTMLDivElement) => {
     const viewportTop = scroller.getBoundingClientRect().top;
@@ -1471,7 +1819,7 @@ export function ChatView({
       scroller.scrollTop = target;
     }
     lastObservedScrollTopRef.current = scroller.scrollTop;
-  }, [messages, sending, projected.streaming, conversation.id]);
+  }, [messages, conversation.id]);
 
   const sendUserText = useCallback(
     async (
@@ -1479,17 +1827,23 @@ export function ChatView({
       images: MessageImage[] = [],
       options?: {
         skillVersionIds?: readonly string[];
+        modelOverride?: string;
+        reasoningEffort?: ReasoningEffort;
+        networkEnabled?: boolean;
       },
     ) => {
       const api = bridge();
-      // Interjection: sending during an active run is allowed — the runtime
-      // supersedes the old run (superseded-by-new-message) instead of blocking.
       if (!api || (!text.trim() && images.length === 0)) return;
+      const conversationId = String(conversation.id);
+      const isActiveConversation = () => activeConversationIdRef.current === conversationId;
       // Freeze before auto-compaction or any IPC so menu changes cannot alter this Run.
       const skillVersionIds = resolveAppendSkillVersionIds(
         conversation.track,
         options?.skillVersionIds ?? selectedSkillVersionIds,
       );
+      const selectedModelOverride = options?.modelOverride ?? modelOverride;
+      const selectedReasoningEffort = options?.reasoningEffort ?? reasoningEffort;
+      const selectedNetworkEnabled = options?.networkEnabled ?? netEnabled;
 
       // Auto-compact when context occupancy is near the window limit (~70%).
       // Failures are non-fatal — the user message still goes out.
@@ -1522,48 +1876,58 @@ export function ChatView({
                 ? `（${compactResult.beforeTokens} → ${compactResult.afterTokens}）`
                 : '';
             const elapsed = formatCompactElapsed(startedAt);
-            setCompactProgress({
-              status: 'success',
-              mode: 'auto',
-              startedAt,
-              // NewMax: "Context automatically compacted"
-              message: `上下文已自动压缩${saved} · ${elapsed}`,
-              afterTokens: compactResult.afterTokens,
-            });
-            scheduleCompactDismiss(2400);
-          } else {
+            if (isActiveConversation()) {
+              setCompactProgress({
+                status: 'success',
+                mode: 'auto',
+                startedAt,
+                // NewMax: "Context automatically compacted"
+                message: `上下文已自动压缩${saved} · ${elapsed}`,
+                afterTokens: compactResult.afterTokens,
+              });
+              scheduleCompactDismiss(2400);
+            }
+          } else if (isActiveConversation()) {
             clearCompactDismissTimer();
             setCompactProgress(null);
           }
         } catch {
           // Auto compact failure is silent — do not block the user message.
-          clearCompactDismissTimer();
-          setCompactProgress(null);
+          if (isActiveConversation()) {
+            clearCompactDismissTimer();
+            setCompactProgress(null);
+          }
         } finally {
           await refreshContextStatus();
           compactingRef.current = false;
         }
       }
 
-      setSending(true);
       const tempId = `temp-${Date.now()}`;
-      setPendingUserMessages((prev) => [
-        ...prev,
-        {
-          id: tempId,
-          role: 'user',
-          text,
-          images: images.length > 0 ? images : undefined,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+      if (isActiveConversation()) {
+        setSending(true);
+        setPendingUserMessages((prev) => [
+          ...prev,
+          {
+            id: tempId,
+            role: 'user',
+            text,
+            images: images.length > 0 ? images : undefined,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      }
 
       try {
         const prep = await api.sendConversationMessage({
           conversationId: conversation.id,
           text,
         });
-        if (typeof prep.threadId === 'string' && prep.threadId.length > 0) {
+        if (
+          isActiveConversation() &&
+          typeof prep.threadId === 'string' &&
+          prep.threadId.length > 0
+        ) {
           setThreadId(prep.threadId);
         }
         const response = await api.appendMessage({
@@ -1578,14 +1942,14 @@ export function ChatView({
           // Prefer explicit override; only fall back to targetRef when it is a real
           // catalog model id. Agent/team tracks store agent/team ids in targetRef.
           modelId: resolveSendModelId({
-            modelOverride,
+            modelOverride: selectedModelOverride,
             track: conversation.track,
             targetRef: conversation.targetRef,
             catalogModelIds: models.map((model) => model.modelId),
           }),
           // 'auto' 原样透传：runtime 透传后由 adapters 映射为默认思考档（auto=开启思考）。
-          reasoningEffort,
-          networkEnabled: netEnabled || undefined,
+          reasoningEffort: selectedReasoningEffort,
+          networkEnabled: selectedNetworkEnabled || undefined,
           skillVersionIds,
           images:
             images.length > 0
@@ -1613,35 +1977,39 @@ export function ChatView({
                 url: image.url!,
               }))
           : images;
-        setPendingUserMessages((prev) =>
-          prev.map((message) =>
-            message.id === tempId
-              ? {
-                  ...message,
-                  id: response.messageId,
-                  images: durableImages.length > 0 ? durableImages : message.images,
-                }
-              : message,
-          ),
-        );
-        onTitleUpdated(prep.conversationTitle || response.taskTitle || conversation.title || '');
+        if (isActiveConversation()) {
+          setPendingUserMessages((prev) =>
+            prev.map((message) =>
+              message.id === tempId
+                ? {
+                    ...message,
+                    id: response.messageId,
+                    images: durableImages.length > 0 ? durableImages : message.images,
+                  }
+                : message,
+            ),
+          );
+          onTitleUpdated(prep.conversationTitle || response.taskTitle || conversation.title || '');
+        }
         return true;
       } catch (err) {
-        setSending(false);
-        setPendingUserMessages((prev) => prev.filter((message) => message.id !== tempId));
-        setLocalErrors((prev) => [
-          ...prev,
-          {
-            id: `err-${Date.now()}`,
-            role: 'system',
-            tone: 'error',
-            text: `发送失败: ${(err as Error).message}`,
-            timestamp: new Date().toISOString(),
-          },
-        ]);
+        if (isActiveConversation()) {
+          setSending(false);
+          setPendingUserMessages((prev) => prev.filter((message) => message.id !== tempId));
+          setLocalErrors((prev) => [
+            ...prev,
+            {
+              id: `err-${Date.now()}`,
+              role: 'system',
+              tone: 'error',
+              text: `发送失败: ${(err as Error).message}`,
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+        }
         throw err;
       } finally {
-        inputRef.current?.focus();
+        if (isActiveConversation()) inputRef.current?.focus();
       }
     },
     [
@@ -1660,6 +2028,169 @@ export function ChatView({
       selectedSkillVersionIds,
     ],
   );
+
+  const dispatchQueuedComposeRequest = useCallback(
+    async (request: QueuedComposeRequest, mode: 'auto' | 'interject') => {
+      const conversationId = String(conversation.id);
+      if (request.conversationId !== conversationId) return;
+      if (mode === 'auto' && activeConversationIdRef.current !== conversationId) return;
+
+      const currentDispatchState =
+        queuedDispatchByConversationRef.current.get(conversationId) ?? {};
+      if (currentDispatchState.dispatching) return;
+
+      const token = Symbol(`queued-compose:${conversationId}:${request.id}`);
+      const nextDispatchState: QueueDispatchState = {
+        ...currentDispatchState,
+        dispatching: { requestId: request.id, token },
+        blocked:
+          currentDispatchState.blocked?.requestId === request.id
+            ? undefined
+            : currentDispatchState.blocked,
+      };
+      queuedDispatchByConversationRef.current.set(conversationId, nextDispatchState);
+      if (activeConversationIdRef.current === conversationId) {
+        setDispatchingQueuedRequestId(request.id);
+      }
+      if (
+        activeConversationIdRef.current === conversationId &&
+        currentDispatchState.blocked?.requestId === request.id
+      ) {
+        setBlockedQueuedRequestId(undefined);
+        setQueuedRequestDispatchError(undefined);
+      }
+
+      const outbound = buildMessageWithAttachments(request.text, request.attachments);
+      const images = messageImagesFromAttachments(request.attachments);
+      try {
+        const sent = await sendUserText(outbound, images, {
+          modelOverride,
+          reasoningEffort: request.reasoningEffort,
+          networkEnabled: request.networkEnabled,
+          skillVersionIds: request.skillVersionIds,
+        });
+        if (!sent) throw new Error('发送接口未返回成功结果');
+
+        const latestDispatchState = queuedDispatchByConversationRef.current.get(conversationId);
+        if (latestDispatchState?.dispatching?.token !== token) return;
+        const settledDispatchState: QueueDispatchState = {
+          ...latestDispatchState,
+          dispatching: undefined,
+        };
+        if (settledDispatchState.blocked) {
+          queuedDispatchByConversationRef.current.set(conversationId, settledDispatchState);
+        } else {
+          queuedDispatchByConversationRef.current.delete(conversationId);
+        }
+
+        if (activeConversationIdRef.current === conversationId) {
+          commitQueuedComposeRequests((current) => removeQueuedComposeRequest(current, request.id));
+          setDispatchingQueuedRequestId(undefined);
+          setBlockedQueuedRequestId(settledDispatchState.blocked?.requestId);
+          setQueuedRequestDispatchError(settledDispatchState.blocked?.error);
+        } else {
+          const stored = readQueuedComposeRequests(conversationId);
+          writeQueuedComposeRequests(
+            conversationId,
+            removeQueuedComposeRequest(stored, request.id),
+          );
+        }
+      } catch (error) {
+        const latestDispatchState = queuedDispatchByConversationRef.current.get(conversationId);
+        if (latestDispatchState?.dispatching?.token !== token) return;
+        const dispatchError =
+          mode === 'auto'
+            ? '自动执行失败，需求已保留，可点击重试'
+            : `插话发送失败，需求已保留：${error instanceof Error ? error.message : String(error)}`;
+        const failedDispatchState: QueueDispatchState = {
+          ...latestDispatchState,
+          dispatching: undefined,
+          blocked: { requestId: request.id, error: dispatchError },
+        };
+        queuedDispatchByConversationRef.current.set(conversationId, failedDispatchState);
+        if (activeConversationIdRef.current === conversationId) {
+          setDispatchingQueuedRequestId(undefined);
+          setBlockedQueuedRequestId(request.id);
+          setQueuedRequestDispatchError(dispatchError);
+        }
+      }
+    },
+    [commitQueuedComposeRequests, conversation.id, modelOverride, sendUserText],
+  );
+
+  const handleEditQueuedComposeRequest = useCallback(
+    (requestId: string, text: string) => {
+      const request = queuedComposeRequests.find((item) => item.id === requestId);
+      if (!request || (!text.trim() && request.attachments.length === 0)) return;
+      commitQueuedComposeRequests((current) =>
+        updateQueuedComposeRequest(current, requestId, { text }),
+      );
+    },
+    [commitQueuedComposeRequests, queuedComposeRequests],
+  );
+
+  const handleDeleteQueuedComposeRequest = useCallback(
+    (requestId: string) => {
+      if (dispatchingQueuedRequestId === requestId) return;
+      commitQueuedComposeRequests((current) => removeQueuedComposeRequest(current, requestId));
+      if (blockedQueuedRequestId === requestId) {
+        const conversationId = String(conversation.id);
+        const dispatchState = queuedDispatchByConversationRef.current.get(conversationId);
+        if (dispatchState?.blocked?.requestId === requestId) {
+          if (dispatchState.dispatching) {
+            queuedDispatchByConversationRef.current.set(conversationId, {
+              dispatching: dispatchState.dispatching,
+            });
+          } else {
+            queuedDispatchByConversationRef.current.delete(conversationId);
+          }
+        }
+        setBlockedQueuedRequestId(undefined);
+        setQueuedRequestDispatchError(undefined);
+      }
+    },
+    [
+      blockedQueuedRequestId,
+      commitQueuedComposeRequests,
+      conversation.id,
+      dispatchingQueuedRequestId,
+    ],
+  );
+
+  const handleInterjectQueuedComposeRequest = useCallback(
+    (requestId: string) => {
+      const request = queuedComposeRequests.find((item) => item.id === requestId);
+      if (!request) return;
+      void dispatchQueuedComposeRequest(request, 'interject');
+    },
+    [dispatchQueuedComposeRequest, queuedComposeRequests],
+  );
+
+  useEffect(() => {
+    const next = queuedComposeRequests[0];
+    const dispatchState = queuedDispatchByConversationRef.current.get(String(conversation.id));
+    if (
+      !next ||
+      next.conversationId !== String(conversation.id) ||
+      runIsActive ||
+      Boolean(dispatchState?.dispatching) ||
+      dispatchState?.blocked?.requestId === next.id ||
+      (conversation.taskId && !threadId)
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void dispatchQueuedComposeRequest(next, 'auto');
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    blockedQueuedRequestId,
+    conversation.taskId,
+    dispatchQueuedComposeRequest,
+    queuedComposeRequests,
+    runIsActive,
+    threadId,
+  ]);
 
   const handleRegenerate = useCallback(
     async (assistantMessageId: string) => {
@@ -1788,6 +2319,45 @@ export function ChatView({
   }, [closeMention, closeSlash]);
 
   const slashCommands = useMemo(() => (slash ? filterSlashCommands(slash.query) : []), [slash]);
+  const filteredSlashSkills = useMemo(() => {
+    if (!slash) return [];
+    const query = slash.query.trim().toLocaleLowerCase();
+    return slashSkills.filter((skill) => {
+      if (!skill.enabled || selectedSkillVersionIds.includes(skill.skillVersionId)) return false;
+      if (!query) return true;
+      return [skill.name, skill.description, skill.skillId, skill.version]
+        .join('\n')
+        .toLocaleLowerCase()
+        .includes(query);
+    });
+  }, [selectedSkillVersionIds, slash, slashSkills]);
+  const slashItemCount = slashCommands.length + filteredSlashSkills.length;
+
+  useEffect(() => {
+    if (!slash) return;
+    const api = bridge();
+    if (!api?.listSkills) return;
+    let cancelled = false;
+    setSlashSkillsLoading(true);
+    void api
+      .listSkills(
+        conversation.workspaceId
+          ? { limit: 500, workspaceId: conversation.workspaceId }
+          : { limit: 500 },
+      )
+      .then((response) => {
+        if (!cancelled) setSlashSkills(response.skills.filter((skill) => skill.enabled));
+      })
+      .catch(() => {
+        if (!cancelled) setSlashSkills([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSlashSkillsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [Boolean(slash), conversation.workspaceId]);
 
   // Tick while compacting so the capsule can show NewMax-style elapsed time.
   useEffect(() => {
@@ -1970,9 +2540,32 @@ export function ChatView({
     [closeComposePickers, input, resizeComposeInput, slash],
   );
 
+  const selectSlashSkill = useCallback(
+    (skill: SkillVersionSummary) => {
+      if (!slash) return;
+      const stripped = stripSlashToken(input, slash);
+      setInput(stripped.text);
+      setSelectedSkillVersionIds((current) =>
+        resolveAppendSkillVersionIds(conversation.track, [
+          ...current,
+          skill.skillVersionId,
+        ]),
+      );
+      closeComposePickers();
+      window.requestAnimationFrame(() => {
+        resizeComposeInput();
+        const el = inputRef.current;
+        if (el) {
+          el.focus();
+          el.setSelectionRange(stripped.caret, stripped.caret);
+        }
+      });
+    },
+    [closeComposePickers, conversation.track, input, resizeComposeInput, slash],
+  );
+
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    // Interjection: allow sending while a run is active (runtime supersedes it).
     if ((!text && attachments.length === 0) || compactingRef.current) return;
 
     // NewMax: `/compact` manually compresses context without sending a chat turn.
@@ -2026,6 +2619,24 @@ export function ChatView({
     }
 
     const snapshot = attachments;
+    if (runIsActive) {
+      const request = createQueuedComposeRequest({
+        conversationId: String(conversation.id),
+        text: input,
+        attachments: snapshot,
+        modelOverride,
+        reasoningEffort,
+        networkEnabled: netEnabled,
+        skillVersionIds: selectedSkillVersionIds,
+      });
+      commitQueuedComposeRequests((current) => enqueueQueuedComposeRequest(current, request));
+      setInput('');
+      setAttachments([]);
+      closeComposePickers();
+      window.requestAnimationFrame(() => resizeComposeInput());
+      return;
+    }
+
     const outbound = buildMessageWithAttachments(input, snapshot);
     const images = messageImagesFromAttachments(snapshot);
     setInput('');
@@ -2040,11 +2651,17 @@ export function ChatView({
   }, [
     attachments,
     closeComposePickers,
+    commitQueuedComposeRequests,
+    conversation.id,
     input,
+    modelOverride,
+    netEnabled,
+    reasoningEffort,
     resizeComposeInput,
+    runIsActive,
     runManualCompact,
+    selectedSkillVersionIds,
     sendUserText,
-    sending,
   ]);
 
   /** NewMax: selecting a file becomes an attachment chip, not inline @path text. */
@@ -2273,21 +2890,23 @@ export function ChatView({
         }
         if (e.key === 'ArrowDown') {
           e.preventDefault();
-          setSlashIndex((i) => (slashCommands.length === 0 ? 0 : (i + 1) % slashCommands.length));
+          setSlashIndex((i) => (slashItemCount === 0 ? 0 : (i + 1) % slashItemCount));
           return;
         }
         if (e.key === 'ArrowUp') {
           e.preventDefault();
           setSlashIndex((i) =>
-            slashCommands.length === 0 ? 0 : (i - 1 + slashCommands.length) % slashCommands.length,
+            slashItemCount === 0 ? 0 : (i - 1 + slashItemCount) % slashItemCount,
           );
           return;
         }
         if (e.key === 'Enter' || e.key === 'Tab') {
-          const selected = slashCommands[slashIndex];
-          if (selected) {
+          const selectedCommand = slashCommands[slashIndex];
+          const selectedSkill = filteredSlashSkills[slashIndex - slashCommands.length];
+          if (selectedCommand || selectedSkill) {
             e.preventDefault();
-            selectSlashCommand(selected);
+            if (selectedCommand) selectSlashCommand(selectedCommand);
+            else if (selectedSkill) selectSlashSkill(selectedSkill);
             return;
           }
         }
@@ -2320,7 +2939,10 @@ export function ChatView({
       selectSlashCommand,
       slash,
       slashCommands,
+      filteredSlashSkills,
+      slashItemCount,
       slashIndex,
+      selectSlashSkill,
       stopping,
     ],
   );
@@ -2508,77 +3130,20 @@ export function ChatView({
     activeModelId ||
     '选择模型';
 
-  // Context usage for the ring: the live context footprint is the latest
-  // *input* token count of this thread (prompt + history), not input+output.
-  // After a successful compact, prefer context.compacted.afterTokens until a
-  // newer provider.usage arrives so the ring drops immediately.
-  // Runtime stores threadId under payload.run.threadId (not always top-level).
+  // Runtime is the single source of truth for the ring. estimatedUsedTokens is
+  // the complete context that would be sent on the next model request
+  // (instructions + agent/team + project + saved summary + messages + tools),
+  // not the latest turn's provider usage and not the cross-turn cumulative cost.
   const contextUsed = contextStatus?.estimatedUsedTokens ?? 0;
   const contextLimit = contextStatus?.contextWindow ?? 0;
 
   // Session metrics for the NewMax ring hover card (会话 耗时 / 用量).
   const sessionMetrics = useMemo(() => {
-    let tokens = 0;
-    let firstStart: number | undefined;
-    let lastEnd: number | undefined;
-    const ordered = [...eventHistory].sort((a, b) => a.sequence - b.sequence);
-    for (const event of ordered) {
-      const runPayload =
-        event.payload.run && typeof event.payload.run === 'object'
-          ? (event.payload.run as Record<string, unknown>)
-          : undefined;
-      const eventThread =
-        typeof event.payload.threadId === 'string'
-          ? event.payload.threadId
-          : typeof runPayload?.threadId === 'string'
-            ? runPayload.threadId
-            : undefined;
-      if (threadId && eventThread && eventThread !== threadId) continue;
-      if (
-        threadId &&
-        !eventThread &&
-        conversation.taskId &&
-        event.taskId &&
-        event.taskId !== conversation.taskId
-      ) {
-        continue;
-      }
-
-      if (event.type === 'run.started') {
-        const t = Date.parse(event.occurredAt);
-        if (Number.isFinite(t)) {
-          firstStart = firstStart === undefined ? t : Math.min(firstStart, t);
-        }
-      }
-      if (isRunTerminalEventType(event.type) || event.type === 'provider.usage') {
-        const t = Date.parse(event.occurredAt);
-        if (Number.isFinite(t)) {
-          lastEnd = lastEnd === undefined ? t : Math.max(lastEnd, t);
-        }
-      }
-      if (event.type === 'provider.usage') {
-        const inn =
-          typeof event.payload.tokensIn === 'number'
-            ? event.payload.tokensIn
-            : typeof event.payload.inputTokens === 'number'
-              ? event.payload.inputTokens
-              : 0;
-        const out =
-          typeof event.payload.tokensOut === 'number'
-            ? event.payload.tokensOut
-            : typeof event.payload.outputTokens === 'number'
-              ? event.payload.outputTokens
-              : 0;
-        // For session total usage, sum each request's reported totals when possible.
-        // Prefer the latest cumulative-looking value if later rows dominate.
-        tokens = Math.max(tokens, inn + out);
-      }
-    }
-    const durationMs =
-      firstStart !== undefined && lastEnd !== undefined && lastEnd >= firstStart
-        ? lastEnd - firstStart
-        : undefined;
-    return { durationMs, tokens };
+    return projectConversationUsageMetrics({
+      events: eventHistory,
+      threadId,
+      taskId: conversation.taskId ? String(conversation.taskId) : undefined,
+    });
   }, [conversation.taskId, eventHistory, threadId]);
 
   const PermIcon = PERMISSION_ICONS[permissionMode];
@@ -2616,9 +3181,7 @@ export function ChatView({
           track: option.track,
           targetRef,
         });
-        setSelectedSkillVersionIds(
-          resolveDefaultComposeSkillVersionIds({ track: option.track, targetRef }, agents, teams),
-        );
+        setSelectedSkillVersionIds([]);
         onConversationUpdated?.();
       } catch {
         // 换绑失败保持原状（无 toast 通道，静默即可，下次点击可重试）。
@@ -2755,7 +3318,7 @@ export function ChatView({
   // Live task progress for the active run — powers the spinner capsule above
   // the composer (hover reveals the full step list, NewMax-style).
   const liveTaskView = projected.activeRunId
-    ? runProcessById.get(projected.activeRunId)
+    ? displayRunProcessById.get(projected.activeRunId)
     : undefined;
   const showTaskCapsule = Boolean(
     (sending || projected.streaming) &&
@@ -2777,159 +3340,200 @@ export function ChatView({
         ) : null}
 
         {/* ─── Messages ───────────────────────────────────────────────── */}
-        <div
-          ref={messagesScrollRef}
-          className="shell-chat-content-wrap shell-chat-message-scroller flex-1 overflow-y-auto py-6"
-          onWheel={(event) => {
-            if (event.deltaY !== 0) {
-              userScrollRevisionRef.current += 1;
-              bottomPinIntentRef.current = event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
-              // Release the pin during the gesture itself. Waiting for the
-              // native scroll event lets a streaming render run first and
-              // snap the viewport back to the bottom, perceived as jitter.
-              if (event.deltaY < 0) stickToBottomRef.current = false;
-            }
-          }}
-          onTouchStart={(event) => {
-            lastTouchClientYRef.current = event.touches[0]?.clientY ?? null;
-          }}
-          onTouchMove={(event) => {
-            const currentClientY = event.touches[0]?.clientY;
-            const previousClientY = lastTouchClientYRef.current;
-            if (currentClientY !== undefined && previousClientY !== null) {
-              userScrollRevisionRef.current += 1;
-              if (currentClientY < previousClientY) {
+        <div className="shell-chat-message-stage">
+          <div
+            ref={messagesScrollRef}
+            className="shell-chat-content-wrap shell-chat-message-scroller h-full overflow-y-auto py-6"
+            onWheel={(event) => {
+              if (event.deltaY !== 0) {
+                userScrollRevisionRef.current += 1;
+                bottomPinIntentRef.current =
+                  event.deltaY > 0 ? 'toward-bottom' : 'away-from-bottom';
+                // Release the pin during the gesture itself. Waiting for the
+                // native scroll event lets a streaming render run first and
+                // snap the viewport back to the bottom, perceived as jitter.
+                if (event.deltaY < 0) stickToBottomRef.current = false;
+              }
+            }}
+            onTouchStart={(event) => {
+              lastTouchClientYRef.current = event.touches[0]?.clientY ?? null;
+            }}
+            onTouchMove={(event) => {
+              const currentClientY = event.touches[0]?.clientY;
+              const previousClientY = lastTouchClientYRef.current;
+              if (currentClientY !== undefined && previousClientY !== null) {
+                userScrollRevisionRef.current += 1;
+                if (currentClientY < previousClientY) {
+                  bottomPinIntentRef.current = 'toward-bottom';
+                } else if (currentClientY > previousClientY) {
+                  bottomPinIntentRef.current = 'away-from-bottom';
+                  stickToBottomRef.current = false;
+                }
+              }
+              lastTouchClientYRef.current = currentClientY ?? null;
+            }}
+            onTouchEnd={() => {
+              lastTouchClientYRef.current = null;
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End') {
+                userScrollRevisionRef.current += 1;
                 bottomPinIntentRef.current = 'toward-bottom';
-              } else if (currentClientY > previousClientY) {
+              } else if (
+                event.key === 'ArrowUp' ||
+                event.key === 'PageUp' ||
+                event.key === 'Home'
+              ) {
+                userScrollRevisionRef.current += 1;
                 bottomPinIntentRef.current = 'away-from-bottom';
                 stickToBottomRef.current = false;
               }
-            }
-            lastTouchClientYRef.current = currentClientY ?? null;
-          }}
-          onTouchEnd={() => {
-            lastTouchClientYRef.current = null;
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End') {
-              userScrollRevisionRef.current += 1;
-              bottomPinIntentRef.current = 'toward-bottom';
-            } else if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
-              userScrollRevisionRef.current += 1;
-              bottomPinIntentRef.current = 'away-from-bottom';
-              stickToBottomRef.current = false;
-            }
-          }}
-          onScroll={(event) => {
-            const scroller = event.currentTarget;
-            const currentScrollTop = scroller.scrollTop;
-            const programmaticTarget = programmaticScrollTargetRef.current;
-            const isProgrammatic =
-              programmaticTarget !== null && Math.abs(currentScrollTop - programmaticTarget) <= 1;
-            if (isProgrammatic) {
-              programmaticScrollTargetRef.current = null;
-            } else {
-              const nativeIntent = inferNativeScrollIntent({
-                previousScrollTop: lastObservedScrollTopRef.current,
-                nextScrollTop: currentScrollTop,
-              });
-              // Native scrollbar dragging does not emit wheel events. Infer its
-              // direction from scrollTop so dragging upward always releases pinning.
-              if (nativeIntent === 'away-from-bottom') {
-                userScrollRevisionRef.current += 1;
-                bottomPinIntentRef.current = nativeIntent;
-                stickToBottomRef.current = false;
-              } else if (nativeIntent === 'toward-bottom' && bottomPinIntentRef.current === null) {
-                userScrollRevisionRef.current += 1;
-                bottomPinIntentRef.current = nativeIntent;
-              }
-            }
-            lastObservedScrollTopRef.current = currentScrollTop;
-
-            // Proximity may disable pinning, but only an explicit/native
-            // downward gesture may re-enable it after the user viewed history.
-            const distance = scroller.scrollHeight - currentScrollTop - scroller.clientHeight;
-            stickToBottomRef.current = resolveBottomPinState({
-              currentlyPinned: stickToBottomRef.current,
-              distanceFromBottom: distance,
-              userIntent: isProgrammatic ? null : bottomPinIntentRef.current,
-            });
-            bottomPinIntentRef.current = null;
-
-            // Load older messages when scrolled near top. Capture one real DOM
-            // row and restore it only if the user did not keep scrolling while
-            // the async history request was pending.
-            if (currentScrollTop < 50 && hasMore && !loadingMore && !loadingMoreRef.current) {
-              const anchor = capturePrependAnchor(scroller);
-              const expectedUserScrollRevision = userScrollRevisionRef.current;
-              void loadMessages(nextCursor).then((applied) => {
-                if (!applied || !anchor) return;
-                requestAnimationFrame(() => {
-                  restorePrependAnchor(scroller, anchor, expectedUserScrollRevision);
+            }}
+            onScroll={(event) => {
+              const scroller = event.currentTarget;
+              const currentScrollTop = scroller.scrollTop;
+              const programmaticTarget = programmaticScrollTargetRef.current;
+              const isProgrammatic =
+                programmaticTarget !== null && Math.abs(currentScrollTop - programmaticTarget) <= 1;
+              if (isProgrammatic) {
+                programmaticScrollTargetRef.current = null;
+              } else {
+                const nativeIntent = inferNativeScrollIntent({
+                  previousScrollTop: lastObservedScrollTopRef.current,
+                  nextScrollTop: currentScrollTop,
                 });
+                // Native scrollbar dragging does not emit wheel events. Infer its
+                // direction from scrollTop so dragging upward always releases pinning.
+                if (nativeIntent === 'away-from-bottom') {
+                  userScrollRevisionRef.current += 1;
+                  bottomPinIntentRef.current = nativeIntent;
+                  stickToBottomRef.current = false;
+                } else if (
+                  nativeIntent === 'toward-bottom' &&
+                  bottomPinIntentRef.current === null
+                ) {
+                  userScrollRevisionRef.current += 1;
+                  bottomPinIntentRef.current = nativeIntent;
+                }
+              }
+              lastObservedScrollTopRef.current = currentScrollTop;
+
+              // Proximity may disable pinning, but only an explicit/native
+              // downward gesture may re-enable it after the user viewed history.
+              const distance = scroller.scrollHeight - currentScrollTop - scroller.clientHeight;
+              stickToBottomRef.current = resolveBottomPinState({
+                currentlyPinned: stickToBottomRef.current,
+                distanceFromBottom: distance,
+                userIntent: isProgrammatic ? null : bottomPinIntentRef.current,
               });
-            }
-          }}
-        >
-          {messages.length === 0 && !showTyping && (
-            <div className="flex h-full items-center justify-center">
-              <span className="text-[13px] text-text-faint">
-                {!initialLoaded ? '加载中…' : '发送消息开始对话'}
-              </span>
-            </div>
-          )}
-          {/* Keep message column and compose at the same content width. */}
-          <div className="shell-chat-content mx-auto flex flex-col">
-            {loadingMore && (
-              <div className="flex items-center justify-center py-3">
-                <LoaderCircle className="h-4 w-4 animate-spin text-text-faint" />
-                <span className="ml-2 text-[12px] text-text-faint">加载更早消息…</span>
+              bottomPinIntentRef.current = null;
+
+              // Load older messages when scrolled near top. Capture one real DOM
+              // row and restore it only if the user did not keep scrolling while
+              // the async history request was pending.
+              if (currentScrollTop < 50 && hasMore && !loadingMore && !loadingMoreRef.current) {
+                const anchor = capturePrependAnchor(scroller);
+                const expectedUserScrollRevision = userScrollRevisionRef.current;
+                void loadMessages(nextCursor).then((applied) => {
+                  if (!applied || !anchor) return;
+                  requestAnimationFrame(() => {
+                    restorePrependAnchor(scroller, anchor, expectedUserScrollRevision);
+                  });
+                });
+              }
+            }}
+          >
+            {messages.length === 0 && !showTyping && (
+              <div className="flex h-full items-center justify-center">
+                <span className="text-[13px] text-text-faint">
+                  {!initialLoaded ? '加载中…' : '发送消息开始对话'}
+                </span>
               </div>
             )}
-            {visibleDurableMessages.map((msg) => (
-              <div key={msg.id} data-message-id={msg.id} className="shell-message-window-item pb-6">
-                <MessageBubble
-                  message={msg}
-                  processView={msg.runId ? runProcessById.get(msg.runId) : undefined}
-                  models={models}
-                  agents={agents}
-                  regenerating={sending}
-                  onRegenerate={handleRegenerate}
-                  onOpenChange={openChangeInRail}
-                  onExpandRail={expandRail}
-                  onOpenImage={setLightbox}
+            {/* Keep message column and compose at the same content width. */}
+            <div className="shell-chat-content mx-auto flex flex-col">
+              {loadingMore && (
+                <div className="flex items-center justify-center py-3">
+                  <LoaderCircle className="h-4 w-4 animate-spin text-text-faint" />
+                  <span className="ml-2 text-[12px] text-text-faint">加载更早消息…</span>
+                </div>
+              )}
+              {visibleDurableMessages.map((msg) => (
+                <div
+                  key={msg.id}
+                  data-message-id={msg.id}
+                  className="shell-message-window-item pb-6"
+                >
+                  <MessageBubble
+                    message={msg}
+                    processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
+                    models={models}
+                    agents={agents}
+                    regenerating={sending}
+                    onRegenerate={handleRegenerate}
+                    onOpenChange={openChangeInRail}
+                    onExpandRail={expandRail}
+                    onOpenImage={setLightbox}
+                  />
+                </div>
+              ))}
+              {standaloneRuntimeConnectionNotice ? (
+                <div className="pb-4">
+                  <div
+                    className="shell-run-connection-status shell-run-connection-status--standalone"
+                    data-state={standaloneRuntimeConnectionNotice.state}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {standaloneRuntimeConnectionNotice.state === 'failed' ? (
+                      <AlertCircle size={12} aria-hidden="true" />
+                    ) : (
+                      <RefreshCw size={12} aria-hidden="true" />
+                    )}
+                    <span>{standaloneRuntimeConnectionNotice.text}</span>
+                  </div>
+                </div>
+              ) : null}
+              {liveMessages.map((msg) => (
+                <div
+                  key={msg.id}
+                  data-message-id={msg.id}
+                  className="shell-message-window-item pb-6"
+                >
+                  <MessageBubble
+                    message={msg}
+                    processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
+                    models={models}
+                    agents={agents}
+                    regenerating={sending}
+                    onRegenerate={handleRegenerate}
+                    onOpenChange={openChangeInRail}
+                    onExpandRail={expandRail}
+                    onOpenImage={setLightbox}
+                  />
+                </div>
+              ))}
+              {pendingApprovals.map((approval) => (
+                <ToolApprovalCard
+                  key={approval.approvalId}
+                  approval={approval}
+                  busy={decidingApprovalId === approval.approvalId}
+                  onApprove={() => void handleToolApproval(approval.approvalId, 'approve')}
+                  onDeny={() => void handleToolApproval(approval.approvalId, 'deny')}
                 />
-              </div>
-            ))}
-            {liveMessages.map((msg) => (
-              <div key={msg.id} className="pb-6">
-                <MessageBubble
-                  message={msg}
-                  processView={msg.runId ? runProcessById.get(msg.runId) : undefined}
-                  models={models}
-                  agents={agents}
-                  regenerating={sending}
-                  onRegenerate={handleRegenerate}
-                  onOpenChange={openChangeInRail}
-                  onExpandRail={expandRail}
-                  onOpenImage={setLightbox}
-                />
-              </div>
-            ))}
-            {pendingApprovals.map((approval) => (
-              <ToolApprovalCard
-                key={approval.approvalId}
-                approval={approval}
-                busy={decidingApprovalId === approval.approvalId}
-                onApprove={() => void handleToolApproval(approval.approvalId, 'approve')}
-                onDeny={() => void handleToolApproval(approval.approvalId, 'deny')}
-              />
-            ))}
-            {showTyping &&
-              !messages.some((message) => message.streaming) &&
-              pendingApprovals.length === 0 && <TypingIndicator />}
-            <div ref={messagesEndRef} />
+              ))}
+              {showTyping &&
+                !messages.some((message) => message.streaming) &&
+                pendingApprovals.length === 0 && <TypingIndicator />}
+              <div ref={messagesEndRef} />
+            </div>
           </div>
+
+          <ConversationMinimapRail
+            items={navigationItems}
+            scrollerRef={messagesScrollRef}
+            onNavigate={handleNavigateMessage}
+          />
         </div>
 
         {/* ─── Compose (NewMax-style) ─────────────────────────────────── */}
@@ -3051,6 +3655,41 @@ export function ChatView({
                         </button>
                       ))
                     )}
+                    <div className="shell-slash-pop__section">Skill</div>
+                    {slashSkillsLoading ? (
+                      <div className="shell-mention-pop__empty">正在读取已启用 Skill…</div>
+                    ) : filteredSlashSkills.length === 0 ? (
+                      <div className="shell-mention-pop__empty">没有匹配的已启用 Skill</div>
+                    ) : (
+                      filteredSlashSkills.map((skill, skillIndex) => {
+                        const index = slashCommands.length + skillIndex;
+                        return (
+                          <button
+                            key={skill.skillVersionId}
+                            type="button"
+                            role="option"
+                            aria-selected={index === slashIndex}
+                            className={`shell-mention-pop__item shell-slash-pop__item ${
+                              index === slashIndex ? 'is-active' : ''
+                            }`}
+                            onMouseEnter={() => setSlashIndex(index)}
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              selectSlashSkill(skill);
+                            }}
+                          >
+                            <span className="shell-slash-pop__cmd">/{skill.name}</span>
+                            <span className="shell-slash-pop__meta">
+                              <span className="shell-slash-pop__label">{skill.name}</span>
+                              <span className="shell-slash-pop__desc">
+                                {skill.description || `v${skill.version}`}
+                              </span>
+                            </span>
+                            <span className="shell-slash-pop__badge">Skill</span>
+                          </button>
+                        );
+                      })
+                    )}
                   </div>,
                   document.body,
                 )}
@@ -3112,6 +3751,17 @@ export function ChatView({
                   document.body,
                 )}
 
+              <ComposeRequestQueue
+                items={queuedComposeRequests}
+                activeRun={runIsActive}
+                dispatchingId={dispatchingQueuedRequestId}
+                blockedId={blockedQueuedRequestId}
+                dispatchError={queuedRequestDispatchError}
+                onEdit={handleEditQueuedComposeRequest}
+                onDelete={handleDeleteQueuedComposeRequest}
+                onInterject={handleInterjectQueuedComposeRequest}
+              />
+
               {/* Attachment chips (NewMax: selected @ files / images become chips) */}
               {attachments.length > 0 && (
                 <div className="shell-compose__chips" data-testid="compose-attachments">
@@ -3157,11 +3807,12 @@ export function ChatView({
                 </div>
               )}
 
-              {/* Interjection: the textarea stays editable while streaming — sending
-                  a new message supersedes the active run instead of blocking. */}
+              {/* The textarea stays editable while streaming. Send queues a draft;
+                  only the queued item's explicit 插话 action supersedes the Run. */}
               <textarea
                 ref={inputRef}
                 className="shell-compose__input"
+                data-testid="compose-input"
                 placeholder={
                   hasProjectFolder
                     ? '有什么我能帮你的吗？输入 @ 引用文件，/ 打开命令'
@@ -3200,9 +3851,10 @@ export function ChatView({
                       ref={permissionBtnRef}
                       type="button"
                       className="shell-compose__tool"
-                      data-active={
-                        menu === 'permission' || permissionMode === 'full-access' ? '1' : '0'
-                      }
+                      data-active={permissionMode === 'full-access' ? '1' : '0'}
+                      data-open={menu === 'permission' ? '1' : '0'}
+                      aria-haspopup="menu"
+                      aria-expanded={menu === 'permission'}
                       onClick={() => setMenu((m) => (m === 'permission' ? null : 'permission'))}
                       title={`权限：${PERMISSION_LABELS[permissionMode]}`}
                     >
@@ -3237,7 +3889,10 @@ export function ChatView({
                       ref={reasoningBtnRef}
                       type="button"
                       className="shell-compose__tool"
-                      data-active={menu === 'reasoning' || reasoningEffort !== 'auto' ? '1' : '0'}
+                      data-active={reasoningEffort !== 'auto' ? '1' : '0'}
+                      data-open={menu === 'reasoning' ? '1' : '0'}
+                      aria-haspopup="menu"
+                      aria-expanded={menu === 'reasoning'}
                       onClick={() => setMenu((m) => (m === 'reasoning' ? null : 'reasoning'))}
                       title={`推理强度：${REASONING_LABELS[reasoningEffort]}`}
                     >
@@ -3257,6 +3912,7 @@ export function ChatView({
 
                   <TurnSkillControl
                     owner={skillOwner}
+                    workspaceId={conversation.workspaceId}
                     open={menu === 'skill'}
                     selectedSkillVersionIds={selectedSkillVersionIds}
                     onOpenChange={(open) => setMenu(open ? 'skill' : null)}
@@ -3271,9 +3927,10 @@ export function ChatView({
                       ref={identityBtnRef}
                       type="button"
                       className="shell-compose__tool"
-                      data-active={
-                        menu === 'identity' || conversation.track !== 'model' ? '1' : '0'
-                      }
+                      data-active={conversation.track !== 'model' ? '1' : '0'}
+                      data-open={menu === 'identity' ? '1' : '0'}
+                      aria-haspopup="menu"
+                      aria-expanded={menu === 'identity'}
                       data-testid="compose-identity"
                       onClick={() => setMenu((m) => (m === 'identity' ? null : 'identity'))}
                       title={`对话对象：${identityLabel}`}
@@ -3306,9 +3963,17 @@ export function ChatView({
                     used={contextUsed}
                     limit={contextLimit}
                     usageRatio={contextStatus?.usageRatio}
+                    compactThreshold={contextStatus?.compactThreshold}
+                    compactedAt={contextStatus?.compactedAt}
                     sections={contextStatus?.sections}
                     sessionDurationMs={sessionMetrics.durationMs}
-                    sessionTokens={sessionMetrics.tokens}
+                    sessionTokens={
+                      durableUsageSummary
+                        ? durableUsageSummary.totalTokens
+                        : sessionMetrics.requestCount > 0
+                          ? sessionMetrics.totalTokens
+                          : undefined
+                    }
                   />
 
                   {/* Two-level model picker */}
@@ -3341,8 +4006,8 @@ export function ChatView({
                     />
                   </div>
 
-                  {/* Stop (streaming) + Send — both available during streaming so
-                      the user can either stop or interject with a new message. */}
+                  {/* Stop remains immediate. Send stays available during streaming,
+                      but creates an editable queued draft instead of interrupting. */}
                   {canStop && (
                     <button
                       type="button"
@@ -3435,11 +4100,7 @@ export function ChatView({
  */
 const USER_TEXT_COLLAPSE_HEIGHT = 160;
 
-const CollapsibleUserText = memo(function CollapsibleUserText({
-  text,
-}: {
-  text: string;
-}) {
+const CollapsibleUserText = memo(function CollapsibleUserText({ text }: { text: string }) {
   const [collapsed, setCollapsed] = useState(true);
   const [overflowing, setOverflowing] = useState(false);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -3676,6 +4337,8 @@ const MessageBubble = memo(function MessageBubble({
       (message.globalAgentId && a.id === message.globalAgentId) ||
       (!message.globalAgentId && agentLabel && a.name === agentLabel),
   );
+  const hasAnswerText = Boolean(message.text.trim());
+  const showFooter = !message.streaming && (hasAnswerText || Boolean(processView));
   return (
     <div className="shell-msg shell-msg--assistant group relative flex items-start gap-3">
       {agentRecord || agentLabel ? (
@@ -3696,44 +4359,68 @@ const MessageBubble = memo(function MessageBubble({
         {agentLabel ? (
           <div className="mb-1 text-[11.5px] font-medium text-text-faint">{agentLabel}</div>
         ) : null}
+        {message.processStatus ? (
+          <div
+            className="shell-run-connection-status"
+            data-state={message.processStatusState}
+            role="status"
+            aria-live="polite"
+          >
+            {message.processStatusState === 'failed' ? (
+              <AlertCircle size={12} aria-hidden="true" />
+            ) : (
+              <RefreshCw size={12} aria-hidden="true" />
+            )}
+            <span>{message.processStatus}</span>
+          </div>
+        ) : null}
         <AssistantProcessGroup
-          reasoningText={message.reasoningText}
+          commentaryText={message.commentaryText}
+          commentarySegments={message.commentarySegments}
           processView={processView}
           streaming={Boolean(message.streaming)}
         >
-          <ReasoningBlock
-            text={message.reasoningText}
+          <ExecutionTimeline
+            commentarySegments={message.commentarySegments}
+            commentaryText={message.commentaryText}
+            processView={processView}
             streaming={Boolean(message.streaming && !message.text.trim())}
+            onOpenChange={onOpenChange}
           />
-          {processView ? (
-            <ExecutionProcessBlock
-              view={processView}
-              forceExpanded={Boolean(message.streaming)}
-              nested
-              onOpenChange={onOpenChange}
-            />
-          ) : null}
         </AssistantProcessGroup>
         {message.text ? (
           <MarkdownContent text={message.text} streaming={Boolean(message.streaming)} />
-        ) : message.streaming && !message.reasoningText?.trim() ? (
+        ) : message.streaming &&
+          !message.commentaryText?.trim() &&
+          !message.commentarySegments?.some((segment) => segment.text.trim()) &&
+          !message.processStatus ? (
           <TypingDots inline />
         ) : null}
         {message.terminalState ? (
           <div
-            className="mt-2 flex items-center gap-1.5 text-[11.5px] text-text-faint"
+            className="mt-2 flex items-start gap-1.5 text-[11.5px] text-text-faint"
             data-testid={`assistant-terminal-${message.terminalState}`}
-            title={message.terminalError}
           >
             {message.terminalState === 'failed' ? (
-              <AlertCircle size={12} className="shrink-0 text-[var(--color-error)]" />
+              <AlertCircle size={12} className="mt-0.5 shrink-0 text-[var(--color-error)]" />
             ) : (
-              <Square size={11} className="shrink-0" />
+              <Square size={11} className="mt-0.5 shrink-0" />
             )}
-            <span>
-              {message.terminalState === 'failed'
-                ? '回复失败，已保留中断前内容'
-                : '已停止生成，以上内容已保留'}
+            <span className="min-w-0">
+              <span>
+                {message.terminalState === 'failed'
+                  ? '回复失败，已保留中断前内容'
+                  : '已停止生成，以上内容已保留'}
+              </span>
+              {message.terminalState === 'failed' && message.terminalError ? (
+                <span
+                  className="shell-terminal-error"
+                  data-testid="assistant-terminal-error"
+                  title={message.terminalError}
+                >
+                  {message.terminalError}
+                </span>
+              ) : null}
             </span>
           </div>
         ) : null}
@@ -3749,38 +4436,40 @@ const MessageBubble = memo(function MessageBubble({
           />
         ) : null}
 
-        {!message.streaming && message.text.trim() ? (
+        {showFooter ? (
           <div className="shell-msg-footer">
-            <div className="shell-msg-footer__actions">
-              <button
-                type="button"
-                className="shell-msg-footer__btn"
-                onClick={() => void handleCopy()}
-                title="复制"
-              >
-                {copied ? <Check size={13} /> : <Copy size={13} />}
-                <span>{copied ? '已复制' : '复制'}</span>
-              </button>
-              <button
-                type="button"
-                className="shell-msg-footer__btn"
-                onClick={() => void onRegenerate?.(message.id)}
-                disabled={regenerating}
-                title="重新生成"
-              >
-                <RefreshCw size={13} className={regenerating ? 'shell-process-spin' : ''} />
-                <span>重新生成</span>
-              </button>
-              <button
-                type="button"
-                className="shell-msg-footer__btn"
-                onClick={() => void handleShare()}
-                title="分享（先复制 Markdown）"
-              >
-                <Share2 size={13} />
-                <span>{shared ? '已复制' : '分享'}</span>
-              </button>
-            </div>
+            {hasAnswerText ? (
+              <div className="shell-msg-footer__actions">
+                <button
+                  type="button"
+                  className="shell-msg-footer__btn"
+                  onClick={() => void handleCopy()}
+                  title="复制"
+                >
+                  {copied ? <Check size={13} /> : <Copy size={13} />}
+                  <span>{copied ? '已复制' : '复制'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="shell-msg-footer__btn"
+                  onClick={() => void onRegenerate?.(message.id)}
+                  disabled={regenerating}
+                  title="重新生成"
+                >
+                  <RefreshCw size={13} className={regenerating ? 'shell-process-spin' : ''} />
+                  <span>重新生成</span>
+                </button>
+                <button
+                  type="button"
+                  className="shell-msg-footer__btn"
+                  onClick={() => void handleShare()}
+                  title="分享（先复制 Markdown）"
+                >
+                  <Share2 size={13} />
+                  <span>{shared ? '已复制' : '分享'}</span>
+                </button>
+              </div>
+            ) : null}
             <div className="shell-msg-meta shell-msg-meta--assistant">
               {metricsLabel && metricsDetail ? (
                 <MetaHover
@@ -4003,50 +4692,61 @@ export function formatAssistantProcessElapsed(
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  return hours > 0
-    ? [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':')
-    : [minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
+  if (hours > 0) return `${hours}小时${minutes}分${seconds}秒`;
+  if (minutes > 0) return `${minutes}分${seconds}秒`;
+  return `${seconds}秒`;
 }
 
 export function AssistantProcessGroup({
-  reasoningText,
+  commentaryText,
+  commentarySegments,
   processView,
   streaming,
+  defaultOpen = false,
   children,
 }: {
-  reasoningText?: string;
+  commentaryText?: string;
+  commentarySegments?: readonly CommentaryTimelineSegment[];
   processView?: RunProcessView;
   streaming?: boolean;
+  /** Deterministic visual/test fixture only; production keeps the default folded state. */
+  defaultOpen?: boolean;
   children: ReactNode;
 }) {
-  const hasReasoning = Boolean(reasoningText?.trim());
+  const hasCommentary = Boolean(
+    commentaryText?.trim() || commentarySegments?.some((segment) => segment.text.trim()),
+  );
   const stepCount = processView?.steps.length ?? 0;
   const changeCount = processView?.fileChanges.length ?? 0;
   const completed = Boolean(processView?.completedAt);
   const lifecycleActive = Boolean(processView?.startedAt && !processView?.completedAt);
-  const active = Boolean(streaming || processView?.running || lifecycleActive);
+  const active = !completed && Boolean(streaming || processView?.running || lifecycleActive);
   const hasLifecycle = Boolean(processView?.startedAt || completed);
-  const hasDetails = hasReasoning || stepCount > 0 || changeCount > 0;
+  const hasDetails = hasCommentary || stepCount > 0 || changeCount > 0;
   // Keep the application-owned run summary even when a provider withholds its
-  // reasoning trace. This mirrors NewMax's process card without fabricating or
-  // exposing hidden chain-of-thought: live runs show an observable status, and
-  // completed runs retain duration plus an explicit "no summary provided" note.
+  // commentary. The outer row remains useful as a durable elapsed-time
+  // marker, while its contents stay folded until the user asks to inspect them.
   const hasContent = hasDetails || active || hasLifecycle;
-  const [open, setOpen] = useState(Boolean(streaming));
-  // Folded-state preview: first ~64 chars of the thinking, so the collapsed
-  // bar shows what's inside instead of a bare label.
-  const preview = useMemo(() => {
-    const t = reasoningText?.trim();
-    if (!t) return undefined;
-    const single = t.replace(/\s+/g, ' ');
-    return single.length > 64 ? `${single.slice(0, 64)}…` : single;
-  }, [reasoningText]);
+  const [open, setOpen] = useState(defaultOpen);
   const [clockNow, setClockNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (streaming) setOpen(true);
-    else setOpen(false);
-  }, [streaming]);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const followTailRef = useRef(true);
+  const previousScrollTopRef = useRef<number | null>(null);
+  const lastCommentarySegment = commentarySegments?.at(-1);
+  const lastProcessStep = processView?.steps.at(-1);
+  const commentaryRevision = [
+    commentarySegments?.length ?? 0,
+    lastCommentarySegment?.id ?? '',
+    lastCommentarySegment?.text.length ?? commentaryText?.length ?? 0,
+    lastCommentarySegment?.completedAt ?? '',
+  ].join(':');
+  const processRevision = [
+    lastProcessStep?.id ?? '',
+    lastProcessStep?.status ?? '',
+    lastProcessStep?.completedAt ?? '',
+    lastProcessStep?.preview?.length ?? 0,
+    lastProcessStep?.error?.length ?? 0,
+  ].join(':');
 
   useEffect(() => {
     setClockNow(Date.now());
@@ -4055,14 +4755,35 @@ export function AssistantProcessGroup({
     return () => window.clearInterval(timer);
   }, [active, processView?.startedAt]);
 
+  useEffect(() => {
+    if (active) {
+      followTailRef.current = true;
+      previousScrollTopRef.current = null;
+    }
+  }, [active, processView?.runId]);
+
+  useLayoutEffect(() => {
+    if (!active || !open || !followTailRef.current) return;
+    const body = bodyRef.current;
+    if (body) {
+      body.scrollTop = body.scrollHeight;
+      previousScrollTopRef.current = body.scrollTop;
+    }
+  }, [
+    active,
+    open,
+    processView?.runId,
+    processView?.steps.length,
+    processView?.fileChanges.length,
+    processView?.doneCount,
+    processView?.errorCount,
+    processRevision,
+    commentaryRevision,
+  ]);
+
   if (!hasContent) return null;
 
   const elapsed = formatAssistantProcessElapsed(processView, active, clockNow);
-  const summaryParts = [
-    hasReasoning ? '深度思考' : completed ? '模型未提供思考摘要' : undefined,
-    stepCount > 0 ? `${stepCount} 个工具步骤` : undefined,
-    changeCount > 0 ? `${changeCount} 个文件变更` : undefined,
-  ].filter(Boolean);
 
   return (
     <section
@@ -4072,132 +4793,49 @@ export function AssistantProcessGroup({
       <button
         type="button"
         className="shell-process-group__toggle"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() =>
+          setOpen((value) => {
+            const next = !value;
+            if (next && active) {
+              followTailRef.current = true;
+              previousScrollTopRef.current = null;
+            }
+            return next;
+          })
+        }
         aria-expanded={open}
       >
-        <span className="shell-process-group__icon">
-          {active ? (
-            <LoaderCircle size={14} className="shell-process-spin" />
-          ) : processView?.errorCount ? (
-            <FileWarning size={14} />
-          ) : (
-            <Brain size={14} />
-          )}
-        </span>
-        <span className="shell-process-group__heading">
-          <strong>
-            {active ? '正在思考与执行…' : '思考与执行过程'}
-            {elapsed ? ` · ${elapsed}` : ''}
-          </strong>
-          <small>{summaryParts.length > 0 ? summaryParts.join(' · ') : '准备中'}</small>
-          {!open && preview ? (
-            <span className="shell-process-group__preview" title="点击展开查看思考全文">
-              {preview}
-            </span>
-          ) : null}
+        <span className="shell-process-group__title">
+          执行过程
+          {elapsed ? ` · ${elapsed}` : ''}
         </span>
         <ChevronDown size={15} className="shell-process-group__chevron" />
       </button>
       {open ? (
-        <div className="shell-process-group__body">
-          {children}
-          {!active && !hasDetails && completed ? (
-            <div className="shell-process-group__empty">
-              本轮已完成。供应商未返回可展示的思考摘要。
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-// ─── Depth thinking / reasoning block (NewMax-style) ─────────────────────────
-
-function ReasoningBlock({ text, streaming }: { text?: string; streaming?: boolean }) {
-  const content = (text ?? '').trim();
-  const [open, setOpen] = useState(Boolean(streaming));
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const followTailRef = useRef(true);
-  const previousStreamingRef = useRef(Boolean(streaming));
-
-  useEffect(() => {
-    // Expanded while thinking, folded once the answer lands (P2). Without the
-    // collapse the reasoning stayed open forever and dominated the transcript.
-    setOpen(Boolean(streaming));
-    // A new streaming turn starts at the tail; preserve a user's manual
-    // position while that same turn continues to receive tokens.
-    if (streaming && !previousStreamingRef.current) followTailRef.current = true;
-    previousStreamingRef.current = Boolean(streaming);
-  }, [streaming]);
-
-  // NewMax-style live thinking: keep the newest reasoning line in view while
-  // tokens stream, so the panel reads like a rolling console. Once the user
-  // wheels upward, stop forcing scrollTop so the text no longer jumps back.
-  useEffect(() => {
-    if (!streaming || !open || !followTailRef.current) return;
-    const el = bodyRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom <= 32) el.scrollTop = el.scrollHeight;
-  }, [content, streaming, open]);
-
-  if (!content && !streaming) return null;
-
-  const foldedPreview =
-    !open && !streaming && content
-      ? content.replace(/\s+/g, ' ').length > 48
-        ? `${content.replace(/\s+/g, ' ').slice(0, 48)}…`
-        : content.replace(/\s+/g, ' ')
-      : undefined;
-
-  return (
-    <div
-      className={`shell-reasoning ${open ? 'is-open' : ''}`}
-      data-streaming={streaming ? '1' : '0'}
-    >
-      <button
-        type="button"
-        className="shell-reasoning__toggle"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        title={foldedPreview ? '点击展开查看思考全文' : undefined}
-      >
-        <Brain size={13} className="shell-reasoning__icon" />
-        <span className="shell-reasoning__title">{streaming ? '深度思考中…' : '深度思考'}</span>
-        {foldedPreview ? (
-          <span className="shell-reasoning__preview">{foldedPreview}</span>
-        ) : null}
-        <span className="shell-reasoning__chev" aria-hidden>
-          {open ? '▾' : '▸'}
-        </span>
-      </button>
-      {open ? (
         <div
           ref={bodyRef}
-          className="shell-reasoning__body"
+          className="shell-process-group__body"
           onWheel={(event) => {
             if (event.deltaY < 0) followTailRef.current = false;
           }}
           onScroll={() => {
-            const el = bodyRef.current;
-            if (!el) return;
-            const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-            if (distanceFromBottom > 32) followTailRef.current = false;
-            else if (streaming) followTailRef.current = true;
+            const body = bodyRef.current;
+            if (!body) return;
+            const previousScrollTop = previousScrollTopRef.current;
+            const currentScrollTop = body.scrollTop;
+            const distanceFromBottom = body.scrollHeight - body.scrollTop - body.clientHeight;
+            if (distanceFromBottom <= 32) {
+              followTailRef.current = true;
+            } else if (previousScrollTop !== null && currentScrollTop < previousScrollTop - 1) {
+              followTailRef.current = false;
+            }
+            previousScrollTopRef.current = currentScrollTop;
           }}
         >
-          {content ? (
-            <pre className="shell-reasoning__text">
-              {content}
-              {streaming ? <span className="shell-reasoning__caret" aria-hidden /> : null}
-            </pre>
-          ) : (
-            <div className="shell-reasoning__placeholder">正在思考…</div>
-          )}
+          {children}
         </div>
       ) : null}
-    </div>
+    </section>
   );
 }
 

@@ -14,6 +14,7 @@ import type { BrowserRecordingStepInput } from '@sync-think/shared';
 import {
   Bot,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
   FileCheck2,
@@ -71,6 +72,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
   const [reviewTarget, setReviewTarget] = useState<GetBrowserWorkflowResponse>();
   const [reviewNote, setReviewNote] = useState('');
   const [executeTarget, setExecuteTarget] = useState<GetBrowserWorkflowResponse>();
+  const [expandedTaskId, setExpandedTaskId] = useState<string>();
 
   const loadTasks = useCallback(
     async (nextQuery = '', preserveFeedback = false) => {
@@ -82,6 +84,11 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
           limit: 100,
         });
         setTasks(response.tasks);
+        setExpandedTaskId((current) =>
+          current && response.tasks.some((task) => task.id === current)
+            ? current
+            : response.tasks[0]?.id,
+        );
         const detailResults = await Promise.allSettled(
           response.tasks.map((task) =>
             workflowRuntime().browserWorkflow.get({
@@ -229,17 +236,17 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="browser-workflow-panel">
-      <div className="shrink-0 border-b border-border bg-elevated px-4 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="relative min-w-[220px] flex-1">
+    <div className="browser-workflow" data-testid="browser-workflow-panel">
+      <div className="browser-workflow__toolbar">
+        <div className="browser-workflow__search-row">
+          <label className="browser-workflow__search">
             <Search
               className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-faint"
               size={13}
             />
             <input
               data-testid="browser-workflow-search"
-              className="h-8 w-full rounded-md border border-border bg-surface pl-8 pr-2.5 text-[11.5px] text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
+              className="browser-workflow__input pl-8"
               value={query}
               placeholder="搜索任务名称、目标或网址"
               maxLength={200}
@@ -251,7 +258,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
           </label>
           <button
             type="button"
-            className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11.5px] font-medium text-text-secondary hover:bg-hover hover:text-text disabled:opacity-45"
+            className="browser-workflow__button"
             disabled={loading}
             onClick={applySearch}
           >
@@ -261,7 +268,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
           <button
             type="button"
             data-testid="browser-workflow-create-manual"
-            className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11.5px] font-medium text-text-secondary hover:bg-hover hover:text-text"
+            className="browser-workflow__button"
             onClick={() => setCreateSource('manual')}
           >
             <Plus size={13} />
@@ -270,13 +277,13 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
           <button
             type="button"
             data-testid="browser-workflow-create-ai"
-            className="flex h-8 items-center gap-1.5 rounded-md bg-accent px-2.5 text-[11.5px] font-medium text-accent-fg hover:opacity-90"
+            className="browser-workflow__button browser-workflow__button--primary"
             onClick={() => setCreateSource('ai')}
           >
             <Sparkles size={13} />让 AI 创建
           </button>
         </div>
-        <div className="mt-2 flex items-center justify-between gap-3 text-[10.5px] text-text-faint">
+        <div className="browser-workflow__summary">
           <span>
             {tasks.length} 个任务
             {appliedQuery ? ` · 搜索“${appliedQuery}”` : ''}
@@ -296,10 +303,10 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
           <div
             data-testid="browser-workflow-feedback"
             className={clsx(
-              'mt-2 flex min-h-7 items-center justify-between gap-2 rounded-md border px-2.5 py-1 text-[10.5px]',
+              'browser-workflow__feedback',
               feedback.kind === 'error'
-                ? 'border-error/30 bg-error/10 text-error'
-                : 'border-success/30 bg-success/10 text-success',
+                ? 'is-error'
+                : 'is-success',
             )}
           >
             <span>{feedback.text}</span>
@@ -315,11 +322,27 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="browser-workflow__content">
+        <section className="browser-workflow__assistant-tip">
+          <span className="browser-workflow__assistant-icon">
+            <Sparkles size={14} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <strong>直接在对话中告诉 AI 你想做什么，AI 会自动打开浏览器帮你完成。</strong>
+            <span>例如：“帮我登录小红书发一条视频笔记｜查一下 HackerNews 今天的热帖”</span>
+          </div>
+          <button
+            type="button"
+            className="browser-workflow__tip-action"
+            onClick={() => setCreateSource('ai')}
+          >
+            创建 AI 任务
+          </button>
+        </section>
         {loading ? <WorkflowListSkeleton /> : null}
         {!loading && tasks.length === 0 ? (
-          <div className="flex h-full min-h-[300px] flex-col items-center justify-center px-6 text-center">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-elevated text-text-faint">
+          <div className="browser-workflow__empty">
+            <div className="browser-workflow__empty-icon">
               <Workflow size={20} />
             </div>
             <div className="mt-3 text-[13px] font-medium text-text">
@@ -332,7 +355,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
               <div className="mt-4 flex items-center gap-2">
                 <button
                   type="button"
-                  className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11.5px] font-medium text-text-secondary hover:bg-hover hover:text-text"
+                  className="browser-workflow__button"
                   onClick={() => setCreateSource('manual')}
                 >
                   <PencilLine size={13} />
@@ -340,7 +363,7 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
                 </button>
                 <button
                   type="button"
-                  className="flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[11.5px] font-medium text-accent-fg hover:opacity-90"
+                  className="browser-workflow__button browser-workflow__button--primary"
                   onClick={() => setCreateSource('ai')}
                 >
                   <Bot size={13} />让 AI 创建
@@ -350,20 +373,17 @@ export function BrowserWorkflowPanel(props: BrowserWorkflowPanelProps): JSX.Elem
           </div>
         ) : null}
         {!loading && tasks.length > 0 ? (
-          <div className="px-4 py-2" data-testid="browser-workflow-list">
-            <div className="grid h-8 grid-cols-[minmax(0,1.3fr)_minmax(180px,1fr)_100px_112px_168px] items-center gap-3 border-b border-border px-2 text-[10.5px] font-medium text-text-faint">
-              <span>任务</span>
-              <span>目标</span>
-              <span>来源</span>
-              <span>状态</span>
-              <span className="text-right">操作</span>
-            </div>
+          <div className="browser-workflow__list" data-testid="browser-workflow-list">
             {tasks.map((task) => (
               <WorkflowTaskRow
                 key={task.id}
                 task={task}
                 detail={detailsByTaskId[task.id]}
                 busy={busyAction === `task:${task.id}`}
+                expanded={expandedTaskId === task.id}
+                onToggle={() =>
+                  setExpandedTaskId((current) => (current === task.id ? undefined : task.id))
+                }
                 onOpen={(intent) => void openTask(task, intent)}
                 onExecute={(target) => void openExecute(target)}
               />
@@ -417,10 +437,12 @@ function WorkflowTaskRow(props: {
   task: BrowserAutomationTaskSummary;
   detail?: GetBrowserWorkflowResponse;
   busy: boolean;
+  expanded: boolean;
+  onToggle(): void;
   onOpen(intent: 'view' | 'record' | 'revision'): void;
   onExecute(task: BrowserAutomationTaskSummary): void;
 }): JSX.Element {
-  const { task, detail, busy, onOpen, onExecute } = props;
+  const { task, detail, busy, expanded, onToggle, onOpen, onExecute } = props;
   const state = workflowTaskState(task, detail?.draft, detail?.version);
   const StateIcon = state.icon;
   const canRecord = task.status === 'draft' && Boolean(detail?.draft);
@@ -441,64 +463,114 @@ function WorkflowTaskRow(props: {
           ? '继续录制'
           : '查看';
   return (
-    <div
+    <article
       data-testid={`browser-workflow-task-${task.id}`}
-      className="grid min-h-[68px] grid-cols-[minmax(0,1.3fr)_minmax(180px,1fr)_100px_112px_168px] items-center gap-3 border-b border-border px-2 last:border-b-0 hover:bg-hover"
+      className={clsx('browser-workflow-card', expanded && 'is-expanded')}
     >
-      <button type="button" className="min-w-0 text-left" onClick={() => onOpen('view')}>
-        <div className="truncate text-[11.5px] font-medium text-text">{task.name}</div>
-        <div className="mt-1 flex min-w-0 items-center gap-1 text-[10.5px] text-text-faint">
-          <Globe2 size={11} />
-          <span className="truncate">{workflowHost(task.startUrl)}</span>
-        </div>
-      </button>
-      <div className="line-clamp-2 min-w-0 text-[10.5px] leading-4 text-text-secondary">
-        {task.instruction}
-      </div>
-      <div className="flex items-center gap-1.5 text-[10.5px] text-text-secondary">
-        {task.source === 'ai' ? <Bot size={12} /> : <PencilLine size={12} />}
-        {task.source === 'ai' ? 'AI 草稿' : '手动'}
-      </div>
-      <div className={clsx('min-w-0 text-[10.5px]', state.className)}>
-        <div className="flex items-center gap-1.5">
-          <StateIcon size={12} />
-          <span>{state.label}</span>
-        </div>
-        <div className="mt-1 truncate text-[10px] text-text-faint">{state.detail}</div>
-      </div>
-      <div className="flex justify-end gap-1.5">
-        {task.status === 'enabled' ? (
-          <button
-            type="button"
-            data-testid={`browser-workflow-execute-${task.id}`}
-            className="flex h-7 items-center gap-1 rounded-md bg-accent px-2 text-[10.5px] font-medium text-accent-fg hover:opacity-90 disabled:opacity-45"
-            disabled={busy}
-            onClick={() => onExecute(task)}
-          >
-            {busy ? <LoaderCircle className="animate-spin" size={11} /> : <Play size={11} />}
-            执行
-          </button>
-        ) : null}
+      <div className="browser-workflow-card__head">
         <button
           type="button"
-          className={clsx(
-            'flex h-7 items-center gap-1 rounded-md px-2 text-[10.5px] font-medium disabled:opacity-45',
-            task.status === 'pending_review'
-              ? 'bg-warning/15 text-warning hover:bg-warning/20'
-              : task.status === 'enabled'
-                ? 'border border-border bg-surface text-text-secondary hover:bg-elevated hover:text-text'
-                : canRecord
-                  ? 'border border-border bg-surface text-text-secondary hover:bg-elevated hover:text-text'
-                  : 'text-text-secondary hover:bg-elevated hover:text-text',
-          )}
-          disabled={busy}
-          onClick={() => onOpen(actionIntent)}
+          className="browser-workflow-card__toggle"
+          aria-expanded={expanded}
+          onClick={onToggle}
         >
-          {actionLabel}
-          {!busy ? <ChevronRight size={11} /> : null}
+          <span className={clsx('browser-workflow-card__dot', state.className)} />
+          <span className="min-w-0 flex-1">
+            <span className="browser-workflow-card__title-row">
+              <strong>{task.name}</strong>
+              <span>
+                有策略 · {detail?.draft?.steps.length ?? detail?.version?.stepCount ?? 0} 个参数
+              </span>
+            </span>
+            {!expanded ? (
+              <span className="browser-workflow-card__collapsed-summary">
+                {task.instruction}
+              </span>
+            ) : null}
+          </span>
         </button>
+        <div className="browser-workflow-card__status">
+          <span className={state.className}>
+            <StateIcon size={12} />
+            {state.label}
+          </span>
+          <span className="browser-workflow-card__success">
+            成功率 {task.successCount + task.failureCount > 0
+              ? `${Math.round((task.successCount / (task.successCount + task.failureCount)) * 100)}%`
+              : '—'}
+          </span>
+          <button
+            type="button"
+            className="browser-workflow-card__icon-button"
+            aria-label={expanded ? `折叠 ${task.name}` : `展开 ${task.name}`}
+            onClick={onToggle}
+          >
+            {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+        </div>
       </div>
-    </div>
+      {expanded ? (
+        <div className="browser-workflow-card__body">
+          <p className="browser-workflow-card__instruction">{task.instruction}</p>
+          <div className="browser-workflow-card__strategy">
+            <span>执行策略</span>
+            <p>
+              {detail?.version
+                ? `运行已审核发布的 V${detail.version.versionNumber}，共 ${detail.version.stepCount} 个浏览器动作。`
+                : detail?.draft
+                  ? `当前草稿包含 ${detail.draft.stepCount} 个录制动作，完成后提交审核。`
+                  : '打开任务详情，检查目标、录制步骤和审核状态。'}
+            </p>
+          </div>
+          <div className="browser-workflow-card__meta">
+            <span>
+              <Globe2 size={11} />
+              {workflowHost(task.startUrl)}
+            </span>
+            <span>
+              {task.source === 'ai' ? <Bot size={11} /> : <PencilLine size={11} />}
+              {task.source === 'ai' ? 'AI 创建' : '手动创建'}
+            </span>
+            <span>{state.detail}</span>
+          </div>
+          <div className="browser-workflow-card__actions">
+            <div className="flex items-center gap-2">
+              {task.status === 'enabled' ? (
+                <button
+                  type="button"
+                  data-testid={`browser-workflow-execute-${task.id}`}
+                  className="browser-workflow__button browser-workflow__button--primary"
+                  disabled={busy}
+                  onClick={() => onExecute(task)}
+                >
+                  {busy ? <LoaderCircle className="animate-spin" size={11} /> : <Play size={11} />}
+                  执行任务
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={clsx(
+                  'browser-workflow__button',
+                  task.status === 'pending_review' && 'browser-workflow__button--warning',
+                )}
+                disabled={busy}
+                onClick={() => onOpen(actionIntent)}
+              >
+                {actionLabel}
+                {!busy ? <ChevronRight size={11} /> : null}
+              </button>
+            </div>
+            <button
+              type="button"
+              className="browser-workflow-card__detail-link"
+              onClick={() => onOpen('view')}
+            >
+              查看详情
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -563,8 +635,8 @@ function WorkflowCreateDialog(props: {
   return (
     <Dialog.Root open={Boolean(source)} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(520px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface shadow-2xl focus:outline-none">
+        <Dialog.Overlay className="browser-workflow-dialog__overlay" />
+        <Dialog.Content className="browser-workflow-dialog browser-workflow-dialog--create">
           <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
             <div>
               <Dialog.Title className="text-[14px] font-semibold text-text">
@@ -706,8 +778,8 @@ function WorkflowReviewDialog(props: {
   return (
     <Dialog.Root open={Boolean(detail)} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[min(760px,calc(100vh-32px))] w-[min(760px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl focus:outline-none">
+        <Dialog.Overlay className="browser-workflow-dialog__overlay" />
+        <Dialog.Content className="browser-workflow-dialog browser-workflow-dialog--review">
           <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-5 py-4">
             <div className="min-w-0">
               <Dialog.Title className="truncate text-[14px] font-semibold text-text">
@@ -950,8 +1022,8 @@ function WorkflowExecuteDialog(props: {
   return (
     <Dialog.Root open={Boolean(detail)} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[min(720px,calc(100vh-32px))] w-[min(620px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl focus:outline-none">
+        <Dialog.Overlay className="browser-workflow-dialog__overlay" />
+        <Dialog.Content className="browser-workflow-dialog browser-workflow-dialog--execute">
           <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-5 py-4">
             <div className="min-w-0">
               <Dialog.Title className="truncate text-[14px] font-semibold text-text">

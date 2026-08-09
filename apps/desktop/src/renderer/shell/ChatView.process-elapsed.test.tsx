@@ -1,9 +1,9 @@
 /**
  * @vitest-environment jsdom
  */
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { RunProcessView } from '@sync-think/protocol';
+import type { CommentaryTimelineSegment, RunProcessView } from '@sync-think/protocol';
 import { AssistantProcessGroup, formatAssistantProcessElapsed } from './ChatView.js';
 
 function processView(overrides: Partial<RunProcessView> = {}): RunProcessView {
@@ -25,6 +25,13 @@ afterEach(() => {
 });
 
 describe('AssistantProcessGroup elapsed clock', () => {
+  const segment = (text: string): CommentaryTimelineSegment => ({
+    id: 'commentary-live',
+    text,
+    startedAt: '2026-08-04T00:00:01.000Z',
+    afterSequence: 0,
+  });
+
   it('updates once per second while the run is active', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-04T00:00:05.000Z'));
@@ -36,38 +43,89 @@ describe('AssistantProcessGroup elapsed clock', () => {
     );
 
     const toggle = screen.getByRole('button');
-    expect(toggle.textContent).toContain('正在思考与执行… · 00:05');
-    expect(toggle.textContent).not.toContain('模型未提供思考摘要');
+    expect(toggle.textContent).toContain('执行过程 · 5秒');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('process body')).toBeNull();
 
     act(() => {
       vi.advanceTimersByTime(1_000);
     });
-    expect(screen.getByRole('button').textContent).toContain('正在思考与执行… · 00:06');
+    expect(screen.getByRole('button').textContent).toContain('执行过程 · 6秒');
   });
 
-  it('freezes at the durable completion time', () => {
+  it('freezes a paused run at its durable terminal time', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-04T00:00:20.000Z'));
-    const completed = processView({
+    const paused = processView({
       running: false,
       completedAt: '2026-08-04T00:00:08.000Z',
       durationMs: 8_000,
     });
 
     render(
-      <AssistantProcessGroup processView={completed} reasoningText="done">
+      <AssistantProcessGroup processView={paused} commentaryText="备用模型已耗尽，任务暂停。">
         <div>process body</div>
       </AssistantProcessGroup>,
     );
 
-    expect(screen.getByRole('button').textContent).toContain('思考与执行过程 · 00:08');
+    expect(screen.getByRole('button').textContent).toContain('执行过程 · 8秒');
     act(() => {
       vi.advanceTimersByTime(5_000);
     });
-    expect(screen.getByRole('button').textContent).toContain('思考与执行过程 · 00:08');
+    expect(screen.getByRole('button').textContent).toContain('执行过程 · 8秒');
   });
 
-  it('keeps a completed process summary when the provider exposes no reasoning text', () => {
+  it('supports a deterministic initially expanded fixture without changing later user state', () => {
+    const completed = processView({
+      running: false,
+      completedAt: '2026-08-04T00:00:08.000Z',
+      durationMs: 8_000,
+    });
+    const { rerender } = render(
+      <AssistantProcessGroup processView={completed} defaultOpen>
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+
+    const toggle = screen.getByRole('button');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('process body')).toBeTruthy();
+
+    act(() => toggle.click());
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    rerender(
+      <AssistantProcessGroup processView={completed} defaultOpen>
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('formats minute and hour durations as readable Chinese text', () => {
+    expect(
+      formatAssistantProcessElapsed(
+        processView({
+          running: false,
+          startedAt: undefined,
+          durationMs: 93_000,
+        }),
+        false,
+      ),
+    ).toBe('1分33秒');
+    expect(
+      formatAssistantProcessElapsed(
+        processView({
+          running: false,
+          startedAt: undefined,
+          durationMs: 3_723_000,
+        }),
+        false,
+      ),
+    ).toBe('1小时2分3秒');
+  });
+
+  it('expands and collapses the complete process from one compact row', () => {
     const completed = processView({
       running: false,
       completedAt: '2026-08-04T00:00:08.000Z',
@@ -76,15 +134,127 @@ describe('AssistantProcessGroup elapsed clock', () => {
 
     render(
       <AssistantProcessGroup processView={completed}>
-        <div />
+        <div>process body</div>
       </AssistantProcessGroup>,
     );
 
     const toggle = screen.getByRole('button');
-    expect(toggle.textContent).toContain('思考与执行过程 · 00:08');
-    expect(toggle.textContent).toContain('模型未提供思考摘要');
+    expect(toggle.textContent).toBe('执行过程 · 8秒');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('process body')).toBeNull();
+
     act(() => toggle.click());
-    expect(screen.getByText('本轮已完成。供应商未返回可展示的思考摘要。')).toBeTruthy();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('process body')).toBeTruthy();
+
+    act(() => toggle.click());
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('process body')).toBeNull();
+  });
+
+  it('does not auto-expand when streaming starts or finishes', () => {
+    const { rerender } = render(
+      <AssistantProcessGroup processView={processView({ running: false })}>
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+    rerender(
+      <AssistantProcessGroup processView={processView()} streaming>
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+
+    act(() => screen.getByRole('button').click());
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('true');
+    rerender(
+      <AssistantProcessGroup
+        processView={processView({
+          running: false,
+          completedAt: '2026-08-04T00:00:08.000Z',
+        })}
+      >
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('follows appended commentary, pauses on upward user scroll, and resumes at the bottom', () => {
+    const { container, rerender } = render(
+      <AssistantProcessGroup
+        processView={processView()}
+        commentarySegments={[segment('first')]}
+        streaming
+        defaultOpen
+      >
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+    const body = container.querySelector('.shell-process-group__body') as HTMLDivElement;
+    let scrollHeight = 200;
+    const clientHeight = 100;
+    let scrollTop = 100;
+    Object.defineProperties(body, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, get: () => clientHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+
+    fireEvent.scroll(body);
+    scrollHeight = 400;
+    fireEvent.scroll(body);
+    rerender(
+      <AssistantProcessGroup
+        processView={processView()}
+        commentarySegments={[segment('first plus appended commentary')]}
+        streaming
+        defaultOpen
+      >
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+    expect(scrollTop).toBe(400);
+
+    fireEvent.wheel(body, { deltaY: -120 });
+    scrollTop = 120;
+    scrollHeight = 500;
+    rerender(
+      <AssistantProcessGroup
+        processView={processView()}
+        commentarySegments={[segment('first plus appended commentary while reading history')]}
+        streaming
+        defaultOpen
+      >
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+    expect(scrollTop).toBe(120);
+
+    scrollTop = 400;
+    fireEvent.scroll(body);
+    scrollHeight = 600;
+    rerender(
+      <AssistantProcessGroup
+        processView={processView()}
+        commentarySegments={[
+          segment('first plus appended commentary after returning to the bottom'),
+        ]}
+        streaming
+        defaultOpen
+      >
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+    expect(scrollTop).toBe(600);
   });
 
   it('omits an invalid clock instead of rendering a bogus value', () => {

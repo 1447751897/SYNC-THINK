@@ -454,7 +454,7 @@ export function parseSetSettingPayload(value: unknown): SetSettingPayload {
 
 export function parseUsageSummaryPayload(value: unknown): UsageSummaryPayload {
   if (value === undefined || value === null) return {};
-  if (!isRecord(value) || !hasOnlyKeys(value, ['sinceDays'])) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['sinceDays', 'taskId'])) {
     throw new Error('Invalid usage-summary payload');
   }
   if (
@@ -466,7 +466,18 @@ export function parseUsageSummaryPayload(value: unknown): UsageSummaryPayload {
   ) {
     throw new Error('Invalid usage-summary payload');
   }
-  return { sinceDays: value.sinceDays as number | undefined };
+  if (
+    value.taskId !== undefined &&
+    (typeof value.taskId !== 'string' ||
+      value.taskId.length > 256 ||
+      value.taskId.trim().length === 0)
+  ) {
+    throw new Error('Invalid usage-summary payload');
+  }
+  return {
+    ...(value.sinceDays !== undefined ? { sinceDays: value.sinceDays as number } : {}),
+    ...(typeof value.taskId === 'string' ? { taskId: value.taskId.trim() } : {}),
+  };
 }
 
 export function parseUpdateProviderPayload(value: unknown): RendererUpdateProviderPayload {

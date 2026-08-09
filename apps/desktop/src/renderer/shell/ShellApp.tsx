@@ -23,11 +23,12 @@ import {
   readConversationLastSeen,
   writeConversationLastSeen,
 } from '../conversation-activity.js';
+import type { RunActivityAuthority } from '../run-activity-authority.js';
 import { Sidebar } from './Sidebar.js';
 import { TopBar } from './TopBar.js';
 import { ConversationTabs } from './ConversationTabs.js';
 import { WorkspacePaneHost } from './WorkspacePaneHost.js';
-import { ChatView } from './ChatView.js';
+import { ChatView, type RuntimeConnectionNotice } from './ChatView.js';
 import {
   FilePane,
   clearFilePaneSession,
@@ -36,6 +37,8 @@ import {
 } from './FilePane.js';
 import { TerminalPane } from './TerminalPane.js';
 import { disposeTerminalSession } from './terminal-session-store.js';
+import { BrowserPanel } from './BrowserPanel.js';
+import { WorkspaceFilesPanel } from './RightDock.js';
 import { AgentLibrary } from './AgentLibrary.js';
 import { TeamLibrary } from './TeamLibrary.js';
 import { AbilitiesPage } from './AbilitiesPage.js';
@@ -57,7 +60,6 @@ import {
 import {
   resolveAppendSkillVersionIds,
   resolveConversationSkillOwner,
-  resolveDefaultComposeSkillVersionIds,
 } from './compose-skill-selection.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
 import { canCloseSettings } from './settings-unsaved.js';
@@ -106,6 +108,7 @@ import {
   writeLastConversationTrack,
   writeNewConversationDraft,
   writeNewConversationModel,
+  writeConversationModelOverride,
   writeOpenConversationTabs,
   writeSelectedConversationByWorkspace,
   writeWorkspacePaneLayouts,
@@ -115,26 +118,35 @@ import {
 import {
   activateFilePaneTab,
   activatePaneTab,
+  activateBrowserPaneTab,
+  activateWorkspaceFilesPaneTab,
   activateTerminalPaneTab,
+  closeBrowserPaneTab,
   closeFilePaneTab,
   closeConversationInLayout,
   closePane,
   closePaneTab,
+  closeWorkspaceFilesPaneTab,
   closeTerminalPaneTab,
   createWorkspacePaneLayout,
+  findWorkspaceFilesPane,
   focusPane,
   focusedConversationId,
   migrateLegacyPaneLayouts,
-  moveConversationToPane,
+  movePaneResourceToPane,
+  openBrowserInPane,
   openFileInPane,
   openConversationInPane,
   openTerminalInPane,
   paneConversationIds,
   pruneWorkspacePaneLayout,
+  replaceConversationInPane,
   reorderPaneTabs,
   setSplitRatio,
   splitPaneWithConversation,
+  splitPaneWithWorkspaceFiles,
   updateTerminalPaneCwd,
+  type PaneResourceRef,
   type PaneSplitDirection,
   type WorkspacePaneLayout,
   type WorkspacePaneLayouts,
@@ -147,6 +159,14 @@ interface ShellData {
   modelNames: Map<string, string>;
   models: ModelOption[];
   workspaces: WorkspaceSummary[];
+}
+
+interface DraftConversationSession {
+  id: string;
+  workspaceId: string;
+  track: ConversationTrack;
+  targetRef?: string;
+  createdAt: string;
 }
 
 const EMPTY: ShellData = {
@@ -189,6 +209,53 @@ function createTerminalId(): string {
   );
 }
 
+function createBrowserId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `browser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  );
+}
+
+function paneTabMatchesResource(
+  tab: WorkspacePaneLayout['panes'][string]['tabs'][number],
+  resource: PaneResourceRef,
+): boolean {
+  if (resource.type === 'conversation') {
+    return tab.type === 'conversation' && tab.conversationId === resource.id;
+  }
+  if (resource.type === 'file') return tab.type === 'file' && tab.path === resource.id;
+  if (resource.type === 'terminal') {
+    return tab.type === 'terminal' && tab.terminalId === resource.id;
+  }
+  if (resource.type === 'browser') {
+    return tab.type === 'browser' && tab.browserId === resource.id;
+  }
+  return tab.type === 'workspace-files';
+}
+
+function parsePaneResourceDrag(raw: string): PaneResourceRef | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<PaneResourceRef>;
+    if (
+      value.type === 'conversation' ||
+      value.type === 'file' ||
+      value.type === 'terminal' ||
+      value.type === 'browser'
+    ) {
+      return typeof value.id === 'string' && value.id.trim()
+        ? { type: value.type, id: value.id }
+        : null;
+    }
+    if (value.type === 'workspace-files') {
+      return { type: 'workspace-files', id: 'workspace-files' };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function ShellApp() {
   // DialogProvider wraps the real component tree so useDialog() resolves
   // to the in-app NewMax dialogs; tests that render <ShellApp /> also get it.
@@ -208,7 +275,12 @@ function ShellAppInner() {
   const [data, setData] = useState<ShellData>(EMPTY);
   const [skillCatalogRevision, setSkillCatalogRevision] = useState(0);
   const [eventHistory, setEventHistory] = useState<readonly Event[]>([]);
+  const [runActivityAuthority, setRunActivityAuthority] = useState<
+    RunActivityAuthority | undefined
+  >();
   const [runtimeConnectionRevision, setRuntimeConnectionRevision] = useState(0);
+  const [runtimeConnectionNotice, setRuntimeConnectionNotice] =
+    useState<RuntimeConnectionNotice>(null);
   const [pickerTrack, setPickerTrack] = useState<ConversationTrack | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | undefined>(() =>
@@ -256,20 +328,33 @@ function ShellAppInner() {
    * 正在被拖拽的对话 tab id（NewMax 式跨屏移动）：拖动 tab 时聊天区右缘
    * 显示「拖到此处开分屏」落点，drop 后该对话进入右侧分屏。
    */
-  const [tabDragId, setTabDragId] = useState<string | null>(null);
+  const [tabDragResource, setTabDragResource] = useState<PaneResourceRef | null>(null);
   const [paneDropTargetId, setPaneDropTargetId] = useState<string | null>(null);
   /** 各对话「用户最后查看到的事件 sequence」——完成后未查看即未读。 */
   const [conversationLastSeen, setConversationLastSeen] = useState(() =>
     readConversationLastSeen(),
   );
   /**
-   * Draft "new chat" context. Exists only in the welcome empty state — nothing is
-   * written to Runtime / the sidebar until the user sends the first message.
+   * A local-only conversation projected into the current workspace tree and
+   * pane tabs. Runtime persistence still waits for the first successful turn.
    */
-  const [draftSession, setDraftSession] = useState<{
-    track: ConversationTrack;
-    targetRef?: string;
-  } | null>(null);
+  const [draftSession, setDraftSessionState] = useState<DraftConversationSession | null>(null);
+  const draftSessionRef = useRef<DraftConversationSession | null>(null);
+  const draftNonceRef = useRef(0);
+  const setDraftSession = useCallback(
+    (
+      value:
+        | DraftConversationSession
+        | null
+        | ((current: DraftConversationSession | null) => DraftConversationSession | null),
+    ) => {
+      const next =
+        typeof value === 'function' ? value(draftSessionRef.current) : value;
+      draftSessionRef.current = next;
+      setDraftSessionState(next);
+    },
+    [],
+  );
   const pendingFirstMessageRef = useRef<{
     text: string;
     modelId?: string;
@@ -323,7 +408,6 @@ function ShellAppInner() {
         commitPaneLayout(ws, (current) => openConversationInPane(current, conversationId));
       }
       if (!ws || activeWorkspaceIdRef.current === ws) {
-        setDraftSession(null);
         setNav((n) => openConversation(n, conversationId));
       }
     },
@@ -352,8 +436,15 @@ function ShellAppInner() {
       commitPaneLayout(activeWorkspaceId, (current) =>
         closePaneTab(current, paneId, conversationId),
       );
+      if (draftSessionRef.current?.id === conversationId) {
+        pendingFirstMessageRef.current = null;
+        setDraftSession(null);
+        setNewConversationDraft('');
+        writeNewConversationDraft('');
+        setNewConversationError(undefined);
+      }
     },
-    [activeWorkspaceId, commitPaneLayout],
+    [activeWorkspaceId, commitPaneLayout, setDraftSession],
   );
 
   const handleOpenFileInPane = useCallback(
@@ -389,6 +480,82 @@ function ShellAppInner() {
       setRailOpen(false);
     },
     [activeWorkspaceId, commitPaneLayout, data.workspaces],
+  );
+
+  const handleOpenBrowserInPane = useCallback(
+    (paneId?: string) => {
+      if (!activeWorkspaceId) return;
+      const browserId = createBrowserId();
+      commitPaneLayout(activeWorkspaceId, (current) =>
+        openBrowserInPane(
+          current,
+          browserId,
+          'https://www.bing.com',
+          paneId ?? current.focusedPaneId,
+        ),
+      );
+      setRailOpen(false);
+    },
+    [activeWorkspaceId, commitPaneLayout],
+  );
+
+  const handleActivateBrowserTab = useCallback(
+    (paneId: string, browserId: string) => {
+      if (!activeWorkspaceId) return;
+      commitPaneLayout(activeWorkspaceId, (current) =>
+        activateBrowserPaneTab(current, paneId, browserId),
+      );
+    },
+    [activeWorkspaceId, commitPaneLayout],
+  );
+
+  const handleCloseBrowserTab = useCallback(
+    (paneId: string, browserId: string) => {
+      if (!activeWorkspaceId) return;
+      commitPaneLayout(activeWorkspaceId, (current) =>
+        closeBrowserPaneTab(current, paneId, browserId),
+      );
+    },
+    [activeWorkspaceId, commitPaneLayout],
+  );
+
+  const handleToggleWorkspaceFilesPane = useCallback(
+    (targetPaneId?: string) => {
+      if (!activeWorkspaceId) return;
+      commitPaneLayout(activeWorkspaceId, (current) => {
+        const existingPaneId = findWorkspaceFilesPane(current);
+        if (existingPaneId) {
+          return closeWorkspaceFilesPaneTab(current, existingPaneId);
+        }
+        return splitPaneWithWorkspaceFiles(
+          current,
+          targetPaneId ?? current.focusedPaneId,
+          'horizontal',
+        );
+      });
+      setRailOpen(false);
+    },
+    [activeWorkspaceId, commitPaneLayout],
+  );
+
+  const handleActivateWorkspaceFilesTab = useCallback(
+    (paneId: string) => {
+      if (!activeWorkspaceId) return;
+      commitPaneLayout(activeWorkspaceId, (current) =>
+        activateWorkspaceFilesPaneTab(current, paneId),
+      );
+    },
+    [activeWorkspaceId, commitPaneLayout],
+  );
+
+  const handleCloseWorkspaceFilesTab = useCallback(
+    (paneId: string) => {
+      if (!activeWorkspaceId) return;
+      commitPaneLayout(activeWorkspaceId, (current) =>
+        closeWorkspaceFilesPaneTab(current, paneId),
+      );
+    },
+    [activeWorkspaceId, commitPaneLayout],
   );
 
   const handleFileDirtyChange = useCallback(
@@ -543,19 +710,38 @@ function ShellAppInner() {
     [activeWorkspaceId, commitPaneLayout],
   );
 
-  const handleMoveConversationToPane = useCallback(
-    (conversationId: string, paneId: string) => {
+  const handleMovePaneResourceToPane = useCallback(
+    (resource: PaneResourceRef, targetPaneId: string) => {
       if (!activeWorkspaceId) return;
       commitPaneLayout(activeWorkspaceId, (current) =>
-        moveConversationToPane(current, conversationId, paneId),
+        movePaneResourceToPane(current, resource, targetPaneId),
       );
-      setNav((state) => openConversation(state, conversationId));
+      if (resource.type === 'conversation') {
+        setNav((state) => openConversation(state, resource.id));
+      }
     },
     [activeWorkspaceId, commitPaneLayout],
   );
 
   const selectWorkspace = useCallback(
     (workspaceId: string) => {
+      const draft = draftSessionRef.current;
+      if (draft && draft.workspaceId !== workspaceId) {
+        setPaneLayouts((current) => {
+          const layout = current[draft.workspaceId];
+          if (!layout) return current;
+          const next = {
+            ...current,
+            [draft.workspaceId]: closeConversationInLayout(layout, draft.id),
+          };
+          persistPaneLayouts(next);
+          return next;
+        });
+        pendingFirstMessageRef.current = null;
+        setDraftSession(null);
+        setNewConversationDraft('');
+        writeNewConversationDraft('');
+      }
       activeWorkspaceIdRef.current = workspaceId;
       setActiveWorkspaceId(workspaceId);
       writeActiveWorkspaceId(workspaceId);
@@ -569,9 +755,8 @@ function ShellAppInner() {
       setMultiSelect(false);
       setPickerTrack(null);
       setRailOpen(false);
-      setDraftSession(null);
     },
-    [],
+    [setDraftSession],
   );
 
   const handleReorderConversationTab = useCallback(
@@ -645,6 +830,8 @@ function ShellAppInner() {
             .filter((conversation) => conversation.workspaceId === workspaceId)
             .map((conversation) => String(conversation.id)),
         );
+        const draft = draftSessionRef.current;
+        if (draft?.workspaceId === workspaceId) validIds.add(draft.id);
         next[workspaceId] = pruneWorkspacePaneLayout(layout, validIds);
       }
       persistPaneLayouts(next);
@@ -708,7 +895,17 @@ function ShellAppInner() {
       retryDelaysMs: [300, 600, 1_200, 2_000, 3_000],
       onConnected: (result) => {
         if (cancelled) return;
+        setRuntimeConnectionNotice(null);
         setEventHistory((prev) => mergeEventHistory(prev, result.snapshot));
+        const health = result.health;
+        setRunActivityAuthority(
+          health?.ok
+            ? {
+                throughSequence: health.eventSequence,
+                activeRunIds: new Set(health.inFlightRunIds),
+              }
+            : undefined,
+        );
         setRuntimeConnectionRevision((revision) => revision + 1);
         void refresh()
           .then(() => {
@@ -723,8 +920,19 @@ function ShellAppInner() {
             setBootError(error instanceof Error ? error.message : '加载对话列表失败');
           });
       },
+      onRetrying: ({ attempt, maxAttempts }) => {
+        if (cancelled) return;
+        setRuntimeConnectionNotice({
+          state: 'retrying',
+          text: `正在重新连接运行时 ${attempt}/${maxAttempts}`,
+        });
+      },
       onFailed: (error) => {
         if (cancelled) return;
+        setRuntimeConnectionNotice({
+          state: 'failed',
+          text: `连接运行时失败：${error.code}`,
+        });
         setBootError(error.code);
         void refresh()
           .then(() => {
@@ -829,6 +1037,44 @@ function ShellAppInner() {
     writeLastConversationTrack(track);
   }, []);
 
+  const beginDraftConversation = useCallback(
+    (
+      track: ConversationTrack,
+      targetRef?: string,
+      targetPaneId?: string,
+    ): DraftConversationSession | null => {
+      if (!activeWorkspaceId) {
+        setNewConversationError('请先创建或打开一个工作区');
+        return null;
+      }
+      const existing = draftSessionRef.current;
+      if (existing?.workspaceId === activeWorkspaceId) {
+        commitPaneLayout(activeWorkspaceId, (current) =>
+          openConversationInPane(current, existing.id, targetPaneId),
+        );
+        setNav((current) => openConversation(current, existing.id));
+        return existing;
+      }
+
+      draftNonceRef.current += 1;
+      const createdAt = new Date().toISOString();
+      const draft: DraftConversationSession = {
+        id: `draft:${activeWorkspaceId}:${createdAt}:${draftNonceRef.current}`,
+        workspaceId: activeWorkspaceId,
+        track,
+        targetRef: targetRef?.trim() || undefined,
+        createdAt,
+      };
+      setDraftSession(draft);
+      commitPaneLayout(activeWorkspaceId, (current) =>
+        openConversationInPane(current, draft.id, targetPaneId),
+      );
+      setNav((current) => openConversation({ ...current, stage: 'talk' }, draft.id));
+      return draft;
+    },
+    [activeWorkspaceId, commitPaneLayout, setDraftSession],
+  );
+
   const createConversationWithTarget = useCallback(
     async (track: ConversationTrack, targetRef: string, firstMessage?: {
       text: string;
@@ -853,6 +1099,15 @@ function ShellAppInner() {
         workspaceId: workspaceId as WorkspaceId,
         executionMode: firstMessage?.permissionMode ?? readDefaultPermission(),
       });
+      const initialModelId = firstMessage?.modelId?.trim();
+      if (initialModelId) {
+        const conversationId = String(created.conversation.id);
+        writeConversationModelOverride(conversationId, initialModelId);
+        setModelOverrides((current) => ({
+          ...current,
+          [conversationId]: initialModelId,
+        }));
+      }
 
       if (firstMessage?.text.trim()) {
         const prep = await api.sendConversationMessage({
@@ -880,10 +1135,19 @@ function ShellAppInner() {
         );
       }
 
-      await refresh();
-      focusConversation(created.conversation.id, workspaceId);
-      if (activeWorkspaceIdRef.current === workspaceId) {
+      const createdConversationId = String(created.conversation.id);
+      const materializedDraft = draftSessionRef.current;
+      if (materializedDraft?.workspaceId === workspaceId) {
+        commitPaneLayout(workspaceId, (current) =>
+          replaceConversationInPane(current, materializedDraft.id, createdConversationId),
+        );
         setDraftSession(null);
+        setNav((current) => openConversation(current, createdConversationId));
+      }
+
+      await refresh();
+      focusConversation(createdConversationId, workspaceId);
+      if (activeWorkspaceIdRef.current === workspaceId) {
         if (firstMessage?.text.trim()) {
           setNewConversationDraft('');
           writeNewConversationDraft('');
@@ -892,19 +1156,27 @@ function ShellAppInner() {
       }
       return created.conversation;
     },
-    [activeWorkspaceId, focusConversation, refresh, rememberTrack],
+    [
+      activeWorkspaceId,
+      commitPaneLayout,
+      focusConversation,
+      refresh,
+      rememberTrack,
+      setDraftSession,
+    ],
   );
 
   const handlePickTarget = useCallback(
     async (track: ConversationTrack, targetRef: string) => {
       const pending = pendingFirstMessageRef.current;
-      // From the welcome draft, picking a target only *prepares* the session —
-      // we create the conversation when the user actually sends a message.
+      // Picking a target prepares the local draft; Runtime persistence still
+      // waits until the user submits the first turn.
       if (!pending) {
-        setDraftSession({ track, targetRef });
+        const draft = beginDraftConversation(track, targetRef);
+        if (!draft) return;
+        setDraftSession({ ...draft, track, targetRef });
         rememberTrack(track);
         setPickerTrack(null);
-        setNav((n) => ({ ...n, stage: 'talk', selectedConversationId: undefined }));
         if (track === 'model') {
           setNewConversationModel(targetRef);
           writeNewConversationModel(targetRef);
@@ -921,14 +1193,15 @@ function ShellAppInner() {
         setNewConversationSending(false);
       }
     },
-    [createConversationWithTarget, rememberTrack],
+    [beginDraftConversation, createConversationWithTarget, rememberTrack, setDraftSession],
   );
 
   const handleNewConversation = useCallback(
-    (track?: ConversationTrack, sourceConversation?: Conversation | null) => {
-      // New chat is a *draft* welcome state: no Runtime create until the user
-      // actually sends the first message. That way the sidebar only lists real
-      // conversations, and the welcome page stays visible.
+    (
+      track?: ConversationTrack,
+      sourceConversation?: Conversation | null,
+      targetPaneId?: string,
+    ) => {
       const current =
         sourceConversation === undefined
           ? data.conversations.find((c) => c.id === nav.selectedConversationId)
@@ -937,29 +1210,31 @@ function ShellAppInner() {
       rememberTrack(t);
       setPickerTrack(null);
       setRailOpen(false);
-      setNav((n) => ({
-        ...n,
-        stage: 'talk',
-        selectedConversationId: undefined,
-      }));
-      // Carry the current conversation's target into the draft so the first
-      // send can create the same kind of session without a picker.
+      const carriedTarget =
+        current && !track
+          ? current.targetRef
+          : t === 'model'
+            ? newConversationModel || data.models[0]?.modelId
+            : undefined;
+      const draft = beginDraftConversation(t, carriedTarget, targetPaneId);
+      if (!draft) return;
       if (current && !track) {
-        setDraftSession({ track: current.track, targetRef: current.targetRef });
         if (current.track === 'model' && current.targetRef) {
           setNewConversationModel(current.targetRef);
           writeNewConversationModel(current.targetRef);
         }
         return;
       }
-      setDraftSession(track ? { track } : { track: t });
       // Explicit track from a header still needs a target for agent/team.
-      if (t !== 'model') setPickerTrack(t);
+      if (t !== 'model' && !draft.targetRef) setPickerTrack(t);
     },
     [
+      beginDraftConversation,
       data.conversations,
+      data.models,
       nav.lastTrack,
       nav.selectedConversationId,
+      newConversationModel,
       rememberTrack,
     ],
   );
@@ -1405,10 +1680,21 @@ function ShellAppInner() {
     [activeWorkspaceId, data.conversations, groups, persistGroups, selectedIds],
   );
 
-  const visibleConversations = useMemo(
-    () => filterByWorkspace(data.conversations, activeWorkspaceId),
-    [data.conversations, activeWorkspaceId],
-  );
+  const visibleConversations = useMemo(() => {
+    const conversations = filterByWorkspace(data.conversations, activeWorkspaceId);
+    if (!draftSession || draftSession.workspaceId !== activeWorkspaceId) return conversations;
+    const draftConversation: Conversation = {
+      id: draftSession.id as Conversation['id'],
+      workspaceId: draftSession.workspaceId as WorkspaceId,
+      track: draftSession.track,
+      targetRef: draftSession.targetRef ?? '',
+      title: '新对话',
+      executionMode: readDefaultPermission(),
+      createdAt: draftSession.createdAt,
+      updatedAt: draftSession.createdAt,
+    };
+    return [draftConversation, ...conversations];
+  }, [activeWorkspaceId, data.conversations, draftSession]);
 
   // Tracks with no active conversations collapse by default: the sidebar only
   // auto-expands branches that actually have content. Branches WITH content are
@@ -1471,7 +1757,7 @@ function ShellAppInner() {
   }, [activePaneLayout]);
 
   useEffect(() => {
-    if (nav.stage !== 'talk' || draftSession) return;
+    if (nav.stage !== 'talk') return;
     const selectedConversationId = activePaneLayout
       ? focusedConversationId(activePaneLayout)
       : undefined;
@@ -1481,7 +1767,7 @@ function ShellAppInner() {
       }
       return { ...current, selectedConversationId };
     });
-  }, [activePaneLayout, draftSession, nav.stage]);
+  }, [activePaneLayout, nav.stage]);
 
   const resolveTargetName = useCallback(
     (conversation: Conversation) =>
@@ -1498,8 +1784,8 @@ function ShellAppInner() {
 
   /** 各对话运行/完成状态（由全局事件流按 taskId 投影）。 */
   const conversationActivity = useMemo(
-    () => buildConversationActivity(eventHistory, data.conversations),
-    [eventHistory, data.conversations],
+    () => buildConversationActivity(eventHistory, data.conversations, runActivityAuthority),
+    [eventHistory, data.conversations, runActivityAuthority],
   );
   /** 对话级 running/unread map（对话 tab 与侧栏用）。 */
   const conversationActivityView = useMemo(() => {
@@ -1520,16 +1806,17 @@ function ShellAppInner() {
     () => buildWorkspaceActivity(data.conversations, conversationActivity, conversationLastSeen),
     [data.conversations, conversationActivity, conversationLastSeen],
   );
-  // Only mounted talk-stage panes count as viewed. Hidden stages, drafts and
-  // the settings overlay must retain unread completion indicators.
+  // Only mounted talk-stage Runtime conversations count as viewed. Draft tabs
+  // are ignored, while other visible panes can still clear their unread state.
   useEffect(() => {
-    if (nav.stage !== 'talk' || draftSession || settingsOpen) return;
+    if (nav.stage !== 'talk' || settingsOpen) return;
     const watched = activePaneLayout
       ? Object.values(activePaneLayout.panes)
           .filter((pane) => mountedConversationPaneIds.has(pane.id))
           .map((pane) => pane.tabs.find((tab) => tab.id === pane.activeTabId))
           .filter((tab) => tab?.type === 'conversation')
           .map((tab) => tab.conversationId)
+          .filter((id) => id !== draftSession?.id)
       : [];
     if (watched.length === 0) return;
     setConversationLastSeen((current) => {
@@ -1558,6 +1845,168 @@ function ShellAppInner() {
     }
     setNav((n) => selectStage(n, stage));
   }, []);
+
+  const handleDraftModelChange = useCallback(
+    (modelId: string) => {
+      setNewConversationModel(modelId);
+      writeNewConversationModel(modelId);
+      setDraftSession((current) =>
+        current && current.track === 'model'
+          ? { ...current, targetRef: modelId || current.targetRef }
+          : current,
+      );
+    },
+    [setDraftSession],
+  );
+
+  const handleDraftSend = useCallback(
+    async (options: {
+      modelId: string;
+      permissionMode: PermissionMode;
+      reasoningEffort: ReasoningEffort;
+      networkEnabled: boolean;
+      skillVersionIds: string[];
+    }) => {
+      const text = newConversationDraft.trim();
+      if (!text || newConversationSending) return false;
+      if (!activeWorkspaceId) {
+        setNewConversationError('请先创建或打开一个工作区');
+        return false;
+      }
+      const track = draftSession?.track ?? nav.lastTrack;
+      const session =
+        draftSession ??
+        beginDraftConversation(
+          track,
+          track === 'model'
+            ? options.modelId || newConversationModel || data.models[0]?.modelId
+            : undefined,
+        );
+      if (!session) return false;
+      const requested = {
+        text,
+        modelId: options.modelId || undefined,
+        permissionMode: options.permissionMode,
+        reasoningEffort: options.reasoningEffort,
+        networkEnabled: options.networkEnabled,
+        skillVersionIds: resolveAppendSkillVersionIds(track, options.skillVersionIds),
+      };
+
+      if (track !== 'model' && !session.targetRef) {
+        pendingFirstMessageRef.current = requested;
+        setPickerTrack(track);
+        return false;
+      }
+      if (track !== 'model' && session.targetRef) {
+        setNewConversationSending(true);
+        try {
+          await createConversationWithTarget(track, session.targetRef, requested);
+          return true;
+        } catch (error) {
+          setNewConversationError(
+            error instanceof Error ? error.message : '发送第一条消息失败',
+          );
+          return false;
+        } finally {
+          setNewConversationSending(false);
+        }
+      }
+
+      const modelId =
+        options.modelId ||
+        session.targetRef ||
+        newConversationModel ||
+        data.models[0]?.modelId;
+      if (!modelId) {
+        setNewConversationError('还没有可用模型，请先在设置中添加模型');
+        return false;
+      }
+      setNewConversationSending(true);
+      try {
+        await createConversationWithTarget('model', modelId, {
+          ...requested,
+          modelId,
+        });
+        return true;
+      } catch (error) {
+        setNewConversationError(
+          error instanceof Error ? error.message : '发送第一条消息失败',
+        );
+        return false;
+      } finally {
+        setNewConversationSending(false);
+      }
+    },
+    [
+      activeWorkspaceId,
+      beginDraftConversation,
+      createConversationWithTarget,
+      data.models,
+      draftSession,
+      nav.lastTrack,
+      newConversationDraft,
+      newConversationModel,
+      newConversationSending,
+    ],
+  );
+
+  const handleDraftTrackPick = useCallback(
+    (track: ConversationTrack) => {
+      rememberTrack(track);
+      if (track === 'model') {
+        const draft = beginDraftConversation(
+          'model',
+          newConversationModel || data.models[0]?.modelId,
+        );
+        if (draft) {
+          setDraftSession({
+            ...draft,
+            track: 'model',
+            targetRef: newConversationModel || data.models[0]?.modelId,
+          });
+        }
+        setPickerTrack(null);
+        return;
+      }
+      const draft = beginDraftConversation(track);
+      if (draft) setDraftSession({ ...draft, track, targetRef: undefined });
+      setPickerTrack(track);
+    },
+    [
+      beginDraftConversation,
+      data.models,
+      newConversationModel,
+      rememberTrack,
+      setDraftSession,
+    ],
+  );
+
+  const emptyTalk = (
+    <EmptyTalk
+      hasWorkspace={Boolean(activeWorkspaceId)}
+      workspaceId={activeWorkspaceId}
+      models={data.models}
+      agents={data.agents}
+      teams={data.teams}
+      draft={newConversationDraft}
+      selectedModelId={newConversationModel}
+      draftTrack={draftSession?.track ?? nav.lastTrack}
+      draftTargetRef={draftSession?.targetRef}
+      sending={newConversationSending}
+      error={newConversationError}
+      onDraftChange={(draft) => {
+        setNewConversationDraft(draft);
+        writeNewConversationDraft(draft);
+        setNewConversationError(undefined);
+      }}
+      onModelChange={handleDraftModelChange}
+      onSend={handleDraftSend}
+      onOpenWorkspaceMenu={() => {
+        /* user uses topbar */
+      }}
+      onPickTrack={handleDraftTrackPick}
+    />
+  );
 
   return (
     <div className="flex h-full flex-col bg-page">
@@ -1674,7 +2123,7 @@ function ShellAppInner() {
           />
           {nav.stage === 'talk' ? (
             <>
-              {activePaneLayout && hasOpenPaneTabs && !draftSession ? (
+              {activePaneLayout && hasOpenPaneTabs ? (
                 <WorkspacePaneHost
                   layout={activePaneLayout}
                   onFocusPane={handleFocusPane}
@@ -1692,10 +2141,20 @@ function ShellAppInner() {
                           : false,
                       }));
                     const localTerminalTabs = pane.tabs.filter((tab) => tab.type === 'terminal');
+                    const localBrowserTabs = pane.tabs.filter((tab) => tab.type === 'browser');
+                    const hasLocalWorkspaceFilesTab = pane.tabs.some(
+                      (tab) => tab.type === 'workspace-files',
+                    );
                     const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId);
                     const activeFilePath = activeTab?.type === 'file' ? activeTab.path : undefined;
                     const activeTerminalId =
                       activeTab?.type === 'terminal' ? activeTab.terminalId : undefined;
+                    const activeBrowserId =
+                      activeTab?.type === 'browser' ? activeTab.browserId : undefined;
+                    const workspaceFilesPaneId = findWorkspaceFilesPane(activePaneLayout);
+                    const isDraftConversation =
+                      activeTab?.type === 'conversation' &&
+                      activeTab.conversationId === draftSession?.id;
                     const conversation =
                       activeTab?.type === 'conversation'
                         ? visibleConversations.find((item) => item.id === activeTab.conversationId)
@@ -1711,14 +2170,17 @@ function ShellAppInner() {
                     ).length;
                     const canUseRail = Object.keys(activePaneLayout.panes).length === 1 && focused;
                     const shouldMountConversation = mountedConversationPaneIds.has(pane.id);
+                    const canToggleWorkspaceFiles =
+                      focused || hasLocalWorkspaceFilesTab;
                     const draggingFromThisPane = Boolean(
-                      tabDragId && localConversationIds.includes(tabDragId),
+                      tabDragResource &&
+                      pane.tabs.some((tab) => paneTabMatchesResource(tab, tabDragResource)),
                     );
                     return (
                       <div
                         className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
                         onDragOver={(event) => {
-                          if (!tabDragId || draggingFromThisPane) return;
+                          if (!tabDragResource || draggingFromThisPane) return;
                           event.preventDefault();
                           event.dataTransfer.dropEffect = 'move';
                           setPaneDropTargetId(pane.id);
@@ -1727,12 +2189,17 @@ function ShellAppInner() {
                           setPaneDropTargetId((current) => (current === pane.id ? null : current));
                         }}
                         onDrop={(event) => {
-                          if (!tabDragId || draggingFromThisPane) return;
+                          if (!tabDragResource || draggingFromThisPane) return;
                           event.preventDefault();
-                          const id = event.dataTransfer.getData('text/plain') || tabDragId;
+                          const resource =
+                            parsePaneResourceDrag(
+                              event.dataTransfer.getData('application/x-sync-think-pane-resource'),
+                            ) ??
+                            parsePaneResourceDrag(event.dataTransfer.getData('text/plain')) ??
+                            tabDragResource;
                           setPaneDropTargetId(null);
-                          setTabDragId(null);
-                          if (id) handleMoveConversationToPane(id, pane.id);
+                          setTabDragResource(null);
+                          handleMovePaneResourceToPane(resource, pane.id);
                         }}
                       >
                         <ConversationTabs
@@ -1744,6 +2211,11 @@ function ShellAppInner() {
                           activeFilePath={activeFilePath}
                           terminalTabs={localTerminalTabs}
                           activeTerminalId={activeTerminalId}
+                          browserTabs={localBrowserTabs}
+                          activeBrowserId={activeBrowserId}
+                          workspaceFilesActive={activeTab?.type === 'workspace-files'}
+                          workspaceFilesTab={hasLocalWorkspaceFilesTab}
+                          workspaceFilesPaneOpen={Boolean(workspaceFilesPaneId)}
                           railOpen={canUseRail ? railOpen : false}
                           canSplit={activeConversationPaneCount < MAX_MOUNTED_CHAT_VIEWS}
                           onSelect={(id) => handleActivatePaneTab(pane.id, id)}
@@ -1757,10 +2229,26 @@ function ShellAppInner() {
                             void handleCloseTerminalTab(pane.id, terminalId)
                           }
                           onNewTerminal={() => handleOpenTerminalInPane(pane.id)}
+                          onSelectBrowser={(browserId) =>
+                            handleActivateBrowserTab(pane.id, browserId)
+                          }
+                          onCloseBrowser={(browserId) =>
+                            handleCloseBrowserTab(pane.id, browserId)
+                          }
+                          onNewBrowser={() => handleOpenBrowserInPane(pane.id)}
+                          onSelectWorkspaceFiles={() =>
+                            handleActivateWorkspaceFilesTab(pane.id)
+                          }
+                          onCloseWorkspaceFiles={() => handleCloseWorkspaceFilesTab(pane.id)}
+                          onToggleWorkspaceFilesPane={
+                            canToggleWorkspaceFiles
+                              ? () => handleToggleWorkspaceFilesPane(pane.id)
+                              : undefined
+                          }
                           canOpenTerminal={Boolean(activeProjectFolder)}
                           onNew={() => {
                             handleFocusPane(pane.id);
-                            handleNewConversation(undefined, conversation ?? null);
+                            handleNewConversation(undefined, conversation ?? null, pane.id);
                           }}
                           onReorder={(fromId, toId) =>
                             handleReorderConversationTab(pane.id, fromId, toId)
@@ -1776,12 +2264,14 @@ function ShellAppInner() {
                               : undefined
                           }
                           onTabDragStateChange={(id) => {
-                            setTabDragId(id);
+                            setTabDragResource(id);
                             if (!id) setPaneDropTargetId(null);
                           }}
                           conversationActivity={conversationActivityView}
                         />
-                        {conversation && shouldMountConversation ? (
+                        {isDraftConversation ? (
+                          emptyTalk
+                        ) : conversation && shouldMountConversation ? (
                           <ChatView
                             key={conversation.id}
                             conversation={conversation}
@@ -1791,7 +2281,9 @@ function ShellAppInner() {
                             teams={data.teams}
                             workspaces={data.workspaces}
                             eventHistory={eventHistory}
+                            runActivityAuthority={runActivityAuthority}
                             runtimeConnectionRevision={runtimeConnectionRevision}
+                            runtimeConnectionNotice={runtimeConnectionNotice}
                             initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
                               String(conversation.id),
                             )}
@@ -1802,6 +2294,22 @@ function ShellAppInner() {
                             onConversationUpdated={handleConversationUpdated}
                             railOpen={canUseRail ? railOpen : false}
                             onRailOpenChange={canUseRail ? handleRailOpenChange : undefined}
+                            onOpenFile={(path, location) =>
+                              handleOpenFileInPane(pane.id, path, location)
+                            }
+                          />
+                        ) : activeTab?.type === 'browser' ? (
+                          <BrowserPanel
+                            key={activeTab.browserId}
+                            initialUrl={activeTab.url}
+                            onClose={() => handleCloseBrowserTab(pane.id, activeTab.browserId)}
+                            partition={`pane-browser-${activeTab.browserId}`}
+                            registerForAutomation={false}
+                          />
+                        ) : activeTab?.type === 'workspace-files' ? (
+                          <WorkspaceFilesPanel
+                            projectFolder={activeProjectFolder}
+                            activeFilePath={undefined}
                             onOpenFile={(path, location) =>
                               handleOpenFileInPane(pane.id, path, location)
                             }
@@ -1843,120 +2351,7 @@ function ShellAppInner() {
                   }}
                 />
               ) : (
-              <EmptyTalk
-                hasWorkspace={Boolean(activeWorkspaceId)}
-                models={data.models}
-                agents={data.agents}
-                teams={data.teams}
-                draft={newConversationDraft}
-                selectedModelId={newConversationModel}
-                draftTrack={draftSession?.track ?? nav.lastTrack}
-                draftTargetRef={draftSession?.targetRef}
-                sending={newConversationSending}
-                error={newConversationError}
-                onDraftChange={(draft) => {
-                  setNewConversationDraft(draft);
-                  writeNewConversationDraft(draft);
-                  setNewConversationError(undefined);
-                }}
-                onModelChange={(modelId) => {
-                  setNewConversationModel(modelId);
-                  writeNewConversationModel(modelId);
-                  setDraftSession((prev) =>
-                    prev && prev.track !== 'model'
-                      ? prev
-                      : {
-                          track: 'model',
-                          targetRef: modelId || prev?.targetRef,
-                        },
-                  );
-                }}
-                onSend={async (options) => {
-                  const text = newConversationDraft.trim();
-                  if (!text || newConversationSending) return false;
-                  if (!activeWorkspaceId) {
-                    setNewConversationError('请先创建或打开一个工作区');
-                    return false;
-                  }
-                  const track = draftSession?.track ?? nav.lastTrack;
-                  // Agent/team drafts must NOT carry the welcome-page model picker.
-                  // Explicit modelId would override the agent's defaultModelId on the
-                  // first turn (and only the first turn), causing model thrash.
-                  const requested = {
-                    text,
-                    modelId: track === 'model' ? options.modelId || undefined : undefined,
-                    permissionMode: options.permissionMode,
-                    reasoningEffort: options.reasoningEffort,
-                    networkEnabled: options.networkEnabled,
-                    skillVersionIds: resolveAppendSkillVersionIds(
-                      track,
-                      options.skillVersionIds,
-                    ),
-                  };
-                  // Agent/team drafts without a target still need a picker first.
-                  if (track !== 'model' && !draftSession?.targetRef) {
-                    pendingFirstMessageRef.current = requested;
-                    setPickerTrack(track);
-                    return false;
-                  }
-                  if (track !== 'model' && draftSession?.targetRef) {
-                    setNewConversationSending(true);
-                    try {
-                      await createConversationWithTarget(
-                        track,
-                        draftSession.targetRef,
-                        requested,
-                      );
-                      return true;
-                    } catch (error) {
-                      setNewConversationError(
-                        error instanceof Error ? error.message : '发送第一条消息失败',
-                      );
-                      return false;
-                    } finally {
-                      setNewConversationSending(false);
-                    }
-                  }
-                  const modelId =
-                    options.modelId ||
-                    draftSession?.targetRef ||
-                    data.models[0]?.modelId;
-                  if (!modelId) {
-                    setNewConversationError('还没有可用模型，请先在设置中添加模型');
-                    return false;
-                  }
-                  setNewConversationSending(true);
-                  try {
-                    await createConversationWithTarget('model', modelId, {
-                      ...requested,
-                      modelId,
-                    });
-                    return true;
-                  } catch (error) {
-                    setNewConversationError(
-                      error instanceof Error ? error.message : '发送第一条消息失败',
-                    );
-                    return false;
-                  } finally {
-                    setNewConversationSending(false);
-                  }
-                }}
-                onOpenWorkspaceMenu={() => {
-                  /* user uses topbar */
-                }}
-                onPickTrack={(track) => {
-                  rememberTrack(track);
-                  if (track === 'model') {
-                    setDraftSession({
-                      track: 'model',
-                      targetRef: newConversationModel || data.models[0]?.modelId,
-                    });
-                    setPickerTrack(null);
-                  } else {
-                    setPickerTrack(track);
-                  }
-                }}
-              />
+                emptyTalk
               )}
             </>
           ) : nav.stage === 'agents' ? (
@@ -1985,6 +2380,8 @@ function ShellAppInner() {
             <BrowserStage />
           ) : nav.stage === 'abilities' ? (
             <AbilitiesPage
+              activeWorkspaceId={activeWorkspaceId}
+              workspaces={data.workspaces}
               onCatalogChanged={() => {
                 setSkillCatalogRevision((revision) => revision + 1);
                 void refresh();
@@ -2014,6 +2411,7 @@ function ShellAppInner() {
 
 export function EmptyTalk(props: {
   hasWorkspace: boolean;
+  workspaceId?: string;
   models: readonly ModelOption[];
   agents: readonly GlobalAgent[];
   teams: readonly Team[];
@@ -2075,22 +2473,14 @@ export function EmptyTalk(props: {
     ),
     [draftTrack, props.agents, props.draftTargetRef, props.teams],
   );
-  const defaultSkillVersionIds = useMemo(
-    () =>
-      resolveDefaultComposeSkillVersionIds(
-        { track: draftTrack, targetRef: props.draftTargetRef ?? '' },
-        props.agents,
-        props.teams,
-      ),
-    [draftTrack, props.agents, props.draftTargetRef, props.teams],
-  );
+  const defaultSkillVersionIds = useMemo<string[]>(() => [], []);
   const [selectedSkillVersionIds, setSelectedSkillVersionIds] = useState<string[]>(() =>
     defaultSkillVersionIds,
   );
   const skillScopeKey =
     draftTrack === 'model'
-      ? `model:${selectedModel?.modelId ?? ''}`
-      : `${draftTrack}:${props.draftTargetRef ?? ''}:${String(skillOwner?.id ?? '')}:${defaultSkillVersionIds.join('\0')}`;
+      ? `model:${props.workspaceId ?? ''}:${selectedModel?.modelId ?? ''}`
+      : `${draftTrack}:${props.workspaceId ?? ''}:${props.draftTargetRef ?? ''}`;
   const skillScopeKeyRef = useRef(skillScopeKey);
   const updateSelectedSkillVersionIds = useCallback((skillVersionIds: string[]) => {
     setSelectedSkillVersionIds(skillVersionIds);
@@ -2249,6 +2639,7 @@ export function EmptyTalk(props: {
                   </div>
                   <TurnSkillControl
                     owner={skillOwner}
+                    workspaceId={props.workspaceId}
                     open={skillMenuOpen}
                     selectedSkillVersionIds={selectedSkillVersionIds}
                     onOpenChange={setSkillMenuOpen}
@@ -2341,7 +2732,10 @@ function SettingsModal({
       if (raw) {
         const pos = JSON.parse(raw) as { dx?: number; dy?: number };
         if (typeof pos.dx === 'number' && typeof pos.dy === 'number') {
-          setDragOffset({ dx: pos.dx, dy: pos.dy });
+          setDragOffset({
+            dx: Math.round(pos.dx),
+            dy: Math.round(pos.dy),
+          });
         }
       }
     } catch {
@@ -2353,8 +2747,8 @@ function SettingsModal({
     const w = window.innerWidth;
     const h = window.innerHeight;
     return {
-      dx: Math.min(Math.max(dx, -w / 2 + 80), w / 2 - 80),
-      dy: Math.min(Math.max(dy, -h / 2 + 80), h / 2 - 80),
+      dx: Math.round(Math.min(Math.max(dx, -w / 2 + 80), w / 2 - 80)),
+      dy: Math.round(Math.min(Math.max(dy, -h / 2 + 80), h / 2 - 80)),
     };
   }, []);
 
@@ -2433,7 +2827,10 @@ function SettingsModal({
         style={
           dragOffset
             ? {
-                transform: `translate(calc(-50% + ${dragOffset.dx}px), calc(-50% + ${dragOffset.dy}px))`,
+                left: `${dragOffset.dx}px`,
+                right: `${-dragOffset.dx}px`,
+                top: `${dragOffset.dy}px`,
+                bottom: `${-dragOffset.dy}px`,
               }
             : undefined
         }

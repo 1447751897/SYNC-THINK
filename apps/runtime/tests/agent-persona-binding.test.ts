@@ -235,6 +235,18 @@ describe('agent-track persona + default model binding', () => {
       expect(String(call.systemPrompt)).toContain('海盗船长');
       expect(String(call.systemPrompt)).toContain('啊哈');
       expect(String(call.systemPrompt)).toMatch(/persona|Follow this persona/i);
+      expect(String(call.systemPrompt)).toContain(
+        'Write commentary in the same language as the latest user message',
+      );
+      expect(String(call.systemPrompt)).toContain(
+        'Before meaningful tool work, send a brief commentary preamble',
+      );
+      expect(String(call.systemPrompt)).toContain(
+        'Never expose hidden chain-of-thought or provider reasoning summaries',
+      );
+      expect(String(call.systemPrompt)).toContain(
+        'Keep the terminal response separate as the final answer',
+      );
       expect(call.reasoningEffort).toBe('medium');
 
       const packet = store.listEvents(workspaceId, 0).find((e) => e.type === 'context.packet.built');

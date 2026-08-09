@@ -33,11 +33,13 @@ export function resolveBottomPinState(input: {
   // Even a small explicit upward gesture must release the pin immediately. Without
   // this branch, a wheel tick inside the threshold is pulled straight back down.
   if (input.userIntent === 'away-from-bottom') return false;
-  if (input.distanceFromBottom >= threshold) return false;
-  // Layout changes, virtual spacer refinements, and explicit scrollTop writes all
-  // emit `scroll`. Once the user has scrolled away, proximity alone must not
-  // reactivate bottom pinning; only an explicit toward-bottom gesture may do so.
-  return input.currentlyPinned || input.userIntent === 'toward-bottom';
+  // A growing streaming bubble can increase scrollHeight before the next layout
+  // effect writes the new bottom scrollTop. That transient distance is not user
+  // intent and must not release an existing pin.
+  if (input.currentlyPinned && input.userIntent === null) return true;
+  // Once the user has scrolled away, proximity alone must not reactivate
+  // pinning; only an explicit gesture toward the bottom may do so.
+  return input.userIntent === 'toward-bottom' && input.distanceFromBottom < threshold;
 }
 
 export function preservePrependScrollTop(input: {

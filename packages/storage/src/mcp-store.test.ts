@@ -61,9 +61,36 @@ describe('SqliteMcpStore', () => {
       expect(server.tools).toHaveLength(2);
       expect(server.tools[0]!.name).toBe('read_file');
       expect(server.trusted).toBe(false);
+      expect(server.enabled).toBe(true);
       expect(server.maxOutputBytes).toBe(65536);
       expect(mcpStore.list()).toHaveLength(1);
       expect(mcpStore.get(server.id)?.id).toBe(server.id);
+    } finally {
+      close();
+    }
+  });
+
+  it('persists enablement and lists only enabled MCP servers', async () => {
+    const { mcpStore, close } = await openStores();
+    try {
+      const first = mcpStore.register({
+        name: 'filesystem',
+        endpoint: 'stdio://filesystem',
+        tools: [{ name: 'read_file', description: 'Read a file' }],
+      });
+      const second = mcpStore.register({
+        name: 'search',
+        endpoint: 'stdio://search',
+        tools: [{ name: 'search', description: 'Search' }],
+      });
+
+      expect(mcpStore.setEnabled(first.id, true)?.enabled).toBe(true);
+      expect(mcpStore.setEnabled(second.id, false)?.enabled).toBe(false);
+      expect(mcpStore.listEnabled().map((server) => server.id)).toEqual([first.id]);
+      expect(mcpStore.get(second.id)?.enabled).toBe(false);
+
+      expect(mcpStore.setEnabled(first.id, false)?.enabled).toBe(false);
+      expect(mcpStore.listEnabled()).toEqual([]);
     } finally {
       close();
     }

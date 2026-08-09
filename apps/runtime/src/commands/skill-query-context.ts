@@ -4,6 +4,7 @@ import type {
   McpServerRecord,
   SkillVersionMetadataRecord,
   SkillVersionRecord,
+  SqliteCapabilityStore,
   SqliteMcpStore,
   SqliteSkillStore,
 } from '@sync-think/storage';
@@ -16,6 +17,8 @@ import type {
 export interface SkillQueryContext {
   /** Skill capability store; undefined when runtime starts without storage. */
   skillStore?: SqliteSkillStore;
+  /** Workspace activation resolver for ordinary Compose discovery. */
+  capabilityStore?: SqliteCapabilityStore;
   /** MCP server metadata store; undefined when runtime starts without storage. */
   mcpStore?: SqliteMcpStore;
   /** Respond with PROTOCOL_FRAME_MALFORMED for an unparsable payload. */

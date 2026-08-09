@@ -458,7 +458,11 @@ describe('M0 fake provider run', () => {
       expect(store.loadLatestCheckpoint(checkpointRunId)?.lastEventSequence).toBe(
         events.length,
       );
-      expect(runtime.currentHealthcheck()).toMatchObject({ ok: true, inFlightRuns: 0 });
+      expect(runtime.currentHealthcheck()).toMatchObject({
+        ok: true,
+        inFlightRuns: 0,
+        inFlightRunIds: [],
+      });
     } finally {
       socket.destroy();
       await runtime.stop();

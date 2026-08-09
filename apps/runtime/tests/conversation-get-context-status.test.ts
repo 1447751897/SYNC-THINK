@@ -145,6 +145,7 @@ type FrameInbox = ReturnType<typeof createFrameInbox>;
 
 interface RuntimeHarness {
   adapter: ContextRecordingAdapter;
+  alternateModelId?: string;
   connection: Awaited<ReturnType<typeof openDatabaseAsync>>;
   conversationId: ConversationId;
   inbox: FrameInbox;
@@ -158,6 +159,7 @@ interface RuntimeHarness {
 }
 
 interface CreateHarnessOptions {
+  alternateContextWindow?: number;
   target?: 'agent' | 'model';
 }
 
@@ -189,7 +191,7 @@ async function createHarness(
     protocol: 'openai-chat',
     storeHandle,
   });
-  const [model] = providerStore.upsertModels({
+  const [model, alternateModel] = providerStore.upsertModels({
     providerId: provider.provider.id,
     protocol: 'openai-chat',
     models: [
@@ -198,6 +200,17 @@ async function createHarness(
         displayName: 'Context Model',
         limitsJson: JSON.stringify({ contextWindow }),
       },
+      ...(options.alternateContextWindow
+        ? [
+            {
+              providerModelId: 'context-model-luna',
+              displayName: 'Context Model Luna',
+              limitsJson: JSON.stringify({
+                contextWindow: options.alternateContextWindow,
+              }),
+            },
+          ]
+        : []),
     ],
   });
   if (!model) throw new Error('model fixture was not created');
@@ -326,6 +339,7 @@ async function createHarness(
 
   return {
     adapter,
+    ...(alternateModel ? { alternateModelId: alternateModel.id } : {}),
     connection,
     conversationId: conversation.id,
     inbox,
@@ -383,12 +397,16 @@ async function appendUserMessage(
 async function getContextStatus(
   harness: RuntimeHarness,
   requestId: string,
+  modelId?: string,
 ): Promise<ConversationGetContextStatusResponse> {
   const frame = await harness.inbox.send({
     id: requestId,
     kind: 'request',
     type: 'conversation.getContextStatus',
-    payload: { conversationId: harness.conversationId },
+    payload: {
+      conversationId: harness.conversationId,
+      ...(modelId ? { modelId } : {}),
+    },
   });
   expect(frame.error).toBeUndefined();
   return parseConversationGetContextStatusResponse(frame.payload);
@@ -626,6 +644,63 @@ describe('conversation.getContextStatus runtime integration', () => {
       expect(status.sections.find((section) => section.type === 'agent')?.tokens).toBeGreaterThan(
         0,
       );
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
+  it('keeps independent cached snapshots when the requested compose model changes', async () => {
+    const harness = await createHarness(128_000, {
+      target: 'model',
+      alternateContextWindow: 400_000,
+    });
+    try {
+      const original = await getContextStatus(harness, 'context-status-original');
+      expect(original.contextWindow).toBe(128_000);
+
+      const luna = await getContextStatus(
+        harness,
+        'context-status-luna',
+        harness.alternateModelId,
+      );
+      expect(luna.modelId).toBe(harness.alternateModelId);
+      expect(luna.contextWindow).toBe(400_000);
+
+      const restored = await getContextStatus(harness, 'context-status-restored');
+      expect(restored.modelId).not.toBe(harness.alternateModelId);
+      expect(restored.contextWindow).toBe(128_000);
+
+      const snapshotsByThread = (
+        harness.runtime as unknown as {
+          contextSnapshotByThread: Map<string, Map<string, unknown>>;
+        }
+      ).contextSnapshotByThread;
+      expect(snapshotsByThread.get(String(harness.threadId))?.size).toBe(2);
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
+  it('previews an explicit compose model for an Agent conversation without changing its default', async () => {
+    const harness = await createHarness(128_000, {
+      target: 'agent',
+      alternateContextWindow: 400_000,
+    });
+    try {
+      const original = await getContextStatus(harness, 'agent-context-status-original');
+      expect(original.contextWindow).toBe(128_000);
+
+      const luna = await getContextStatus(
+        harness,
+        'agent-context-status-luna',
+        harness.alternateModelId,
+      );
+      expect(luna.modelId).toBe(harness.alternateModelId);
+      expect(luna.contextWindow).toBe(400_000);
+
+      const restored = await getContextStatus(harness, 'agent-context-status-restored');
+      expect(restored.modelId).not.toBe(harness.alternateModelId);
+      expect(restored.contextWindow).toBe(128_000);
     } finally {
       await closeHarness(harness);
     }

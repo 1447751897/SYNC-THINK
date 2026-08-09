@@ -6,7 +6,10 @@ import {
   Bot,
   Columns2,
   FileCode2,
+  Folder,
+  Globe,
   MessageSquare,
+  MessageSquarePlus,
   PanelRight,
   Plus,
   Rows2,
@@ -16,7 +19,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { Conversation, ConversationTrack } from '@sync-think/shared';
-import type { PaneSplitDirection } from './pane-layout.js';
+import type { PaneResourceRef, PaneSplitDirection } from './pane-layout.js';
 import {
   DndContext,
   KeyboardSensor,
@@ -43,6 +46,11 @@ export interface ConversationTabsProps {
   activeFilePath?: string;
   terminalTabs?: readonly { id: string; terminalId: string; cwd: string }[];
   activeTerminalId?: string;
+  browserTabs?: readonly { id: string; browserId: string; url: string }[];
+  activeBrowserId?: string;
+  workspaceFilesActive?: boolean;
+  workspaceFilesTab?: boolean;
+  workspaceFilesPaneOpen?: boolean;
   railOpen?: boolean;
   /** Conversation currently shown in the split (right) pane, if any. */
   splitId?: string;
@@ -54,6 +62,12 @@ export interface ConversationTabsProps {
   onSelectTerminal?(terminalId: string): void;
   onCloseTerminal?(terminalId: string): void;
   onNewTerminal?(): void;
+  onSelectBrowser?(browserId: string): void;
+  onCloseBrowser?(browserId: string): void;
+  onNewBrowser?(): void;
+  onSelectWorkspaceFiles?(): void;
+  onCloseWorkspaceFiles?(): void;
+  onToggleWorkspaceFilesPane?(): void;
   canOpenTerminal?: boolean;
   onNew(): void;
   onReorder?(fromId: string, toId: string): void;
@@ -67,7 +81,7 @@ export interface ConversationTabsProps {
    * 拖拽 tab 的开始/结束通知（携带被拖对话 id 或 null）。宿主用它在聊天区
    * 显示「拖到此处开分屏」的落点。
    */
-  onTabDragStateChange?(draggingId: string | null): void;
+  onTabDragStateChange?(dragging: PaneResourceRef | null): void;
   /** 各对话任务状态（运行中动效 / 完成未读圆点）。key = conversationId。 */
   conversationActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
 }
@@ -78,6 +92,18 @@ const TRACK_TAB_ICON: Record<ConversationTrack, typeof MessageSquare> = {
   team: Users,
 };
 
+function beginResourceDrag(
+  event: React.DragEvent<HTMLDivElement>,
+  resource: PaneResourceRef,
+  onChange?: (dragging: PaneResourceRef | null) => void,
+): void {
+  event.dataTransfer.effectAllowed = 'move';
+  const serialized = JSON.stringify(resource);
+  event.dataTransfer.setData('application/x-sync-think-pane-resource', serialized);
+  event.dataTransfer.setData('text/plain', serialized);
+  onChange?.(resource);
+}
+
 export function ConversationTabs(props: ConversationTabsProps) {
   const byId = new Map(props.conversations.map((c) => [String(c.id), c] as const));
   const tabs = props.openIds
@@ -87,13 +113,16 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const [ctxMenu, setCtxMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   /** Split picker dropdown anchored at the strip-right split button. */
   const [splitPickerDirection, setSplitPickerDirection] = useState<PaneSplitDirection | null>(null);
+  /** New-resource menu anchored at the plus button. */
+  const [newResourceMenuOpen, setNewResourceMenuOpen] = useState(false);
 
   // Any outside click dismisses menus (they're fixed-position overlays).
   useEffect(() => {
-    if (!ctxMenu && !splitPickerDirection) return;
+    if (!ctxMenu && !splitPickerDirection && !newResourceMenuOpen) return;
     const dismiss = () => {
       setCtxMenu(null);
       setSplitPickerDirection(null);
+      setNewResourceMenuOpen(false);
     };
     window.addEventListener('mousedown', dismiss);
     window.addEventListener('blur', dismiss);
@@ -101,7 +130,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
       window.removeEventListener('mousedown', dismiss);
       window.removeEventListener('blur', dismiss);
     };
-  }, [ctxMenu, splitPickerDirection]);
+  }, [ctxMenu, newResourceMenuOpen, splitPickerDirection]);
 
   /**
    * Conversations eligible for the split pane: any other than the active one.
@@ -116,6 +145,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
   ];
   const paneSuffix = props.paneId ? `-${props.paneId}` : '';
   const canSplit = props.canSplit !== false;
+  const hasWorkspaceFilesTab = props.workspaceFilesTab ?? props.workspaceFilesActive ?? false;
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -149,7 +179,12 @@ export function ConversationTabs(props: ConversationTabsProps) {
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
-          onDragStart={(event) => props.onTabDragStateChange?.(String(event.active.id))}
+          onDragStart={(event) =>
+            props.onTabDragStateChange?.({
+              type: 'conversation',
+              id: String(event.active.id),
+            })
+          }
           onDragEnd={handleTabDragEnd}
           onDragCancel={() => props.onTabDragStateChange?.(null)}
         >
@@ -191,17 +226,24 @@ export function ConversationTabs(props: ConversationTabsProps) {
       {(props.fileTabs ?? []).map((file) => {
         const active = file.path === props.activeFilePath;
         const label = file.path.split(/[\\/]/).at(-1) || file.path;
+        const resource: PaneResourceRef = { type: 'file', id: file.path };
         return (
           <div
             key={file.id}
             data-testid={`file-tab-${file.path}`}
             data-active={active ? 'true' : 'false'}
+            data-pane-resource-type="file"
+            draggable
             className={clsx(
               'st-row-motion group relative flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
               active
                 ? 'shell-conversation-tab-active font-medium text-text'
                 : 'text-text-secondary hover:bg-hover/70 hover:text-text',
             )}
+            onDragStart={(event) =>
+              beginResourceDrag(event, resource, props.onTabDragStateChange)
+            }
+            onDragEnd={() => props.onTabDragStateChange?.(null)}
           >
             <FileCode2
               size={12}
@@ -248,17 +290,24 @@ export function ConversationTabs(props: ConversationTabsProps) {
       {(props.terminalTabs ?? []).map((terminal) => {
         const active = terminal.terminalId === props.activeTerminalId;
         const label = terminal.cwd ? `终端 · ${terminal.cwd}` : '终端';
+        const resource: PaneResourceRef = { type: 'terminal', id: terminal.terminalId };
         return (
           <div
             key={terminal.id}
             data-testid={`terminal-tab-${terminal.terminalId}`}
             data-active={active ? 'true' : 'false'}
+            data-pane-resource-type="terminal"
+            draggable
             className={clsx(
               'st-row-motion group relative flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
               active
                 ? 'shell-conversation-tab-active font-medium text-text'
                 : 'text-text-secondary hover:bg-hover/70 hover:text-text',
             )}
+            onDragStart={(event) =>
+              beginResourceDrag(event, resource, props.onTabDragStateChange)
+            }
+            onDragEnd={() => props.onTabDragStateChange?.(null)}
           >
             <SquareTerminal
               size={12}
@@ -293,32 +342,210 @@ export function ConversationTabs(props: ConversationTabsProps) {
         );
       })}
 
-      <button
-        type="button"
-        data-testid="conversation-tab-new"
-        className="st-icon-motion mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-(--radius-row) text-text-secondary hover:bg-hover hover:text-text"
-        title="新建对话"
-        onClick={props.onNew}
-      >
-        <Plus size={14} />
-      </button>
+      {(props.browserTabs ?? []).map((browser) => {
+        const active = browser.browserId === props.activeBrowserId;
+        const resource: PaneResourceRef = { type: 'browser', id: browser.browserId };
+        return (
+          <div
+            key={browser.id}
+            data-testid={`browser-tab-${browser.browserId}`}
+            data-active={active ? 'true' : 'false'}
+            data-pane-resource-type="browser"
+            draggable
+            className={clsx(
+              'st-row-motion group relative flex h-7 max-w-[240px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+              active
+                ? 'shell-conversation-tab-active font-medium text-text'
+                : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+            )}
+            onDragStart={(event) =>
+              beginResourceDrag(event, resource, props.onTabDragStateChange)
+            }
+            onDragEnd={() => props.onTabDragStateChange?.(null)}
+          >
+            <Globe
+              size={12}
+              className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
+              aria-hidden="true"
+            />
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate text-left"
+              aria-label={`打开网页 ${browser.browserId}`}
+              title={browser.url}
+              onClick={() => props.onSelectBrowser?.(browser.browserId)}
+            >
+              {browser.url.replace(/^https?:\/\//i, '').replace(/\/$/, '') || '网页浏览'}
+            </button>
+            <button
+              type="button"
+              className={clsx(
+                'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+                active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+              )}
+              aria-label={`关闭网页 ${browser.browserId}`}
+              title="关闭网页标签"
+              onClick={(event) => {
+                event.stopPropagation();
+                props.onCloseBrowser?.(browser.browserId);
+              }}
+            >
+              <X size={11} />
+            </button>
+          </div>
+        );
+      })}
+
+      {hasWorkspaceFilesTab ? (
+        <div
+          data-testid={`workspace-files-tab${paneSuffix}`}
+          data-active={props.workspaceFilesActive ? 'true' : 'false'}
+          data-pane-resource-type="workspace-files"
+          draggable
+          className={clsx(
+            'st-row-motion group relative flex h-7 max-w-[180px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+            props.workspaceFilesActive
+              ? 'shell-conversation-tab-active font-medium text-text'
+              : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+          )}
+          onDragStart={(event) =>
+            beginResourceDrag(event, { type: 'workspace-files', id: 'workspace-files' }, props.onTabDragStateChange)
+          }
+          onDragEnd={() => props.onTabDragStateChange?.(null)}
+        >
+          <Folder
+            size={12}
+            className={clsx(
+              'shrink-0',
+              props.workspaceFilesActive ? 'text-accent' : 'text-text-faint',
+            )}
+            aria-hidden="true"
+          />
+          <button
+            type="button"
+            className="min-w-0 flex-1 truncate text-left"
+            aria-label="打开工作区文件"
+            title="工作区文件"
+            onClick={() => props.onSelectWorkspaceFiles?.()}
+          >
+            工作区文件
+          </button>
+          <button
+            type="button"
+            className={clsx(
+              'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+              props.workspaceFilesActive ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+            )}
+            aria-label="关闭工作区文件"
+            title="关闭工作区文件标签"
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onCloseWorkspaceFiles?.();
+            }}
+          >
+            <X size={11} />
+          </button>
+        </div>
+      ) : null}
+
+      <div className="relative shrink-0">
+        <button
+          type="button"
+          data-testid="conversation-tab-new"
+          className={clsx(
+            'st-icon-motion mt-0.5 flex h-7 w-7 items-center justify-center rounded-(--radius-row)',
+            newResourceMenuOpen
+              ? 'bg-active text-text'
+              : 'text-text-secondary hover:bg-hover hover:text-text',
+          )}
+          title="新建资源"
+          aria-label="新建资源"
+          aria-expanded={newResourceMenuOpen}
+          aria-haspopup="menu"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={() => setNewResourceMenuOpen((open) => !open)}
+        >
+          <Plus size={14} />
+        </button>
+        {newResourceMenuOpen ? (
+          <div
+            className="shell-new-resource-menu"
+            role="menu"
+            data-testid="new-resource-menu"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="shell-new-resource-menu__title">新建资源</div>
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="new-resource-conversation"
+              className="shell-new-resource-menu__item"
+              onClick={() => {
+                setNewResourceMenuOpen(false);
+                props.onNew();
+              }}
+            >
+              <MessageSquarePlus size={14} />
+              <span>
+                <strong>新建对话</strong>
+                <small>在当前窗格打开新的对话草稿</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="new-resource-terminal"
+              className="shell-new-resource-menu__item"
+              disabled={props.canOpenTerminal === false}
+              title={props.canOpenTerminal === false ? '先绑定项目文件夹' : undefined}
+              onClick={() => {
+                setNewResourceMenuOpen(false);
+                props.onNewTerminal?.();
+              }}
+            >
+              <SquareTerminal size={14} />
+              <span>
+                <strong>新建终端</strong>
+                <small>在当前窗格启动一个终端</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="new-resource-browser"
+              className="shell-new-resource-menu__item"
+              onClick={() => {
+                setNewResourceMenuOpen(false);
+                props.onNewBrowser?.();
+              }}
+            >
+              <Globe size={14} />
+              <span>
+                <strong>网页浏览</strong>
+                <small>在当前窗格打开网页浏览器</small>
+              </span>
+            </button>
+          </div>
+        ) : null}
+      </div>
       </div>
 
       <div className="mt-0.5 ml-2 flex shrink-0 items-center gap-0.5">
-        {props.onNewTerminal ? (
+        {props.onToggleWorkspaceFilesPane ? (
           <button
             type="button"
-            data-testid={`pane-new-terminal${paneSuffix}`}
-            disabled={props.canOpenTerminal === false}
+            data-testid={`workspace-files-toggle${paneSuffix}`}
             className={clsx(
-              'st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) text-text-faint hover:bg-hover hover:text-text',
-              props.canOpenTerminal === false && 'cursor-not-allowed opacity-35',
+              'st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) transition-colors',
+              props.workspaceFilesPaneOpen
+                ? 'bg-active text-text'
+                : 'text-text-faint hover:bg-hover hover:text-text',
             )}
-            title={props.canOpenTerminal === false ? '先绑定项目文件夹' : '打开终端'}
-            aria-label="打开终端"
-            onClick={props.onNewTerminal}
+            title={props.workspaceFilesPaneOpen ? '隐藏工作区文件' : '打开工作区文件'}
+            aria-label={props.workspaceFilesPaneOpen ? '隐藏工作区文件' : '打开工作区文件'}
+            onClick={props.onToggleWorkspaceFilesPane}
           >
-            <SquareTerminal size={14} />
+            <Folder size={14} />
           </button>
         ) : null}
         {props.onOpenInSplit ? (
@@ -519,6 +746,22 @@ function SortableConversationTab(props: {
       {...listeners}
       onContextMenu={props.onContextMenu}
     >
+      {/* Status marker sits at the left of each conversation tab: a pulsing
+          dot while running/thinking, a static dot when finished-but-unread.
+          Visual-only — no text — so the tab row stays compact. */}
+      {props.running ? (
+        <span
+          className="shell-activity-dot shell-activity-dot--running"
+          data-testid={`conversation-running-${props.conversationId}`}
+          aria-label="正在运行"
+        />
+      ) : props.unread ? (
+        <span
+          className="shell-activity-dot shell-activity-dot--unread"
+          data-testid={`conversation-unread-${props.conversationId}`}
+          aria-label="已完成待查看"
+        />
+      ) : null}
       <span
         className={clsx('flex h-3.5 w-3.5 shrink-0 items-center justify-center', props.activeIconClass)}
         aria-hidden
@@ -536,19 +779,6 @@ function SortableConversationTab(props: {
       </button>
       {props.splitId === props.conversationId ? (
         <Columns2 size={11} className="shrink-0 text-accent" aria-label="已在分屏中" />
-      ) : null}
-      {props.running ? (
-        <span
-          className="shell-activity-dot shell-activity-dot--running"
-          data-testid={`conversation-running-${props.conversationId}`}
-          aria-label="正在运行"
-        />
-      ) : props.unread ? (
-        <span
-          className="shell-activity-dot shell-activity-dot--unread"
-          data-testid={`conversation-unread-${props.conversationId}`}
-          aria-label="已完成待查看"
-        />
       ) : null}
       <button
         type="button"

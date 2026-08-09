@@ -64,6 +64,11 @@ const newConversationDialogProps: { current?: Record<string, unknown> } = {};
 
 const completeMock = vi.fn(async () => true);
 
+function clickNewConversationResource(button?: HTMLElement): void {
+  fireEvent.click(button ?? screen.getByTestId('conversation-tab-new'));
+  fireEvent.click(screen.getByTestId('new-resource-conversation'));
+}
+
 vi.mock('../runtime-connection.js', () => ({
   startRuntimeConnection: ({ onConnected }: { onConnected(result: { snapshot: unknown[] }): void }) => {
     onConnected({ snapshot: [] });
@@ -278,6 +283,28 @@ describe('ShellApp abilities navigation', () => {
 });
 
 describe('ShellApp settings modal', () => {
+  it('centers and restores a dragged position without transform-based text rasterization', async () => {
+    installRuntime();
+    window.localStorage.setItem(
+      'sync-think-settings-pos',
+      JSON.stringify({ dx: 18.4, dy: -9.2 }),
+    );
+
+    render(<ShellApp />);
+    fireEvent.click(screen.getByTestId('nav-settings'));
+
+    const closeButton = screen.getByRole('button', { name: '关闭设置' });
+    const positioner = closeButton.closest<HTMLElement>('.settings-modal-positioner');
+    expect(positioner).toBeTruthy();
+    await waitFor(() => {
+      expect(positioner?.style.transform).toBe('');
+      expect(positioner?.style.left).toBe('18px');
+      expect(positioner?.style.right).toBe('-18px');
+      expect(positioner?.style.top).toBe('-9px');
+      expect(positioner?.style.bottom).toBe('9px');
+    });
+  });
+
   it('keeps the modal open when model complete/test fails', async () => {
     installRuntime();
     completeMock.mockResolvedValue(false);
@@ -583,7 +610,7 @@ describe('ShellApp workspace context', () => {
     await waitFor(() => expect(screen.getAllByTestId('conversation-tab-new')).toHaveLength(2));
 
     const newButtons = screen.getAllByTestId('conversation-tab-new');
-    fireEvent.click(newButtons[1]!);
+    clickNewConversationResource(newButtons[1]);
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '沿用右侧智能体' },
@@ -598,6 +625,159 @@ describe('ShellApp workspace context', () => {
         workspaceId: 'ws-a',
       }),
     );
+  });
+
+  it('keeps existing conversations visible while a local new-conversation row is active', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'conv-a',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: '已有对话',
+          executionMode: 'full-access',
+          createdAt: '2026-07-25T00:00:00.000Z',
+          updatedAt: '2026-07-25T00:00:00.000Z',
+        },
+      ],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.openConversationTabs',
+      JSON.stringify({ 'ws-a': ['conv-a'] }),
+    );
+    window.localStorage.setItem(
+      'sync-think.selectedConversationByWorkspace',
+      JSON.stringify({ 'ws-a': 'conv-a' }),
+    );
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
+    clickNewConversationResource();
+
+    const draft = await waitFor(() => {
+      const conversations =
+        (sidebarProps.current?.conversations as Array<{ id: string; title: string }>) ?? [];
+      const item = conversations.find((conversation) => conversation.id.startsWith('draft:'));
+      expect(item).toMatchObject({ title: '新对话' });
+      return item!;
+    });
+    expect(screen.getAllByText('已有对话')).not.toHaveLength(0);
+    expect(screen.getByTestId('conversation-tab-conv-a')).toBeTruthy();
+    expect(screen.getByTestId(`conversation-tab-${draft.id}`)).toBeTruthy();
+    expect(screen.getByTestId('empty-compose')).toBeTruthy();
+
+    fireEvent.click(
+      within(screen.getByTestId('conversation-tab-conv-a')).getByRole('button', {
+        name: '已有对话',
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
+    expect(
+      ((sidebarProps.current?.conversations as Array<{ id: string }>) ?? []).some(
+        (conversation) => conversation.id === draft.id,
+      ),
+    ).toBe(true);
+
+    fireEvent.click(
+      within(screen.getByTestId(`conversation-tab-${draft.id}`)).getByRole('button', {
+        name: '新对话',
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
+
+    clickNewConversationResource();
+    expect(
+      ((sidebarProps.current?.conversations as Array<{ id: string }>) ?? []).filter(
+        (conversation) => conversation.id.startsWith('draft:'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('replaces the local draft tab after the first successful turn and closes drafts locally', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockImplementation(async () => ({
+      conversations:
+        runtime.createConversation.mock.calls.length === 0
+          ? []
+          : [
+              {
+                id: 'created-conversation',
+                workspaceId: 'ws-a',
+                track: 'model',
+                targetRef: 'model-a',
+                title: '首条消息',
+                executionMode: 'full-access',
+                createdAt: '2026-07-25T00:00:00.000Z',
+                updatedAt: '2026-07-25T00:00:00.000Z',
+              },
+            ],
+    }));
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
+    const onNewConversation = sidebarProps.current?.onNewConversation as (() => void) | undefined;
+    act(() => onNewConversation?.());
+    const draft = await waitFor(() => {
+      const conversations =
+        (sidebarProps.current?.conversations as Array<{ id: string }>) ?? [];
+      return conversations.find((conversation) => conversation.id.startsWith('draft:'))!;
+    });
+
+    fireEvent.change(screen.getByTestId('empty-compose-input'), {
+      target: { value: '把草稿转正' },
+    });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('conversation-tab-created-conversation')).toBeTruthy(),
+    );
+    expect(screen.queryByTestId(`conversation-tab-${draft.id}`)).toBeNull();
+    expect(
+      ((sidebarProps.current?.conversations as Array<{ id: string }>) ?? []).some(
+        (conversation) => conversation.id.startsWith('draft:'),
+      ),
+    ).toBe(false);
+
+    act(() => onNewConversation?.());
+    const disposableDraft = await waitFor(() => {
+      const conversations =
+        (sidebarProps.current?.conversations as Array<{ id: string }>) ?? [];
+      return conversations.find((conversation) => conversation.id.startsWith('draft:'))!;
+    });
+    fireEvent.click(screen.getByTestId(`conversation-tab-close-${disposableDraft.id}`));
+    await waitFor(() =>
+      expect(screen.queryByTestId(`conversation-tab-${disposableDraft.id}`)).toBeNull(),
+    );
+    expect(runtime.deleteConversation).not.toHaveBeenCalled();
   });
 
   it('clears a selected conversation when switching workspaces', async () => {
@@ -781,7 +961,7 @@ describe('ShellApp pane visibility activity', () => {
         fireEvent.click(screen.getByTestId('nav-abilities'));
         await waitFor(() => expect(screen.getByTestId('mock-abilities-page')).toBeTruthy());
       } else if (mode === 'draft') {
-        fireEvent.click(screen.getByTestId('conversation-tab-new'));
+        clickNewConversationResource();
         await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
       } else {
         fireEvent.click(screen.getByTestId('nav-settings'));
@@ -864,7 +1044,7 @@ describe('ShellApp empty conversation compose', () => {
     );
   });
 
-  it('defaults Agent/Team Skills, preserves their owners across model changes, and carries an override into ChatView', async () => {
+  it('keeps Agent/Team owners across model changes and carries explicit workspace picks into ChatView', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
       workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
@@ -968,7 +1148,7 @@ describe('ShellApp empty conversation compose', () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
     fireEvent.click(screen.getByTitle('切换模型'));
     const provider = await screen.findByTestId('model-provider-Provider A');
@@ -976,12 +1156,12 @@ describe('ShellApp empty conversation compose', () => {
     fireEvent.keyDown(provider, { key: 'ArrowLeft' });
     fireEvent.click(await screen.findByText('Model B'));
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
     fireEvent.click(screen.getByTestId('welcome-track-model'));
     await waitFor(() => {
       expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
-      expect((screen.getByTestId('turn-skill-trigger') as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId('turn-skill-trigger') as HTMLButtonElement).disabled).toBe(false);
     });
 
     fireEvent.click(screen.getByTestId('welcome-track-agent'));
@@ -992,7 +1172,7 @@ describe('ShellApp empty conversation compose', () => {
       );
     });
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-b'));
@@ -1004,19 +1184,34 @@ describe('ShellApp empty conversation compose', () => {
 
     await waitFor(() =>
       expect(runtime.appendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ skillVersionIds: ['skill-a'], text: '带 Skill 开始' }),
+        expect.objectContaining({
+          modelId: 'model-b',
+          skillVersionIds: ['skill-b'],
+          text: '带 Skill 开始',
+        }),
       ),
+    );
+    expect(runtime.sendConversationMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'created-conversation',
+        modelId: 'model-b',
+      }),
     );
     expect(runtime.createConversation).toHaveBeenCalledWith(
       expect.objectContaining({ track: 'agent', targetRef: 'agent-a' }),
     );
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('sync-think.conversationModelOverrides') ?? '{}',
+      )['created-conversation'],
+    ).toBe('model-b');
     expect(runtime.getSkill).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
-    expect(chatViewProps.current?.initialSkillVersionIds).toEqual(['skill-a']);
-    fireEvent.click(await screen.findByTestId('conversation-tab-new'));
+    expect(chatViewProps.current?.initialSkillVersionIds).toEqual(['skill-b']);
+    clickNewConversationResource(await screen.findByTestId('conversation-tab-new'));
     await screen.findByTestId('empty-compose');
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
 
     fireEvent.click(screen.getByTestId('welcome-track-team'));
@@ -1027,7 +1222,7 @@ describe('ShellApp empty conversation compose', () => {
       );
     });
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
     fireEvent.click(screen.getByTitle('切换模型'));
     const teamProvider = await screen.findByTestId('model-provider-Provider A');
@@ -1035,11 +1230,11 @@ describe('ShellApp empty conversation compose', () => {
     fireEvent.keyDown(teamProvider, { key: 'ArrowLeft' });
     fireEvent.click(await screen.findByText('Model A'));
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
   });
 
-  it('keeps a temporary welcome Skill selection when the Agent catalog refreshes unchanged', async () => {
+  it('keeps a temporary welcome workspace Skill selection when the catalog refreshes unchanged', async () => {
     installRuntime();
     runtime.listSkills.mockResolvedValue({
       skills: [
@@ -1106,7 +1301,7 @@ describe('ShellApp empty conversation compose', () => {
       />,
     );
 
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-b'));
     expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
@@ -1131,7 +1326,7 @@ describe('ShellApp empty conversation compose', () => {
     );
   });
 
-  it('resets a Team draft when its effective owner changes with the same Skill IDs', async () => {
+  it('keeps a Team draft when its effective owner changes with the same Skill IDs', async () => {
     installRuntime();
     runtime.listSkills.mockResolvedValue({
       skills: [
@@ -1192,7 +1387,7 @@ describe('ShellApp empty conversation compose', () => {
       />,
     );
 
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
     fireEvent.click(screen.getByTestId('turn-skill-trigger'));
     fireEvent.click(await screen.findByTestId('turn-skill-option-skill-b'));
     expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
@@ -1213,7 +1408,7 @@ describe('ShellApp empty conversation compose', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8'),
     );
   });
 
@@ -1274,8 +1469,11 @@ describe('ShellApp empty conversation compose', () => {
       );
     });
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
+    fireEvent.click(screen.getByTestId('turn-skill-trigger'));
+    fireEvent.click(await screen.findByTestId('turn-skill-option-skill-a'));
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '失败后重试' },
     });
@@ -1351,8 +1549,11 @@ describe('ShellApp empty conversation compose', () => {
       );
     });
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
+    fireEvent.click(screen.getByTestId('turn-skill-trigger'));
+    fireEvent.click(await screen.findByTestId('turn-skill-option-skill-a'));
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '工作区 A 的首条消息' },
     });
@@ -1362,7 +1563,7 @@ describe('ShellApp empty conversation compose', () => {
     fireEvent.click(screen.getByTestId('mock-switch-workspace'));
     await waitFor(() => {
       expect(window.localStorage.getItem('sync-think.activeWorkspaceId')).toBe('ws-b');
-      expect((screen.getByTestId('turn-skill-trigger') as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByTestId('turn-skill-trigger') as HTMLButtonElement).disabled).toBe(false);
     });
     fireEvent.click(screen.getByTestId('welcome-track-agent'));
     await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
@@ -1371,6 +1572,9 @@ describe('ShellApp empty conversation compose', () => {
         'agent-a',
       );
     });
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
+    fireEvent.click(screen.getByTestId('turn-skill-trigger'));
+    fireEvent.click(await screen.findByTestId('turn-skill-option-skill-a'));
     expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
 
     await act(async () => {

@@ -107,7 +107,173 @@ describe('ConversationTabs pane actions', () => {
     expect(onSelectTerminal).toHaveBeenCalledWith('t1');
     fireEvent.click(screen.getByRole('button', { name: '关闭终端 t1' }));
     expect(onCloseTerminal).toHaveBeenCalledWith('t1');
-    fireEvent.click(screen.getByTestId('pane-new-terminal-pane-a'));
+    fireEvent.click(screen.getByTestId('conversation-tab-new'));
+    fireEvent.click(screen.getByTestId('new-resource-terminal'));
     expect(onNewTerminal).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the plus button as a resource menu without splitting automatically', () => {
+    const onNew = vi.fn();
+    const onNewTerminal = vi.fn();
+    const onNewBrowser = vi.fn();
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1']}
+        activeId="c1"
+        canOpenTerminal
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={onNew}
+        onNewTerminal={onNewTerminal}
+        onNewBrowser={onNewBrowser}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('conversation-tab-new'));
+    expect(screen.getByTestId('new-resource-menu')).toBeTruthy();
+    expect(screen.getByTestId('new-resource-conversation')).toBeTruthy();
+    expect(screen.getByTestId('new-resource-terminal')).toBeTruthy();
+    expect(screen.getByTestId('new-resource-browser')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('new-resource-browser'));
+    expect(onNewBrowser).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId('new-resource-menu')).toBeNull();
+    expect(screen.queryByTestId('chat-split-picker-pane-a')).toBeNull();
+    expect(onNew).not.toHaveBeenCalled();
+    expect(onNewTerminal).not.toHaveBeenCalled();
+  });
+
+    it('renders and toggles the workspace files resource separately from the pane split', () => {
+      const onSelectWorkspaceFiles = vi.fn();
+      const onCloseWorkspaceFiles = vi.fn();
+      const onToggleWorkspaceFilesPane = vi.fn();
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1']}
+        activeId="c1"
+        workspaceFilesTab
+        workspaceFilesPaneOpen
+        workspaceFilesActive
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+        onSelectWorkspaceFiles={onSelectWorkspaceFiles}
+        onCloseWorkspaceFiles={onCloseWorkspaceFiles}
+        onToggleWorkspaceFilesPane={onToggleWorkspaceFilesPane}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '打开工作区文件' }));
+    fireEvent.click(screen.getByRole('button', { name: '关闭工作区文件' }));
+      fireEvent.click(screen.getByTestId('workspace-files-toggle-pane-a'));
+      expect(onSelectWorkspaceFiles).toHaveBeenCalledOnce();
+      expect(onCloseWorkspaceFiles).toHaveBeenCalledOnce();
+      expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
+    });
+
+    it('shows the workspace files split button before the resource is opened', () => {
+      const onToggleWorkspaceFilesPane = vi.fn();
+      render(
+        <ConversationTabs
+          paneId="pane-a"
+          conversations={conversations}
+          openIds={['c1']}
+          activeId="c1"
+          onSelect={vi.fn()}
+          onClose={vi.fn()}
+          onNew={vi.fn()}
+          onToggleWorkspaceFilesPane={onToggleWorkspaceFilesPane}
+        />,
+      );
+
+      const toggle = screen.getByTestId('workspace-files-toggle-pane-a');
+      expect(toggle.getAttribute('aria-label')).toBe('打开工作区文件');
+      fireEvent.click(toggle);
+      expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
+    });
+  });
+
+describe('ConversationTabs activity markers', () => {
+  it('shows a running marker on the left of the running conversation tab', () => {
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1', 'c2']}
+        activeId="c1"
+        conversationActivity={
+          new Map([
+            ['c1', { running: true, unread: false }],
+            ['c2', { running: false, unread: false }],
+          ])
+        }
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+
+    const tab = screen.getByTestId('conversation-tab-c1');
+    const dot = screen.getByTestId('conversation-running-c1');
+    expect(tab.querySelector('.shell-activity-dot--running')).toBeTruthy();
+    // The marker sits before the track icon inside the tab (left side).
+    expect(tab.compareDocumentPosition(dot)).toBeGreaterThan(0);
+    expect(tab.firstElementChild?.getAttribute('data-testid')).toContain('conversation-running');
+  });
+
+  it('shows a static unread marker when finished but unseen (running wins)', () => {
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1', 'c2']}
+        activeId="c1"
+        conversationActivity={
+          new Map([
+            ['c1', { running: false, unread: true }],
+            ['c2', { running: true, unread: true }],
+          ])
+        }
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+
+    // c1: finished-but-unread → static unread dot.
+    const unreadDot = screen.getByTestId('conversation-unread-c1');
+    expect(unreadDot.className).toContain('shell-activity-dot--unread');
+    // c2: running takes precedence over unread.
+    expect(screen.getByTestId('conversation-running-c2')).toBeTruthy();
+    expect(screen.queryByTestId('conversation-unread-c2')).toBeNull();
+  });
+
+  it('renders no marker for idle read conversations', () => {
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1', 'c2']}
+        activeId="c1"
+        conversationActivity={
+          new Map([
+            ['c1', { running: false, unread: false }],
+            ['c2', { running: false, unread: false }],
+          ])
+        }
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('conversation-running-c1')).toBeNull();
+    expect(screen.queryByTestId('conversation-unread-c1')).toBeNull();
+    expect(screen.queryByTestId('conversation-running-c2')).toBeNull();
+    expect(screen.queryByTestId('conversation-unread-c2')).toBeNull();
   });
 });

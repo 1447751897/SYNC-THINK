@@ -42,9 +42,31 @@ const provider: ProviderSummary = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
+const importedProvider: ProviderSummary = {
+  ...provider,
+  providerId: 'provider-imported' as ProviderSummary['providerId'],
+  name: 'Imported Claude',
+  baseUrl: 'https://imported.example.com',
+  protocol: 'anthropic-messages',
+  credentials: [
+    {
+      ...provider.credentials[0],
+      credentialRefId:
+        'credential-imported' as ProviderSummary['credentials'][number]['credentialRefId'],
+      credentialGroupId:
+        'group-imported' as ProviderSummary['credentials'][number]['credentialGroupId'],
+    },
+  ],
+  models: [],
+  sortOrder: 1,
+};
+
 const runtime = {
   listProviders: vi.fn(),
   getSettings: vi.fn(),
+  createProvider: vi.fn(),
+  previewCcSwitchImport: vi.fn(),
+  importCcSwitch: vi.fn(),
   updateProvider: vi.fn(),
   addProviderCredential: vi.fn(),
   revealProviderCredential: vi.fn(),
@@ -60,6 +82,44 @@ const runtime = {
 beforeEach(() => {
   runtime.listProviders.mockResolvedValue({ providers: [provider] });
   runtime.getSettings.mockResolvedValue({ settings: {} });
+  runtime.createProvider.mockResolvedValue({
+    provider: importedProvider,
+    credentialRefId: 'credential-imported',
+    discoveredModelCount: 0,
+  });
+  runtime.previewCcSwitchImport.mockResolvedValue({
+    dbPath: 'C:\\Users\\tester\\.cc-switch\\cc-switch.db',
+    skippedCount: 0,
+    importableCount: 1,
+    items: [
+      {
+        sourceId: 'source-claude',
+        appType: 'claude',
+        name: 'Imported Claude',
+        baseUrl: 'https://imported.example.com',
+        protocol: 'anthropic-messages',
+        hasSecret: true,
+        models: ['claude-sonnet-4'],
+        credentialGroupName: 'default',
+        importedFrom: 'cc-switch',
+        warnings: [],
+        importable: true,
+      },
+    ],
+  });
+  runtime.importCcSwitch.mockResolvedValue({
+    importedCount: 1,
+    failedCount: 0,
+    results: [
+      {
+        sourceId: 'source-claude',
+        ok: true,
+        providerId: importedProvider.providerId,
+        name: importedProvider.name,
+        discoveredModelCount: 1,
+      },
+    ],
+  });
   runtime.updateProvider.mockImplementation(async (payload: Record<string, unknown>) => ({
     provider: { ...provider, ...payload },
     secretRotated: false,
@@ -109,15 +169,20 @@ beforeEach(() => {
     requests: [
       {
         requestId: 'request-cache-1',
+        taskId: 'task-usage-1',
+        runId: 'run-usage-1',
         occurredAt: '2026-08-04T09:30:00.000Z',
         modelId: 'model-1',
         providerId: 'provider-1',
+        providerModelId: 'gpt-5-provider',
+        purpose: 'normal',
         displayName: 'gpt-5',
         providerName: 'CODEX',
         tokensIn: 14_000,
         tokensOut: 488,
         cachedTokensHit: 12_800,
         cachedTokensCreated: 0,
+        reasoningTokens: 123,
         totalTokens: 14_488,
         status: 'success',
         estimatedCost: 0.018256,
@@ -169,6 +234,13 @@ async function renderSettings(onDirtyChange = vi.fn()) {
   return onDirtyChange;
 }
 
+async function openProviderCatalog() {
+  const button = document.querySelector<HTMLButtonElement>('.model-enabled-list__add');
+  expect(button).toBeTruthy();
+  fireEvent.click(button!);
+  await screen.findByRole('heading', { name: '添加模型' });
+}
+
 describe('ModelSettings NewMax provider detail', () => {
   it('shows readable cache efficiency and expands one request cost breakdown on demand', async () => {
     await renderSettings();
@@ -184,8 +256,26 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.queryByText(/普通输入费 \$0\.006000/)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '查看 gpt-5 请求详情' }));
-    expect(await screen.findByText(/普通输入费 \$0\.006000/)).toBeTruthy();
-    expect(screen.getByText(/缓存读取费 \$0\.006400/)).toBeTruthy();
+    const details = await screen.findByTestId('usage-request-details-request-cache-1');
+    expect(within(details).getByText('请求信息')).toBeTruthy();
+    expect(within(details).getByText('请求 ID')).toBeTruthy();
+    expect(within(details).getByText('request-cache-1')).toBeTruthy();
+    expect(within(details).getByText('运行 ID')).toBeTruthy();
+    expect(within(details).getByText('run-usage-1')).toBeTruthy();
+    expect(within(details).getByText('Provider')).toBeTruthy();
+    expect(within(details).getByText('CODEX · provider-1')).toBeTruthy();
+    expect(within(details).getByText('Provider 模型')).toBeTruthy();
+    expect(within(details).getByText('gpt-5-provider')).toBeTruthy();
+    expect(within(details).getByText('Token 明细')).toBeTruthy();
+    expect(within(details).getByText('推理 Token')).toBeTruthy();
+    expect(within(details).getByText('123')).toBeTruthy();
+    expect(within(details).getByText('总 Token')).toBeTruthy();
+    expect(within(details).getByText('14.5k')).toBeTruthy();
+    expect(within(details).getByText('费用明细')).toBeTruthy();
+    expect(within(details).getByText('普通输入费')).toBeTruthy();
+    expect(within(details).getByText('$0.006000')).toBeTruthy();
+    expect(within(details).getByText('缓存读取费')).toBeTruthy();
+    expect(within(details).getByText('$0.006400')).toBeTruthy();
     expect(screen.getByRole('button', { name: '收起 gpt-5 请求详情' })).toBeTruthy();
     expect(screen.queryByText('详情记录')).toBeNull();
   });
@@ -302,9 +392,7 @@ describe('ModelSettings NewMax provider detail', () => {
     await renderSettings();
     fireEvent.click(screen.getByRole('button', { name: '图片识别 Fallback' }));
 
-    expect(
-      await screen.findByRole('heading', { name: '图片识别 Fallback' }),
-    ).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: '图片识别 Fallback' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
     fireEvent.click(screen.getByRole('switch'));
 
@@ -320,9 +408,7 @@ describe('ModelSettings NewMax provider detail', () => {
     await renderSettings();
     fireEvent.click(screen.getByRole('button', { name: '规划 & 执行模型' }));
 
-    expect(
-      await screen.findByRole('heading', { name: '规划 & 执行模型' }),
-    ).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: '规划 & 执行模型' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
     fireEvent.click(screen.getByRole('switch'));
 
@@ -397,6 +483,147 @@ describe('ModelSettings NewMax provider detail', () => {
       });
     });
     expect(await screen.findByText(/连接成功 · 128ms/)).toBeTruthy();
+  });
+
+  it('opens the provider catalog before showing a provider form', async () => {
+    await renderSettings();
+    await openProviderCatalog();
+
+    expect(await screen.findByRole('heading', { name: '添加模型' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '推荐服务' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.getByRole('button', { name: /NewMax Gateway/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /自定义供应商/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /从 CC Switch 导入/ })).toBeTruthy();
+    expect(screen.getByTestId('provider-icon-newmax-gateway')).toBeTruthy();
+    expect(screen.getByTestId('provider-icon-custom')).toBeTruthy();
+    expect(screen.getByTestId('provider-icon-cc-switch')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '添加模型源' })).toBeNull();
+    expect(screen.queryByDisplayValue('https://')).toBeNull();
+  });
+
+  it('opens custom provider configuration and returns to the catalog', async () => {
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
+
+    expect(await screen.findByRole('heading', { name: '添加模型源' })).toBeTruthy();
+    expect(screen.getByText('正在配置 自定义供应商')).toBeTruthy();
+    expect(screen.getByTestId('provider-form-icon-custom')).toBeTruthy();
+    expect(screen.getByTestId('provider-base-url')).toHaveProperty('value', 'https://');
+
+    fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
+    expect(await screen.findByRole('heading', { name: '添加模型' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '添加模型源' })).toBeNull();
+  });
+
+  it('uses built-in endpoints for OpenAI, Moonshot and Ollama without exposing URL fields', async () => {
+    await renderSettings();
+    await openProviderCatalog();
+
+    fireEvent.click(screen.getByRole('tab', { name: '海外平台' }));
+    fireEvent.click(screen.getByRole('button', { name: /^OpenAI/ }));
+    expect(await screen.findByDisplayValue('OpenAI')).toBeTruthy();
+    expect(screen.getByTestId('provider-form-icon-openai')).toBeTruthy();
+    expect(screen.queryByTestId('provider-base-url')).toBeNull();
+    expect(screen.getByText('连接地址已由 OpenAI 模板内置')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
+
+    fireEvent.click(screen.getByRole('tab', { name: '国内服务' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Moonshot/ }));
+    expect(await screen.findByDisplayValue('Moonshot')).toBeTruthy();
+    expect(screen.getByTestId('provider-form-icon-moonshot')).toBeTruthy();
+    expect(screen.queryByTestId('provider-base-url')).toBeNull();
+    expect(screen.getByText('连接地址已由 Moonshot 模板内置')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
+
+    fireEvent.click(screen.getByRole('tab', { name: '本地模型' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Ollama/ }));
+    expect(await screen.findByDisplayValue('Ollama')).toBeTruthy();
+    expect(screen.getByTestId('provider-form-icon-ollama')).toBeTruthy();
+    expect(screen.queryByTestId('provider-base-url')).toBeNull();
+    expect(screen.getByText('连接地址已由 Ollama 模板内置')).toBeTruthy();
+    expect(screen.getByDisplayValue('ollama-local')).toBeTruthy();
+  });
+
+  it('submits the hidden built-in endpoint for a catalog provider', async () => {
+    await renderSettings();
+    await openProviderCatalog();
+
+    fireEvent.click(screen.getByRole('tab', { name: '海外平台' }));
+    fireEvent.click(screen.getByRole('button', { name: /^OpenAI/ }));
+
+    const apiKey = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input[type="password"]',
+    );
+    expect(apiKey).toBeTruthy();
+    fireEvent.change(apiKey!, { target: { value: 'sk-openai-test' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建并保存' }));
+
+    await waitFor(() => {
+      expect(runtime.createProvider).toHaveBeenCalledWith({
+        name: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1',
+        protocol: 'openai-responses',
+        supportsDiscovery: true,
+      });
+    });
+  });
+
+  it('requires Base URL only for a custom provider', async () => {
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: /自定义供应商/ }));
+
+    const name = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input:not([type="password"])',
+    );
+    const apiKey = document.querySelector<HTMLInputElement>(
+      '.model-provider-form input[type="password"]',
+    );
+    expect(name).toBeTruthy();
+    expect(apiKey).toBeTruthy();
+    fireEvent.change(name!, { target: { value: 'Custom Gateway' } });
+    fireEvent.change(apiKey!, { target: { value: 'sk-custom-test' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建并保存' }));
+
+    expect((await screen.findAllByText('请填写 Base URL')).length).toBeGreaterThan(0);
+    expect(runtime.createProvider).not.toHaveBeenCalled();
+  });
+
+  it('cancels provider creation and restores the previously selected provider', async () => {
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: '取消添加模型' }));
+
+    expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '添加模型' })).toBeNull();
+  });
+
+  it('previews and imports selected CC Switch providers', async () => {
+    runtime.listProviders
+      .mockResolvedValueOnce({ providers: [provider] })
+      .mockResolvedValue({ providers: [provider, importedProvider] });
+
+    await renderSettings();
+    await openProviderCatalog();
+    fireEvent.click(screen.getByRole('button', { name: /从 CC Switch 导入/ }));
+
+    await waitFor(() => {
+      expect(runtime.previewCcSwitchImport).toHaveBeenCalledWith({});
+    });
+    expect(await screen.findByRole('heading', { name: '从 CC Switch 导入' })).toBeTruthy();
+    expect(screen.getByText('CC Switch 配置')).toBeTruthy();
+    expect(screen.getByText(/claude-sonnet-4/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '导入 1 项' }));
+    await waitFor(() => {
+      expect(runtime.importCcSwitch).toHaveBeenCalledWith({
+        sourceIds: ['source-claude'],
+      });
+    });
+    expect(await screen.findByDisplayValue('Imported Claude')).toBeTruthy();
   });
 
   it('keeps manual add collapsed behind 添加模型', async () => {

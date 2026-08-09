@@ -267,12 +267,16 @@ export function parseConversationGetContextStatusPayload(
 ): ConversationGetContextStatusPayload {
   const label = 'Invalid get-conversation-context-status payload';
   if (!isRecord(value)) throw new Error(label);
-  const allowed = new Set(['conversationId']);
+  const allowed = new Set(['conversationId', 'modelId']);
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
   const conversationId = requiredString(value.conversationId, label);
   if (conversationId.length > 128) throw new Error(label);
+  const modelId =
+    value.modelId === undefined ? undefined : requiredString(value.modelId, label);
+  if (modelId !== undefined && modelId.length > 256) throw new Error(label);
   return {
     conversationId: conversationId as ConversationGetContextStatusPayload['conversationId'],
+    ...(modelId ? { modelId } : {}),
   };
 }
 

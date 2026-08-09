@@ -53,24 +53,24 @@ describe('Composer Skill owner and catalog filtering', () => {
     ).toEqual(['skill-2', 'skill-1']);
   });
 
-  it('always sends an explicit array and keeps model-direct turns empty', () => {
-    expect(resolveAppendSkillVersionIds('model', ['skill-1'])).toEqual([]);
+  it('always sends a deduplicated explicit array for every conversation track', () => {
+    expect(resolveAppendSkillVersionIds('model', ['skill-1'])).toEqual(['skill-1']);
     expect(resolveAppendSkillVersionIds('agent', ['skill-1', 'skill-1', '', 'skill-2'])).toEqual([
       'skill-1',
       'skill-2',
     ]);
   });
 
-  it('defaults Agent and Team drafts to the effective owner configuration', () => {
+  it('keeps Compose defaults empty so Agent Skills stay on the runtime injection path', () => {
     expect(
       resolveDefaultComposeSkillVersionIds(conversation('agent', 'agent-a'), agents, teams),
-    ).toEqual(['skill-2', 'skill-1']);
+    ).toEqual([]);
     expect(
       resolveDefaultComposeSkillVersionIds(conversation('team', 'team-1'), agents, teams),
-    ).toEqual(['skill-3']);
+    ).toEqual([]);
     expect(
       resolveDefaultComposeSkillVersionIds(conversation('team', 'team-2'), agents, teams),
-    ).toEqual(['skill-2', 'skill-1']);
+    ).toEqual([]);
     expect(
       resolveDefaultComposeSkillVersionIds(conversation('model', 'model-a'), agents, teams),
     ).toEqual([]);

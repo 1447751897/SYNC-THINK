@@ -26,6 +26,8 @@ const MESSAGE_BLOCK_TYPES = new Set<MessageBlock['type']>([
   'tool-call',
   'tool-result',
   'error',
+  'commentary',
+  'reasoning',
 ]);
 
 export type MessageStoreErrorCode =
@@ -117,8 +119,11 @@ function encodeBlocks(blocks: readonly MessageBlock[]): string {
     if (block.text !== undefined && typeof block.text !== 'string') {
       invalidInput(`blocks[${index}].text must be a string`);
     }
+    if (block.reasoningText !== undefined && typeof block.reasoningText !== 'string') {
+      invalidInput(`blocks[${index}].reasoningText must be a string`);
+    }
     for (const key of Object.keys(block)) {
-      if (key !== 'type' && key !== 'text' && key !== 'payload') {
+      if (key !== 'type' && key !== 'text' && key !== 'reasoningText' && key !== 'payload') {
         invalidInput(`blocks[${index}].${key} is unsupported`);
       }
     }

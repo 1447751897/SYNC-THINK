@@ -238,32 +238,51 @@ export function BrowserStage(): JSX.Element {
   }, [activeProfile, busyAction, clearTarget, loadSessions, profileMaintenanceLocked]);
 
   return (
-    <div className="flex h-full min-h-0 bg-surface" data-testid="browser-stage">
-      <aside className="flex w-[248px] shrink-0 flex-col border-r border-border bg-elevated">
-        <header className="flex h-[58px] shrink-0 items-center justify-between border-b border-border px-3.5">
+    <div className="browser-automation" data-testid="browser-stage">
+      <aside className="browser-automation__profiles">
+        <header className="browser-automation__profiles-header">
           <div className="min-w-0">
-            <h1 className="truncate text-[14px] font-semibold text-text">浏览器自动化</h1>
-            <p className="mt-0.5 text-[11px] text-text-faint">Runtime Profiles</p>
+            <div className="flex items-baseline gap-1.5">
+              <h2 className="truncate text-[13px] font-semibold text-text">Profile</h2>
+              <span className="text-[10.5px] tabular-nums text-text-faint">
+                {profiles.length}
+              </span>
+            </div>
+            <p className="mt-1 max-w-[178px] text-[10.5px] leading-4 text-text-faint">
+              每个 Profile 拥有独立的 Cookie 和登录态，可管理多账号
+            </p>
           </div>
           <button
             type="button"
+            className={clsx(
+              'browser-automation__record-shortcut',
+              view === 'recordings' && 'is-active',
+            )}
+            aria-label="录制浏览器操作"
+            aria-pressed={view === 'recordings'}
+            onClick={() => setView('recordings')}
+          >
+            <Radio size={12} />
+            录制
+          </button>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-2.5 py-2.5">
+          <button
+            type="button"
             data-testid="browser-profile-new"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-hover hover:text-text disabled:opacity-40"
-            aria-label="新建 Profile"
-            title="新建 Profile"
+            className="browser-automation__new-profile"
             disabled={Boolean(busyAction) || profileMaintenanceLocked}
             onClick={() => {
               setCreating(true);
               setNewName('');
             }}
           >
-            <Plus size={15} />
+            <Plus size={14} />
+            新建 Profile
           </button>
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
           {creating ? (
-            <div className="mb-2 flex items-center gap-1 rounded-md border border-accent bg-surface px-1.5 py-1">
+            <div className="mt-2 flex items-center gap-1 rounded-lg border border-accent bg-chat px-1.5 py-1">
               <input
                 ref={newInputRef}
                 data-testid="browser-profile-new-input"
@@ -300,7 +319,7 @@ export function BrowserStage(): JSX.Element {
               暂无可用 Profile
             </div>
           ) : null}
-          <div className="space-y-1" data-testid="browser-profile-list">
+          <div className="mt-2 space-y-1.5" data-testid="browser-profile-list">
             {profiles.map((profile) => {
               const active = profile.id === activeProfileId;
               const renaming = renamingProfile?.id === profile.id;
@@ -312,10 +331,10 @@ export function BrowserStage(): JSX.Element {
                   key={profile.id}
                   data-testid={`browser-profile-item-${profile.id}`}
                   className={clsx(
-                    'group relative flex min-h-[54px] items-center gap-2 rounded-md border px-2.5 py-2',
+                    'browser-automation__profile-card group relative',
                     active
-                      ? 'border-accent bg-accent-soft'
-                      : 'border-transparent hover:border-border hover:bg-hover',
+                      ? 'is-active'
+                      : 'hover:border-border-strong hover:bg-hover',
                   )}
                 >
                   <button
@@ -331,8 +350,8 @@ export function BrowserStage(): JSX.Element {
                   />
                   <div
                     className={clsx(
-                      'relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
-                      active ? 'bg-accent text-accent-fg' : 'bg-surface text-text-secondary',
+                      'browser-automation__profile-icon relative',
+                      active ? 'is-active' : '',
                     )}
                   >
                     <Globe2 size={14} />
@@ -363,7 +382,10 @@ export function BrowserStage(): JSX.Element {
                           ) : null}
                         </div>
                         <div className="mt-0.5 truncate text-[10.5px] text-text-faint">
-                          {profile.siteCount} 个站点 · {formatProfileActivity(profile.lastUsedAt)}
+                          {profile.isDefault ? '与应用共享登录态' : `${profile.siteCount} 个站点`}
+                          {!profile.isDefault && profile.lastUsedAt
+                            ? ` · ${formatProfileActivity(profile.lastUsedAt)}`
+                            : ''}
                         </div>
                       </>
                     )}
@@ -421,13 +443,16 @@ export function BrowserStage(): JSX.Element {
         </div>
       </aside>
 
-      <main className="flex min-w-0 flex-1 flex-col bg-surface">
-        <header className="flex min-h-[58px] shrink-0 items-center justify-between gap-3 border-b border-border px-4">
+      <main className="browser-automation__stage">
+        <header className="browser-automation__stage-header">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="truncate text-[14px] font-semibold text-text">
-                {activeProfile?.name ?? '登录状态'}
-              </h2>
+              <h1 className="truncate text-[14px] font-semibold text-text">浏览器自动化</h1>
+              {activeProfile ? (
+                <span className="browser-automation__active-profile-name">
+                  {activeProfile.name}
+                </span>
+              ) : null}
               {activeProfile &&
               (activeProfile.inUse || recordingLockedProfileId === activeProfile.id) ? (
                 <span className="shrink-0 text-[10.5px] font-medium text-warning">
@@ -438,7 +463,7 @@ export function BrowserStage(): JSX.Element {
             <p className="mt-0.5 truncate text-[11px] text-text-faint">
               {activeProfile
                 ? view === 'tasks'
-                  ? '创建、录制、审核并发布可复用的浏览器任务'
+                  ? `使用「${activeProfile.name}」创建、审核并运行可复用任务`
                   : view === 'sessions'
                     ? `${sessions.length} 个站点会话${checkedAt ? ` · 检查于 ${formatDateTime(checkedAt)}` : ''}`
                     : recordingLockedProfileId === activeProfile.id
@@ -451,7 +476,7 @@ export function BrowserStage(): JSX.Element {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <div
-              className="flex h-8 items-center rounded-md border border-border bg-elevated p-0.5"
+              className="browser-automation__view-switcher"
               role="group"
               aria-label="浏览器工作区"
             >
@@ -466,10 +491,10 @@ export function BrowserStage(): JSX.Element {
                   key={value}
                   type="button"
                   className={clsx(
-                    'h-7 rounded px-2.5 text-[11px] font-medium transition-colors',
+                    'browser-automation__view-option',
                     view === value
-                      ? 'bg-surface text-text shadow-sm'
-                      : 'text-text-faint hover:text-text-secondary',
+                      ? 'is-active'
+                      : '',
                   )}
                   aria-pressed={view === value}
                   onClick={() => setView(value)}
@@ -482,7 +507,7 @@ export function BrowserStage(): JSX.Element {
               <button
                 type="button"
                 data-testid="browser-site-session-refresh"
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11.5px] font-medium text-text-secondary hover:bg-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-45"
+                className="browser-automation__secondary-button"
                 disabled={
                   !activeProfile ||
                   activeProfile.inUse ||

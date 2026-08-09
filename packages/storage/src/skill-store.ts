@@ -14,11 +14,16 @@ export interface SkillVersionRecord {
   contentFingerprint: string;
   hasScripts: boolean;
   warnings: string[];
+  enabled: boolean;
+  originType: SkillOriginType;
+  originRef?: string;
+  derivedFromSkillVersionId?: SkillVersionId;
   archivedAt?: string;
   createdAt: string;
 }
 
 export type SkillVersionMetadataRecord = Omit<SkillVersionRecord, 'sourceMd' | 'body'>;
+export type SkillOriginType = 'local' | 'market' | 'derived';
 
 export interface ImportSkillVersionInput {
   name: string;
@@ -30,6 +35,9 @@ export interface ImportSkillVersionInput {
   contentFingerprint: string;
   hasScripts?: boolean;
   warnings?: readonly string[];
+  originType?: SkillOriginType;
+  originRef?: string;
+  derivedFromSkillVersionId?: SkillVersionId | string;
   /** When re-importing a known family, keep skillId stable. */
   skillId?: SkillId;
   id?: SkillVersionId;
@@ -58,6 +66,10 @@ interface SkillVersionRow {
   content_fingerprint: string;
   has_scripts: number;
   warnings_json: string;
+  enabled: number;
+  origin_type: string;
+  origin_ref: string | null;
+  derived_from_skill_version_id: string | null;
   archived_at: string | null;
   created_at: string;
 }
@@ -87,6 +99,11 @@ function mapRow(row: SkillVersionRow): SkillVersionRecord {
     contentFingerprint: row.content_fingerprint,
     hasScripts: row.has_scripts === 1,
     warnings: parseJsonArray(row.warnings_json),
+    enabled: row.enabled === 1,
+    originType: normalizeOriginType(row.origin_type),
+    originRef: row.origin_ref ?? undefined,
+    derivedFromSkillVersionId:
+      (row.derived_from_skill_version_id as SkillVersionId | null) ?? undefined,
     archivedAt: row.archived_at ?? undefined,
     createdAt: row.created_at,
   };
@@ -103,9 +120,19 @@ function mapMetadataRow(row: SkillVersionMetadataRow): SkillVersionMetadataRecor
     contentFingerprint: row.content_fingerprint,
     hasScripts: row.has_scripts === 1,
     warnings: parseJsonArray(row.warnings_json),
+    enabled: row.enabled === 1,
+    originType: normalizeOriginType(row.origin_type),
+    originRef: row.origin_ref ?? undefined,
+    derivedFromSkillVersionId:
+      (row.derived_from_skill_version_id as SkillVersionId | null) ?? undefined,
     archivedAt: row.archived_at ?? undefined,
     createdAt: row.created_at,
   };
+}
+
+function normalizeOriginType(value: unknown): SkillOriginType {
+  if (value === 'market' || value === 'derived') return value;
+  return 'local';
 }
 
 function slugSkillId(name: string): SkillId {
@@ -129,7 +156,9 @@ export class SqliteSkillStore {
     const row = this.raw
       .prepare(
         `SELECT id, skill_id, name, description, version, source_md, body,
-                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                enabled, origin_type, origin_ref, derived_from_skill_version_id,
+                archived_at, created_at
          FROM skill_version WHERE id = ?`,
       )
       .get(String(id)) as SkillVersionRow | undefined;
@@ -141,6 +170,7 @@ export class SqliteSkillStore {
       .prepare(
         `SELECT id, skill_id, name, description, version,
                 allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                enabled, origin_type, origin_ref, derived_from_skill_version_id,
                 archived_at, created_at
          FROM skill_version WHERE id = ?`,
       )
@@ -152,7 +182,9 @@ export class SqliteSkillStore {
     const row = this.raw
       .prepare(
         `SELECT id, skill_id, name, description, version, source_md, body,
-                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                enabled, origin_type, origin_ref, derived_from_skill_version_id,
+                archived_at, created_at
          FROM skill_version WHERE content_fingerprint = ? AND archived_at IS NULL
          ORDER BY created_at DESC LIMIT 1`,
       )
@@ -172,7 +204,9 @@ export class SqliteSkillStore {
       const row = this.raw
         .prepare(
           `SELECT id, skill_id, name, description, version, source_md, body,
-                  allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
+                  allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                  enabled, origin_type, origin_ref, derived_from_skill_version_id,
+                  archived_at, created_at
            FROM skill_version
            WHERE name = ? AND content_fingerprint != ?
            ORDER BY created_at DESC
@@ -184,7 +218,9 @@ export class SqliteSkillStore {
     const row = this.raw
       .prepare(
         `SELECT id, skill_id, name, description, version, source_md, body,
-                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                enabled, origin_type, origin_ref, derived_from_skill_version_id,
+                archived_at, created_at
          FROM skill_version
          WHERE name = ?
          ORDER BY created_at DESC
@@ -198,7 +234,9 @@ export class SqliteSkillStore {
     const rows = this.raw
       .prepare(
         `SELECT id, skill_id, name, description, version, source_md, body,
-                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                enabled, origin_type, origin_ref, derived_from_skill_version_id,
+                archived_at, created_at
          FROM skill_version
          WHERE archived_at IS NULL
          ORDER BY created_at DESC
@@ -214,6 +252,7 @@ export class SqliteSkillStore {
       .prepare(
         `SELECT id, skill_id, name, description, version,
                 allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                enabled, origin_type, origin_ref, derived_from_skill_version_id,
                 archived_at, created_at
          FROM skill_version
          WHERE archived_at IS NULL
@@ -243,6 +282,7 @@ export class SqliteSkillStore {
       .prepare(
         `SELECT id, skill_id, name, description, version,
                 allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                enabled, origin_type, origin_ref, derived_from_skill_version_id,
                 archived_at, created_at
          FROM skill_version
          WHERE archived_at IS NULL AND id IN (${placeholders})`,
@@ -252,6 +292,36 @@ export class SqliteSkillStore {
     return orderedIds
       .map((id) => byId.get(id))
       .filter((row): row is SkillVersionMetadataRecord => Boolean(row));
+  }
+
+  setEnabled(
+    skillVersionId: SkillVersionId | string,
+    enabled: boolean,
+  ): SkillVersionRecord | undefined {
+    const id = String(skillVersionId ?? '').trim();
+    if (!id) return undefined;
+    const skill = this.getVersion(id);
+    if (!skill) return undefined;
+    if (enabled && skill.archivedAt) {
+      throw new Error(`Archived Skill version cannot be enabled: ${id}`);
+    }
+
+    const update = this.raw.transaction(() => {
+      if (enabled) {
+        this.raw
+          .prepare(`UPDATE skill_version SET enabled = 0 WHERE skill_id = ? AND id != ?`)
+          .run(skill.skillId, id);
+      }
+      this.raw
+        .prepare(
+          `UPDATE skill_version
+           SET enabled = ?
+           WHERE id = ?${enabled ? ' AND archived_at IS NULL' : ''}`,
+        )
+        .run(enabled ? 1 : 0, id);
+    });
+    update();
+    return this.getVersion(id);
   }
 
   hasPendingPermissionApproval(skillVersionId: SkillVersionId | string): boolean {
@@ -366,7 +436,11 @@ export class SqliteSkillStore {
 
     const now = new Date().toISOString();
     const result = this.raw
-      .prepare(`UPDATE skill_version SET archived_at = ? WHERE id = ? AND archived_at IS NULL`)
+      .prepare(
+        `UPDATE skill_version
+         SET archived_at = ?, enabled = 0
+         WHERE id = ? AND archived_at IS NULL`,
+      )
       .run(now, skillVersionId);
     return { deleted: result.changes > 0, blockers };
   }
@@ -387,15 +461,27 @@ export class SqliteSkillStore {
     const archived = this.raw
       .prepare(
         `SELECT id, skill_id, name, description, version, source_md, body,
-                allowed_tools_json, content_fingerprint, has_scripts, warnings_json, archived_at, created_at
+                allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+                enabled, origin_type, origin_ref, derived_from_skill_version_id,
+                archived_at, created_at
          FROM skill_version
          WHERE content_fingerprint = ? AND archived_at IS NOT NULL
          ORDER BY created_at DESC LIMIT 1`,
       )
       .get(fingerprint) as SkillVersionRow | undefined;
     if (archived) {
-      this.raw.prepare(`UPDATE skill_version SET archived_at = NULL WHERE id = ?`).run(archived.id);
-      return { ...mapRow(archived), archivedAt: undefined };
+      const restore = this.raw.transaction(() => {
+        this.raw
+          .prepare(`UPDATE skill_version SET enabled = 0 WHERE skill_id = ? AND id != ?`)
+          .run(archived.skill_id, archived.id);
+        this.raw
+          .prepare(`UPDATE skill_version SET archived_at = NULL, enabled = 1 WHERE id = ?`)
+          .run(archived.id);
+      });
+      restore();
+      const restored = this.getVersion(archived.id);
+      if (!restored) throw new Error('Failed to restore skill version');
+      return restored;
     }
 
     const sameName = this.raw
@@ -415,28 +501,45 @@ export class SqliteSkillStore {
     const allowedTools = [...(input.allowedTools ?? [])].map((t) => t.trim()).filter(Boolean);
     const warnings = [...(input.warnings ?? [])].map((w) => w.trim()).filter(Boolean);
     const hasScripts = input.hasScripts ? 1 : 0;
+    const originType = normalizeOriginType(input.originType);
+    const originRef = String(input.originRef ?? '').trim() || null;
+    const derivedFromSkillVersionId =
+      String(input.derivedFromSkillVersionId ?? '').trim() || null;
+    if (originType === 'derived' && !derivedFromSkillVersionId) {
+      throw new Error('derived Skill version requires derivedFromSkillVersionId');
+    }
 
-    this.raw
-      .prepare(
-        `INSERT INTO skill_version (
-           id, skill_id, name, description, version, source_md, body,
-           allowed_tools_json, content_fingerprint, has_scripts, warnings_json, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        skillId,
-        name,
-        description,
-        version,
-        String(input.sourceMd ?? ''),
-        String(input.body ?? ''),
-        JSON.stringify(allowedTools),
-        fingerprint,
-        hasScripts,
-        JSON.stringify(warnings),
-        now,
-      );
+    const insert = this.raw.transaction(() => {
+      this.raw
+        .prepare(`UPDATE skill_version SET enabled = 0 WHERE skill_id = ?`)
+        .run(skillId);
+      this.raw
+        .prepare(
+          `INSERT INTO skill_version (
+             id, skill_id, name, description, version, source_md, body,
+             allowed_tools_json, content_fingerprint, has_scripts, warnings_json,
+             enabled, origin_type, origin_ref, derived_from_skill_version_id, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          skillId,
+          name,
+          description,
+          version,
+          String(input.sourceMd ?? ''),
+          String(input.body ?? ''),
+          JSON.stringify(allowedTools),
+          fingerprint,
+          hasScripts,
+          JSON.stringify(warnings),
+          originType,
+          originRef,
+          derivedFromSkillVersionId,
+          now,
+        );
+    });
+    insert();
 
     const created = this.getVersion(id);
     if (!created) throw new Error('Failed to import skill version');

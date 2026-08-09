@@ -126,6 +126,7 @@ async function hello(
         'context.packet.peek',
         'workspace.create',
         'task.create',
+        'capability.workspace.setActive',
         'mcp.tool.request',
         'mcp.spawn.probe',
         'mcp.tool.call',
@@ -300,6 +301,19 @@ describe('mcp commands (§9.3 authz skeleton)', () => {
     });
     expect(ws.error).toBeUndefined();
     const workspaceId = (ws.payload as { workspaceId: string }).workspaceId;
+
+    const activated = await writeAndRead(sock, reader, {
+      id: 'mcp-workspace-active',
+      kind: 'request',
+      type: 'capability.workspace.setActive',
+      payload: {
+        capabilityType: 'mcp',
+        capabilityId: mcpServerId,
+        workspaceId,
+        active: true,
+      },
+    });
+    expect(activated.error).toBeUndefined();
 
     const task = await writeAndRead(sock, reader, {
       id: 'task-1',
@@ -1781,6 +1795,19 @@ describe('mcp commands (§9.3 authz skeleton)', () => {
     });
     expect(ws.error).toBeUndefined();
     const workspaceId = (ws.payload as { workspaceId: string }).workspaceId;
+    const activated = await writeAndRead(sock, reader, {
+      id: 'mcp-refresh-workspace-active',
+      kind: 'request',
+      type: 'capability.workspace.setActive',
+      payload: {
+        capabilityType: 'mcp',
+        capabilityId: mcpServerId,
+        workspaceId,
+        active: true,
+      },
+    });
+    expect(activated.error).toBeUndefined();
+
     const task = await writeAndRead(sock, reader, {
       id: 'mcp-refresh-task',
       kind: 'request',

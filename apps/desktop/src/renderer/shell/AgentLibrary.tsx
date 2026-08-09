@@ -308,6 +308,25 @@ export function AgentLibrary({
   }, [dialog, selected, onRefresh]);
 
   const drawerOpen = isNew || selected !== null;
+
+  // Escape dismisses the topmost layer first. When the model picker is open,
+  // keep the agent draft intact and only close that picker; a second Escape
+  // closes the drawer itself.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (modelMenuOpen) {
+        setModelMenuOpen(false);
+        return;
+      }
+      setSelected(null);
+      setIsNew(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [drawerOpen, modelMenuOpen]);
+
   const fallbackCandidates = models.filter((m) => m.modelId !== draft.defaultModelId);
   // Fallback checkboxes grouped by provider, mirroring the two-level picker.
   const fallbackGroups = useMemo(() => {
@@ -324,14 +343,14 @@ export function AgentLibrary({
     ?? (draft.defaultModelId || '请选择模型');
 
   return (
-    <div className="flex flex-1 overflow-hidden">
+    <div className="shell-library-page">
       {/* ── Library panel ─────────────────────────────────────────── */}
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="shell-library-panel">
         {/* Header */}
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-5">
+        <div className="shell-library-header">
           <span className="text-[14px] font-semibold text-text">智能体库</span>
           <button
-            className="flex h-7 items-center gap-1.5 rounded-lg bg-accent px-3 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90"
+            className="shell-library-primary-action"
             onClick={openNew}
           >
             <Plus size={13} /> 新建智能体
@@ -339,11 +358,11 @@ export function AgentLibrary({
         </div>
 
         {/* Cards */}
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="shell-library-content">
           {active.length === 0 ? (
             <EmptyAgents onNew={openNew} />
           ) : (
-            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))' }}>
+            <div className="shell-library-grid">
               {active.map((agent) => (
                 <AgentCard
                   key={agent.id}
@@ -359,11 +378,10 @@ export function AgentLibrary({
         </div>
       </div>
 
-      {/* ── Edit dialog — centered two-column layout, roomy (was a cramped
-            380px drawer). Left: identity & persona. Right: model & bindings. ── */}
+      {/* ── Edit drawer. Left: identity & persona. Right: model & bindings. ── */}
       {drawerOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
+          className="shell-library-drawer-backdrop"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closeDrawer();
           }}
@@ -373,9 +391,15 @@ export function AgentLibrary({
               content's computed z-index onto its wrapper, so lift the menu
               panels above the backdrop while this dialog is open. */}
           <style>{'.shell-menu--model-providers,.shell-menu--model-flyout{z-index:60}'}</style>
-          <div className="flex max-h-[88vh] w-full max-w-[860px] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl">
-            {/* Dialog header */}
-            <div className="flex h-13 shrink-0 items-center justify-between border-b border-border px-6 py-3">
+          <div
+            className="shell-library-drawer shell-library-drawer--agent"
+            data-testid="agent-detail-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label={isNew ? '新建智能体' : `编辑智能体${draft.name ? ` · ${draft.name}` : ''}`}
+          >
+            {/* Drawer header */}
+            <div className="shell-library-drawer__header">
               <div className="flex items-center gap-3">
                 <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={30} />
                 <span className="text-[14px] font-semibold text-text">
@@ -391,7 +415,7 @@ export function AgentLibrary({
             </div>
 
             {/* Two-column form */}
-            <div className="grid flex-1 gap-x-8 gap-y-5 overflow-y-auto px-6 py-5 md:grid-cols-2">
+            <div className="shell-library-drawer__body">
               {/* ── Left column: identity ── */}
               <div className="space-y-5">
                 <SectionTitle>基本信息</SectionTitle>
@@ -478,7 +502,7 @@ export function AgentLibrary({
                 {/* Default model — required; empty value is rejected by protocol.
                     Two-level provider → model picker (same widget as the compose bar). */}
                 <Field label="默认模型 *">
-              <div className="flex h-9 items-center rounded-lg border border-border bg-page px-1.5 focus-within:border-accent">
+              <div className="shell-library-control flex h-9 items-center px-1.5">
                 <ModelTrigger
                   label={defaultModelLabel}
                   open={modelMenuOpen}
@@ -509,7 +533,7 @@ export function AgentLibrary({
                   没有其它可选模型。请先在设置里导入更多模型。
                 </p>
               ) : (
-                <div className="max-h-36 space-y-2 overflow-y-auto rounded-lg border border-border bg-page p-2">
+                <div className="shell-library-subpanel max-h-36 space-y-2 overflow-y-auto p-2">
                   {fallbackGroups.map(([providerName, providerModels]) => (
                     <div key={providerName}>
                       <div className="px-1.5 pb-0.5 text-[10.5px] font-medium text-text-faint">
@@ -582,7 +606,7 @@ export function AgentLibrary({
                     <button
                       type="button"
                       data-testid="manage-skills-from-agent"
-                      className="mt-2 rounded-lg bg-accent-soft px-3 py-1.5 text-[11.5px] font-medium text-accent-text hover:opacity-80"
+                      className="shell-library-secondary-action mt-2"
                       onClick={onManageSkills}
                     >
                       去能力中心导入
@@ -590,7 +614,7 @@ export function AgentLibrary({
                   ) : null}
                 </div>
               ) : (
-                <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border bg-page p-2">
+                <div className="shell-library-subpanel max-h-40 space-y-1 overflow-y-auto p-2">
                   {skills.map((s) => {
                     const checked = draft.skillIds.includes(s.id);
                     return (
@@ -647,7 +671,7 @@ export function AgentLibrary({
                   暂无已注册 MCP 服务器。注册后可在此绑定，对话内可调用其工具。
                 </p>
               ) : (
-                <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border bg-page p-2">
+                <div className="shell-library-subpanel max-h-40 space-y-1 overflow-y-auto p-2">
                   {mcpServers.map((s) => {
                     const checked = draft.mcpServerIds.includes(s.id);
                     return (
@@ -682,7 +706,7 @@ export function AgentLibrary({
             </div>
 
             {/* Footer actions */}
-            <div className="flex shrink-0 items-center justify-between border-t border-border px-6 py-3">
+            <div className="shell-library-drawer__footer">
               {!isNew ? (
                 <button
                   className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-error hover:bg-error/10 disabled:opacity-40"
@@ -721,7 +745,7 @@ export function AgentLibrary({
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <div className="border-b border-border pb-1 text-[11.5px] font-semibold uppercase tracking-wide text-text-faint">
+    <div className="shell-library-section-title">
       {children}
     </div>
   );
@@ -750,10 +774,8 @@ function AgentCard({
   return (
     <div
       className={clsx(
-        'group relative flex cursor-pointer flex-col gap-3 rounded-xl border p-4 transition-all',
-        selected
-          ? 'border-accent/40 bg-accent-soft'
-          : 'border-border bg-surface hover:border-border-strong hover:shadow-sm',
+        'shell-library-card group',
+        selected && 'shell-library-card--selected',
       )}
       onClick={onClick}
     >
@@ -768,14 +790,15 @@ function AgentCard({
       </div>
 
       {/* Description */}
-      {agent.description && (
-        <p className="line-clamp-2 text-[12px] text-text-secondary leading-relaxed">
-          {agent.description}
-        </p>
-      )}
+      <p
+        className="shell-library-card__description"
+        data-empty={agent.description ? undefined : '1'}
+      >
+        {agent.description || '暂无简介'}
+      </p>
 
       {/* Binding badges */}
-      <div className="flex flex-wrap gap-1.5">
+      <div className="shell-library-card__meta">
         {fallbackN > 0 && (
           <span className="rounded-md bg-page px-1.5 py-0.5 text-[10.5px] text-text-faint">
             备用 {fallbackN}
@@ -792,7 +815,7 @@ function AgentCard({
       {/* Footer */}
       {onStartConversation && (
         <button
-          className="mt-1 flex h-7 w-full items-center justify-center gap-1.5 rounded-lg border border-border text-[12px] text-text-secondary opacity-0 transition-opacity hover:bg-hover group-hover:opacity-100"
+          className="shell-library-card__action"
           onClick={(e) => { e.stopPropagation(); onStartConversation(agent.id); }}
         >
           <Bot size={12} /> 开始对话
@@ -824,7 +847,7 @@ function EmptyAgents({ onNew }: { onNew(): void }) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
+    <div className="shell-library-field">
       <label className="text-[11px] text-text-faint">{label}</label>
       {children}
     </div>

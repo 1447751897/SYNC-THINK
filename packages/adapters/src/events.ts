@@ -10,7 +10,13 @@ export async function collect(events: AsyncIterable<AdapterEvent>): Promise<Adap
 // Reassemble the text deltas from a collected event stream.
 export function textFromEvents(events: AdapterEvent[]): string {
   return events
-    .filter((e) => e.type === 'text-delta')
-    .map((e) => (e as { type: 'text-delta'; text: string }).text)
+    .filter(
+      (event) =>
+        event.type === 'text-delta' ||
+        (event.type === 'assistant-message-delta' && event.phase === 'final_answer'),
+    )
+    .map((event) =>
+      event.type === 'text-delta' || event.type === 'assistant-message-delta' ? event.text : '',
+    )
     .join('');
 }

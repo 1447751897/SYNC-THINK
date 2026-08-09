@@ -1081,6 +1081,8 @@ describe('conversation projection', () => {
           protocolVersion: 2,
           features: [],
           inFlightRuns: 0,
+          inFlightRunIds: [],
+          eventSequence: 0,
         },
         snapshot,
       },
@@ -1108,14 +1110,14 @@ describe('conversation projection', () => {
     expect(JSON.stringify(projection)).not.toMatch(/sk-[A-Za-z0-9_-]{8,}/);
   });
 
-  it('projects message.reasoning_delta into assistant reasoningText without mixing answer text', () => {
-    const threadId = 'thread-reasoning';
+  it('projects message.commentary_delta into assistant commentaryText without mixing answer text', () => {
+    const threadId = 'thread-commentary';
     const projection = projectConversation(
       [
         eventAt(1, {
           category: 'message',
           type: 'message.appended',
-          payload: { threadId, role: 'user', text: '想清楚再答', taskVersion: 1 },
+          payload: { threadId, role: 'user', text: '开始执行', taskVersion: 1 },
         }),
         eventAt(2, {
           category: 'run',
@@ -1125,9 +1127,9 @@ describe('conversation projection', () => {
         }),
         eventAt(3, {
           category: 'message',
-          type: 'message.reasoning_delta',
+          type: 'message.commentary_delta',
           runId: 'run-r1' as Event['runId'],
-          payload: { threadId, textDelta: '先列要点' },
+          payload: { threadId, textDelta: '正在梳理要点。' },
         }),
         eventAt(4, {
           category: 'message',
@@ -1142,7 +1144,7 @@ describe('conversation projection', () => {
           payload: {
             threadId,
             assistantText: '最终答案',
-            reasoningText: '先列要点',
+            commentaryText: '正在梳理要点。',
           },
         }),
       ],
@@ -1151,7 +1153,48 @@ describe('conversation projection', () => {
 
     const assistant = projection.messages.find((m) => m.role === 'assistant');
     expect(assistant?.text).toBe('最终答案');
-    expect(assistant?.reasoningText).toBe('先列要点');
+    expect(assistant?.commentaryText).toBe('正在梳理要点。');
     expect(assistant?.streaming).toBe(false);
+  });
+
+  it('keeps provider reasoning diagnostics out of the projected conversation', () => {
+    const threadId = 'thread-reasoning-diagnostics';
+    const projection = projectConversation(
+      [
+        eventAt(1, {
+          category: 'message',
+          type: 'message.appended',
+          payload: { threadId, role: 'user', text: '执行任务', taskVersion: 1 },
+        }),
+        eventAt(2, {
+          category: 'run',
+          type: 'run.started',
+          runId: 'run-r2' as Event['runId'],
+          payload: { threadId },
+        }),
+        eventAt(3, {
+          category: 'message',
+          type: 'message.reasoning_delta',
+          runId: 'run-r2' as Event['runId'],
+          payload: { threadId, textDelta: 'internal provider summary' },
+        }),
+        eventAt(4, {
+          category: 'run',
+          type: 'run.completed',
+          runId: 'run-r2' as Event['runId'],
+          payload: {
+            threadId,
+            assistantText: '完成',
+            reasoningText: 'internal provider summary',
+          },
+        }),
+      ],
+      threadId,
+    );
+
+    const assistant = projection.messages.find((message) => message.role === 'assistant');
+    expect(assistant?.text).toBe('完成');
+    expect(assistant?.commentaryText).toBe('');
+    expect(JSON.stringify(projection.messages)).not.toContain('internal provider summary');
   });
 });

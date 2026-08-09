@@ -114,6 +114,24 @@ interface TransientSubscription {
   pendingLiveFrames: ConversationTransientFrame[];
 }
 
+function isTimelineSegment(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const segment = value as Record<string, unknown>;
+  return (
+    typeof segment.id === 'string' &&
+    segment.id.length > 0 &&
+    typeof segment.text === 'string' &&
+    typeof segment.startedAt === 'string' &&
+    (segment.completedAt === undefined || typeof segment.completedAt === 'string') &&
+    (segment.afterSequence === undefined ||
+      (Number.isSafeInteger(segment.afterSequence) && Number(segment.afterSequence) >= 0))
+  );
+}
+
+function isOptionalTimeline(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.every(isTimelineSegment));
+}
+
 function isConversationTransientSnapshot(value: unknown): value is ConversationTransientSnapshot {
   if (!value || typeof value !== 'object') return false;
   const snapshot = value as Partial<ConversationTransientSnapshot>;
@@ -125,7 +143,10 @@ function isConversationTransientSnapshot(value: unknown): value is ConversationT
     Number.isSafeInteger(snapshot.streamSequence) &&
     (snapshot.streamSequence ?? -1) >= 0 &&
     typeof snapshot.text === 'string' &&
+    (snapshot.commentaryText === undefined || typeof snapshot.commentaryText === 'string') &&
+    isOptionalTimeline(snapshot.commentarySegments) &&
     (snapshot.reasoningText === undefined || typeof snapshot.reasoningText === 'string') &&
+    isOptionalTimeline(snapshot.reasoningSegments) &&
     typeof snapshot.updatedAt === 'string'
   );
 }

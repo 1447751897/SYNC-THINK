@@ -862,6 +862,7 @@ function resolveProductionStepSkills(
       if (!row) return undefined;
       return {
         id: String(row.id),
+        enabled: row.enabled !== false,
         archived: Boolean(row.archivedAt),
         permissionApproved: skillStore.isPermissionApproved(row.id),
       };

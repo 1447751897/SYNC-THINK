@@ -19,6 +19,12 @@ export const skillVersion = sqliteTable(
     contentFingerprint: text('content_fingerprint').notNull(),
     hasScripts: integer('has_scripts', { mode: 'boolean' }).notNull().default(false),
     warningsJson: text('warnings_json').notNull().default('[]'),
+    /** Global Compose/runtime availability. One active version per Skill family. */
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    /** local | market | derived. Market edits create a new derived row. */
+    originType: text('origin_type').notNull().default('local'),
+    originRef: text('origin_ref'),
+    derivedFromSkillVersionId: text('derived_from_skill_version_id'),
     /** Reversible uninstall marker. Archived versions stay for audit/history. */
     archivedAt: text('archived_at'),
     createdAt: text('created_at').notNull(),
@@ -27,6 +33,9 @@ export const skillVersion = sqliteTable(
     bySkill: index('skill_version_skill_idx').on(t.skillId),
     byName: index('skill_version_name_idx').on(t.name),
     byFingerprint: index('skill_version_fp_idx').on(t.contentFingerprint),
+    byEnabled: index('skill_version_enabled_idx').on(t.enabled, t.archivedAt, t.createdAt),
+    byOrigin: index('skill_version_origin_idx').on(t.originType, t.originRef, t.createdAt),
+    byDerivedFrom: index('skill_version_derived_from_idx').on(t.derivedFromSkillVersionId),
   }),
 );
 export type SkillVersionRow = typeof skillVersion.$inferSelect;

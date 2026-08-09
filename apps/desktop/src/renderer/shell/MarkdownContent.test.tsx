@@ -47,12 +47,15 @@ describe('MarkdownContent', () => {
   });
 
   it('shows inline expand controls for long fenced code without a fullscreen action', () => {
-    const lines = Array.from({ length: 14 }, (_, index) => `const line${index} = ${index};`).join('\n');
+    const lines = Array.from({ length: 14 }, (_, index) => `const line${index} = ${index};`).join(
+      '\n',
+    );
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: `\`\`\`ts\n${lines}\n\`\`\``,
       }),
     );
+    expect(html).toContain('shell-md-code is-expandable is-collapsed');
     expect(html).toContain('shell-md-code__collapse');
     expect(html).toContain('展开全部 14 行');
     expect(html).toContain('aria-expanded="false"');
@@ -68,6 +71,8 @@ describe('MarkdownContent', () => {
     );
     expect(html).not.toContain('放大查看代码');
     expect(html).not.toContain('展开全部');
+    expect(html).toContain('shell-md-code is-collapsed');
+    expect(html).not.toContain('is-expandable');
     expect(html).not.toContain('shell-md-code__collapse');
   });
   it('shows streaming caret when streaming is true', () => {
@@ -102,6 +107,7 @@ describe('MarkdownContent', () => {
     expect(html).toContain('预览');
     expect(html).toContain('源码');
     expect(html).toContain('复制源码');
+    expect(html).toContain('aria-label="放大查看图表"');
   });
 
   it('keeps a streaming mermaid block as code until the block completes', () => {
@@ -124,9 +130,11 @@ describe('MarkdownContent', () => {
     expect(html).toContain('shell-html');
     expect(html).toContain('data:text/html');
     expect(html).toContain('html-sandbox');
-    // The sandbox injects a fill style so short pages paint their background
-    // across the whole stage instead of leaving an unfilled strip.
-    expect(html).toContain('min-height');
+    const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
+    const decoded = decodeURIComponent(src);
+    expect(decoded).toContain('html,body{margin:0}');
+    expect(decoded).toContain('background-color:');
+    expect(decoded).not.toContain('body{min-height:100vh}');
   });
 
   it('offers a preview/source view switcher on the html sandbox', () => {
@@ -155,7 +163,7 @@ describe('MarkdownContent', () => {
     expect(html).toContain('shell-md-code');
   });
 
-  it('injects the fill style into the head of a complete html document', () => {
+  it('injects the viewport and canvas style into the head of a complete html document', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '```html\n<!DOCTYPE html>\n<html>\n<head><title>t</title></head>\n<body style="background:#222">x</body>\n</html>\n```',
@@ -166,7 +174,7 @@ describe('MarkdownContent', () => {
     const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
     const decoded = decodeURIComponent(src);
     const headPos = decoded.indexOf('</head>');
-    const fillPos = decoded.indexOf('min-height');
+    const fillPos = decoded.indexOf('<style>html,body{margin:0}');
     expect(headPos).toBeGreaterThan(-1);
     expect(fillPos).toBeGreaterThan(-1);
     expect(fillPos).toBeLessThan(headPos);
@@ -176,7 +184,7 @@ describe('MarkdownContent', () => {
     expect(decoded.indexOf('name="viewport"')).toBeLessThan(headPos);
   });
 
-  it('wraps a bare html fragment in a document with the fill style in the head', () => {
+  it('wraps a bare html fragment with viewport and canvas styles in the head', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {
         text: '```html\n<div id="app">Hello</div>\n```',
@@ -185,11 +193,12 @@ describe('MarkdownContent', () => {
     const src = html.match(/src="([^"]*)"/)?.[1] ?? '';
     const decoded = decodeURIComponent(src);
     const headPos = decoded.indexOf('<head>');
-    const fillPos = decoded.indexOf('min-height');
+    const fillPos = decoded.indexOf('<style>html,body{margin:0}');
     expect(headPos).toBeGreaterThan(-1);
     expect(fillPos).toBeGreaterThan(-1);
     expect(fillPos).toBeGreaterThan(headPos);
     expect(fillPos).toBeLessThan(decoded.indexOf('<body>'));
     expect(decoded).toContain('name="viewport"');
+    expect(decoded).not.toContain('body{min-height:100vh}');
   });
 });

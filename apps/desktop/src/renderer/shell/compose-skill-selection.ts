@@ -5,15 +5,15 @@ export interface ComposeSkillOption {
   name: string;
   version: string;
   description: string;
+  enabled?: boolean;
 }
 
 export const MAX_TURN_SKILL_SELECTION = 8;
 
 export function resolveAppendSkillVersionIds(
-  track: Conversation['track'],
+  _track: Conversation['track'],
   selectedSkillVersionIds: readonly string[],
 ): string[] {
-  if (track === 'model') return [];
   const result: string[] = [];
   const seen = new Set<string>();
   for (const raw of selectedSkillVersionIds) {
@@ -43,12 +43,13 @@ export function resolveConversationSkillOwner(
 }
 
 export function resolveDefaultComposeSkillVersionIds(
-  conversation: Pick<Conversation, 'track' | 'targetRef'>,
-  agents: readonly GlobalAgent[],
-  teams: readonly Team[],
+  _conversation: Pick<Conversation, 'track' | 'targetRef'>,
+  _agents: readonly GlobalAgent[],
+  _teams: readonly Team[],
 ): string[] {
-  const owner = resolveConversationSkillOwner(conversation, agents, teams);
-  return resolveAppendSkillVersionIds(conversation.track, owner?.skillIds ?? []);
+  // Agent defaults are injected by Runtime through a separate path. Compose
+  // starts empty and only carries explicit workspace-catalog picks.
+  return [];
 }
 
 export function filterEquippedSkillOptions<T extends ComposeSkillOption>(
@@ -63,7 +64,7 @@ export function filterEquippedSkillOptions<T extends ComposeSkillOption>(
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const skill = byId.get(id);
-    if (skill) result.push(skill);
+    if (skill && skill.enabled !== false) result.push(skill);
   }
   return result;
 }

@@ -7,6 +7,7 @@ import {
   parseAddModelsPayload,
   parseProbeCapabilitiesPayload,
   parseConfirmCapabilitiesPayload,
+  parseUsageSummaryPayload,
 } from '../src/provider-payloads.js';
 
 describe('provider-payloads', () => {
@@ -76,5 +77,30 @@ describe('provider-payloads', () => {
         capabilities: ['not-a-real-tag'],
       }),
     ).toThrow(/Invalid confirm-capabilities/);
+  });
+
+  it('parses task-scoped usage summary payloads and trims the task id', () => {
+    expect(parseUsageSummaryPayload({ taskId: ' task-a ' })).toEqual({
+      taskId: 'task-a',
+    });
+    expect(parseUsageSummaryPayload({ sinceDays: 30, taskId: 'task-a' })).toEqual({
+      sinceDays: 30,
+      taskId: 'task-a',
+    });
+  });
+
+  it('rejects invalid task-scoped usage summary payloads', () => {
+    expect(() => parseUsageSummaryPayload({ taskId: '   ' })).toThrow(
+      /Invalid usage-summary payload/,
+    );
+    expect(() => parseUsageSummaryPayload({ taskId: 'x'.repeat(257) })).toThrow(
+      /Invalid usage-summary payload/,
+    );
+    expect(() => parseUsageSummaryPayload({ taskId: 123 })).toThrow(
+      /Invalid usage-summary payload/,
+    );
+    expect(() => parseUsageSummaryPayload({ taskId: 'task-a', unknown: true })).toThrow(
+      /Invalid usage-summary payload/,
+    );
   });
 });

@@ -44,6 +44,22 @@ class BrowserToolProvider implements ProviderAdapter {
     const resultMessage = request.messages.find((message) => message.role === 'tool');
     if (!resultMessage) {
       yield {
+        type: 'assistant-message-start',
+        phase: 'commentary',
+        itemId: 'browser-commentary-1',
+      };
+      yield {
+        type: 'assistant-message-delta',
+        phase: 'commentary',
+        itemId: 'browser-commentary-1',
+        text: '我先打开页面并读取结果。',
+      };
+      yield {
+        type: 'assistant-message-end',
+        phase: 'commentary',
+        itemId: 'browser-commentary-1',
+      };
+      yield {
         type: 'tool-call',
         toolCall: {
           id: 'browser-call-1',
@@ -58,6 +74,70 @@ class BrowserToolProvider implements ProviderAdapter {
     }
     this.toolResult = String(resultMessage.content);
     yield { type: 'text-delta', text: 'Browser opened.' };
+    yield { type: 'finished', reason: 'stop' };
+  }
+}
+
+class CodexTimelineBrowserProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  readonly requests: ProviderCallRequest[] = [];
+
+  async discoverModels(): Promise<string[]> {
+    return ['fake-mini'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    this.requests.push(request);
+    const toolResults = request.messages.filter((message) => message.role === 'tool');
+    const round = toolResults.length + 1;
+
+    if (round <= 2) {
+      yield {
+        type: 'assistant-message-start',
+        phase: 'commentary',
+        itemId: `timeline-commentary-${round}`,
+      };
+      yield {
+        type: 'assistant-message-delta',
+        phase: 'commentary',
+        itemId: `timeline-commentary-${round}`,
+        text: round === 1 ? '我先检查首页。' : '首页已确认，我继续检查详情页。',
+      };
+      yield {
+        type: 'assistant-message-end',
+        phase: 'commentary',
+        itemId: `timeline-commentary-${round}`,
+      };
+      yield {
+        type: 'tool-call',
+        toolCall: {
+          id: `timeline-call-${round}`,
+          name: 'browser_open',
+          argumentsJson: JSON.stringify({
+            url: `https://example.test/step-${round}`,
+          }),
+        },
+      };
+      yield { type: 'finished', reason: 'tool-requests' };
+      return;
+    }
+
+    yield {
+      type: 'assistant-message-start',
+      phase: 'final_answer',
+      itemId: 'timeline-final',
+    };
+    yield {
+      type: 'assistant-message-delta',
+      phase: 'final_answer',
+      itemId: 'timeline-final',
+      text: '两步检查均已完成。',
+    };
+    yield {
+      type: 'assistant-message-end',
+      phase: 'final_answer',
+      itemId: 'timeline-final',
+    };
     yield { type: 'finished', reason: 'stop' };
   }
 }
@@ -232,6 +312,11 @@ describe('Runtime Browser Worker tool loop', () => {
         ),
       ).toBe(true);
       expect(provider.requests[0]?.tools?.some((tool) => tool.name === 'browser_open')).toBe(true);
+      expect(provider.requests[1]?.messages).toContainEqual({
+        role: 'assistant',
+        phase: 'commentary',
+        content: '我先打开页面并读取结果。',
+      });
       expect(browserHost.executions).toHaveLength(1);
       expect(browserHost.executions[0]).toMatchObject({
         action: {
@@ -277,6 +362,154 @@ describe('Runtime Browser Worker tool loop', () => {
       connection.raw.close();
     }
     expect(browserHost.shutdownCalled).toBe(true);
+  });
+
+  it('preserves Codex commentary and tool calls in canonical sequence across multiple rounds', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'sync-think-browser-timeline-runtime-'));
+    tempDirs.push(root);
+    const dbPath = join(root, 'sync-think.db');
+    const installId = `browser-timeline-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const workspaceId = 'workspace-browser-timeline-runtime' as WorkspaceId;
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+    const store = new SqliteEventCheckpointStore(connection.raw);
+    const browserStore = new SqliteBrowserStore(connection.raw);
+    const workspaceStore = new SqliteWorkspaceStore(connection.raw);
+    const conversationStore = new SqliteConversationStore(connection.raw);
+    const unitOfWork = new SqliteUnitOfWork(connection.raw);
+    workspaceStore.createWorkspace({
+      id: workspaceId,
+      name: 'Browser timeline runtime',
+      folderPath: root,
+      allowedRoots: [root],
+    });
+    const task = workspaceStore.createTask({
+      workspaceId,
+      title: 'Browser timeline runtime',
+      goal: 'Exercise Codex-style provider history',
+    });
+    const conversation = conversationStore.create({
+      target: { track: 'model', modelId: 'fake-mini' as never },
+      workspaceId,
+      title: 'Browser timeline runtime',
+      executionMode: 'full-access',
+    });
+    conversationStore.bindTask(conversation.id, task.taskId);
+    const provider = new CodexTimelineBrowserProvider();
+    const browserHost = new RecordingBrowserHost();
+    const runtime = new Runtime({
+      installId,
+      allowNoToken: true,
+      stateStore: store,
+      browserStore,
+      workspaceStore,
+      conversationStore,
+      unitOfWork,
+      workspaceId,
+      checkpointRunId: `runtime-${installId}` as RunId,
+      demoProvider: provider,
+      browserHost,
+      browserFallbackWorkingDir: root,
+    });
+    await runtime.start();
+    const socket = await connectRuntime(installId);
+    const inbox = createFrameInbox(socket);
+    try {
+      await inbox.send({
+        id: 'hello-browser-timeline-runtime',
+        kind: 'request',
+        type: '__hello',
+        payload: {
+          protocolVersion: 2,
+          appVersion: '0.0.1',
+          installId,
+          nonce: 'browser-timeline-runtime',
+          features: ['task.appendMessage'],
+        },
+      });
+      await inbox.send({
+        id: 'append-browser-timeline-runtime',
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: task.threadId,
+          expectedTaskVersion: 0,
+          role: 'user',
+          text: '依次检查首页和详情页。',
+          networkEnabled: true,
+        },
+      });
+
+      expect(
+        await waitFor(() =>
+          store.listEvents(workspaceId, 0).some((event) => event.type === 'run.completed'),
+        ),
+      ).toBe(true);
+      expect(provider.requests).toHaveLength(3);
+      expect(browserHost.executions).toHaveLength(2);
+
+      const secondTurn = provider.requests[1]!.messages.filter(
+        (message) => message.role !== 'system',
+      );
+      expect(secondTurn).toEqual([
+        { role: 'user', content: '依次检查首页和详情页。' },
+        {
+          role: 'assistant',
+          phase: 'commentary',
+          content: '我先检查首页。',
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCall: {
+                id: 'timeline-call-1',
+                name: 'browser_open',
+                argumentsJson: '{"url":"https://example.test/step-1"}',
+              },
+            },
+          ],
+        },
+        expect.objectContaining({
+          role: 'tool',
+          toolCallId: 'timeline-call-1',
+        }),
+      ]);
+
+      const finalTurn = provider.requests[2]!.messages.filter(
+        (message) => message.role !== 'system',
+      );
+      expect(finalTurn).toEqual([
+        ...secondTurn,
+        {
+          role: 'assistant',
+          phase: 'commentary',
+          content: '首页已确认，我继续检查详情页。',
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCall: {
+                id: 'timeline-call-2',
+                name: 'browser_open',
+                argumentsJson: '{"url":"https://example.test/step-2"}',
+              },
+            },
+          ],
+        },
+        expect.objectContaining({
+          role: 'tool',
+          toolCallId: 'timeline-call-2',
+        }),
+      ]);
+    } finally {
+      socket.destroy();
+      await runtime.stop();
+      connection.raw.close();
+    }
   });
 
   it('removes URL credentials, query, and hash from persisted Browser errors', async () => {

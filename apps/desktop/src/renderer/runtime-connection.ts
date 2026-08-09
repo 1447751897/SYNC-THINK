@@ -15,6 +15,12 @@ export interface RuntimeConnectionOptions {
   connect: () => Promise<RuntimeConnectOutcome>;
   onConnected: (result: RuntimeConnectResult) => void;
   onFailed: (error: RuntimeConnectFailure) => void;
+  onRetrying?: (status: {
+    attempt: number;
+    maxAttempts: number;
+    delayMs: number;
+    error: RuntimeConnectFailure;
+  }) => void;
   retryDelaysMs?: readonly number[];
   scheduler?: RuntimeRetryScheduler;
 }
@@ -50,7 +56,14 @@ export function startRuntimeConnection(options: RuntimeConnectionOptions): () =>
       options.onFailed(outcome.error);
       return;
     }
-    const delayMs = retryDelaysMs[retryIndex++];
+    const delayMs = retryDelaysMs[retryIndex];
+    options.onRetrying?.({
+      attempt: retryIndex + 1,
+      maxAttempts: retryDelaysMs.length + 1,
+      delayMs,
+      error: outcome.error,
+    });
+    retryIndex += 1;
     retryTimer = scheduler.schedule(() => {
       retryTimer = null;
       if (!active) return;

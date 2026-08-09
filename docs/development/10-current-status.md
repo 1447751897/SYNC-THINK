@@ -1,3 +1,25 @@
+## 当前状态：2026-08-09 · Skill / MCP 治理与分屏工作台阶段性提交快照
+
+### 当前结论
+
+- 能力治理已按三条独立路径收口：全局开关开启后能力可被发现；Workspace 未激活时，当前 Workspace 的 Compose `/` 菜单不展示该 Skill，也不能主动调用；Workspace 激活后，Compose 才能选择并执行。
+- Agent 自身绑定的 Skill 走独立注入路径：Agent 执行任务时默认把其已配置的 Skill 注入上下文，不要求当前 Workspace 再激活同一 Skill。Workspace 治理约束 Compose/普通对话路径，Agent 绑定约束 Agent 执行路径。
+- Runtime、Compose、MCP dispatch 和能力中心共用全局启用、Workspace 激活、Agent 绑定三层状态模型；全局停用只阻断实际调用，保留 Workspace 激活关系与 Agent 绑定。
+- Electron 分屏工作台已支持对话行 `+` 菜单中的“新建对话 / 新建终端 / 网页浏览”。新建内容默认进入当前 Pane，不自动分屏；内容可通过拖拽移动到其他 Pane。
+- “文件”和“工作区”已合并为“工作区文件”，并提供独立的分屏打开/隐藏按钮；分屏、拖拽目标、面板打开/关闭均有过渡动画，同时补齐浅色/深色主题 token、窄窗口适配和 reduced-motion 分支。
+
+### 当前验证
+
+- 已知本阶段定向回归 65 项通过，TypeScript 检查通过，Desktop build 通过；Electron `capturePage()` 视觉矩阵 10 个用例通过，覆盖浅色、深色和 760px 窄窗口。
+- 提交前门禁已完成：Desktop 全量测试 `148 files / 1072 tests` 通过；`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 通过；`pnpm --filter @sync-think/desktop build` 通过；`git diff --check` 通过，仅保留既有 CRLF→LF 转换提示，无空白错误。
+- 真实 Electron 启动尝试受 `ERR_FAILED (-2)`、Windows Chromium cache 权限和已有单实例锁影响；PID `120804` 的 `--remote-debugging-port=9222 .` 实例保持运行，未结束或清理。
+
+### 工作树与后续动作
+
+- 当前分支为 `feature/newmax-shell-rewrite`，跟踪 `origin/feature/newmax-shell-rewrite`；本阶段源代码、测试和文档已创建阶段性提交，尚待推送到远端。
+- `.codex` 下的本地截图与根目录 `sync-think-arch.html` 已作为本地证据/临时产物排除在提交之外，仍保留在工作区。
+- 下一步：推送阶段性提交到 `origin/feature/newmax-shell-rewrite`，随后核对远端提交、分支指针和工作树状态。
+
 ## 当前状态：2026-08-05 17:44 +08:00 · Browser Automation Studio P1.1 最终收口
 
 ### 当前结论
@@ -663,3 +685,31 @@
 1. P1.3 后续：步骤编辑、固定值/运行变量/秘密引用绑定和已发布 WorkflowVersion 的确定性回放。
 2. 在后续设计中明确误建 V2 Draft 的取消/丢弃、任务归档或删除、Profile 重绑与历史版本查看；同时评估任务列表逐项 get 的 N+1 成本。
 3. P1.4 再实现运行历史、逐步日志/截图、失败定位和登录 handoff；P1.5 实现手动启停定时任务。
+
+## 当前状态：2026-08-09 · TD-040 Skill / MCP 能力治理收口
+
+### 已完成
+
+- 已落地 Skill/MCP 共用的能力治理模型与能力中心：全局启用、Workspace 激活、Agent/Team 绑定、来源/版本和当前有效性均可查询。
+- Runtime 执行前按三层治理规则计算有效能力集合；Compose `/` 入口和 MCP 工具 dispatch 共用同一份有效能力判断。
+- 能力中心支持市场/我的切换、搜索、来源与状态筛选、Workspace 激活/停用、全局开关、Agent 绑定展示、最近 45 天调用统计和失败计数。
+- Skill 市场版本编辑会创建本地派生版本并保留来源关系；本地发布草稿支持保存、列表、详情、编辑回填和提交占位结果。
+- “一键整理”只生成只读报告，覆盖未使用、未激活、有问题和上下文占用较高的能力，不直接修改数据或关系。
+
+### 当前边界
+
+1. 市场发布渠道尚未开放；提交草稿只返回稳定的 `channel-unavailable` 本地结果，不代表已审核或已发布。
+2. 全局停用只阻断实际调用，Workspace 激活关系和 Agent 绑定仍保留，重新启用后可恢复有效性。
+3. 整理报告不会自动删除、停用、取消 Workspace 激活或解除 Agent 绑定。
+4. 能力用量以最近 45 天为治理视图窗口，失败和取消计入调用次数，失败另计问题次数；未进入有效执行集合的能力不会产生本轮调用记录。
+
+### 本轮验证
+
+- `pnpm test --force --concurrency=1`：20/20 Turbo tasks 通过；Runtime 80 files / 526 tests，Storage 37 files / 406 tests。
+- `pnpm typecheck`：20/20 tasks；`pnpm lint`：11/11 tasks；`pnpm lint:tokens`；`pnpm build`：11/11 tasks；`git diff --check` 均通过。
+- 能力中心手测路径：打开能力中心，切换 Skill/MCP 与市场/我的，搜索并查看来源/状态；切换全局开关；选择 Workspace 激活或停用能力；查看 Agent 绑定和最近 45 天 usage；打开只读整理报告；编辑并保存本地发布草稿；提交后确认显示 `channel-unavailable`。
+
+### 工作树
+
+- 当前分支为 `feature/newmax-shell-rewrite`，HEAD 为 `7db45ec`（`desktop: UI 修复与打磨`）。
+- 本轮及此前改动均保持未提交、未推送；真实数据库 `D:\projects\SYNC-THINK\.data\SYNC-THINK\sync-think.db` 未被修改。

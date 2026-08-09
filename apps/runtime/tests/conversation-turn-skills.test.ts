@@ -10,6 +10,7 @@ import { SecureStore, XorDevBackend } from '@sync-think/secure-store';
 import {
   openDatabaseAsync,
   runMigrations,
+  SqliteCapabilityStore,
   SqliteConversationStore,
   SqliteEventCheckpointStore,
   SqliteGlobalAgentStore,
@@ -162,6 +163,7 @@ async function expectUnauthorizedSelectionRejected(options: {
     : undefined;
   const globalAgentStore = new SqliteGlobalAgentStore(connection.raw);
   const conversationStore = new SqliteConversationStore(connection.raw);
+  const capabilityStore = new SqliteCapabilityStore(connection.raw);
   const messageStore = new SqliteMessageStore(connection.raw);
   const workspaceStore = new SqliteWorkspaceStore(connection.raw);
   const skillStore = new SqliteSkillStore(connection.raw);
@@ -218,6 +220,7 @@ async function expectUnauthorizedSelectionRejected(options: {
     messageStore,
     workspaceStore,
     skillStore,
+    capabilityStore,
     unitOfWork,
     ...(options.provider
       ? { demoProvider: new FallbackRecordingAdapter(() => undefined) }
@@ -342,7 +345,6 @@ describe('per-turn Skill selection', () => {
       const runtime = new Runtime({
         installId,
         allowNoToken: true,
-    modelRetryBaseDelayMs: 0,
         modelRetryBaseDelayMs: 0,
         stateStore,
         workspaceId,
@@ -461,7 +463,7 @@ describe('per-turn Skill selection', () => {
     }
   }, 60_000);
 
-  it('uses only selected exact versions and freezes them through fallback', async () => {
+  it('merges Compose Skills with Agent defaults and freezes the result through fallback', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-turn-skills-'));
     tempDirs.push(dir);
     const dbPath = join(dir, 'sync-think.db');
@@ -473,6 +475,7 @@ describe('per-turn Skill selection', () => {
     const providerStore = new SqliteProviderStore(connection.raw);
     const globalAgentStore = new SqliteGlobalAgentStore(connection.raw);
     const conversationStore = new SqliteConversationStore(connection.raw);
+    const capabilityStore = new SqliteCapabilityStore(connection.raw);
     const workspaceStore = new SqliteWorkspaceStore(connection.raw);
     const skillStore = new SqliteSkillStore(connection.raw);
     const unitOfWork = new SqliteUnitOfWork(connection.raw);
@@ -516,6 +519,14 @@ describe('per-turn Skill selection', () => {
       body: '',
       contentFingerprint: 'fingerprint-empty-guidance',
     });
+    const deniedSkill = skillStore.importVersion({
+      name: 'workspace-denied',
+      description: 'Not activated in this workspace',
+      version: '1.0.0',
+      sourceMd: '---\nname: workspace-denied\n---\nDENIED_SKILL_BODY',
+      body: 'DENIED_SKILL_BODY',
+      contentFingerprint: 'fingerprint-workspace-denied',
+    });
     const agent = globalAgentStore.create({
       name: 'Turn Skill Agent',
       defaultModelId: models[0]!.id,
@@ -528,6 +539,18 @@ describe('per-turn Skill selection', () => {
       folderPath: dir,
       allowedRoots: [dir],
     });
+    capabilityStore.setWorkspaceActivation({
+      capabilityType: 'skill',
+      capabilityId: skillB.id,
+      workspaceId,
+      active: true,
+    });
+    capabilityStore.setWorkspaceActivation({
+      capabilityType: 'skill',
+      capabilityId: emptySkill.id,
+      workspaceId,
+      active: true,
+    });
 
     const adapter = new FallbackRecordingAdapter(() => {
       globalAgentStore.update({ agentId: agent.id, skillIds: [skillA.id, emptySkill.id] });
@@ -535,7 +558,7 @@ describe('per-turn Skill selection', () => {
     const runtime = new Runtime({
       installId,
       allowNoToken: true,
-    modelRetryBaseDelayMs: 0,
+      modelRetryBaseDelayMs: 0,
       stateStore,
       workspaceId,
       checkpointRunId: `runtime-${installId}` as RunId,
@@ -544,6 +567,7 @@ describe('per-turn Skill selection', () => {
       conversationStore,
       workspaceStore,
       skillStore,
+      capabilityStore,
       unitOfWork,
       secureStore,
       discoveryByProtocol: { 'openai-chat': adapter },
@@ -600,21 +624,25 @@ describe('per-turn Skill selection', () => {
       expect(selected.error).toBeUndefined();
       // The primary model retries in place 5 times (6 failed attempts) before
       // the fallback walk runs the 7th call. All calls must use the frozen
-      // per-turn selection (skillB), never the agent's mutated skillIds.
+      // union of Agent defaults and the explicit Compose selection.
       expect(await waitFor(() => adapter.calls.length >= 7)).toBe(true);
       for (const call of adapter.calls) {
+        expect(String(call.systemPrompt)).toContain('ALPHA_SKILL_BODY');
         expect(String(call.systemPrompt)).toContain('BETA_SKILL_BODY');
-        expect(String(call.systemPrompt)).not.toContain('ALPHA_SKILL_BODY');
+        expect(String(call.systemPrompt)).toContain('### Skill: empty-guidance (1.0.0)');
+        expect(String(call.systemPrompt)).not.toContain('DENIED_SKILL_BODY');
       }
 
       const firstTurnEvents = stateStore.listEvents(workspaceId, 0);
       const contextEvents = firstTurnEvents.filter((event) => event.type === 'context.packet.built');
       expect(contextEvents.length).toBeGreaterThanOrEqual(2);
       for (const event of contextEvents) {
-        expect(JSON.stringify(event.payload)).not.toContain('BETA_SKILL_BODY');
-        expect(event.payload.skillVersionIds).toEqual([skillB.id]);
+        expect(JSON.stringify(event.payload)).not.toContain('DENIED_SKILL_BODY');
+        expect(event.payload.skillVersionIds).toEqual([skillA.id, skillB.id, emptySkill.id]);
+        expect(event.payload.includedSourceIds).toContain(`skill:${skillA.id}`);
         expect(event.payload.includedSourceIds).toContain(`skill:${skillB.id}`);
-        expect(event.payload.includedSourceIds).not.toContain(`skill:${skillA.id}`);
+        expect(event.payload.includedSourceIds).toContain(`skill:${emptySkill.id}`);
+        expect(event.payload.includedSourceIds).not.toContain(`skill:${deniedSkill.id}`);
       }
       const persistedRuns = firstTurnEvents.filter(
         (event) => event.type === 'run.started' || event.type === 'run.fallback.selected',
@@ -622,10 +650,11 @@ describe('per-turn Skill selection', () => {
       expect(persistedRuns.length).toBeGreaterThanOrEqual(2);
       for (const event of persistedRuns) {
         const serialized = JSON.stringify(event.payload);
-        expect(serialized).not.toContain('ALPHA_SKILL_BODY');
-        expect(serialized).not.toContain('BETA_SKILL_BODY');
+        expect(serialized).not.toContain('DENIED_SKILL_BODY');
         expect((event.payload.run as { skillVersionIds?: string[] }).skillVersionIds).toEqual([
+          skillA.id,
           skillB.id,
+          emptySkill.id,
         ]);
       }
 
@@ -650,10 +679,14 @@ describe('per-turn Skill selection', () => {
       });
       expect(empty.error).toBeUndefined();
       // First turn consumed 7 calls (6 failed attempts + 1 success after the
-      // fallback); the no-skill turn is call index 7.
+      // fallback); an empty Compose selection still keeps the current Agent
+      // defaults after the Agent binding changed during the first turn.
       expect(await waitFor(() => adapter.calls.length >= 8)).toBe(true);
-      expect(String(adapter.calls[7]!.systemPrompt)).not.toContain('ALPHA_SKILL_BODY');
+      expect(String(adapter.calls[7]!.systemPrompt)).toContain('ALPHA_SKILL_BODY');
       expect(String(adapter.calls[7]!.systemPrompt)).not.toContain('BETA_SKILL_BODY');
+      expect(String(adapter.calls[7]!.systemPrompt)).toContain(
+        '### Skill: empty-guidance (1.0.0)',
+      );
 
       const prepEmptyBody = await inbox.send({
         id: 'prep-empty-body',
@@ -685,7 +718,7 @@ describe('per-turn Skill selection', () => {
         id: 'prep-denied',
         kind: 'request',
         type: 'conversation.sendMessage',
-        payload: { conversationId, text: 'Try stale beta' },
+        payload: { conversationId, text: 'Try an inactive workspace Skill' },
       });
       const deniedPrep = prepDenied.payload as { threadId: string; taskVersion: number };
       const denied = await inbox.send({
@@ -696,8 +729,8 @@ describe('per-turn Skill selection', () => {
           threadId: deniedPrep.threadId,
           expectedTaskVersion: deniedPrep.taskVersion,
           role: 'user',
-          text: 'Try stale beta',
-          skillVersionIds: [skillB.id],
+          text: 'Try an inactive workspace Skill',
+          skillVersionIds: [deniedSkill.id],
         },
       });
       expect(denied.error).toBeDefined();
@@ -705,7 +738,11 @@ describe('per-turn Skill selection', () => {
       expect(
         stateStore
           .listEvents(workspaceId, 0)
-          .some((event) => event.type === 'message.appended' && event.payload.text === 'Try stale beta'),
+          .some(
+            (event) =>
+              event.type === 'message.appended' &&
+              event.payload.text === 'Try an inactive workspace Skill',
+          ),
       ).toBe(false);
     } finally {
       socket.destroy();

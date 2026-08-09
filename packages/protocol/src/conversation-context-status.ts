@@ -26,6 +26,7 @@ const conversationGetContextStatusPayloadSchema = z
       .trim()
       .min(1)
       .max(MAX_CONTEXT_STATUS_CONVERSATION_ID_LENGTH),
+    modelId: z.string().trim().min(1).max(MAX_CONTEXT_STATUS_MODEL_ID_LENGTH).optional(),
   })
   .strict();
 

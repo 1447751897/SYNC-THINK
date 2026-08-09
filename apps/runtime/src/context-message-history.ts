@@ -28,6 +28,56 @@ function textFromMessage(message: Message): string {
     .join('\n');
 }
 
+function commentaryTextsFromMessage(message: Message): string[] {
+  const texts: string[] = [];
+  for (const block of message.blocks) {
+    if (block.type !== 'commentary') continue;
+    const payload =
+      block.payload && typeof block.payload === 'object'
+        ? (block.payload as { commentarySegments?: unknown })
+        : undefined;
+    const segments = Array.isArray(payload?.commentarySegments)
+      ? payload.commentarySegments
+      : [];
+    let restoredSegment = false;
+    for (const segment of segments) {
+      if (!segment || typeof segment !== 'object') continue;
+      const text = (segment as { text?: unknown }).text;
+      if (typeof text !== 'string' || !text.trim()) continue;
+      texts.push(text.trim());
+      restoredSegment = true;
+    }
+    if (!restoredSegment && block.text?.trim()) texts.push(block.text.trim());
+  }
+  return texts;
+}
+
+function assistantProviderMessagesFromMessage(message: Message): ProviderMessage[] {
+  const messages: ProviderMessage[] = commentaryTextsFromMessage(message).map((content) => ({
+    role: 'assistant',
+    phase: 'commentary',
+    content,
+  }));
+  const finalAnswer = textFromMessage(message);
+  if (finalAnswer) {
+    messages.push({
+      role: 'assistant',
+      phase: 'final_answer',
+      content: finalAnswer,
+    });
+  }
+  return messages;
+}
+
+function isCancelledAssistantMessage(message: Message): boolean {
+  return message.blocks.some((block) => {
+    if (block.type !== 'error' || !block.payload || typeof block.payload !== 'object') {
+      return false;
+    }
+    return (block.payload as { terminalState?: unknown }).terminalState === 'cancelled';
+  });
+}
+
 function providerContentFromMessage(
   message: Message,
   resolveImageDataUrl?: BuildProviderMessagesInput['resolveImageDataUrl'],
@@ -79,6 +129,17 @@ export function buildProviderMessagesFromDurableMessages(
   for (const message of durable) {
     // UI-only compact notices are never sent back to the model.
     if (message.role === 'system' && /^上下文已(?:自动)?压缩/.test(textFromMessage(message))) continue;
+    if (message.role === 'assistant') {
+      const restored = assistantProviderMessagesFromMessage(message);
+      if (restored.length > 0 && isCancelledAssistantMessage(message)) {
+        messages.push({
+          role: 'system',
+          content: '[上一轮回答已被用户中止，以下是中止前产生的部分内容]',
+        });
+      }
+      messages.push(...restored);
+      continue;
+    }
     const content = providerContentFromMessage(message, input.resolveImageDataUrl);
     if (content === undefined) continue;
     messages.push({ role: message.role, content });

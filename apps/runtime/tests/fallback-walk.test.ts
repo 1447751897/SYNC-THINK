@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeFrames, encodeFrame, pipePathPortable, type Frame } from '@sync-think/protocol';
 import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
-import { openDatabaseAsync } from '@sync-think/storage';
+import { openDatabaseAsync, SqliteMessageStore } from '@sync-think/storage';
 import { openPersistentRuntime } from '../src/persistence.js';
 
 const tempDirs: string[] = [];
@@ -273,7 +273,239 @@ class RepeatGuardFailProvider implements ProviderAdapter {
   }
 }
 
+class PartialCommentaryFallbackProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  readonly requests: ProviderCallRequest[] = [];
+
+  constructor(private readonly failureMode: 'error-event' | 'stream-throw') {}
+
+  async discoverModels(): Promise<string[]> {
+    return ['alpha-model', 'beta-model'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    this.requests.push(request);
+    if (request.modelId === 'alpha-model') {
+      yield {
+        type: 'assistant-message-start',
+        phase: 'commentary',
+        itemId: 'partial-commentary',
+      };
+      yield {
+        type: 'assistant-message-delta',
+        phase: 'commentary',
+        itemId: 'partial-commentary',
+        text: '我先检查当前状态。',
+      };
+      yield {
+        type: 'assistant-message-end',
+        phase: 'commentary',
+        itemId: 'partial-commentary',
+      };
+      if (this.failureMode === 'error-event') {
+        yield {
+          type: 'error',
+          failureClass: 'timeout',
+          message: 'simulated timeout after commentary',
+        };
+        return;
+      }
+      throw new Error('simulated provider stream timed out after commentary');
+    }
+
+    yield {
+      type: 'assistant-message-start',
+      phase: 'final_answer',
+      itemId: 'fallback-final',
+    };
+    yield {
+      type: 'assistant-message-delta',
+      phase: 'final_answer',
+      itemId: 'fallback-final',
+      text: '已从备用模型继续完成。',
+    };
+    yield {
+      type: 'assistant-message-end',
+      phase: 'final_answer',
+      itemId: 'fallback-final',
+    };
+    yield { type: 'finished', reason: 'stop' };
+  }
+}
+
 describe('runtime fallback walk on model failure (design §5.3)', () => {
+  it.each(['error-event', 'stream-throw'] as const)(
+    'carries visible commentary into fallback history after %s without inheriting incomplete tools',
+    async (failureMode) => {
+      const dir = mkdtempSync(join(tmpdir(), `sync-think-fb-commentary-${failureMode}-`));
+      tempDirs.push(dir);
+      const dbPath = join(dir, 'sync-think.db');
+      const secureKey = join(dir, 'secure', 'key.bin');
+      const installId = `test-fb-commentary-${failureMode}-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2)}`;
+
+      const adapter = new PartialCommentaryFallbackProvider(failureMode);
+      const session = await openPersistentRuntime({
+        installId,
+        dbPath,
+        secureStoreKeyPath: secureKey,
+        allowNoToken: true,
+        modelRetryBaseDelayMs: 0,
+        demoProvider: adapter,
+      });
+      await session.runtime.start();
+
+      const sock = await connectRuntime(installId);
+      const reader = createFrameReader(sock);
+      await hello(sock, reader, installId);
+
+      const created = await writeAndRead(sock, reader, {
+        id: `prov-commentary-${failureMode}`,
+        kind: 'request',
+        type: 'provider.create',
+        payload: {
+          name: `Commentary ${failureMode} Gateway`,
+          baseUrl: 'https://commentary.example/v1',
+          protocol: 'openai-chat',
+          apiKey: 'sk-commentary-fallback-key-not-real',
+          supportsDiscovery: false,
+        },
+      });
+      const providerId = (created.payload as { provider: { providerId: string } }).provider
+        .providerId;
+      const add = await writeAndRead(sock, reader, {
+        id: `add-commentary-${failureMode}`,
+        kind: 'request',
+        type: 'provider.addModels',
+        payload: {
+          providerId,
+          protocol: 'openai-chat',
+          models: [
+            { providerModelId: 'alpha-model', displayName: 'Alpha' },
+            { providerModelId: 'beta-model', displayName: 'Beta' },
+          ],
+        },
+      });
+      const models = (
+        add.payload as { models: Array<{ modelId: string; providerModelId: string }> }
+      ).models;
+      const alpha = models.find((model) => model.providerModelId === 'alpha-model')!;
+      const beta = models.find((model) => model.providerModelId === 'beta-model')!;
+
+      await writeAndRead(sock, reader, {
+        id: `agent-commentary-${failureMode}`,
+        kind: 'request',
+        type: 'agent.updateBinding',
+        payload: {
+          defaultModelId: alpha.modelId,
+          fallbackModelIds: [beta.modelId],
+          pauseOnFailure: true,
+        },
+      });
+      const workspace = await writeAndRead(sock, reader, {
+        id: `workspace-commentary-${failureMode}`,
+        kind: 'request',
+        type: 'workspace.create',
+        payload: {
+          folderPath: join(dir, 'workspace'),
+          name: `Commentary ${failureMode} workspace`,
+        },
+      });
+      const workspaceId = (workspace.payload as { workspaceId: string }).workspaceId;
+      const task = await writeAndRead(sock, reader, {
+        id: `task-commentary-${failureMode}`,
+        kind: 'request',
+        type: 'task.create',
+        payload: {
+          workspaceId,
+          title: `Commentary ${failureMode} task`,
+          goal: 'Preserve visible commentary across fallback',
+        },
+      });
+      const taskPayload = task.payload as { threadId: string; taskVersion: number };
+
+      await writeAndRead(sock, reader, {
+        id: `subscribe-commentary-${failureMode}`,
+        kind: 'request',
+        type: 'runtime.subscribeEvents',
+        payload: { afterCursor: 0 },
+      });
+      await writeAndRead(sock, reader, {
+        id: `message-commentary-${failureMode}`,
+        kind: 'request',
+        type: 'task.appendMessage',
+        payload: {
+          threadId: taskPayload.threadId,
+          expectedTaskVersion: taskPayload.taskVersion,
+          role: 'user',
+          text: '检查状态并继续完成。',
+        },
+      });
+
+      const completed = await reader.waitForEvent((type) => type === 'run.completed', 8_000);
+      expect(completed).toBeDefined();
+      expect(adapter.requests.map((request) => request.modelId)).toEqual([
+        'alpha-model',
+        'beta-model',
+      ]);
+
+      const fallbackRequest = adapter.requests[1]!;
+      expect(
+        fallbackRequest.messages.filter(
+          (message) => message.role === 'assistant' && message.phase === 'commentary',
+        ),
+      ).toEqual([
+        {
+          role: 'assistant',
+          phase: 'commentary',
+          content: '我先检查当前状态。',
+        },
+      ]);
+      expect(
+        fallbackRequest.messages.some(
+          (message) =>
+            message.role === 'assistant' &&
+            Array.isArray(message.content) &&
+            message.content.some((part) => part.type === 'tool-call'),
+        ),
+      ).toBe(false);
+
+      reader.close();
+      sock.destroy();
+      await session.close();
+
+      const audit = await openDatabaseAsync({ path: dbPath });
+      try {
+        const assistant = new SqliteMessageStore(audit.raw)
+          .listMessages(taskPayload.threadId as never)
+          .messages.find((message) => message.role === 'assistant');
+        expect(assistant?.blocks).toEqual([
+          {
+            type: 'commentary',
+            text: '我先检查当前状态。',
+            payload: {
+              commentarySegments: [
+                expect.objectContaining({
+                  text: '我先检查当前状态。',
+                  completedAt: expect.any(String),
+                }),
+              ],
+            },
+          },
+          {
+            type: 'text',
+            text: '已从备用模型继续完成。',
+          },
+        ]);
+        expect(assistant?.blocks.filter((block) => block.type === 'commentary')).toHaveLength(1);
+      } finally {
+        audit.raw.close();
+      }
+    },
+    30_000,
+  );
+
   it('walks agent fallback after retryable default failure and completes without restating context', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-fb-walk-'));
     tempDirs.push(dir);
@@ -383,6 +615,11 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     });
     expect(append.error).toBeUndefined();
 
+    const retrying = await reader.waitForEvent(
+      (type, payload) =>
+        type === 'run.retrying' && payload.attempt === 5 && payload.maxAttempts === 5,
+      6_000,
+    );
     const fallbackSelected = await reader.waitForEvent((t) => t === 'run.fallback.selected', 6_000);
     const completed = await reader.waitForEvent((t) => t === 'run.completed', 8_000);
 
@@ -398,6 +635,8 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
       'alpha-model',
       'beta-model',
     ]);
+    expect(retrying).toBeDefined();
+    expect(eventInner(retrying!).providerModelId).toBe('alpha-model');
     expect(fallbackSelected ?? completed).toBeDefined();
     expect(completed).toBeDefined();
 
@@ -425,10 +664,11 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         .prepare(
           `SELECT type, sequence
            FROM event
-           WHERE type IN ('run.fallback.selected', 'context.packet.built')
+           WHERE type IN ('run.retrying', 'run.fallback.selected', 'context.packet.built')
            ORDER BY sequence ASC`,
         )
         .all() as Array<{ type: string; sequence: number }>;
+      const retryEvents = durableEvents.filter((event) => event.type === 'run.retrying');
       const fallbackEvents = durableEvents.filter(
         (event) => event.type === 'run.fallback.selected',
       );
@@ -443,6 +683,7 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         audit.raw.prepare('SELECT COUNT(*) AS count FROM checkpoint').get() as { count: number }
       ).count;
 
+      expect(retryEvents).toHaveLength(5);
       expect(fallbackEvents).toHaveLength(1);
       expect(contextEvents).toHaveLength(2);
       expect(durableEvents[fallbackIndex + 1]?.type).toBe('context.packet.built');
@@ -567,7 +808,15 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     expect(fallbackSelected).toBeDefined();
     expect(eventInner(fallbackSelected!).toProviderModelId).toBe('beta-model');
     expect(completed).toBeDefined();
-    expect(adapter.calls).toEqual(['alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','beta-model']);
+    expect(adapter.calls).toEqual([
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'beta-model',
+    ]);
 
     reader.close();
     sock.destroy();
@@ -693,7 +942,20 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
     expect(eventType(terminal!)).toBe('run.paused');
     expect(eventInner(terminal!).reason).toBe('no_fallback_configured');
     expect(unexpectedFallback).toBeUndefined();
-    expect(adapter.calls).toEqual(['alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','beta-model','beta-model','beta-model','beta-model','beta-model','beta-model']);
+    expect(adapter.calls).toEqual([
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'beta-model',
+      'beta-model',
+      'beta-model',
+      'beta-model',
+      'beta-model',
+      'beta-model',
+    ]);
 
     reader.close();
     sock.destroy();
@@ -801,7 +1063,20 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
 
     const paused = await reader.waitForEvent((t) => t === 'run.paused', 8_000);
     // Default + one fallback attempted; no third silent model.
-    expect(adapter.calls).toEqual(['alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','alpha-model','beta-model','beta-model','beta-model','beta-model','beta-model','beta-model']);
+    expect(adapter.calls).toEqual([
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'alpha-model',
+      'beta-model',
+      'beta-model',
+      'beta-model',
+      'beta-model',
+      'beta-model',
+      'beta-model',
+    ]);
     expect(paused).toBeDefined();
     const blob = JSON.stringify(paused);
     expect(blob.includes('fallback_exhausted') || eventType(paused!) === 'run.paused').toBe(true);

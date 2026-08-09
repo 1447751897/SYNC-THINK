@@ -23,6 +23,7 @@ import {
   SqliteMemoryStore,
   SqliteSkillStore,
   SqliteMcpStore,
+  SqliteCapabilityStore,
   SqliteApprovalStore,
   SqlitePolicyStore,
   SqliteAuthorizationStore,
@@ -76,6 +77,7 @@ export interface OpenPersistentRuntimeOptions extends Omit<
   | 'memoryStore'
   | 'skillStore'
   | 'mcpStore'
+  | 'capabilityStore'
   | 'approvalStore'
   | 'policyStore'
   | 'authorizationStore'
@@ -217,6 +219,7 @@ export async function openPersistentRuntime(
     const browserStore = new SqliteBrowserStore(connection.raw);
     const desktopStore = new SqliteDesktopStore(connection.raw);
     const skillStore = new SqliteSkillStore(connection.raw);
+    const capabilityStore = new SqliteCapabilityStore(connection.raw);
     const appSettingStore = new SqliteAppSettingStore(connection.raw);
     // Usage aggregation runs in an isolated Worker for file-backed databases so a
     // first-time scan cannot block the Runtime pipe or its healthcheck.
@@ -319,6 +322,7 @@ export async function openPersistentRuntime(
       memoryStore: new SqliteMemoryStore(connection.raw),
       skillStore,
       mcpStore: new SqliteMcpStore(connection.raw),
+      capabilityStore,
       approvalStore: new SqliteApprovalStore(connection.raw),
       policyStore: new SqlitePolicyStore(connection.raw),
       authorizationStore: new SqliteAuthorizationStore(connection.raw),

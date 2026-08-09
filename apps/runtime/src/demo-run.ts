@@ -1,4 +1,8 @@
 import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
+import type {
+  CommentaryTimelineSegment,
+  ReasoningTimelineSegment,
+} from '@sync-think/protocol';
 import type { ContextSnapshot, ContextSnapshotSource } from './context-snapshot.js';
 import { isRetryable } from '@sync-think/shared';
 import type {
@@ -17,6 +21,8 @@ export const MODEL_RETRY_MAX = 5;
 /** Base delay for the retry backoff (500ms, 1s, 2s, 4s, 8s — capped). */
 export const MODEL_RETRY_BASE_DELAY_MS = 500;
 export const MODEL_RETRY_MAX_DELAY_MS = 8_000;
+export const MAX_COMMENTARY_TIMELINE_SEGMENTS = 128;
+export const MAX_COMMENTARY_TIMELINE_CHARS = 120_000;
 
 /**
  * Whether a failed provider call should be retried in place on the same model.
@@ -136,9 +142,18 @@ export interface DemoRunState {
   packetId?: string;
   proofHash?: string;
   nextAdapterEventIndex: number;
+  /** User-visible final answer (`assistant` message phase = final_answer). */
   assistantText: string;
-  /** Extended thinking / reasoning channel (never mixed into assistantText). */
+  /** User-visible work updates (`assistant` message phase = commentary). */
+  commentaryText: string;
+  /** Bounded commentary fragments interleaved with durable tool boundaries. */
+  commentarySegments: CommentaryTimelineSegment[];
+  /** Unclassified text from legacy providers that do not expose assistant phases. */
+  legacyPendingText: string;
+  /** Provider reasoning summary for diagnostics only. */
   reasoningText: string;
+  /** Legacy provider reasoning fragments retained only for checkpoint compatibility. */
+  reasoningSegments: ReasoningTimelineSegment[];
   /** When true, use demoProvider Fake path (no live secret). */
   useFakeProvider: boolean;
 }
@@ -149,6 +164,11 @@ export interface DemoRunEventProjection {
   payload: Record<string, unknown>;
   nextRun?: DemoRunState;
   terminal: boolean;
+}
+
+export interface DemoRunEventProjectionMetadata {
+  /** Stable for every progressive usage update emitted by one provider request. */
+  requestId?: string;
 }
 
 export interface CreateDemoRunInput {
@@ -256,8 +276,77 @@ export function createDemoRun(
     proofHash: extras.proofHash,
     nextAdapterEventIndex: 0,
     assistantText: '',
+    commentaryText: '',
+    commentarySegments: [],
+    legacyPendingText: '',
     reasoningText: '',
+    reasoningSegments: [],
     useFakeProvider: useFake,
+  };
+}
+
+function boundCommentaryTimeline(
+  segments: readonly CommentaryTimelineSegment[],
+): CommentaryTimelineSegment[] {
+  const bounded = segments
+    .slice(-MAX_COMMENTARY_TIMELINE_SEGMENTS)
+    .map((segment) => ({ ...segment }));
+  let totalChars = bounded.reduce((total, segment) => total + segment.text.length, 0);
+  while (bounded.length > 0 && totalChars > MAX_COMMENTARY_TIMELINE_CHARS) {
+    const first = bounded[0]!;
+    const overflow = totalChars - MAX_COMMENTARY_TIMELINE_CHARS;
+    if (first.text.length <= overflow) {
+      totalChars -= first.text.length;
+      bounded.shift();
+      continue;
+    }
+    first.text = first.text.slice(overflow);
+    totalChars -= overflow;
+  }
+  return bounded;
+}
+
+export function appendCommentaryTimelineDelta(
+  run: DemoRunState,
+  input: {
+    textDelta: string;
+    occurredAt: string;
+    afterSequence?: number;
+  },
+): DemoRunState {
+  if (!input.textDelta) return run;
+  const segments = (run.commentarySegments ?? []).map((segment) => ({ ...segment }));
+  const last = segments.at(-1);
+  if (last && last.completedAt === undefined && last.afterSequence === input.afterSequence) {
+    last.text += input.textDelta;
+  } else {
+    const segmentIndex = segments.length;
+    segments.push({
+      id: `commentary-${input.afterSequence ?? 'transient'}-${segmentIndex}`,
+      text: input.textDelta,
+      startedAt: input.occurredAt,
+      ...(input.afterSequence !== undefined ? { afterSequence: input.afterSequence } : {}),
+    });
+  }
+  return { ...run, commentarySegments: boundCommentaryTimeline(segments) };
+}
+
+export function closeCommentaryTimelineSegment(
+  run: DemoRunState,
+  completedAt: string,
+): DemoRunState {
+  const segments = run.commentarySegments ?? [];
+  const last = segments.at(-1);
+  if (!last || last.completedAt !== undefined) return run;
+  return {
+    ...run,
+    commentarySegments: [
+      ...segments.slice(0, -1),
+      {
+        ...last,
+        completedAt,
+      },
+    ],
   };
 }
 
@@ -301,6 +390,7 @@ export function createDemoProviderRequest(
 export function projectAdapterEvent(
   run: DemoRunState,
   adapterEvent: AdapterEvent,
+  metadata: DemoRunEventProjectionMetadata = {},
 ): DemoRunEventProjection {
   const nextAdapterEventIndex = run.nextAdapterEventIndex + 1;
   if (adapterEvent.type === 'finished') {
@@ -311,6 +401,7 @@ export function projectAdapterEvent(
         threadId: run.threadId,
         reason: adapterEvent.reason,
         assistantText: run.assistantText,
+        ...(run.commentaryText ? { commentaryText: run.commentaryText } : {}),
         ...(run.reasoningText ? { reasoningText: run.reasoningText } : {}),
         adapterEventIndex: run.nextAdapterEventIndex,
         idempotencyKey: run.runId,
@@ -344,19 +435,51 @@ export function projectAdapterEvent(
     ...run,
     nextAdapterEventIndex,
     assistantText:
-      adapterEvent.type === 'text-delta'
+      adapterEvent.type === 'text-delta' ||
+      (adapterEvent.type === 'assistant-message-delta' &&
+        adapterEvent.phase === 'final_answer')
         ? run.assistantText + adapterEvent.text
         : run.assistantText,
+    commentaryText:
+      adapterEvent.type === 'assistant-message-delta' && adapterEvent.phase === 'commentary'
+        ? run.commentaryText + adapterEvent.text
+        : run.commentaryText,
     reasoningText:
       adapterEvent.type === 'reasoning-delta'
         ? run.reasoningText + adapterEvent.text
         : run.reasoningText,
   };
+  if (
+    adapterEvent.type === 'assistant-message-start' ||
+    adapterEvent.type === 'assistant-message-end'
+  ) {
+    return {
+      category: 'message',
+      type:
+        adapterEvent.type === 'assistant-message-start'
+          ? 'message.phase_started'
+          : 'message.phase_ended',
+      payload: {
+        threadId: run.threadId,
+        phase: adapterEvent.phase,
+        ...(adapterEvent.itemId ? { itemId: adapterEvent.itemId } : {}),
+        adapterEventIndex: run.nextAdapterEventIndex,
+        modelId: run.modelId,
+      },
+      nextRun,
+      terminal: false,
+    };
+  }
   if (adapterEvent.type === 'usage') {
     return {
       category: 'provider',
       type: 'provider.usage',
       payload: {
+        threadId: run.threadId,
+        ...(metadata.requestId ? { requestId: metadata.requestId } : {}),
+        ...(run.providerId ? { providerId: run.providerId } : {}),
+        providerModelId: run.providerModelId,
+        purpose: 'normal',
         tokensIn: adapterEvent.tokensIn,
         tokensOut: adapterEvent.tokensOut,
         ...(adapterEvent.cachedTokensHit !== undefined
@@ -386,6 +509,23 @@ export function projectAdapterEvent(
       payload: {
         threadId: run.threadId,
         textDelta: adapterEvent.text,
+        adapterEventIndex: run.nextAdapterEventIndex,
+        modelId: run.modelId,
+      },
+      nextRun,
+      terminal: false,
+    };
+  }
+  if (adapterEvent.type === 'assistant-message-delta') {
+    return {
+      category: 'message',
+      type:
+        adapterEvent.phase === 'commentary' ? 'message.commentary_delta' : 'message.delta',
+      payload: {
+        threadId: run.threadId,
+        textDelta: adapterEvent.text,
+        phase: adapterEvent.phase,
+        ...(adapterEvent.itemId ? { itemId: adapterEvent.itemId } : {}),
         adapterEventIndex: run.nextAdapterEventIndex,
         modelId: run.modelId,
       },
@@ -659,9 +799,61 @@ function parseDemoRun(value: unknown): DemoRunState {
     proofHash: typeof run.proofHash === 'string' ? run.proofHash : undefined,
     nextAdapterEventIndex: run.nextAdapterEventIndex,
     assistantText: run.assistantText,
+    commentaryText: typeof run.commentaryText === 'string' ? run.commentaryText : '',
+    commentarySegments: parseTimelineSegments(
+      run.commentarySegments,
+      'commentary',
+      boundCommentaryTimeline,
+    ),
+    legacyPendingText:
+      typeof run.legacyPendingText === 'string' ? run.legacyPendingText : '',
     reasoningText: typeof run.reasoningText === 'string' ? run.reasoningText : '',
+    reasoningSegments: parseTimelineSegments(
+      run.reasoningSegments,
+      'reasoning',
+      (segments) => segments.slice(-MAX_COMMENTARY_TIMELINE_SEGMENTS),
+    ),
     useFakeProvider: run.useFakeProvider !== false && !run.providerId,
   };
 }
 
 export type DemoProvider = ProviderAdapter;
+
+function parseTimelineSegments<T extends CommentaryTimelineSegment>(
+  value: unknown,
+  channel: 'commentary' | 'reasoning',
+  bound: (segments: T[]) => T[],
+): T[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`Runtime checkpoint contains invalid ${channel} timeline segments`);
+  }
+  const segments = value.map((entry) => {
+    if (
+      !entry ||
+      typeof entry !== 'object' ||
+      Array.isArray(entry) ||
+      typeof entry.id !== 'string' ||
+      typeof entry.text !== 'string' ||
+      typeof entry.startedAt !== 'string'
+    ) {
+      throw new Error(`Runtime checkpoint contains an invalid ${channel} timeline segment`);
+    }
+    const completedAt =
+      typeof entry.completedAt === 'string' ? entry.completedAt : undefined;
+    const afterSequence =
+      typeof entry.afterSequence === 'number' &&
+      Number.isInteger(entry.afterSequence) &&
+      entry.afterSequence >= 0
+        ? entry.afterSequence
+        : undefined;
+    return {
+      id: entry.id,
+      text: entry.text,
+      startedAt: entry.startedAt,
+      ...(completedAt ? { completedAt } : {}),
+      ...(afterSequence !== undefined ? { afterSequence } : {}),
+    } as T;
+  });
+  return bound(segments);
+}

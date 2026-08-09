@@ -72,10 +72,17 @@ export function handleListSkills(ctx: SkillQueryContext, socket: Socket, frame: 
     return;
   }
   try {
-    const records =
-      payload.skillVersionIds === undefined
-        ? ctx.skillStore.listVersionMetadata(payload.limit ?? 100)
-        : ctx.skillStore.listVersionMetadataByIds(payload.skillVersionIds);
+    const records = payload.skillVersionIds
+      ? ctx.skillStore.listVersionMetadataByIds(payload.skillVersionIds)
+      : payload.workspaceId && ctx.capabilityStore
+        ? ctx.skillStore.listVersionMetadataByIds(
+            ctx.capabilityStore.listActiveCapabilityIds(
+              payload.workspaceId,
+              'skill',
+              payload.limit ?? 100,
+            ),
+          )
+        : ctx.skillStore.listVersionMetadata(payload.limit ?? 100);
     const skills = records
       .map((r) => ctx.toSkillVersionSummary(r));
     const response: ListSkillsResponse = { skills };

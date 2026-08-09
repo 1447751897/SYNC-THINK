@@ -308,6 +308,24 @@ export const CHAT_SKILL_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
 ];
 
 /**
+ * MCP catalog introspection is a Runtime-local read-only tool. It lets the
+ * model answer "currently available MCP tools" from the enabled registry
+ * instead of guessing from the prompt or requiring one server to be pinned.
+ */
+export const CHAT_MCP_CATALOG_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'list_mcp_tools',
+    description:
+      'List enabled MCP servers and their currently registered tools in SYNC-THINK. Use this when the user asks which MCP tools are installed, enabled, or available.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+];
+
+export const CHAT_MCP_CATALOG_TOOL_NAMES = new Set(
+  CHAT_MCP_CATALOG_TOOL_SCHEMAS.map((tool) => tool.name),
+);
+
+/**
  * Team-management tools — let the chat model manage the Team Library.
  * Mutations share the create_agent permission gate: full-access executes
  * immediately; other modes suspend on a user approval card.
@@ -990,6 +1008,7 @@ export const CHAT_READ_ONLY_TOOL_NAMES = new Set([
   'list_agent_resources',
   'list_skills',
   'read_skill',
+  'list_mcp_tools',
   'list_teams',
   'update_task_plan',
   'browser_workflow_list',
@@ -1041,6 +1060,8 @@ export function toolsForExecutionMode(
     includeDesktopTools?: boolean;
     /** Local Browser Automation task/Draft tools. */
     includeBrowserWorkflowTools?: boolean;
+    /** Runtime-local enabled MCP catalog introspection. */
+    includeMcpCatalogTools?: boolean;
     /** Extra provider tools (e.g. MCP schemas) appended after built-ins. */
     extraTools?: readonly ProviderToolSchema[];
   } = {},
@@ -1062,6 +1083,9 @@ export function toolsForExecutionMode(
     tools.push(...CHAT_AGENT_TOOL_SCHEMAS);
     tools.push(...CHAT_SKILL_TOOL_SCHEMAS);
     tools.push(...CHAT_TEAM_TOOL_SCHEMAS);
+  }
+  if (options.includeMcpCatalogTools) {
+    tools.push(...CHAT_MCP_CATALOG_TOOL_SCHEMAS);
   }
   if (options.includeDesktopTools) {
     tools.push(...CHAT_DESKTOP_TOOL_SCHEMAS);
@@ -1200,6 +1224,7 @@ export function isChatToolAllowed(
   if (CHAT_SKILL_TOOL_NAMES.has(toolName)) return true;
   // Team tools share the same gate (mutations approval-gated outside full-access).
   if (CHAT_TEAM_TOOL_NAMES.has(toolName)) return true;
+  if (CHAT_MCP_CATALOG_TOOL_NAMES.has(toolName)) return true;
   // Task-plan tool: pure UI signal, always allowed.
   if (CHAT_PLAN_TOOL_NAMES.has(toolName)) return true;
   // Browser Automation Studio tools are local and do not depend on networking.

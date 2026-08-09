@@ -1190,3 +1190,41 @@ Computer Use built-in plugin
 12. 任何状态的自动化 Task 都会阻止其 Profile 被 soft delete。Runtime 在触发 Host 目录删除前预检，Storage 在同一 immediate transaction 内最终复核，并返回稳定错误 `browser.profile-has-workflows`；任务重绑或归档能力交付前，该 Profile 必须保留。
 13. `browser.workflow.get` 返回该 Task 最近 100 条 Review，查询先取最新记录，再按 `createdAt/id` 正序返回，并通过 `reviewsTruncated` 明示截断。任务搜索同时匹配 `name`、`instruction` 与已脱敏 `start_url`。
 14. Desktop 标题点击始终进入详情；已发布 Task 的单一行操作为“录制新版本”。待审 V2 优先展示当前 Draft 步骤而不是旧 V1，详情显示审核备注与历史；“批准并发布”继续保持人类动作。此扩展复用 `0038`，不新增迁移。
+
+### TD-039：Codex-style commentary / tools / final_answer 消息语义（2026-08-08）
+
+状态：已采用。
+
+背景：旧实现把 Provider reasoning 或 reasoning summary 当作普通聊天 UI 的“思考过程”文字，导致不同 Provider 的语言、数量和可见性不一致，也让 fallback、重连、流式草稿与工具时间线同时维护两套相互竞争的语义。Codex-style 交互需要区分用户可见的执行说明、内部 reasoning 和最终答案，并保持工具前后的真实发生顺序。
+
+采用合同：
+
+1. Runtime canonical `ProviderMessage[]` 是 Provider 对话历史的语义真源。Assistant 文本必须显式区分 `phase: "commentary"` 与 `phase: "final_answer"`；工具调用和工具结果继续使用独立结构化 item。
+2. OpenAI Responses 路径原生保留 assistant message phase，允许同一轮形成 `commentary → tool call/result → commentary → final_answer`。不得把 reasoning item 或 reasoning summary 转换为 commentary。
+3. OpenAI Chat Completions 与 Anthropic Messages 缺少等价的多 assistant phase 表达时，只允许在各自 serializer 层把相邻 commentary、tool call 和必要协议内容降级为单个 assistant turn；Runtime、Storage 与 Renderer 不采用该降级形态作为内部真源。
+4. Durable assistant message 可以聚合保存一个 commentary block 与一个 final text block；commentary block 的 payload 保存有界 `commentarySegments`。工具执行过程继续由 durable execution event/process view 提供，避免按 Token 写入事件或 SQLite。
+5. 恢复或构建下一次 Provider 请求时，Runtime 必须从 durable assistant message 重建多个带 phase 的 assistant messages，并按原始工具边界恢复顺序。兼容历史消息时允许读取聚合 commentary，但不得把 reasoning-only 消息提升为可见 commentary。
+6. Provider reasoning、encrypted reasoning 与 reasoning summary 仅用于 Provider 连续性、诊断、导出和兼容恢复。普通聊天 UI 不渲染 reasoning，不用 reasoning 创建空助手行，也不用 reasoning 驱动自动滚动锚点。
+7. fallback 延续同一个用户可见 assistant turn。切换前关闭旧模型最后一个 commentary segment，保留已经显示的 commentary，清除失败模型的部分 final answer、legacy pending text、reasoning 和未完成工具；备用模型的新 commentary 从新 segment 开始。
+8. Renderer 按 durable sequence 与 commentary segment 的 `afterSequence` 混排 commentary 和工具。连续工具默认折叠为“调用了 N 个工具”，组内每个工具可以单独展开；不显示步骤时间点，只保留顶层整体耗时。
+9. Provider 没有输出 commentary 时，UI 只展示真实工具步骤，不伪造执行文字。Runtime 通过 Codex-style developer prompt 请求模型使用最新用户消息的语言输出简短 commentary，但 UI 不以本地模板冒充模型输出。
+10. reconnect 与 fallback 状态是当前 assistant turn 的 transient 状态。收到新 commentary、final text、工具进展或终态后立即撤下；重放、reset 与冷恢复必须单调合并，已显示 commentary 不得被空快照或旧快照覆盖。
+11. 该决策取代此前“把 reasoning summary 作为普通思考文字展示”的产品语义；reasoning 数据链可继续保留用于诊断和 Provider 上下文兼容，但不得重新进入普通执行 UI。
+
+### TD-040：Skill / MCP 三重交集、统一使用事件与本地发布草稿（2026-08-09）
+
+状态：已采用。
+
+背景：现有实现只有 SkillVersion/McpServer 全局开关与 Agent 绑定，缺少工作区激活、统一统计、真实 Context Token 归属、市场派生关系和本地发布草稿，导致能力中心只能展示安装事实，不能成为 Runtime 的治理真源。
+
+采用合同：
+
+1. 新增 `capability_workspace_activation`，以 `(capability_type, capability_id, workspace_id)` 唯一标识工作区激活状态。停用全局能力时不删除该记录；Runtime 统一通过全局启用、工作区激活和 Agent 绑定的交集解析有效能力。
+2. 新增追加式 `capability_usage_event`，记录 `skill/mcp`、能力 ID、Workspace、Agent、AgentVersion、Run、`success/failed/cancelled`、实际上下文 Token 和时间。最近 45 天统计直接从该表聚合，失败额外进入问题计数。
+3. SkillVersion 增加 `origin_type/origin_ref/derived_from_skill_version_id`。市场原版保持不可变，编辑通过新建 `derived` SkillVersion 实现；本地创建使用 `local`。
+4. 新增 `skill_publish_draft`，只保存本地可编辑发布资料和附件元数据。当前没有市场传输或审核端点，提交命令只返回稳定的 `channel-unavailable` 结果。
+5. 新增 `capability_organize_report` 保存一次整理检查的有界快照。生成过程只分类和计数，不执行删除、停用、解绑或工作区状态修改。
+6. 迁移必须把 0039 以前的历史 Skill/MCP 修正为全局启用；新导入/注册默认启用。已归档 Skill 保持停用。
+7. Context Token 在真实注入边界写入使用事件，不从字符数、目录大小或 UI 展示反推。Skill 归属进入 Context Packet 的 `SKILL.md`，MCP 归属实际提供给 Provider 的工具 schema。
+8. 新增命令通过 Protocol → Runtime → Desktop IPC 暴露。Renderer 不直接访问 SQLite，也不自行复制有效能力判定或 45 天统计 SQL。
+9. 回滚边界：能力中心新 UI 和命令可以独立移除；新增表保留不会改变历史 Run。移除工作区交集时不得误删激活、来源、草稿或统计事实。

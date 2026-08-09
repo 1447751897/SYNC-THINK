@@ -9,6 +9,8 @@ import { ChatView } from './ChatView.js';
 
 const runtime = {
   getConversationRunProcess: vi.fn(),
+  getConversationContextStatus: vi.fn(),
+  getUsageSummary: vi.fn(),
   listConversationMessages: vi.fn(),
   openTask: vi.fn(),
 };
@@ -53,11 +55,41 @@ const processView = {
 
 beforeEach(() => {
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-usage' } });
+  runtime.getConversationContextStatus.mockReset().mockResolvedValue({
+    modelId: 'model-usage',
+    contextWindow: 400_000,
+    estimatedUsedTokens: 183_000,
+    usageRatio: 0.4575,
+    compactThreshold: 0.7,
+    compactedAt: '2026-08-04T08:45:00.000Z',
+    sections: [
+      { type: 'system', tokens: 2_000 },
+      { type: 'agent', tokens: 27 },
+      { type: 'project', tokens: 79 },
+      { type: 'summary', tokens: 12_000 },
+      { type: 'messages', tokens: 163_000 },
+      { type: 'tools', tokens: 5_894 },
+    ],
+  });
   runtime.listConversationMessages.mockReset().mockResolvedValue({
     messages: [assistantMessage],
     hasMore: false,
   });
   runtime.getConversationRunProcess.mockReset().mockResolvedValue({ process: processView });
+  runtime.getUsageSummary.mockReset().mockResolvedValue({
+    rows: [],
+    requests: [],
+    tools: [],
+    toolModels: [],
+    toolFailures: [],
+    pricing: [],
+    totalRequests: 0,
+    totalTokensIn: 0,
+    totalTokensOut: 0,
+    totalCostByCurrency: {},
+    totalReasoningTokens: 0,
+    totalTokens: 0,
+  });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: { runtime },
@@ -70,6 +102,200 @@ afterEach(() => {
 });
 
 describe('ChatView reply usage details', () => {
+  it('uses the durable task-scoped usage summary for cumulative conversation tokens', async () => {
+    runtime.getUsageSummary.mockResolvedValueOnce({
+      rows: [],
+      requests: [
+        {
+          requestId: 'request-1',
+          taskId: 'task-usage',
+          occurredAt: '2026-08-04T09:01:00.000Z',
+          modelId: 'model-usage',
+          tokensIn: 8_000,
+          tokensOut: 500,
+          totalTokens: 8_500,
+          status: 'success',
+        },
+        {
+          requestId: 'request-2',
+          taskId: 'task-usage',
+          occurredAt: '2026-08-04T09:02:00.000Z',
+          modelId: 'model-usage',
+          tokensIn: 3_500,
+          tokensOut: 345,
+          totalTokens: 3_845,
+          status: 'success',
+        },
+      ],
+      tools: [],
+      toolModels: [],
+      toolFailures: [],
+      pricing: [],
+      totalRequests: 2,
+      totalTokensIn: 11_500,
+      totalTokensOut: 845,
+      totalCostByCurrency: {},
+      totalReasoningTokens: 0,
+      totalTokens: 12_345,
+    });
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(runtime.getUsageSummary).toHaveBeenCalledWith({ taskId: 'task-usage' }),
+    );
+    fireEvent.mouseEnter(screen.getByTestId('context-ring'));
+    expect((await screen.findByTestId('context-session-tokens')).textContent).toBe('12.3k');
+  });
+
+  it('does not add the transient event projection on top of the durable total', async () => {
+    runtime.getUsageSummary.mockResolvedValueOnce({
+      rows: [],
+      requests: [],
+      tools: [],
+      toolModels: [],
+      toolFailures: [],
+      pricing: [],
+      totalRequests: 1,
+      totalTokensIn: 90,
+      totalTokensOut: 10,
+      totalCostByCurrency: {},
+      totalReasoningTokens: 0,
+      totalTokens: 100,
+    });
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[
+          {
+            id: 'usage-event',
+            workspaceId: 'workspace-usage',
+            taskId: 'task-usage',
+            runId: 'run-usage',
+            category: 'provider',
+            type: 'provider.usage',
+            sequence: 1,
+            occurredAt: '2026-08-04T09:01:00.000Z',
+            payload: {
+              requestId: 'request-1',
+              tokensIn: 90,
+              tokensOut: 10,
+              totalTokens: 100,
+            },
+          } as never,
+        ]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(runtime.getUsageSummary).toHaveBeenCalled());
+    fireEvent.mouseEnter(screen.getByTestId('context-ring'));
+    expect((await screen.findByTestId('context-session-tokens')).textContent).toBe('100');
+  });
+
+  it('does not let a stale usage response overwrite the newly selected conversation', async () => {
+    let resolveOld!: (value: Awaited<ReturnType<typeof runtime.getUsageSummary>>) => void;
+    const oldSummary = new Promise<Awaited<ReturnType<typeof runtime.getUsageSummary>>>((resolve) => {
+      resolveOld = resolve;
+    });
+    runtime.getUsageSummary
+      .mockImplementationOnce(() => oldSummary)
+      .mockResolvedValueOnce({
+        rows: [],
+        requests: [],
+        tools: [],
+        toolModels: [],
+        toolFailures: [],
+        pricing: [],
+        totalRequests: 1,
+        totalTokensIn: 200,
+        totalTokensOut: 20,
+        totalCostByCurrency: {},
+        totalReasoningTokens: 0,
+        totalTokens: 220,
+      });
+    runtime.openTask.mockImplementation(async ({ taskId }: { taskId: string }) => ({
+      task: { threadId: taskId === 'task-usage-b' ? 'thread-usage-b' : 'thread-usage' },
+    }));
+
+    const view = render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    view.rerender(
+      <ChatView
+        conversation={{
+          ...conversation,
+          id: 'conversation-usage-b',
+          taskId: 'task-usage-b',
+          title: 'Usage details B',
+        } as unknown as Conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(runtime.getUsageSummary).toHaveBeenCalledWith({ taskId: 'task-usage-b' }),
+    );
+    resolveOld({
+      rows: [],
+      requests: [],
+      tools: [],
+      toolModels: [],
+      toolFailures: [],
+      pricing: [],
+      totalRequests: 1,
+      totalTokensIn: 9_000,
+      totalTokensOut: 900,
+      totalCostByCurrency: {},
+      totalReasoningTokens: 0,
+      totalTokens: 9_900,
+    });
+    await Promise.resolve();
+    fireEvent.mouseEnter(screen.getByTestId('context-ring'));
+    expect((await screen.findByTestId('context-session-tokens')).textContent).toBe('220');
+  });
+
+  it('uses the Runtime full-conversation snapshot for context occupancy', async () => {
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(runtime.getConversationContextStatus).toHaveBeenCalled());
+    fireEvent.mouseEnter(screen.getByTestId('context-ring'));
+
+    const tooltip = await screen.findByTestId('context-ring-tooltip');
+    expect(within(tooltip).getByTestId('context-used-value').textContent).toContain('183k');
+    expect(within(tooltip).getByText('当前对话上下文构成')).toBeTruthy();
+    expect(within(tooltip).getByTestId('context-section-summary').textContent).toContain('12k');
+    expect(within(tooltip).getByTestId('context-compact-distance').textContent).toBe('97k');
+  });
+
   it('separates ordinary input, cache reads, cache writes, and output in the hover panel', async () => {
     render(
       <ChatView
@@ -122,6 +348,72 @@ describe('ChatView reply usage details', () => {
 
     const tooltip = await screen.findByRole('tooltip');
     expect(within(tooltip).getAllByText('未上报')).toHaveLength(2);
+  });
+
+  it('keeps per-reply usage visible for a completed commentary-only assistant turn', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [
+        {
+          ...assistantMessage,
+          blocks: [{ type: 'commentary', text: '已完成检查，没有额外正文。' }],
+        } as Message,
+      ],
+      hasMore: false,
+    });
+
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    const processToggle = await screen.findByRole('button', { name: /执行过程/ });
+    fireEvent.click(processToggle);
+    expect(await screen.findByText('已完成检查，没有额外正文。')).toBeTruthy();
+    await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
+    expect(await screen.findByText(/14\.5k/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '复制' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '分享' })).toBeNull();
+  });
+
+  it('shows explicit runtime reconnect and failure notices without durable message pollution', async () => {
+    const view = render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        runtimeConnectionNotice={{
+          state: 'retrying',
+          text: '正在重新连接运行时 2/6',
+        }}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect((await screen.findByRole('status')).textContent).toContain('正在重新连接运行时 2/6');
+
+    view.rerender(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        runtimeConnectionNotice={{
+          state: 'failed',
+          text: '连接运行时失败：runtime.unavailable',
+        }}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect((await screen.findByRole('status')).textContent).toContain(
+      '连接运行时失败：runtime.unavailable',
+    );
   });
 
   it('collapses a long user message and expands on demand', async () => {

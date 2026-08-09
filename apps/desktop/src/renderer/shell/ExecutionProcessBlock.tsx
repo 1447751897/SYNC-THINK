@@ -23,11 +23,7 @@ import bash from 'highlight.js/lib/languages/bash';
 import python from 'highlight.js/lib/languages/python';
 import yaml from 'highlight.js/lib/languages/yaml';
 import sql from 'highlight.js/lib/languages/sql';
-import type {
-  ExecutionProcessStep,
-  ProcessToolKind,
-  RunProcessView,
-} from '@sync-think/protocol';
+import type { ExecutionProcessStep, ProcessToolKind, RunProcessView } from '@sync-think/protocol';
 
 // Register a compact set of languages for NewMax-like file previews.
 let hljsReady = false;
@@ -110,7 +106,6 @@ function isStatusOnlyPreview(preview?: string): boolean {
 
 interface ExecutionProcessBlockProps {
   view: RunProcessView;
-  forceExpanded?: boolean;
   nested?: boolean;
   onOpenChange?: (path: string) => void;
 }
@@ -162,20 +157,20 @@ function hasRichOutput(step: ExecutionProcessStep): boolean {
  * - header: status + Chinese title + chevron
  * - body: Path / Command / Output fields
  */
-function StepCard({
+export function ExecutionProcessStepCard({
   step,
-  defaultOpen,
   onOpenChange,
 }: {
   step: ExecutionProcessStep;
-  defaultOpen?: boolean;
   onOpenChange?: (path: string) => void;
 }) {
-  const [open, setOpen] = useState(Boolean(defaultOpen));
+  const [open, setOpen] = useState(false);
   const title = formatExecutionStepTitle(step);
   const output = step.error || step.preview;
   const showOutput = hasRichOutput(step);
-  const hasBody = Boolean(step.path || step.command || step.url || showOutput || step.exitCode !== undefined);
+  const hasBody = Boolean(
+    step.path || step.command || step.url || showOutput || step.exitCode !== undefined,
+  );
 
   return (
     <div className="shell-tool-card" data-status={step.status} data-open={open ? '1' : '0'}>
@@ -185,7 +180,6 @@ function StepCard({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
-        <StatusIcon status={step.status} />
         <span className="shell-tool-card__kind">
           <KindIcon kind={step.kind} />
         </span>
@@ -193,10 +187,10 @@ function StepCard({
         {step.exitCode !== undefined ? (
           <span className="shell-tool-card__badge">exit {step.exitCode}</span>
         ) : null}
-        <ChevronDown
-          size={14}
-          className={`shell-tool-card__chevron ${open ? 'is-open' : ''}`}
-        />
+        <span className="shell-tool-card__status">
+          <StatusIcon status={step.status} />
+        </span>
+        <ChevronDown size={14} className={`shell-tool-card__chevron ${open ? 'is-open' : ''}`} />
       </button>
 
       {open && hasBody ? (
@@ -232,9 +226,7 @@ function StepCard({
           {showOutput && output ? (
             <div className="shell-tool-card__field">
               <div className="shell-tool-card__field-key">Output</div>
-              <pre
-                className={`shell-tool-card__output ${step.error ? 'is-error' : ''}`}
-              >
+              <pre className={`shell-tool-card__output ${step.error ? 'is-error' : ''}`}>
                 {output}
               </pre>
             </div>
@@ -254,7 +246,6 @@ function StepCard({
 
 export function ExecutionProcessBlock({
   view,
-  forceExpanded = false,
   nested = false,
   onOpenChange,
 }: ExecutionProcessBlockProps) {
@@ -266,13 +257,7 @@ export function ExecutionProcessBlock({
       data-testid="execution-process"
     >
       {view.steps.map((step) => (
-        <StepCard
-          key={step.id}
-          step={step}
-          // The outer process group owns density; only the live step opens automatically.
-          defaultOpen={forceExpanded && step.status === 'running'}
-          onOpenChange={onOpenChange}
-        />
+        <ExecutionProcessStepCard key={step.id} step={step} onOpenChange={onOpenChange} />
       ))}
     </div>
   );
@@ -309,9 +294,7 @@ export function CodePreview({
   const normalized = text.replace(/\r\n/g, '\n');
   const rawLines = normalized.split('\n');
   const display =
-    rawLines.length > 1 && rawLines[rawLines.length - 1] === ''
-      ? rawLines.slice(0, -1)
-      : rawLines;
+    rawLines.length > 1 && rawLines[rawLines.length - 1] === '' ? rawLines.slice(0, -1) : rawLines;
 
   const highlightedHtml = useMemo(() => {
     if (!language || !hljs.getLanguage(language)) return undefined;
@@ -395,9 +378,7 @@ export function FileChangesCard({
   return (
     <div className={`shell-changes-card ${nested ? 'is-nested' : ''}`}>
       <div className="shell-changes-card__header">
-        <span className="shell-changes-card__title">
-          已更改 {view.fileChanges.length} 个文件
-        </span>
+        <span className="shell-changes-card__title">已更改 {view.fileChanges.length} 个文件</span>
         <button
           type="button"
           className="shell-changes-card__action"

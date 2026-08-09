@@ -72,6 +72,34 @@ class PartialTerminalProvider implements ProviderAdapter {
   }
 }
 
+class ReasoningOnlyTerminalProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+  emitted = false;
+
+  constructor(private readonly terminal: 'completed' | 'failed' | 'cancelled') {}
+
+  async discoverModels(): Promise<string[]> {
+    return ['fake-mini'];
+  }
+
+  async *call(request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    yield { type: 'reasoning-delta', text: 'reasoning-only summary' };
+    this.emitted = true;
+    if (this.terminal === 'completed') {
+      yield { type: 'finished', reason: 'stop' };
+      return;
+    }
+    if (this.terminal === 'failed') {
+      yield { type: 'error', failureClass: 'acceptance', message: 'reasoning fixture failure' };
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      if (request.signal.aborted) resolve();
+      else request.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+  }
+}
+
 async function connectRuntime(installId: string): Promise<Socket> {
   const socket = connect(pipePathPortable(installId));
   await new Promise<void>((resolve, reject) => {
@@ -186,6 +214,36 @@ async function createPartialMessageFixture(terminal: 'failed' | 'cancelled') {
   return { connection, installId, messageStore, provider, runtime, store, threadId, workspaceId };
 }
 
+async function createReasoningOnlyMessageFixture(
+  terminal: 'completed' | 'failed' | 'cancelled',
+) {
+  const dir = mkdtempSync(join(tmpdir(), `sync-think-reasoning-only-${terminal}-`));
+  tempDirs.push(dir);
+  const dbPath = join(dir, 'sync-think.db');
+  const installId = `reasoning-only-${terminal}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const workspaceId = `workspace-reasoning-only-${terminal}` as WorkspaceId;
+  const threadId = `thread-reasoning-only-${terminal}`;
+  await runMigrations(dbPath);
+  const connection = await openDatabaseAsync({ path: dbPath });
+  connection.raw
+    .prepare('INSERT INTO thread (id, task_id, created_at) VALUES (?, ?, ?)')
+    .run(threadId, `task-reasoning-only-${terminal}`, '2026-08-07T00:00:00.000Z');
+  const store = new SqliteEventCheckpointStore(connection.raw);
+  const messageStore = new SqliteMessageStore(connection.raw);
+  const provider = new ReasoningOnlyTerminalProvider(terminal);
+  const runtime = new Runtime({
+    installId,
+    allowNoToken: true,
+    stateStore: store,
+    messageStore,
+    workspaceId,
+    checkpointRunId: `runtime-${installId}` as RunId,
+    demoProvider: provider,
+  });
+  await runtime.start();
+  return { connection, installId, messageStore, provider, runtime, store, threadId, workspaceId };
+}
+
 function transientFrames(inbox: ReturnType<typeof createInbox>): ConversationTransientFrame[] {
   return inbox.queued
     .filter((frame) => frame.kind === 'event' && frame.type === 'conversation.transientFrame')
@@ -245,6 +303,70 @@ describe('conversation transient shadow stream', () => {
             payload: expect.objectContaining({ terminalState: terminal }),
           }),
         ]);
+      } finally {
+        socket.destroy();
+        await fixture.runtime.stop();
+        fixture.connection.raw.close();
+      }
+    },
+  );
+
+  it.each(['completed', 'failed', 'cancelled'] as const)(
+    'persists a reasoning-only assistant message when a run is %s',
+    async (terminal) => {
+      const fixture = await createReasoningOnlyMessageFixture(terminal);
+      const socket = await connectRuntime(fixture.installId);
+      const inbox = createInbox(socket);
+      try {
+        await hello(inbox, fixture.installId, `hello-reasoning-only-${terminal}`);
+        const append = await inbox.send({
+          id: `append-reasoning-only-${terminal}`,
+          kind: 'request',
+          type: 'task.appendMessage',
+          payload: {
+            threadId: fixture.threadId,
+            expectedTaskVersion: 0,
+            role: 'user',
+            text: `start reasoning-only ${terminal} run`,
+          },
+        });
+        expect(append.error).toBeUndefined();
+        const runId = String((append.payload as { streamId?: string }).streamId ?? '');
+        expect(await waitFor(() => fixture.provider.emitted)).toBe(true);
+        if (terminal === 'cancelled') {
+          const cancelled = await inbox.send({
+            id: 'cancel-reasoning-only-run',
+            kind: 'request',
+            type: 'run.cancel',
+            payload: { runId },
+          });
+          expect(cancelled.error).toBeUndefined();
+        }
+        expect(
+          await waitFor(() =>
+            fixture.store
+              .listEvents(fixture.workspaceId, 0)
+              .some((event) => event.type === `run.${terminal}`),
+          ),
+        ).toBe(true);
+
+        const assistant = fixture.messageStore
+          .listMessages(fixture.threadId as never)
+          .messages.find((message: Message) => message.role === 'assistant');
+        expect(assistant?.blocks[0]).toMatchObject({
+          type: 'reasoning',
+          reasoningText: 'reasoning-only summary',
+        });
+        if (terminal === 'completed') {
+          expect(assistant?.blocks).toHaveLength(1);
+        } else {
+          expect(assistant?.blocks[1]).toEqual(
+            expect.objectContaining({
+              type: 'error',
+              payload: expect.objectContaining({ terminalState: terminal }),
+            }),
+          );
+        }
       } finally {
         socket.destroy();
         await fixture.runtime.stop();
@@ -419,7 +541,12 @@ describe('conversation transient shadow stream', () => {
       }
       async *call(_request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
         for (let index = 0; index < 260; index++) {
-          yield { type: 'text-delta', text: 'x' };
+          yield {
+            type: 'assistant-message-delta',
+            phase: 'final_answer',
+            itemId: 'final-snapshot',
+            text: 'x',
+          };
         }
         await completionGate;
         yield { type: 'finished', reason: 'stop' };
@@ -577,7 +704,16 @@ describe('conversation transient shadow stream', () => {
   it('signals resetRequired when a cursor falls outside the bounded replay window', async () => {
     const fixture = await createFixture(
       () => [
-        ...Array.from({ length: 260 }, () => ({ type: 'text-delta', text: 'x' }) as const),
+        ...Array.from(
+          { length: 260 },
+          () =>
+            ({
+              type: 'assistant-message-delta',
+              phase: 'final_answer',
+              itemId: 'final-reset',
+              text: 'x',
+            }) as const,
+        ),
         { type: 'finished', reason: 'stop' } as const,
       ],
       0,

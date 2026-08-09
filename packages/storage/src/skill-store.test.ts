@@ -61,8 +61,39 @@ describe('SqliteSkillStore', () => {
       expect(v.version).toBe('0.1.0');
       expect(v.contentFingerprint).toBe('deadbeef');
       expect(v.skillId).toMatch(/^skill-/);
+      expect(v.enabled).toBe(true);
       expect(skillStore.listVersions()).toHaveLength(1);
       expect(skillStore.getVersion(v.id)?.id).toBe(v.id);
+    } finally {
+      close();
+    }
+  });
+
+  it('enables only one active version in the same Skill family', async () => {
+    const { skillStore, close } = await openStores();
+    try {
+      const first = skillStore.importVersion({
+        name: 'family-skill',
+        description: 'First version',
+        version: '1.0.0',
+        sourceMd: 'first',
+        body: 'first',
+        contentFingerprint: 'family-skill-v1',
+      });
+      const second = skillStore.importVersion({
+        name: 'family-skill',
+        description: 'Second version',
+        version: '2.0.0',
+        sourceMd: 'second',
+        body: 'second',
+        contentFingerprint: 'family-skill-v2',
+      });
+
+      expect(skillStore.setEnabled(first.id, true)?.enabled).toBe(true);
+      expect(skillStore.setEnabled(second.id, true)?.enabled).toBe(true);
+      expect(skillStore.getVersion(first.id)?.enabled).toBe(false);
+      expect(skillStore.getVersion(second.id)?.enabled).toBe(true);
+      expect(skillStore.listVersionMetadata().filter((skill) => skill.enabled)).toHaveLength(1);
     } finally {
       close();
     }
@@ -227,9 +258,13 @@ describe('SqliteSkillStore', () => {
         body: 'body',
         contentFingerprint: 'fp-delete-free',
       });
+      skillStore.setEnabled(removable.id, true);
       expect(skillStore.deleteVersion(removable.id)).toMatchObject({ deleted: true });
       expect(skillStore.listVersions().some((row) => row.id === removable.id)).toBe(false);
-      expect(skillStore.getVersion(removable.id)?.archivedAt).toBeDefined();
+      expect(skillStore.getVersion(removable.id)).toMatchObject({
+        enabled: false,
+        archivedAt: expect.any(String),
+      });
 
       const equipped = skillStore.importVersion({
         name: 'equipped',

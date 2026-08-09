@@ -10,32 +10,16 @@
 //   sources (see will-attach-webview in apps/desktop/src/main/index.ts).
 //
 // Fullness / white-screen handling:
-// - the fill style is injected into the document *head* (never appended after
-//   </html>, where browsers drop it): `html{background-color:<theme-fallback>}`
-//   paints the whole webview canvas with the chat-surface colour so short pages
-//   cannot show a white strip, and `body{min-height:100vh}` makes the page's
-//   own background fill the viewport instead of stopping at the content height.
-// - a `<meta name="viewport">` keeps the guest layout viewport tied to the
-//   webview element width, so the preview layout matches a real browser tab.
-// - the webview height follows the measured guest content (clamped), so short
-//   pages collapse to their real height instead of leaving an empty stage.
-// - an IntersectionObserver re-measures when the webview scrolls into view,
-//   because the shell uses content-visibility on message items: an off-screen
-//   webview loads late and misses its dom-ready/did-finish-load events.
-//
-// Scale alignment (why the preview can otherwise look bigger/smaller than the
-// rendered page):
-// - the guest is a separate renderer whose devicePixelRatio can differ from
-//   the host on Windows display scaling (125%/150%). When host DPR != guest
-//   DPR, 1 CSS px means different physical sizes on screen, so the embedded
-//   page renders at a different scale than the host UI around it.
-// - on dom-ready we read the guest DPR and call webview.setZoomFactor(hostDpr /
-//   guestDpr), which makes guest CSS pixels exactly as big as host CSS pixels.
-//   All measurements below then hold in host CSS pixels directly.
-// - the measure script uses body.getBoundingClientRect().height (the real
-//   rendered height) instead of documentElement rects, which equal the
-//   viewport height on short pages and would pin the stage to its current
-//   height — the "preview bigger than the page" symptom.
+// - the fallback canvas colour and viewport meta are injected into the document
+//   head (never after </html>, where browsers may discard them).
+// - the guest body is deliberately not forced to 100vh: its natural content
+//   height drives the webview height, so short pages do not leave a large blank
+//   stage below their content.
+// - Electron owns guest DPI/zoom. Applying a second host/guest DPR correction
+//   makes the guest surface and host element disagree on Windows scaling, which
+//   can paint only the top strip of the page.
+// - load events, bounded delayed retries and IntersectionObserver measurements
+//   cover fast data: URLs, async layout and content-visibility delayed mounts.
 //
 // Card chrome: the block is a collapsible card with a header bar that offers
 // 预览 (default live view) / 源码 (source view) tabs, 复制 and 浏览器打开.
@@ -60,7 +44,7 @@ interface HtmlSandboxProps {
 const DEFAULT_HEIGHT = 320;
 const MIN_HEIGHT = 200;
 const MAX_HEIGHT = 960;
-const HEIGHT_JITTER = 24; // px; below this, a re-measurement is ignored
+const HEIGHT_JITTER = 8; // px; below this, a re-measurement is ignored
 
 /** Max source size accepted by the browser-open bridge (8 MiB). */
 const MAX_OPEN_HTML = 8 * 1024 * 1024;
@@ -100,7 +84,7 @@ function buildSandboxSource(code: string, fallbackBg: string): string {
   const fill =
     '<style>html,body{margin:0}html{background-color:' +
     fallbackBg +
-    '}body{min-height:100vh}</style>';
+    '}</style>';
   const viewport =
     '<meta name="viewport" content="width=device-width, initial-scale=1">';
   const headExtras = `${viewport}${fill}`;
@@ -137,7 +121,6 @@ function toDataUrl(html: string): string {
 interface HtmlSandboxWebview {
   reload?: () => void;
   executeJavaScript?: (code: string) => Promise<unknown>;
-  setZoomFactor?: (factor: number) => Promise<void> | void;
   addEventListener?: (
     event: 'dom-ready' | 'did-finish-load',
     listener: () => void,
@@ -148,22 +131,21 @@ interface HtmlSandboxWebview {
   ) => void;
 }
 
-/** Read the guest document's devicePixelRatio (CSS-px per physical px). */
-const READ_DPR_SCRIPT = `(() => window.devicePixelRatio || 1)()`;
-
 /**
- * Height-measuring script run inside the guest document.
- *
- * body.getBoundingClientRect().height is the *rendered* height of the content
- * box, which is exactly what the preview frame should occupy — documentElement
- * scroll/offset/client heights all fall back to the *viewport* height on short
- * pages, which would pin the frame to its current height and make the preview
- * area bigger than the actual page.
+ * Measure the guest's natural body content rather than documentElement, whose
+ * height is at least the current viewport and therefore cannot shrink a short
+ * preview. Child bottoms cover absolutely-positioned content that may sit
+ * outside the body's own border box.
  */
 const MEASURE_SCRIPT = `(() => {
-  const b = document.body;
-  const h = b ? b.getBoundingClientRect().height : 0;
-  return Math.max(h, b ? b.scrollHeight : 0);
+  const body = document.body;
+  if (!body) return 0;
+  const bodyRect = body.getBoundingClientRect();
+  const childBottom = Array.from(body.children).reduce((bottom, child) => {
+    const rect = child.getBoundingClientRect();
+    return Math.max(bottom, rect.bottom - bodyRect.top);
+  }, 0);
+  return Math.ceil(Math.max(bodyRect.height, body.scrollHeight, body.offsetHeight, childBottom));
 })()`;
 
 export function HtmlSandbox({ code }: HtmlSandboxProps) {
@@ -187,7 +169,19 @@ export function HtmlSandbox({ code }: HtmlSandboxProps) {
   const measure = useCallback(() => {
     const el = webviewRef.current as HtmlSandboxWebview | null;
     if (!el || typeof el.executeJavaScript !== 'function') return;
-    el.executeJavaScript(MEASURE_SCRIPT)
+
+    // Electron throws synchronously when executeJavaScript is called before the
+    // guest has emitted dom-ready. This can happen during React's first effect
+    // pass and must not escape into the shell root (which would blank the whole
+    // window). Later bounded retries/load events will measure once it is ready.
+    let measurement: Promise<unknown>;
+    try {
+      measurement = el.executeJavaScript(MEASURE_SCRIPT);
+    } catch {
+      return;
+    }
+
+    void measurement
       .then((value) => {
         const raw = Number(value);
         if (!Number.isFinite(raw)) return;
@@ -197,81 +191,66 @@ export function HtmlSandbox({ code }: HtmlSandboxProps) {
         setHeight((prev) => (Math.abs(next - prev) >= HEIGHT_JITTER ? next : prev));
       })
       .catch(() => {
-        /* guest page threw while measuring — keep current height */
+        /* guest page threw while measuring; keep current height */
       });
   }, []);
 
-  /**
-   * Align the guest's CSS-pixel scale with the host's. The webview is a
-   * separate renderer whose devicePixelRatio can differ from the host on
-   * Windows display scaling (125%/150%): with host DPR != guest DPR, the
-   * embedded page renders at a different physical scale than the UI around
-   * it — the "preview size does not match the rendered page" symptom.
-   * setZoomFactor(hostDpr / guestDpr) makes one guest CSS px exactly one host
-   * CSS px, so the preview frame, page layout and measured heights all agree.
-   */
-  const alignScale = useCallback(() => {
-    const el = webviewRef.current as HtmlSandboxWebview | null;
-    if (
-      !el ||
-      typeof el.executeJavaScript !== 'function' ||
-      typeof el.setZoomFactor !== 'function'
-    ) {
-      return;
-    }
-    const hostDpr =
-      typeof window !== 'undefined' && window.devicePixelRatio > 0
-        ? window.devicePixelRatio
-        : 1;
-    el.executeJavaScript(READ_DPR_SCRIPT)
-      .then((guestDpr) => {
-        const ratio = Number(guestDpr);
-        if (!Number.isFinite(ratio) || ratio <= 0) return;
-        return el.setZoomFactor?.(hostDpr / ratio);
-      })
-      .catch(() => {
-        /* guest page unavailable — scale stays as-is */
-      });
-  }, []);
-
-  // Measure at every meaningful load milestone, and once more shortly after
-  // dom-ready for async content (images, fonts, layout shifts). Scale is
-  // aligned on dom-ready, before the first measurement, so measured heights
-  // are already in host CSS pixels.
+  // data: URLs can finish loading before React attaches the Electron events.
+  // Measure immediately and retry a few bounded times after every mount/view
+  // change so the first visible frame converges without a permanent poller.
   useEffect(() => {
+    if (collapsed || view !== 'preview') return;
+    measure();
+    const timers = [50, 250, 800].map((delay) => window.setTimeout(measure, delay));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [collapsed, measure, src, view]);
+
+  // Re-measure at Electron's meaningful load milestones, then once more after
+  // likely image/font layout shifts.
+  useEffect(() => {
+    if (collapsed || view !== 'preview') return;
     const el = webviewRef.current as HtmlSandboxWebview | null;
     if (!el || typeof el.addEventListener !== 'function') return;
+    const timers = new Set<number>();
     const listener = () => {
-      alignScale();
       measure();
-      window.setTimeout(measure, 400);
+      for (const delay of [100, 500]) {
+        const timer = window.setTimeout(() => {
+          timers.delete(timer);
+          measure();
+        }, delay);
+        timers.add(timer);
+      }
     };
     el.addEventListener('dom-ready', listener);
     el.addEventListener('did-finish-load', listener);
     return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
       el.removeEventListener?.('dom-ready', listener);
       el.removeEventListener?.('did-finish-load', listener);
     };
-  }, [alignScale, measure]);
+  }, [collapsed, measure, src, view]);
 
-  // The shell uses content-visibility on message items: an off-screen webview
-  // only starts loading when scrolled into view, by which time dom-ready may
-  // have fired and been missed. Re-align scale and re-measure whenever the
-  // webview becomes visible so late-loaded pages still get their real height
-  // and scale.
+  // Message rows use content-visibility, so an off-screen webview may only
+  // become drawable after it enters the viewport.
   useEffect(() => {
+    if (collapsed || view !== 'preview') return;
     const el = webviewRef.current as HtmlSandboxWebview | null;
     if (!el || typeof IntersectionObserver === 'undefined') return;
+    let timer: number | undefined;
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) {
-        alignScale();
         measure();
-        window.setTimeout(measure, 300);
+        if (timer !== undefined) window.clearTimeout(timer);
+        timer = window.setTimeout(measure, 250);
       }
     });
     observer.observe(el as unknown as Element);
-    return () => observer.disconnect();
-  }, [alignScale, measure]);
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [collapsed, measure, src, view]);
 
   const handleCopy = useCallback(async () => {
     try {

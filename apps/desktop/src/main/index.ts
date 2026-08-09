@@ -119,14 +119,27 @@ import {
   parseListSkillsPayload,
   parseDeleteSkillPayload,
   parseGetSkillPayload,
+  parseSetSkillEnabledPayload,
   parseRegisterMcpServerPayload,
   parseListMcpServersPayload,
+  parseSetMcpServerEnabledPayload,
   parseProbeMcpPolicyPayload,
   parseRequestMcpToolPayload,
   parseProbeMcpSpawnPayload,
   parseCallMcpToolPayload,
   parseRefreshMcpToolsPayload,
 } from '../agent-payloads.js';
+import {
+  parseCapabilityGovernanceListPayload,
+  parseCapabilityWorkspaceListPayload,
+  parseCapabilityWorkspaceSetActivePayload,
+  parseGetLatestCapabilityOrganizePayload,
+  parseGetSkillPublishDraftPayload,
+  parseListSkillPublishDraftsPayload,
+  parsePreviewCapabilityOrganizePayload,
+  parseSaveSkillPublishDraftPayload,
+  parseSubmitSkillPublishDraftPayload,
+} from '../capability-payloads.js';
 import {
   parseDecideMemoryPayload,
   parseRollbackMemoryPayload,
@@ -268,7 +281,11 @@ import {
 } from './packaged-install-identity.js';
 import { stageChatImageDataUrl } from './image-staging.js';
 import { messageImageUrl, persistMessageImages, readMessageImage } from './message-images.js';
-import type { RuntimeConnectOutcome, RuntimeConnectResult } from '../runtime-bridge-contract.js';
+import {
+  CAPABILITY_RUNTIME_IPC_CHANNELS,
+  type RuntimeConnectOutcome,
+  type RuntimeConnectResult,
+} from '../runtime-bridge-contract.js';
 import { TerminalProcessWorker, type TerminalWorkerOutput } from '@sync-think/workers';
 import type {
   CancelProjectTerminalPayload,
@@ -1796,6 +1813,11 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('skill.get', parseGetSkillPayload(value));
   });
+  ipcMain.handle('runtime:skill-set-enabled', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('skill.setEnabled', parseSetSkillEnabledPayload(value));
+  });
 
   ipcMain.handle('runtime:mcp-register', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -1806,6 +1828,11 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('mcp.list', parseListMcpServersPayload(value));
+  });
+  ipcMain.handle('runtime:mcp-set-enabled', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('mcp.setEnabled', parseSetMcpServerEnabledPayload(value));
   });
   ipcMain.handle('runtime:mcp-policy-probe', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -1836,6 +1863,106 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('mcp.tools.refresh', parseRefreshMcpToolsPayload(value));
   });
+
+  ipcMain.handle(
+    CAPABILITY_RUNTIME_IPC_CHANNELS.listWorkspaceActivations,
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'capability.workspace.list',
+        parseCapabilityWorkspaceListPayload(value),
+      );
+    },
+  );
+  ipcMain.handle(
+    CAPABILITY_RUNTIME_IPC_CHANNELS.setWorkspaceActive,
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'capability.workspace.setActive',
+        parseCapabilityWorkspaceSetActivePayload(value),
+      );
+    },
+  );
+  ipcMain.handle(
+    CAPABILITY_RUNTIME_IPC_CHANNELS.listGovernance,
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'capability.governance.list',
+        parseCapabilityGovernanceListPayload(value),
+      );
+    },
+  );
+  ipcMain.handle(
+    CAPABILITY_RUNTIME_IPC_CHANNELS.savePublishDraft,
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'capability.publishDraft.save',
+        parseSaveSkillPublishDraftPayload(value),
+      );
+    },
+  );
+  ipcMain.handle(
+    CAPABILITY_RUNTIME_IPC_CHANNELS.listPublishDrafts,
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'capability.publishDraft.list',
+        parseListSkillPublishDraftsPayload(value),
+      );
+    },
+  );
+  ipcMain.handle(
+    CAPABILITY_RUNTIME_IPC_CHANNELS.getPublishDraft,
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'capability.publishDraft.get',
+        parseGetSkillPublishDraftPayload(value),
+      );
+    },
+  );
+  ipcMain.handle(
+    CAPABILITY_RUNTIME_IPC_CHANNELS.submitPublishDraft,
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'capability.publishDraft.submit',
+        parseSubmitSkillPublishDraftPayload(value),
+      );
+    },
+  );
+  ipcMain.handle(
+    CAPABILITY_RUNTIME_IPC_CHANNELS.previewOrganize,
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'capability.organize.preview',
+        parsePreviewCapabilityOrganizePayload(value),
+      );
+    },
+  );
+  ipcMain.handle(
+    CAPABILITY_RUNTIME_IPC_CHANNELS.getLatestOrganize,
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'capability.organize.getLatest',
+        parseGetLatestCapabilityOrganizePayload(value),
+      );
+    },
+  );
 
   ipcMain.handle('runtime:memory-list', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

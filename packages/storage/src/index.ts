@@ -24,6 +24,7 @@ export * from './conversation-store.js';
 export * from './memory-store.js';
 export * from './skill-store.js';
 export * from './mcp-store.js';
+export * from './capability-store.js';
 
 export * from './approval-store.js';
 export * from './policy-store.js';

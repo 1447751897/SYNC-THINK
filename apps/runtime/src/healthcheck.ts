@@ -7,6 +7,8 @@ export interface HealthcheckResult {
   protocolVersion: number;
   features: Feature[];
   inFlightRuns: number;
+  inFlightRunIds: string[];
+  eventSequence: number;
 }
 
 export interface HealthcheckError {
@@ -16,6 +18,8 @@ export interface HealthcheckError {
 
 export interface HealthcheckOptions {
   inFlightRuns?: number;
+  inFlightRunIds?: readonly string[];
+  eventSequence?: number;
   features?: Feature[];
   protocolVersion?: number;
 }
@@ -31,6 +35,8 @@ export function makeHealthcheck(
     protocolVersion: opts.protocolVersion ?? PROTOCOL_VERSION,
     features: opts.features ?? DEFAULT_FEATURES,
     inFlightRuns: opts.inFlightRuns ?? 0,
+    inFlightRunIds: [...(opts.inFlightRunIds ?? [])].sort(),
+    eventSequence: opts.eventSequence ?? 0,
   };
 }
 

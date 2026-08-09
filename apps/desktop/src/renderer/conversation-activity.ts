@@ -5,6 +5,7 @@
 // run.completed / run.failed / run.cancelled / run.paused 结束。
 
 import type { Event } from '@sync-think/shared';
+import { isHistoricalOrphanRunStart, type RunActivityAuthority } from './run-activity-authority.js';
 
 /** 判定为 Run 开始的事件类型。 */
 const RUN_STARTED_TYPE = 'run.started';
@@ -48,11 +49,46 @@ interface TaskRunFacts {
   finishedAt: number | null;
 }
 
+function createTaskRunFacts(): TaskRunFacts {
+  return {
+    latestSequence: -Infinity,
+    latestIsStarted: false,
+    finishedSequence: null,
+    finishedAt: null,
+  };
+}
+
+function updateTaskRunFacts(
+  facts: TaskRunFacts,
+  event: Event,
+  isStarted: boolean,
+  isFinished: boolean,
+): void {
+  if (event.sequence > facts.latestSequence) {
+    facts.latestSequence = event.sequence;
+    facts.latestIsStarted = isStarted;
+  }
+  if (isFinished && (facts.finishedSequence === null || event.sequence > facts.finishedSequence)) {
+    facts.finishedSequence = event.sequence;
+    const parsed = Date.parse(event.occurredAt);
+    facts.finishedAt = Number.isFinite(parsed) ? parsed : null;
+  }
+}
+
+function legacyThreadIdFromTaskId(taskId: string | undefined): string | undefined {
+  const prefix = 'task-from-thread:';
+  if (!taskId?.startsWith(prefix)) return undefined;
+  const threadId = taskId.slice(prefix.length);
+  return threadId.length > 0 ? threadId : undefined;
+}
+
 /**
  * 单次遍历全局事件流,为每个对话产出活动状态。
  *
- * 事件可能未按 sequence 排序,因此不排序,而是对每个 taskId
- * 直接取 sequence 最大的生命周期事件做判定(等价于按序处理的终值)。
+ * 运行事件的 payload 带 threadId,而 Conversation 只保存真实的 taskId。
+ * 两者的关系由同一批事件中的 message.appended（顶层 taskId + payload.threadId）
+ * 建立；不能假设 taskId 是 `task-from-thread:{threadId}` 这种人工格式。
+ * 同时保留直接 taskId 索引,兼容未来补齐顶层 taskId 的 run 事件和旧数据。
  *
  * @param events 全局事件历史(可能乱序,按 sequence 判定)
  * @param conversations 对话列表(仅需 id 与 taskId;taskId 为空给默认 idle)
@@ -61,41 +97,48 @@ interface TaskRunFacts {
 export function buildConversationActivity(
   events: readonly Event[],
   conversations: readonly { id: string; taskId?: string }[],
+  authority?: RunActivityAuthority,
 ): Map<string, ConversationActivity> {
+  const factsByThread = new Map<string, TaskRunFacts>();
   const factsByTask = new Map<string, TaskRunFacts>();
+  const threadByTask = new Map<string, string>();
 
   for (const event of events) {
-    const taskId = event.taskId;
-    if (!taskId) continue;
+    const payloadThreadId =
+      typeof event.payload?.threadId === 'string' && event.payload.threadId.length > 0
+        ? event.payload.threadId
+        : undefined;
+    const payloadTaskId =
+      typeof event.payload?.taskId === 'string' && event.payload.taskId.length > 0
+        ? event.payload.taskId
+        : undefined;
+    const eventTaskId = event.taskId ? String(event.taskId) : payloadTaskId;
+    if (eventTaskId && payloadThreadId) threadByTask.set(eventTaskId, payloadThreadId);
+
     const isStarted = event.type === RUN_STARTED_TYPE;
     const isFinished = RUN_FINISHED_TYPES.has(event.type);
     if (!isStarted && !isFinished) continue;
+    if (isStarted && isHistoricalOrphanRunStart(event, authority)) continue;
 
-    let facts = factsByTask.get(taskId);
-    if (!facts) {
-      facts = {
-        latestSequence: -Infinity,
-        latestIsStarted: false,
-        finishedSequence: null,
-        finishedAt: null,
-      };
-      factsByTask.set(taskId, facts);
+    if (payloadThreadId) {
+      const facts = factsByThread.get(payloadThreadId) ?? createTaskRunFacts();
+      factsByThread.set(payloadThreadId, facts);
+      updateTaskRunFacts(facts, event, isStarted, isFinished);
     }
-
-    if (event.sequence > facts.latestSequence) {
-      facts.latestSequence = event.sequence;
-      facts.latestIsStarted = isStarted;
-    }
-    if (isFinished && (facts.finishedSequence === null || event.sequence > facts.finishedSequence)) {
-      facts.finishedSequence = event.sequence;
-      const parsed = Date.parse(event.occurredAt);
-      facts.finishedAt = Number.isFinite(parsed) ? parsed : null;
+    if (eventTaskId) {
+      const facts = factsByTask.get(eventTaskId) ?? createTaskRunFacts();
+      factsByTask.set(eventTaskId, facts);
+      updateTaskRunFacts(facts, event, isStarted, isFinished);
     }
   }
 
   const result = new Map<string, ConversationActivity>();
   for (const conversation of conversations) {
-    const facts = conversation.taskId ? factsByTask.get(conversation.taskId) : undefined;
+    const taskId = conversation.taskId ? String(conversation.taskId) : undefined;
+    const threadId = threadByTask.get(taskId ?? '') ?? legacyThreadIdFromTaskId(taskId);
+    const facts =
+      (taskId ? factsByTask.get(taskId) : undefined) ??
+      (threadId ? factsByThread.get(threadId) : undefined);
     if (!facts) {
       result.set(conversation.id, IDLE_ACTIVITY);
       continue;

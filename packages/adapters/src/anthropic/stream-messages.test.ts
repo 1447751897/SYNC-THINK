@@ -226,6 +226,68 @@ describe('streamAnthropicMessages', () => {
     });
   });
 
+  it('degrades adjacent commentary and tool calls into one Anthropic assistant turn', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }),
+    } as unknown as Response);
+
+    await collect(
+      streamAnthropicMessages(
+        req({
+          messages: [
+            { role: 'user', content: '检查状态' },
+            {
+              role: 'assistant',
+              phase: 'commentary',
+              content: '我先检查文件。',
+            },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCall: {
+                    id: 'call-1',
+                    name: 'read_file',
+                    argumentsJson: '{"path":"README.md"}',
+                  },
+                },
+              ],
+            },
+            { role: 'tool', toolCallId: 'call-1', content: '{"ok":true}' },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const requestBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(requestBody.messages).toEqual([
+      { role: 'user', content: '检查状态' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '我先检查文件。' },
+          {
+            type: 'tool_use',
+            id: 'call-1',
+            name: 'read_file',
+            input: { path: 'README.md' },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'call-1', content: '{"ok":true}' }],
+      },
+    ]);
+    expect(JSON.stringify(requestBody.messages)).not.toContain('phase');
+  });
+
   it('maps 401 to auth error without leaking key', async () => {
     const secret = 'sk-ant-LEAK_ME_IN_ERROR_BODY_XYZ999';
     fetchMock.mockResolvedValue({

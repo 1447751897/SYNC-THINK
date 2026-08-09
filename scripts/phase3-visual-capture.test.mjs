@@ -23,14 +23,22 @@ describe('Phase 3 visual matrix', () => {
     const fixtures = new Set(PHASE3_VISUAL_MATRIX.map((item) => item.fixture));
     const themes = new Set(PHASE3_VISUAL_MATRIX.map((item) => item.theme));
     assert.deepEqual([...fixtures].sort(), [
+      'connection-and-code',
       'diagnostics',
       'long-trace-closed',
       'long-trace-open',
+      'streaming-follow',
       'welcome',
     ]);
     assert.deepEqual([...themes].sort(), ['dark', 'light']);
     assert.ok(PHASE3_VISUAL_MATRIX.some((item) => item.scale === 1.25));
     assert.ok(PHASE3_VISUAL_MATRIX.some((item) => item.width <= 760));
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) =>
+          item.fixture === 'long-trace-open' && item.theme === 'dark' && item.width === 1280,
+      ),
+    );
   });
 
   it('parses output overrides and rejects unknown arguments', () => {
@@ -62,10 +70,19 @@ describe('Phase 3 visual matrix', () => {
   });
 
   it('uses Electron capturePage with zoom and waits for the fixture readiness marker', () => {
-    const driver = readFileSync(new URL('./phase3-visual-capture-electron.cjs', import.meta.url), 'utf8');
+    const driver = readFileSync(
+      new URL('./phase3-visual-capture-electron.cjs', import.meta.url),
+      'utf8',
+    );
     assert.match(driver, /capturePage\(\)/);
     assert.match(driver, /setZoomFactor\(visualCase.scale\)/);
     assert.match(driver, /data-phase3-ready/);
     assert.match(driver, /document.fonts/);
+    assert.match(driver, /execution_timeline_invalid/);
+    assert.match(driver, /execution-commentary-item/);
+    assert.doesNotMatch(driver, /execution-reasoning-item/);
+    assert.match(driver, /execution_timeline_closed_invalid/);
+    assert.match(driver, /connection_code_invalid/);
+    assert.match(driver, /streaming_follow_invalid/);
   });
 });

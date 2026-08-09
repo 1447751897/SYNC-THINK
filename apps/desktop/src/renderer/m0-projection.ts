@@ -19,8 +19,8 @@ export interface ConversationMessage {
   text: string;
   /** Durable image attachments resolved by the Desktop custom protocol. */
   images?: ConversationImage[];
-  /** Extended thinking / reasoning channel (never mixed into text). */
-  reasoningText?: string;
+  /** User-visible assistant commentary (never mixed into the final answer). */
+  commentaryText?: string;
   /** Visual tone for system notices (compact success, errors, …). */
   tone?: SystemMessageTone;
   streaming?: boolean;
@@ -119,7 +119,7 @@ export function projectConversation(
 
   // Per-run assistant accumulation for the current thread.
   const runText = new Map<string, string>();
-  const runReasoning = new Map<string, string>();
+  const runCommentary = new Map<string, string>();
   const runModel = new Map<string, string>();
   const runAgentVersion = new Map<string, string>();
   const runGlobalAgentId = new Map<string, string>();
@@ -219,7 +219,7 @@ export function projectConversation(
     if (event.type === 'run.started' && event.runId) {
       latestRunId = event.runId;
       runText.set(event.runId, '');
-      runReasoning.set(event.runId, '');
+      runCommentary.set(event.runId, '');
       runTerminal.delete(event.runId);
       if (!runOrder.includes(event.runId)) runOrder.push(event.runId);
       if (typeof event.payload.modelId === 'string') {
@@ -240,7 +240,7 @@ export function projectConversation(
         id: `assistant-${event.runId}`,
         role: 'assistant',
         text: '',
-        reasoningText: '',
+        commentaryText: '',
         streaming: true,
         runId: event.runId,
         modelId: runModel.get(event.runId),
@@ -261,20 +261,20 @@ export function projectConversation(
       // Orphan run events without start: still track for completed text recovery.
       runOrder.push(event.runId);
       runText.set(event.runId, '');
-      runReasoning.set(event.runId, '');
+      runCommentary.set(event.runId, '');
     }
 
-    if (event.type === 'message.reasoning_delta' && typeof event.payload.textDelta === 'string') {
+    if (event.type === 'message.commentary_delta' && typeof event.payload.textDelta === 'string') {
       const next =
-        typeof event.payload.reasoningText === 'string'
-          ? event.payload.reasoningText
-          : (runReasoning.get(event.runId) ?? '') + event.payload.textDelta;
-      runReasoning.set(event.runId, next);
+        typeof event.payload.commentaryText === 'string'
+          ? event.payload.commentaryText
+          : (runCommentary.get(event.runId) ?? '') + event.payload.textDelta;
+      runCommentary.set(event.runId, next);
       const idx = assistantIndexByRun.get(event.runId);
       if (idx !== undefined) {
         messages[idx] = {
           ...messages[idx]!,
-          reasoningText: next,
+          commentaryText: next,
           streaming: !runTerminal.has(event.runId),
         };
       } else {
@@ -283,7 +283,7 @@ export function projectConversation(
           id: `assistant-${event.runId}`,
           role: 'assistant',
           text: runText.get(event.runId) ?? '',
-          reasoningText: next,
+          commentaryText: next,
           streaming: true,
           runId: event.runId,
           modelId: runModel.get(event.runId),
@@ -308,7 +308,7 @@ export function projectConversation(
         messages[idx] = {
           ...messages[idx]!,
           text: next,
-          reasoningText: runReasoning.get(event.runId) ?? messages[idx]!.reasoningText,
+          commentaryText: runCommentary.get(event.runId) ?? messages[idx]!.commentaryText,
           streaming: !runTerminal.has(event.runId),
         };
       } else {
@@ -317,7 +317,7 @@ export function projectConversation(
           id: `assistant-${event.runId}`,
           role: 'assistant',
           text: next,
-          reasoningText: runReasoning.get(event.runId) ?? '',
+          commentaryText: runCommentary.get(event.runId) ?? '',
           streaming: true,
           runId: event.runId,
           modelId: runModel.get(event.runId),
@@ -339,19 +339,19 @@ export function projectConversation(
         typeof event.payload.assistantText === 'string'
           ? event.payload.assistantText
           : (runText.get(event.runId) ?? '');
-      const finalReasoning =
-        typeof event.payload.reasoningText === 'string'
-          ? event.payload.reasoningText
-          : (runReasoning.get(event.runId) ?? '');
+      const finalCommentary =
+        typeof event.payload.commentaryText === 'string'
+          ? event.payload.commentaryText
+          : (runCommentary.get(event.runId) ?? '');
       runText.set(event.runId, finalText);
-      if (finalReasoning) runReasoning.set(event.runId, finalReasoning);
+      if (finalCommentary) runCommentary.set(event.runId, finalCommentary);
       runTerminal.set(event.runId, 'completed');
       const idx = assistantIndexByRun.get(event.runId);
       if (idx !== undefined) {
         messages[idx] = {
           ...messages[idx]!,
           text: finalText,
-          reasoningText: finalReasoning || messages[idx]!.reasoningText,
+          commentaryText: finalCommentary || messages[idx]!.commentaryText,
           streaming: false,
           modelId: runModel.get(event.runId) ?? messages[idx]!.modelId,
           globalAgentId: runGlobalAgentId.get(event.runId) ?? messages[idx]!.globalAgentId,
@@ -362,7 +362,7 @@ export function projectConversation(
           id: `assistant-${event.runId}`,
           role: 'assistant',
           text: finalText,
-          reasoningText: finalReasoning || undefined,
+          commentaryText: finalCommentary || undefined,
           streaming: false,
           runId: event.runId,
           modelId: runModel.get(event.runId),

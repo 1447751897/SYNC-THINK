@@ -1,6 +1,18 @@
 import type { Feature } from '@sync-think/protocol';
 import type { Event } from '@sync-think/shared';
 
+export const CAPABILITY_RUNTIME_IPC_CHANNELS = {
+  listWorkspaceActivations: 'runtime:capability-workspace-list',
+  setWorkspaceActive: 'runtime:capability-workspace-set-active',
+  listGovernance: 'runtime:capability-governance-list',
+  savePublishDraft: 'runtime:capability-publish-draft-save',
+  listPublishDrafts: 'runtime:capability-publish-draft-list',
+  getPublishDraft: 'runtime:capability-publish-draft-get',
+  submitPublishDraft: 'runtime:capability-publish-draft-submit',
+  previewOrganize: 'runtime:capability-organize-preview',
+  getLatestOrganize: 'runtime:capability-organize-get-latest',
+} as const;
+
 export interface RuntimeHealthyStatus {
   readonly ok: true;
   readonly runtimePid: number;
@@ -8,6 +20,8 @@ export interface RuntimeHealthyStatus {
   readonly protocolVersion: number;
   readonly features: readonly Feature[];
   readonly inFlightRuns: number;
+  readonly inFlightRunIds: readonly string[];
+  readonly eventSequence: number;
 }
 
 export interface RuntimeUnhealthyStatus {

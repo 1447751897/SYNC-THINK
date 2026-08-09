@@ -86,8 +86,19 @@ export type Feature =
   | 'skill.list'
   | 'skill.get'
   | 'skill.delete'
+  | 'skill.setEnabled'
   | 'mcp.register'
   | 'mcp.list'
+  | 'mcp.setEnabled'
+  | 'capability.workspace.list'
+  | 'capability.workspace.setActive'
+  | 'capability.governance.list'
+  | 'capability.publishDraft.save'
+  | 'capability.publishDraft.list'
+  | 'capability.publishDraft.get'
+  | 'capability.publishDraft.submit'
+  | 'capability.organize.preview'
+  | 'capability.organize.getLatest'
   | 'mcp.policy.probe'
   | 'mcp.spawn.probe'
   | 'mcp.tool.request'
@@ -179,8 +190,19 @@ export const DEFAULT_FEATURES: Feature[] = [
   'skill.list',
   'skill.get',
   'skill.delete',
+  'skill.setEnabled',
   'mcp.register',
   'mcp.list',
+  'mcp.setEnabled',
+  'capability.workspace.list',
+  'capability.workspace.setActive',
+  'capability.governance.list',
+  'capability.publishDraft.save',
+  'capability.publishDraft.list',
+  'capability.publishDraft.get',
+  'capability.publishDraft.submit',
+  'capability.organize.preview',
+  'capability.organize.getLatest',
   'mcp.policy.probe',
   'mcp.spawn.probe',
   'mcp.tool.request',

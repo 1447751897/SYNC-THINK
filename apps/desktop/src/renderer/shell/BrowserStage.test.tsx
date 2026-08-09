@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   BrowserAutomationTaskSummary,
   BrowserProfileSummary,
@@ -772,7 +772,7 @@ describe('BrowserStage Runtime Profiles', () => {
     expect(await screen.findByRole('button', { name: /继续录制/ })).toBeTruthy();
   });
 
-  it('opens an enabled task from its title and creates a V2 draft from the row action', async () => {
+  it('opens an enabled task from the expanded card and creates a V2 draft from its action', async () => {
     api.browserWorkflow.list
       .mockResolvedValueOnce({ tasks: [enabledTask] })
       .mockResolvedValue({ tasks: [revisionTask] });
@@ -801,9 +801,8 @@ describe('BrowserStage Runtime Profiles', () => {
     render(<BrowserStage />);
 
     const taskRow = await screen.findByTestId(`browser-workflow-task-${enabledTask.id}`);
-    const titleButton = taskRow.querySelector('button');
-    expect(titleButton).toBeTruthy();
-    fireEvent.click(titleButton!);
+    expect(within(taskRow).getByRole('button', { name: `折叠 ${enabledTask.name}` })).toBeTruthy();
+    fireEvent.click(within(taskRow).getByRole('button', { name: '查看详情' }));
 
     expect(await screen.findByText('自动化任务详情')).toBeTruthy();
     expect(screen.getByText('V1 审核通过。')).toBeTruthy();

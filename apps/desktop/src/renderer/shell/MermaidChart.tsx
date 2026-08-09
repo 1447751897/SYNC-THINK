@@ -7,6 +7,7 @@
 // The card chrome (collapse button, 预览/源码 view tabs, source view) reuses
 // the shared block-control classes defined for the HTML sandbox
 // (shell-html__collapse / shell-html__view-tabs / shell-html__source...).
+import * as Dialog from '@radix-ui/react-dialog';
 import { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
@@ -17,7 +18,9 @@ import {
   Eye,
   FileCode2,
   Loader2,
+  Maximize2,
   RotateCcw,
+  X,
 } from 'lucide-react';
 import { loadMermaidVendor } from './mermaid-vendor-loader.js';
 import { highlightSource } from './highlight.js';
@@ -78,6 +81,8 @@ export function MermaidChart({ code }: MermaidChartProps) {
     }
   }, [code]);
 
+  const canEnlarge = !collapsed && view === 'preview' && state.status === 'ready';
+
   return (
     <div className="shell-mermaid">
       <div className="shell-mermaid__bar">
@@ -114,6 +119,49 @@ export function MermaidChart({ code }: MermaidChartProps) {
           </button>
         </div>
         <div className="shell-md-code__actions">
+          <Dialog.Root>
+            <Dialog.Trigger asChild>
+              <button
+                type="button"
+                className="shell-md-code__action"
+                title="放大查看图表"
+                aria-label="放大查看图表"
+                disabled={!canEnlarge}
+              >
+                <Maximize2 size={12} />
+                <span>放大</span>
+              </button>
+            </Dialog.Trigger>
+            <Dialog.Portal>
+              <Dialog.Overlay className="shell-mermaid-lightbox__overlay" />
+              <Dialog.Content
+                className="shell-mermaid-lightbox__content"
+                aria-describedby={undefined}
+              >
+                <div className="shell-mermaid-lightbox__bar">
+                  <Dialog.Title className="shell-mermaid-lightbox__title">
+                    Mermaid 图表预览
+                  </Dialog.Title>
+                  <Dialog.Close asChild>
+                    <button
+                      type="button"
+                      className="shell-mermaid-lightbox__close"
+                      title="关闭放大图表"
+                      aria-label="关闭放大图表"
+                    >
+                      <X size={16} />
+                    </button>
+                  </Dialog.Close>
+                </div>
+                <div
+                  className="shell-mermaid-lightbox__canvas"
+                  dangerouslySetInnerHTML={{
+                    __html: state.status === 'ready' ? state.svg : '',
+                  }}
+                />
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
           <button
             type="button"
             className="shell-md-code__action"

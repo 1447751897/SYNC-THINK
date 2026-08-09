@@ -162,7 +162,119 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0038_browser_automation_workflow',
     sql: browserAutomationWorkflowDdlSql(),
   },
+  {
+    name: '0039_capability_enablement',
+    sql: capabilityEnablementDdlSql(),
+  },
+  {
+    name: '0040_capability_governance',
+    sql: capabilityGovernanceDdlSql(),
+  },
 ];
+
+function capabilityGovernanceDdlSql(): string {
+  return `
+UPDATE skill_version SET enabled = 1 WHERE archived_at IS NULL;
+UPDATE skill_version SET enabled = 0 WHERE archived_at IS NOT NULL;
+UPDATE mcp_server SET enabled = 1;
+
+ALTER TABLE skill_version ADD COLUMN origin_type TEXT NOT NULL DEFAULT 'local'
+  CHECK (origin_type IN ('local', 'market', 'derived'));
+ALTER TABLE skill_version ADD COLUMN origin_ref TEXT;
+ALTER TABLE skill_version ADD COLUMN derived_from_skill_version_id TEXT
+  REFERENCES skill_version(id) ON DELETE RESTRICT;
+CREATE INDEX skill_version_origin_idx
+  ON skill_version(origin_type, origin_ref, created_at);
+CREATE INDEX skill_version_derived_from_idx
+  ON skill_version(derived_from_skill_version_id);
+
+CREATE TABLE capability_workspace_activation (
+  capability_type TEXT NOT NULL,
+  capability_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+  active INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (capability_type, capability_id, workspace_id),
+  CONSTRAINT capability_workspace_activation_type_check
+    CHECK (capability_type IN ('skill', 'mcp')),
+  CONSTRAINT capability_workspace_activation_active_check
+    CHECK (active IN (0, 1))
+);
+CREATE INDEX capability_workspace_activation_workspace_idx
+  ON capability_workspace_activation(workspace_id, capability_type, active, updated_at);
+
+CREATE TABLE capability_usage_event (
+  id TEXT PRIMARY KEY,
+  capability_type TEXT NOT NULL,
+  capability_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE RESTRICT,
+  agent_id TEXT,
+  agent_version_id TEXT,
+  run_id TEXT,
+  outcome TEXT NOT NULL,
+  context_tokens INTEGER NOT NULL DEFAULT 0,
+  occurred_at TEXT NOT NULL,
+  CONSTRAINT capability_usage_event_type_check
+    CHECK (capability_type IN ('skill', 'mcp')),
+  CONSTRAINT capability_usage_event_outcome_check
+    CHECK (outcome IN ('success', 'failed', 'cancelled')),
+  CONSTRAINT capability_usage_event_context_tokens_check
+    CHECK (context_tokens >= 0)
+);
+CREATE INDEX capability_usage_event_lookup_idx
+  ON capability_usage_event(
+    workspace_id, capability_type, capability_id, occurred_at DESC
+  );
+CREATE INDEX capability_usage_event_run_idx
+  ON capability_usage_event(run_id, capability_type, capability_id);
+
+CREATE TABLE skill_publish_draft (
+  id TEXT PRIMARY KEY,
+  skill_version_id TEXT NOT NULL REFERENCES skill_version(id) ON DELETE RESTRICT,
+  skill_id TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  skill_md TEXT NOT NULL,
+  category TEXT NOT NULL,
+  version TEXT NOT NULL,
+  icon TEXT NOT NULL,
+  attachments_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT skill_publish_draft_attachments_json_check
+    CHECK (json_valid(attachments_json))
+);
+CREATE INDEX skill_publish_draft_skill_idx
+  ON skill_publish_draft(skill_id, updated_at DESC);
+
+CREATE TABLE capability_organize_report (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE RESTRICT,
+  context_budget_tokens INTEGER NOT NULL,
+  categories_json TEXT NOT NULL,
+  summary_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  CONSTRAINT capability_organize_report_budget_check
+    CHECK (context_budget_tokens > 0),
+  CONSTRAINT capability_organize_report_categories_json_check
+    CHECK (json_valid(categories_json)),
+  CONSTRAINT capability_organize_report_summary_json_check
+    CHECK (json_valid(summary_json))
+);
+CREATE INDEX capability_organize_report_workspace_idx
+  ON capability_organize_report(workspace_id, created_at DESC);
+`;
+}
+
+function capabilityEnablementDdlSql(): string {
+  return `
+ALTER TABLE skill_version ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE mcp_server ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX skill_version_enabled_idx ON skill_version(enabled, archived_at, created_at);
+CREATE INDEX mcp_server_enabled_idx ON mcp_server(enabled, created_at);
+`;
+}
 
 function browserAutomationWorkflowDdlSql(): string {
   return `

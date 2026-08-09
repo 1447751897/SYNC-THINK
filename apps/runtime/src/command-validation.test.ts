@@ -8,6 +8,7 @@ import {
   parseSubscribeConversationTransientStreamPayload,
   parseUnsubscribeConversationTransientStreamPayload,
   parseAppendMessagePayload,
+  parseImportSkillPayload,
   parseListSkillsPayload,
 } from './command-validation.js';
 
@@ -32,6 +33,42 @@ describe('Skill metadata list validation', () => {
         skillVersionIds: Array.from({ length: 65 }, (_, index) => `skill-${index}`),
       }),
     ).toBeUndefined();
+  });
+});
+
+describe('Skill import lineage validation', () => {
+  const skillMd = '---\nname: market-skill\n---\nBody';
+
+  it('accepts bounded market and derived lineage metadata', () => {
+    expect(
+      parseImportSkillPayload({
+        skillMd,
+        originType: 'market',
+        originRef: ' market://skills/market-skill ',
+      }),
+    ).toMatchObject({
+      skillMd,
+      originType: 'market',
+      originRef: 'market://skills/market-skill',
+    });
+    expect(
+      parseImportSkillPayload({
+        skillMd,
+        originType: 'derived',
+        originRef: 'market://skills/market-skill',
+        derivedFromSkillVersionId: ' market-version ',
+        skillId: ' skill-market ',
+      }),
+    ).toMatchObject({
+      originType: 'derived',
+      derivedFromSkillVersionId: 'market-version',
+      skillId: 'skill-market',
+    });
+  });
+
+  it('rejects incomplete derived metadata and unknown fields', () => {
+    expect(parseImportSkillPayload({ skillMd, originType: 'derived' })).toBeUndefined();
+    expect(parseImportSkillPayload({ skillMd, extra: true })).toBeUndefined();
   });
 });
 

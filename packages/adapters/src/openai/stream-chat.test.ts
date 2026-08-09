@@ -92,6 +92,64 @@ describe('streamOpenAIChatCompletions', () => {
     const bodyJson = JSON.parse((init as { body: string }).body);
     expect(bodyJson.model).toBe('gpt-4o-mini');
     expect(bodyJson.stream).toBe(true);
+    expect(bodyJson.stream_options).toEqual({ include_usage: true });
+  });
+
+  it('keeps reading after finish_reason so the trailing usage-only chunk is emitted', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":21,"completion_tokens":7,"total_tokens":28}}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+
+    expect(events).toContainEqual({
+      type: 'usage',
+      tokensIn: 21,
+      tokensOut: 7,
+      totalTokens: 28,
+    });
+    expect(events.findIndex((event) => event.type === 'usage')).toBeLessThan(
+      events.findIndex((event) => event.type === 'finished'),
+    );
+    expect(events.at(-1)).toEqual({ type: 'finished', reason: 'stop' });
+  });
+
+  it('parses usage and visible choices from the same chunk', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"content":"combined"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+
+    expect(textFromEvents(events)).toBe('combined');
+    expect(events).toContainEqual({
+      type: 'usage',
+      tokensIn: 8,
+      tokensOut: 2,
+      totalTokens: 10,
+    });
   });
 
   it('serializes GPT-5.6 implicit cache policy without gateway-incompatible breakpoints', async () => {
@@ -279,7 +337,85 @@ describe('streamOpenAIChatCompletions', () => {
     expect(JSON.stringify(events)).not.toContain('secret');
   });
 
-  it('collapses \'auto\' to a valid wire effort (OpenAI rejects \'auto\')', async () => {
+  it('preserves paragraph boundaries between structured reasoning summary blocks', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":"Planning project inspection"},{"type":"reasoning.summary","summary":"Listing relevant files"}]}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req({ reasoningEffort: 'high' }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+
+    expect(events).toContainEqual({
+      type: 'reasoning-delta',
+      text: 'Planning project inspection\n\nListing relevant files',
+    });
+  });
+
+  it('preserves structured reasoning content blocks without mixing visible text', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"content":[{"type":"thinking","text":"Inspect current state"},{"type":"thinking","text":"Choose the smallest fix"},{"type":"text","text":"Visible answer"}]}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req({ reasoningEffort: 'high' }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+
+    expect(events).toContainEqual({
+      type: 'reasoning-delta',
+      text: 'Inspect current state\n\nChoose the smallest fix',
+    });
+    expect(events).toContainEqual({ type: 'text-delta', text: 'Visible answer' });
+  });
+
+  it('keeps ordinary string reasoning deltas contiguous across stream frames', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"reasoning_content":"Planning"}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning_content":" next step"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body,
+      text: async () => '',
+    } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req({ reasoningEffort: 'high' }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+
+    expect(
+      events
+        .filter((event) => event.type === 'reasoning-delta')
+        .map((event) => (event.type === 'reasoning-delta' ? event.text : '')),
+    ).toEqual(['Planning', ' next step']);
+  });
+
+  it("collapses 'auto' to a valid wire effort (OpenAI rejects 'auto')", async () => {
     const body = sseStream(['data: [DONE]\n\n']);
     fetchMock.mockResolvedValue({
       ok: true,
@@ -405,6 +541,67 @@ describe('streamOpenAIChatCompletions', () => {
       role: 'tool',
       tool_call_id: 'previous-call',
     });
+  });
+
+  it('degrades adjacent commentary and tool calls into one Chat assistant turn', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(
+        req({
+          messages: [
+            { role: 'user', content: '检查状态' },
+            {
+              role: 'assistant',
+              phase: 'commentary',
+              content: '我先检查文件。',
+            },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCall: {
+                    id: 'call-1',
+                    name: 'read_file',
+                    argumentsJson: '{"path":"README.md"}',
+                  },
+                },
+              ],
+            },
+            { role: 'tool', toolCallId: 'call-1', content: '{"ok":true}' },
+          ],
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+
+    const requestBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(requestBody.messages).toEqual([
+      { role: 'user', content: '检查状态' },
+      {
+        role: 'assistant',
+        content: '我先检查文件。',
+        tool_calls: [
+          {
+            id: 'call-1',
+            type: 'function',
+            function: {
+              name: 'read_file',
+              arguments: '{"path":"README.md"}',
+            },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: '{"ok":true}' },
+    ]);
+    expect(JSON.stringify(requestBody.messages)).not.toContain('phase');
   });
 
   it('distinguishes external cancellation from timeout', async () => {
@@ -593,5 +790,215 @@ describe('streamOpenAIChatCompletions', () => {
     const adapter = new OpenAIChatAdapter({ fetchImpl: fetchMock as unknown as typeof fetch });
     const events = await collect(adapter.call(req()));
     expect(textFromEvents(events)).toContain('via adapter');
+  });
+
+  it('degrades enable_thinking on 400 Unsupported parameter and retries once', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        headers: { get: () => 'application/json' },
+        body: null,
+        text: async () =>
+          JSON.stringify({
+            error: {
+              message: 'Validation: Unsupported parameter(s): `enable_thinking`',
+              type: 'invalid_request_error',
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'text/event-stream' },
+        body: sseStream(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', 'data: [DONE]\n\n']),
+        text: async () => '',
+      } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req({ modelId: 'z-ai/glm-5.2', reasoningEffort: 'auto' }), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+    expect(textFromEvents(events)).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const firstBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    const secondBody = JSON.parse((fetchMock.mock.calls[1]![1] as { body: string }).body);
+    expect(firstBody.enable_thinking).toBe(true);
+    expect(secondBody.enable_thinking).toBeUndefined();
+    // The OpenAI-standard effort field stays on the degraded retry.
+    expect(secondBody.reasoning_effort).toBe('high');
+  });
+
+  it('degrades prompt_cache_key on 400 Unsupported parameter and retries once', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        headers: { get: () => 'application/json' },
+        body: null,
+        text: async () =>
+          JSON.stringify({
+            error: {
+              message: 'Validation: Unsupported parameter(s): `prompt_cache_key`',
+              type: 'invalid_request_error',
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'text/event-stream' },
+        body: sseStream(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', 'data: [DONE]\n\n']),
+        text: async () => '',
+      } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(
+        req({
+          modelId: 'gpt-5.6-sol',
+          promptCache: { key: 'thread-cache-key', strategy: 'automatic', retention: '24h' },
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+    expect(textFromEvents(events)).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const firstBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    const secondBody = JSON.parse((fetchMock.mock.calls[1]![1] as { body: string }).body);
+    expect(firstBody.prompt_cache_key).toBe('thread-cache-key');
+    expect(secondBody.prompt_cache_key).toBeUndefined();
+  });
+
+  it('degrades stream_options on gateways that reject streamed usage', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        headers: { get: () => 'application/json' },
+        body: null,
+        text: async () =>
+          JSON.stringify({
+            error: {
+              message: 'Validation: Unsupported parameter(s): `stream_options`',
+              type: 'invalid_request_error',
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'text/event-stream' },
+        body: sseStream(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', 'data: [DONE]\n\n']),
+        text: async () => '',
+      } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIChatCompletions(req(), {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    );
+
+    expect(textFromEvents(events)).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    const secondBody = JSON.parse((fetchMock.mock.calls[1]![1] as { body: string }).body);
+    expect(firstBody.stream_options).toEqual({ include_usage: true });
+    expect(secondBody.stream_options).toBeUndefined();
+  });
+
+  it('does not send prompt_cache fields for non-gpt relay models', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      body: null,
+      text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+    } as unknown as Response);
+
+    await collect(
+      streamOpenAIChatCompletions(
+        req({
+          modelId: 'glm-5.2',
+          promptCache: { key: 'thread-cache-key', strategy: 'automatic' },
+        }),
+        { fetchImpl: fetchMock as unknown as typeof fetch },
+      ),
+    );
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+    expect(body).not.toHaveProperty('prompt_cache_key');
+  });
+
+  describe('friendly failure reasons', () => {
+    function errorResponse(status: number, body: unknown) {
+      return {
+        ok: false,
+        status,
+        headers: { get: () => 'application/json' },
+        body: null,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response;
+    }
+
+    async function firstErrorMessage(): Promise<string | undefined> {
+      const events = await collect(
+        streamOpenAIChatCompletions(req(), {
+          fetchImpl: fetchMock as unknown as typeof fetch,
+        }),
+      );
+      const error = events.find((event) => event.type === 'error');
+      return error?.type === 'error' ? error.message : undefined;
+    }
+
+    it('quotes the rejected parameter names for 400 unsupported-parameter', async () => {
+      fetchMock.mockResolvedValue(
+        errorResponse(400, {
+          error: {
+            message: 'Validation: Unsupported parameter(s): `enable_thinking`, `prompt_cache_key`',
+            type: 'invalid_request_error',
+          },
+        }),
+      );
+      const message = await firstErrorMessage();
+      expect(message).toContain('请求被网关拒绝（400）');
+      expect(message).toContain('enable_thinking');
+      expect(message).toContain('prompt_cache_key');
+      expect(message).toContain('请调整模型或网关配置');
+    });
+
+    it('quotes the gateway message for other 4xx rejections', async () => {
+      fetchMock.mockResolvedValue(
+        errorResponse(400, {
+          error: { message: 'context length exceeded', type: 'invalid_request_error' },
+        }),
+      );
+      const message = await firstErrorMessage();
+      expect(message).toContain('请求被网关拒绝（400）');
+      expect(message).toContain('context length exceeded');
+    });
+
+    it('explains auth failures with an actionable hint', async () => {
+      fetchMock.mockResolvedValue(errorResponse(401, { error: { message: 'invalid key' } }));
+      const message = await firstErrorMessage();
+      expect(message).toContain('认证失败（401）');
+      expect(message).toContain('API Key 无效或无权限');
+      expect(message).toContain('检查密钥');
+    });
+
+    it('explains rate limits', async () => {
+      fetchMock.mockResolvedValue(errorResponse(429, { error: { message: 'slow down' } }));
+      const message = await firstErrorMessage();
+      expect(message).toContain('请求被限流（429）');
+      expect(message).toContain('请稍后重试');
+    });
+
+    it('explains upstream 5xx failures as gateway-side issues', async () => {
+      fetchMock.mockResolvedValue(errorResponse(502, { error: { message: 'bad gateway' } }));
+      const message = await firstErrorMessage();
+      expect(message).toContain('上游服务暂不可用（502）');
+      expect(message).toContain('请稍后重试或联系网关管理员');
+    });
   });
 });

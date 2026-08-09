@@ -36,10 +36,14 @@ describe('conversation.getContextStatus protocol', () => {
   it('registers the command and builds its typed request', () => {
     expect(DEFAULT_FEATURES).toContain('conversation.getContextStatus');
     expect(
-      req('conversation.getContextStatus', { conversationId: 'conv-1' }, 'request-1'),
+      req(
+        'conversation.getContextStatus',
+        { conversationId: 'conv-1', modelId: 'provider/model-2' },
+        'request-1',
+      ),
     ).toEqual({
       type: 'conversation.getContextStatus',
-      payload: { conversationId: 'conv-1' },
+      payload: { conversationId: 'conv-1', modelId: 'provider/model-2' },
       requestId: 'request-1',
     });
   });
@@ -58,10 +62,31 @@ describe('conversation.getContextStatus protocol', () => {
     expect(parseConversationGetContextStatusPayload({ conversationId: 'conv-1' })).toEqual({
       conversationId: 'conv-1',
     });
+    expect(
+      parseConversationGetContextStatusPayload({
+        conversationId: 'conv-1',
+        modelId: 'provider/model-2',
+      }),
+    ).toEqual({
+      conversationId: 'conv-1',
+      modelId: 'provider/model-2',
+    });
     expect(() => parseConversationGetContextStatusPayload({ conversationId: '' })).toThrow();
     expect(() => parseConversationGetContextStatusPayload({ conversationId: '   ' })).toThrow();
     expect(() =>
       parseConversationGetContextStatusPayload({ conversationId: 'x'.repeat(129) }),
+    ).toThrow();
+    expect(() =>
+      parseConversationGetContextStatusPayload({
+        conversationId: 'conv-1',
+        modelId: '',
+      }),
+    ).toThrow();
+    expect(() =>
+      parseConversationGetContextStatusPayload({
+        conversationId: 'conv-1',
+        modelId: 'x'.repeat(257),
+      }),
     ).toThrow();
     expect(() =>
       parseConversationGetContextStatusPayload({ conversationId: 'conv-1', extra: true }),

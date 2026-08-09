@@ -385,6 +385,9 @@ export function parseSetSettingPayload(value: unknown): SetSettingPayload | unde
 export function parseUsageSummaryPayload(value: unknown): UsageSummaryPayload | undefined {
   if (value === undefined || value === null) return {};
   if (!isRecord(value)) return undefined;
+  if (Object.keys(value).some((key) => key !== 'sinceDays' && key !== 'taskId')) {
+    return undefined;
+  }
   if (value.sinceDays !== undefined) {
     if (
       typeof value.sinceDays !== 'number' ||
@@ -395,5 +398,16 @@ export function parseUsageSummaryPayload(value: unknown): UsageSummaryPayload | 
       return undefined;
     }
   }
-  return value as unknown as UsageSummaryPayload;
+  if (
+    value.taskId !== undefined &&
+    (typeof value.taskId !== 'string' ||
+      value.taskId.length > 256 ||
+      value.taskId.trim().length === 0)
+  ) {
+    return undefined;
+  }
+  return {
+    ...(value.sinceDays !== undefined ? { sinceDays: value.sinceDays } : {}),
+    ...(typeof value.taskId === 'string' ? { taskId: value.taskId.trim() } : {}),
+  };
 }

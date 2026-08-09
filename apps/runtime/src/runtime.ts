@@ -58,11 +58,27 @@ import {
   type CreateAgentResponse,
   type ListAgentVersionsResponse,
   type CreateAgentVersionResponse,
+  type ImportSkillPayload,
   type ImportSkillResponse,
   type SkillPermissionDiffSummary,
   type DeleteSkillResponse,
+  type SetSkillEnabledResponse,
   type SkillVersionSummary,
   type RegisterMcpServerResponse,
+  type SetMcpServerEnabledResponse,
+  type CapabilityWorkspaceListResponse,
+  type CapabilityWorkspaceSetActiveResponse,
+  type CapabilityGovernanceListResponse,
+  type SaveSkillPublishDraftResponse,
+  type ListSkillPublishDraftsResponse,
+  type GetSkillPublishDraftResponse,
+  type SubmitSkillPublishDraftResponse,
+  type PreviewCapabilityOrganizeResponse,
+  type GetLatestCapabilityOrganizeResponse,
+  type CapabilityWorkspaceActivationSummary,
+  type CapabilityUsageSummary,
+  type SkillPublishDraftSummary,
+  type CapabilityOrganizeReportSummary,
   type ProbeMcpPolicyResponse,
   type RequestMcpToolResponse,
   type ProbeMcpSpawnResponse,
@@ -172,6 +188,11 @@ import {
   type Message,
   type MessageBlock,
 } from '@sync-think/shared';
+import type {
+  ProviderMessage,
+  ProviderToolCall,
+  VisibleAssistantMessagePhase,
+} from '@sync-think/adapters';
 import { defaultSurfaceForProtocol, inferProviderSurface } from '@sync-think/shared';
 import type { ConversationGetRunProcessResponse } from '@sync-think/protocol';
 import { projectRunProcess } from './run-process-view.js';
@@ -199,6 +220,7 @@ import {
   type SqliteMemoryStore,
   type SqliteSkillStore,
   type SqliteMcpStore,
+  type SqliteCapabilityStore,
   type SqliteApprovalStore,
   type SqlitePolicyStore,
   type SqliteAuthorizationStore,
@@ -271,7 +293,9 @@ import { createHash } from 'node:crypto';
 // cc-switch import helpers re-exported via core
 import type { Socket } from 'node:net';
 import {
+  appendCommentaryTimelineDelta,
   applyDemoRunEvent,
+  closeCommentaryTimelineSegment,
   createDemoProviderRequest,
   createDemoRun,
   isDemoRunRecoveryExpired,
@@ -292,6 +316,7 @@ import {
   CHAT_BROWSER_WORKFLOW_TOOL_NAMES,
   CHAT_DESKTOP_TOOL_NAMES,
   CHAT_PLAN_TOOL_NAMES,
+  CHAT_MCP_CATALOG_TOOL_NAMES,
   CHAT_SKILL_TOOL_NAMES,
   CHAT_TEAM_TOOL_NAMES,
   chatToolDeniedMessage,
@@ -375,7 +400,18 @@ import {
   parseCreateAgentVersionPayload,
   parseImportSkillPayload,
   parseDeleteSkillPayload,
+  parseSetSkillEnabledPayload,
   parseRegisterMcpServerPayload,
+  parseSetMcpServerEnabledPayload,
+  parseCapabilityWorkspaceListPayload,
+  parseCapabilityWorkspaceSetActivePayload,
+  parseCapabilityGovernanceListPayload,
+  parseSaveSkillPublishDraftPayload,
+  parseListSkillPublishDraftsPayload,
+  parseGetSkillPublishDraftPayload,
+  parseSubmitSkillPublishDraftPayload,
+  parsePreviewCapabilityOrganizePayload,
+  parseGetLatestCapabilityOrganizePayload,
   parseProbeMcpPolicyPayload,
   parseRequestMcpToolPayload,
   parseProbeMcpSpawnPayload,
@@ -517,6 +553,17 @@ import * as skillQueries from './commands/skill-queries.js';
 import type { SkillQueryContext } from './commands/skill-query-context.js';
 import type { UsageSummaryRawResult } from './usage-summary-cache.js';
 
+const CODEX_STYLE_COMMENTARY_PROMPT = [
+  'User-visible execution updates (Codex-style commentary):',
+  '- Write commentary in the same language as the latest user message unless the user explicitly requests another language.',
+  '- Before meaningful tool work, send a brief commentary preamble that states the immediate plan.',
+  '- After important tool results, briefly state the relevant finding before the next action. During longer work, add a concise progress update after roughly 4-5 tool calls and never leave a long tool sequence unexplained.',
+  '- Keep commentary concise and natural. Group related actions instead of narrating every trivial read, search, or command.',
+  '- Commentary may describe observable plans, actions, progress, and findings. Never expose hidden chain-of-thought or provider reasoning summaries.',
+  '- Use the provider commentary phase for progress updates when phase metadata is available. Keep the terminal response separate as the final answer.',
+  '- Do not add timestamps to commentary; Runtime sequence metadata determines display order.',
+].join('\n');
+
 export interface RuntimeOptions {
   installId: string;
   helloSecret?: string;
@@ -549,6 +596,7 @@ export interface RuntimeOptions {
   stepExecutor?: StepExecutor;
   skillStore?: SqliteSkillStore;
   mcpStore?: SqliteMcpStore;
+  capabilityStore?: SqliteCapabilityStore;
   secureStore?: SecureStore;
   /** Shared Browser Host. Persistent Runtime supplies the production CDP Host. */
   browserHost?: BrowserHostLike;
@@ -667,6 +715,143 @@ const MAX_TRANSIENT_REPLAY_FRAMES = 256;
 /** Keep a subscribe response comfortably under the 1 MiB pipe frame limit. */
 const MAX_TRANSIENT_REPLAY_BYTES = 512 * 1024;
 
+interface ProviderRoundTranscript {
+  messages: ProviderMessage[];
+  itemIndexes: Map<string, number>;
+  openAnonymousItems: Map<VisibleAssistantMessagePhase, string>;
+  nextAnonymousItem: number;
+  legacyText: string;
+}
+
+function createProviderRoundTranscript(): ProviderRoundTranscript {
+  return {
+    messages: [],
+    itemIndexes: new Map(),
+    openAnonymousItems: new Map(),
+    nextAnonymousItem: 0,
+    legacyText: '',
+  };
+}
+
+function ensureProviderRoundAssistantItem(
+  transcript: ProviderRoundTranscript,
+  input: {
+    phase: VisibleAssistantMessagePhase;
+    itemId?: string;
+    forceNewAnonymous?: boolean;
+  },
+): { key: string; index: number } {
+  let key: string;
+  if (input.itemId) {
+    key = `item:${input.itemId}`;
+  } else {
+    const open = transcript.openAnonymousItems.get(input.phase);
+    if (open && !input.forceNewAnonymous) {
+      key = open;
+    } else {
+      key = `anonymous:${input.phase}:${transcript.nextAnonymousItem++}`;
+      transcript.openAnonymousItems.set(input.phase, key);
+    }
+  }
+
+  const existing = transcript.itemIndexes.get(key);
+  if (existing !== undefined) return { key, index: existing };
+  const index = transcript.messages.length;
+  transcript.messages.push({
+    role: 'assistant',
+    phase: input.phase,
+    content: '',
+  });
+  transcript.itemIndexes.set(key, index);
+  return { key, index };
+}
+
+function startProviderRoundAssistantItem(
+  transcript: ProviderRoundTranscript,
+  phase: VisibleAssistantMessagePhase,
+  itemId?: string,
+): void {
+  ensureProviderRoundAssistantItem(transcript, {
+    phase,
+    itemId,
+    forceNewAnonymous: !itemId,
+  });
+}
+
+function appendProviderRoundAssistantDelta(
+  transcript: ProviderRoundTranscript,
+  phase: VisibleAssistantMessagePhase,
+  text: string,
+  itemId?: string,
+): void {
+  const { index } = ensureProviderRoundAssistantItem(transcript, { phase, itemId });
+  const message = transcript.messages[index];
+  if (!message) return;
+  const current = typeof message.content === 'string' ? message.content : '';
+  transcript.messages[index] = {
+    ...message,
+    content: current + text,
+  };
+}
+
+function endProviderRoundAssistantItem(
+  transcript: ProviderRoundTranscript,
+  phase: VisibleAssistantMessagePhase,
+  itemId?: string,
+): void {
+  ensureProviderRoundAssistantItem(transcript, { phase, itemId });
+  if (!itemId) transcript.openAnonymousItems.delete(phase);
+}
+
+function appendProviderRoundLegacyMessage(
+  transcript: ProviderRoundTranscript,
+  phase: VisibleAssistantMessagePhase,
+): void {
+  if (!transcript.legacyText.trim()) return;
+  transcript.messages.push({
+    role: 'assistant',
+    phase,
+    content: transcript.legacyText,
+  });
+  transcript.legacyText = '';
+}
+
+function appendProviderRoundToolCall(
+  transcript: ProviderRoundTranscript,
+  toolCall: ProviderToolCall,
+): void {
+  transcript.messages.push({
+    role: 'assistant',
+    content: [{ type: 'tool-call', toolCall }],
+  });
+}
+
+function providerMessagesFromRoundTranscript(
+  transcript: ProviderRoundTranscript,
+): ProviderMessage[] {
+  return transcript.messages.filter((message) => {
+    if (typeof message.content === 'string') return Boolean(message.content.trim());
+    return message.content.length > 0;
+  });
+}
+
+/**
+ * A failed provider attempt may already have emitted user-visible progress.
+ * Carry only that visible assistant text into the next model attempt. Incomplete
+ * tool calls and internal reasoning are deliberately excluded.
+ */
+function providerVisibleMessagesFromRoundTranscript(
+  transcript: ProviderRoundTranscript,
+): ProviderMessage[] {
+  return transcript.messages.filter(
+    (message) =>
+      message.role === 'assistant' &&
+      (message.phase === 'commentary' || message.phase === 'final_answer') &&
+      typeof message.content === 'string' &&
+      Boolean(message.content.trim()),
+  );
+}
+
 export class Runtime {
   readonly startedAt = Date.now();
   readonly installId: string;
@@ -706,6 +891,8 @@ export class Runtime {
   private readonly scheduler?: Scheduler;
   private readonly skillStore?: SqliteSkillStore;
   private readonly mcpStore?: SqliteMcpStore;
+  private readonly capabilityStore?: SqliteCapabilityStore;
+  private readonly recordedCapabilityUsageKeys = new Set<string>();
   private readonly secureStore?: SecureStore;
   private readonly browserHost?: BrowserHostLike;
   private readonly browserController?: RuntimeBrowserController;
@@ -746,7 +933,7 @@ export class Runtime {
   private readonly backgroundTasks = new Set<Promise<void>>();
   /** Thread-scoped Manifest amendments (force-exclude source ids). In-memory for M1. */
   private readonly threadContextAmendments = new Map<string, { excludeSourceIds: string[] }>();
-  private readonly contextSnapshotByThread = new Map<string, ContextSnapshot>();
+  private readonly contextSnapshotByThread = new Map<string, Map<string, ContextSnapshot>>();
   private readonly contextRunByThread = new Map<
     string,
     {
@@ -852,6 +1039,7 @@ export class Runtime {
         : undefined;
     this.skillStore = opts.skillStore;
     this.mcpStore = opts.mcpStore;
+    this.capabilityStore = opts.capabilityStore;
     this.secureStore = opts.secureStore;
     this.browserHost = opts.browserHost;
     const browserProfileGate =
@@ -1415,12 +1603,56 @@ export class Runtime {
           this.handleDeleteSkill(socket, frame);
           return;
         }
+        if (frame.type === 'skill.setEnabled') {
+          this.handleSetSkillEnabled(socket, frame);
+          return;
+        }
         if (frame.type === 'mcp.register') {
           this.handleRegisterMcpServer(socket, frame);
           return;
         }
         if (frame.type === 'mcp.list') {
           this.handleListMcpServers(socket, frame);
+          return;
+        }
+        if (frame.type === 'mcp.setEnabled') {
+          this.handleSetMcpServerEnabled(socket, frame);
+          return;
+        }
+        if (frame.type === 'capability.workspace.list') {
+          this.handleListCapabilityWorkspaceActivations(socket, frame);
+          return;
+        }
+        if (frame.type === 'capability.workspace.setActive') {
+          this.handleSetCapabilityWorkspaceActive(socket, frame);
+          return;
+        }
+        if (frame.type === 'capability.governance.list') {
+          this.handleListCapabilityGovernance(socket, frame);
+          return;
+        }
+        if (frame.type === 'capability.publishDraft.save') {
+          this.handleSaveSkillPublishDraft(socket, frame);
+          return;
+        }
+        if (frame.type === 'capability.publishDraft.list') {
+          this.handleListSkillPublishDrafts(socket, frame);
+          return;
+        }
+        if (frame.type === 'capability.publishDraft.get') {
+          this.handleGetSkillPublishDraft(socket, frame);
+          return;
+        }
+        if (frame.type === 'capability.publishDraft.submit') {
+          this.handleSubmitSkillPublishDraft(socket, frame);
+          return;
+        }
+        if (frame.type === 'capability.organize.preview') {
+          this.handlePreviewCapabilityOrganize(socket, frame);
+          return;
+        }
+        if (frame.type === 'capability.organize.getLatest') {
+          this.handleGetLatestCapabilityOrganize(socket, frame);
           return;
         }
         if (frame.type === 'mcp.policy.probe') {
@@ -1513,7 +1745,11 @@ export class Runtime {
   }
 
   currentHealthcheck(): HealthcheckResult | HealthcheckError {
-    return healthcheck(this.startedAt, { inFlightRuns: this.inFlight.size });
+    return healthcheck(this.startedAt, {
+      inFlightRuns: this.inFlight.size,
+      inFlightRunIds: [...this.inFlight],
+      eventSequence: this.eventSequence,
+    });
   }
 
   recordInFlight(id: string): void {
@@ -5365,6 +5601,72 @@ export class Runtime {
           ? new Date(Date.now() - payload.sinceDays * 24 * 60 * 60 * 1000).toISOString()
           : undefined;
       const raw = await this.queryUsageSummary(sinceIso);
+      const scopedRawRequests = payload.taskId
+        ? raw.requests.filter((request) => request.taskId === payload.taskId)
+        : raw.requests;
+      const scopedRawRows: UsageSummaryRawResult['rows'] = payload.taskId
+        ? (() => {
+            const byModel = new Map<
+              string,
+              UsageSummaryRawResult['rows'][number] & {
+                latencyTotalMs: number;
+                latencySamples: number;
+              }
+            >();
+            for (const request of scopedRawRequests) {
+              const key = `${request.providerId ?? ''}|${request.modelId}`;
+              const current = byModel.get(key) ?? {
+                modelId: request.modelId,
+                providerId: request.providerId,
+                requests: 0,
+                succeededRequests: 0,
+                failedRequests: 0,
+                tokensIn: 0,
+                tokensOut: 0,
+                cachedTokensHit: undefined,
+                cachedTokensCreated: undefined,
+                reasoningTokens: 0,
+                totalTokens: 0,
+                latencyTotalMs: 0,
+                latencySamples: 0,
+                lastUsedAt: request.occurredAt,
+              };
+              current.requests += 1;
+              if (request.status === 'success') current.succeededRequests += 1;
+              if (request.status === 'failed') current.failedRequests += 1;
+              current.tokensIn += request.tokensIn;
+              current.tokensOut += request.tokensOut;
+              if (request.cachedTokensHit !== undefined) {
+                current.cachedTokensHit =
+                  (current.cachedTokensHit ?? 0) + request.cachedTokensHit;
+              }
+              if (request.cachedTokensCreated !== undefined) {
+                current.cachedTokensCreated =
+                  (current.cachedTokensCreated ?? 0) + request.cachedTokensCreated;
+              }
+              current.reasoningTokens += request.reasoningTokens ?? 0;
+              current.totalTokens += request.totalTokens;
+              if (typeof request.latencyMs === 'number') {
+                current.latencyTotalMs += request.latencyMs;
+                current.latencySamples += 1;
+                current.averageLatencyMs = current.latencyTotalMs / current.latencySamples;
+              }
+              if (!current.lastUsedAt || request.occurredAt > current.lastUsedAt) {
+                current.lastUsedAt = request.occurredAt;
+              }
+              byModel.set(key, current);
+            }
+            return Array.from(byModel.values())
+              .map(
+                ({
+                  latencyTotalMs: _latencyTotalMs,
+                  latencySamples: _latencySamples,
+                  ...row
+                }) => row,
+              )
+              .sort((left, right) => right.tokensOut - left.tokensOut);
+          })()
+        : raw.rows;
       // Enrich request and aggregate rows with catalog display names.
       const catalog = this.providerStore?.listProviders() ?? [];
       const providerNameById = new Map(
@@ -5415,7 +5717,7 @@ export class Runtime {
         if (modelPricing?.displayName) return modelPricing.displayName;
         return catalogName || providerModelId || modelId;
       };
-      const requests = raw.requests.map((row) => {
+      const requests = scopedRawRequests.map((row) => {
         const modelPricing = resolvePricing(row.modelId);
         const estimatedCostBreakdown = modelPricing
           ? estimateUsageCostBreakdown(row, modelPricing)
@@ -5429,7 +5731,7 @@ export class Runtime {
           currency: modelPricing?.currency,
         };
       });
-      const rows: UsageSummaryRow[] = raw.rows.map((row) => {
+      const rows: UsageSummaryRow[] = scopedRawRows.map((row) => {
         const matchingRequests = requests.filter(
           (request) => request.modelId === row.modelId && request.providerId === row.providerId,
         );
@@ -5451,11 +5753,14 @@ export class Runtime {
               : undefined,
         };
       });
-      const toolModels = raw.toolModels.map((row) => ({
+      const scopedTools = payload.taskId ? [] : raw.tools;
+      const scopedToolModels = payload.taskId ? [] : raw.toolModels;
+      const scopedToolFailures = payload.taskId ? [] : raw.toolFailures;
+      const toolModels = scopedToolModels.map((row) => ({
         ...row,
         displayName: resolveDisplayName(row.modelId),
       }));
-      const toolFailures = raw.toolFailures.map((row) => ({
+      const toolFailures = scopedToolFailures.map((row) => ({
         ...row,
         displayName: row.modelId ? resolveDisplayName(row.modelId) : undefined,
       }));
@@ -5479,7 +5784,7 @@ export class Runtime {
       const response: UsageSummaryResponse = {
         rows,
         requests,
-        tools: raw.tools,
+        tools: scopedTools,
         toolModels,
         toolFailures,
         pricing,
@@ -6483,10 +6788,13 @@ export class Runtime {
   private getOrBuildConversationContextSnapshot(input: {
     threadId: string;
     modelId?: string;
+    track?: 'model' | 'agent' | 'team';
     globalAgentId?: string;
     teamId?: string;
   }): ContextSnapshot {
-    const cached = this.contextSnapshotByThread.get(input.threadId);
+    const cached = input.modelId
+      ? this.contextSnapshotByThread.get(input.threadId)?.get(input.modelId)
+      : undefined;
     if (cached) return cached;
 
     const prepared = this.prepareRunBinding({
@@ -6494,9 +6802,11 @@ export class Runtime {
       threadId: input.threadId,
       userText: '',
       modelId: input.modelId,
+      track: input.track,
       globalAgentId: input.globalAgentId,
       teamId: input.teamId,
-      skillVersionIds: [],
+      skillVersionIds:
+        input.track === 'agent' || input.track === 'team' ? undefined : [],
     });
     const messages = this.buildChatProviderMessages(prepared.run);
     const workspaceRoot = this.resolveChatWorkspaceRoot(input.threadId);
@@ -6518,8 +6828,17 @@ export class Runtime {
       executionMode,
       networkEnabled,
     });
-    this.contextSnapshotByThread.set(input.threadId, snapshot);
+    this.setConversationContextSnapshot(input.threadId, snapshot);
     return snapshot;
+  }
+
+  private setConversationContextSnapshot(threadId: string, snapshot: ContextSnapshot): void {
+    let snapshotsByModel = this.contextSnapshotByThread.get(threadId);
+    if (!snapshotsByModel) {
+      snapshotsByModel = new Map<string, ContextSnapshot>();
+      this.contextSnapshotByThread.set(threadId, snapshotsByModel);
+    }
+    snapshotsByModel.set(snapshot.status.modelId, snapshot);
   }
 
   private handleGetConversationContextStatus(socket: Socket, frame: Frame): void {
@@ -6544,7 +6863,8 @@ export class Runtime {
       const threadId = task?.threadId ? String(task.threadId) : String(conversation.id);
       const snapshot = this.getOrBuildConversationContextSnapshot({
         threadId,
-        modelId: conversation.track === 'model' ? conversation.targetRef : undefined,
+        modelId: payload.modelId ?? this.resolveConversationDefaultModelId(conversation),
+        track: conversation.track,
         globalAgentId: conversation.track === 'agent' ? conversation.targetRef : undefined,
         teamId: conversation.track === 'team' ? conversation.targetRef : undefined,
       });
@@ -6929,9 +7249,11 @@ export class Runtime {
         : this.stateStore.listAllEvents
           ? this.stateStore.listAllEvents(0)
           : this.stateStore.listEvents(this.workspaceId, 0);
+      const compactModelId = this.resolveConversationDefaultModelId(conversation);
       const snapshot = this.getOrBuildConversationContextSnapshot({
         threadId,
-        modelId: conversation.track === 'model' ? conversation.targetRef : undefined,
+        modelId: compactModelId,
+        track: conversation.track,
         globalAgentId: conversation.track === 'agent' ? conversation.targetRef : undefined,
         teamId: conversation.track === 'team' ? conversation.targetRef : undefined,
       });
@@ -6999,7 +7321,6 @@ export class Runtime {
         contextWindow: snapshot.status.contextWindow,
       });
 
-      const compactModelId = this.resolveCompactModelId(conversation);
       const modelSummary = await this.generateModelCompactSummary({
         threadId,
         conversationId: String(payload.conversationId),
@@ -7147,11 +7468,11 @@ export class Runtime {
   }
 
   /**
-   * Resolve the model used for compact summaries.
+   * Resolve the durable default model for context previews and compact summaries.
    * Model track �?targetRef; agent track �?agent.defaultModelId;
    * team track �?coordinator agent default model (fallback: undefined �?fake/default).
    */
-  private resolveCompactModelId(conversation: {
+  private resolveConversationDefaultModelId(conversation: {
     track?: string;
     targetRef?: string | null;
   }): string | undefined {
@@ -7846,6 +8167,11 @@ export class Runtime {
     }
     try {
       const peekRunId = ulid() as RunId;
+      const task = this.resolveTaskForThread(payload.threadId);
+      const conversation =
+        task && this.conversationStore
+          ? this.conversationStore.getByTaskId(task.id)
+          : undefined;
       const userText =
         typeof payload.userText === 'string' && payload.userText.trim().length > 0
           ? payload.userText
@@ -7859,7 +8185,14 @@ export class Runtime {
           typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
         agentVersionId:
           typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
-        skillVersionIds: [],
+        track: conversation?.track,
+        globalAgentId:
+          conversation?.track === 'agent' ? conversation.targetRef : undefined,
+        teamId: conversation?.track === 'team' ? conversation.targetRef : undefined,
+        skillVersionIds:
+          conversation?.track === 'agent' || conversation?.track === 'team'
+            ? undefined
+            : [],
       });
       const response: PeekContextPacketResponse = {
         threadId: payload.threadId,
@@ -8806,6 +9139,10 @@ export class Runtime {
       contentFingerprint: record.contentFingerprint,
       hasScripts: record.hasScripts,
       warnings: [...record.warnings],
+      enabled: record.enabled,
+      originType: record.originType,
+      originRef: record.originRef,
+      derivedFromSkillVersionId: record.derivedFromSkillVersionId,
       createdAt: record.createdAt,
     };
   }
@@ -8862,7 +9199,7 @@ export class Runtime {
         }
         throw error;
       }
-      const response = this.finishSkillImport(payload.skillMd, parsed);
+      const response = this.finishSkillImport(payload.skillMd, parsed, payload);
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -8880,6 +9217,10 @@ export class Runtime {
   private finishSkillImport(
     skillMd: string,
     parsed: ReturnType<typeof parseSkillMd>,
+    lineage: Pick<
+      ImportSkillPayload,
+      'originType' | 'originRef' | 'derivedFromSkillVersionId' | 'skillId'
+    > = {},
   ): ImportSkillResponse {
     if (!this.skillStore) throw new Error('Skill store is not configured on this Runtime.');
     {
@@ -8904,6 +9245,10 @@ export class Runtime {
         contentFingerprint: fingerprint,
         hasScripts: parsed.hasScripts,
         warnings: parsed.warnings,
+        originType: lineage.originType,
+        originRef: lineage.originRef,
+        derivedFromSkillVersionId: lineage.derivedFromSkillVersionId,
+        skillId: lineage.skillId as import('@sync-think/shared').SkillId | undefined,
       });
       const summary = this.toSkillVersionSummary(record);
       const rawDiff = diffSkillPermissions(
@@ -9101,9 +9446,59 @@ export class Runtime {
     }
   }
 
+  private handleSetSkillEnabled(socket: Socket, frame: Frame): void {
+    const payload = parseSetSkillEnabledPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.skillStore) {
+      this.writeSkillStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.skillStore.setEnabled(payload.skillVersionId, payload.enabled);
+      if (!updated) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'skill.setEnabled',
+            payload: {},
+            error: {
+              code: ErrorCode.RUN_NOT_FOUND,
+              message: `Skill version not found: ${payload.skillVersionId}`,
+            },
+          }),
+        );
+        return;
+      }
+      const skill = this.toSkillVersionSummary(updated);
+      const event = this.appendEvent('provider', 'skill.enabledChanged', {
+        skillVersionId: skill.skillVersionId,
+        skillId: skill.skillId,
+        name: skill.name,
+        enabled: skill.enabled,
+      });
+      this.publishEvent(event);
+      const response: SetSkillEnabledResponse = { skill };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'skill.setEnabled',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
   private skillQueryContext(): SkillQueryContext {
     return {
       skillStore: this.skillStore,
+      capabilityStore: this.capabilityStore,
       mcpStore: this.mcpStore,
       writeMalformedPayload: (socket, frame) => this.writeMalformedPayload(socket, frame),
       writeSkillStoreUnavailable: (socket, frame) => this.writeSkillStoreUnavailable(socket, frame),
@@ -9190,6 +9585,500 @@ export class Runtime {
 
   private handleListMcpServers(socket: Socket, frame: Frame): void {
     skillQueries.handleListMcpServers(this.skillQueryContext(), socket, frame);
+  }
+
+  private handleSetMcpServerEnabled(socket: Socket, frame: Frame): void {
+    const payload = parseSetMcpServerEnabledPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.mcpStore) {
+      this.writeMcpStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.mcpStore.setEnabled(payload.mcpServerId, payload.enabled);
+      if (!updated) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'mcp.setEnabled',
+            payload: {},
+            error: {
+              code: ErrorCode.RUN_NOT_FOUND,
+              message: `MCP server not found: ${payload.mcpServerId}`,
+            },
+          }),
+        );
+        return;
+      }
+      const server = this.toMcpServerSummary(updated);
+      const event = this.appendEvent('provider', 'mcp.enabledChanged', {
+        mcpServerId: server.mcpServerId,
+        name: server.name,
+        enabled: server.enabled,
+        toolCount: server.tools.length,
+      });
+      this.publishEvent(event);
+      const response: SetMcpServerEnabledResponse = { server };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'mcp.setEnabled',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private toCapabilityWorkspaceActivationSummary(
+    record: import('@sync-think/storage').CapabilityWorkspaceActivationRecord,
+  ): CapabilityWorkspaceActivationSummary {
+    return {
+      capabilityType: record.capabilityType,
+      capabilityId: record.capabilityId,
+      workspaceId: record.workspaceId,
+      active: record.active,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+  }
+
+  private toCapabilityUsageSummary(
+    record: import('@sync-think/storage').CapabilityUsageSummary,
+  ): CapabilityUsageSummary {
+    return {
+      capabilityType: record.capabilityType,
+      capabilityId: record.capabilityId,
+      callCount: record.callCount,
+      successCount: record.successCount,
+      failedCount: record.failedCount,
+      cancelledCount: record.cancelledCount,
+      problemCount: record.problemCount,
+      contextTokens: record.contextTokens,
+      lastUsedAt: record.lastUsedAt,
+    };
+  }
+
+  private toSkillPublishDraftSummary(
+    record: import('@sync-think/storage').SkillPublishDraftRecord,
+  ): SkillPublishDraftSummary {
+    return {
+      id: record.id,
+      skillVersionId: record.skillVersionId,
+      skillId: record.skillId,
+      displayName: record.displayName,
+      description: record.description,
+      skillMd: record.skillMd,
+      category: record.category,
+      version: record.version,
+      icon: record.icon,
+      attachments: record.attachments.map((attachment) => ({
+        name: attachment.name,
+        size: attachment.size,
+      })),
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+  }
+
+  private toCapabilityOrganizeReportSummary(
+    record: import('@sync-think/storage').CapabilityOrganizeReportRecord,
+  ): CapabilityOrganizeReportSummary {
+    return {
+      id: record.id,
+      workspaceId: record.workspaceId,
+      contextBudgetTokens: record.contextBudgetTokens,
+      categories: {
+        unused: [...record.categories.unused],
+        inactive: [...record.categories.inactive],
+        problematic: [...record.categories.problematic],
+        contextWarning: [...record.categories.contextWarning],
+        highContext: [...record.categories.highContext],
+      },
+      summary: { ...record.summary },
+      createdAt: record.createdAt,
+    };
+  }
+
+  private handleListCapabilityWorkspaceActivations(socket: Socket, frame: Frame): void {
+    const payload = parseCapabilityWorkspaceListPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.capabilityStore) {
+      this.writeCapabilityStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: CapabilityWorkspaceListResponse = {
+        activations: this.capabilityStore
+          .listWorkspaceActivations(payload.workspaceId, payload.capabilityType)
+          .map((record) => this.toCapabilityWorkspaceActivationSummary(record)),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'capability.workspace.list',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetCapabilityWorkspaceActive(socket: Socket, frame: Frame): void {
+    const payload = parseCapabilityWorkspaceSetActivePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.capabilityStore || !this.skillStore || !this.mcpStore) {
+      this.writeCapabilityStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const exists =
+        payload.capabilityType === 'skill'
+          ? Boolean(this.skillStore.getVersion(payload.capabilityId))
+          : Boolean(this.mcpStore.get(payload.capabilityId));
+      if (!exists) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'capability.workspace.setActive',
+            payload: {},
+            error: {
+              code: ErrorCode.RUN_NOT_FOUND,
+              message: `Capability not found: ${payload.capabilityType}:${payload.capabilityId}`,
+            },
+          }),
+        );
+        return;
+      }
+      const activation = this.capabilityStore.setWorkspaceActivation(payload);
+      const response: CapabilityWorkspaceSetActiveResponse = {
+        activation: this.toCapabilityWorkspaceActivationSummary(activation),
+      };
+      const event = this.appendEvent('provider', 'capability.workspaceActivationChanged', {
+        ...response.activation,
+      });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'capability.workspace.setActive',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleListCapabilityGovernance(socket: Socket, frame: Frame): void {
+    const payload = parseCapabilityGovernanceListPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.capabilityStore || !this.skillStore || !this.mcpStore) {
+      this.writeCapabilityStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const skills = this.skillStore.listVersionMetadata(500);
+      const mcpServers = this.mcpStore.list(500);
+      const activations = this.capabilityStore.listWorkspaceActivations(payload.workspaceId);
+      const activeIds = new Set(
+        activations
+          .filter((activation) => activation.active)
+          .map(
+            (activation) =>
+              `${activation.capabilityType}:${activation.capabilityId}`,
+          ),
+      );
+      const skillUsage = new Map(
+        this.capabilityStore
+          .summarizeUsage({
+            capabilityType: 'skill',
+            capabilityIds: skills.map((skill) => skill.id),
+            workspaceId: payload.workspaceId,
+            now: payload.now,
+            windowDays: 45,
+          })
+          .map((usage) => [usage.capabilityId, this.toCapabilityUsageSummary(usage)] as const),
+      );
+      const mcpUsage = new Map(
+        this.capabilityStore
+          .summarizeUsage({
+            capabilityType: 'mcp',
+            capabilityIds: mcpServers.map((server) => server.id),
+            workspaceId: payload.workspaceId,
+            now: payload.now,
+            windowDays: 45,
+          })
+          .map((usage) => [usage.capabilityId, this.toCapabilityUsageSummary(usage)] as const),
+      );
+      const response: CapabilityGovernanceListResponse = {
+        workspaceId: payload.workspaceId,
+        windowDays: 45,
+        skills: skills.map((skill) => ({
+          skill: this.toSkillVersionSummary(skill),
+          workspaceActive: activeIds.has(`skill:${skill.id}`),
+          usage: skillUsage.get(skill.id)!,
+        })),
+        mcpServers: mcpServers.map((server) => ({
+          server: this.toMcpServerSummary(server),
+          workspaceActive: activeIds.has(`mcp:${server.id}`),
+          usage: mcpUsage.get(server.id)!,
+        })),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'capability.governance.list',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSaveSkillPublishDraft(socket: Socket, frame: Frame): void {
+    const payload = parseSaveSkillPublishDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.capabilityStore || !this.skillStore) {
+      this.writeCapabilityStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const skill = this.skillStore.getVersion(payload.skillVersionId);
+      if (!skill || skill.skillId !== payload.skillId) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'capability.publishDraft.save',
+            payload: {},
+            error: {
+              code: ErrorCode.RUN_NOT_FOUND,
+              message: `Skill version not found: ${payload.skillVersionId}`,
+            },
+          }),
+        );
+        return;
+      }
+      const draft = this.capabilityStore.saveSkillPublishDraft({
+        ...payload,
+        attachments: (payload.attachments ?? []).map((attachment) => ({
+          name: attachment.name,
+          size: attachment.size,
+        })),
+      });
+      const response: SaveSkillPublishDraftResponse = {
+        draft: this.toSkillPublishDraftSummary(draft),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'capability.publishDraft.save',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleListSkillPublishDrafts(socket: Socket, frame: Frame): void {
+    const payload = parseListSkillPublishDraftsPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.capabilityStore) {
+      this.writeCapabilityStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response: ListSkillPublishDraftsResponse = {
+        drafts: this.capabilityStore
+          .listSkillPublishDrafts(payload.skillId, payload.limit ?? 100)
+          .map((draft) => this.toSkillPublishDraftSummary(draft)),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'capability.publishDraft.list',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleGetSkillPublishDraft(socket: Socket, frame: Frame): void {
+    const payload = parseGetSkillPublishDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.capabilityStore) {
+      this.writeCapabilityStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const draft = this.capabilityStore.getSkillPublishDraft(payload.id);
+      if (!draft) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'capability.publishDraft.get',
+            payload: {},
+            error: {
+              code: ErrorCode.RUN_NOT_FOUND,
+              message: `Skill publish draft not found: ${payload.id}`,
+            },
+          }),
+        );
+        return;
+      }
+      const response: GetSkillPublishDraftResponse = {
+        draft: this.toSkillPublishDraftSummary(draft),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'capability.publishDraft.get',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSubmitSkillPublishDraft(socket: Socket, frame: Frame): void {
+    const payload = parseSubmitSkillPublishDraftPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.capabilityStore) {
+      this.writeCapabilityStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const draft = this.capabilityStore.getSkillPublishDraft(payload.id);
+      if (!draft) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'capability.publishDraft.submit',
+            payload: {},
+            error: {
+              code: ErrorCode.RUN_NOT_FOUND,
+              message: `Skill publish draft not found: ${payload.id}`,
+            },
+          }),
+        );
+        return;
+      }
+      const result = this.capabilityStore.submitSkillPublishDraft(payload.id);
+      const response: SubmitSkillPublishDraftResponse = {
+        ...result,
+        draft: this.toSkillPublishDraftSummary(draft),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'capability.publishDraft.submit',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handlePreviewCapabilityOrganize(socket: Socket, frame: Frame): void {
+    const payload = parsePreviewCapabilityOrganizePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.capabilityStore) {
+      this.writeCapabilityStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const report = this.capabilityStore.generateOrganizeReport(payload);
+      const response: PreviewCapabilityOrganizeResponse = {
+        report: this.toCapabilityOrganizeReportSummary(report),
+        readOnly: true,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'capability.organize.preview',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private handleGetLatestCapabilityOrganize(socket: Socket, frame: Frame): void {
+    const payload = parseGetLatestCapabilityOrganizePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.capabilityStore) {
+      this.writeCapabilityStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const report = this.capabilityStore.getLatestOrganizeReport(payload.workspaceId);
+      const response: GetLatestCapabilityOrganizeResponse = {
+        report: report ? this.toCapabilityOrganizeReportSummary(report) : undefined,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'capability.organize.getLatest',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
   }
 
   /**
@@ -10743,6 +11632,21 @@ export class Runtime {
     );
   }
 
+  private writeCapabilityStoreUnavailable(socket: Socket, frame: Frame): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code: ErrorCode.STORAGE_WRITE_FAILED,
+          message: 'Capability governance store is not configured on this Runtime',
+        },
+      }),
+    );
+  }
+
   private toMcpServerSummary(
     record: import('@sync-think/storage').McpServerRecord,
   ): import('@sync-think/protocol').McpServerSummary {
@@ -10757,6 +11661,7 @@ export class Runtime {
         inputSchemaJson: t.inputSchemaJson,
       })),
       trusted: record.trusted,
+      enabled: record.enabled,
       maxOutputBytes: record.maxOutputBytes,
       timeoutMs: record.timeoutMs,
       notes: record.notes,
@@ -11242,6 +12147,8 @@ export class Runtime {
     if (payload.role === 'user') {
       try {
         this.authorizeRunSkillSelection({
+          workspaceId: this.resolveEventWorkspaceId(payload.threadId),
+          track: boundConversation?.track,
           agentVersionId:
             typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
           globalAgentId,
@@ -11330,6 +12237,7 @@ export class Runtime {
           {
             id: ulid() as Event['id'],
             workspaceId: this.resolveEventWorkspaceId(payload.threadId),
+            taskId: this.resolveEventTaskId(payload.threadId),
             runId: supersededRunId as RunId,
             category: 'run',
             type: 'run.cancelled',
@@ -11361,6 +12269,7 @@ export class Runtime {
             typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
           agentVersionId:
             typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
+          track: boundConversation?.track,
           globalAgentId,
           teamId,
           skillVersionIds: payload.skillVersionIds,
@@ -11385,6 +12294,7 @@ export class Runtime {
       eventDrafts.push({
         id: ulid() as Event['id'],
         workspaceId: persistedTask?.workspaceId ?? this.workspaceId,
+        taskId: persistedTask?.id,
         runId: demoRunId,
         category: 'context',
         type: 'context.packet.built',
@@ -11418,6 +12328,7 @@ export class Runtime {
       eventDrafts.push({
         id: ulid() as Event['id'],
         workspaceId: persistedTask?.workspaceId ?? this.workspaceId,
+        taskId: persistedTask?.id,
         runId: demoRunId,
         category: 'run',
         type: 'run.started',
@@ -11620,6 +12531,7 @@ export class Runtime {
           {
             id: ulid() as Event['id'],
             workspaceId: this.resolveEventWorkspaceId(run.threadId),
+            taskId: this.resolveEventTaskId(run.threadId),
             runId: payload.runId as RunId,
             category: 'run',
             type: 'run.cancelled',
@@ -11649,6 +12561,7 @@ export class Runtime {
           },
           undefined,
           payload.runId as RunId,
+          this.resolveEventTaskId(run.threadId),
         );
         this.persistAssistantTerminalMessage(payload.runId as RunId, run, 'cancelled');
         this.publishEvent(event);
@@ -11982,6 +12895,20 @@ export class Runtime {
         if (abort.signal.aborted) return;
         const attemptRun = this.demoRuns.get(runId);
         if (!attemptRun) return;
+        const providerRequestId = `chat-${ulid()}`;
+        let activeRoundTranscript: ProviderRoundTranscript | undefined;
+        let activeRoundTranscriptCommitted = false;
+        const appendActiveRoundTranscript = (mode: 'complete' | 'visible'): void => {
+          if (!activeRoundTranscript || activeRoundTranscriptCommitted) return;
+          const messages =
+            mode === 'complete'
+              ? providerMessagesFromRoundTranscript(activeRoundTranscript)
+              : providerVisibleMessagesFromRoundTranscript(activeRoundTranscript);
+          if (messages.length > 0) {
+            chatMessages = [...chatMessages, ...messages];
+          }
+          activeRoundTranscriptCommitted = true;
+        };
 
         try {
           let stream: AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined;
@@ -12037,16 +12964,19 @@ export class Runtime {
                 retryCount: this.demoRuns.get(runId)?.retryCount ?? 0,
                 hasOutput: Boolean(
                   this.demoRuns.get(runId)?.assistantText ||
-                    this.demoRuns.get(runId)?.reasoningText,
+                  this.demoRuns.get(runId)?.commentaryText ||
+                  this.demoRuns.get(runId)?.legacyPendingText ||
+                  this.demoRuns.get(runId)?.reasoningText,
                 ),
               })
             ) {
               const retryCount = (this.demoRuns.get(runId)?.retryCount ?? 0) + 1;
-              this.updateDemoRun(runId, { retryCount });
-              console.warn(
-                `[demo-run] retrying same model (${retryCount}/${MODEL_RETRY_MAX})`,
-                { runId, modelId: attemptRun?.providerModelId, failureClass },
-              );
+              this.publishModelRetryStatus(runId, retryCount, failureClass);
+              console.warn(`[demo-run] retrying same model (${retryCount}/${MODEL_RETRY_MAX})`, {
+                runId,
+                modelId: attemptRun?.providerModelId,
+                failureClass,
+              });
               await this.sleepForModelRetry(runId, retryCount - 1);
               continue;
             }
@@ -12076,16 +13006,82 @@ export class Runtime {
           let resumeAfterFallback = false;
           let finishedWithToolRequests = false;
           pendingToolCalls.length = 0;
-          let roundAssistantText = '';
+          const roundTranscript = createProviderRoundTranscript();
+          activeRoundTranscript = roundTranscript;
 
           for await (const adapterEvent of stream) {
             if (abort.signal.aborted || !this.demoRuns.has(runId)) break;
-            const currentRun = this.demoRuns.get(runId);
+            let currentRun = this.demoRuns.get(runId);
             if (!currentRun) break;
 
             if (providerEventIndex < currentRun.nextAdapterEventIndex) {
               providerEventIndex++;
               continue;
+            }
+
+            // Providers without native Codex phase metadata are buffered until
+            // the round reveals whether the text precedes tool requests
+            // (commentary) or is the terminal answer (final_answer).
+            if (adapterEvent.type === 'text-delta') {
+              roundTranscript.legacyText += adapterEvent.text;
+              this.demoRuns.set(runId, {
+                ...currentRun,
+                nextAdapterEventIndex: currentRun.nextAdapterEventIndex + 1,
+                legacyPendingText: currentRun.legacyPendingText + adapterEvent.text,
+              });
+              providerEventIndex++;
+              continue;
+            }
+
+            if (adapterEvent.type === 'tool-call' && currentRun.legacyPendingText) {
+              currentRun =
+                this.flushLegacyAssistantText({
+                  runId,
+                  phase: 'commentary',
+                  occurredAt: new Date().toISOString(),
+                }) ?? currentRun;
+              appendProviderRoundLegacyMessage(roundTranscript, 'commentary');
+            } else if (adapterEvent.type === 'finished' && currentRun.legacyPendingText) {
+              const phase = adapterEvent.reason === 'tool-requests' ? 'commentary' : 'final_answer';
+              currentRun =
+                this.flushLegacyAssistantText({
+                  runId,
+                  phase,
+                  occurredAt: new Date().toISOString(),
+                }) ?? currentRun;
+              appendProviderRoundLegacyMessage(roundTranscript, phase);
+            } else if (adapterEvent.type === 'error' && currentRun.legacyPendingText) {
+              const phase = pendingToolCalls.length > 0 ? 'commentary' : 'final_answer';
+              currentRun =
+                this.flushLegacyAssistantText({
+                  runId,
+                  phase,
+                  occurredAt: new Date().toISOString(),
+                }) ?? currentRun;
+              appendProviderRoundLegacyMessage(roundTranscript, phase);
+            }
+
+            if (adapterEvent.type === 'assistant-message-start') {
+              startProviderRoundAssistantItem(
+                roundTranscript,
+                adapterEvent.phase,
+                adapterEvent.itemId,
+              );
+            } else if (adapterEvent.type === 'assistant-message-delta') {
+              appendProviderRoundAssistantDelta(
+                roundTranscript,
+                adapterEvent.phase,
+                adapterEvent.text,
+                adapterEvent.itemId,
+              );
+            } else if (adapterEvent.type === 'assistant-message-end') {
+              endProviderRoundAssistantItem(
+                roundTranscript,
+                adapterEvent.phase,
+                adapterEvent.itemId,
+              );
+            } else if (adapterEvent.type === 'tool-call') {
+              appendProviderRoundToolCall(roundTranscript, adapterEvent.toolCall);
             }
 
             // section 5.3: retryable / auth / unknown failures walk the configured fallback chain.
@@ -12107,15 +13103,21 @@ export class Runtime {
                 shouldRetrySameModel({
                   failureClass,
                   retryCount: currentRun.retryCount ?? 0,
-                  hasOutput: Boolean(currentRun.assistantText || currentRun.reasoningText),
+                  hasOutput: Boolean(
+                    currentRun.assistantText ||
+                    currentRun.commentaryText ||
+                    currentRun.legacyPendingText ||
+                    currentRun.reasoningText,
+                  ),
                 })
               ) {
                 const retryCount = (currentRun.retryCount ?? 0) + 1;
-                this.updateDemoRun(runId, { retryCount });
-                console.warn(
-                  `[demo-run] retrying same model (${retryCount}/${MODEL_RETRY_MAX})`,
-                  { runId, modelId: currentRun.providerModelId, failureClass },
-                );
+                this.publishModelRetryStatus(runId, retryCount, failureClass);
+                console.warn(`[demo-run] retrying same model (${retryCount}/${MODEL_RETRY_MAX})`, {
+                  runId,
+                  modelId: currentRun.providerModelId,
+                  failureClass,
+                });
                 resumeAfterFallback = true;
                 await this.sleepForModelRetry(runId, retryCount - 1);
                 break;
@@ -12139,14 +13141,12 @@ export class Runtime {
             if (adapterEvent.type === 'tool-call') {
               pendingToolCalls.push(adapterEvent.toolCall);
             }
-            if (adapterEvent.type === 'text-delta') {
-              roundAssistantText += adapterEvent.text;
-            }
             if (adapterEvent.type === 'finished' && adapterEvent.reason === 'tool-requests') {
               finishedWithToolRequests = true;
             }
 
-            // When tools are requested, do not treat finished as terminal yet �?            // we still need a local tool loop + follow-up model turn.
+            // When tools are requested, do not treat finished as terminal yet:
+            // we still need a local tool loop + follow-up model turn.
             const suppressTerminal =
               !finalTurn &&
               finishedWithToolRequests &&
@@ -12154,7 +13154,40 @@ export class Runtime {
               pendingToolCalls.length > 0 &&
               adapterEvent.type === 'finished';
 
-            const projection = projectAdapterEvent(currentRun, adapterEvent);
+            const projectionOccurredAt = new Date().toISOString();
+            const projection = projectAdapterEvent(currentRun, adapterEvent, {
+              requestId: providerRequestId,
+            });
+            if (
+              adapterEvent.type === 'assistant-message-delta' &&
+              adapterEvent.phase === 'commentary' &&
+              projection.nextRun
+            ) {
+              projection.nextRun = appendCommentaryTimelineDelta(projection.nextRun, {
+                textDelta: adapterEvent.text,
+                occurredAt: projectionOccurredAt,
+                afterSequence: this.eventSequence,
+              });
+            } else if (
+              adapterEvent.type === 'assistant-message-end' &&
+              adapterEvent.phase === 'commentary' &&
+              projection.nextRun
+            ) {
+              projection.nextRun = closeCommentaryTimelineSegment(
+                projection.nextRun,
+                projectionOccurredAt,
+              );
+            } else if (
+              projection.nextRun &&
+              (projection.type === 'tool.requested' ||
+                projection.type === 'tool.completed' ||
+                projection.type === 'tool.failed')
+            ) {
+              projection.nextRun = closeCommentaryTimelineSegment(
+                projection.nextRun,
+                projectionOccurredAt,
+              );
+            }
             if (suppressTerminal) {
               // Keep run alive for the tool follow-up turn.
               projection.terminal = false;
@@ -12181,6 +13214,16 @@ export class Runtime {
                 })(),
               };
             }
+            if (
+              projection.category === 'tool' &&
+              projection.type !== 'tool.turn_pending' &&
+              typeof projection.payload.threadId !== 'string'
+            ) {
+              projection.payload = {
+                ...projection.payload,
+                threadId: currentRun.threadId,
+              };
+            }
 
             // First successful event from this model: clear the in-place retry
             // budget. The stream is now healthy and any later failure happens
@@ -12202,7 +13245,12 @@ export class Runtime {
               payload.run = serializeDemoRun(projection.nextRun);
             }
             const isTransientDelta =
-              projection.type === 'message.delta' || projection.type === 'message.reasoning_delta';
+              projection.type === 'message.delta' ||
+              projection.type === 'message.commentary_delta' ||
+              projection.type === 'message.reasoning_delta';
+            const isTransientPhaseBoundary =
+              projection.type === 'message.phase_started' ||
+              projection.type === 'message.phase_ended';
             if (isTransientDelta) {
               if (!projection.nextRun) {
                 throw new Error('A transient delta projection requires a next run state');
@@ -12212,7 +13260,12 @@ export class Runtime {
               this.publishTransientDelta({
                 threadId: currentRun.threadId as ThreadId,
                 runId,
-                kind: projection.type === 'message.delta' ? 'text' : 'reasoning',
+                kind:
+                  projection.type === 'message.delta'
+                    ? 'text'
+                    : projection.type === 'message.commentary_delta'
+                      ? 'commentary'
+                      : 'reasoning',
                 textDelta:
                   typeof payload.textDelta === 'string'
                     ? payload.textDelta
@@ -12220,25 +13273,34 @@ export class Runtime {
                       ? payload.delta
                       : '',
                 occurredAt,
+                ...(projection.type === 'message.commentary_delta'
+                  ? { afterSequence: this.eventSequence }
+                  : {}),
               });
               this.updateTransientTextSnapshot({
                 threadId: currentRun.threadId as ThreadId,
                 runId,
                 streamSequence: this.transientSequenceByThread.get(currentRun.threadId) ?? 0,
                 text: projection.nextRun.assistantText,
+                commentaryText: projection.nextRun.commentaryText,
+                commentarySegments: projection.nextRun.commentarySegments,
                 reasoningText: projection.nextRun.reasoningText,
+                reasoningSegments: projection.nextRun.reasoningSegments,
                 updatedAt: occurredAt,
               });
               // Skip publishing the intermediate tool-turn marker to keep user UI clean.
+            } else if (isTransientPhaseBoundary && projection.nextRun) {
+              this.demoRuns.set(runId, projection.nextRun);
             } else if (projection.type !== 'tool.turn_pending') {
               const event = this.persistProjectedEvent(
                 {
                   id: ulid() as Event['id'],
                   workspaceId: this.resolveEventWorkspaceId(currentRun.threadId),
+                  taskId: this.resolveEventTaskId(currentRun.threadId),
                   runId,
                   category: projection.category,
                   type: projection.type,
-                  occurredAt: new Date().toISOString(),
+                  occurredAt: projectionOccurredAt,
                   payload,
                 },
                 projectedRuns,
@@ -12252,11 +13314,15 @@ export class Runtime {
               // ChatView can then refresh the message page immediately on the terminal event
               // without racing a later message-store write.
               if (projection.terminal && projection.type === 'run.completed') {
-                this.persistAssistantFinalMessage(runId, currentRun, projection.payload);
+                this.persistAssistantFinalMessage(
+                  runId,
+                  closeCommentaryTimelineSegment(currentRun, projectionOccurredAt),
+                  projection.payload,
+                );
               } else if (projection.terminal && projection.type === 'run.failed') {
                 this.persistAssistantTerminalMessage(
                   runId,
-                  currentRun,
+                  closeCommentaryTimelineSegment(currentRun, projectionOccurredAt),
                   'failed',
                   typeof projection.payload.errorMessage === 'string'
                     ? projection.payload.errorMessage
@@ -12278,7 +13344,10 @@ export class Runtime {
             if (projection.terminal) break;
           }
 
-          if (resumeAfterFallback) continue;
+          if (resumeAfterFallback) {
+            appendActiveRoundTranscript('visible');
+            continue;
+          }
 
           // Local tool loop: execute requested tools and continue the model turn.
           // Project tools need workspaceRoot; network tools only need networkEnabled.
@@ -12292,21 +13361,7 @@ export class Runtime {
           ) {
             toolLoopRound += 1;
             const currentRun = this.demoRuns.get(runId)!;
-            const assistantParts: import('@sync-think/adapters').ProviderContentPart[] = [];
-            if (roundAssistantText.trim()) {
-              assistantParts.push({ type: 'text', text: roundAssistantText });
-            }
-            for (const toolCall of pendingToolCalls) {
-              assistantParts.push({ type: 'tool-call', toolCall });
-            }
-            chatMessages = [
-              ...chatMessages,
-              {
-                role: 'assistant',
-                content:
-                  assistantParts.length > 0 ? assistantParts : roundAssistantText || '（调用工具）',
-              },
-            ];
+            appendActiveRoundTranscript('complete');
 
             const completedResults: Array<{ toolCallId: string; content: string }> = [];
             for (let toolIndex = 0; toolIndex < pendingToolCalls.length; toolIndex++) {
@@ -12589,11 +13644,14 @@ export class Runtime {
                   run: currentRun,
                   toolCall,
                 });
+              } else if (CHAT_MCP_CATALOG_TOOL_NAMES.has(toolCall.name)) {
+                resultText = this.executeChatMcpCatalogTool(currentRun);
               } else if (mcpDispatch) {
                 resultText = await this.executeChatBoundMcpTool({
                   run: currentRun,
                   mcpServerId: mcpDispatch.mcpServerId,
                   toolName: mcpDispatch.toolName,
+                  toolCallId: toolCall.id,
                   argumentsJson: toolCall.argumentsJson,
                   signal: abort.signal,
                 });
@@ -12678,7 +13736,10 @@ export class Runtime {
           if (current) {
             const failureClass = this.classifyThrownFailure(error);
             const outcome = this.tryContinueWithFallback(runId, current, failureClass, message);
-            if (outcome === 'continued') continue;
+            if (outcome === 'continued') {
+              appendActiveRoundTranscript('visible');
+              continue;
+            }
             if (outcome === 'paused') return;
           }
           this.persistDemoRunFailure(runId, 'unknown', message);
@@ -12703,11 +13764,16 @@ export class Runtime {
 
   /** Authoritative per-turn Skill check, independent of Run/provider availability. */
   private authorizeRunSkillSelection(input: {
+    workspaceId: string;
+    track?: 'model' | 'agent' | 'team';
     agentVersionId?: string;
     globalAgentId?: string;
     teamId?: string;
     skillVersionIds?: readonly string[];
   }): void {
+    const track =
+      input.track ?? (input.teamId ? 'team' : input.globalAgentId ? 'agent' : 'model');
+    const isAgentTrack = track === 'agent' || track === 'team';
     let effectiveGlobalAgentId = input.globalAgentId;
     if (input.teamId && this.teamStore) {
       const team = this.teamStore.get(input.teamId as TeamId);
@@ -12724,17 +13790,34 @@ export class Runtime {
 
     const agent = this.resolveAgentModelBinding(input.agentVersionId);
     const agentMeta = this.resolveAgentManifestMeta(agent.agentVersionId);
-    const allowlistedSkillVersionIds = globalAgent
+    const agentBoundSkillVersionIds = globalAgent
       ? [...globalAgent.skillIds]
       : agentMeta.skillVersionIds;
+    const selectedSkillVersionIds = isAgentTrack
+      ? input.skillVersionIds
+      : (input.skillVersionIds ?? []);
+    const skillSelectionPolicy = this.resolveSkillSelectionPolicy({
+      workspaceId: input.workspaceId,
+      isAgentTrack,
+      agentBoundSkillVersionIds,
+      selectedSkillVersionIds,
+    });
+    this.assertSelectedSkillsWithinEffectiveAllowlist(
+      selectedSkillVersionIds,
+      skillSelectionPolicy.composeSelectedSkillVersionIds,
+    );
     resolveRunSkillSelection({
-      allowlistedSkillVersionIds,
-      selectedSkillVersionIds: input.skillVersionIds,
+      allowlistedSkillVersionIds: skillSelectionPolicy.allowlistedSkillVersionIds,
+      inheritedSkillVersionIds: isAgentTrack
+        ? skillSelectionPolicy.agentDefaultSkillVersionIds
+        : undefined,
+      selectedSkillVersionIds: skillSelectionPolicy.selectedSkillVersionIds,
       getSkill: (skillVersionId) => {
         const row = this.skillStore?.getVersionMetadata(skillVersionId);
         if (!row) return undefined;
         return {
           id: row.id,
+          enabled: row.enabled,
           archived: Boolean(row.archivedAt),
           permissionApproved: this.skillStore?.isPermissionApproved(row.id) === true,
         };
@@ -13134,6 +14217,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     modelId?: string;
     credentialRefId?: string;
     agentVersionId?: string;
+    track?: 'model' | 'agent' | 'team';
     /** Bound global Agent (mutable agent table) for persona / default model. */
     globalAgentId?: string;
     /** Bound team (team-track conversations) �?coordinator drives the model. */
@@ -13251,14 +14335,35 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const agentVersionId = effectiveAgentBinding.agentVersionId;
     const agentMeta = this.resolveAgentManifestMeta(agentVersionId);
     const agentSkillIds = globalAgent ? [...globalAgent.skillIds] : agentMeta.skillVersionIds;
+    const workspaceId = this.resolveEventWorkspaceId(input.threadId);
+    const track =
+      input.track ?? (input.teamId ? 'team' : input.globalAgentId ? 'agent' : 'model');
+    const isAgentTrack = track === 'agent' || track === 'team';
+    const selectedSkillVersionIds = isAgentTrack
+      ? input.skillVersionIds
+      : (input.skillVersionIds ?? []);
+    const skillSelectionPolicy = this.resolveSkillSelectionPolicy({
+      workspaceId,
+      isAgentTrack,
+      agentBoundSkillVersionIds: agentSkillIds,
+      selectedSkillVersionIds,
+    });
+    this.assertSelectedSkillsWithinEffectiveAllowlist(
+      selectedSkillVersionIds,
+      skillSelectionPolicy.composeSelectedSkillVersionIds,
+    );
     const skillSelection = resolveRunSkillSelection({
-      allowlistedSkillVersionIds: agentSkillIds,
-      selectedSkillVersionIds: input.skillVersionIds,
+      allowlistedSkillVersionIds: skillSelectionPolicy.allowlistedSkillVersionIds,
+      inheritedSkillVersionIds: isAgentTrack
+        ? skillSelectionPolicy.agentDefaultSkillVersionIds
+        : undefined,
+      selectedSkillVersionIds: skillSelectionPolicy.selectedSkillVersionIds,
       getSkill: (skillVersionId) => {
         const row = this.skillStore?.getVersionMetadata(skillVersionId);
         if (!row) return undefined;
         return {
           id: row.id,
+          enabled: row.enabled !== false,
           archived: Boolean(row.archivedAt),
           permissionApproved: this.skillStore?.isPermissionApproved(row.id) === true,
         };
@@ -13266,7 +14371,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
     const requestedSkillVersionIds = skillSelection.requestedSkillVersionIds;
     const effectiveSkillIds = skillSelection.skillVersionIds;
-    const effectiveMcpIds = globalAgent ? [...globalAgent.mcpServerIds] : agentMeta.mcpServerIds;
+    const effectiveMcpIds = this.resolveEffectiveMcpServerIds(
+      workspaceId,
+      globalAgent ? globalAgent.mcpServerIds : agentMeta.mcpServerIds,
+    );
 
     const resolution = resolveModelBinding({
       agent: effectiveAgentBinding,
@@ -13515,6 +14623,58 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     };
   }
 
+  private resolveSkillSelectionPolicy(input: {
+    workspaceId: string;
+    isAgentTrack: boolean;
+    agentBoundSkillVersionIds: readonly string[];
+    selectedSkillVersionIds?: readonly string[];
+  }): {
+    selectedSkillVersionIds: string[];
+    agentDefaultSkillVersionIds: string[];
+    composeSelectedSkillVersionIds: string[];
+    allowlistedSkillVersionIds: string[];
+  } {
+    const selectedSkillVersionIds = [...new Set(
+      (input.selectedSkillVersionIds ?? []).map((skillVersionId) =>
+        String(skillVersionId ?? '').trim(),
+      ),
+    )].filter(Boolean);
+    const agentDefaultSkillVersionIds = input.isAgentTrack
+      ? this.capabilityStore
+        ? this.capabilityStore.resolveAgentSkillVersionIds(input.agentBoundSkillVersionIds)
+        : [...new Set(input.agentBoundSkillVersionIds.map(String).filter(Boolean))]
+      : [];
+    const composeSelectedSkillVersionIds = this.capabilityStore
+      ? this.capabilityStore.resolveComposeSkillVersionIds(
+          input.workspaceId,
+          selectedSkillVersionIds,
+        )
+      : [...selectedSkillVersionIds];
+    const allowlistedSkillVersionIds = [
+      ...new Set([...agentDefaultSkillVersionIds, ...composeSelectedSkillVersionIds]),
+    ];
+    return {
+      selectedSkillVersionIds,
+      agentDefaultSkillVersionIds,
+      composeSelectedSkillVersionIds,
+      allowlistedSkillVersionIds,
+    };
+  }
+
+  private assertSelectedSkillsWithinEffectiveAllowlist(
+    selectedSkillVersionIds: readonly string[] | undefined,
+    effectiveAllowlist: readonly string[],
+  ): void {
+    if (!this.capabilityStore || selectedSkillVersionIds === undefined) return;
+    const allowed = new Set(effectiveAllowlist);
+    const denied = [...new Set(selectedSkillVersionIds.map(String))].find(
+      (skillVersionId) => !allowed.has(skillVersionId),
+    );
+    if (denied) {
+      throw new Error(`Skill version is not on the current Skill allowlist: ${denied}`);
+    }
+  }
+
   /**
    * After a model call failure:
    * 1) Same-provider priority chain �?walk *forward only* from the failed model
@@ -13527,6 +14687,47 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const run = this.demoRuns.get(runId);
     if (!run) return;
     this.demoRuns.set(runId, { ...run, ...patch });
+  }
+
+  private publishModelRetryStatus(
+    runId: RunId,
+    retryCount: number,
+    failureClass: FailureClass,
+  ): void {
+    this.updateDemoRun(runId, { retryCount });
+    const run = this.demoRuns.get(runId);
+    if (!run) return;
+
+    try {
+      const event = this.persistProjectedEvent(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: this.resolveEventWorkspaceId(run.threadId),
+          taskId: this.resolveEventTaskId(run.threadId),
+          runId,
+          category: 'run',
+          type: 'run.retrying',
+          occurredAt: new Date().toISOString(),
+          payload: {
+            threadId: run.threadId,
+            attempt: retryCount,
+            maxAttempts: MODEL_RETRY_MAX,
+            modelId: run.modelId,
+            providerModelId: run.providerModelId,
+            failureClass,
+            run: serializeDemoRun(run),
+          },
+        },
+        new Map(this.demoRuns),
+      );
+      this.publishEvent(event);
+    } catch (error) {
+      console.warn('[runtime] model retry status could not be persisted', {
+        runId,
+        retryCount,
+        error,
+      });
+    }
   }
 
   private sleepForModelRetry(runId: RunId, retryIndex: number): Promise<void> {
@@ -13822,6 +15023,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     modelId: ModelId,
     source: ModelResolutionSource,
   ): DemoRunState {
+    // A fallback is still the same user-visible assistant turn. Preserve the
+    // commentary that has already reached the user, but close its active
+    // segment so commentary from the next model starts at a new boundary.
+    const visibleRun = closeCommentaryTimelineSegment(run, new Date().toISOString());
     let modelRecord = this.providerStore?.getModel(modelId);
     if (!modelRecord && this.providerStore) {
       for (const entry of this.providerStore.listProviders()) {
@@ -13882,7 +15087,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
     const reboundModelId = (modelRecord?.id ?? modelId) as string;
     return {
-      ...run,
+      ...visibleRun,
       modelId: reboundModelId,
       providerModelId: modelRecord?.providerModelId ?? modelId,
       protocol: modelRecord?.protocol ?? run.protocol,
@@ -13902,7 +15107,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       proofHash: built.packet.proofHash,
       nextAdapterEventIndex: 0,
       assistantText: '',
+      commentaryText: visibleRun.commentaryText,
+      commentarySegments: visibleRun.commentarySegments,
+      legacyPendingText: '',
       reasoningText: '',
+      reasoningSegments: [],
       // A fresh model gets a fresh retry budget.
       retryCount: 0,
       useFakeProvider: useFake,
@@ -14080,10 +15289,57 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
    * Chat-loop MCP dispatch (no orchestration step fence).
    * Bound servers only �?schemas were already filtered by run.mcpServerIds.
    */
+  private resolveEffectiveMcpServerIds(
+    workspaceId: string,
+    boundIds: readonly string[] | undefined,
+  ): string[] {
+    if (!this.mcpStore) return [];
+    if (this.capabilityStore) {
+      return this.capabilityStore.resolveEffectiveMcpServerIds(workspaceId, boundIds ?? []);
+    }
+    return [...new Set((boundIds ?? []).map(String))].filter(
+      (id) => this.mcpStore?.get(id)?.enabled === true,
+    );
+  }
+
+  private executeChatMcpCatalogTool(run: DemoRunState): string {
+    if (!this.mcpStore) {
+      return JSON.stringify({
+        ok: true,
+        catalogState: 'store-unavailable',
+        servers: [],
+        serverCount: 0,
+        toolCount: 0,
+      });
+    }
+    const servers = (run.mcpServerIds ?? [])
+      .map((id) => this.mcpStore?.get(id))
+      .filter((server): server is NonNullable<typeof server> => Boolean(server?.enabled))
+      .map((server) => ({
+        mcpServerId: server.id,
+        name: server.name,
+        transport: server.transport,
+        enabled: server.enabled,
+        toolCount: server.tools.length,
+        tools: server.tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+        })),
+      }));
+    return JSON.stringify({
+      ok: true,
+      catalogState: servers.length > 0 ? 'ready' : 'no-enabled-servers',
+      servers,
+      serverCount: servers.length,
+      toolCount: servers.reduce((total, server) => total + server.toolCount, 0),
+    });
+  }
+
   private async executeChatBoundMcpTool(input: {
     run: DemoRunState;
     mcpServerId: string;
     toolName: string;
+    toolCallId: string;
     argumentsJson?: string;
     signal?: AbortSignal;
   }): Promise<string> {
@@ -14095,12 +15351,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         toolName: input.toolName,
       });
     }
-    // Enforce run allowlist when present.
-    if (
-      input.run.mcpServerIds &&
-      input.run.mcpServerIds.length > 0 &&
-      !input.run.mcpServerIds.includes(input.mcpServerId)
-    ) {
+    // The frozen Run allowlist is authoritative, including an explicitly empty list.
+    if (!(input.run.mcpServerIds ?? []).includes(input.mcpServerId)) {
       return JSON.stringify({
         ok: false,
         error: `MCP server ${input.mcpServerId} is not on this Agent's allowlist`,
@@ -14110,6 +15362,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
     const row = this.mcpStore.get(input.mcpServerId);
     if (!row) {
+      this.recordMcpCallUsage(input, 'failed');
       return JSON.stringify({
         ok: false,
         error: `MCP server not found: ${input.mcpServerId}`,
@@ -14117,8 +15370,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         toolName: input.toolName,
       });
     }
+    if (!row.enabled) {
+      this.recordMcpCallUsage(input, 'failed');
+      return JSON.stringify({
+        ok: false,
+        error: `MCP server is disabled: ${row.name}`,
+        mcpServerId: input.mcpServerId,
+        toolName: input.toolName,
+      });
+    }
     const registered = (row.tools ?? []).map((t) => t.name);
     if (registered.length > 0 && !registered.includes(input.toolName)) {
+      this.recordMcpCallUsage(input, 'failed');
       return JSON.stringify({
         ok: false,
         error: `Tool ${input.toolName} is not on MCP server ${row.name}`,
@@ -14181,6 +15444,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     if (failMessage) {
+      this.recordMcpCallUsage(
+        input,
+        input.signal?.aborted ? 'cancelled' : 'failed',
+      );
       return JSON.stringify({
         ok: false,
         error: failMessage,
@@ -14189,6 +15456,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         serverName: row.name,
       });
     }
+    this.recordMcpCallUsage(input, 'success');
     return JSON.stringify({
       ok: true,
       mcpServerId: input.mcpServerId,
@@ -14196,6 +15464,96 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       serverName: row.name,
       result: completedOut ?? {},
     });
+  }
+
+  private recordMcpCallUsage(
+    input: {
+      run: DemoRunState;
+      mcpServerId: string;
+      toolCallId: string;
+    },
+    outcome: 'success' | 'failed' | 'cancelled',
+  ): void {
+    const usageKey = `${input.run.runId}:mcp:${input.mcpServerId}:mcp-call:${input.toolCallId}`;
+    this.appendCapabilityUsageOnce(usageKey, {
+      capabilityType: 'mcp',
+      capabilityId: input.mcpServerId,
+      run: input.run,
+      outcome,
+    });
+  }
+
+  private appendCapabilityUsageOnce(
+    usageKey: string,
+    input: {
+      capabilityType: 'skill' | 'mcp';
+      capabilityId: string;
+      run: DemoRunState;
+      outcome: 'success' | 'failed' | 'cancelled';
+      contextTokens?: number;
+    },
+  ): void {
+    if (!this.capabilityStore || this.recordedCapabilityUsageKeys.has(usageKey)) return;
+    this.capabilityStore.appendUsageEvent({
+      id: usageKey,
+      capabilityType: input.capabilityType,
+      capabilityId: input.capabilityId,
+      workspaceId: this.resolveEventWorkspaceId(input.run.threadId),
+      agentId: input.run.globalAgentId,
+      agentVersionId: input.run.agentVersionId,
+      runId: input.run.runId,
+      outcome: input.outcome,
+      contextTokens: input.contextTokens,
+    });
+    this.recordedCapabilityUsageKeys.add(usageKey);
+  }
+
+  private recordProviderContextCapabilityUsage(
+    run: DemoRunState,
+    snapshot: ContextSnapshot,
+  ): void {
+    const includedSources = snapshot.sources.filter(
+      (source) => source.disposition === 'included',
+    );
+    for (const skillVersionId of run.skillVersionIds ?? []) {
+      const source = includedSources.find(
+        (candidate) =>
+          candidate.kind === 'skill-definition' &&
+          candidate.id === `skill:${skillVersionId}`,
+      );
+      if (!source) continue;
+      this.appendCapabilityUsageOnce(
+        `${run.runId}:skill:${skillVersionId}:skill-context`,
+        {
+          capabilityType: 'skill',
+          capabilityId: skillVersionId,
+          run,
+          outcome: 'success',
+          contextTokens: source.tokens,
+        },
+      );
+    }
+    for (const mcpServerId of run.mcpServerIds ?? []) {
+      const contextTokens = includedSources.reduce(
+        (total, source) =>
+          source.kind === 'tool-schema' &&
+          source.id.startsWith(`tool:${mcpServerId}:`)
+            ? total + source.tokens
+            : total,
+        0,
+      );
+      if (contextTokens <= 0) continue;
+      this.appendCapabilityUsageOnce(
+        `${run.runId}:mcp:${mcpServerId}:mcp-schema`,
+        {
+          capabilityType: 'mcp',
+          capabilityId: mcpServerId,
+          run,
+          outcome: 'success',
+          contextTokens,
+        },
+      );
+    }
   }
 
   private resolveChatWorkspaceRoot(threadId: string): string | undefined {
@@ -14223,6 +15581,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   private resolveEventWorkspaceId(threadId: string): WorkspaceId {
     const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
     return task?.workspaceId ?? this.workspaceId;
+  }
+
+  private resolveEventTaskId(threadId: string): TaskId | undefined {
+    return this.workspaceStore?.getTaskByThreadId(threadId as ThreadId)?.id;
   }
 
   private isAbortError(error: unknown): boolean {
@@ -14262,6 +15624,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       {
         id: ulid() as Event['id'],
         workspaceId: this.resolveEventWorkspaceId(threadId),
+        taskId: this.resolveEventTaskId(threadId),
         runId,
         category: 'tool',
         type: 'tool.completed',
@@ -15685,7 +17048,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           return JSON.stringify({
             ok: false,
             code: 'browser.workflow-variables-invalid',
-            error: 'browser_workflow_execute: every variable must have a non-empty name and string value.',
+            error:
+              'browser_workflow_execute: every variable must have a non-empty name and string value.',
             failureClass: 'acceptance',
           });
         }
@@ -15720,7 +17084,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     } catch (error) {
       return JSON.stringify({
         ok: false,
-        code: error instanceof BrowserWorkflowRunnerError ? error.code : 'browser.workflow-permission-failed',
+        code:
+          error instanceof BrowserWorkflowRunnerError
+            ? error.code
+            : 'browser.workflow-permission-failed',
         error: error instanceof Error ? error.message : 'Browser Workflow permission check failed.',
         failureClass: 'permission',
       });
@@ -15761,13 +17128,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         error.code === 'browser.workflow-variables-required';
       return JSON.stringify({
         ok: false,
-        code: error instanceof BrowserWorkflowRunnerError ? error.code : 'browser.workflow-replay-failed',
+        code:
+          error instanceof BrowserWorkflowRunnerError
+            ? error.code
+            : 'browser.workflow-replay-failed',
         error: error instanceof Error ? error.message : 'Browser Workflow replay failed.',
-        failureClass:
-          error instanceof BrowserWorkflowRunnerError ? error.failureClass : 'unknown',
-        ...(isVariablesError
-          ? { missingVariables: true, askUser: true }
-          : {}),
+        failureClass: error instanceof BrowserWorkflowRunnerError ? error.failureClass : 'unknown',
+        ...(isVariablesError ? { missingVariables: true, askUser: true } : {}),
       });
     }
   }
@@ -16552,10 +17919,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           stepCount: 0,
           executedStepCount: 0,
           steps: [],
-          ...(isVariables
-            ? { missingVariables: extractMissingVariables(error) }
-            : {}),
-          errorCode: error instanceof BrowserWorkflowRunnerError ? error.code : 'browser.workflow-replay-failed',
+          ...(isVariables ? { missingVariables: extractMissingVariables(error) } : {}),
+          errorCode:
+            error instanceof BrowserWorkflowRunnerError
+              ? error.code
+              : 'browser.workflow-replay-failed',
           error: error instanceof Error ? error.message : 'Browser Workflow replay failed.',
         } satisfies ExecuteBrowserWorkflowResponse);
       }
@@ -16667,10 +18035,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           stepCount: 0,
           executedStepCount: 0,
           steps: [],
-          ...(isVariables
-            ? { missingVariables: extractMissingVariables(error) }
-            : {}),
-          errorCode: error instanceof BrowserWorkflowRunnerError ? error.code : 'browser.workflow-replay-failed',
+          ...(isVariables ? { missingVariables: extractMissingVariables(error) } : {}),
+          errorCode:
+            error instanceof BrowserWorkflowRunnerError
+              ? error.code
+              : 'browser.workflow-replay-failed',
           error: error instanceof Error ? error.message : 'Browser Workflow replay failed.',
         } satisfies ExecuteBrowserWorkflowResponse);
       }
@@ -17132,30 +18501,34 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const networkEnabled = options.networkEnabled === true || run.networkEnabled === true;
     const hasProjectTools = Boolean(options.toolsEnabled && options.workspaceRoot);
     const mcpExtra = (() => {
-      if (!options.toolsEnabled || !this.mcpStore || !run.mcpServerIds?.length) {
+      if (!options.toolsEnabled || !this.mcpStore) {
         return {
           tools: [] as import('@sync-think/adapters').ProviderToolSchema[],
           dispatch: new Map<string, { mcpServerId: string; toolName: string }>(),
         };
       }
-      const servers = run.mcpServerIds
+      const effectiveMcpIds = this.resolveEffectiveMcpServerIds(
+        this.resolveEventWorkspaceId(run.threadId),
+        run.mcpServerIds,
+      );
+      run.mcpServerIds = effectiveMcpIds;
+      const servers = effectiveMcpIds
         .map((id) => this.mcpStore?.get(id))
         .filter((row): row is NonNullable<typeof row> => Boolean(row))
         .map((row) => ({ id: row.id, name: row.name, tools: row.tools }));
       return mcpToolsToProviderSchemas(servers, { maxTools: 16 });
     })();
-    if (mcpExtra.dispatch.size > 0) {
-      (
-        run as DemoRunState & {
-          mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
-        }
-      ).mcpToolDispatch = mcpExtra.dispatch;
-    }
+    (
+      run as DemoRunState & {
+        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+      }
+    ).mcpToolDispatch = mcpExtra.dispatch;
     const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
     const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
     const browserWorkflowToolsEnabled = Boolean(
       options.toolsEnabled && this.browserWorkflowService,
     );
+    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
@@ -17163,6 +18536,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         agentToolsEnabled ||
         desktopToolsEnabled ||
         browserWorkflowToolsEnabled ||
+        mcpCatalogToolsEnabled ||
         mcpExtra.tools.length > 0)
         ? toolsForExecutionMode(executionMode, {
             networkEnabled,
@@ -17170,6 +18544,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             includeAgentTools: agentToolsEnabled,
             includeDesktopTools: desktopToolsEnabled,
             includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
+            includeMcpCatalogTools: mcpCatalogToolsEnabled,
             extraTools: mcpExtra.tools,
           })
         : undefined;
@@ -17247,6 +18622,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       : 'Browser Automation Workflow tools are unavailable in this Runtime.';
     const productBoundaryPrompt = [
       'Product capability boundaries (SYNC-THINK / this desktop shell):',
+      CODEX_STYLE_COMMENTARY_PROMPT,
       agentCreationPrompt,
       planToolPrompt,
       browserWorkflowPrompt,
@@ -17270,6 +18646,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           'If the user asks about local project files, tell them to open/select a project folder first.',
           ...(run.projectContextPromptBlocks ?? []),
         ];
+    const messageExcerpt = [...options.messages]
+      .reverse()
+      .find((message) => message.role === 'user');
+    const messageExcerptText =
+      messageExcerpt && typeof messageExcerpt.content === 'string'
+        ? messageExcerpt.content
+        : messageExcerpt && Array.isArray(messageExcerpt.content)
+          ? messageExcerpt.content
+              .filter((part) => part.type === 'text' && typeof part.text === 'string')
+              .map((part) => part.text)
+              .join('\n')
+          : '';
     const actualSources = (run.contextSources ?? []).map((source) => {
       if (source.disposition !== 'included') return source;
       if (
@@ -17280,6 +18668,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       }
       if (source.section === 'agent' && source.kind === 'agent-instructions') {
         return { ...source, content: agentInstructions[0] ?? 'You are' };
+      }
+      if (source.section === 'messages' && source.kind === 'message-excerpt') {
+        return {
+          ...source,
+          ...(messageExcerptText.trim()
+            ? { content: messageExcerptText }
+            : { content: undefined }),
+        };
       }
       return source;
     });
@@ -17321,13 +18717,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const hasProjectTools = Boolean(options.toolsEnabled && options.workspaceRoot);
     // MCP tools bound on the run �?expose schemas to the provider when tools are on.
     const mcpExtra = (() => {
-      if (!options.toolsEnabled || !this.mcpStore || !run.mcpServerIds?.length) {
+      if (!options.toolsEnabled || !this.mcpStore) {
         return {
           tools: [] as import('@sync-think/adapters').ProviderToolSchema[],
           dispatch: new Map<string, { mcpServerId: string; toolName: string }>(),
         };
       }
-      const servers = run.mcpServerIds
+      const effectiveMcpIds = this.resolveEffectiveMcpServerIds(
+        this.resolveEventWorkspaceId(run.threadId),
+        run.mcpServerIds,
+      );
+      run.mcpServerIds = effectiveMcpIds;
+      const servers = effectiveMcpIds
         .map((id) => this.mcpStore?.get(id))
         .filter((row): row is NonNullable<typeof row> => Boolean(row))
         .map((row) => ({
@@ -17338,18 +18739,17 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return mcpToolsToProviderSchemas(servers, { maxTools: 16 });
     })();
     // Stash dispatch on the run for the tool loop (in-memory only).
-    if (mcpExtra.dispatch.size > 0) {
-      (
-        run as DemoRunState & {
-          mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
-        }
-      ).mcpToolDispatch = mcpExtra.dispatch;
-    }
+    (
+      run as DemoRunState & {
+        mcpToolDispatch?: Map<string, { mcpServerId: string; toolName: string }>;
+      }
+    ).mcpToolDispatch = mcpExtra.dispatch;
     const agentToolsEnabled = Boolean(options.toolsEnabled && this.globalAgentStore);
     const desktopToolsEnabled = Boolean(options.toolsEnabled && this.isComputerUsePluginEnabled());
     const browserWorkflowToolsEnabled = Boolean(
       options.toolsEnabled && this.browserWorkflowService,
     );
+    const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
@@ -17357,6 +18757,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         agentToolsEnabled ||
         desktopToolsEnabled ||
         browserWorkflowToolsEnabled ||
+        mcpCatalogToolsEnabled ||
         mcpExtra.tools.length > 0)
         ? [
             ...toolsForExecutionMode(executionMode, {
@@ -17365,6 +18766,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               includeAgentTools: agentToolsEnabled,
               includeDesktopTools: desktopToolsEnabled,
               includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
+              includeMcpCatalogTools: mcpCatalogToolsEnabled,
               extraTools: mcpExtra.tools,
             }),
           ]
@@ -17391,7 +18793,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         networkEnabled,
       });
       run.contextSnapshot = snapshot;
-      this.contextSnapshotByThread.set(run.threadId, snapshot);
+      this.recordProviderContextCapabilityUsage(run, snapshot);
+      this.setConversationContextSnapshot(run.threadId, snapshot);
       this.contextRunByThread.set(run.threadId, {
         run,
         workspaceRoot: options.workspaceRoot,
@@ -17599,11 +19002,27 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         : typeof run.assistantText === 'string'
           ? run.assistantText
           : '';
-    if (!assistantText.trim()) return;
+    const commentaryText =
+      typeof payload.commentaryText === 'string' && payload.commentaryText.trim()
+        ? payload.commentaryText
+        : typeof run.commentaryText === 'string' && run.commentaryText.trim()
+          ? run.commentaryText
+          : undefined;
+    const commentarySegments = run.commentarySegments.filter((segment) => segment.text.trim());
     const reasoningText =
       typeof run.reasoningText === 'string' && run.reasoningText.trim()
         ? run.reasoningText
         : undefined;
+    const reasoningSegments = run.reasoningSegments.filter((segment) => segment.text.trim());
+    if (
+      !assistantText.trim() &&
+      !commentaryText &&
+      commentarySegments.length === 0 &&
+      !reasoningText &&
+      reasoningSegments.length === 0
+    ) {
+      return;
+    }
     this.persistFinalChatMessage({
       // Deterministic id so resume/redelivery of run.completed stays idempotent.
       id: `asst-${runId}` as MessageId,
@@ -17611,9 +19030,27 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       role: 'assistant',
       text: assistantText,
       blocks: [
-        { type: 'text', text: assistantText },
-        ...(reasoningText
-          ? [{ type: 'reasoning' as const, reasoningText }]
+        ...(commentaryText || commentarySegments.length > 0
+          ? [
+              {
+                type: 'commentary' as const,
+                ...(commentaryText ? { text: commentaryText } : {}),
+                ...(commentarySegments.length > 0 ? { payload: { commentarySegments } } : {}),
+              },
+            ]
+          : []),
+        ...(assistantText.trim() ? [{ type: 'text' as const, text: assistantText }] : []),
+        // Provider reasoning summaries remain durable for diagnostics and
+        // backward-compatible export, but Desktop does not present them as the
+        // user-visible execution process.
+        ...(reasoningText || reasoningSegments.length > 0
+          ? [
+              {
+                type: 'reasoning' as const,
+                ...(reasoningText ? { reasoningText } : {}),
+                ...(reasoningSegments.length > 0 ? { payload: { reasoningSegments } } : {}),
+              },
+            ]
           : []),
       ],
       runId,
@@ -17629,23 +19066,65 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     terminalState: 'failed' | 'cancelled',
     errorMessage?: string,
   ): void {
-    const assistantText = typeof run.assistantText === 'string' ? run.assistantText : '';
-    if (!assistantText.trim()) return;
+    const classifiedRun = run.legacyPendingText
+      ? {
+          ...run,
+          assistantText: run.assistantText + run.legacyPendingText,
+          legacyPendingText: '',
+        }
+      : run;
+    const terminalRun = closeCommentaryTimelineSegment(classifiedRun, new Date().toISOString());
+    const assistantText =
+      typeof terminalRun.assistantText === 'string' ? terminalRun.assistantText : '';
     const scrubbedMessage = this.scrubDiagnosticMessage(errorMessage);
-    const reasoningText =
-      typeof run.reasoningText === 'string' && run.reasoningText.trim()
-        ? run.reasoningText
+    const commentaryText =
+      typeof terminalRun.commentaryText === 'string' && terminalRun.commentaryText.trim()
+        ? terminalRun.commentaryText
         : undefined;
+    const commentarySegments = terminalRun.commentarySegments.filter((segment) =>
+      segment.text.trim(),
+    );
+    const reasoningText =
+      typeof terminalRun.reasoningText === 'string' && terminalRun.reasoningText.trim()
+        ? terminalRun.reasoningText
+        : undefined;
+    const reasoningSegments = terminalRun.reasoningSegments.filter((segment) =>
+      segment.text.trim(),
+    );
+    if (
+      !assistantText.trim() &&
+      !commentaryText &&
+      commentarySegments.length === 0 &&
+      !reasoningText &&
+      reasoningSegments.length === 0
+    ) {
+      return;
+    }
     this.persistFinalChatMessage({
       id: `asst-${runId}` as MessageId,
       threadId: run.threadId as ThreadId,
       role: 'assistant',
       text: assistantText,
       blocks: [
-        { type: 'text', text: assistantText },
-        // Keep whatever reasoning was produced before the stop — pausing
-        // mid-thought must not discard the visible trace.
-        ...(reasoningText ? [{ type: 'reasoning' as const, reasoningText }] : []),
+        ...(commentaryText || commentarySegments.length > 0
+          ? [
+              {
+                type: 'commentary' as const,
+                ...(commentaryText ? { text: commentaryText } : {}),
+                ...(commentarySegments.length > 0 ? { payload: { commentarySegments } } : {}),
+              },
+            ]
+          : []),
+        ...(assistantText.trim() ? [{ type: 'text' as const, text: assistantText }] : []),
+        ...(reasoningText || reasoningSegments.length > 0
+          ? [
+              {
+                type: 'reasoning' as const,
+                ...(reasoningText ? { reasoningText } : {}),
+                ...(reasoningSegments.length > 0 ? { payload: { reasoningSegments } } : {}),
+              },
+            ]
+          : []),
         {
           type: 'error',
           payload: {
@@ -17655,9 +19134,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         },
       ],
       runId,
-      modelId: run.modelId ? (run.modelId as ModelId) : undefined,
-      credentialRefId: run.credentialRefId ? (run.credentialRefId as CredentialRefId) : undefined,
-      agentVersionId: run.agentVersionId ? (run.agentVersionId as AgentVersionId) : undefined,
+      modelId: terminalRun.modelId ? (terminalRun.modelId as ModelId) : undefined,
+      credentialRefId: terminalRun.credentialRefId
+        ? (terminalRun.credentialRefId as CredentialRefId)
+        : undefined,
+      agentVersionId: terminalRun.agentVersionId
+        ? (terminalRun.agentVersionId as AgentVersionId)
+        : undefined,
     });
   }
 
@@ -17964,11 +19447,61 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     this.publishTransientProjection(event);
   }
 
+  private flushLegacyAssistantText(input: {
+    runId: RunId;
+    phase: 'commentary' | 'final_answer';
+    occurredAt: string;
+  }): DemoRunState | undefined {
+    const current = this.demoRuns.get(input.runId);
+    if (!current?.legacyPendingText) return current;
+
+    const textDelta = current.legacyPendingText;
+    let nextRun: DemoRunState = {
+      ...current,
+      legacyPendingText: '',
+      ...(input.phase === 'commentary'
+        ? { commentaryText: current.commentaryText + textDelta }
+        : { assistantText: current.assistantText + textDelta }),
+    };
+    if (input.phase === 'commentary') {
+      nextRun = appendCommentaryTimelineDelta(nextRun, {
+        textDelta,
+        occurredAt: input.occurredAt,
+        afterSequence: this.eventSequence,
+      });
+    } else {
+      nextRun = closeCommentaryTimelineSegment(nextRun, input.occurredAt);
+    }
+
+    this.demoRuns.set(input.runId, nextRun);
+    this.publishTransientDelta({
+      threadId: nextRun.threadId as ThreadId,
+      runId: input.runId,
+      kind: input.phase === 'commentary' ? 'commentary' : 'text',
+      textDelta,
+      ...(input.phase === 'commentary' ? { afterSequence: this.eventSequence } : {}),
+      occurredAt: input.occurredAt,
+    });
+    this.updateTransientTextSnapshot({
+      threadId: nextRun.threadId as ThreadId,
+      runId: input.runId,
+      streamSequence: this.transientSequenceByThread.get(nextRun.threadId) ?? 0,
+      text: nextRun.assistantText,
+      commentaryText: nextRun.commentaryText,
+      commentarySegments: nextRun.commentarySegments,
+      reasoningText: nextRun.reasoningText,
+      reasoningSegments: nextRun.reasoningSegments,
+      updatedAt: input.occurredAt,
+    });
+    return nextRun;
+  }
+
   private publishTransientDelta(input: {
     threadId: ThreadId;
     runId: RunId;
-    kind: 'text' | 'reasoning';
+    kind: 'text' | 'commentary' | 'reasoning';
     textDelta: string;
+    afterSequence?: number;
     occurredAt: string;
   }): void {
     this.publishTransientFrame({
@@ -17976,6 +19509,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       runId: input.runId,
       kind: input.kind,
       textDelta: input.textDelta,
+      ...(input.afterSequence !== undefined ? { afterSequence: input.afterSequence } : {}),
       occurredAt: input.occurredAt,
     });
   }
@@ -17985,7 +19519,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     runId: RunId;
     streamSequence: number;
     text: string;
+    commentaryText?: string;
+    commentarySegments?: ConversationTransientSnapshot['commentarySegments'];
     reasoningText?: string;
+    reasoningSegments?: ConversationTransientSnapshot['reasoningSegments'];
     updatedAt: string;
   }): void {
     const current = this.transientSnapshotByThread.get(input.threadId);
@@ -17994,7 +19531,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       runId: input.runId,
       streamSequence: input.streamSequence,
       text: input.text,
+      ...(input.commentaryText ? { commentaryText: input.commentaryText } : {}),
+      ...(input.commentarySegments && input.commentarySegments.length > 0
+        ? { commentarySegments: input.commentarySegments.map((segment) => ({ ...segment })) }
+        : {}),
       ...(input.reasoningText ? { reasoningText: input.reasoningText } : {}),
+      ...(input.reasoningSegments && input.reasoningSegments.length > 0
+        ? { reasoningSegments: input.reasoningSegments.map((segment) => ({ ...segment })) }
+        : {}),
       ...(current?.runId === input.runId && current.process ? { process: current.process } : {}),
       updatedAt: input.updatedAt,
     });
@@ -18008,7 +19552,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     let projection:
       | Pick<
           ConversationTransientFrame,
-          'kind' | 'textDelta' | 'terminalState' | 'errorMessage' | 'process'
+          'kind' | 'textDelta' | 'afterSequence' | 'terminalState' | 'errorMessage' | 'process'
         >
       | undefined;
     const runProcess = (): ConversationGetRunProcessResponse['process'] => {
@@ -18026,6 +19570,22 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             : undefined;
       if (textDelta === undefined) return;
       projection = { kind: 'text', textDelta };
+    } else if (event.type === 'message.commentary_delta') {
+      const textDelta =
+        typeof event.payload.textDelta === 'string'
+          ? event.payload.textDelta
+          : typeof event.payload.delta === 'string'
+            ? event.payload.delta
+            : undefined;
+      if (textDelta === undefined) return;
+      projection = {
+        kind: 'commentary',
+        textDelta,
+        afterSequence:
+          typeof event.payload.afterSequence === 'number'
+            ? event.payload.afterSequence
+            : event.sequence,
+      };
     } else if (event.type === 'message.reasoning_delta') {
       const textDelta =
         typeof event.payload.textDelta === 'string'
@@ -18036,7 +19596,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               ? event.payload.delta
               : undefined;
       if (textDelta === undefined) return;
-      projection = { kind: 'reasoning', textDelta };
+      projection = {
+        kind: 'reasoning',
+        textDelta,
+        afterSequence:
+          typeof event.payload.afterSequence === 'number'
+            ? event.payload.afterSequence
+            : event.sequence,
+      };
     } else if (event.type === 'run.completed') {
       projection = { kind: 'terminal', terminalState: 'completed', process: runProcess() };
     } else if (event.type === 'run.failed') {
@@ -18061,7 +19628,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       event.type === 'execution.tool.failed' ||
       event.type.startsWith('mcp.tool_')
     ) {
-      projection = { kind: 'process', process: runProcess() };
+      projection = { kind: 'process', process: runProcess(), afterSequence: event.sequence };
     } else {
       return;
     }
@@ -18081,8 +19648,25 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         runId: event.runId,
         streamSequence: transientFrame.streamSequence,
         text: current?.runId === event.runId ? current.text : '',
+        ...(current?.runId === event.runId && current.commentaryText
+          ? { commentaryText: current.commentaryText }
+          : {}),
+        ...(current?.runId === event.runId && current.commentarySegments
+          ? {
+              commentarySegments: current.commentarySegments.map((segment) => ({
+                ...segment,
+              })),
+            }
+          : {}),
         ...(current?.runId === event.runId && current.reasoningText
           ? { reasoningText: current.reasoningText }
+          : {}),
+        ...(current?.runId === event.runId && current.reasoningSegments
+          ? {
+              reasoningSegments: current.reasoningSegments.map((segment) => ({
+                ...segment,
+              })),
+            }
           : {}),
         process: projection.process,
         updatedAt: event.occurredAt,

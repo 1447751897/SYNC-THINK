@@ -22,6 +22,7 @@ import {
   JsonRpcStdioParser,
   type McpDiscoveredTool,
 } from './jsonrpc-stdio.js';
+import { terminateProcessTree } from '../process-runner.js';
 
 /**
  * Real local-stdio MCP process host (§9.3 / §14).
@@ -126,58 +127,6 @@ export function parseLocalStdioCommand(
     };
   }
   return { ok: true, command, args };
-}
-
-const killRequests = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
-
-function killTree(child: ChildProcessWithoutNullStreams): Promise<void> {
-  const existing = killRequests.get(child);
-  if (existing) return existing;
-
-  const request = new Promise<void>((resolve) => {
-    try {
-      if (process.platform === 'win32') {
-        const pid = child.pid;
-        if (typeof pid !== 'number' || pid <= 0) {
-          child.kill();
-          resolve();
-          return;
-        }
-        try {
-          const killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
-            shell: false,
-            windowsHide: true,
-            stdio: 'ignore',
-          });
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            resolve();
-          };
-          killer.once('error', () => {
-            try {
-              child.kill();
-            } catch {
-              // The process already exited.
-            }
-            finish();
-          });
-          killer.once('close', finish);
-        } catch {
-          child.kill();
-          resolve();
-        }
-        return;
-      }
-      child.kill('SIGKILL');
-      resolve();
-    } catch {
-      resolve();
-    }
-  });
-  killRequests.set(child, request);
-  return request;
 }
 
 function refuseOutput(
@@ -346,6 +295,11 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
       };
       return;
     }
+    let terminationPromise: Promise<void> | undefined;
+    const terminate = () => {
+      terminationPromise ??= terminateProcessTree(child);
+      return terminationPromise;
+    };
 
     const maxBytes = policy.maxOutputBytes;
     let stdout = '';
@@ -395,12 +349,12 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
     const timeoutMs = policy.timeoutMs;
     const timer = setTimeout(() => {
       timedOut = true;
-      void killTree(child);
+      void terminate();
     }, timeoutMs);
     const onAbort = () => {
       aborted = true;
       clearTimeout(timer);
-      void killTree(child);
+      void terminate();
     };
     token.signal?.addEventListener('abort', onAbort, { once: true });
     if (token.signal?.aborted) onAbort();
@@ -418,6 +372,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
     });
     clearTimeout(timer);
     token.signal?.removeEventListener('abort', onAbort);
+    if (terminationPromise) await terminationPromise;
 
     const elapsedMs = Date.now() - started;
     const combined = stdout + (stderr ? (stdout ? '\n' : '') + stderr : '');
@@ -600,6 +555,11 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
       };
       return;
     }
+    let terminationPromise: Promise<void> | undefined;
+    const terminate = () => {
+      terminationPromise ??= terminateProcessTree(child);
+      return terminationPromise;
+    };
 
     const parser = new JsonRpcStdioParser(policy.maxOutputBytes);
     let rawStdoutBytes = 0;
@@ -632,7 +592,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
       if (rawStdoutBytes > policy.maxOutputBytes * 4) {
         // hard ceiling before parser blow-up
         parseError = 'stdout exceeded hard ceiling';
-        void killTree(child);
+        void terminate();
         return;
       }
       try {
@@ -640,7 +600,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
         for (const m of msgs) onMessage(m);
       } catch (err) {
         parseError = err instanceof Error ? err.message : String(err);
-        void killTree(child);
+        void terminate();
       }
     });
     child.stderr.on('data', (chunk: Buffer) => {
@@ -693,7 +653,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
         w.reject(new Error('MCP JSON-RPC timed out'));
       }
       pending.clear();
-      void killTree(child);
+      void terminate();
     }, policy.timeoutMs);
     const onAbort = () => {
       aborted = true;
@@ -702,7 +662,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
         waiter.reject(new Error('MCP execution aborted'));
       }
       pending.clear();
-      void killTree(child);
+      void terminate();
     };
     token.signal?.addEventListener('abort', onAbort, { once: true });
     if (token.signal?.aborted) onAbort();
@@ -769,7 +729,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
       // Give a short grace then kill residual process
       if (!closed) {
         setTimeout(() => {
-          if (!closed) void killTree(child);
+          if (!closed) void terminate();
         }, 200).unref?.();
       }
     }
@@ -782,14 +742,13 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
     clearTimeout(timer);
     token.signal?.removeEventListener('abort', onAbort);
     if (!closed) {
-      await killTree(child);
+      await terminate();
       await Promise.race([
         closePromise,
         new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
       ]);
     }
-    const pendingKill = killRequests.get(child);
-    if (pendingKill) await pendingKill;
+    if (terminationPromise) await terminationPromise;
 
     const elapsedMs = Date.now() - started;
     const combined =
@@ -973,6 +932,11 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
       };
       return;
     }
+    let terminationPromise: Promise<void> | undefined;
+    const terminate = () => {
+      terminationPromise ??= terminateProcessTree(child);
+      return terminationPromise;
+    };
 
     const parser = new JsonRpcStdioParser(policy.maxOutputBytes);
     let rawStdoutBytes = 0;
@@ -1004,7 +968,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
       rawStdoutBytes += chunk.length;
       if (rawStdoutBytes > policy.maxOutputBytes * 4) {
         parseError = 'stdout exceeded hard ceiling';
-        void killTree(child);
+        void terminate();
         return;
       }
       try {
@@ -1012,7 +976,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
         for (const m of msgs) onMessage(m);
       } catch (err) {
         parseError = err instanceof Error ? err.message : String(err);
-        void killTree(child);
+        void terminate();
       }
     });
     child.stderr.on('data', (chunk: Buffer) => {
@@ -1065,7 +1029,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
         w.reject(new Error('MCP JSON-RPC timed out'));
       }
       pending.clear();
-      void killTree(child);
+      void terminate();
     }, policy.timeoutMs);
 
     const onAbort = () => {
@@ -1075,7 +1039,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
         waiter.reject(new Error('MCP execution aborted'));
       }
       pending.clear();
-      void killTree(child);
+      void terminate();
     };
     token.signal?.addEventListener('abort', onAbort, { once: true });
     if (token.signal?.aborted) onAbort();
@@ -1146,7 +1110,7 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
       }
       if (!closed) {
         setTimeout(() => {
-          if (!closed) void killTree(child);
+          if (!closed) void terminate();
         }, 200).unref?.();
       }
     }
@@ -1158,14 +1122,13 @@ export class LocalStdioMcpWorker implements Worker<LocalStdioMcpWorkerInput> {
     clearTimeout(timer);
     token.signal?.removeEventListener('abort', onAbort);
     if (!closed) {
-      await killTree(child);
+      await terminate();
       await Promise.race([
         closePromise,
         new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
       ]);
     }
-    const pendingKill = killRequests.get(child);
-    if (pendingKill) await pendingKill;
+    if (terminationPromise) await terminationPromise;
 
     const elapsedMs = Date.now() - started;
     const combined =

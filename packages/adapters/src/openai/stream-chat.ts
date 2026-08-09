@@ -10,6 +10,7 @@ import {
   closeResponseReader,
   createProviderCallControl,
   providerAbortEvent,
+  type ProviderCallControl,
 } from '../call-control.js';
 import { openAIPromptCacheBodyFields } from './prompt-cache.js';
 
@@ -87,7 +88,11 @@ function toOpenAIMessages(request: ProviderCallRequest): Array<Record<string, un
           },
         }));
       if (toolCalls.length > 0) {
-        out.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
+        appendOpenAIMessage(out, {
+          role: 'assistant',
+          content: content || null,
+          tool_calls: toolCalls,
+        });
         continue;
       }
     }
@@ -110,12 +115,37 @@ function toOpenAIMessages(request: ProviderCallRequest): Array<Record<string, un
       }
     }
     if (!content && message.role !== 'assistant') continue;
-    out.push({
+    appendOpenAIMessage(out, {
       role: message.role,
       content,
     });
   }
   return out;
+}
+
+function appendOpenAIMessage(
+  out: Array<Record<string, unknown>>,
+  message: Record<string, unknown>,
+): void {
+  const previous = out.at(-1);
+  if (message.role !== 'assistant' || previous?.role !== 'assistant') {
+    out.push(message);
+    return;
+  }
+
+  const previousContent = typeof previous.content === 'string' ? previous.content : '';
+  const nextContent = typeof message.content === 'string' ? message.content : '';
+  const mergedContent =
+    previousContent && nextContent
+      ? `${previousContent}\n\n${nextContent}`
+      : previousContent || nextContent;
+  const previousToolCalls = Array.isArray(previous.tool_calls) ? previous.tool_calls : [];
+  const nextToolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+  previous.content = mergedContent || null;
+  if (previousToolCalls.length > 0 || nextToolCalls.length > 0) {
+    previous.tool_calls = [...previousToolCalls, ...nextToolCalls];
+  }
 }
 
 function messageContentToString(message: ProviderMessage): string {
@@ -141,7 +171,10 @@ function readableReasoningValue(value: unknown, depth = 0): string {
   if (depth > 4) return '';
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) {
-    return value.map((entry) => readableReasoningValue(entry, depth + 1)).join('');
+    return value
+      .map((entry) => readableReasoningValue(entry, depth + 1))
+      .filter((text) => text.trim().length > 0)
+      .join('\n\n');
   }
   const record = asRecord(value);
   if (!record) return '';
@@ -174,7 +207,7 @@ function chatContentChannels(value: unknown): { text: string; reasoning: string 
   if (typeof value === 'string') return { text: value, reasoning: '' };
   const parts = Array.isArray(value) ? value : value ? [value] : [];
   let text = '';
-  let reasoning = '';
+  const reasoningParts: string[] = [];
   for (const part of parts) {
     if (typeof part === 'string') {
       text += part;
@@ -184,7 +217,8 @@ function chatContentChannels(value: unknown): { text: string; reasoning: string 
     if (!record) continue;
     const type = typeof record.type === 'string' ? record.type.toLowerCase() : '';
     if (/(reasoning|thinking|analysis)/.test(type)) {
-      reasoning += readableReasoningValue(record);
+      const reasoning = readableReasoningValue(record);
+      if (reasoning.trim()) reasoningParts.push(reasoning);
       continue;
     }
     const visible =
@@ -195,28 +229,91 @@ function chatContentChannels(value: unknown): { text: string; reasoning: string 
           : '';
     text += visible;
   }
-  return { text, reasoning };
+  return { text, reasoning: reasoningParts.join('\n\n') };
 }
 
+/**
+ * Extract gateway error.message from a `Provider call failed (400) ? {json}`
+ * style snippet so the friendly message can quote the actual reason.
+ */
+function extractGatewayMessage(snippet: string): string | undefined {
+  const marker = / \? (\{.*\})/s.exec(snippet);
+  if (!marker) return undefined;
+  try {
+    const parsed = JSON.parse(marker[1]!) as {
+      error?: { message?: unknown };
+      message?: unknown;
+    };
+    const message = parsed.error?.message ?? parsed.message;
+    return typeof message === 'string' && message.trim() ? message.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Backtick-quoted parameter names from `Unsupported parameter(s): \`a\`, \`b\``. */
+function extractUnsupportedParameterNames(snippet: string): string[] | undefined {
+  const match = /Unsupported parameter\(s\):\s*([^"]+)/i.exec(snippet);
+  if (!match) return undefined;
+  const names = match[1]!.match(/`([^`]+)`/g)?.map((name) => name.replace(/`/g, '')) ?? [];
+  return names.length > 0 ? names : undefined;
+}
+
+/**
+ * User-readable failure reasons (Chinese UI). The raw gateway detail is kept
+ * in the message tail so logs and tooltips still carry the full picture, while
+ * the visible line explains what happened and what to do.
+ */
 function classifyHttpFailure(status: number, snippet: string): ProviderCallError {
   if (status === 401 || status === 403) {
-    return new ProviderCallError(`Provider auth failed (${status})${snippet}`, 'auth', status);
+    return new ProviderCallError(
+      `认证失败（${status}）：API Key 无效或无权限，请在「设置 → 模型」中检查密钥。${snippet}`,
+      'auth',
+      status,
+    );
   }
   if (status === 429) {
     return new ProviderCallError(
-      `Provider rate limited (${status})${snippet}`,
+      `请求被限流（${status}）：可能已达账户额度或并发上限，请稍后重试。${snippet}`,
       'rate-limit',
       status,
     );
   }
   if (status >= 400 && status < 500) {
+    const unsupported = extractUnsupportedParameterNames(snippet);
+    if (unsupported && unsupported.length > 0) {
+      return new ProviderCallError(
+        `请求被网关拒绝（${status}）：网关不支持参数 ${unsupported.join('、')}（中转网关可能不接受非标准参数）。` +
+          `请调整模型或网关配置，或联系网关管理员。${snippet}`,
+        'protocol',
+        status,
+      );
+    }
+    const gatewayMessage = extractGatewayMessage(snippet);
     return new ProviderCallError(
-      `Provider call rejected (${status})${snippet}`,
+      `请求被网关拒绝（${status}）：${gatewayMessage ?? '请求参数或格式不符合网关要求。'}` +
+        (gatewayMessage ? '' : `${snippet}`),
       'protocol',
       status,
     );
   }
-  return new ProviderCallError(`Provider call failed (${status})${snippet}`, 'transient', status);
+  return new ProviderCallError(
+    `上游服务暂不可用（${status}）：中转网关或模型服务异常，请稍后重试或联系网关管理员。${snippet}`,
+    'transient',
+    status,
+  );
+}
+
+/** Friendly timeout/abort reason, keeping the raw detail for tooltips. */
+function chatAbortEvent(control: ProviderCallControl): Extract<AdapterEvent, { type: 'error' }> {
+  const event = providerAbortEvent(control, 'Provider chat call');
+  if (event.failureClass === 'timeout') {
+    return {
+      ...event,
+      message: `模型响应超时：长时间未返回内容，可能因模型繁忙或网络问题，请重试。(${event.message})`,
+    };
+  }
+  return event;
 }
 
 export interface StreamOpenAIChatOptions {
@@ -277,40 +374,40 @@ export async function* streamOpenAIChatCompletions(
   const effortLevel = normalizeReasoningEffort(request.reasoningEffort);
   const sendEffort = Boolean(effortLevel) && !shouldOmitReasoningEffort(effortLevel);
 
-  const body = {
-    model: request.modelId,
-    messages: toOpenAIMessages(request),
-    stream: true,
-    ...openAIPromptCacheBodyFields(request),
-    ...(request.maxOutputTokens !== undefined
-      ? isOpenAiReasoningFamily
-        ? { max_completion_tokens: request.maxOutputTokens }
-        : { max_tokens: request.maxOutputTokens }
-      : {}),
-    ...(request.temperature !== undefined && !isOpenAiReasoningFamily
-      ? { temperature: request.temperature }
-      : {}),
-    ...(sendEffort ? { reasoning_effort: wireReasoningEffort(effortLevel ?? 'high') } : {}),
-    ...(sendEffort && wantsEnableThinking ? { enable_thinking: true } : {}),
-    ...(request.tools?.length
-      ? {
-          tools: request.tools.map((tool) => ({
-            type: 'function',
-            function: {
-              name: tool.name,
-              description: tool.description,
-              parameters: tool.inputSchema,
-            },
-          })),
-          ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
-        }
-      : {}),
-  };
-
   try {
-    let response: Response;
-    try {
-      response = await fetchImpl(url, {
+    let body: Record<string, unknown> = {
+      model: request.modelId,
+      messages: toOpenAIMessages(request),
+      stream: true,
+      stream_options: { include_usage: true },
+      ...openAIPromptCacheBodyFields(request),
+      ...(request.maxOutputTokens !== undefined
+        ? isOpenAiReasoningFamily
+          ? { max_completion_tokens: request.maxOutputTokens }
+          : { max_tokens: request.maxOutputTokens }
+        : {}),
+      ...(request.temperature !== undefined && !isOpenAiReasoningFamily
+        ? { temperature: request.temperature }
+        : {}),
+      ...(sendEffort ? { reasoning_effort: wireReasoningEffort(effortLevel ?? 'high') } : {}),
+      ...(sendEffort && wantsEnableThinking ? { enable_thinking: true } : {}),
+      ...(request.tools?.length
+        ? {
+            tools: request.tools.map((tool) => ({
+              type: 'function',
+              function: {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.inputSchema,
+              },
+            })),
+            ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+          }
+        : {}),
+    };
+
+    async function attemptProviderFetch(payload: Record<string, unknown>): Promise<Response> {
+      return fetchImpl(url, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -318,21 +415,73 @@ export async function* streamOpenAIChatCompletions(
           Accept: 'text/event-stream',
           'Idempotency-Key': request.idempotencyKey,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(payload),
         signal: control.signal,
       });
+    }
+
+    let response: Response;
+    let degradedForGateway = false;
+    try {
+      response = await attemptProviderFetch(body);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        yield providerAbortEvent(control, 'Provider chat call');
+        yield chatAbortEvent(control);
         return;
       }
       const raw = error instanceof Error ? error.message : 'network error';
       yield {
         type: 'error',
         failureClass: 'transient',
-        message: `Provider chat network error: ${scrubSecrets(raw, [apiKey])}`,
+        message: `无法连接到模型服务：请检查网络或网关地址是否可用。(${scrubSecrets(raw, [apiKey])})`,
       };
       return;
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      const snippetRaw = scrubSecrets(text.slice(0, 240), [apiKey]);
+      // Some relays reject optional compatibility params with a 400
+      // "Unsupported parameter(s)". Degrade once: drop only the rejected
+      // optional fields and retry, so older gateways still stream normally.
+      const unsupportedParameters = extractUnsupportedParameterNames(snippetRaw) ?? [];
+      const degradableParameters = new Set([
+        'enable_thinking',
+        'prompt_cache_key',
+        'prompt_cache_options',
+        'prompt_cache_retention',
+        'stream_options',
+      ]);
+      const rejectedOptionalParameters = unsupportedParameters.filter(
+        (parameter) => degradableParameters.has(parameter) && body[parameter] !== undefined,
+      );
+      if (
+        !degradedForGateway &&
+        response.status === 400 &&
+        rejectedOptionalParameters.length > 0
+      ) {
+        degradedForGateway = true;
+        const degradedBody = { ...body };
+        for (const parameter of rejectedOptionalParameters) {
+          delete degradedBody[parameter];
+        }
+        body = degradedBody;
+        try {
+          response = await attemptProviderFetch(degradedBody);
+        } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') {
+            yield chatAbortEvent(control);
+            return;
+          }
+          const raw = error instanceof Error ? error.message : 'network error';
+          yield {
+            type: 'error',
+            failureClass: 'transient',
+            message: `无法连接到模型服务：请检查网络或网关地址是否可用。(${scrubSecrets(raw, [apiKey])})`,
+          };
+          return;
+        }
+      }
     }
 
     if (!response.ok) {
@@ -383,7 +532,7 @@ export async function* streamOpenAIChatCompletions(
         ({ done, value } = await reader.read());
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
-          yield providerAbortEvent(control, 'Provider chat call');
+          yield chatAbortEvent(control);
           return;
         }
         throw error;
@@ -404,7 +553,12 @@ export async function* streamOpenAIChatCompletions(
         for (const event of parseSseLine(buffer, apiKey, parseState)) yield event;
       }
       if (!parseState.finished) {
-        for (const event of finishChatStream(parseState, 'stop')) yield event;
+        for (const event of finishChatStream(
+          parseState,
+          parseState.finishReason ?? (parseState.toolCalls.size > 0 ? 'tool-requests' : 'stop'),
+        )) {
+          yield event;
+        }
       }
     }
   } finally {
@@ -419,6 +573,7 @@ interface ChatParseState {
   toolCalls: Map<number, ChatToolCall>;
   emitted: Set<string>;
   finished: boolean;
+  finishReason?: 'stop' | 'length' | 'tool-requests';
 }
 
 function parseSseLine(line: string, apiKey: string, state: ChatParseState): AdapterEvent[] {
@@ -428,7 +583,10 @@ function parseSseLine(line: string, apiKey: string, state: ChatParseState): Adap
   if (data === '[DONE]') {
     return state.finished
       ? []
-      : finishChatStream(state, state.toolCalls.size > 0 ? 'tool-requests' : 'stop');
+      : finishChatStream(
+          state,
+          state.finishReason ?? (state.toolCalls.size > 0 ? 'tool-requests' : 'stop'),
+        );
   }
   let json: unknown;
   try {
@@ -486,12 +644,10 @@ function parseCompletionChunk(
     return [{ type: 'error', failureClass: 'protocol', message: msg }];
   }
 
-  if (root.usage) {
-    return [toUsageEvent(root.usage)];
-  }
-
+  const events: AdapterEvent[] = [];
+  if (root.usage) events.push(toUsageEvent(root.usage));
   const choice = root.choices?.[0];
-  if (!choice) return [];
+  if (!choice) return events;
   for (const part of choice.delta?.tool_calls ?? []) {
     const index = Number.isInteger(part.index) ? Number(part.index) : state.toolCalls.size;
     const previous = state.toolCalls.get(index) ?? {
@@ -513,8 +669,6 @@ function parseCompletionChunk(
     });
   }
 
-  const events: AdapterEvent[] = [];
-
   const deltaChannels = chatContentChannels(choice.delta?.content);
   const reasoningDelta = reasoningTextFromContainer(choice.delta) || deltaChannels.reasoning;
   if (reasoningDelta.length > 0) {
@@ -535,20 +689,13 @@ function parseCompletionChunk(
     events.push({ type: 'text-delta', text: messageChannels.text });
   }
 
-  if (events.length > 0 && !choice.finish_reason) {
-    return events;
-  }
-
   if (choice.finish_reason) {
-    const reason =
+    state.finishReason =
       choice.finish_reason === 'length'
         ? 'length'
         : choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call'
           ? 'tool-requests'
           : 'stop';
-    return events.length > 0
-      ? [...events, ...finishChatStream(state, reason)]
-      : finishChatStream(state, reason);
   }
 
   return events;
@@ -579,7 +726,12 @@ async function* emitFromSseText(text: string, apiKey: string): AsyncIterable<Ada
     if (state.finished) break;
   }
   if (!state.finished) {
-    for (const event of finishChatStream(state, 'stop')) yield event;
+    for (const event of finishChatStream(
+      state,
+      state.finishReason ?? (state.toolCalls.size > 0 ? 'tool-requests' : 'stop'),
+    )) {
+      yield event;
+    }
   }
 }
 

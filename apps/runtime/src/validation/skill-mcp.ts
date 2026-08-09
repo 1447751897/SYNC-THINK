@@ -1,12 +1,93 @@
 // skill-mcp command payload parsers (extracted from command-validation.ts).
-import type { ImportSkillPayload, ListSkillsPayload, RegisterMcpServerPayload, ListMcpServersPayload, ProbeMcpPolicyPayload, RequestMcpToolPayload, ProbeMcpSpawnPayload, CallMcpToolPayload, RefreshMcpToolsPayload } from '@sync-think/protocol';
+import type {
+  ImportSkillPayload,
+  ListSkillsPayload,
+  RegisterMcpServerPayload,
+  ListMcpServersPayload,
+  ProbeMcpPolicyPayload,
+  RequestMcpToolPayload,
+  ProbeMcpSpawnPayload,
+  CallMcpToolPayload,
+  RefreshMcpToolsPayload,
+  SetSkillEnabledPayload,
+  SetMcpServerEnabledPayload,
+  CapabilityWorkspaceListPayload,
+  CapabilityWorkspaceSetActivePayload,
+  CapabilityGovernanceListPayload,
+  SaveSkillPublishDraftPayload,
+  ListSkillPublishDraftsPayload,
+  GetSkillPublishDraftPayload,
+  SubmitSkillPublishDraftPayload,
+  PreviewCapabilityOrganizePayload,
+  GetLatestCapabilityOrganizePayload,
+} from '@sync-think/protocol';
 import { hasOnlyKeys, isRecord } from './shared.js';
 
+const CAPABILITY_TYPES = new Set(['skill', 'mcp']);
+
+function isCapabilityType(value: unknown): value is 'skill' | 'mcp' {
+  return typeof value === 'string' && CAPABILITY_TYPES.has(value);
+}
+
+function boundedRequiredText(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength;
+}
+
+function isOptionalIsoDate(value: unknown): value is string | undefined {
+  return (
+    value === undefined ||
+    (typeof value === 'string' &&
+      value.length <= 64 &&
+      value.trim().length > 0 &&
+      !Number.isNaN(new Date(value).getTime()))
+  );
+}
+
 export function parseImportSkillPayload(value: unknown): ImportSkillPayload | undefined {
-  if (!isRecord(value)) return undefined;
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'skillMd',
+      'originType',
+      'originRef',
+      'derivedFromSkillVersionId',
+      'skillId',
+    ])
+  ) {
+    return undefined;
+  }
   if (typeof value.skillMd !== 'string' || value.skillMd.trim().length === 0) return undefined;
   if (value.skillMd.length > 512_000) return undefined;
-  return { skillMd: value.skillMd };
+  if (
+    value.originType !== undefined &&
+    value.originType !== 'local' &&
+    value.originType !== 'market' &&
+    value.originType !== 'derived'
+  ) {
+    return undefined;
+  }
+  for (const key of ['originRef', 'derivedFromSkillVersionId', 'skillId'] as const) {
+    const entry = value[key];
+    if (
+      entry !== undefined &&
+      (typeof entry !== 'string' || entry.trim().length === 0 || entry.length > 512)
+    ) {
+      return undefined;
+    }
+  }
+  if (value.originType === 'derived' && value.derivedFromSkillVersionId === undefined) {
+    return undefined;
+  }
+  return {
+    skillMd: value.skillMd,
+    originType: value.originType as ImportSkillPayload['originType'],
+    originRef: typeof value.originRef === 'string' ? value.originRef.trim() : undefined,
+    derivedFromSkillVersionId:
+      typeof value.derivedFromSkillVersionId === 'string'
+        ? value.derivedFromSkillVersionId.trim()
+        : undefined,
+    skillId: typeof value.skillId === 'string' ? value.skillId.trim() : undefined,
+  };
 }
 
 export function parseListSkillsPayload(value: unknown): ListSkillsPayload | undefined {
@@ -21,6 +102,12 @@ export function parseListSkillsPayload(value: unknown): ListSkillsPayload | unde
     ) {
       return undefined;
     }
+  }
+  if (
+    value.workspaceId !== undefined &&
+    !boundedRequiredText(value.workspaceId, 256)
+  ) {
+    return undefined;
   }
   let skillVersionIds: string[] | undefined;
   if (value.skillVersionIds !== undefined) {
@@ -39,6 +126,9 @@ export function parseListSkillsPayload(value: unknown): ListSkillsPayload | unde
   }
   return {
     limit: value.limit as number | undefined,
+    ...(typeof value.workspaceId === 'string'
+      ? { workspaceId: value.workspaceId.trim() }
+      : {}),
     skillVersionIds,
   };
 }
@@ -53,6 +143,21 @@ export function parseDeleteSkillPayload(value: unknown): import('@sync-think/pro
     return undefined;
   }
   return { skillVersionId: value.skillVersionId.trim() };
+}
+
+export function parseSetSkillEnabledPayload(
+  value: unknown,
+): SetSkillEnabledPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.skillVersionId !== 'string' ||
+    value.skillVersionId.trim().length === 0 ||
+    value.skillVersionId.length > 256 ||
+    typeof value.enabled !== 'boolean'
+  ) {
+    return undefined;
+  }
+  return { skillVersionId: value.skillVersionId.trim(), enabled: value.enabled };
 }
 
 export function parseGetSkillPayload(value: unknown): import('@sync-think/protocol').GetSkillPayload | undefined {
@@ -147,6 +252,223 @@ export function parseListMcpServersPayload(value: unknown): ListMcpServersPayloa
   return {
     limit: value.limit as number | undefined,
   };
+}
+
+export function parseSetMcpServerEnabledPayload(
+  value: unknown,
+): SetMcpServerEnabledPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.mcpServerId !== 'string' ||
+    value.mcpServerId.trim().length === 0 ||
+    value.mcpServerId.length > 256 ||
+    typeof value.enabled !== 'boolean'
+  ) {
+    return undefined;
+  }
+  return { mcpServerId: value.mcpServerId.trim(), enabled: value.enabled };
+}
+
+export function parseCapabilityWorkspaceListPayload(
+  value: unknown,
+): CapabilityWorkspaceListPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['workspaceId', 'capabilityType']) ||
+    !boundedRequiredText(value.workspaceId, 256) ||
+    (value.capabilityType !== undefined && !isCapabilityType(value.capabilityType))
+  ) {
+    return undefined;
+  }
+  return {
+    workspaceId: value.workspaceId.trim(),
+    ...(value.capabilityType === undefined ? {} : { capabilityType: value.capabilityType }),
+  };
+}
+
+export function parseCapabilityWorkspaceSetActivePayload(
+  value: unknown,
+): CapabilityWorkspaceSetActivePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['workspaceId', 'capabilityType', 'capabilityId', 'active']) ||
+    !boundedRequiredText(value.workspaceId, 256) ||
+    !isCapabilityType(value.capabilityType) ||
+    !boundedRequiredText(value.capabilityId, 256) ||
+    typeof value.active !== 'boolean'
+  ) {
+    return undefined;
+  }
+  return {
+    workspaceId: value.workspaceId.trim(),
+    capabilityType: value.capabilityType,
+    capabilityId: value.capabilityId.trim(),
+    active: value.active,
+  };
+}
+
+export function parseCapabilityGovernanceListPayload(
+  value: unknown,
+): CapabilityGovernanceListPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['workspaceId', 'now']) ||
+    !boundedRequiredText(value.workspaceId, 256) ||
+    !isOptionalIsoDate(value.now)
+  ) {
+    return undefined;
+  }
+  return {
+    workspaceId: value.workspaceId.trim(),
+    ...(value.now === undefined ? {} : { now: value.now }),
+  };
+}
+
+export function parseSaveSkillPublishDraftPayload(
+  value: unknown,
+): SaveSkillPublishDraftPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'id',
+      'skillVersionId',
+      'skillId',
+      'displayName',
+      'description',
+      'skillMd',
+      'category',
+      'version',
+      'icon',
+      'attachments',
+    ]) ||
+    (value.id !== undefined && !boundedRequiredText(value.id, 256)) ||
+    !boundedRequiredText(value.skillVersionId, 256) ||
+    !boundedRequiredText(value.skillId, 256) ||
+    !boundedRequiredText(value.displayName, 128) ||
+    typeof value.description !== 'string' ||
+    value.description.length > 20_000 ||
+    typeof value.skillMd !== 'string' ||
+    value.skillMd.length === 0 ||
+    value.skillMd.length > 512_000 ||
+    !boundedRequiredText(value.category, 128) ||
+    !boundedRequiredText(value.version, 64) ||
+    typeof value.icon !== 'string' ||
+    value.icon.length > 256
+  ) {
+    return undefined;
+  }
+  let attachments: SaveSkillPublishDraftPayload['attachments'];
+  if (value.attachments !== undefined) {
+    if (!Array.isArray(value.attachments) || value.attachments.length > 32) return undefined;
+    attachments = [];
+    for (const attachment of value.attachments) {
+      if (
+        !isRecord(attachment) ||
+        !hasOnlyKeys(attachment, ['name', 'size']) ||
+        !boundedRequiredText(attachment.name, 256) ||
+        !Number.isSafeInteger(attachment.size) ||
+        (attachment.size as number) < 0 ||
+        (attachment.size as number) > 1_000_000_000
+      ) {
+        return undefined;
+      }
+      attachments.push({
+        name: attachment.name.trim(),
+        size: attachment.size as number,
+      });
+    }
+  }
+  return {
+    ...(value.id === undefined ? {} : { id: value.id.trim() }),
+    skillVersionId: value.skillVersionId.trim(),
+    skillId: value.skillId.trim(),
+    displayName: value.displayName.trim(),
+    description: value.description,
+    skillMd: value.skillMd,
+    category: value.category.trim(),
+    version: value.version.trim(),
+    icon: value.icon.trim(),
+    ...(attachments === undefined ? {} : { attachments }),
+  };
+}
+
+export function parseListSkillPublishDraftsPayload(
+  value: unknown,
+): ListSkillPublishDraftsPayload | undefined {
+  if (value === undefined || value === null) return {};
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['skillId', 'limit']) ||
+    (value.skillId !== undefined && !boundedRequiredText(value.skillId, 256)) ||
+    (value.limit !== undefined &&
+      (!Number.isSafeInteger(value.limit) ||
+        (value.limit as number) < 1 ||
+        (value.limit as number) > 500))
+  ) {
+    return undefined;
+  }
+  return {
+    ...(value.skillId === undefined ? {} : { skillId: value.skillId.trim() }),
+    ...(value.limit === undefined ? {} : { limit: value.limit as number }),
+  };
+}
+
+function parsePublishDraftIdPayload(
+  value: unknown,
+): GetSkillPublishDraftPayload | SubmitSkillPublishDraftPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['id']) ||
+    !boundedRequiredText(value.id, 256)
+  ) {
+    return undefined;
+  }
+  return { id: value.id.trim() };
+}
+
+export function parseGetSkillPublishDraftPayload(
+  value: unknown,
+): GetSkillPublishDraftPayload | undefined {
+  return parsePublishDraftIdPayload(value);
+}
+
+export function parseSubmitSkillPublishDraftPayload(
+  value: unknown,
+): SubmitSkillPublishDraftPayload | undefined {
+  return parsePublishDraftIdPayload(value);
+}
+
+export function parsePreviewCapabilityOrganizePayload(
+  value: unknown,
+): PreviewCapabilityOrganizePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['workspaceId', 'contextBudgetTokens', 'now']) ||
+    !boundedRequiredText(value.workspaceId, 256) ||
+    !Number.isSafeInteger(value.contextBudgetTokens) ||
+    (value.contextBudgetTokens as number) < 1 ||
+    !isOptionalIsoDate(value.now)
+  ) {
+    return undefined;
+  }
+  return {
+    workspaceId: value.workspaceId.trim(),
+    contextBudgetTokens: value.contextBudgetTokens as number,
+    ...(value.now === undefined ? {} : { now: value.now }),
+  };
+}
+
+export function parseGetLatestCapabilityOrganizePayload(
+  value: unknown,
+): GetLatestCapabilityOrganizePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['workspaceId']) ||
+    !boundedRequiredText(value.workspaceId, 256)
+  ) {
+    return undefined;
+  }
+  return { workspaceId: value.workspaceId.trim() };
 }
 
 export function parseProbeMcpPolicyPayload(value: unknown): ProbeMcpPolicyPayload | undefined {

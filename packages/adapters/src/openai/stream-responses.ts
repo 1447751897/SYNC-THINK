@@ -2,7 +2,7 @@ import type {
   AdapterEvent,
   ProviderCallRequest,
   ProviderMessage,
-  ProviderToolCall,
+  VisibleAssistantMessagePhase,
 } from '../types.js';
 import { normalizeOpenAICompatibleBaseUrl, scrubSecrets } from './discover-models.js';
 import {
@@ -24,8 +24,23 @@ export interface StreamOpenAIResponsesOptions {
 
 interface ResponsesParseState {
   sawTextDelta: boolean;
+  sawReasoningDelta: boolean;
   finished: boolean;
   emittedToolCallIds: Set<string>;
+  assistantItems: Map<string, AssistantMessageParseState>;
+  assistantItemIdsByOutputIndex: Map<number, string>;
+  activeAnonymousAssistantItemKey?: string;
+  emittedAssistantTextByPhase: Map<VisibleAssistantMessagePhase, string>;
+  assistantPhasesWithLiveDelta: Set<VisibleAssistantMessagePhase>;
+}
+
+interface AssistantMessageParseState {
+  phase?: VisibleAssistantMessagePhase;
+  defaultedPhase: boolean;
+  started: boolean;
+  sawDelta: boolean;
+  ended: boolean;
+  emittedText: string;
 }
 
 export function joinResponsesUrl(baseUrl: string): string {
@@ -86,6 +101,7 @@ function toResponsesInput(request: ProviderCallRequest): Array<Record<string, un
     input.push({
       role: message.role === 'assistant' ? 'assistant' : 'user',
       content,
+      ...(message.role === 'assistant' && message.phase ? { phase: message.phase } : {}),
     });
   }
   return input;
@@ -187,34 +203,284 @@ function extractOutputText(response: unknown): string {
   return parts.join('');
 }
 
-function extractToolCalls(response: unknown): ProviderToolCall[] {
-  if (!response || typeof response !== 'object') return [];
+function visibleAssistantMessagePhase(value: unknown): VisibleAssistantMessagePhase | undefined {
+  return value === 'commentary' || value === 'final_answer' ? value : undefined;
+}
+
+function outputItemText(item: unknown): string {
+  if (!item || typeof item !== 'object') return '';
+  const content = (item as { content?: unknown }).content;
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    const typed = part as { type?: unknown; text?: unknown };
+    if (
+      (typed.type === 'output_text' || typed.type === 'text') &&
+      typeof typed.text === 'string'
+    ) {
+      parts.push(typed.text);
+    }
+  }
+  return parts.join('');
+}
+
+function outputItemId(item: unknown, outputIndex?: number): string | undefined {
+  if (item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string') {
+    return (item as { id: string }).id;
+  }
+  return outputIndex !== undefined ? `output-${outputIndex}` : undefined;
+}
+
+function ensureAssistantItem(
+  state: ResponsesParseState,
+  input: {
+    itemId?: string;
+    outputIndex?: number;
+    phase?: VisibleAssistantMessagePhase;
+  },
+): { key: string; itemId?: string; item: AssistantMessageParseState } {
+  const indexedId =
+    input.outputIndex !== undefined
+      ? state.assistantItemIdsByOutputIndex.get(input.outputIndex)
+      : undefined;
+  const key =
+    indexedId ??
+    input.itemId ??
+    (input.outputIndex !== undefined
+      ? `output-${input.outputIndex}`
+      : state.activeAnonymousAssistantItemKey ?? `anonymous-${state.assistantItems.size}`);
+  if (input.outputIndex === undefined && !input.itemId && !indexedId) {
+    state.activeAnonymousAssistantItemKey = key;
+  }
+  const current =
+    state.assistantItems.get(key) ??
+    (input.itemId ? state.assistantItems.get(input.itemId) : undefined) ?? {
+      defaultedPhase: false,
+      emittedText: '',
+      started: false,
+      sawDelta: false,
+      ended: false,
+    };
+  if (
+    input.phase &&
+    (!current.phase || !current.started || current.phase === input.phase)
+  ) {
+    current.phase = input.phase;
+    current.defaultedPhase = false;
+  }
+  state.assistantItems.set(key, current);
+  if (input.itemId && input.itemId !== key) {
+    state.assistantItems.set(input.itemId, current);
+  }
+  if (input.outputIndex !== undefined) {
+    state.assistantItemIdsByOutputIndex.set(input.outputIndex, key);
+  }
+  return {
+    key,
+    itemId: key.startsWith('anonymous-') ? undefined : key,
+    item: current,
+  };
+}
+
+function defaultAssistantItemToFinalAnswer(item: AssistantMessageParseState): void {
+  if (item.phase) return;
+  item.phase = 'final_answer';
+  item.defaultedPhase = true;
+}
+
+function missingSnapshotSuffix(
+  snapshot: string,
+  emitted: string,
+  allowContainedSnapshot = false,
+): string {
+  if (!snapshot) return '';
+  if (!emitted) return snapshot;
+  if (snapshot.startsWith(emitted)) return snapshot.slice(emitted.length);
+  if (emitted.endsWith(snapshot)) return '';
+  if (allowContainedSnapshot && emitted.includes(snapshot)) return '';
+  const maxOverlap = Math.min(snapshot.length, emitted.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap--) {
+    if (emitted.endsWith(snapshot.slice(0, overlap))) {
+      return snapshot.slice(overlap);
+    }
+  }
+  return snapshot;
+}
+
+function assistantMessageStartEvents(
+  itemId: string | undefined,
+  item: AssistantMessageParseState,
+): AdapterEvent[] {
+  if (!item.phase || item.started) return [];
+  item.started = true;
+  return [
+    {
+      type: 'assistant-message-start',
+      phase: item.phase,
+      ...(itemId ? { itemId } : {}),
+    },
+  ];
+}
+
+function assistantMessageDeltaEvents(
+  state: ResponsesParseState,
+  itemId: string | undefined,
+  item: AssistantMessageParseState,
+  text: string,
+  source: 'live' | 'snapshot' = 'live',
+): AdapterEvent[] {
+  if (!item.phase || !text) return [];
+  const events = assistantMessageStartEvents(itemId, item);
+  item.sawDelta = true;
+  item.emittedText += text;
+  state.emittedAssistantTextByPhase.set(
+    item.phase,
+    (state.emittedAssistantTextByPhase.get(item.phase) ?? '') + text,
+  );
+  if (source === 'live') {
+    state.assistantPhasesWithLiveDelta.add(item.phase);
+  }
+  events.push({
+    type: 'assistant-message-delta',
+    phase: item.phase,
+    ...(itemId ? { itemId } : {}),
+    text,
+  });
+  return events;
+}
+
+function assistantMessageSnapshotEvents(
+  state: ResponsesParseState,
+  itemId: string | undefined,
+  item: AssistantMessageParseState,
+  text: string,
+): AdapterEvent[] {
+  if (!item.phase || !text) return [];
+  const phaseHadLiveDelta = state.assistantPhasesWithLiveDelta.has(item.phase);
+  const phaseBaseline = phaseHadLiveDelta
+    ? (state.emittedAssistantTextByPhase.get(item.phase) ?? '')
+    : '';
+  const baseline = item.emittedText || phaseBaseline;
+  const suffix = missingSnapshotSuffix(
+    text,
+    baseline,
+    phaseHadLiveDelta && !item.emittedText,
+  );
+  const events = suffix
+    ? assistantMessageDeltaEvents(state, itemId, item, suffix, 'snapshot')
+    : [];
+  item.sawDelta = true;
+  item.emittedText = text;
+  return events;
+}
+
+function assistantMessageEndEvents(
+  state: ResponsesParseState,
+  key: string,
+  itemId: string | undefined,
+  item: AssistantMessageParseState,
+): AdapterEvent[] {
+  if (!item.phase || item.ended) return [];
+  if (!item.started && item.sawDelta) {
+    item.ended = true;
+    if (state.activeAnonymousAssistantItemKey === key) {
+      state.activeAnonymousAssistantItemKey = undefined;
+    }
+    return [];
+  }
+  const events = assistantMessageStartEvents(itemId, item);
+  item.ended = true;
+  if (state.activeAnonymousAssistantItemKey === key) {
+    state.activeAnonymousAssistantItemKey = undefined;
+  }
+  events.push({
+    type: 'assistant-message-end',
+    phase: item.phase,
+    ...(itemId ? { itemId } : {}),
+  });
+  return events;
+}
+
+function openAssistantMessageEndEvents(state: ResponsesParseState): AdapterEvent[] {
+  const events: AdapterEvent[] = [];
+  const visited = new Set<AssistantMessageParseState>();
+  for (const [key, item] of state.assistantItems) {
+    if (visited.has(item)) continue;
+    visited.add(item);
+    if (!item.started || item.ended || !item.phase) continue;
+    events.push(
+      ...assistantMessageEndEvents(
+        state,
+        key,
+        key.startsWith('anonymous-') ? undefined : key,
+        item,
+      ),
+    );
+  }
+  return events;
+}
+
+function textFromReasoningField(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return '';
+  const parts: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === 'string') {
+      parts.push(entry);
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const typed = entry as {
+      text?: unknown;
+      summary?: unknown;
+      content?: unknown;
+    };
+    if (typeof typed.text === 'string') parts.push(typed.text);
+    else {
+      const nested = textFromReasoningField(typed.summary ?? typed.content);
+      if (nested) parts.push(nested);
+    }
+  }
+  return parts.join('');
+}
+
+function extractReasoningSummary(response: unknown): string {
+  if (!response || typeof response !== 'object') return '';
   const output = (response as { output?: unknown }).output;
-  if (!Array.isArray(output)) return [];
-  const calls: ProviderToolCall[] = [];
+  if (!Array.isArray(output)) return '';
+  const parts: string[] = [];
   for (const item of output) {
     if (!item || typeof item !== 'object') continue;
     const typed = item as {
       type?: unknown;
-      id?: unknown;
-      call_id?: unknown;
-      name?: unknown;
-      arguments?: unknown;
+      text?: unknown;
+      summary?: unknown;
+      content?: unknown;
     };
-    if (typed.type !== 'function_call' || typeof typed.name !== 'string') continue;
-    const id =
-      typeof typed.call_id === 'string'
-        ? typed.call_id
-        : typeof typed.id === 'string'
-          ? typed.id
-          : `call-${calls.length + 1}`;
-    calls.push({
-      id,
-      name: typed.name,
-      argumentsJson: typeof typed.arguments === 'string' ? typed.arguments : '{}',
-    });
+    if (typed.type === 'reasoning' || typed.type === 'reasoning_summary') {
+      const text =
+        textFromReasoningField(typed.summary) ||
+        textFromReasoningField(typed.content) ||
+        (typeof typed.text === 'string' ? typed.text : '');
+      if (text) parts.push(text);
+      continue;
+    }
+    if (!Array.isArray(typed.content)) continue;
+    for (const content of typed.content) {
+      if (!content || typeof content !== 'object') continue;
+      const reasoningPart = content as { type?: unknown; text?: unknown };
+      if (
+        (reasoningPart.type === 'reasoning' ||
+          reasoningPart.type === 'reasoning_text' ||
+          reasoningPart.type === 'summary_text') &&
+        typeof reasoningPart.text === 'string'
+      ) {
+        parts.push(reasoningPart.text);
+      }
+    }
   }
-  return calls;
+  return parts.join('');
 }
 
 function nonNegativeNumber(value: unknown): number | undefined {
@@ -262,6 +528,8 @@ function parseResponseEvent(
     text?: unknown;
     response?: unknown;
     item?: unknown;
+    item_id?: unknown;
+    output_index?: unknown;
     name?: unknown;
     arguments?: unknown;
     call_id?: unknown;
@@ -284,19 +552,99 @@ function parseResponseEvent(
     root.type === 'response.reasoning_text.delta'
   ) {
     if (typeof root.delta !== 'string' || root.delta.length === 0) return [];
+    state.sawReasoningDelta = true;
     return [{ type: 'reasoning-delta', text: root.delta }];
+  }
+
+  if (
+    root.type === 'response.reasoning_summary_text.done' ||
+    root.type === 'response.reasoning.done' ||
+    root.type === 'response.reasoning_text.done'
+  ) {
+    if (state.sawReasoningDelta || typeof root.text !== 'string' || root.text.length === 0) return [];
+    state.sawReasoningDelta = true;
+    return [{ type: 'reasoning-delta', text: root.text }];
+  }
+
+  if (root.type === 'response.output_item.added') {
+    const item =
+      root.item && typeof root.item === 'object'
+        ? (root.item as { type?: unknown; role?: unknown; phase?: unknown })
+        : undefined;
+    if (item?.type !== 'message' || item.role !== 'assistant') return [];
+    const outputIndex =
+      typeof root.output_index === 'number' && Number.isInteger(root.output_index)
+        ? root.output_index
+        : undefined;
+    const tracked = ensureAssistantItem(state, {
+      itemId: outputItemId(root.item, outputIndex),
+      outputIndex,
+      phase: visibleAssistantMessagePhase(item.phase),
+    });
+    return assistantMessageStartEvents(tracked.itemId, tracked.item);
   }
 
   if (root.type === 'response.output_text.delta' || root.type === 'response.refusal.delta') {
     if (typeof root.delta !== 'string' || root.delta.length === 0) return [];
-    state.sawTextDelta = true;
-    return [{ type: 'text-delta', text: root.delta }];
+    const outputIndex =
+      typeof root.output_index === 'number' && Number.isInteger(root.output_index)
+        ? root.output_index
+        : undefined;
+    const tracked = ensureAssistantItem(state, {
+      itemId: typeof root.item_id === 'string' ? root.item_id : undefined,
+      outputIndex,
+    });
+    defaultAssistantItemToFinalAnswer(tracked.item);
+    return assistantMessageDeltaEvents(state, tracked.itemId, tracked.item, root.delta);
   }
 
   if (root.type === 'response.output_text.done') {
-    if (state.sawTextDelta || typeof root.text !== 'string' || root.text.length === 0) return [];
-    state.sawTextDelta = true;
-    return [{ type: 'text-delta', text: root.text }];
+    const outputIndex =
+      typeof root.output_index === 'number' && Number.isInteger(root.output_index)
+        ? root.output_index
+        : undefined;
+    const tracked = ensureAssistantItem(state, {
+      itemId: typeof root.item_id === 'string' ? root.item_id : undefined,
+      outputIndex,
+    });
+    if (typeof root.text !== 'string' || root.text.length === 0) return [];
+    defaultAssistantItemToFinalAnswer(tracked.item);
+    return assistantMessageSnapshotEvents(state, tracked.itemId, tracked.item, root.text);
+  }
+
+  if (root.type === 'response.output_item.done') {
+    const item =
+      root.item && typeof root.item === 'object'
+        ? (root.item as { type?: unknown; role?: unknown; phase?: unknown })
+        : undefined;
+    if (item?.type !== 'message' || item.role !== 'assistant') return [];
+    const outputIndex =
+      typeof root.output_index === 'number' && Number.isInteger(root.output_index)
+        ? root.output_index
+        : undefined;
+    const tracked = ensureAssistantItem(state, {
+      itemId: outputItemId(root.item, outputIndex),
+      outputIndex,
+      phase: visibleAssistantMessagePhase(item.phase),
+    });
+    const events: AdapterEvent[] = [];
+    const text = outputItemText(root.item);
+    if (!tracked.item.phase && text) defaultAssistantItemToFinalAnswer(tracked.item);
+    if (!tracked.item.phase) return [];
+    if (text) {
+      events.push(
+        ...assistantMessageSnapshotEvents(state, tracked.itemId, tracked.item, text),
+      );
+    }
+    events.push(
+      ...assistantMessageEndEvents(
+        state,
+        tracked.key,
+        tracked.itemId,
+        tracked.item,
+      ),
+    );
+    return events;
   }
 
   if (root.type === 'response.function_call_arguments.done') {
@@ -323,18 +671,95 @@ function parseResponseEvent(
   if (root.type === 'response.completed' || root.type === 'response.incomplete') {
     const response = root.response ?? root;
     const events: AdapterEvent[] = [];
-    if (!state.sawTextDelta) {
-      const text = extractOutputText(response);
-      if (text) {
-        state.sawTextDelta = true;
-        events.push({ type: 'text-delta', text });
+    if (!state.sawReasoningDelta) {
+      const reasoningText = extractReasoningSummary(response);
+      if (reasoningText) {
+        state.sawReasoningDelta = true;
+        events.push({ type: 'reasoning-delta', text: reasoningText });
       }
     }
-    for (const toolCall of extractToolCalls(response)) {
-      if (state.emittedToolCallIds.has(toolCall.id)) continue;
-      state.emittedToolCallIds.add(toolCall.id);
-      events.push({ type: 'tool-call', toolCall });
+    const output =
+      response && typeof response === 'object'
+        ? (response as { output?: unknown }).output
+        : undefined;
+    if (Array.isArray(output)) {
+      for (const [outputIndex, item] of output.entries()) {
+        if (!item || typeof item !== 'object') continue;
+        const typed = item as {
+          type?: unknown;
+          role?: unknown;
+          phase?: unknown;
+          id?: unknown;
+          call_id?: unknown;
+          name?: unknown;
+          arguments?: unknown;
+        };
+        if (typed.type === 'message' && (typed.role === undefined || typed.role === 'assistant')) {
+          const phase = visibleAssistantMessagePhase(typed.phase);
+          const tracked = ensureAssistantItem(state, {
+            itemId: outputItemId(item, outputIndex),
+            outputIndex,
+            phase,
+          });
+          const text = outputItemText(item);
+          if (!tracked.item.phase && text) defaultAssistantItemToFinalAnswer(tracked.item);
+          if (tracked.item.phase) {
+            if (text) {
+              events.push(
+                ...assistantMessageSnapshotEvents(
+                  state,
+                  tracked.itemId,
+                  tracked.item,
+                  text,
+                ),
+              );
+            }
+            events.push(
+              ...assistantMessageEndEvents(
+                state,
+                tracked.key,
+                tracked.itemId,
+                tracked.item,
+              ),
+            );
+          }
+          continue;
+        }
+        if (typed.type !== 'function_call' || typeof typed.name !== 'string') continue;
+        const id =
+          typeof typed.call_id === 'string'
+            ? typed.call_id
+            : typeof typed.id === 'string'
+              ? typed.id
+              : `call-${outputIndex + 1}`;
+        if (state.emittedToolCallIds.has(id)) continue;
+        state.emittedToolCallIds.add(id);
+        events.push({
+          type: 'tool-call',
+          toolCall: {
+            id,
+            name: typed.name,
+            argumentsJson: typeof typed.arguments === 'string' ? typed.arguments : '{}',
+          },
+        });
+      }
+    } else if (!state.sawTextDelta) {
+      const text = extractOutputText(response);
+      if (text) {
+        const tracked = ensureAssistantItem(state, {});
+        defaultAssistantItemToFinalAnswer(tracked.item);
+        events.push(
+          ...assistantMessageSnapshotEvents(state, tracked.itemId, tracked.item, text),
+          ...assistantMessageEndEvents(
+            state,
+            tracked.key,
+            tracked.itemId,
+            tracked.item,
+          ),
+        );
+      }
     }
+    events.push(...openAssistantMessageEndEvents(state));
     const usage = usageEvent(response);
     if (usage) events.push(usage);
     state.finished = true;
@@ -384,19 +809,33 @@ async function* emitFromJsonResponse(text: string, apiKey: string): AsyncIterabl
     yield responseErrorEvent(response, apiKey);
     return;
   }
-  const outputText = extractOutputText(response);
-  if (outputText) yield { type: 'text-delta', text: outputText };
-  const toolCalls = extractToolCalls(response);
-  for (const toolCall of toolCalls) yield { type: 'tool-call', toolCall };
-  const usage = usageEvent(response);
-  if (usage) yield usage;
   const status =
     response && typeof response === 'object'
       ? (response as { status?: unknown }).status
       : undefined;
-  yield {
-    type: 'finished',
-    reason: toolCalls.length > 0 ? 'tool-requests' : status === 'incomplete' ? 'length' : 'stop',
+  const state = createResponsesParseState();
+  for (const event of parseResponseEvent(
+    {
+      type: status === 'incomplete' ? 'response.incomplete' : 'response.completed',
+      response,
+    },
+    apiKey,
+    state,
+  )) {
+    yield event;
+  }
+}
+
+function createResponsesParseState(): ResponsesParseState {
+  return {
+    sawTextDelta: false,
+    sawReasoningDelta: false,
+    finished: false,
+    emittedToolCallIds: new Set(),
+    assistantItems: new Map(),
+    assistantItemIdsByOutputIndex: new Map(),
+    emittedAssistantTextByPhase: new Map(),
+    assistantPhasesWithLiveDelta: new Set(),
   };
 }
 
@@ -510,11 +949,7 @@ export async function* streamOpenAIResponses(
         yield* emitFromJsonResponse(text, apiKey);
         return;
       }
-      const state: ResponsesParseState = {
-        sawTextDelta: false,
-        finished: false,
-        emittedToolCallIds: new Set(),
-      };
+      const state = createResponsesParseState();
       for (const line of text.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed.startsWith('data:')) continue;
@@ -532,11 +967,7 @@ export async function* streamOpenAIResponses(
 
     reader = response.body.getReader();
     const decoder = new TextDecoder();
-    const state: ResponsesParseState = {
-      sawTextDelta: false,
-      finished: false,
-      emittedToolCallIds: new Set(),
-    };
+    const state = createResponsesParseState();
     let buffer = '';
     while (!state.finished) {
       let done: boolean;

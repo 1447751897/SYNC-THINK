@@ -1,17 +1,51 @@
 import type { Event } from '@sync-think/shared';
+import type { CommentaryTimelineSegment } from '@sync-think/protocol';
+import {
+  isHistoricalOrphanRunStart,
+  type RunActivityAuthority,
+} from '../run-activity-authority.js';
 
 export interface ConversationStreamDraft {
   runId?: string;
   text: string;
-  reasoningText?: string;
+  commentaryText?: string;
+  commentarySegments?: CommentaryTimelineSegment[];
   timestamp: string;
+  /** Terminal drafts stay mounted until the same Run is visible durably. */
+  terminal?: boolean;
+}
+
+/** A terminal draft is renderable only when the provider emitted user-visible content. */
+export function hasConversationStreamDraftContent(
+  draft: ConversationStreamDraft | null | undefined,
+): boolean {
+  return Boolean(
+    draft &&
+      (draft.text.trim() ||
+        draft.commentaryText?.trim() ||
+        draft.commentarySegments?.some((segment) => segment.text.trim())),
+  );
 }
 
 export type ConversationStreamOperation =
   | {
-      type: 'text.delta' | 'reasoning.delta';
+      type: 'text.delta';
       runId?: string;
       delta: string;
+      occurredAt: string;
+      sequence: number;
+    }
+  | {
+      type: 'commentary.delta';
+      runId?: string;
+      delta: string;
+      occurredAt: string;
+      sequence: number;
+      afterSequence?: number;
+    }
+  | {
+      type: 'process.boundary';
+      runId?: string;
       occurredAt: string;
       sequence: number;
     }
@@ -19,6 +53,7 @@ export type ConversationStreamOperation =
       type: 'run.terminal';
       runId?: string;
       sequence: number;
+      occurredAt?: string;
     };
 
 export interface ConversationStreamBatch {
@@ -38,6 +73,18 @@ export function isRunTerminalEventType(type: string): boolean {
   return RUN_TERMINAL_EVENT_TYPES.has(type);
 }
 
+function isProcessBoundaryEventType(type: string): boolean {
+  return (
+    type === 'tool.requested' ||
+    type === 'tool.completed' ||
+    type === 'tool.failed' ||
+    type === 'execution.tool.requested' ||
+    type === 'execution.tool.completed' ||
+    type === 'execution.tool.failed' ||
+    type.startsWith('mcp.tool_')
+  );
+}
+
 export interface RunPauseNotice {
   id: string;
   runId?: string;
@@ -51,6 +98,14 @@ export interface ConversationRunActivity {
   activeRunId?: string;
 }
 
+export interface RunConnectionStatus {
+  id: string;
+  runId: string;
+  text: string;
+  timestamp: string;
+  sequence: number;
+}
+
 export function belongsToConversation(event: Event, threadId: string, taskId?: string): boolean {
   const eventThread =
     typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
@@ -62,12 +117,14 @@ export function projectConversationRunActivity(input: {
   events: readonly Event[];
   threadId: string;
   taskId?: string;
+  authority?: RunActivityAuthority;
 }): ConversationRunActivity {
   const startedRuns = new Map<string, number>();
   const endedRuns = new Set<string>();
   for (const event of input.events) {
     if (!belongsToConversation(event, input.threadId, input.taskId) || !event.runId) continue;
     if (event.type === 'run.started') {
+      if (isHistoricalOrphanRunStart(event, input.authority)) continue;
       startedRuns.set(event.runId, event.sequence);
     } else if (isRunTerminalEventType(event.type)) {
       endedRuns.add(event.runId);
@@ -83,6 +140,108 @@ export function projectConversationRunActivity(input: {
     }
   }
   return { streaming: Boolean(activeRunId), activeRunId };
+}
+
+/**
+ * Return the latest transient connection/model-switch status for the active run.
+ * Any subsequent provider output or terminal lifecycle event clears the status.
+ */
+export function selectLatestRunConnectionStatus(input: {
+  events: readonly Event[];
+  threadId: string;
+  taskId?: string;
+  activeRunId?: string;
+  streamingMessage?: Pick<ConversationStreamDraft, 'runId' | 'timestamp'> | null;
+}): RunConnectionStatus | undefined {
+  let status: RunConnectionStatus | undefined;
+  const ordered = input.events
+    .filter((event) => belongsToConversation(event, input.threadId, input.taskId))
+    .slice()
+    .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
+
+  for (const event of ordered) {
+    if (event.type === 'run.started') {
+      if (status && event.sequence >= status.sequence) status = undefined;
+      continue;
+    }
+
+    if (event.type === 'run.retrying' || event.type === 'run.fallback.selected') {
+      if (!event.runId || (input.activeRunId && event.runId !== input.activeRunId)) continue;
+
+      if (event.type === 'run.retrying') {
+        const attempt =
+          typeof event.payload.attempt === 'number' && Number.isFinite(event.payload.attempt)
+            ? Math.max(1, Math.trunc(event.payload.attempt))
+            : 1;
+        const maxAttempts =
+          typeof event.payload.maxAttempts === 'number' &&
+          Number.isFinite(event.payload.maxAttempts)
+            ? Math.max(attempt, Math.trunc(event.payload.maxAttempts))
+            : attempt;
+        status = {
+          id: `run-connection-${String(event.id)}`,
+          runId: event.runId,
+          text: `正在重新连接 ${attempt}/${maxAttempts}`,
+          timestamp: event.occurredAt,
+          sequence: event.sequence,
+        };
+        continue;
+      }
+
+      const fromModel =
+        typeof event.payload.fromProviderModelId === 'string' &&
+        event.payload.fromProviderModelId.trim()
+          ? event.payload.fromProviderModelId.trim()
+          : typeof event.payload.fromModelId === 'string' && event.payload.fromModelId.trim()
+            ? event.payload.fromModelId.trim()
+            : '当前模型';
+      const toModel =
+        typeof event.payload.toProviderModelId === 'string' &&
+        event.payload.toProviderModelId.trim()
+          ? event.payload.toProviderModelId.trim()
+          : typeof event.payload.toModelId === 'string' && event.payload.toModelId.trim()
+            ? event.payload.toModelId.trim()
+            : '备用模型';
+      status = {
+        id: `run-connection-${String(event.id)}`,
+        runId: event.runId,
+        text: `正在切换备用模型：${fromModel} → ${toModel}`,
+        timestamp: event.occurredAt,
+        sequence: event.sequence,
+      };
+      continue;
+    }
+
+    if (
+      status &&
+      event.sequence >= status.sequence &&
+      event.runId === status.runId &&
+      (event.type === 'message.delta' ||
+        event.type === 'message.commentary_delta' ||
+        event.type === 'message.reasoning_delta' ||
+        isRunTerminalEventType(event.type))
+    ) {
+      status = undefined;
+    }
+  }
+
+  if (!status || (input.activeRunId && status.runId !== input.activeRunId)) return undefined;
+
+  const streamingTimestamp = input.streamingMessage?.timestamp
+    ? Date.parse(input.streamingMessage.timestamp)
+    : Number.NaN;
+  const statusTimestamp = Date.parse(status.timestamp);
+  if (
+    input.streamingMessage &&
+    (!input.streamingMessage.runId || input.streamingMessage.runId === status.runId) &&
+    Number.isFinite(streamingTimestamp) &&
+    Number.isFinite(statusTimestamp) &&
+    streamingTimestamp > statusTimestamp
+  ) {
+    return undefined;
+  }
+
+  return status;
 }
 
 /**
@@ -125,24 +284,36 @@ export function collectConversationStreamBatch(input: {
       continue;
     }
 
-    if (event.type === 'message.reasoning_delta') {
+    if (event.type === 'message.commentary_delta') {
       const delta =
-        typeof event.payload.reasoningDelta === 'string'
-          ? event.payload.reasoningDelta
-          : typeof event.payload.textDelta === 'string'
+        typeof event.payload.textDelta === 'string'
             ? event.payload.textDelta
             : typeof event.payload.delta === 'string'
               ? event.payload.delta
               : '';
       if (delta) {
         operations.push({
-          type: 'reasoning.delta',
+          type: 'commentary.delta',
           runId: event.runId,
           delta,
           occurredAt: event.occurredAt,
           sequence: event.sequence,
+          afterSequence:
+            typeof event.payload.afterSequence === 'number'
+              ? event.payload.afterSequence
+              : event.sequence,
         });
       }
+      continue;
+    }
+
+    if (isProcessBoundaryEventType(event.type)) {
+      operations.push({
+        type: 'process.boundary',
+        runId: event.runId,
+        occurredAt: event.occurredAt,
+        sequence: event.sequence,
+      });
       continue;
     }
 
@@ -152,6 +323,7 @@ export function collectConversationStreamBatch(input: {
         type: 'run.terminal',
         runId: event.runId,
         sequence: event.sequence,
+        occurredAt: event.occurredAt,
       });
     }
   }
@@ -169,7 +341,13 @@ export function applyConversationStreamOperations(
   for (const operation of operations) {
     if (operation.type === 'run.terminal') {
       if (draft && (!operation.runId || !draft.runId || operation.runId === draft.runId)) {
-        draft = null;
+        const finalized = closeDraftCommentarySegment(
+          draft,
+          operation.occurredAt ?? draft.timestamp,
+        );
+        draft = hasConversationStreamDraftContent(finalized)
+          ? { ...finalized, terminal: true }
+          : null;
       }
       continue;
     }
@@ -183,19 +361,121 @@ export function applyConversationStreamOperations(
       text: '',
       timestamp: operation.occurredAt,
     };
+    const activeBase = { ...base };
+    delete activeBase.terminal;
+    if (operation.type === 'process.boundary') {
+      const closed = closeDraftCommentarySegment(activeBase, operation.occurredAt);
+      draft =
+        closed === activeBase
+          ? base
+          : {
+              ...closed,
+              runId: activeBase.runId ?? operation.runId,
+              timestamp: operation.occurredAt,
+            };
+      continue;
+    }
+    const commentarySegments =
+      operation.type === 'commentary.delta'
+        ? appendDraftCommentaryDelta(activeBase.commentarySegments, {
+            textDelta: operation.delta,
+            occurredAt: operation.occurredAt,
+            afterSequence: operation.afterSequence,
+          })
+        : closeCommentarySegments(activeBase.commentarySegments, operation.occurredAt);
+    const commentaryText =
+      operation.type === 'commentary.delta'
+        ? (activeBase.commentaryText ?? '') + operation.delta
+        : activeBase.commentaryText;
     draft = {
-      ...base,
-      runId: base.runId ?? operation.runId,
-      text: operation.type === 'text.delta' ? base.text + operation.delta : base.text,
-      reasoningText:
-        operation.type === 'reasoning.delta'
-          ? (base.reasoningText ?? '') + operation.delta
-          : base.reasoningText,
+      ...activeBase,
+      runId: activeBase.runId ?? operation.runId,
+      text: operation.type === 'text.delta' ? activeBase.text + operation.delta : activeBase.text,
+      ...(commentaryText !== undefined ? { commentaryText } : {}),
+      ...(commentarySegments && commentarySegments.length > 0 ? { commentarySegments } : {}),
       timestamp: operation.occurredAt,
     };
   }
 
   return draft;
+}
+
+const MAX_COMMENTARY_TIMELINE_SEGMENTS = 128;
+const MAX_COMMENTARY_TIMELINE_CHARS = 120_000;
+
+function boundCommentarySegments(
+  segments: readonly CommentaryTimelineSegment[] | undefined,
+): CommentaryTimelineSegment[] | undefined {
+  if (!segments || segments.length === 0) return undefined;
+  const bounded = segments
+    .slice(-MAX_COMMENTARY_TIMELINE_SEGMENTS)
+    .map((segment) => ({ ...segment }));
+  let totalChars = bounded.reduce((total, segment) => total + segment.text.length, 0);
+  while (bounded.length > 0 && totalChars > MAX_COMMENTARY_TIMELINE_CHARS) {
+    const first = bounded[0]!;
+    const overflow = totalChars - MAX_COMMENTARY_TIMELINE_CHARS;
+    if (first.text.length <= overflow) {
+      totalChars -= first.text.length;
+      bounded.shift();
+    } else {
+      first.text = first.text.slice(overflow);
+      totalChars -= overflow;
+    }
+  }
+  return bounded.length > 0 ? bounded : undefined;
+}
+
+function appendDraftCommentaryDelta(
+  current: readonly CommentaryTimelineSegment[] | undefined,
+  input: {
+    textDelta: string;
+    occurredAt: string;
+    afterSequence?: number;
+  },
+): CommentaryTimelineSegment[] | undefined {
+  if (!input.textDelta) return boundCommentarySegments(current);
+  const segments = (current ?? []).map((segment) => ({ ...segment }));
+  const last = segments.at(-1);
+  if (
+    last &&
+    last.completedAt === undefined &&
+    last.afterSequence === input.afterSequence
+  ) {
+    last.text += input.textDelta;
+  } else {
+    segments.push({
+      id: `commentary-${input.afterSequence ?? 'transient'}-${segments.length}`,
+      text: input.textDelta,
+      startedAt: input.occurredAt,
+      ...(input.afterSequence !== undefined ? { afterSequence: input.afterSequence } : {}),
+    });
+  }
+  return boundCommentarySegments(segments);
+}
+
+function closeCommentarySegments(
+  current: readonly CommentaryTimelineSegment[] | undefined,
+  completedAt: string,
+): CommentaryTimelineSegment[] | undefined {
+  if (!current || current.length === 0) return undefined;
+  const last = current.at(-1);
+  if (!last || last.completedAt !== undefined) return current as CommentaryTimelineSegment[];
+  return [
+    ...current.slice(0, -1).map((segment) => ({ ...segment })),
+    { ...last, completedAt },
+  ];
+}
+
+function closeDraftCommentarySegment(
+  draft: Omit<ConversationStreamDraft, 'terminal'>,
+  completedAt: string,
+): Omit<ConversationStreamDraft, 'terminal'> {
+  const commentarySegments = closeCommentarySegments(draft.commentarySegments, completedAt);
+  if (commentarySegments === draft.commentarySegments) return draft;
+  return {
+    ...draft,
+    ...(commentarySegments && commentarySegments.length > 0 ? { commentarySegments } : {}),
+  };
 }
 
 function formatRunPauseNotice(event: Event): RunPauseNotice {

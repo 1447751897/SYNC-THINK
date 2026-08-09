@@ -1,17 +1,8 @@
-import {
-  useCallback,
-  useMemo,
-  useState,
-  type ReactNode,
-} from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import {
-  Check,
-  ChevronDown,
-  Copy,
-} from 'lucide-react';
+import { Check, ChevronDown, Copy } from 'lucide-react';
 import { MermaidChart } from './MermaidChart.js';
 import { HtmlSandbox } from './HtmlSandbox.js';
 
@@ -80,13 +71,7 @@ function splitMarkdownSections(text: string): MarkdownSection[] {
   return sections.length > 0 ? sections : [{ body: text }];
 }
 
-function CodeBlock({
-  language,
-  children,
-}: {
-  language?: string;
-  children: ReactNode;
-}) {
+function CodeBlock({ language, children }: { language?: string; children: ReactNode }) {
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const text = useMemo(() => extractText(children).replace(/\n$/, ''), [children]);
@@ -105,7 +90,9 @@ function CodeBlock({
 
   return (
     <div
-      className={`shell-md-code ${expanded ? 'is-expanded' : 'is-collapsed'}`}
+      className={`shell-md-code${canExpand ? ' is-expandable' : ''} ${
+        expanded ? 'is-expanded' : 'is-collapsed'
+      }`}
       data-language={language || 'text'}
     >
       <div className="shell-md-code__bar">
@@ -139,9 +126,7 @@ function CodeBlock({
         <pre className="shell-md-code__pre">
           <code className={language ? `hljs language-${language}` : 'hljs'}>{children}</code>
         </pre>
-        {canExpand && !expanded ? (
-          <div className="shell-md-code__fade" aria-hidden="true" />
-        ) : null}
+        {canExpand && !expanded ? <div className="shell-md-code__fade" aria-hidden="true" /> : null}
       </div>
       {canExpand ? (
         <button
@@ -219,7 +204,15 @@ function MarkdownRenderer({ text, streaming }: { text: string; streaming: boolea
   );
 }
 
-function CollapsibleSection({ title, body, streaming }: { title: string; body: string; streaming: boolean }) {
+function CollapsibleSection({
+  title,
+  body,
+  streaming,
+}: {
+  title: string;
+  body: string;
+  streaming: boolean;
+}) {
   const [expanded, setExpanded] = useState(true);
   return (
     <section className={`shell-md-section ${expanded ? 'is-expanded' : 'is-collapsed'}`}>

@@ -2,9 +2,18 @@ import type { MessageId, ThreadId, AgentVersionId, ModelId, CredentialRefId, Run
 import type { MessageRole } from './enums.js';
 
 export interface MessageBlock {
-  type: 'text' | 'code' | 'image' | 'plan' | 'tool-call' | 'tool-result' | 'error' | 'reasoning';
+  type:
+    | 'text'
+    | 'code'
+    | 'image'
+    | 'plan'
+    | 'tool-call'
+    | 'tool-result'
+    | 'error'
+    | 'commentary'
+    | 'reasoning';
   text?: string;
-  /** Reasoning trace text for 'reasoning' blocks (kept visible after the run ends). */
+  /** Provider reasoning summary for legacy/diagnostic 'reasoning' blocks. */
   reasoningText?: string;
   /** Structured payload per block type. Kept opaque here; refined in core. */
   payload?: unknown;

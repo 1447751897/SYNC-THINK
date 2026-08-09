@@ -50,6 +50,8 @@ class FakeRuntimeClient implements RuntimeSessionClient {
       protocolVersion: 2,
       features: [],
       inFlightRuns: 0,
+      inFlightRunIds: [],
+      eventSequence: 0,
     };
   }
 

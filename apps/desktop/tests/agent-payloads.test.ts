@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseGetAgentPayload,
+  parseImportSkillPayload,
   parseListSkillsPayload,
   parseUpdateAgentBindingPayload,
 } from '../src/agent-payloads.js';
@@ -53,5 +54,29 @@ describe('agent payloads', () => {
         skillVersionIds: Array.from({ length: 65 }, (_, index) => `skill-${index}`),
       }),
     ).toThrow(/list-skills/);
+  });
+
+  it('preserves market and derived Skill lineage on import', () => {
+    expect(
+      parseImportSkillPayload({
+        skillMd: '---\nname: market-skill\n---\nBody',
+        originType: 'derived',
+        originRef: ' market://skills/market-skill ',
+        derivedFromSkillVersionId: ' version-market ',
+        skillId: ' skill-market ',
+      }),
+    ).toEqual({
+      skillMd: '---\nname: market-skill\n---\nBody',
+      originType: 'derived',
+      originRef: 'market://skills/market-skill',
+      derivedFromSkillVersionId: 'version-market',
+      skillId: 'skill-market',
+    });
+    expect(() =>
+      parseImportSkillPayload({
+        skillMd: '---\nname: market-skill\n---\nBody',
+        originType: 'derived',
+      }),
+    ).toThrow(/import-skill/);
   });
 });

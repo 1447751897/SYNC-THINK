@@ -74,12 +74,34 @@ import type {
   ListSkillsResponse,
   DeleteSkillPayload,
   DeleteSkillResponse,
+  SetSkillEnabledPayload,
+  SetSkillEnabledResponse,
   GetSkillPayload,
   GetSkillResponse,
   RegisterMcpServerPayload,
   RegisterMcpServerResponse,
   ListMcpServersPayload,
   ListMcpServersResponse,
+  SetMcpServerEnabledPayload,
+  SetMcpServerEnabledResponse,
+  CapabilityWorkspaceListPayload,
+  CapabilityWorkspaceListResponse,
+  CapabilityWorkspaceSetActivePayload,
+  CapabilityWorkspaceSetActiveResponse,
+  CapabilityGovernanceListPayload,
+  CapabilityGovernanceListResponse,
+  SaveSkillPublishDraftPayload,
+  SaveSkillPublishDraftResponse,
+  ListSkillPublishDraftsPayload,
+  ListSkillPublishDraftsResponse,
+  GetSkillPublishDraftPayload,
+  GetSkillPublishDraftResponse,
+  SubmitSkillPublishDraftPayload,
+  SubmitSkillPublishDraftResponse,
+  PreviewCapabilityOrganizePayload,
+  PreviewCapabilityOrganizeResponse,
+  GetLatestCapabilityOrganizePayload,
+  GetLatestCapabilityOrganizeResponse,
   ProbeMcpPolicyPayload,
   ProbeMcpPolicyResponse,
   RequestMcpToolPayload,
@@ -248,7 +270,10 @@ import type {
   StartProjectTerminalPayload,
   StartProjectTerminalResult,
 } from '../workspace-tools-contract.js';
-import type { RuntimeConnectOutcome } from '../runtime-bridge-contract.js';
+import {
+  CAPABILITY_RUNTIME_IPC_CHANNELS,
+  type RuntimeConnectOutcome,
+} from '../runtime-bridge-contract.js';
 import type {
   DesktopUpdateActionResult,
   DesktopUpdateSnapshot,
@@ -625,10 +650,14 @@ const api = {
       ipcRenderer.invoke('runtime:skill-delete', payload) as Promise<DeleteSkillResponse>,
     getSkill: (payload: GetSkillPayload) =>
       ipcRenderer.invoke('runtime:skill-get', payload) as Promise<GetSkillResponse>,
+    setSkillEnabled: (payload: SetSkillEnabledPayload) =>
+      ipcRenderer.invoke('runtime:skill-set-enabled', payload) as Promise<SetSkillEnabledResponse>,
     registerMcpServer: (payload: RegisterMcpServerPayload) =>
       ipcRenderer.invoke('runtime:mcp-register', payload) as Promise<RegisterMcpServerResponse>,
     listMcpServers: (payload: ListMcpServersPayload = {}) =>
       ipcRenderer.invoke('runtime:mcp-list', payload) as Promise<ListMcpServersResponse>,
+    setMcpServerEnabled: (payload: SetMcpServerEnabledPayload) =>
+      ipcRenderer.invoke('runtime:mcp-set-enabled', payload) as Promise<SetMcpServerEnabledResponse>,
     probeMcpPolicy: (payload: ProbeMcpPolicyPayload = {}) =>
       ipcRenderer.invoke('runtime:mcp-policy-probe', payload) as Promise<ProbeMcpPolicyResponse>,
     requestMcpTool: (payload: RequestMcpToolPayload) =>
@@ -639,6 +668,51 @@ const api = {
       ipcRenderer.invoke('runtime:mcp-tool-call', payload) as Promise<CallMcpToolResponse>,
     refreshMcpTools: (payload: RefreshMcpToolsPayload) =>
       ipcRenderer.invoke('runtime:mcp-tools-refresh', payload) as Promise<RefreshMcpToolsResponse>,
+    listCapabilityWorkspaceActivations: (payload: CapabilityWorkspaceListPayload) =>
+      ipcRenderer.invoke(
+        CAPABILITY_RUNTIME_IPC_CHANNELS.listWorkspaceActivations,
+        payload,
+      ) as Promise<CapabilityWorkspaceListResponse>,
+    setCapabilityWorkspaceActive: (payload: CapabilityWorkspaceSetActivePayload) =>
+      ipcRenderer.invoke(
+        CAPABILITY_RUNTIME_IPC_CHANNELS.setWorkspaceActive,
+        payload,
+      ) as Promise<CapabilityWorkspaceSetActiveResponse>,
+    listCapabilityGovernance: (payload: CapabilityGovernanceListPayload) =>
+      ipcRenderer.invoke(
+        CAPABILITY_RUNTIME_IPC_CHANNELS.listGovernance,
+        payload,
+      ) as Promise<CapabilityGovernanceListResponse>,
+    saveSkillPublishDraft: (payload: SaveSkillPublishDraftPayload) =>
+      ipcRenderer.invoke(
+        CAPABILITY_RUNTIME_IPC_CHANNELS.savePublishDraft,
+        payload,
+      ) as Promise<SaveSkillPublishDraftResponse>,
+    listSkillPublishDrafts: (payload: ListSkillPublishDraftsPayload = {}) =>
+      ipcRenderer.invoke(
+        CAPABILITY_RUNTIME_IPC_CHANNELS.listPublishDrafts,
+        payload,
+      ) as Promise<ListSkillPublishDraftsResponse>,
+    getSkillPublishDraft: (payload: GetSkillPublishDraftPayload) =>
+      ipcRenderer.invoke(
+        CAPABILITY_RUNTIME_IPC_CHANNELS.getPublishDraft,
+        payload,
+      ) as Promise<GetSkillPublishDraftResponse>,
+    submitSkillPublishDraft: (payload: SubmitSkillPublishDraftPayload) =>
+      ipcRenderer.invoke(
+        CAPABILITY_RUNTIME_IPC_CHANNELS.submitPublishDraft,
+        payload,
+      ) as Promise<SubmitSkillPublishDraftResponse>,
+    previewCapabilityOrganize: (payload: PreviewCapabilityOrganizePayload) =>
+      ipcRenderer.invoke(
+        CAPABILITY_RUNTIME_IPC_CHANNELS.previewOrganize,
+        payload,
+      ) as Promise<PreviewCapabilityOrganizeResponse>,
+    getLatestCapabilityOrganize: (payload: GetLatestCapabilityOrganizePayload) =>
+      ipcRenderer.invoke(
+        CAPABILITY_RUNTIME_IPC_CHANNELS.getLatestOrganize,
+        payload,
+      ) as Promise<GetLatestCapabilityOrganizeResponse>,
     listWaitingDesktopCommands: (payload: ListWaitingDesktopCommandsPayload = {}) =>
       ipcRenderer.invoke(
         'runtime:desktop-command-list-waiting',

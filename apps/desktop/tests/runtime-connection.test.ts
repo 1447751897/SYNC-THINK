@@ -35,6 +35,8 @@ function connectResult(snapshot: readonly Event[] = []): RuntimeConnectResult {
       protocolVersion: 2,
       features: [],
       inFlightRuns: 0,
+      inFlightRunIds: [],
+      eventSequence: 0,
     },
     snapshot,
   };
@@ -84,6 +86,7 @@ describe('Renderer Runtime connection controller', () => {
     let attempts = 0;
     const connected: RuntimeConnectResult[] = [];
     const failed: unknown[] = [];
+    const retrying: unknown[] = [];
 
     startRuntimeConnection({
       connect: async () => outcomes[attempts++]!,
@@ -91,18 +94,67 @@ describe('Renderer Runtime connection controller', () => {
       scheduler,
       onConnected: (value) => connected.push(value),
       onFailed: (error) => failed.push(error),
+      onRetrying: (status) => retrying.push(status),
     });
 
     await flushAsyncWork();
     expect(attempts).toBe(1);
     expect(scheduler.delays).toEqual([25]);
     expect(scheduler.pendingCount).toBe(1);
+    expect(retrying).toEqual([
+      {
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 25,
+        error: { code: 'runtime.unavailable', retryable: true },
+      },
+    ]);
 
     scheduler.runNext();
     await flushAsyncWork();
     expect(attempts).toBe(2);
     expect(connected).toEqual([result]);
     expect(failed).toEqual([]);
+  });
+
+  it('reports every scheduled reconnect before the final connection failure', async () => {
+    const scheduler = new ManualScheduler();
+    const retrying: unknown[] = [];
+    const failed: unknown[] = [];
+
+    startRuntimeConnection({
+      connect: async () => ({
+        ok: false,
+        error: { code: 'runtime.unavailable', retryable: true },
+      }),
+      retryDelaysMs: [10, 20],
+      scheduler,
+      onConnected: () => undefined,
+      onRetrying: (status) => retrying.push(status),
+      onFailed: (error) => failed.push(error),
+    });
+
+    await flushAsyncWork();
+    scheduler.runNext();
+    await flushAsyncWork();
+    scheduler.runNext();
+    await flushAsyncWork();
+
+    expect(retrying).toEqual([
+      {
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 10,
+        error: { code: 'runtime.unavailable', retryable: true },
+      },
+      {
+        attempt: 2,
+        maxAttempts: 3,
+        delayMs: 20,
+        error: { code: 'runtime.unavailable', retryable: true },
+      },
+    ]);
+    expect(failed).toEqual([{ code: 'runtime.unavailable', retryable: true }]);
   });
 
   it('does not retry a non-retryable connection failure', async () => {
@@ -224,6 +276,8 @@ describe('Renderer Runtime reconnect state', () => {
           protocolVersion: 2,
           features: [],
           inFlightRuns: 0,
+          inFlightRunIds: [],
+          eventSequence: 0,
         },
         snapshot: [],
       },

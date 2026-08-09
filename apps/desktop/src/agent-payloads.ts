@@ -5,6 +5,8 @@
   ListSkillsPayload,
   DeleteSkillPayload,
   GetSkillPayload,
+  SetSkillEnabledPayload,
+  SetMcpServerEnabledPayload,
 } from '@sync-think/protocol';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -89,7 +91,36 @@ export function parseImportSkillPayload(value: unknown): ImportSkillPayload {
     throw new Error('Invalid import-skill payload');
   }
   if (value.skillMd.length > 512000) throw new Error('Invalid import-skill payload');
-  return { skillMd: value.skillMd };
+  if (
+    value.originType !== undefined &&
+    value.originType !== 'local' &&
+    value.originType !== 'market' &&
+    value.originType !== 'derived'
+  ) {
+    throw new Error('Invalid import-skill payload');
+  }
+  for (const key of ['originRef', 'derivedFromSkillVersionId', 'skillId'] as const) {
+    const entry = value[key];
+    if (
+      entry !== undefined &&
+      (typeof entry !== 'string' || entry.trim().length === 0 || entry.length > 512)
+    ) {
+      throw new Error('Invalid import-skill payload');
+    }
+  }
+  if (value.originType === 'derived' && value.derivedFromSkillVersionId === undefined) {
+    throw new Error('Invalid import-skill payload');
+  }
+  return {
+    skillMd: value.skillMd,
+    originType: value.originType as ImportSkillPayload['originType'],
+    originRef: typeof value.originRef === 'string' ? value.originRef.trim() : undefined,
+    derivedFromSkillVersionId:
+      typeof value.derivedFromSkillVersionId === 'string'
+        ? value.derivedFromSkillVersionId.trim()
+        : undefined,
+    skillId: typeof value.skillId === 'string' ? value.skillId.trim() : undefined,
+  };
 }
 
 export function parseListSkillsPayload(value: unknown): ListSkillsPayload {
@@ -101,6 +132,14 @@ export function parseListSkillsPayload(value: unknown): ListSkillsPayload {
       !Number.isFinite(value.limit) ||
       value.limit < 1 ||
       value.limit > 500)
+  ) {
+    throw new Error('Invalid list-skills payload');
+  }
+  if (
+    value.workspaceId !== undefined &&
+    (typeof value.workspaceId !== 'string' ||
+      value.workspaceId.trim().length === 0 ||
+      value.workspaceId.length > 256)
   ) {
     throw new Error('Invalid list-skills payload');
   }
@@ -121,7 +160,13 @@ export function parseListSkillsPayload(value: unknown): ListSkillsPayload {
       skillVersionIds.push(id);
     }
   }
-  return { limit: value.limit as number | undefined, skillVersionIds };
+  return {
+    limit: value.limit as number | undefined,
+    ...(typeof value.workspaceId === 'string'
+      ? { workspaceId: value.workspaceId.trim() }
+      : {}),
+    skillVersionIds,
+  };
 }
 
 export function parseDeleteSkillPayload(value: unknown): DeleteSkillPayload {
@@ -134,6 +179,18 @@ export function parseDeleteSkillPayload(value: unknown): DeleteSkillPayload {
     throw new Error('Invalid delete-skill payload');
   }
   return { skillVersionId: value.skillVersionId.trim() };
+}
+
+export function parseSetSkillEnabledPayload(value: unknown): SetSkillEnabledPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.skillVersionId !== 'string' ||
+    value.skillVersionId.trim().length === 0 ||
+    typeof value.enabled !== 'boolean'
+  ) {
+    throw new Error('Invalid set-skill-enabled payload');
+  }
+  return { skillVersionId: value.skillVersionId.trim(), enabled: value.enabled };
 }
 
 export function parseGetSkillPayload(value: unknown): GetSkillPayload {
@@ -189,6 +246,20 @@ export function parseListMcpServersPayload(value: unknown): import('@sync-think/
     throw new Error('Invalid list-mcp payload');
   }
   return { limit: rec.limit as number | undefined };
+}
+
+export function parseSetMcpServerEnabledPayload(
+  value: unknown,
+): SetMcpServerEnabledPayload {
+  if (
+    !isRecord(value) ||
+    typeof value.mcpServerId !== 'string' ||
+    value.mcpServerId.trim().length === 0 ||
+    typeof value.enabled !== 'boolean'
+  ) {
+    throw new Error('Invalid set-mcp-enabled payload');
+  }
+  return { mcpServerId: value.mcpServerId.trim(), enabled: value.enabled };
 }
 
 export function parseProbeMcpPolicyPayload(value: unknown): import('@sync-think/protocol').ProbeMcpPolicyPayload {

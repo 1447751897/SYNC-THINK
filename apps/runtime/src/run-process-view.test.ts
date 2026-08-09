@@ -14,6 +14,45 @@ function event(input: Partial<Event> & Pick<Event, 'id' | 'sequence' | 'type' | 
 }
 
 describe('projectRunProcess', () => {
+  it('settles a running tool when the Run is paused', () => {
+    const runId = 'run-paused' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-run-started' as EventId,
+        sequence: 1,
+        runId,
+        type: 'run.started',
+        occurredAt: '2026-08-08T10:00:00.000Z',
+        payload: {},
+      }),
+      event({
+        id: 'event-tool-requested' as EventId,
+        sequence: 2,
+        runId,
+        type: 'tool.requested',
+        occurredAt: '2026-08-08T10:00:02.000Z',
+        payload: {
+          toolCallId: 'call-paused',
+          toolName: 'read_file',
+          arguments: { path: 'paused.ts' },
+        },
+      }),
+      event({
+        id: 'event-run-paused' as EventId,
+        sequence: 3,
+        runId,
+        type: 'run.paused',
+        occurredAt: '2026-08-08T10:00:08.000Z',
+        payload: {},
+      }),
+    ]);
+
+    expect(view.running).toBe(false);
+    expect(view.completedAt).toBe('2026-08-08T10:00:08.000Z');
+    expect(view.durationMs).toBe(8_000);
+    expect(view.steps[0]?.status).toBe('done');
+  });
+
   it('projects cache usage separately from total provider input', () => {
     const runId = 'run-cache-usage' as RunId;
     const view = projectRunProcess(runId, [
@@ -169,8 +208,36 @@ describe('projectRunProcess', () => {
         path: 'src/main.ts',
         status: 'done',
         preview: 'export const ready = true;\n',
+        sequence: 1,
+        startedAt: '2026-07-27T00:00:00.000Z',
+        completedAt: '2026-07-27T00:00:00.000Z',
       }),
     );
+  });
+
+  it('uses a completed-only legacy event as both the start and completion boundary', () => {
+    const runId = 'run-completed-only' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-completed-only' as EventId,
+        sequence: 7,
+        runId,
+        type: 'tool.completed',
+        occurredAt: '2026-08-08T01:02:03.000Z',
+        payload: {
+          toolCallId: 'call-completed-only',
+          toolName: 'read_file',
+          arguments: { path: 'legacy.ts' },
+          result: JSON.stringify({ content: 'legacy' }),
+        },
+      }),
+    ]);
+
+    expect(view.steps[0]).toMatchObject({
+      sequence: 7,
+      startedAt: '2026-08-08T01:02:03.000Z',
+      completedAt: '2026-08-08T01:02:03.000Z',
+    });
   });
 
   it('maps MCP called/refused audit events to terminal step states', () => {

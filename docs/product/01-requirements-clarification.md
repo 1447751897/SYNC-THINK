@@ -193,6 +193,18 @@
 17. Execution mode 只控制“AI 创建 Draft”这类工具调用是否需要普通审批；发布审批始终是人类显式动作，不因 workspace/full-access 自动跳过。
 18. P1.3 第一切片只交付 Task/Draft/Review/不可变 WorkflowVersion 的治理闭环。固定值、运行变量、秘密引用编辑和确定性回放仍属于 P1.3 后续；运行历史、失败定位、登录 handoff 与定时任务分别留在 P1.4-P1.5。
 
+### 7.3 Skill / MCP 能力治理规则（2026-08-09 用户确认）
+
+1. Skill 与 MCP 的有效能力集合统一为“全局启用 ∩ 当前工作区激活 ∩ Agent 绑定”，列表展示、Compose 发现、Context Packet 注入和 MCP dispatch 必须使用同一判定口径。
+2. 历史已安装能力迁移后默认全局启用；新导入 Skill 和新注册 MCP 也默认启用。全局停用不得删除工作区激活关系或 Agent 绑定。
+3. 能力使用统计窗口固定为最近 45 天。成功、失败和取消都计入调用次数，失败同时计入问题数；记录必须包含能力、工作区、Agent/AgentVersion、Run、结果、实际上下文 Token 与发生时间。
+4. Skill 上下文 Token 只统计实际进入 Context Packet 的 `SKILL.md`，MCP 只统计实际注入 Provider 的名称、描述和 Input Schema；未读取附件不计入，未在当前工作区激活的能力不计入。
+5. Skill 来源分为 `local / market / derived`。编辑市场 Skill 必须创建本地派生版本并保留来源，不修改市场原版。
+6. 本地 Skill 创建和编辑必须落入真实 SkillVersion 并可参与启用、激活、绑定和 Compose 选择。
+7. 市场发布当前只提供本地草稿表单和保存能力；提交动作显示渠道未开放，不生成虚假审核状态。
+8. 一键整理只生成检查报告，不自动删除或改变能力状态。报告至少覆盖未使用、未激活、有问题和高上下文占用。
+9. 保留 Skill 激活码入口，当前状态为“筹备中”。
+
 ## 8. 验收标准
 
 闭测完成必须满足（摘自设计文档 §23.2）：

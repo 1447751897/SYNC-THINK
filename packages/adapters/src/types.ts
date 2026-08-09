@@ -52,6 +52,8 @@ export interface ProviderCallRequest {
 export interface ProviderMessage {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string | ProviderContentPart[];
+  /** Responses-compatible assistant phase. Omitted for protocols without native phase support. */
+  phase?: VisibleAssistantMessagePhase;
   /** For role = 'tool': the tool call id this is the result of. */
   toolCallId?: string;
 }
@@ -118,9 +120,28 @@ export interface ProviderImageGenerationResult {
   images: ProviderGeneratedImage[];
 }
 
+export type VisibleAssistantMessagePhase = 'commentary' | 'final_answer';
+
 // Unified adapter event stream. Adapters translate SSE/proprietary formats
 // into events emitted on the AsyncIterable<AdapterEvent>.
 export type AdapterEvent =
+  | {
+      type: 'assistant-message-start';
+      phase: VisibleAssistantMessagePhase;
+      itemId?: string;
+    }
+  | {
+      type: 'assistant-message-delta';
+      phase: VisibleAssistantMessagePhase;
+      itemId?: string;
+      text: string;
+    }
+  | {
+      type: 'assistant-message-end';
+      phase: VisibleAssistantMessagePhase;
+      itemId?: string;
+    }
+  /** Legacy Provider text without native Codex phase metadata. */
   | { type: 'text-delta'; text: string }
   /** Extended thinking / reasoning channel — never mixed into assistant text. */
   | { type: 'reasoning-delta'; text: string }

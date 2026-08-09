@@ -25,6 +25,10 @@ export function supportsOpenAIExtendedPromptCacheRetention(request: ProviderCall
 export function openAIPromptCacheBodyFields(request: ProviderCallRequest): Record<string, unknown> {
   const key = request.promptCache?.key?.trim();
   if (!key) return {};
+  // prompt_cache_* is an OpenAI-native concept; third-party relays (glm/grok/
+  // qwen etc.) reject it with 400 "Unsupported parameter(s)". Only send for
+  // OpenAI gpt models — other models skip caching fields entirely.
+  if (!/^gpt-/.test(openAIModelName(request))) return {};
   if (usesOpenAIModernPromptCaching(request)) {
     return {
       prompt_cache_key: key,

@@ -1078,6 +1078,19 @@ describe('skill tools (capability center)', () => {
   });
 });
 
+describe('MCP catalog tools', () => {
+  it('exposes list_mcp_tools when MCP catalog discovery is enabled', async () => {
+    const { CHAT_MCP_CATALOG_TOOL_NAMES } = await import('./chat-tools.js');
+    const names = toolsForExecutionMode('workspace', {
+      includeProjectTools: false,
+      includeMcpCatalogTools: true,
+    }).map((tool) => tool.name);
+
+    expect(names).toContain('list_mcp_tools');
+    expect(CHAT_MCP_CATALOG_TOOL_NAMES.has('list_mcp_tools')).toBe(true);
+  });
+});
+
 describe('team tools (team library)', () => {
   it('exposes team tools alongside agent tools when agent tools are enabled', async () => {
     const { toolsForExecutionMode, CHAT_TEAM_TOOL_NAMES, CHAT_AGENT_MUTATING_TOOL_NAMES } =

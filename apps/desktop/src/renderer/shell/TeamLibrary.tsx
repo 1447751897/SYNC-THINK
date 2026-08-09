@@ -235,24 +235,24 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
   );
 
   return (
-    <div className="flex flex-1 overflow-hidden">
+    <div className="shell-library-page">
       {/* ── Library panel ─────────────────────────────────────────── */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-5">
+      <div className="shell-library-panel">
+        <div className="shell-library-header">
           <span className="text-[14px] font-semibold text-text">小队库</span>
           <button
-            className="flex h-7 items-center gap-1.5 rounded-lg bg-accent px-3 text-[12.5px] font-medium text-[var(--color-accent-fg)] hover:opacity-90"
+            className="shell-library-primary-action"
             onClick={openNew}
           >
             <Plus size={13} /> 新建小队
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="shell-library-content">
           {teams.length === 0 ? (
             <EmptyTeams onNew={openNew} />
           ) : (
-            <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))' }}>
+            <div className="shell-library-grid">
               {teams.map((team) => (
                 <TeamCard
                   key={team.id}
@@ -268,26 +268,25 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
         </div>
       </div>
 
-      {/* ── Edit dialog — centered two-column layout, roomy (was a cramped
-            400px drawer). Left: identity & coordinator. Right: members.
+      {/* ── Edit drawer. Left: identity & coordinator. Right: members.
             The stacked MemberModal (st-member-modal-backdrop, z-220) renders
             above this backdrop (z-50). ── */}
       {drawerOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
+          className="shell-library-drawer-backdrop"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closeDrawer();
           }}
         >
           <div
-            className="flex max-h-[88vh] w-full max-w-[760px] flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl"
-            data-testid="team-edit-modal"
+            className="shell-library-drawer shell-library-drawer--team"
+            data-testid="team-detail-drawer"
             role="dialog"
             aria-modal="true"
             aria-label={isNew ? '新建小队' : '编辑小队'}
           >
-            {/* Dialog header */}
-            <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-3">
+            {/* Drawer header */}
+            <div className="shell-library-drawer__header">
               <span className="text-[14px] font-semibold text-text">
                 {isNew ? '新建小队' : `编辑小队${draft.name ? ` · ${draft.name}` : ''}`}
               </span>
@@ -300,7 +299,7 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
             </div>
 
             {/* Two-column form */}
-            <div className="grid flex-1 gap-x-8 gap-y-5 overflow-y-auto px-6 py-5 md:grid-cols-2">
+            <div className="shell-library-drawer__body">
               {/* ── Left column: identity & coordinator ── */}
               <div className="space-y-5">
                 {/* Avatar + Name */}
@@ -344,10 +343,10 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
                       <button
                         key={s}
                         className={clsx(
-                          'flex-1 rounded-lg border py-2 text-[12.5px] transition-colors',
+                          'shell-library-option flex-1',
                           draft.strategy === s
-                            ? 'border-accent/40 bg-accent-soft text-accent-text'
-                            : 'border-border text-text-secondary hover:bg-hover',
+                            ? 'shell-library-option--selected'
+                            : undefined,
                         )}
                         onClick={() => setDraft((d) => ({ ...d, strategy: s }))}
                       >
@@ -388,7 +387,7 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
                       return (
                         <div
                           key={m.agentId}
-                          className="st-member-row group/member flex cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-page px-3 py-2 transition-colors hover:border-border-strong"
+                          className="shell-library-subpanel st-member-row group/member flex cursor-pointer items-center gap-2.5 px-3 py-2 transition-colors hover:border-border-strong"
                           role="button"
                           tabIndex={0}
                           onClick={() => setMemberModal({ mode: 'edit', agentId: m.agentId })}
@@ -439,7 +438,7 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
             </div>
 
             {/* Footer actions */}
-            <div className="flex shrink-0 items-center justify-between border-t border-border px-6 py-3">
+            <div className="shell-library-drawer__footer">
               {!isNew ? (
                 <button
                   className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-error hover:bg-error/10 disabled:opacity-40"
@@ -742,10 +741,8 @@ function TeamCard({
   return (
     <div
       className={clsx(
-        'group relative flex cursor-pointer flex-col gap-3 rounded-xl border p-4 transition-all',
-        selected
-          ? 'border-accent/40 bg-accent-soft'
-          : 'border-border bg-surface hover:border-border-strong hover:shadow-sm',
+        'shell-library-card group',
+        selected && 'shell-library-card--selected',
       )}
       onClick={onClick}
     >
@@ -766,28 +763,33 @@ function TeamCard({
       </div>
 
       {/* Mission */}
-      {team.mission && (
-        <p className="line-clamp-2 text-[12px] text-text-secondary leading-relaxed">
-          {team.mission}
-        </p>
-      )}
+      <p
+        className="shell-library-card__description"
+        data-empty={team.mission ? undefined : '1'}
+      >
+        {team.mission || '暂无小队使命'}
+      </p>
 
       {/* Member avatars */}
-      {memberAgents.length > 0 && (
-        <div className="flex items-center gap-1">
+      <div className="shell-library-card__meta">
+        {memberAgents.length > 0 ? (
+          <>
           {memberAgents.slice(0, 5).map((a) => (
             <AgentAvatar key={a.id} agent={a} size={22} />
           ))}
           {memberAgents.length > 5 && (
             <span className="text-[11px] text-text-faint">+{memberAgents.length - 5}</span>
           )}
-        </div>
-      )}
+          </>
+        ) : (
+          <span className="text-[11px] text-text-faint">尚未添加成员</span>
+        )}
+      </div>
 
       {/* Start conversation button */}
       {onStartConversation && (
         <button
-          className="mt-1 flex h-7 w-full items-center justify-center gap-1.5 rounded-lg border border-border text-[12px] text-text-secondary opacity-0 transition-opacity hover:bg-hover group-hover:opacity-100"
+          className="shell-library-card__action"
           onClick={(e) => { e.stopPropagation(); onStartConversation(team.id); }}
         >
           <ArrowRight size={12} /> 开始小队对话
@@ -819,7 +821,7 @@ function EmptyTeams({ onNew }: { onNew(): void }) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
+    <div className="shell-library-field">
       <label className="text-[11px] text-text-faint">{label}</label>
       {children}
     </div>

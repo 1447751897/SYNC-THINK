@@ -126,25 +126,26 @@ afterEach(() => {
 });
 
 describe('ChatView turn Skill draft', () => {
-  it('defaults to all configured Agent Skills and keeps them after append succeeds', async () => {
+  it('starts Agent Compose empty and keeps an explicit selection after append succeeds', async () => {
     renderChat(conversation('conversation-a'));
     await waitForInitialMessages();
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
     expect(runtime.listSkills).not.toHaveBeenCalled();
 
+    await toggleSkill('skill-b', 1);
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Review this' } });
     fireEvent.click(screen.getByTestId('compose-send'));
 
     await waitFor(() =>
       expect(runtime.appendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ skillVersionIds: ['skill-a', 'skill-b'], text: 'Review this' }),
+        expect.objectContaining({ skillVersionIds: ['skill-b'], text: 'Review this' }),
       ),
     );
     expect(runtime.sendConversationMessage).toHaveBeenCalledWith({
       conversationId: 'conversation-a',
       text: 'Review this',
     });
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
     expect(runtime.getSkill).not.toHaveBeenCalled();
   });
 
@@ -152,40 +153,42 @@ describe('ChatView turn Skill draft', () => {
     runtime.appendMessage.mockRejectedValueOnce(new Error('append failed'));
     renderChat(conversation('conversation-a'));
     await waitForInitialMessages();
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
+    await toggleSkill('skill-a', 1);
 
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Retry this' } });
     fireEvent.click(screen.getByTestId('compose-send'));
 
     expect(await screen.findByText('发送失败: append failed')).toBeTruthy();
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
   });
 
   it('keeps a temporary adjustment made while an append is pending', async () => {
     const pending = deferred<{ messageId: string; taskVersion: number }>();
     runtime.appendMessage.mockReturnValueOnce(pending.promise);
     renderChat(conversation('conversation-a'));
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
     await toggleSkill('skill-b', 1);
 
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Review this' } });
     fireEvent.click(screen.getByTestId('compose-send'));
     await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
     expect(runtime.appendMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ skillVersionIds: ['skill-a'] }),
+      expect.objectContaining({ skillVersionIds: ['skill-b'] }),
     );
 
-    await toggleSkill('skill-b', 2);
+    await toggleSkill('skill-b', 0);
 
     await act(async () => {
       pending.resolve({ messageId: 'message-a', taskVersion: 1 });
       await pending.promise;
     });
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
   });
 
-  it('resets to the new effective owner defaults when the conversation or identity changes', async () => {
+  it('resets the Compose draft when the conversation or identity changes', async () => {
     const view = renderChat(conversation('conversation-a'));
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
 
     fireEvent.click(screen.getByTestId('compose-identity'));
     fireEvent.click(await screen.findByTestId('identity-option-agent-agent-b'));
@@ -205,11 +208,11 @@ describe('ChatView turn Skill draft', () => {
       />,
     );
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
   });
 
-  it('resets a Team selection when the coordinator changes with the same Skill IDs', async () => {
+  it('keeps a Team selection when the coordinator changes', async () => {
     const sharedAgents = [
       { id: 'agent-a', name: 'Agent A', skillIds: ['skill-a', 'skill-b'] },
       { id: 'agent-b', name: 'Agent B', skillIds: ['skill-a', 'skill-b'] },
@@ -251,16 +254,17 @@ describe('ChatView turn Skill draft', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8'),
     );
   });
 
-  it('keeps Agent Skills when only the model override changes', async () => {
+  it('keeps the Compose selection when only the model override changes', async () => {
     renderChat(conversation('conversation-a'), [
       { modelId: 'model-a', displayName: 'Model A', providerName: 'Provider' },
       { modelId: 'model-b', displayName: 'Model B', providerName: 'Provider' },
     ]);
-    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8');
+    expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
+    await toggleSkill('skill-a', 1);
 
     fireEvent.click(screen.getByTitle('切换模型'));
     const provider = await screen.findByTestId('model-provider-Provider');
@@ -269,7 +273,7 @@ describe('ChatView turn Skill draft', () => {
     fireEvent.click(await screen.findByText('Model B'));
 
     await waitFor(() =>
-      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('2/8'),
+      expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8'),
     );
   });
 

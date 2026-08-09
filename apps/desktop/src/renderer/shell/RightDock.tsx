@@ -1,8 +1,9 @@
-// 右侧多面板 Dock（NewMax 式）：预览 / 文件 / 工作区（git）三个标签页。
+// 右侧多面板 Dock（NewMax 式）：预览 / 工作区文件两个标签页。
 // - 预览面板始终保持挂载（display 切换），避免切标签丢失当前页面；
 // - AI 下发 URL 时，面板只展示结果；真实 Browser 工具仍由 Runtime 的系统浏览器执行；
+// - 工作区文件面板内部切换文件树与 Git 状态；
 // - 文件面板：搜索 + 预览项目内文本文件（主进程只读 IPC，防目录穿越）；
-// - 工作区面板：当前分支 / 未提交变更 / 最近提交。
+// - Git 面板：当前分支 / 未提交变更 / 最近提交。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
@@ -33,7 +34,9 @@ function dockBridge() {
   return window.syncThink?.runtime;
 }
 
-export type DockTab = 'browser' | 'files' | 'workspace';
+export type DockTab = 'browser' | 'files' | 'workspace' | 'workspace-files';
+
+type WorkspaceFilesSection = 'files' | 'git';
 
 interface ProjectFileEntry {
   path: string;
@@ -63,7 +66,15 @@ export function RightDock(props: {
   activeFilePath?: string | null;
   onClose(): void;
 }) {
-  const [tab, setTab] = useState<DockTab>(props.initialTab ?? 'browser');
+  const requestedTab =
+    props.initialTab === 'browser' || !props.initialTab ? 'browser' : 'workspace-files';
+  const [tab, setTab] = useState<'browser' | 'workspace-files'>(
+    requestedTab,
+  );
+
+  useEffect(() => {
+    setTab(requestedTab);
+  }, [requestedTab]);
 
   // AI 下发新 URL → 自动切到浏览器标签。
   useEffect(() => {
@@ -80,16 +91,10 @@ export function RightDock(props: {
           onClick={() => setTab('browser')}
         />
         <DockTabBtn
-          active={tab === 'files'}
-          icon={<Folder size={13} />}
-          label="文件"
-          onClick={() => setTab('files')}
-        />
-        <DockTabBtn
-          active={tab === 'workspace'}
-          icon={<GitBranch size={13} />}
-          label="工作区"
-          onClick={() => setTab('workspace')}
+          active={tab === 'workspace-files'}
+          icon={<FolderOpen size={13} />}
+          label="工作区文件"
+          onClick={() => setTab('workspace-files')}
         />
         <button
           type="button"
@@ -120,7 +125,69 @@ export function RightDock(props: {
             registerForAutomation={false}
           />
         </div>
-        {tab === 'files' ? (
+        {tab === 'workspace-files' ? (
+          <div
+            key={props.initialTab ?? 'workspace-files'}
+            className="shell-dock-panel absolute inset-0 is-active"
+          >
+            <WorkspaceFilesPanel
+              projectFolder={props.projectFolder}
+              onOpenFile={props.onOpenFile}
+              activeFilePath={props.activeFilePath}
+            />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function WorkspaceFilesPanel(props: {
+  projectFolder?: string;
+  onOpenFile?(path: string, location?: ProjectTextLocation): void;
+  activeFilePath?: string | null;
+}) {
+  const [section, setSection] = useState<WorkspaceFilesSection>('files');
+
+  return (
+    <div
+      className="shell-workspace-files-panel flex h-full min-h-0 flex-col"
+      data-testid="workspace-files-panel"
+    >
+      <div
+        className="shell-workspace-files-switcher shrink-0"
+        role="tablist"
+        aria-label="工作区文件视图"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={section === 'files'}
+          className={clsx(
+            'shell-workspace-files-switcher__tab',
+            section === 'files' && 'is-active',
+          )}
+          onClick={() => setSection('files')}
+        >
+          <Folder size={12} />
+          文件
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={section === 'git'}
+          className={clsx(
+            'shell-workspace-files-switcher__tab',
+            section === 'git' && 'is-active',
+          )}
+          onClick={() => setSection('git')}
+        >
+          <GitBranch size={12} />
+          Git
+        </button>
+      </div>
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        {section === 'files' ? (
           <div className="shell-dock-panel absolute inset-0 is-active">
             <FilesPanel
               projectFolder={props.projectFolder}
@@ -128,12 +195,11 @@ export function RightDock(props: {
               activeFilePath={props.activeFilePath}
             />
           </div>
-        ) : null}
-        {tab === 'workspace' ? (
+        ) : (
           <div className="shell-dock-panel absolute inset-0 is-active">
             <WorkspacePanel projectFolder={props.projectFolder} />
           </div>
-        ) : null}
+        )}
       </div>
     </div>
   );
@@ -963,6 +1029,8 @@ function DockTabBtn({
     <button
       type="button"
       onClick={onClick}
+      data-active={active ? 'true' : 'false'}
+      aria-pressed={active}
       className={clsx(
         'flex h-7 items-center gap-1 rounded-md px-2 text-[11.5px] transition-colors',
         active

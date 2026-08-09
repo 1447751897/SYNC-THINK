@@ -46,18 +46,39 @@ function parseDataUrl(dataUrl: string): { mediaType: string; data: string } | nu
   return { mediaType: match[1]!, data: match[2]! };
 }
 
+type AnthropicWireMessage = {
+  role: 'user' | 'assistant';
+  content: string | Array<Record<string, unknown>>;
+};
+
+function appendAnthropicMessage(
+  out: AnthropicWireMessage[],
+  message: AnthropicWireMessage,
+): void {
+  const previous = out.at(-1);
+  if (!previous || previous.role !== message.role) {
+    out.push(message);
+    return;
+  }
+
+  const toBlocks = (
+    content: AnthropicWireMessage['content'],
+  ): Array<Record<string, unknown>> => {
+    if (Array.isArray(content)) return content;
+    return content ? [{ type: 'text', text: content }] : [];
+  };
+  previous.content = [...toBlocks(previous.content), ...toBlocks(message.content)];
+}
+
 function toAnthropicMessages(
   request: ProviderCallRequest,
-): Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }> {
-  const out: Array<{
-    role: 'user' | 'assistant';
-    content: string | Array<Record<string, unknown>>;
-  }> = [];
+): AnthropicWireMessage[] {
+  const out: AnthropicWireMessage[] = [];
   for (const message of request.messages) {
     if (message.role === 'system') continue;
     const content = messageContentToString(message);
     if (message.role === 'tool' && message.toolCallId) {
-      out.push({
+      appendAnthropicMessage(out, {
         role: 'user',
         content: [{ type: 'tool_result', tool_use_id: message.toolCallId, content }],
       });
@@ -82,7 +103,7 @@ function toAnthropicMessages(
         });
       }
       if (blocks.length > 0) {
-        out.push({ role: 'assistant', content: blocks });
+        appendAnthropicMessage(out, { role: 'assistant', content: blocks });
         continue;
       }
     }
@@ -113,12 +134,12 @@ function toAnthropicMessages(
         }
       }
       if (blocks.length > 0) {
-        out.push({ role: 'user', content: blocks });
+        appendAnthropicMessage(out, { role: 'user', content: blocks });
         continue;
       }
     }
     if (!content && message.role !== 'assistant') continue;
-    out.push({
+    appendAnthropicMessage(out, {
       role: message.role === 'assistant' ? 'assistant' : 'user',
       content,
     });

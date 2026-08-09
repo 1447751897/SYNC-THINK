@@ -19,7 +19,31 @@ export interface TerminalPaneTab {
   cwd: string;
 }
 
-export type WorkspacePaneTab = ConversationPaneTab | FilePaneTab | TerminalPaneTab;
+export interface BrowserPaneTab {
+  id: string;
+  type: 'browser';
+  browserId: string;
+  url: string;
+}
+
+export interface WorkspaceFilesPaneTab {
+  id: 'workspace-files';
+  type: 'workspace-files';
+}
+
+export type WorkspacePaneTab =
+  | ConversationPaneTab
+  | FilePaneTab
+  | TerminalPaneTab
+  | BrowserPaneTab
+  | WorkspaceFilesPaneTab;
+
+export type PaneResourceRef =
+  | { type: 'conversation'; id: string }
+  | { type: 'file'; id: string }
+  | { type: 'terminal'; id: string }
+  | { type: 'browser'; id: string }
+  | { type: 'workspace-files'; id: 'workspace-files' };
 
 export interface WorkspacePane {
   id: string;
@@ -101,10 +125,30 @@ function terminalTab(terminalId: string, cwd = ''): TerminalPaneTab {
   };
 }
 
+function normalizeBrowserUrl(url: string): string {
+  const normalized = url.trim();
+  return normalized.slice(0, 4_000) || 'https://www.bing.com';
+}
+
+function browserTab(browserId: string, url: string): BrowserPaneTab {
+  return {
+    id: `browser:${browserId}`,
+    type: 'browser',
+    browserId,
+    url: normalizeBrowserUrl(url),
+  };
+}
+
+function workspaceFilesTab(): WorkspaceFilesPaneTab {
+  return { id: 'workspace-files', type: 'workspace-files' };
+}
+
 function tabResourceKey(tab: WorkspacePaneTab): string {
   if (tab.type === 'conversation') return `conversation:${tab.conversationId}`;
   if (tab.type === 'file') return `file:${tab.path}`;
-  return `terminal:${tab.terminalId}`;
+  if (tab.type === 'terminal') return `terminal:${tab.terminalId}`;
+  if (tab.type === 'browser') return `browser:${tab.browserId}`;
+  return 'workspace-files';
 }
 
 function isSafeRecordKey(value: string): boolean {
@@ -270,6 +314,76 @@ function findTerminalPane(layout: WorkspacePaneLayout, terminalId: string): stri
   );
 }
 
+function findBrowserPane(layout: WorkspacePaneLayout, browserId: string): string | undefined {
+  return paneIdsInTree(layout.root).find((paneId) =>
+    layout.panes[paneId]?.tabs.some(
+      (tab) => tab.type === 'browser' && tab.browserId === browserId,
+    ),
+  );
+}
+
+export function findWorkspaceFilesPane(layout: WorkspacePaneLayout): string | undefined {
+  return paneIdsInTree(layout.root).find((paneId) =>
+    layout.panes[paneId]?.tabs.some((tab) => tab.type === 'workspace-files'),
+  );
+}
+
+function findPaneTab(
+  layout: WorkspacePaneLayout,
+  resource: PaneResourceRef,
+): { paneId: string; tab: WorkspacePaneTab } | undefined {
+  const id = resource.id.trim();
+  if (!id) return undefined;
+  const key = `${resource.type}:${id}`;
+  if (resource.type === 'workspace-files') {
+    return findWorkspaceFilesPane(layout)
+      ? {
+          paneId: findWorkspaceFilesPane(layout)!,
+          tab: workspaceFilesTab(),
+        }
+      : undefined;
+  }
+  for (const paneId of paneIdsInTree(layout.root)) {
+    const tab = layout.panes[paneId]?.tabs.find((candidate) => tabResourceKey(candidate) === key);
+    if (tab) return { paneId, tab };
+  }
+  return undefined;
+}
+
+function removePaneTabWithoutCollapsing(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+  tabId: string,
+): WorkspacePaneLayout {
+  const pane = layout.panes[paneId];
+  if (!pane) return layout;
+  const index = pane.tabs.findIndex((tab) => tab.id === tabId);
+  if (index < 0) return layout;
+  const tabs = pane.tabs.filter((tab) => tab.id !== tabId);
+  const activeTabId =
+    pane.activeTabId === tabId
+      ? (tabs[index]?.id ?? tabs[index - 1]?.id)
+      : pane.activeTabId;
+  return {
+    ...layout,
+    panes: { ...layout.panes, [paneId]: { ...pane, tabs, activeTabId } },
+  };
+}
+
+function closePaneTabByResource(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+  resource: PaneResourceRef,
+): WorkspacePaneLayout {
+  const found = findPaneTab(layout, resource);
+  if (!found || found.paneId !== paneId) return layout;
+  const next = removePaneTabWithoutCollapsing(layout, paneId, found.tab.id);
+  if (next.panes[paneId]?.tabs.length === 0 && Object.keys(next.panes).length > 1) {
+    return closePane(next, paneId);
+  }
+  return next;
+}
+
 export function createWorkspacePaneLayout(
   workspaceId: string,
   conversationIds: readonly string[] = [],
@@ -370,6 +484,40 @@ export function activateTerminalPaneTab(
   };
 }
 
+export function activateBrowserPaneTab(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+  browserId: string,
+): WorkspacePaneLayout {
+  const normalizedId = browserId.trim();
+  const pane = layout.panes[paneId];
+  const tab = pane?.tabs.find(
+    (item) => item.type === 'browser' && item.browserId === normalizedId,
+  );
+  if (!pane || !tab) return layout;
+  if (layout.focusedPaneId === paneId && pane.activeTabId === tab.id) return layout;
+  return {
+    ...layout,
+    focusedPaneId: paneId,
+    panes: { ...layout.panes, [paneId]: { ...pane, activeTabId: tab.id } },
+  };
+}
+
+export function activateWorkspaceFilesPaneTab(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+): WorkspacePaneLayout {
+  const pane = layout.panes[paneId];
+  const tab = pane?.tabs.find((item) => item.type === 'workspace-files');
+  if (!pane || !tab) return layout;
+  if (layout.focusedPaneId === paneId && pane.activeTabId === tab.id) return layout;
+  return {
+    ...layout,
+    focusedPaneId: paneId,
+    panes: { ...layout.panes, [paneId]: { ...pane, activeTabId: tab.id } },
+  };
+}
+
 export function openFileInPane(
   layout: WorkspacePaneLayout,
   path: string,
@@ -433,6 +581,32 @@ export function openTerminalInPane(
   };
 }
 
+export function openBrowserInPane(
+  layout: WorkspacePaneLayout,
+  browserId: string,
+  url = 'https://www.bing.com',
+  targetPaneId: string = layout.focusedPaneId,
+): WorkspacePaneLayout {
+  const normalizedId = browserId.trim();
+  if (!normalizedId || normalizedId.length > 200 || !isSafeRecordKey(normalizedId)) return layout;
+  const existingPaneId = findBrowserPane(layout, normalizedId);
+  if (existingPaneId) return activateBrowserPaneTab(layout, existingPaneId, normalizedId);
+  const paneId = layout.panes[targetPaneId] ? targetPaneId : paneIdsInTree(layout.root)[0];
+  const pane = layout.panes[paneId];
+  if (!pane || paneHasOnlyStatefulTabsAtLimit(pane)) return layout;
+  const tab = browserTab(normalizedId, url);
+  const nextPane = normalizePane({
+    ...pane,
+    tabs: [...pane.tabs, tab],
+    activeTabId: tab.id,
+  });
+  return {
+    ...layout,
+    focusedPaneId: paneId,
+    panes: { ...layout.panes, [paneId]: nextPane },
+  };
+}
+
 export function focusPane(layout: WorkspacePaneLayout, paneId: string): WorkspacePaneLayout {
   if (!layout.panes[paneId] || layout.focusedPaneId === paneId) return layout;
   return { ...layout, focusedPaneId: paneId };
@@ -462,6 +636,52 @@ export function openConversationInPane(
     panes: {
       ...layout.panes,
       [paneId]: nextPane,
+    },
+  };
+}
+
+export function replaceConversationInPane(
+  layout: WorkspacePaneLayout,
+  fromConversationId: string,
+  toConversationId: string,
+): WorkspacePaneLayout {
+  const fromId = fromConversationId.trim();
+  const toId = toConversationId.trim();
+  if (!fromId || !toId || fromId === toId) return layout;
+  const sourcePaneId = findConversationPane(layout, fromId);
+  if (!sourcePaneId) return layout;
+
+  const sourcePane = layout.panes[sourcePaneId];
+  const sourceIndex = sourcePane?.tabs.findIndex(
+    (tab) => tab.type === 'conversation' && tab.conversationId === fromId,
+  ) ?? -1;
+  if (!sourcePane || sourceIndex < 0) return layout;
+
+  const existingPaneId = findConversationPane(layout, toId);
+  if (existingPaneId) {
+    let next = removeConversationWithoutCollapsing(layout, sourcePaneId, fromId);
+    next = activatePaneTab(next, existingPaneId, toId);
+    if (next.panes[sourcePaneId]?.tabs.length === 0 && Object.keys(next.panes).length > 1) {
+      next = closePane(next, sourcePaneId);
+    }
+    return next;
+  }
+
+  const replacement = conversationTab(toId);
+  const tabs = sourcePane.tabs.map((tab, index) => (index === sourceIndex ? replacement : tab));
+  return {
+    ...layout,
+    focusedPaneId: sourcePaneId,
+    panes: {
+      ...layout.panes,
+      [sourcePaneId]: {
+        ...sourcePane,
+        tabs,
+        activeTabId:
+          sourcePane.activeTabId === sourcePane.tabs[sourceIndex]?.id
+            ? replacement.id
+            : sourcePane.activeTabId,
+      },
     },
   };
 }
@@ -565,6 +785,109 @@ export function splitPaneWithConversation(
     root: replacePaneNode(base.root, targetPaneId, splitNode),
     focusedPaneId: newPaneId,
   };
+}
+
+export function splitPaneWithWorkspaceFiles(
+  layout: WorkspacePaneLayout,
+  targetPaneId: string = layout.focusedPaneId,
+  direction: PaneSplitDirection = 'horizontal',
+): WorkspacePaneLayout {
+  const existingPaneId = findWorkspaceFilesPane(layout);
+  if (existingPaneId) return activateWorkspaceFilesPaneTab(layout, existingPaneId);
+  const targetPane = layout.panes[targetPaneId];
+  const targetNode = findPaneNode(layout.root, targetPaneId);
+  if (!targetPane || !targetNode) return layout;
+
+  const newPaneId = nextId('pane');
+  const newPaneNode: PaneLeafNode = { type: 'pane', id: nextId('node'), paneId: newPaneId };
+  const splitNode: PaneSplitNode = {
+    type: 'split',
+    id: nextId('split'),
+    direction,
+    ratio: 0.68,
+    children: [targetNode, newPaneNode],
+  };
+  const tab = workspaceFilesTab();
+  return {
+    ...layout,
+    panes: {
+      ...layout.panes,
+      [newPaneId]: { id: newPaneId, tabs: [tab], activeTabId: tab.id },
+    },
+    root: replacePaneNode(layout.root, targetPaneId, splitNode),
+    focusedPaneId: newPaneId,
+  };
+}
+
+export function movePaneResourceToPane(
+  layout: WorkspacePaneLayout,
+  resource: PaneResourceRef,
+  targetPaneId: string,
+): WorkspacePaneLayout {
+  const found = findPaneTab(layout, resource);
+  const targetPane = layout.panes[targetPaneId];
+  if (!found || !targetPane) return layout;
+  if (found.paneId === targetPaneId) {
+    if (resource.type === 'conversation') return activatePaneTab(layout, targetPaneId, resource.id);
+    if (resource.type === 'file') return activateFilePaneTab(layout, targetPaneId, resource.id);
+    if (resource.type === 'terminal') {
+      return activateTerminalPaneTab(layout, targetPaneId, resource.id);
+    }
+    if (resource.type === 'browser') {
+      return activateBrowserPaneTab(layout, targetPaneId, resource.id);
+    }
+    return activateWorkspaceFilesPaneTab(layout, targetPaneId);
+  }
+
+  let next = removePaneTabWithoutCollapsing(layout, found.paneId, found.tab.id);
+  const currentTarget = next.panes[targetPaneId];
+  if (!currentTarget) return layout;
+  const existingTargetTab = currentTarget.tabs.find(
+    (tab) => tabResourceKey(tab) === tabResourceKey(found.tab),
+  );
+  if (existingTargetTab) {
+    next = {
+      ...next,
+      focusedPaneId: targetPaneId,
+      panes: {
+        ...next.panes,
+        [targetPaneId]: { ...currentTarget, activeTabId: existingTargetTab.id },
+      },
+    };
+  } else {
+    next = {
+      ...next,
+      focusedPaneId: targetPaneId,
+      panes: {
+        ...next.panes,
+        [targetPaneId]: normalizePane({
+          ...currentTarget,
+          tabs: [...currentTarget.tabs, found.tab],
+          activeTabId: found.tab.id,
+        }),
+      },
+    };
+  }
+  if (next.panes[found.paneId]?.tabs.length === 0) next = closePane(next, found.paneId);
+  return { ...next, focusedPaneId: targetPaneId };
+}
+
+export function closeBrowserPaneTab(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+  browserId: string,
+): WorkspacePaneLayout {
+  return closePaneTabByResource(layout, paneId, { type: 'browser', id: browserId });
+}
+
+export function closeWorkspaceFilesPaneTab(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+): WorkspacePaneLayout {
+  return closePaneTabByResource(layout, paneId, {
+    type: 'workspace-files',
+    id: 'workspace-files',
+  });
 }
 
 export function setSplitRatio(
@@ -838,6 +1161,16 @@ export function parseWorkspacePaneLayout(raw: unknown): WorkspacePaneLayout | nu
                 ? terminalTab(terminalId, cwd)
                 : null;
             }
+            if (tabRecord.type === 'browser') {
+              const browserId =
+                typeof tabRecord.browserId === 'string' ? tabRecord.browserId.trim() : '';
+              const url = typeof tabRecord.url === 'string' ? tabRecord.url : '';
+              return browserId && browserId.length <= 200 && isSafeRecordKey(browserId)
+                ? browserTab(browserId, url)
+                : null;
+            }
+            if (tabRecord.type === 'workspace-files') return workspaceFilesTab();
+            if (tabRecord.type !== 'conversation') return null;
             const conversationId =
               typeof tabRecord.conversationId === 'string'
                 ? String(tabRecord.conversationId).trim()

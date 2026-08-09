@@ -18,6 +18,7 @@ export interface McpServerRecord {
   endpoint: string;
   tools: McpToolSchemaRecord[];
   trusted: boolean;
+  enabled: boolean;
   maxOutputBytes: number;
   timeoutMs: number;
   notes: string;
@@ -45,6 +46,7 @@ interface McpServerRow {
   endpoint: string;
   tools_json: string;
   trusted: number;
+  enabled: number;
   max_output_bytes: number;
   timeout_ms: number;
   notes: string;
@@ -92,6 +94,7 @@ function mapRow(row: McpServerRow): McpServerRecord {
     endpoint: row.endpoint ?? '',
     tools: parseTools(row.tools_json),
     trusted: row.trusted === 1,
+    enabled: row.enabled === 1,
     maxOutputBytes: row.max_output_bytes || 65536,
     timeoutMs: row.timeout_ms || 15000,
     notes: row.notes ?? '',
@@ -122,7 +125,7 @@ export class SqliteMcpStore {
     const row = this.raw
       .prepare(
         `SELECT id, name, transport, endpoint, tools_json, trusted,
-                max_output_bytes, timeout_ms, notes, created_at, updated_at
+                enabled, max_output_bytes, timeout_ms, notes, created_at, updated_at
          FROM mcp_server WHERE id = ?`,
       )
       .get(String(id)) as McpServerRow | undefined;
@@ -133,13 +136,40 @@ export class SqliteMcpStore {
     const rows = this.raw
       .prepare(
         `SELECT id, name, transport, endpoint, tools_json, trusted,
-                max_output_bytes, timeout_ms, notes, created_at, updated_at
+                enabled, max_output_bytes, timeout_ms, notes, created_at, updated_at
          FROM mcp_server
          ORDER BY created_at DESC
          LIMIT ?`,
       )
       .all(Math.max(1, Math.min(500, limit))) as McpServerRow[];
     return rows.map(mapRow);
+  }
+
+  listEnabled(limit = 100): McpServerRecord[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT id, name, transport, endpoint, tools_json, trusted,
+                enabled, max_output_bytes, timeout_ms, notes, created_at, updated_at
+         FROM mcp_server
+         WHERE enabled = 1
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(Math.max(1, Math.min(500, limit))) as McpServerRow[];
+    return rows.map(mapRow);
+  }
+
+  setEnabled(
+    mcpServerId: McpServerId | string,
+    enabled: boolean,
+    now = new Date().toISOString(),
+  ): McpServerRecord | undefined {
+    const id = String(mcpServerId ?? '').trim();
+    if (!id || !this.get(id)) return undefined;
+    this.raw
+      .prepare(`UPDATE mcp_server SET enabled = ?, updated_at = ? WHERE id = ?`)
+      .run(enabled ? 1 : 0, now, id);
+    return this.get(id);
   }
 
   /**
@@ -208,8 +238,8 @@ export class SqliteMcpStore {
         .prepare(
           `INSERT INTO mcp_server (
              id, name, transport, endpoint, tools_json, trusted,
-             max_output_bytes, timeout_ms, notes, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             enabled, max_output_bytes, timeout_ms, notes, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
