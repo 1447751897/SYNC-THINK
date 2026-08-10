@@ -713,3 +713,71 @@
 
 - 当前分支为 `feature/newmax-shell-rewrite`，HEAD 为 `7db45ec`（`desktop: UI 修复与打磨`）。
 - 本轮及此前改动均保持未提交、未推送；真实数据库 `D:\projects\SYNC-THINK\.data\SYNC-THINK\sync-think.db` 未被修改。
+
+## 当前状态：2026-08-10 · 标签栏下拉选择视口定位修复
+
+### 修复结论
+
+- 顶栏工作区“+”、聊天标签栏“+”新建资源菜单和分屏候选选择器已统一做视口避让；聊天标签栏下拉层通过 `document.body` Portal 使用固定定位，靠近窗口底部时自动向上展开，靠近顶部或空间充足时向下展开。
+- 菜单宽度会限制在视口内，候选过多时仅菜单内部滚动；不会再把内容推到窗口可视区外，也不需要用户上下滚动页面寻找选项。
+
+### 验证
+
+- `apps/desktop/src/renderer/shell/ConversationTabs.test.tsx`：12/12 通过；`TopBar.test.tsx`：1/1 通过，覆盖两个“+”菜单和分屏选择器的底部翻转。
+- Desktop 全量测试：149 个测试文件、1075 个测试全部通过。
+- `pnpm --filter @sync-think/desktop typecheck`：通过。
+- `pnpm --filter @sync-think/desktop lint`：通过，0 errors；6 条 hooks warning 为现有代码提示。
+
+### 当前工作树
+
+- 当前分支 `feature/newmax-shell-rewrite`，基线 HEAD `45b34d6`；本轮只修改两个菜单组件、对应测试和两份开发状态文档。
+- 未安装新依赖、未打包、未提交、未推送；真实数据库未修改。
+
+### 本地源码实例（2026-08-10 09:45 +08:00）
+
+- 已重新执行 `pnpm --filter @sync-think/desktop build` 并启动源码版 Electron；Electron PID `41708`，managed Runtime PID `47568`。
+- 窗口标题为 `SYNC-THINK`，`Responding=True`；Runtime 日志包含 `pipe ready`、`database ready`、`hello accepted`。
+- 本次启动日志：`.data/local-restart-20260810-menu-fix/desktop.stdout.log` 与 `desktop.stderr.log`。stderr 仅记录已有 guest view 的 Bing 导航中止事件，不影响桌面启动。
+
+## 当前状态：2026-08-10 · 对话行工作区文件入口收敛
+
+- 对话行右侧只显示“打开工作区文件” Pane 操作；工作区文件打开后以独立资源 Tab 出现在对应 Pane。
+- `+` 菜单继续只提供“新建对话 / 新建终端 / 网页浏览”，不显示工作区文件；对话行末端的“打开右栏”按钮已移除。
+- ChatView 内部由浏览器工具触发的临时右栏仍保留，避免影响网页预览流程。
+- 最新源码实例已重启：Electron PID `47260`、managed Runtime PID `43680`，日志位于 `.data/local-restart-20260810-workspace-files-entry/`；窗口 `Responding=True`，pipe/database/hello 均正常。
+- 本轮 Desktop 全量回归为 149 个测试文件、1076 个测试全部通过；定向标签行/Shell 回归为 46/46。
+
+### 页面手测
+
+1. 打开任意工作区的聊天窗格，把窗口缩到较矮高度，使标签栏靠近窗口底部。
+2. 点击顶栏工作区“+”，预期工作区选择菜单完整出现在可视区内；若下方空间不足，菜单从按钮上方展开。
+3. 点击聊天标签栏的“+”，预期新建资源菜单同样自动避让窗口边界。
+4. 打开两个以上对话标签，点击水平或垂直分屏按钮，预期“选择分屏对话”同样自动避让窗口边界。
+5. 增加足够多候选项，预期只有菜单内部出现滚动条，页面和标签栏不被整体推移。
+
+## 当前状态：2026-08-10 · 能力中心视觉与远端能力最终收口
+
+### 已完成
+
+- 能力中心、Skill/MCP 详情抽屉、编辑弹窗和 Portal 遮罩统一使用 Shell 页面/表面/边框/文字/强调色变量，浅色和深色保持同一视觉层级。
+- Skill 编辑器已补齐图标、输入框、源码导入和独立滚动布局；保存按钮常态显示，保存中锁定关闭动作，动画结束后清除 transform，中文文本保持清晰。
+- 支持从 HTTP(S)/GitHub blob 导入远端 `SKILL.md`，具备超时、大小上限、规范化来源和可行动错误状态。
+- 支持远端 MCP Streamable HTTP 注册、工具发现/刷新/调用；AI 只登记公开元数据，用户在能力中心单独输入 Key，Key 仅写入 SecureStore。
+
+### 最终验证
+
+- `pnpm exec turbo run test --force --concurrency=1`：20/20 Turbo tasks 通过；Desktop 149 files / 1087 tests，Runtime 82 files / 543 tests。
+- `pnpm exec turbo run typecheck --force`：20/20；`pnpm exec turbo run lint --force --continue`：11/11，0 errors（5 条既有 hooks warnings）；`pnpm lint:tokens` 通过。
+- `pnpm exec turbo run build --force`：11/11、0 cached；`git diff --check` 通过。
+- 关键定向回归：`AbilitiesPage` 21/21；Runtime 远端能力 14/14；Runtime Chat 工具 57/57；Desktop 回滚协调器 6/6（使用项目标准 15 秒超时）。
+
+### 当前本地实例
+
+- 最新源码 Electron 主进程 PID `49912`，managed Runtime PID `42924`，CDP `127.0.0.1:9352`；两者 `Responding=True`。
+- 隔离数据与日志：`.data/local-restart-20260810-123532-remote-capability-final/`；启动日志已出现 `pipe ready`、`database ready`、`hello accepted`。
+- 窗口已恢复约 `1280×820`、浅色主题；能力中心、MCP 和 Skill 编辑实窗检查无横向溢出，保存按钮可见可点击。最新截图：`.data/local-restart-20260810-123532-remote-capability-final/screens/ability-final-mcp-light.png`。
+
+### 当前边界
+
+- 本轮不生成安装包、不提交、不推送；真实数据库未触碰，闭测数据只写入上述隔离目录。
+- 远端 MCP 的 Key 不会出现在 SQLite、Renderer 状态、能力列表、事件、日志或诊断导出中；Key 轮换/删除仍需要后续独立入口。

@@ -2767,3 +2767,51 @@ Desktop typecheck/build：passed
 
 - 当前市场目录与发布提交仍是本地能力：发布草稿可编辑和保存，真实市场渠道尚未开放。
 - 整理报告保持只读；已安装能力的删除、Workspace 关系删除和 Agent 绑定删除不由本轮“一键整理”执行。
+
+## 2026-08-10 · 标签栏下拉选择视口定位修复
+
+### Fixed
+
+- 修复顶栏工作区 `+`、聊天标签栏 `+` 的菜单贴在底部并被窗口裁切的问题：菜单改为按锚点上下可用空间自动翻转，并让外层菜单在自身区域滚动。
+- 分屏候选选择器同步使用 Portal 到 `document.body` 的固定定位和视口碰撞处理；超长候选列表只在自身列表区域滚动，不再要求滚动整个页面才能看到选项。
+
+### Verification
+
+- `ConversationTabs.test.tsx`：12/12 通过；`TopBar.test.tsx`：1/1 通过，覆盖两个“+”菜单和分屏选择器在窗口底部向上展开。
+- `@sync-think/desktop typecheck`：通过；Desktop lint：0 errors（保留仓库已有 hooks warnings）。
+- Desktop 全量最终为 149/149 files、1075/1075 tests，通过；其中包含本轮新增的顶栏菜单回归用例，未发现与本次 UI 修复相关的回归。
+
+## 2026-08-10 · 对话行工作区文件入口收敛
+
+### Changed
+
+- 对话行右侧保留“打开工作区文件”按钮，工作区文件继续作为独立资源 Tab 展示，但明确排除在 `+` 新建资源菜单之外。
+- 移除对话行末端的“打开右栏”按钮及其重复入口；ChatView 内部由浏览器工具触发的右栏能力保持不变。
+
+### Verification
+
+- `ConversationTabs.test.tsx` 新增工作区文件入口/菜单排除/旧右栏按钮移除回归覆盖。
+- Desktop 全量回归：149 个测试文件、1076 个测试全部通过；typecheck、lint、build 和 `git diff --check` 通过。
+
+## 2026-08-10 · 能力中心视觉收口与远端 Skill/MCP 闭环
+
+### Changed
+
+- 能力中心、Skill/MCP 详情抽屉和编辑弹窗统一回 Shell 的页面、表面、边框、文字与强调色变量；Portal 弹层显式继承同一变量作用域，浅色与深色不再出现独立的浅绿色页面。
+- Skill 编辑弹窗补齐名称、版本、描述、源码与文件导入图标和输入样式，改为 header、独立滚动正文、常驻 footer；保存按钮常态可见，所有入场动画结束后恢复 `transform: none`，降低 Windows 中文字发虚。
+- 新增远端 Skill URL 导入；支持 GitHub blob 地址规范化、有界下载、来源记录以及加载/成功/错误状态。
+- 新增远端 MCP Streamable HTTP 注册、工具发现、刷新和实际调用；鉴权 Key 写入 SecureStore，公开摘要只显示鉴权状态与方式。
+- AI 的远端 MCP 工具只登记公开元数据，不接收 Key。登记后详情抽屉提供“配置 Key”，名称、Transport 与 Endpoint 自动预填锁定，用户只输入一次 Key。
+- 远端发现、刷新和调用的错误文本会额外替换当前 SecureStore Key，即使远端服务主动把 Key 原文写进响应正文，也不会回到 UI、事件或日志。
+
+### Verification
+
+- `AbilitiesPage.test.tsx`：21/21 通过；覆盖远端 Skill 成功/失败、保存按钮常态、远端 MCP 注册、密码显示、AI 登记后只配置 Key、Key 不回显和失败刷新保留旧目录。
+- Runtime 远端能力与 Chat 工具定向回归：14/14、57/57 通过；远端命令回归覆盖注册、发现、刷新、调用和 SecureStore 脱敏。
+- `pnpm exec turbo run test --force --concurrency=1`：20/20 Turbo tasks 通过；Desktop 149 files / 1087 tests，Runtime 82 files / 543 tests。
+- `pnpm exec turbo run typecheck --force`：20/20；`pnpm exec turbo run lint --force --continue`：11/11（0 errors，保留 5 条既有 hooks warnings）；`pnpm lint:tokens`、`pnpm exec turbo run build --force`（11/11）和 `git diff --check` 均通过。
+- 新源码实例实窗复核通过：浅色/紧凑窗口无横向溢出；保存按钮 `opacity: 1` 且 `transform: none`；MCP 列表和 Skill 编辑页面清晰可用。证据截图位于 `.data/local-restart-20260810-123532-remote-capability-final/screens/ability-mcp-light-rerun.png` 与 `.data/local-restart-20260810-123532-remote-capability-final/screens/skill-editor-light-rerun.png`。
+
+### Boundary
+
+- 当前仍只重启本地源码实例，未生成安装包、未提交、未推送；远端 MCP Key 继续只保存在 SecureStore，列表、Renderer、事件和日志不回显。

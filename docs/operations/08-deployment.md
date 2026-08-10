@@ -375,3 +375,9 @@ automatic rollback 使用独立、非 `userData` 的恢复根：
 - [ ] 使用正式发布证书和真实 RFC 3161 timestamp provider 完成一次端到端验收。
 - [ ] 使用正式签名 installer 完成故障目标版本的 automatic rollback E2E。
 - [ ] 在 private feed 服务中完成 cohort/rollout enforcement 与 CDN cache invalidation 自动化。
+
+## 12. 本地源码重启验证（不生成安装包）
+
+UI 改动在本地源码实例验证时，先执行 `pnpm --filter @sync-think/desktop build`，再用 `pnpm dev:desktop` 启动 Electron。启动环境使用 `SYNC_THINK_SHELL=1`、`SYNC_THINK_DEV_NO_TOKEN=1` 和固定的本地 `SYNC_THINK_INSTALL_ID`；不运行 installer/portable/release 流程，也不复用签名发布产物。
+
+最小验收证据是：Electron 窗口可见且 `Responding=True`，Runtime 日志包含 `pipe ready`、`database ready`、`hello accepted`，并且测试操作只写入本地开发数据库。

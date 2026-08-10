@@ -1228,3 +1228,19 @@ Computer Use built-in plugin
 7. Context Token 在真实注入边界写入使用事件，不从字符数、目录大小或 UI 展示反推。Skill 归属进入 Context Packet 的 `SKILL.md`，MCP 归属实际提供给 Provider 的工具 schema。
 8. 新增命令通过 Protocol → Runtime → Desktop IPC 暴露。Renderer 不直接访问 SQLite，也不自行复制有效能力判定或 45 天统计 SQL。
 9. 回滚边界：能力中心新 UI 和命令可以独立移除；新增表保留不会改变历史 Run。移除工作区交集时不得误删激活、来源、草稿或统计事实。
+
+### TD-041：远端 Skill 导入与无密钥 AI MCP 登记（2026-08-10）
+
+状态：已采用。
+
+背景：能力中心已有本地 Skill/MCP 治理，但缺少真实远端 Skill 获取、远端 MCP Streamable HTTP 执行和安全的一次性 Key 配置。若让模型直接接收 Key，密钥会进入聊天历史、提示词或工具参数；若只登记 Endpoint 而不接远端刷新和调用，服务注册后仍不可用。
+
+采用合同：
+
+1. Protocol 新增 `skill.importRemote` 与 `mcp.registerRemote`，继续通过 Runtime 和 Desktop IPC 严格校验。远端 Skill 仅允许绝对 HTTP(S) URL，GitHub blob 规范化为 raw 地址；下载使用 20 秒默认超时与 2 MiB 上限，空内容和非成功 HTTP 状态不进入 SkillStore。
+2. 远端 Skill 复用既有 `parseSkillMd -> finishSkillImport`，保存为不可变 `market` 来源版本并记录最终规范化 URL。导入过程只解析文本，不执行脚本；权限扩展继续走既有重新审批。
+3. 远端 MCP 使用 Streamable HTTP JSON-RPC：每次发现或调用先 `initialize`，发送 `notifications/initialized`，再执行 `tools/list` 或 `tools/call`；透传 `Mcp-Session-Id`，并使用既有超时、最大输出、审计和不可信内容策略。
+4. Renderer 的远端注册 IPC 可携带一次性 Key；Runtime 立即写入 SecureStore，`app_setting` 仅保存 `{ storeHandle, authScheme }`。公开 `McpServerSummary` 只返回 `authConfigured/authScheme`，不返回 Key 或 storeHandle；错误正文会替换当前 Key，错误、事件和日志必须脱敏。
+5. AI 的 `register_remote_mcp` 工具 schema 只暴露名称、Endpoint、发现开关和可信标记，不暴露 `key/apiKey/authScheme`。AI 先登记公开元数据，再引导用户到能力中心“配置 Key”；模型不得询问、读取或转发 Key。
+6. 能力中心配置已有远端服务时锁定名称、Transport 和 Endpoint，Key 使用非受控密码输入，仅在提交时进入 IPC。注册成功后重新发现工具，列表和详情只展示鉴权是否配置及方式。
+7. 回滚时可移除新增命令、AI schema 与远端 UI，不删除既有 SkillVersion/McpServer。SecureStore 中的远端 MCP handle 需要由后续显式删除/密钥轮换流程清理，不得通过日志或诊断导出暴露。

@@ -74,6 +74,18 @@ pnpm dev:runtime
 pnpm dev:desktop
 ```
 
+源码 UI 闭测重启（不生成安装包）可直接执行：
+
+```powershell
+pnpm --filter @sync-think/desktop build
+$env:SYNC_THINK_SHELL = '1'
+$env:SYNC_THINK_DEV_NO_TOKEN = '1'
+$env:SYNC_THINK_INSTALL_ID = 'dev-0001'
+pnpm dev:desktop
+```
+
+启动日志应依次出现 `pipe ready`、`database ready` 和 `hello accepted`；窗口标题应为 `SYNC-THINK` 且进程保持 Responding。建议把 stdout/stderr 重定向到 `.data/local-restart-<timestamp>/`，便于回看本次闭测。
+
 认证模式下，两个进程必须使用完全相同的 install ID 和 secret：
 
 ```powershell

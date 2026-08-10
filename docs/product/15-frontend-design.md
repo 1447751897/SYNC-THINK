@@ -332,6 +332,7 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 5. 干净文件外部变化自动刷新；本地已有草稿时显示单层冲突条，只提供“加载磁盘版本 / 覆盖磁盘版本”两个明确动作，不在卡片内再套卡片。
 6. Workspace 快照只恢复 Pane、比例、焦点和资源 Tab；文件正文、未保存草稿、loading/error 与流式状态不持久化。切换 Workspace 可保留当前应用会话内的草稿，应用重启后重新读取磁盘。
 7. 当前轻量编辑器继续复用 `<textarea>` 与既有 tokens；语法高亮、CodeMirror/Monaco 等重型依赖需要单独技术选型门禁，不随 P0 默认进入首屏包。
+8. 对话行右侧只保留“打开工作区文件”这一项 Pane 操作；“工作区文件”作为资源 Tab 展示，但不进入 `+` 新建菜单，旧的“打开右栏”按钮不再占用对话行末端。
 
 ### 12.5 内容搜索与终端 Pane 规则（2026-07-28）
 
@@ -451,3 +452,8 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 11. “一键整理”只生成可检查报告，列出未使用、未激活、有问题和高上下文占用能力，不自动删除、停用或改变绑定。
 12. 保留“Skill 激活码”入口。当前点击后以现有主题样式显示“筹备中”，不创建虚假兑换、授权或联网流程。
 13. hover、focus、selected、disabled 与开关状态必须使用项目现有 surface/border/accent/error tokens；参考界面只锁定结构与交互，不照搬纯黑背景或荧光绿色。
+14. 能力中心页面、Radix Portal 弹窗、详情抽屉和遮罩必须共享 Shell 的 `page/surface/elevated/border/text/accent` 语义变量；浅色和深色主题均不得继续使用独立的浅绿色能力页色阶。Portal 内容必须显式继承同一能力变量作用域。
+15. Skill/MCP 详情抽屉使用稳定的 header、独立滚动正文和常驻 footer。标题、说明、状态、连接信息、工具清单与操作区分层清晰；按钮在常态、hover、disabled 和窄窗口换行时保持完整可见。
+16. Skill 编辑弹窗使用整数像素居中且入场结束后 `transform: none`，避免 Windows/Electron 中文落入长期合成层。名称、版本、描述、`SKILL.md` 与文件导入均有图标和完整字段样式；保存按钮常驻 footer，不依赖 hover 才出现。
+17. 远端 Skill 导入从“创建 Skill”菜单进入独立弹窗，覆盖 URL 输入、加载、成功、下载错误、内容错误和取消状态。成功后关闭弹窗、切换“我的 Skill”并打开已导入版本；失败时保留 URL 和弹窗上下文。
+18. AI 自动登记的远端 MCP 在详情抽屉显示“鉴权未配置”与“配置 Key”。配置弹窗预填并锁定名称、Transport 和 Endpoint，用户只填写密码框；Key 不进入 React state，成功后只显示“鉴权已配置”和鉴权方式，不显示 Key 或 SecureStore handle。
