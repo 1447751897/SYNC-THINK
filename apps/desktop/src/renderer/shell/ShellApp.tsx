@@ -2216,7 +2216,6 @@ function ShellAppInner() {
                           workspaceFilesActive={activeTab?.type === 'workspace-files'}
                           workspaceFilesTab={hasLocalWorkspaceFilesTab}
                           workspaceFilesPaneOpen={Boolean(workspaceFilesPaneId)}
-                          railOpen={canUseRail ? railOpen : false}
                           canSplit={activeConversationPaneCount < MAX_MOUNTED_CHAT_VIEWS}
                           onSelect={(id) => handleActivatePaneTab(pane.id, id)}
                           onClose={(id) => handleCloseConversationTab(pane.id, id)}
@@ -2253,7 +2252,6 @@ function ShellAppInner() {
                           onReorder={(fromId, toId) =>
                             handleReorderConversationTab(pane.id, fromId, toId)
                           }
-                          onToggleRail={canUseRail ? () => setRailOpen((value) => !value) : undefined}
                           onRename={(id, currentTitle) => void handleRename(id, currentTitle)}
                           onOpenInSplit={(id, direction) =>
                             handleSplitConversation(pane.id, id, direction)
@@ -2358,12 +2356,17 @@ function ShellAppInner() {
             <AgentLibrary
               agents={data.agents}
               models={data.models}
+              teams={data.teams}
+              conversations={data.conversations}
               onRefresh={() => void refresh()}
               onManageSkills={() => setNav((n) => selectStage(n, 'abilities'))}
               skillCatalogRevision={skillCatalogRevision}
               onStartConversation={(agentId) => {
                 void handlePickTarget('agent', agentId);
                 setNav((n) => ({ ...n, stage: 'talk' }));
+              }}
+              onOpenConversation={(conversationId) => {
+                void openConversationById(conversationId);
               }}
             />
           ) : nav.stage === 'teams' ? (

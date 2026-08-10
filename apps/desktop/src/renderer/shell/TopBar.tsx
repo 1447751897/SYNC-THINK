@@ -133,14 +133,20 @@ export function TopBar(props: TopBarProps) {
       const r = el.getBoundingClientRect();
       const width = 320;
       const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
-      const spaceBelow = window.innerHeight - r.bottom - 8;
-      const maxH = Math.min(360, Math.max(180, spaceBelow));
+      const gap = 6;
+      const viewportPadding = 8;
+      const spaceBelow = window.innerHeight - r.bottom - gap - viewportPadding;
+      const spaceAbove = r.top - gap - viewportPadding;
+      const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
+      const availableHeight = Math.max(96, openAbove ? spaceAbove : spaceBelow);
       setMenuStyle({
         position: 'fixed',
-        top: r.bottom + 6,
+        top: openAbove ? 'auto' : r.bottom + gap,
+        bottom: openAbove ? window.innerHeight - r.top + gap : 'auto',
         left,
         width,
-        maxHeight: maxH,
+        maxHeight: Math.min(360, availableHeight),
+        overflowY: 'auto',
         zIndex: 10050,
       });
     };

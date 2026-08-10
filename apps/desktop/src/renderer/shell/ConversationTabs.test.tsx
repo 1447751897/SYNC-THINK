@@ -12,6 +12,112 @@ const conversations = [
 ] as unknown as Conversation[];
 
 describe('ConversationTabs pane actions', () => {
+  it('flips the plus menu above the anchor when the tab strip is near the viewport bottom', async () => {
+    const previousHeight = window.innerHeight;
+    const previousWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 300 });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 900 });
+
+    try {
+      render(
+        <ConversationTabs
+          paneId="pane-a"
+          conversations={conversations}
+          openIds={['c1']}
+          activeId="c1"
+          onSelect={vi.fn()}
+          onClose={vi.fn()}
+          onNew={vi.fn()}
+        />,
+      );
+
+      const trigger = screen.getByTestId('conversation-tab-new');
+      const anchor = trigger.parentElement as HTMLElement;
+      vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue({
+        x: 40,
+        y: 260,
+        top: 260,
+        left: 40,
+        right: 120,
+        bottom: 287,
+        width: 80,
+        height: 27,
+        toJSON: () => ({}),
+      });
+
+      fireEvent.click(trigger);
+
+      const menu = await screen.findByTestId('new-resource-menu');
+      expect(menu.style.position).toBe('fixed');
+      expect(menu.style.bottom).not.toBe('');
+      expect(menu.style.top).toBe('auto');
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: previousHeight,
+      });
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: previousWidth,
+      });
+    }
+  });
+
+  it('flips the split candidate picker above the tab strip near the viewport bottom', async () => {
+    const previousHeight = window.innerHeight;
+    const previousWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 300 });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 900 });
+
+    try {
+      render(
+        <ConversationTabs
+          paneId="pane-a"
+          conversations={[
+            ...conversations,
+            { id: 'c3', title: '对话三', track: 'team' } as unknown as Conversation,
+          ]}
+          openIds={['c1', 'c2']}
+          activeId="c1"
+          onSelect={vi.fn()}
+          onClose={vi.fn()}
+          onNew={vi.fn()}
+          onOpenInSplit={vi.fn()}
+        />,
+      );
+
+      const trigger = screen.getByTestId('chat-split-horizontal-pane-a');
+      const anchor = trigger.parentElement as HTMLElement;
+      vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue({
+        x: 700,
+        y: 260,
+        top: 260,
+        left: 700,
+        right: 800,
+        bottom: 287,
+        width: 100,
+        height: 27,
+        toJSON: () => ({}),
+      });
+
+      fireEvent.click(trigger);
+
+      const picker = await screen.findByTestId('chat-split-picker-pane-a');
+      expect(picker.style.position).toBe('fixed');
+      expect(picker.style.bottom).not.toBe('');
+      expect(picker.style.top).toBe('auto');
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: previousHeight,
+      });
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: previousWidth,
+      });
+    }
+  });
+
   it('opens the only candidate in a horizontal or vertical split', () => {
     const onOpenInSplit = vi.fn();
     render(
@@ -145,10 +251,35 @@ describe('ConversationTabs pane actions', () => {
     expect(onNewTerminal).not.toHaveBeenCalled();
   });
 
-    it('renders and toggles the workspace files resource separately from the pane split', () => {
-      const onSelectWorkspaceFiles = vi.fn();
-      const onCloseWorkspaceFiles = vi.fn();
-      const onToggleWorkspaceFilesPane = vi.fn();
+  it('keeps workspace files on the right-side pane action and out of the plus menu', () => {
+    const onToggleWorkspaceFilesPane = vi.fn();
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1']}
+        activeId="c1"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+        onToggleWorkspaceFilesPane={onToggleWorkspaceFilesPane}
+      />,
+    );
+
+    expect(screen.getByTestId('workspace-files-toggle-pane-a')).toBeTruthy();
+    expect(screen.queryByTestId('chat-toggle-rail')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('conversation-tab-new'));
+    expect(screen.queryByRole('menuitem', { name: /工作区文件/ })).toBeNull();
+
+    fireEvent.click(screen.getByTestId('workspace-files-toggle-pane-a'));
+    expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
+  });
+
+  it('renders and toggles the workspace files resource separately from the pane split', () => {
+    const onSelectWorkspaceFiles = vi.fn();
+    const onCloseWorkspaceFiles = vi.fn();
+    const onToggleWorkspaceFilesPane = vi.fn();
     render(
       <ConversationTabs
         paneId="pane-a"
@@ -169,33 +300,33 @@ describe('ConversationTabs pane actions', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '打开工作区文件' }));
     fireEvent.click(screen.getByRole('button', { name: '关闭工作区文件' }));
-      fireEvent.click(screen.getByTestId('workspace-files-toggle-pane-a'));
-      expect(onSelectWorkspaceFiles).toHaveBeenCalledOnce();
-      expect(onCloseWorkspaceFiles).toHaveBeenCalledOnce();
-      expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
-    });
-
-    it('shows the workspace files split button before the resource is opened', () => {
-      const onToggleWorkspaceFilesPane = vi.fn();
-      render(
-        <ConversationTabs
-          paneId="pane-a"
-          conversations={conversations}
-          openIds={['c1']}
-          activeId="c1"
-          onSelect={vi.fn()}
-          onClose={vi.fn()}
-          onNew={vi.fn()}
-          onToggleWorkspaceFilesPane={onToggleWorkspaceFilesPane}
-        />,
-      );
-
-      const toggle = screen.getByTestId('workspace-files-toggle-pane-a');
-      expect(toggle.getAttribute('aria-label')).toBe('打开工作区文件');
-      fireEvent.click(toggle);
-      expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
-    });
+    fireEvent.click(screen.getByTestId('workspace-files-toggle-pane-a'));
+    expect(onSelectWorkspaceFiles).toHaveBeenCalledOnce();
+    expect(onCloseWorkspaceFiles).toHaveBeenCalledOnce();
+    expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
   });
+
+  it('shows the workspace files split button before the resource is opened', () => {
+    const onToggleWorkspaceFilesPane = vi.fn();
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1']}
+        activeId="c1"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+        onToggleWorkspaceFilesPane={onToggleWorkspaceFilesPane}
+      />,
+    );
+
+    const toggle = screen.getByTestId('workspace-files-toggle-pane-a');
+    expect(toggle.getAttribute('aria-label')).toBe('打开工作区文件');
+    fireEvent.click(toggle);
+    expect(onToggleWorkspaceFilesPane).toHaveBeenCalledOnce();
+  });
+});
 
 describe('ConversationTabs activity markers', () => {
   it('shows a running marker on the left of the running conversation tab', () => {

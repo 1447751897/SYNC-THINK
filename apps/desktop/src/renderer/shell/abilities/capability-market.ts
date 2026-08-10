@@ -4,7 +4,14 @@ export type SkillMarketItem = {
   name: string;
   category: string;
   description: string;
+  /** Inline SKILL.md template used when no remote source is configured. */
   source: string;
+  /**
+   * Optional remote SKILL.md URL (NewMax-style remote install). When present,
+   * installing fetches the document over HTTP(S) instead of using `source`;
+   * GitHub blob URLs are normalized by the runtime importer.
+   */
+  sourceUrl?: string;
 };
 
 export type McpMarketItem = {

@@ -1259,8 +1259,65 @@ body {
   }
 }
 
-/* Capability center — dense NewMax-style governance surface. */
-.capability-center {
+/* Capability center - dense NewMax-style governance surface. */
+.capability-center,
+.capability-dialog,
+.capability-drawer,
+.capability-dialog-overlay {
+  /* Keep the capability center on the same warm/cool ramp as the shell. */
+  --color-cap-bg: var(--color-page);
+  --color-cap-surface: var(--color-surface);
+  --color-cap-surface-raised: var(--color-elevated);
+  --color-cap-surface-soft: color-mix(in srgb, var(--color-surface) 76%, var(--color-elevated));
+  --color-cap-border: var(--color-border);
+  --color-cap-border-strong: var(--color-border-strong);
+  --color-cap-text: var(--color-text);
+  --color-cap-muted: var(--color-text-secondary);
+  --color-cap-faint: var(--color-text-faint);
+  --color-cap-green: var(--color-accent);
+  --color-cap-green-deep: var(--color-accent-text);
+  --color-cap-yellow: var(--color-warning);
+  --color-cap-red: var(--color-error);
+  --color-cap-surface-deep: color-mix(in srgb, var(--color-page) 45%, var(--color-surface));
+  --color-cap-surface-selected: var(--color-active);
+  --color-cap-accent-fg: var(--color-accent-fg);
+  --color-cap-green-bright: color-mix(in srgb, var(--color-accent) 84%, var(--color-text));
+  --color-cap-text-secondary: var(--color-text-secondary);
+  --color-cap-popover: var(--color-overlay);
+  --color-cap-toolbar: var(--color-surface);
+  --color-cap-rail: var(--color-elevated);
+  --color-cap-search: var(--color-elevated);
+  --color-cap-search-hover: var(--color-hover);
+  --color-cap-search-focus: var(--color-overlay);
+  --color-cap-placeholder: var(--color-text-faint);
+  --color-cap-mcp: var(--color-info);
+  --color-cap-stat-label: var(--color-text-secondary);
+  --color-cap-meter-track: var(--color-border-strong);
+  --color-cap-meter-green: var(--color-accent);
+  --color-cap-meter-yellow: var(--color-warning);
+  --color-cap-meter-red: var(--color-error);
+  --color-cap-option-text: var(--color-text);
+  --color-cap-option-bg: var(--color-overlay);
+  --color-cap-rule-strong: var(--color-text);
+  --color-cap-origin: var(--color-text-secondary);
+  --color-cap-toggle-track: var(--color-border-strong);
+  --color-cap-toggle-thumb: var(--color-overlay);
+  --color-cap-toggle-active-thumb: var(--color-accent-fg);
+  --color-cap-form-bg: var(--color-overlay);
+  --color-cap-form-focus: var(--color-overlay);
+  --color-cap-form-readonly: var(--color-elevated);
+  --color-cap-code-text: var(--color-text);
+  --color-cap-trust-bg: var(--color-elevated);
+  --color-cap-hover: var(--color-hover);
+  --color-cap-active: var(--color-active);
+  --color-cap-control: var(--color-elevated);
+  --color-cap-row: var(--color-surface);
+  --color-cap-form: var(--color-overlay);
+  --color-cap-overlay-border: var(--color-border);
+  --color-cap-shadow: var(--color-modal-shadow);
+  --color-cap-divider: var(--color-border);
+  --color-cap-dialog-overlay: color-mix(in srgb, var(--color-text) 28%, transparent);
+  --color-cap-inset-highlight: color-mix(in srgb, var(--color-overlay) 70%, transparent);
   --cap-bg: var(--color-cap-bg);
   --cap-surface: var(--color-cap-surface);
   --cap-surface-raised: var(--color-cap-surface-raised);
@@ -1274,6 +1331,9 @@ body {
   --cap-green-deep: var(--color-cap-green-deep);
   --cap-yellow: var(--color-cap-yellow);
   --cap-red: var(--color-cap-red);
+}
+
+.capability-center {
   position: relative;
   display: flex;
   flex: 1 1 auto;
@@ -1287,21 +1347,21 @@ body {
   isolation: isolate;
 }
 
-.capability-center button,
-.capability-center input,
-.capability-center textarea,
-.capability-center select {
+:is(.capability-center, .capability-dialog, .capability-drawer) button,
+:is(.capability-center, .capability-dialog, .capability-drawer) input,
+:is(.capability-center, .capability-dialog, .capability-drawer) textarea,
+:is(.capability-center, .capability-dialog, .capability-drawer) select {
   font: inherit;
 }
 
-.capability-center button {
+:is(.capability-center, .capability-dialog, .capability-drawer) button {
   color: inherit;
 }
 
-.capability-center button:focus-visible,
-.capability-center input:focus-visible,
-.capability-center textarea:focus-visible,
-.capability-center select:focus-visible {
+:is(.capability-center, .capability-dialog, .capability-drawer) button:focus-visible,
+:is(.capability-center, .capability-dialog, .capability-drawer) input:focus-visible,
+:is(.capability-center, .capability-dialog, .capability-drawer) textarea:focus-visible,
+:is(.capability-center, .capability-dialog, .capability-drawer) select:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--cap-green) 72%, transparent);
   outline-offset: 2px;
 }
@@ -1370,7 +1430,9 @@ body {
   background: transparent;
   color: var(--cap-muted);
   cursor: pointer;
-  transition: background 140ms ease, color 140ms ease;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
 }
 
 .capability-center__section-switch button {
@@ -1413,7 +1475,10 @@ body {
   cursor: pointer;
   font-size: 12px;
   font-weight: 650;
-  transition: border-color 140ms ease, background 140ms ease, color 140ms ease,
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    color 140ms ease,
     transform 140ms ease;
 }
 
@@ -1552,7 +1617,7 @@ body {
 .capability-create-menu__popover small {
   margin-top: 3px;
   color: var(--cap-faint);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 450;
 }
 
@@ -1586,7 +1651,7 @@ body {
 
 .capability-center__catalog-tabs button span {
   color: var(--cap-faint);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -1607,7 +1672,9 @@ body {
   color: var(--cap-faint);
   background: var(--color-cap-search);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cap-border) 62%, transparent);
-  transition: border-color 140ms ease, background 140ms ease;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
 }
 
 .capability-center__search:hover {
@@ -1680,7 +1747,10 @@ body {
   cursor: pointer;
   font-size: 11px;
   white-space: nowrap;
-  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+  transition:
+    color 140ms ease,
+    background 140ms ease,
+    border-color 140ms ease;
 }
 
 .capability-category-rail button:hover,
@@ -1711,8 +1781,11 @@ body {
   border-radius: 8px;
   background: var(--cap-surface);
   overflow: hidden;
-  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
-  animation: capability-row-enter 220ms ease-out both;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    transform 150ms ease;
+  animation: capability-row-enter 220ms ease-out backwards;
 }
 
 .capability-market-card:hover {
@@ -1797,7 +1870,7 @@ body {
   padding: 2px 6px;
   color: var(--cap-green);
   background: color-mix(in srgb, var(--cap-green) 12%, transparent);
-  font-size: 10px;
+  font-size: 11px;
   font-style: normal;
 }
 
@@ -1819,7 +1892,7 @@ body {
   padding: 0 13px 0 16px;
   border-top: 1px solid var(--cap-border);
   color: var(--cap-faint);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .capability-link-button,
@@ -1902,7 +1975,7 @@ body {
   margin: 7px 0 0;
   overflow: hidden;
   color: var(--cap-muted);
-  font-size: 10px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2036,7 +2109,7 @@ body {
   min-height: 40px;
   padding: 2px 3px;
   color: var(--cap-muted);
-  font-size: 10px;
+  font-size: 11px;
   animation: capability-content-in 180ms ease-out both;
 }
 
@@ -2054,7 +2127,7 @@ body {
 
 .capability-governance-rule__copy > strong {
   color: var(--color-cap-rule-strong);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -2070,7 +2143,7 @@ body {
 .capability-governance-rule__copy b {
   min-width: 74px;
   color: var(--cap-text-secondary);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -2110,9 +2183,18 @@ body {
 .capability-governance-list__header,
 .capability-governance-row {
   display: grid;
-  grid-template-columns: minmax(260px, 2.25fr) minmax(102px, 0.85fr) minmax(112px, 0.95fr) 80px 88px 66px 64px;
+  grid-template-columns:
+    minmax(260px, 2.25fr) minmax(102px, 0.85fr) minmax(112px, 0.95fr)
+    80px 88px 66px 64px;
   align-items: center;
   column-gap: 12px;
+}
+
+/* MCP governance list dropped the workspace-activation column (global MCP). */
+.capability-governance-list--mcp .capability-governance-list__header,
+.capability-governance-list--mcp .capability-governance-row {
+  grid-template-columns:
+    minmax(280px, 2.25fr) minmax(110px, 0.9fr) 80px 88px 66px 64px;
 }
 
 .capability-governance-list__header {
@@ -2121,7 +2203,7 @@ body {
   border-bottom: 1px solid var(--cap-border);
   color: var(--cap-faint);
   background: var(--cap-surface-soft);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.02em;
 }
@@ -2134,7 +2216,7 @@ body {
   background: var(--cap-surface);
   font-size: 11px;
   transition: background 140ms ease;
-  animation: capability-row-enter 220ms ease-out both;
+  animation: capability-row-enter 220ms ease-out backwards;
 }
 
 .capability-governance-row:hover {
@@ -2193,7 +2275,7 @@ body {
   padding: 2px 5px;
   color: var(--cap-green);
   background: color-mix(in srgb, var(--cap-green) 10%, transparent);
-  font-size: 9px;
+  font-size: 10.5px;
   font-style: normal;
 }
 
@@ -2206,7 +2288,7 @@ body {
   display: block;
   overflow: hidden;
   color: var(--cap-muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2218,7 +2300,7 @@ body {
   flex-direction: column;
   gap: 4px;
   color: var(--color-cap-origin);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .capability-origin small {
@@ -2241,7 +2323,7 @@ body {
   color: var(--cap-muted);
   background: var(--color-cap-control);
   cursor: pointer;
-  font-size: 10px;
+  font-size: 11px;
   transition:
     border-color 140ms ease,
     background 140ms ease,
@@ -2267,7 +2349,9 @@ body {
   place-items: center;
   border-radius: 50%;
   background: var(--color-cap-meter-track);
-  transition: background 140ms ease, color 140ms ease;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
 }
 
 .capability-workspace-activation.is-active > span {
@@ -2303,6 +2387,11 @@ body {
   cursor: pointer;
 }
 
+.capability-row-actions button.capability-row-actions__danger:hover:not(:disabled) {
+  color: var(--cap-red);
+  background: color-mix(in srgb, var(--cap-red) 12%, transparent);
+}
+
 .capability-row-actions button:hover:not(:disabled) {
   color: var(--cap-green);
   background: color-mix(in srgb, var(--cap-green) 10%, transparent);
@@ -2329,7 +2418,9 @@ body {
   height: 14px;
   border-radius: 50%;
   background: var(--color-cap-toggle-thumb);
-  transition: transform 140ms ease, background 140ms ease;
+  transition:
+    transform 140ms ease,
+    background 140ms ease;
 }
 
 .capability-toggle[data-enabled='1'] {
@@ -2502,6 +2593,7 @@ body {
   position: fixed;
   z-index: 51;
   display: flex;
+  min-height: 0;
   flex-direction: column;
   border: 1px solid var(--cap-border-strong);
   outline: 0;
@@ -2510,20 +2602,26 @@ body {
   box-shadow:
     0 24px 70px var(--color-cap-shadow),
     0 1px 0 var(--color-cap-inset-highlight) inset;
-  animation: capability-scale-in 150ms ease-out;
+  /* Scale transforms make CJK glyphs look soft in Chromium screenshots. */
+  animation: capability-fade-in 140ms ease-out;
 }
 
 .capability-dialog {
-  top: 50%;
-  left: 50%;
+  inset: 0;
   width: min(720px, calc(100vw - 32px));
+  height: fit-content;
   max-height: min(840px, calc(100vh - 32px));
+  margin: auto;
   border-radius: 16px;
-  transform: translate(-50%, -50%);
 }
 
 .capability-dialog--editor {
   width: min(780px, calc(100vw - 32px));
+  height: min(760px, calc(100vh - 24px));
+}
+
+.capability-dialog--remote-import {
+  width: min(640px, calc(100vw - 32px));
 }
 
 .capability-dialog--source {
@@ -2587,8 +2685,9 @@ body {
   gap: 4px;
 }
 
-.capability-drawer__identity strong,
+.capability-drawer__identity h2,
 .capability-dialog__header h2 {
+  margin: 0;
   overflow: hidden;
   color: var(--cap-text);
   font-size: 15px;
@@ -2597,12 +2696,12 @@ body {
   white-space: nowrap;
 }
 
-.capability-drawer__identity small,
+.capability-drawer__identity p,
 .capability-dialog__header p {
   margin: 0;
   overflow: hidden;
   color: var(--cap-muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2642,10 +2741,15 @@ body {
   cursor: pointer;
 }
 
-.capability-icon-button:hover {
+.capability-icon-button:hover:not(:disabled) {
   border-color: var(--cap-border);
   color: var(--cap-text);
   background: var(--color-cap-hover);
+}
+
+.capability-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .capability-drawer__scroll,
@@ -2657,7 +2761,7 @@ body {
 }
 
 .capability-drawer__scroll {
-  padding: 18px;
+  padding: 18px 18px 24px;
 }
 
 .capability-dialog__body {
@@ -2691,7 +2795,7 @@ body {
 .capability-detail-metric small {
   display: block;
   color: var(--cap-faint);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .capability-detail-metric strong {
@@ -2728,7 +2832,7 @@ body {
 
 .capability-detail-section__heading small {
   color: var(--cap-faint);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .capability-effect-chain {
@@ -2752,7 +2856,7 @@ body {
 .capability-effect-chain__path > strong {
   min-width: 84px;
   color: var(--cap-text-secondary);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -2800,26 +2904,77 @@ body {
   color: var(--cap-muted);
   background: color-mix(in srgb, var(--cap-text) 2%, var(--cap-surface));
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-.capability-mcp-tool-list > article {
+.capability-mcp-tool-list > .capability-mcp-tool-item {
   font-family: inherit;
+  cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease;
 }
 
-.capability-mcp-tool-list strong {
-  display: block;
+.capability-mcp-tool-list > .capability-mcp-tool-item:hover {
+  border-color: color-mix(in srgb, var(--cap-green) 28%, var(--cap-border));
+  background: color-mix(in srgb, var(--cap-text) 3%, var(--cap-surface));
+}
+
+.capability-mcp-tool-item__head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.capability-mcp-tool-item__head strong {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
   color: var(--cap-text);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.capability-mcp-tool-list p {
+.capability-mcp-tool-item__chevron {
+  flex: 0 0 auto;
+  color: var(--cap-faint);
+  transition: transform 160ms ease;
+}
+
+.capability-mcp-tool-item.is-expanded .capability-mcp-tool-item__chevron {
+  transform: rotate(180deg);
+}
+
+.capability-mcp-tool-item__desc {
+  display: -webkit-box;
   margin: 4px 0 0;
+  overflow: hidden;
   color: var(--cap-muted);
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  transition:
+    -webkit-line-clamp 160ms ease,
+    max-height 160ms ease;
+}
+
+.capability-mcp-tool-item__desc[data-expanded='1'] {
+  -webkit-line-clamp: unset;
+  max-height: none;
 }
 
 .capability-warning-list,
@@ -2836,7 +2991,7 @@ body {
   align-items: flex-start;
   gap: 7px;
   color: var(--cap-yellow);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -2850,7 +3005,7 @@ body {
 
 .capability-detail-list dt {
   color: var(--cap-faint);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .capability-detail-list dd {
@@ -2860,6 +3015,78 @@ body {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 10px;
   overflow-wrap: anywhere;
+}
+
+/* MCP drawer connection info: two-column card grid for scannable values. */
+.capability-detail-list--grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.capability-detail-list--grid > .capability-detail-card {
+  display: grid;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid var(--cap-border);
+  border-bottom: 1px solid var(--cap-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--cap-text) 2%, var(--cap-surface));
+}
+
+.capability-detail-list--grid > .capability-detail-card:first-child {
+  grid-column: 1 / -1;
+}
+
+.capability-detail-list--grid dt {
+  color: var(--cap-faint);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.capability-detail-list--grid dd {
+  color: var(--cap-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.capability-detail-list--grid dd.is-endpoint {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--cap-text-secondary);
+  word-break: break-all;
+}
+
+.capability-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.capability-status-chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.capability-status-chip.is-ok {
+  color: var(--cap-green);
+  background: color-mix(in srgb, var(--cap-green) 10%, transparent);
+}
+
+.capability-status-chip.is-warn {
+  color: var(--cap-yellow);
+  background: color-mix(in srgb, var(--cap-yellow) 10%, transparent);
 }
 
 .capability-inspection {
@@ -2898,6 +3125,11 @@ body {
   min-height: 60px;
   padding: 12px 18px;
   border-top: 1px solid var(--cap-border);
+  background: var(--cap-surface);
+  box-shadow: 0 -8px 18px color-mix(in srgb, var(--cap-text) 5%, transparent);
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
 }
 
 .capability-drawer__footer {
@@ -2912,6 +3144,24 @@ body {
   gap: 8px;
 }
 
+.capability-dialog__footer .capability-button {
+  min-width: 84px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.capability-dialog__footer .capability-button--primary {
+  min-width: 104px;
+  color: var(--color-cap-accent-fg) !important;
+  background: var(--cap-green) !important;
+  opacity: 1;
+}
+
+.capability-dialog__footer .capability-button--primary:disabled {
+  color: color-mix(in srgb, var(--color-cap-accent-fg) 68%, transparent) !important;
+  background: color-mix(in srgb, var(--cap-green) 45%, var(--cap-surface)) !important;
+}
+
 .capability-skill-editor,
 .capability-publish-form,
 .capability-register-form,
@@ -2920,32 +3170,159 @@ body {
   gap: 14px;
 }
 
+/* Grouped register form: section titles separate service / auth / other. */
+.capability-register-section {
+  display: grid;
+  gap: 12px;
+}
+
+.capability-register-section + .capability-register-section {
+  padding-top: 14px;
+  border-top: 1px solid var(--cap-border);
+}
+
+.capability-register-section__title {
+  margin: 0;
+  color: var(--cap-faint);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Select with a custom chevron: native arrow replaced by a lucide icon. */
+.capability-select-wrap {
+  position: relative;
+  display: block;
+}
+
+.capability-select-wrap select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  cursor: pointer;
+  /* Explicitly match the input background so select and input look alike. */
+  background: var(--color-cap-form-bg);
+}
+
+.capability-select-wrap select:disabled {
+  cursor: not-allowed;
+  /* Match the readonly-input look used for the name/endpoint fields. */
+  color: var(--cap-muted);
+  background: var(--color-cap-form-readonly);
+}
+
+.capability-select-chevron {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  color: var(--cap-faint);
+  pointer-events: none;
+}
+
+.capability-select-wrap select:focus-visible ~ .capability-select-chevron {
+  color: var(--cap-green);
+}
+
 .capability-skill-editor__identity {
-  display: flex;
-  align-items: center;
-  gap: 9px;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 150px;
+  align-items: end;
+  gap: 11px;
   color: var(--cap-muted);
   font-size: 11px;
 }
 
-.capability-skill-editor__identity strong {
+.capability-skill-editor__identity > span {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--cap-green) 30%, transparent);
+  border-radius: 11px;
+  color: var(--cap-green);
+  background: color-mix(in srgb, var(--cap-green) 9%, transparent);
+}
+
+.capability-skill-editor__field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.capability-skill-editor__field > span,
+.capability-form-field > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.capability-skill-editor__field > span {
+  color: var(--color-cap-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.capability-skill-editor__field input {
+  width: 100%;
+  min-width: 0;
+  height: 35px;
+  border: 1px solid var(--cap-border);
+  border-radius: 9px;
+  padding: 0 10px;
   color: var(--cap-text);
+  background: var(--color-cap-form-bg);
+  font-size: 11px;
+}
+
+.capability-skill-editor__field input:hover {
+  border-color: var(--cap-border-strong);
+  background: var(--color-cap-surface-soft);
+}
+
+.capability-skill-editor__field input:focus {
+  border-color: color-mix(in srgb, var(--cap-green) 55%, transparent);
+  outline: 0;
+  background: var(--color-cap-form-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cap-green) 8%, transparent);
 }
 
 .capability-editor-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   color: var(--cap-muted);
   font-size: 10px;
 }
 
 .capability-editor-toolbar span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.capability-editor-toolbar button {
+  min-height: 29px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.capability-editor-toolbar input[type='file'] {
+  display: none;
+}
+
+.capability-editor-toolbar em {
+  color: var(--cap-faint);
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
 }
 
 .capability-form-field {
@@ -2955,6 +3332,9 @@ body {
 }
 
 .capability-form-field > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--color-cap-text-secondary);
   font-size: 11px;
   font-weight: 650;
@@ -2976,7 +3356,10 @@ body {
   color: var(--cap-text);
   background: var(--color-cap-form-bg);
   font-size: 11px;
-  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .capability-form-field input,
@@ -3024,7 +3407,7 @@ body {
 
 .capability-code-editor {
   width: 100%;
-  min-height: 360px;
+  min-height: min(360px, 42vh);
   padding: 12px;
   border: 1px solid var(--cap-border);
   border-radius: 10px;
@@ -3051,6 +3434,116 @@ body {
 .capability-code-editor:focus {
   border-color: color-mix(in srgb, var(--cap-green) 55%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--cap-green) 8%, transparent);
+}
+
+.capability-remote-import-form {
+  gap: 16px;
+}
+
+.capability-remote-import-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--cap-green) 22%, transparent);
+  border-radius: 10px;
+  color: var(--cap-green);
+  background: color-mix(in srgb, var(--cap-green) 7%, var(--cap-surface));
+}
+
+.capability-remote-import-note > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.capability-remote-import-note strong {
+  color: var(--cap-text);
+  font-size: 11px;
+}
+
+.capability-remote-import-note span {
+  color: var(--cap-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.capability-remote-auth-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.75fr) minmax(0, 1.25fr);
+  gap: 11px;
+}
+
+.capability-secret-input {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border: 1px solid var(--cap-border);
+  border-radius: 9px;
+  background: var(--color-cap-form-bg);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.capability-secret-input:focus-within {
+  border-color: color-mix(in srgb, var(--cap-green) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cap-green) 8%, transparent);
+}
+
+.capability-secret-input input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.capability-secret-input .capability-icon-button {
+  width: 29px;
+  height: 29px;
+  margin-right: 3px;
+}
+
+.capability-check-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid var(--cap-border);
+  border-radius: 10px;
+  color: var(--cap-muted);
+  background: color-mix(in srgb, var(--cap-text) 2%, var(--cap-surface));
+  cursor: pointer;
+}
+
+.capability-check-option:hover {
+  border-color: var(--cap-border-strong);
+  background: var(--color-cap-hover);
+}
+
+.capability-check-option input {
+  width: 15px;
+  height: 15px;
+  margin: 1px 0 0;
+  accent-color: var(--cap-green);
+}
+
+.capability-check-option span {
+  display: grid;
+  gap: 3px;
+}
+
+.capability-check-option strong {
+  color: var(--cap-text);
+  font-size: 11px;
+}
+
+.capability-check-option small {
+  color: var(--cap-muted);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .capability-inline-error {
@@ -3250,18 +3743,6 @@ body {
   }
 }
 
-@keyframes capability-scale-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -49%) scale(0.985);
-  }
-
-  to {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-}
-
 @keyframes capability-drawer-in {
   from {
     opacity: 0;
@@ -3270,7 +3751,7 @@ body {
 
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: none;
   }
 }
 
@@ -3282,7 +3763,7 @@ body {
 
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
@@ -3294,7 +3775,7 @@ body {
 
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
@@ -3306,7 +3787,7 @@ body {
 
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
@@ -3430,9 +3911,23 @@ body {
   .capability-stats,
   .capability-publish-grid,
   .capability-publish-grid.is-three,
+  .capability-remote-auth-grid,
   .capability-detail-status-grid,
   .capability-organize-summary {
     grid-template-columns: 1fr;
+  }
+
+  .capability-skill-editor__identity {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .capability-skill-editor__identity > span {
+    width: 36px;
+    height: 36px;
+  }
+
+  .capability-skill-editor__field:last-child {
+    grid-column: 2;
   }
 
   .capability-stat--context {
@@ -12352,6 +12847,55 @@ body {
   background: color-mix(in srgb, var(--color-elevated) 72%, var(--color-chat));
 }
 
+.shell-agent-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 10px 28px 0;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-elevated) 72%, var(--color-chat));
+}
+
+.shell-agent-tab {
+  position: relative;
+  padding: 7px 14px 9px;
+  border: 0;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.shell-agent-tab:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.shell-agent-tab.is-active {
+  background: var(--color-chat);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.shell-agent-tab.is-active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--color-chat);
+}
+
+.shell-agent-drawer__body--single {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 640px;
+}
+
 .shell-library-section-title {
   padding-bottom: 6px;
   border-bottom: 1px solid var(--color-border);
@@ -12486,6 +13030,10 @@ body {
     grid-template-columns: minmax(0, 1fr);
     gap: 24px;
     padding: 16px;
+  }
+
+  .shell-agent-tabs {
+    padding: 8px 16px 0;
   }
 }
 
