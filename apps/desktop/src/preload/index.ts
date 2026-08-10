@@ -70,6 +70,8 @@ import type {
   UpdateAgentBindingResponse,
   ImportSkillPayload,
   ImportSkillResponse,
+  ImportRemoteSkillPayload,
+  ImportRemoteSkillResponse,
   ListSkillsPayload,
   ListSkillsResponse,
   DeleteSkillPayload,
@@ -80,10 +82,14 @@ import type {
   GetSkillResponse,
   RegisterMcpServerPayload,
   RegisterMcpServerResponse,
+  RegisterRemoteMcpPayload,
+  RegisterRemoteMcpResponse,
   ListMcpServersPayload,
   ListMcpServersResponse,
   SetMcpServerEnabledPayload,
   SetMcpServerEnabledResponse,
+  DeleteMcpServerPayload,
+  DeleteMcpServerResponse,
   CapabilityWorkspaceListPayload,
   CapabilityWorkspaceListResponse,
   CapabilityWorkspaceSetActivePayload,
@@ -644,6 +650,8 @@ const api = {
       >,
     importSkill: (payload: ImportSkillPayload) =>
       ipcRenderer.invoke('runtime:skill-import', payload) as Promise<ImportSkillResponse>,
+    importRemoteSkill: (payload: ImportRemoteSkillPayload) =>
+      ipcRenderer.invoke('runtime:skill-import-remote', payload) as Promise<ImportRemoteSkillResponse>,
     listSkills: (payload: ListSkillsPayload = {}) =>
       ipcRenderer.invoke('runtime:skill-list', payload) as Promise<ListSkillsResponse>,
     deleteSkill: (payload: DeleteSkillPayload) =>
@@ -654,10 +662,14 @@ const api = {
       ipcRenderer.invoke('runtime:skill-set-enabled', payload) as Promise<SetSkillEnabledResponse>,
     registerMcpServer: (payload: RegisterMcpServerPayload) =>
       ipcRenderer.invoke('runtime:mcp-register', payload) as Promise<RegisterMcpServerResponse>,
+    registerRemoteMcpServer: (payload: RegisterRemoteMcpPayload) =>
+      ipcRenderer.invoke('runtime:mcp-register-remote', payload) as Promise<RegisterRemoteMcpResponse>,
     listMcpServers: (payload: ListMcpServersPayload = {}) =>
       ipcRenderer.invoke('runtime:mcp-list', payload) as Promise<ListMcpServersResponse>,
     setMcpServerEnabled: (payload: SetMcpServerEnabledPayload) =>
       ipcRenderer.invoke('runtime:mcp-set-enabled', payload) as Promise<SetMcpServerEnabledResponse>,
+    deleteMcpServer: (payload: DeleteMcpServerPayload) =>
+      ipcRenderer.invoke('runtime:mcp-delete', payload) as Promise<DeleteMcpServerResponse>,
     probeMcpPolicy: (payload: ProbeMcpPolicyPayload = {}) =>
       ipcRenderer.invoke('runtime:mcp-policy-probe', payload) as Promise<ProbeMcpPolicyResponse>,
     requestMcpTool: (payload: RequestMcpToolPayload) =>

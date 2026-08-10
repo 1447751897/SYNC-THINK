@@ -64,6 +64,8 @@ import type {
   UpdateAgentBindingResponse,
   ImportSkillPayload,
   ImportSkillResponse,
+  ImportRemoteSkillPayload,
+  ImportRemoteSkillResponse,
   ListSkillsPayload,
   ListSkillsResponse,
   DeleteSkillPayload,
@@ -72,6 +74,8 @@ import type {
   SetSkillEnabledResponse,
   RegisterMcpServerPayload,
   RegisterMcpServerResponse,
+  RegisterRemoteMcpPayload,
+  RegisterRemoteMcpResponse,
   ListMcpServersPayload,
   ListMcpServersResponse,
   SetMcpServerEnabledPayload,
@@ -438,6 +442,7 @@ declare global {
           payload: import('@sync-think/protocol').DeleteConversationPayload,
         ): Promise<Record<string, never>>;
         importSkill(payload: ImportSkillPayload): Promise<ImportSkillResponse>;
+        importRemoteSkill(payload: ImportRemoteSkillPayload): Promise<ImportRemoteSkillResponse>;
         listSkills(payload?: ListSkillsPayload): Promise<ListSkillsResponse>;
         deleteSkill(payload: DeleteSkillPayload): Promise<DeleteSkillResponse>;
         setSkillEnabled(payload: SetSkillEnabledPayload): Promise<SetSkillEnabledResponse>;
@@ -446,10 +451,14 @@ declare global {
         ): Promise<import('@sync-think/protocol').GetSkillResponse>;
         fetchSkillMd(payload: { url: string }): Promise<{ url: string; skillMd: string }>;
         registerMcpServer(payload: RegisterMcpServerPayload): Promise<RegisterMcpServerResponse>;
+        registerRemoteMcpServer(
+          payload: RegisterRemoteMcpPayload,
+        ): Promise<RegisterRemoteMcpResponse>;
         listMcpServers(payload?: ListMcpServersPayload): Promise<ListMcpServersResponse>;
         setMcpServerEnabled(
           payload: SetMcpServerEnabledPayload,
         ): Promise<SetMcpServerEnabledResponse>;
+        deleteMcpServer(payload: DeleteMcpServerPayload): Promise<DeleteMcpServerResponse>;
         probeMcpPolicy(payload?: ProbeMcpPolicyPayload): Promise<ProbeMcpPolicyResponse>;
         requestMcpTool(payload: RequestMcpToolPayload): Promise<RequestMcpToolResponse>;
         probeMcpSpawn(payload?: ProbeMcpSpawnPayload): Promise<ProbeMcpSpawnResponse>;

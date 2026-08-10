@@ -116,13 +116,16 @@ import {
   parseGetAgentPayload,
   parseUpdateAgentBindingPayload,
   parseImportSkillPayload,
+  parseImportRemoteSkillPayload,
   parseListSkillsPayload,
   parseDeleteSkillPayload,
   parseGetSkillPayload,
   parseSetSkillEnabledPayload,
   parseRegisterMcpServerPayload,
+  parseRegisterRemoteMcpPayload,
   parseListMcpServersPayload,
   parseSetMcpServerEnabledPayload,
+  parseDeleteMcpServerPayload,
   parseProbeMcpPolicyPayload,
   parseRequestMcpToolPayload,
   parseProbeMcpSpawnPayload,
@@ -1798,6 +1801,13 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('skill.import', parseImportSkillPayload(value));
   });
+  ipcMain.handle('runtime:skill-import-remote', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('skill.importRemote', parseImportRemoteSkillPayload(value), {
+      timeoutMs: 30_000,
+    });
+  });
   ipcMain.handle('runtime:skill-list', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -1824,6 +1834,11 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('mcp.register', parseRegisterMcpServerPayload(value));
   });
+  ipcMain.handle('runtime:mcp-register-remote', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('mcp.registerRemote', parseRegisterRemoteMcpPayload(value));
+  });
   ipcMain.handle('runtime:mcp-list', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -1833,6 +1848,11 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('mcp.setEnabled', parseSetMcpServerEnabledPayload(value));
+  });
+  ipcMain.handle('runtime:mcp-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('mcp.delete', parseDeleteMcpServerPayload(value));
   });
   ipcMain.handle('runtime:mcp-policy-probe', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
