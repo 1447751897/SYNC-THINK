@@ -1,10 +1,21 @@
 // P2 · Global Agent Library
-// NewMax-style card grid + centered two-column edit dialog with avatar import,
-// Skill / MCP bindings and fallback models.
-import { Bot, ChevronRight, ImagePlus, Plus, Trash2, X, Wrench, Sparkles } from 'lucide-react';
+// NewMax-style card grid + tabbed detail drawer: 概览 (read-only), 工作
+// (assigned conversations), 能力 (editable skills/MCP/persona) and
+// 设置 (editable identity/models/reasoning).
+import {
+  ArrowUpRight,
+  Bot,
+  ChevronRight,
+  ImagePlus,
+  Plus,
+  Trash2,
+  X,
+  Wrench,
+  Sparkles,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import type { GlobalAgent, ModelId } from '@sync-think/shared';
+import type { Conversation, GlobalAgent, ModelId, Team } from '@sync-think/shared';
 import type { ModelOption } from './NewConversationDialog.js';
 import { useDialog } from './Dialog.js';
 import { AgentAvatarView, isImageAvatar, readAvatarImage } from './AgentAvatarView.js';
@@ -19,7 +30,15 @@ interface Props {
   onManageSkills?(): void;
   /** Increment after the Skill catalog changes to reload the binding picker. */
   skillCatalogRevision?: number;
+  /** Team roster — used to show which teams an agent belongs to. */
+  teams?: readonly Team[];
+  /** Full conversation list — used to list conversations assigned to an agent. */
+  conversations?: readonly Conversation[];
+  /** Focus/open an existing conversation by id. */
+  onOpenConversation?(conversationId: string): void;
 }
+
+type DrawerTab = 'overview' | 'work' | 'abilities' | 'settings';
 
 type DraftAgent = {
   name: string;
@@ -67,6 +86,13 @@ const REASONING_OPTIONS = [
   { value: 'high', label: '高' },
 ];
 
+const AGENT_DRAWER_TABS: Array<{ id: DrawerTab; label: string }> = [
+  { id: 'overview', label: '概览' },
+  { id: 'work', label: '工作' },
+  { id: 'abilities', label: '能力' },
+  { id: 'settings', label: '设置' },
+];
+
 function bridge() {
   return window.syncThink?.runtime;
 }
@@ -82,10 +108,14 @@ export function AgentLibrary({
   onStartConversation,
   onManageSkills,
   skillCatalogRevision = 0,
+  teams = [],
+  conversations = [],
+  onOpenConversation,
 }: Props) {
   const dialog = useDialog();
   const [selected, setSelected] = useState<GlobalAgent | null>(null);
   const [isNew, setIsNew] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<DrawerTab>('overview');
   const [draft, setDraft] = useState<DraftAgent>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -188,6 +218,7 @@ export function AgentLibrary({
   const openNew = useCallback(() => {
     setIsNew(true);
     setSelected(null);
+    setDrawerTab('overview');
     setDraft({ ...EMPTY_DRAFT, defaultModelId: models[0]?.modelId ?? '' });
     setTimeout(() => nameRef.current?.focus(), 50);
   }, [models]);
@@ -195,6 +226,7 @@ export function AgentLibrary({
   const openEdit = useCallback((agent: GlobalAgent) => {
     setIsNew(false);
     setSelected(agent);
+    setDrawerTab('overview');
     setDraft({
       name: agent.name,
       avatar: agent.avatar,
@@ -212,6 +244,7 @@ export function AgentLibrary({
   const closeDrawer = () => {
     setSelected(null);
     setIsNew(false);
+    setDrawerTab('overview');
     setModelMenuOpen(false);
   };
 
@@ -342,6 +375,30 @@ export function AgentLibrary({
     models.find((m) => m.modelId === draft.defaultModelId)?.displayName
     ?? (draft.defaultModelId || '请选择模型');
 
+  // Teams this agent belongs to (overview tab, read-only).
+  const memberTeams = useMemo(
+    () =>
+      selected ? teams.filter((t) => t.members.some((m) => m.agentId === selected.id)) : [],
+    [selected, teams],
+  );
+  // Conversations assigned to this agent (work tab).
+  // Conversations without a workspace cannot be located by the stage (tabs are
+  // workspace-scoped), so jumping to them is a no-op — exclude those orphaned
+  // rows instead of showing entries that cannot be opened.
+  const assignedConversations = useMemo(
+    () =>
+      selected
+        ? conversations.filter(
+            (c) =>
+              c.track === 'agent' &&
+              c.targetRef === selected.id &&
+              !c.archivedAt &&
+              Boolean(c.workspaceId),
+          )
+        : [],
+    [conversations, selected],
+  );
+
   return (
     <div className="shell-library-page">
       {/* ── Library panel ─────────────────────────────────────────── */}
@@ -414,296 +471,478 @@ export function AgentLibrary({
               </button>
             </div>
 
-            {/* Two-column form */}
-            <div className="shell-library-drawer__body">
-              {/* ── Left column: identity ── */}
-              <div className="space-y-5">
-                <SectionTitle>基本信息</SectionTitle>
+            {/* Tab row */}
+            <div className="shell-agent-tabs" role="tablist" aria-label="智能体详情">
+              {AGENT_DRAWER_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={drawerTab === tab.id}
+                  data-testid={`agent-drawer-tab-${tab.id}`}
+                  className={clsx('shell-agent-tab', drawerTab === tab.id && 'is-active')}
+                  onClick={() => setDrawerTab(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
-                {/* Avatar picker: live preview + emoji input + image import */}
-                <div className="flex items-center gap-4">
-                  <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={56} />
-                  <div className="flex flex-1 flex-col gap-1.5">
-                    <label className="text-[11px] text-text-faint">头像</label>
-                    <div className="flex items-center gap-2">
-                      {!isImageAvatar(draft.avatar) && (
-                        <input
-                          className="h-9 w-16 rounded-lg border border-border bg-page text-center text-[18px] focus:border-accent focus:outline-none"
-                          value={draft.avatar}
-                          onChange={(e) => setDraft((d) => ({ ...d, avatar: e.target.value }))}
-                          maxLength={2}
-                          title="输入一个 emoji 或字母"
-                        />
-                      )}
-                      <button
-                        type="button"
-                        className="flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] text-text-secondary hover:bg-hover"
-                        onClick={() => avatarFileRef.current?.click()}
-                      >
-                        <ImagePlus size={13} /> 导入图片
-                      </button>
-                      {isImageAvatar(draft.avatar) && (
-                        <button
-                          type="button"
-                          className="h-9 rounded-lg px-2 text-[12px] text-text-faint hover:bg-hover hover:text-text"
-                          onClick={() => setDraft((d) => ({ ...d, avatar: '🤖' }))}
-                        >
-                          恢复 emoji
-                        </button>
-                      )}
-                      <input
-                        ref={avatarFileRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => {
-                          void handleAvatarFile(e.target.files?.[0]);
-                          e.target.value = '';
-                        }}
-                      />
+            {/* ── 概览：只读基本信息 ── */}
+            {drawerTab === 'overview' && (
+              <div
+                className="shell-library-drawer__body shell-agent-drawer__body--single"
+                data-testid="agent-drawer-overview"
+              >
+                <div className="space-y-5">
+                  <div className="flex items-center gap-4">
+                    <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={56} />
+                    <div className="min-w-0">
+                      <div className="truncate text-[15px] font-semibold text-text">
+                        {draft.name || '未命名智能体'}
+                      </div>
+                      <div className="mt-0.5 text-[11.5px] text-text-faint">
+                        ID · {selected?.id ?? '-'}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <Field label="名称 *">
-                  <input
-                    ref={nameRef}
-                    className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                    placeholder="前端小张"
-                    value={draft.name}
-                    onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-                  />
-                </Field>
+                  <Field label="简介">
+                    <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-text">
+                      {draft.description || '—'}
+                    </p>
+                  </Field>
 
-                <Field label="简介">
-                  <input
-                    className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                    placeholder="擅长前端开发与调试"
-                    value={draft.description}
-                    onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
-                  />
-                </Field>
-
-                <Field label="人设 / 系统指令">
-                  <textarea
-                    className="w-full resize-y rounded-lg border border-border bg-page px-3 py-2 font-mono text-[12.5px] leading-relaxed text-text focus:border-accent focus:outline-none"
-                    rows={12}
-                    placeholder="你是一名经验丰富的前端工程师，专注于 React 和 TypeScript…"
-                    value={draft.persona}
-                    onChange={(e) => setDraft((d) => ({ ...d, persona: e.target.value }))}
-                  />
-                </Field>
-              </div>
-
-              {/* ── Right column: model & bindings ── */}
-              <div className="space-y-5">
-                <SectionTitle>模型</SectionTitle>
-
-                {/* Default model — required; empty value is rejected by protocol.
-                    Two-level provider → model picker (same widget as the compose bar). */}
-                <Field label="默认模型 *">
-              <div className="shell-library-control flex h-9 items-center px-1.5">
-                <ModelTrigger
-                  label={defaultModelLabel}
-                  open={modelMenuOpen}
-                  buttonRef={setModelAnchorEl}
-                  onClick={() => setModelMenuOpen((o) => !o)}
-                />
-              </div>
-              <ModelPickerMenu
-                open={modelMenuOpen}
-                models={models}
-                selectedModelId={draft.defaultModelId}
-                defaultLabel="请选择模型"
-                anchorEl={modelAnchorEl}
-                onClose={() => setModelMenuOpen(false)}
-                onPick={(modelId) => {
-                  setDraft((d) => ({
-                    ...d,
-                    defaultModelId: modelId,
-                    fallbackModelIds: d.fallbackModelIds.filter((id) => id !== modelId),
-                  }));
-                }}
-              />
-            </Field>
-
-            <Field label="备用模型（主模型失败后按顺序尝试）">
-              {fallbackCandidates.length === 0 ? (
-                <p className="text-[11.5px] text-text-faint">
-                  没有其它可选模型。请先在设置里导入更多模型。
-                </p>
-              ) : (
-                <div className="shell-library-subpanel max-h-36 space-y-2 overflow-y-auto p-2">
-                  {fallbackGroups.map(([providerName, providerModels]) => (
-                    <div key={providerName}>
-                      <div className="px-1.5 pb-0.5 text-[10.5px] font-medium text-text-faint">
-                        {providerName}
-                      </div>
-                      {providerModels.map((m) => {
-                        const checked = draft.fallbackModelIds.includes(m.modelId);
-                        return (
-                          <label
-                            key={m.modelId}
-                            className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-hover"
+                  <Field label="所在小队">
+                    {memberTeams.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {memberTeams.map((t) => (
+                          <span
+                            key={t.id}
+                            className="rounded-md border border-border bg-surface px-2 py-0.5 text-[11.5px] text-text-secondary"
                           >
-                            <input
-                              type="checkbox"
-                              className="accent-[var(--color-accent)]"
-                              checked={checked}
-                              onChange={() =>
-                                setDraft((d) => ({
-                                  ...d,
-                                  fallbackModelIds: toggleId(d.fallbackModelIds, m.modelId),
-                                }))
-                              }
-                            />
-                            <span className="truncate text-[12.5px] text-text">{m.displayName}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {draft.fallbackModelIds.length > 0 && (
-                <p className="mt-1 text-[11px] text-text-faint">
-                  已选 {draft.fallbackModelIds.length} 个备用
-                </p>
-              )}
-            </Field>
-
-            <Field label="推理强度">
-              <select
-                className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                value={draft.reasoningEffort}
-                onChange={(e) => setDraft((d) => ({ ...d, reasoningEffort: e.target.value }))}
-              >
-                {REASONING_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </Field>
-
-            <SectionTitle>
-              <span className="inline-flex items-center gap-1">
-                <Sparkles size={12} /> Skill 绑定
-              </span>
-            </SectionTitle>
-            <Field label={catalogLoading ? '加载中…' : `已选 ${draft.skillIds.length} 个`}>
-              {skillCatalogError ? (
-                <div className="flex items-center justify-between gap-2 rounded-lg bg-error/10 px-3 py-2 text-[11.5px] text-error">
-                  <span className="min-w-0 truncate">Skill 加载失败：{skillCatalogError}</span>
-                  {onManageSkills ? (
-                    <button type="button" className="shrink-0 underline" onClick={onManageSkills}>
-                      打开能力中心
-                    </button>
-                  ) : null}
-                </div>
-              ) : skills.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-border px-3 py-3 text-center">
-                  <p className="m-0 text-[11.5px] text-text-faint">暂无已导入 Skill</p>
-                  {onManageSkills ? (
-                    <button
-                      type="button"
-                      data-testid="manage-skills-from-agent"
-                      className="shell-library-secondary-action mt-2"
-                      onClick={onManageSkills}
-                    >
-                      去能力中心导入
-                    </button>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="shell-library-subpanel max-h-40 space-y-1 overflow-y-auto p-2">
-                  {skills.map((s) => {
-                    const checked = draft.skillIds.includes(s.id);
-                    return (
-                      <label
-                        key={s.id}
-                        className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
-                        title={s.description || s.id}
-                      >
-                        <input
-                          type="checkbox"
-                          className="mt-0.5 accent-[var(--color-accent)]"
-                          checked={checked}
-                          disabled={!checked && draft.skillIds.length >= 8}
-                          onChange={() =>
-                            setDraft((d) => ({
-                              ...d,
-                              skillIds: toggleId(d.skillIds, s.id),
-                            }))
-                          }
-                        />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[12.5px] text-text">
-                            {s.name}
-                            {s.version ? (
-                              <span className="ml-1 text-[11px] text-text-faint">@{s.version}</span>
-                            ) : null}
+                            {t.avatar} {t.name}
                           </span>
-                          {s.description ? (
-                            <span className="block truncate text-[11px] text-text-faint">
-                              {s.description}
-                            </span>
-                          ) : null}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-              {draft.skillIds.length >= 8 ? (
-                <p className="mt-1 text-[11px] text-warning">最多装备 8 个 Skill；请先取消一个再选择。</p>
-              ) : draft.skillIds.length > 0 ? (
-                <p className="mt-1 text-[11px] text-text-faint">最多可装备 8 个 Skill</p>
-              ) : null}
-            </Field>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[12.5px] text-text-faint">无</p>
+                    )}
+                  </Field>
 
-            <SectionTitle>
-              <span className="inline-flex items-center gap-1">
-                <Wrench size={12} /> MCP 绑定
-              </span>
-            </SectionTitle>
-            <Field label={catalogLoading ? '加载中…' : `已选 ${draft.mcpServerIds.length} 个`}>
-              {mcpServers.length === 0 ? (
-                <p className="text-[11.5px] text-text-faint">
-                  暂无已注册 MCP 服务器。注册后可在此绑定，对话内可调用其工具。
-                </p>
-              ) : (
-                <div className="shell-library-subpanel max-h-40 space-y-1 overflow-y-auto p-2">
-                  {mcpServers.map((s) => {
-                    const checked = draft.mcpServerIds.includes(s.id);
-                    return (
-                      <label
-                        key={s.id}
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
+                  <Field label="使用模型">
+                    <div className="flex items-center gap-2">
+                      <p className="text-[12.5px] text-text">
+                        {defaultModelLabel === '请选择模型' && !draft.defaultModelId
+                          ? '未设置'
+                          : defaultModelLabel}
+                      </p>
+                      <button
+                        type="button"
+                        data-testid="agent-overview-edit-model"
+                        className="rounded-md px-2 py-0.5 text-[11px] text-text-faint hover:bg-hover hover:text-text"
+                        onClick={() => setDrawerTab('settings')}
                       >
-                        <input
-                          type="checkbox"
-                          className="accent-[var(--color-accent)]"
-                          checked={checked}
-                          onChange={() =>
-                            setDraft((d) => ({
-                              ...d,
-                              mcpServerIds: toggleId(d.mcpServerIds, s.id),
-                            }))
-                          }
-                        />
-                        <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">
-                          {s.name}
-                        </span>
-                        <span className="shrink-0 text-[11px] text-text-faint">
-                          {s.toolCount} 工具{s.trusted ? ' · 信任' : ''}
-                        </span>
-                      </label>
-                    );
-                  })}
+                        修改
+                      </button>
+                    </div>
+                  </Field>
+
+                  <Field label={`包含 Skill（${draft.skillIds.length}）`}>
+                    {draft.skillIds.length === 0 ? (
+                      <p className="text-[12.5px] text-text-faint">无</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {draft.skillIds.map((id) => {
+                          const skill = skills.find((s) => s.id === id);
+                          return (
+                            <span
+                              key={id}
+                              className="rounded-md border border-border bg-surface px-2 py-0.5 text-[11.5px] text-text-secondary"
+                              title={skill?.description}
+                            >
+                              {skill ? skill.name : id}
+                              {skill?.version ? (
+                                <span className="ml-1 text-[10.5px] text-text-faint">
+                                  @{skill.version}
+                                </span>
+                              ) : null}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </Field>
+
+                  <Field label="系统 / 人设指令">
+                    <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-page p-3 font-mono text-[12px] leading-relaxed text-text">
+                      {draft.persona || '—'}
+                    </pre>
+                  </Field>
                 </div>
-              )}
-            </Field>
               </div>
-            </div>
+            )}
+
+            {/* ── 工作：已分配对话 ── */}
+            {drawerTab === 'work' && (
+              <div
+                className="shell-library-drawer__body shell-agent-drawer__body--single"
+                data-testid="agent-drawer-work"
+              >
+                {assignedConversations.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center">
+                    <p className="m-0 text-[12px] text-text-faint">
+                      暂无已分配对话。在对话中切换对象为该智能体后，对话会出现在这里。
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {assignedConversations.map((c) => (
+                      <div
+                        key={c.id}
+                        className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[12.5px] text-text">
+                            {c.title || '未命名对话'}
+                          </div>
+                          <div className="text-[11px] text-text-faint">
+                            {c.lastMessageAt
+                              ? new Date(c.lastMessageAt).toLocaleString()
+                              : '尚无消息'}
+                          </div>
+                        </div>
+                        {onOpenConversation ? (
+                          <button
+                            type="button"
+                            data-testid={`agent-work-open-${c.id}`}
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-faint hover:bg-hover hover:text-text"
+                            title="打开该对话"
+                            onClick={() => onOpenConversation(String(c.id))}
+                          >
+                            <ArrowUpRight size={15} />
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── 能力：Skill / MCP / 人设（可编辑） ── */}
+            {drawerTab === 'abilities' && (
+              <div className="shell-library-drawer__body" data-testid="agent-drawer-abilities">
+                <div className="space-y-5">
+                  <SectionTitle>
+                    <span className="inline-flex items-center gap-1">
+                      <Sparkles size={12} /> Skill 绑定
+                    </span>
+                  </SectionTitle>
+                  <Field label={catalogLoading ? '加载中…' : `已选 ${draft.skillIds.length} 个`}>
+                    {skillCatalogError ? (
+                      <div className="flex items-center justify-between gap-2 rounded-lg bg-error/10 px-3 py-2 text-[11.5px] text-error">
+                        <span className="min-w-0 truncate">Skill 加载失败：{skillCatalogError}</span>
+                        {onManageSkills ? (
+                          <button type="button" className="shrink-0 underline" onClick={onManageSkills}>
+                            打开能力中心
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : skills.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-border px-3 py-3 text-center">
+                        <p className="m-0 text-[11.5px] text-text-faint">暂无已导入 Skill</p>
+                        {onManageSkills ? (
+                          <button
+                            type="button"
+                            data-testid="manage-skills-from-agent"
+                            className="shell-library-secondary-action mt-2"
+                            onClick={onManageSkills}
+                          >
+                            去能力中心导入
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="shell-library-subpanel max-h-44 space-y-1 overflow-y-auto p-2">
+                        {skills.map((s) => {
+                          const checked = draft.skillIds.includes(s.id);
+                          return (
+                            <label
+                              key={s.id}
+                              className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
+                              title={s.description || s.id}
+                            >
+                              <input
+                                type="checkbox"
+                                className="mt-0.5 accent-[var(--color-accent)]"
+                                checked={checked}
+                                disabled={!checked && draft.skillIds.length >= 8}
+                                onChange={() =>
+                                  setDraft((d) => ({
+                                    ...d,
+                                    skillIds: toggleId(d.skillIds, s.id),
+                                  }))
+                                }
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-[12.5px] text-text">
+                                  {s.name}
+                                  {s.version ? (
+                                    <span className="ml-1 text-[11px] text-text-faint">@{s.version}</span>
+                                  ) : null}
+                                </span>
+                                {s.description ? (
+                                  <span className="block truncate text-[11px] text-text-faint">
+                                    {s.description}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {draft.skillIds.length >= 8 ? (
+                      <p className="mt-1 text-[11px] text-warning">最多装备 8 个 Skill；请先取消一个再选择。</p>
+                    ) : draft.skillIds.length > 0 ? (
+                      <p className="mt-1 text-[11px] text-text-faint">最多可装备 8 个 Skill</p>
+                    ) : null}
+                  </Field>
+
+                  <SectionTitle>
+                    <span className="inline-flex items-center gap-1">
+                      <Wrench size={12} /> MCP 绑定
+                    </span>
+                  </SectionTitle>
+                  <Field label={catalogLoading ? '加载中…' : `已选 ${draft.mcpServerIds.length} 个`}>
+                    {mcpServers.length === 0 ? (
+                      <p className="text-[11.5px] text-text-faint">
+                        暂无已注册 MCP 服务器。注册后可在此绑定，对话内可调用其工具。
+                      </p>
+                    ) : (
+                      <div className="shell-library-subpanel max-h-44 space-y-1 overflow-y-auto p-2">
+                        {mcpServers.map((s) => {
+                          const checked = draft.mcpServerIds.includes(s.id);
+                          return (
+                            <label
+                              key={s.id}
+                              className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
+                            >
+                              <input
+                                type="checkbox"
+                                className="accent-[var(--color-accent)]"
+                                checked={checked}
+                                onChange={() =>
+                                  setDraft((d) => ({
+                                    ...d,
+                                    mcpServerIds: toggleId(d.mcpServerIds, s.id),
+                                  }))
+                                }
+                              />
+                              <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">
+                                {s.name}
+                              </span>
+                              <span className="shrink-0 text-[11px] text-text-faint">
+                                {s.toolCount} 工具{s.trusted ? ' · 信任' : ''}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </Field>
+                </div>
+
+                <div className="space-y-5">
+                  <SectionTitle>系统 / 人设指令</SectionTitle>
+                  <Field label="人设 / 系统指令">
+                    <textarea
+                      className="w-full resize-y rounded-lg border border-border bg-page px-3 py-2 font-mono text-[12.5px] leading-relaxed text-text focus:border-accent focus:outline-none"
+                      rows={12}
+                      placeholder="你是一名经验丰富的前端工程师，专注于 React 和 TypeScript…"
+                      value={draft.persona}
+                      onChange={(e) => setDraft((d) => ({ ...d, persona: e.target.value }))}
+                    />
+                  </Field>
+                </div>
+              </div>
+            )}
+
+            {/* ── 设置：身份与模型（可编辑） ── */}
+            {drawerTab === 'settings' && (
+              <div className="shell-library-drawer__body" data-testid="agent-drawer-settings">
+                <div className="space-y-5">
+                  <SectionTitle>基本信息</SectionTitle>
+
+                  {/* Avatar picker: live preview + emoji input + image import */}
+                  <div className="flex items-center gap-4">
+                    <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={56} />
+                    <div className="flex flex-1 flex-col gap-1.5">
+                      <label className="text-[11px] text-text-faint">头像</label>
+                      <div className="flex items-center gap-2">
+                        {!isImageAvatar(draft.avatar) && (
+                          <input
+                            className="h-9 w-16 rounded-lg border border-border bg-page text-center text-[18px] focus:border-accent focus:outline-none"
+                            value={draft.avatar}
+                            onChange={(e) => setDraft((d) => ({ ...d, avatar: e.target.value }))}
+                            maxLength={2}
+                            title="输入一个 emoji 或字母"
+                          />
+                        )}
+                        <button
+                          type="button"
+                          className="flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] text-text-secondary hover:bg-hover"
+                          onClick={() => avatarFileRef.current?.click()}
+                        >
+                          <ImagePlus size={13} /> 导入图片
+                        </button>
+                        {isImageAvatar(draft.avatar) && (
+                          <button
+                            type="button"
+                            className="h-9 rounded-lg px-2 text-[12px] text-text-faint hover:bg-hover hover:text-text"
+                            onClick={() => setDraft((d) => ({ ...d, avatar: '🤖' }))}
+                          >
+                            恢复 emoji
+                          </button>
+                        )}
+                        <input
+                          ref={avatarFileRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            void handleAvatarFile(e.target.files?.[0]);
+                            e.target.value = '';
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <Field label="名称 *">
+                    <input
+                      ref={nameRef}
+                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                      placeholder="前端小张"
+                      value={draft.name}
+                      onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+                    />
+                  </Field>
+
+                  <Field label="简介">
+                    <input
+                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                      placeholder="擅长前端开发与调试"
+                      value={draft.description}
+                      onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+                    />
+                  </Field>
+                </div>
+
+                <div className="space-y-5">
+                  <SectionTitle>模型</SectionTitle>
+
+                  {/* Default model — required; empty value is rejected by protocol.
+                      Two-level provider → model picker (same widget as the compose bar).
+                      Both the label and the control open the picker so pressing
+                      the field text is never a silent no-op. */}
+                  <Field
+                    label="默认模型 *"
+                    onLabelClick={() => setModelMenuOpen((o) => !o)}
+                  >
+                    <div
+                      className="shell-library-control flex h-9 cursor-pointer items-center px-1.5"
+                      onClick={(e) => {
+                        // The trigger button handles its own click; only open
+                        // when pressing elsewhere in the control area.
+                        if ((e.target as HTMLElement).closest('button')) return;
+                        setModelMenuOpen((o) => !o);
+                      }}
+                    >
+                      <ModelTrigger
+                        label={defaultModelLabel}
+                        open={modelMenuOpen}
+                        buttonRef={setModelAnchorEl}
+                        onClick={() => setModelMenuOpen((o) => !o)}
+                      />
+                    </div>
+                    <ModelPickerMenu
+                      open={modelMenuOpen}
+                      models={models}
+                      selectedModelId={draft.defaultModelId}
+                      defaultLabel="请选择模型"
+                      anchorEl={modelAnchorEl}
+                      onClose={() => setModelMenuOpen(false)}
+                      onPick={(modelId) => {
+                        setDraft((d) => ({
+                          ...d,
+                          defaultModelId: modelId,
+                          fallbackModelIds: d.fallbackModelIds.filter((id) => id !== modelId),
+                        }));
+                      }}
+                    />
+                  </Field>
+
+                  <Field label="备用模型（主模型失败后按顺序尝试）">
+                    {fallbackCandidates.length === 0 ? (
+                      <p className="text-[11.5px] text-text-faint">
+                        没有其它可选模型。请先在设置里导入更多模型。
+                      </p>
+                    ) : (
+                      <div className="shell-library-subpanel max-h-36 space-y-2 overflow-y-auto p-2">
+                        {fallbackGroups.map(([providerName, providerModels]) => (
+                          <div key={providerName}>
+                            <div className="px-1.5 pb-0.5 text-[10.5px] font-medium text-text-faint">
+                              {providerName}
+                            </div>
+                            {providerModels.map((m) => {
+                              const checked = draft.fallbackModelIds.includes(m.modelId);
+                              return (
+                                <label
+                                  key={m.modelId}
+                                  className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-hover"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="accent-[var(--color-accent)]"
+                                    checked={checked}
+                                    onChange={() =>
+                                      setDraft((d) => ({
+                                        ...d,
+                                        fallbackModelIds: toggleId(d.fallbackModelIds, m.modelId),
+                                      }))
+                                    }
+                                  />
+                                  <span className="truncate text-[12.5px] text-text">{m.displayName}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {draft.fallbackModelIds.length > 0 && (
+                      <p className="mt-1 text-[11px] text-text-faint">
+                        已选 {draft.fallbackModelIds.length} 个备用
+                      </p>
+                    )}
+                  </Field>
+
+                  <Field label="推理强度">
+                    <select
+                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                      value={draft.reasoningEffort}
+                      onChange={(e) => setDraft((d) => ({ ...d, reasoningEffort: e.target.value }))}
+                    >
+                      {REASONING_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+              </div>
+            )}
 
             {/* Footer actions */}
             <div className="shell-library-drawer__footer">
@@ -845,10 +1084,26 @@ function EmptyAgents({ onNew }: { onNew(): void }) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+  onLabelClick,
+}: {
+  label: string;
+  children: React.ReactNode;
+  /** Make the label clickable (e.g. open the model picker when the label is pressed). */
+  onLabelClick?: () => void;
+}) {
   return (
     <div className="shell-library-field">
-      <label className="text-[11px] text-text-faint">{label}</label>
+      <label
+        className="text-[11px] text-text-faint"
+        onClick={onLabelClick}
+        style={onLabelClick ? { cursor: 'pointer' } : undefined}
+        title={onLabelClick ? '点击打开选择器' : undefined}
+      >
+        {label}
+      </label>
       {children}
     </div>
   );

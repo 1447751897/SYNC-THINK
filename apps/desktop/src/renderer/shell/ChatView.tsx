@@ -171,7 +171,9 @@ import {
 } from './run-process-state.js';
 import {
   readConversationModelOverride,
+  readConversationReasoningEffort,
   writeConversationModelOverride,
+  writeConversationReasoningEffort,
 } from '../ui-preferences.js';
 import type { RunActivityAuthority } from '../run-activity-authority.js';
 
@@ -434,7 +436,11 @@ export function ChatView({
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     (conversation.executionMode as PermissionMode) || 'full-access',
   );
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('auto');
+  // Restore the conversation's own reasoning effort across switches/restarts;
+  // each conversation keeps its chosen thinking intensity until changed again.
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
+    () => readConversationReasoningEffort(String(conversation.id)) ?? 'auto',
+  );
   // Restore last explicit model pick for this conversation across restarts.
   const [modelOverride, setModelOverride] = useState<string>(
     () => readConversationModelOverride(String(conversation.id)) ?? '',
@@ -781,6 +787,7 @@ export function ChatView({
     setMenu(null);
     setPermissionMode((conversation.executionMode as PermissionMode) || 'full-access');
     setModelOverride(readConversationModelOverride(String(conversation.id)) ?? '');
+    setReasoningEffort(readConversationReasoningEffort(String(conversation.id)) ?? 'auto');
     // Always land at the latest message when opening a chat — no animated scroll.
     stickToBottomRef.current = true;
     bottomPinIntentRef.current = null;
@@ -3906,7 +3913,10 @@ export function ChatView({
                       value={reasoningEffort}
                       anchorEl={reasoningBtnRef.current}
                       onClose={() => setMenu(null)}
-                      onChange={setReasoningEffort}
+                      onChange={(value) => {
+                        setReasoningEffort(value);
+                        writeConversationReasoningEffort(String(conversation.id), value);
+                      }}
                     />
                   </div>
 

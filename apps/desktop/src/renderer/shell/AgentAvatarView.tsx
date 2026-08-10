@@ -52,39 +52,47 @@ export function AgentAvatarView({
 /**
  * Read a user-picked image file and downscale it to a compact square data URL
  * (96×96 webp ≈ a few KB) so avatars stay cheap to store and stream.
+ *
+ * The file is read through FileReader into a `data:` URL first: the shell CSP
+ * (`img-src 'self' data: sync-think-image:`) blocks `blob:` URLs, so loading
+ * a createObjectURL blob into an Image would fire onerror and fail the import.
  */
 export function readAvatarImage(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      try {
-        const SIZE = 96;
-        const canvas = document.createElement('canvas');
-        canvas.width = SIZE;
-        canvas.height = SIZE;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error('Canvas 2D unavailable');
-        // Cover-fit crop to a centered square.
-        const side = Math.min(img.naturalWidth, img.naturalHeight);
-        const sx = (img.naturalWidth - side) / 2;
-        const sy = (img.naturalHeight - side) / 2;
-        ctx.drawImage(img, sx, sy, side, side, 0, 0, SIZE, SIZE);
-        let dataUrl = canvas.toDataURL('image/webp', 0.85);
-        if (!dataUrl.startsWith('data:image/webp')) {
-          dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        }
-        resolve(dataUrl);
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error('头像处理失败'));
-      } finally {
-        URL.revokeObjectURL(url);
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('无法读取该图片文件'));
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl) {
+        reject(new Error('无法读取该图片文件'));
+        return;
       }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const SIZE = 96;
+          const canvas = document.createElement('canvas');
+          canvas.width = SIZE;
+          canvas.height = SIZE;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('Canvas 2D unavailable');
+          // Cover-fit crop to a centered square.
+          const side = Math.min(img.naturalWidth, img.naturalHeight);
+          const sx = (img.naturalWidth - side) / 2;
+          const sy = (img.naturalHeight - side) / 2;
+          ctx.drawImage(img, sx, sy, side, side, 0, 0, SIZE, SIZE);
+          let out = canvas.toDataURL('image/webp', 0.85);
+          if (!out.startsWith('data:image/webp')) {
+            out = canvas.toDataURL('image/jpeg', 0.85);
+          }
+          resolve(out);
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error('头像处理失败'));
+        }
+      };
+      img.onerror = () => reject(new Error('无法读取该图片文件'));
+      img.src = dataUrl;
     };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('无法读取该图片文件'));
-    };
-    img.src = url;
+    reader.readAsDataURL(file);
   });
 }

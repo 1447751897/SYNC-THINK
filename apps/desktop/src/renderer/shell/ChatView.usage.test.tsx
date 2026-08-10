@@ -490,4 +490,50 @@ describe('ChatView reply usage details', () => {
     expect(await screen.findByText('短消息')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /显示更多|收起/ })).toBeNull();
   });
+
+  it('restores the per-conversation reasoning effort from storage on mount', async () => {
+    window.localStorage.setItem(
+      'sync-think.conversationReasoningEfforts',
+      JSON.stringify({ 'conversation-usage': 'high' }),
+    );
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    const trigger = await screen.findByTitle('推理强度：高');
+    expect(trigger.getAttribute('data-active')).toBe('1');
+    window.localStorage.removeItem('sync-think.conversationReasoningEfforts');
+  });
+
+  it('persists the reasoning effort when the user changes it in the menu', async () => {
+    window.localStorage.removeItem('sync-think.conversationReasoningEfforts');
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTitle('推理强度：自动'));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '高' }));
+
+    await waitFor(() =>
+      expect(screen.getByTitle('推理强度：高').getAttribute('data-active')).toBe('1'),
+    );
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('sync-think.conversationReasoningEfforts') ?? '{}',
+      ),
+    ).toEqual({ 'conversation-usage': 'high' });
+    window.localStorage.removeItem('sync-think.conversationReasoningEfforts');
+  });
 });

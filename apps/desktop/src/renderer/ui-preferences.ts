@@ -59,6 +59,13 @@ export const UI_PREF_KEYS = {
    * stale/unknown conversation.targetRef after rebuild.
    */
   conversationModelOverrides: 'sync-think.conversationModelOverrides',
+  /**
+   * Per-conversation reasoning effort chosen in compose.
+   * Shape: Record<conversationId, ReasoningEffort>.
+   * Survives conversation switches and restarts so each conversation keeps
+   * its own thinking intensity until the user changes it again.
+   */
+  conversationReasoningEfforts: 'sync-think.conversationReasoningEfforts',
 } as const;
 
 export type ConversationTrackPreference = 'model' | 'agent' | 'team';
@@ -737,6 +744,68 @@ export function writeConversationModelOverride(
   if (!next) delete current[id];
   else current[id] = next;
   writeConversationModelOverrides(current, storage);
+}
+
+/**
+ * Valid reasoning effort values persisted per conversation.
+ * Kept in sync with the compose-toolbar ReasoningEffort union so stored
+ * values are validated against a bounded set instead of free-form strings.
+ */
+const CONVERSATION_REASONING_EFFORTS = [
+  'auto',
+  'off',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
+export type ConversationReasoningEffort = (typeof CONVERSATION_REASONING_EFFORTS)[number];
+
+export function readConversationReasoningEfforts(
+  storage?: Pick<Storage, 'getItem'>,
+): Record<string, ConversationReasoningEffort> {
+  const raw = readJsonPreference(UI_PREF_KEYS.conversationReasoningEfforts, storage);
+  const result: Record<string, ConversationReasoningEffort> = {};
+  if (raw && typeof raw === 'object') {
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (
+        typeof value === 'string' &&
+        (CONVERSATION_REASONING_EFFORTS as readonly string[]).includes(value)
+      ) {
+        result[key] = value as ConversationReasoningEffort;
+      }
+    }
+  }
+  return result;
+}
+
+export function writeConversationReasoningEfforts(
+  efforts: Record<string, ConversationReasoningEffort>,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(UI_PREF_KEYS.conversationReasoningEfforts, efforts, storage);
+}
+
+export function readConversationReasoningEffort(
+  conversationId: string,
+  storage?: Pick<Storage, 'getItem'>,
+): ConversationReasoningEffort | undefined {
+  const id = conversationId.trim();
+  if (!id) return undefined;
+  return readConversationReasoningEfforts(storage)[id];
+}
+
+export function writeConversationReasoningEffort(
+  conversationId: string,
+  effort: ConversationReasoningEffort,
+  storage?: Pick<Storage, 'getItem' | 'setItem'>,
+): void {
+  const id = conversationId.trim();
+  if (!id) return;
+  const current = { ...readConversationReasoningEfforts(storage) };
+  current[id] = effort;
+  writeConversationReasoningEfforts(current, storage);
 }
 
 /** Max length for the greeting display name; keeps the welcome headline on one line. */
