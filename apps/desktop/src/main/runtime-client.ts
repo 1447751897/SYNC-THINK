@@ -46,6 +46,7 @@ const CONVERSATION_COMPACT_REQUEST_TIMEOUT_MS = 120_000;
  * default.
  */
 export const BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS = 300_000;
+export const MCP_REMOTE_REQUEST_TIMEOUT_MS = 130_000;
 
 export function resolveRuntimeRequestTimeoutMs(type: string, defaultTimeoutMs: number): number {
   if (type === 'usage.summary') return USAGE_SUMMARY_REQUEST_TIMEOUT_MS;
@@ -65,6 +66,13 @@ export function resolveRuntimeRequestTimeoutMs(type: string, defaultTimeoutMs: n
     type === 'browser.workflow.approveAndExecute'
   ) {
     return BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS;
+  }
+  if (
+    type === 'mcp.registerRemote' ||
+    type === 'mcp.tools.refresh' ||
+    type === 'mcp.tool.call'
+  ) {
+    return MCP_REMOTE_REQUEST_TIMEOUT_MS;
   }
   return defaultTimeoutMs;
 }

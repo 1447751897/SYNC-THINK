@@ -658,11 +658,7 @@ describe('conversation.getContextStatus runtime integration', () => {
       const original = await getContextStatus(harness, 'context-status-original');
       expect(original.contextWindow).toBe(128_000);
 
-      const luna = await getContextStatus(
-        harness,
-        'context-status-luna',
-        harness.alternateModelId,
-      );
+      const luna = await getContextStatus(harness, 'context-status-luna', harness.alternateModelId);
       expect(luna.modelId).toBe(harness.alternateModelId);
       expect(luna.contextWindow).toBe(400_000);
 
@@ -707,7 +703,7 @@ describe('conversation.getContextStatus runtime integration', () => {
   });
 
   it('rebuilds cache-miss system, agent, project, and tools from the same provider context', async () => {
-    const harness = await createHarness(1_000_000);
+    const harness = await createHarness(1_000_000, { target: 'model' });
     try {
       expect(harness.adapter.calls).toHaveLength(0);
       const cacheMissStatus = await getContextStatus(harness, 'cache-miss-context-status');
@@ -752,7 +748,10 @@ describe('conversation.getContextStatus runtime integration', () => {
       expect(taskVersion).toBe(2);
       expect(harness.adapter.calls).toHaveLength(2);
 
+      const getVersion = vi.spyOn(harness.skillStore, 'getVersion');
       const status = await getContextStatus(harness, 'get-context-status');
+      expect(getVersion).not.toHaveBeenCalled();
+      getVersion.mockRestore();
       expect(status.compactThreshold).toBe(0.7);
       expect(status.contextWindow).toBe(1_000_000);
       expect(status.sections.reduce((total, section) => total + section.tokens, 0)).toBe(

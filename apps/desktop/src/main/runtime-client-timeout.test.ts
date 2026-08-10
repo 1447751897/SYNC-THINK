@@ -3,6 +3,7 @@ import {
   BROWSER_PROFILE_MAINTENANCE_REQUEST_TIMEOUT_MS,
   BROWSER_RECORDING_REQUEST_TIMEOUT_MS,
   BROWSER_WORKFLOW_REPLAY_REQUEST_TIMEOUT_MS,
+  MCP_REMOTE_REQUEST_TIMEOUT_MS,
   USAGE_SUMMARY_REQUEST_TIMEOUT_MS,
   resolveRuntimeRequestTimeoutMs,
 } from './runtime-client.js';
@@ -46,5 +47,12 @@ describe('RuntimePipeClient request timeout policy', () => {
     }
     expect(resolveRuntimeRequestTimeoutMs('browser.workflow.list', 5_000)).toBe(5_000);
     expect(resolveRuntimeRequestTimeoutMs('browser.workflow.get', 5_000)).toBe(5_000);
+  });
+
+  it('keeps Desktop IPC alive for the complete remote MCP handshake', () => {
+    for (const type of ['mcp.registerRemote', 'mcp.tools.refresh', 'mcp.tool.call']) {
+      expect(resolveRuntimeRequestTimeoutMs(type, 5_000)).toBe(MCP_REMOTE_REQUEST_TIMEOUT_MS);
+    }
+    expect(MCP_REMOTE_REQUEST_TIMEOUT_MS).toBeGreaterThan(120_000);
   });
 });

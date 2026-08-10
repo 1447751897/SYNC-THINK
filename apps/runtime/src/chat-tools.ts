@@ -272,6 +272,21 @@ export const CHAT_SKILL_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
     },
   },
   {
+    name: 'import_remote_skill',
+    description:
+      'Fetch a remote SKILL.md over HTTP(S) and import it into the capability center as a market version. The source is parsed only; scripts are never executed. Use the returned skillVersionId when binding it to an Agent.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['url'],
+      properties: {
+        url: { type: 'string', description: 'Absolute HTTP(S) URL of SKILL.md' },
+        originRef: { type: 'string', description: 'Optional stable source reference' },
+        skillId: { type: 'string', description: 'Optional existing Skill family id' },
+      },
+    },
+  },
+  {
     name: 'update_skill',
     description:
       'Update an existing skill by importing a NEW version of its SKILL.md (same frontmatter name, bumped version). Old versions are kept — agents stay pinned to their equipped version until rebound. Call read_skill first and base your edit on the current source. Approval-gated outside full-access.',
@@ -321,8 +336,30 @@ export const CHAT_MCP_CATALOG_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
   },
 ];
 
+/** Mutating remote MCP registry tool, separated from read-only catalog lookup. */
+export const CHAT_MCP_REGISTRY_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
+  {
+    name: 'register_remote_mcp',
+    description:
+      'Register public metadata for a remote HTTP MCP service in SYNC-THINK. Never ask for or pass an API key in this tool; after registration, direct the user to configure the key in the capability center password field.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name', 'endpoint'],
+      properties: {
+        name: { type: 'string', description: 'Display name' },
+        endpoint: { type: 'string', description: 'Absolute HTTP(S) MCP endpoint' },
+        trusted: { type: 'boolean', description: 'Whether output is trusted (default false)' },
+      },
+    },
+  },
+];
+
 export const CHAT_MCP_CATALOG_TOOL_NAMES = new Set(
   CHAT_MCP_CATALOG_TOOL_SCHEMAS.map((tool) => tool.name),
+);
+export const CHAT_MCP_REGISTRY_TOOL_NAMES = new Set(
+  CHAT_MCP_REGISTRY_TOOL_SCHEMAS.map((tool) => tool.name),
 );
 
 /**
@@ -957,6 +994,8 @@ export const CHAT_AGENT_MUTATING_TOOL_NAMES = new Set([
   'create_skill',
   'update_skill',
   'delete_skill',
+  'import_remote_skill',
+  'register_remote_mcp',
   'create_team',
   'update_team',
   'delete_team',
@@ -1062,6 +1101,8 @@ export function toolsForExecutionMode(
     includeBrowserWorkflowTools?: boolean;
     /** Runtime-local enabled MCP catalog introspection. */
     includeMcpCatalogTools?: boolean;
+    /** Remote MCP registry mutation tool. */
+    includeMcpRegistryTools?: boolean;
     /** Extra provider tools (e.g. MCP schemas) appended after built-ins. */
     extraTools?: readonly ProviderToolSchema[];
   } = {},
@@ -1086,6 +1127,9 @@ export function toolsForExecutionMode(
   }
   if (options.includeMcpCatalogTools) {
     tools.push(...CHAT_MCP_CATALOG_TOOL_SCHEMAS);
+  }
+  if (options.includeMcpRegistryTools) {
+    tools.push(...CHAT_MCP_REGISTRY_TOOL_SCHEMAS);
   }
   if (options.includeDesktopTools) {
     tools.push(...CHAT_DESKTOP_TOOL_SCHEMAS);
@@ -1225,6 +1269,7 @@ export function isChatToolAllowed(
   // Team tools share the same gate (mutations approval-gated outside full-access).
   if (CHAT_TEAM_TOOL_NAMES.has(toolName)) return true;
   if (CHAT_MCP_CATALOG_TOOL_NAMES.has(toolName)) return true;
+  if (CHAT_MCP_REGISTRY_TOOL_NAMES.has(toolName)) return true;
   // Task-plan tool: pure UI signal, always allowed.
   if (CHAT_PLAN_TOOL_NAMES.has(toolName)) return true;
   // Browser Automation Studio tools are local and do not depend on networking.
@@ -1274,13 +1319,17 @@ export function chatToolDeniedMessage(
               ? '更新 Skill'
               : toolName === 'delete_skill'
                 ? '卸载 Skill'
-                : toolName === 'create_team'
-                  ? '创建小队'
-                  : toolName === 'update_team'
-                    ? '修改小队'
-                    : toolName === 'delete_team'
-                      ? '删除小队'
-                      : '创建智能体';
+                : toolName === 'import_remote_skill'
+                  ? '导入远端 Skill'
+                  : toolName === 'register_remote_mcp'
+                    ? '注册远端 MCP'
+                    : toolName === 'create_team'
+                      ? '创建小队'
+                      : toolName === 'update_team'
+                        ? '修改小队'
+                        : toolName === 'delete_team'
+                          ? '删除小队'
+                          : '创建智能体';
     if (reason === 'denied') {
       if (toolName === 'update_agent') {
         return '用户拒绝了修改智能体。不要重试；把变更草案（改了哪些字段、Skill 绑定前后对比）整理给用户，让其手动到「智能体库」修改。';
@@ -1288,8 +1337,15 @@ export function chatToolDeniedMessage(
       if (toolName === 'archive_agent') {
         return '用户拒绝了归档智能体。不要重试；说明你原本想归档的对象和理由，由用户自行到「智能体库」处理。';
       }
-      if (toolName === 'create_skill' || toolName === 'update_skill') {
+      if (
+        toolName === 'create_skill' ||
+        toolName === 'update_skill' ||
+        toolName === 'import_remote_skill'
+      ) {
         return '用户拒绝了写入 Skill。不要重试；把完整 SKILL.md 草案贴给用户，让其手动到「能力中心」导入。';
+      }
+      if (toolName === 'register_remote_mcp') {
+        return '用户拒绝了注册远端 MCP。不要重试；把服务名称和端点整理给用户，让其手动到「能力中心」注册。';
       }
       if (toolName === 'delete_skill') {
         return '用户拒绝了卸载 Skill。不要重试；说明你原本想卸载的版本和理由，由用户自行到「能力中心」处理。';
@@ -1443,6 +1499,25 @@ export function summarizeToolCallForApproval(
         toolsMatch ? `工具声明：${toolsMatch[1]!.trim().slice(0, 60)}` : '未声明工具权限',
         '仅解析文本，不执行脚本',
       ]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
+  if (toolName === 'import_remote_skill') {
+    const url = typeof args.url === 'string' ? args.url.trim() : '';
+    return {
+      title: '导入远端 Skill',
+      detail: [url ? `来源：${url.slice(0, 160)}` : '', '下载后只解析 SKILL.md，不执行脚本']
+        .filter(Boolean)
+        .join(' · '),
+    };
+  }
+  if (toolName === 'register_remote_mcp') {
+    const name = typeof args.name === 'string' ? args.name.trim() : '';
+    const endpoint = typeof args.endpoint === 'string' ? args.endpoint.trim() : '';
+    return {
+      title: name ? `注册远端 MCP「${name}」` : '注册远端 MCP',
+      detail: [endpoint ? `端点：${endpoint.slice(0, 160)}` : '', '仅注册公开元数据，不接收密钥']
         .filter(Boolean)
         .join(' · '),
     };

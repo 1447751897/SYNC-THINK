@@ -1010,6 +1010,7 @@ describe('skill tools (capability center)', () => {
       'list_skills',
       'read_skill',
       'create_skill',
+      'import_remote_skill',
       'update_skill',
       'delete_skill',
     ]) {
@@ -1026,7 +1027,7 @@ describe('skill tools (capability center)', () => {
 
   it('gates skill mutations outside full-access; read tools stay free', async () => {
     const { chatToolRequiresApproval } = await import('./chat-tools.js');
-    for (const tool of ['create_skill', 'update_skill', 'delete_skill']) {
+    for (const tool of ['create_skill', 'import_remote_skill', 'update_skill', 'delete_skill']) {
       expect(chatToolRequiresApproval('ask', tool)).toBe(true);
       expect(chatToolRequiresApproval('workspace', tool)).toBe(true);
       expect(chatToolRequiresApproval('full-access', tool)).toBe(false);
@@ -1088,6 +1089,21 @@ describe('MCP catalog tools', () => {
 
     expect(names).toContain('list_mcp_tools');
     expect(CHAT_MCP_CATALOG_TOOL_NAMES.has('list_mcp_tools')).toBe(true);
+  });
+
+  it('exposes metadata-only remote registration without any key field', async () => {
+    const { CHAT_MCP_REGISTRY_TOOL_NAMES } = await import('./chat-tools.js');
+    const tools = toolsForExecutionMode('workspace', {
+      includeProjectTools: false,
+      includeMcpRegistryTools: true,
+    });
+    const registration = tools.find((tool) => tool.name === 'register_remote_mcp');
+    expect(registration).toBeDefined();
+    expect(CHAT_MCP_REGISTRY_TOOL_NAMES.has('register_remote_mcp')).toBe(true);
+    expect(registration?.inputSchema.properties).not.toHaveProperty('key');
+    expect(registration?.inputSchema.properties).not.toHaveProperty('apiKey');
+    expect(registration?.inputSchema.properties).not.toHaveProperty('discoverTools');
+    expect(registration?.inputSchema.properties).not.toHaveProperty('authScheme');
   });
 });
 

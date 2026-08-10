@@ -9,6 +9,8 @@ import {
   parseUnsubscribeConversationTransientStreamPayload,
   parseAppendMessagePayload,
   parseImportSkillPayload,
+  parseImportRemoteSkillPayload,
+  parseRegisterRemoteMcpPayload,
   parseListSkillsPayload,
 } from './command-validation.js';
 
@@ -69,6 +71,50 @@ describe('Skill import lineage validation', () => {
   it('rejects incomplete derived metadata and unknown fields', () => {
     expect(parseImportSkillPayload({ skillMd, originType: 'derived' })).toBeUndefined();
     expect(parseImportSkillPayload({ skillMd, extra: true })).toBeUndefined();
+  });
+});
+
+describe('remote capability validation', () => {
+  it('normalizes remote Skill and MCP payloads without exposing alternate key fields', () => {
+    expect(
+      parseImportRemoteSkillPayload({
+        url: 'https://example.test/SKILL.md',
+        originRef: ' source://remote-skill ',
+      }),
+    ).toMatchObject({
+      url: 'https://example.test/SKILL.md',
+      originRef: 'source://remote-skill',
+    });
+    expect(
+      parseRegisterRemoteMcpPayload({
+        name: ' Remote MCP ',
+        endpoint: 'https://mcp.example.test/rpc',
+        apiKey: 'secret-value',
+      }),
+    ).toMatchObject({
+      name: 'Remote MCP',
+      endpoint: 'https://mcp.example.test/rpc',
+      apiKey: 'secret-value',
+    });
+  });
+
+  it('rejects non-http URLs, conflicting key aliases, and unknown fields', () => {
+    expect(parseImportRemoteSkillPayload({ url: 'file:///tmp/SKILL.md' })).toBeUndefined();
+    expect(
+      parseRegisterRemoteMcpPayload({
+        name: 'Remote MCP',
+        endpoint: 'https://mcp.example.test/rpc',
+        key: 'first',
+        apiKey: 'second',
+      }),
+    ).toBeUndefined();
+    expect(
+      parseRegisterRemoteMcpPayload({
+        name: 'Remote MCP',
+        endpoint: 'https://mcp.example.test/rpc',
+        unknown: true,
+      }),
+    ).toBeUndefined();
   });
 });
 
