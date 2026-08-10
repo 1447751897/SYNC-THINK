@@ -60,12 +60,15 @@ import {
   type CreateAgentVersionResponse,
   type ImportSkillPayload,
   type ImportSkillResponse,
+  type ImportRemoteSkillResponse,
   type SkillPermissionDiffSummary,
   type DeleteSkillResponse,
   type SetSkillEnabledResponse,
   type SkillVersionSummary,
   type RegisterMcpServerResponse,
+  type RegisterRemoteMcpResponse,
   type SetMcpServerEnabledResponse,
+  type DeleteMcpServerResponse,
   type CapabilityWorkspaceListResponse,
   type CapabilityWorkspaceSetActiveResponse,
   type CapabilityGovernanceListResponse,
@@ -84,6 +87,7 @@ import {
   type ProbeMcpSpawnResponse,
   type CallMcpToolResponse,
   type RefreshMcpToolsResponse,
+  type RefreshMcpToolsPayload,
   type ListMemoryResponse,
   type ProposeMemoryResponse,
   type DecideMemoryResponse,
@@ -317,6 +321,7 @@ import {
   CHAT_DESKTOP_TOOL_NAMES,
   CHAT_PLAN_TOOL_NAMES,
   CHAT_MCP_CATALOG_TOOL_NAMES,
+  CHAT_MCP_REGISTRY_TOOL_NAMES,
   CHAT_SKILL_TOOL_NAMES,
   CHAT_TEAM_TOOL_NAMES,
   chatToolDeniedMessage,
@@ -345,6 +350,13 @@ import {
   wrapModelCompactSummary,
 } from './chat-tools.js';
 import { resolveAppendMessageImageDataUrl } from './chat-image-staging.js';
+import {
+  discoverRemoteMcpTools,
+  callRemoteMcpTool,
+  fetchRemoteSkillMd,
+  parseRemoteHttpUrl,
+  redactRemoteCapabilityError,
+} from './remote-capability.js';
 import {
   ContextSnapshotBuilder,
   selectRecentMessagesWithinBudget,
@@ -399,10 +411,13 @@ import {
   parseListAgentVersionsPayload,
   parseCreateAgentVersionPayload,
   parseImportSkillPayload,
+  parseImportRemoteSkillPayload,
   parseDeleteSkillPayload,
   parseSetSkillEnabledPayload,
   parseRegisterMcpServerPayload,
+  parseRegisterRemoteMcpPayload,
   parseSetMcpServerEnabledPayload,
+  parseDeleteMcpServerPayload,
   parseCapabilityWorkspaceListPayload,
   parseCapabilityWorkspaceSetActivePayload,
   parseCapabilityGovernanceListPayload,
@@ -500,6 +515,7 @@ import {
   PersistentBrowserWorker,
   IsolatedDesktopWorker,
   formatMcpPolicyLabel,
+  enforceMcpOutputLimit,
   normalizeMcpProcessPolicy,
   previewMcpOutput,
   type BrowserHostLike,
@@ -894,6 +910,16 @@ export class Runtime {
   private readonly capabilityStore?: SqliteCapabilityStore;
   private readonly recordedCapabilityUsageKeys = new Set<string>();
   private readonly secureStore?: SecureStore;
+  /**
+   * Remote MCP auth. Key is stored as plaintext in app settings (product
+   * requirement: the key is echoed back into the register dialog), so the
+   * in-memory cache mirrors `{ key, authScheme }`. Legacy SecureStore handles
+   * (storeHandle) are still readable for backwards compatibility.
+   */
+  private readonly mcpAuthHandles = new Map<
+    string,
+    { key?: string; storeHandle?: string; authScheme: string }
+  >();
   private readonly browserHost?: BrowserHostLike;
   private readonly browserController?: RuntimeBrowserController;
   private readonly browserProfileService?: RuntimeBrowserProfileService;
@@ -1591,6 +1617,10 @@ export class Runtime {
           this.handleImportSkill(socket, frame);
           return;
         }
+        if (frame.type === 'skill.importRemote') {
+          this.trackBackgroundTask(this.handleImportRemoteSkill(socket, frame));
+          return;
+        }
         if (frame.type === 'skill.list') {
           this.handleListSkills(socket, frame);
           return;
@@ -1608,7 +1638,11 @@ export class Runtime {
           return;
         }
         if (frame.type === 'mcp.register') {
-          this.handleRegisterMcpServer(socket, frame);
+          this.trackBackgroundTask(this.handleRegisterMcpServer(socket, frame));
+          return;
+        }
+        if (frame.type === 'mcp.registerRemote') {
+          this.trackBackgroundTask(this.handleRegisterRemoteMcp(socket, frame));
           return;
         }
         if (frame.type === 'mcp.list') {
@@ -1617,6 +1651,10 @@ export class Runtime {
         }
         if (frame.type === 'mcp.setEnabled') {
           this.handleSetMcpServerEnabled(socket, frame);
+          return;
+        }
+        if (frame.type === 'mcp.delete') {
+          this.handleDeleteMcpServer(socket, frame);
           return;
         }
         if (frame.type === 'capability.workspace.list') {
@@ -5637,8 +5675,7 @@ export class Runtime {
               current.tokensIn += request.tokensIn;
               current.tokensOut += request.tokensOut;
               if (request.cachedTokensHit !== undefined) {
-                current.cachedTokensHit =
-                  (current.cachedTokensHit ?? 0) + request.cachedTokensHit;
+                current.cachedTokensHit = (current.cachedTokensHit ?? 0) + request.cachedTokensHit;
               }
               if (request.cachedTokensCreated !== undefined) {
                 current.cachedTokensCreated =
@@ -5658,11 +5695,8 @@ export class Runtime {
             }
             return Array.from(byModel.values())
               .map(
-                ({
-                  latencyTotalMs: _latencyTotalMs,
-                  latencySamples: _latencySamples,
-                  ...row
-                }) => row,
+                ({ latencyTotalMs: _latencyTotalMs, latencySamples: _latencySamples, ...row }) =>
+                  row,
               )
               .sort((left, right) => right.tokensOut - left.tokensOut);
           })()
@@ -6805,8 +6839,8 @@ export class Runtime {
       track: input.track,
       globalAgentId: input.globalAgentId,
       teamId: input.teamId,
-      skillVersionIds:
-        input.track === 'agent' || input.track === 'team' ? undefined : [],
+      skillVersionIds: [],
+      skillContextMode: 'maintenance',
     });
     const messages = this.buildChatProviderMessages(prepared.run);
     const workspaceRoot = this.resolveChatWorkspaceRoot(input.threadId);
@@ -8169,9 +8203,7 @@ export class Runtime {
       const peekRunId = ulid() as RunId;
       const task = this.resolveTaskForThread(payload.threadId);
       const conversation =
-        task && this.conversationStore
-          ? this.conversationStore.getByTaskId(task.id)
-          : undefined;
+        task && this.conversationStore ? this.conversationStore.getByTaskId(task.id) : undefined;
       const userText =
         typeof payload.userText === 'string' && payload.userText.trim().length > 0
           ? payload.userText
@@ -8186,13 +8218,10 @@ export class Runtime {
         agentVersionId:
           typeof payload.agentVersionId === 'string' ? payload.agentVersionId : undefined,
         track: conversation?.track,
-        globalAgentId:
-          conversation?.track === 'agent' ? conversation.targetRef : undefined,
+        globalAgentId: conversation?.track === 'agent' ? conversation.targetRef : undefined,
         teamId: conversation?.track === 'team' ? conversation.targetRef : undefined,
-        skillVersionIds:
-          conversation?.track === 'agent' || conversation?.track === 'team'
-            ? undefined
-            : [],
+        skillVersionIds: [],
+        skillContextMode: 'maintenance',
       });
       const response: PeekContextPacketResponse = {
         threadId: payload.threadId,
@@ -9163,6 +9192,64 @@ export class Runtime {
     return this.finishSkillImport(skillMd, parsed);
   }
 
+  /** Fetch and import a remote SKILL.md. Fetching is bounded and parse-only. */
+  private async handleImportRemoteSkill(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseImportRemoteSkillPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.skillStore) {
+      this.writeSkillStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const fetched = await fetchRemoteSkillMd(payload.url);
+      let parsed: ReturnType<typeof parseSkillMd>;
+      try {
+        parsed = parseSkillMd(fetched.skillMd);
+      } catch (error) {
+        if (error instanceof ParseSkillMdError) {
+          const code =
+            error.code === 'path_traversal'
+              ? ErrorCode.PATH_TRAVERSAL
+              : ErrorCode.PROTOCOL_FRAME_MALFORMED;
+          socket.write(
+            encodeFrame({
+              id: frame.id,
+              kind: 'response',
+              type: 'skill.importRemote',
+              payload: {},
+              error: { code, message: error.message },
+            }),
+          );
+          return;
+        }
+        throw error;
+      }
+      const imported = this.finishSkillImport(fetched.skillMd, parsed, {
+        originType: 'market',
+        originRef: payload.originRef ?? fetched.url,
+        skillId: payload.skillId,
+      });
+      const response: ImportRemoteSkillResponse = {
+        ...imported,
+        sourceUrl: fetched.url,
+        fetchedBytes: fetched.fetchedBytes,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'skill.importRemote',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
   private handleImportSkill(socket: Socket, frame: Frame): void {
     const payload = parseImportSkillPayload(frame.payload);
     if (!payload) {
@@ -9519,11 +9606,205 @@ export class Runtime {
     skillQueries.handleListSkills(this.skillQueryContext(), socket, frame);
   }
 
+  private mcpAuthSettingKey(mcpServerId: string): string {
+    return `mcp.auth.${String(mcpServerId).trim()}`;
+  }
+
+  private readMcpAuthConfig(
+    mcpServerId: string,
+  ): { key?: string; storeHandle?: string; authScheme: string } | undefined {
+    const id = String(mcpServerId ?? '').trim();
+    if (!id) return undefined;
+    const memory = this.mcpAuthHandles.get(id);
+    if (memory) return memory;
+    const stored = this.appSettingStore?.get(this.mcpAuthSettingKey(id))?.value;
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return undefined;
+    const rec = stored as Record<string, unknown>;
+    const authScheme =
+      typeof rec.authScheme === 'string' && rec.authScheme.trim()
+        ? rec.authScheme.trim()
+        : 'bearer';
+    // Plaintext key (current format) takes precedence; legacy SecureStore
+    // handle remains readable for previously stored keys.
+    const plainKey = typeof rec.key === 'string' ? rec.key.trim() : '';
+    const handle = typeof rec.storeHandle === 'string' ? rec.storeHandle.trim() : '';
+    if (!plainKey && !handle) return undefined;
+    const config = plainKey
+      ? { key: plainKey, authScheme }
+      : { storeHandle: handle, authScheme };
+    this.mcpAuthHandles.set(id, config);
+    return config;
+  }
+
+  private async persistMcpAuth(
+    mcpServerId: string,
+    key: string | undefined,
+    authScheme: string | undefined,
+  ): Promise<{ configured: boolean; authScheme: string }> {
+    const previous = this.readMcpAuthConfig(mcpServerId);
+    if (!key || !key.trim()) {
+      return {
+        configured: Boolean(previous),
+        authScheme: previous?.authScheme ?? (String(authScheme ?? 'bearer').trim() || 'bearer'),
+      };
+    }
+    const scheme = String(authScheme ?? previous?.authScheme ?? 'bearer').trim() || 'bearer';
+    // Plaintext storage: the product echoes the latest key back into the
+    // register dialog, so SecureStore handles no longer apply to new writes.
+    const config = { key: key.trim(), authScheme: scheme };
+    this.appSettingStore?.set(this.mcpAuthSettingKey(mcpServerId), config);
+    this.mcpAuthHandles.set(String(mcpServerId), config);
+    return { configured: true, authScheme: scheme };
+  }
+
+  private rollbackMcpRegistration(
+    created: import('@sync-think/storage').McpServerRecord,
+    previous: import('@sync-think/storage').McpServerRecord | undefined,
+  ): void {
+    if (!this.mcpStore) return;
+    if (!previous) {
+      this.mcpStore.delete(created.id);
+      return;
+    }
+    this.mcpStore.register({
+      id: previous.id,
+      name: previous.name,
+      transport: previous.transport,
+      endpoint: previous.endpoint,
+      tools: previous.tools,
+      trusted: previous.trusted,
+      maxOutputBytes: previous.maxOutputBytes,
+      timeoutMs: previous.timeoutMs,
+      notes: previous.notes,
+    });
+    this.mcpStore.setEnabled(previous.id, previous.enabled, previous.updatedAt);
+  }
+
+  private async retrieveMcpAuth(
+    mcpServerId: string,
+  ): Promise<{ key: string; authScheme: string } | undefined> {
+    const config = this.readMcpAuthConfig(mcpServerId);
+    if (!config) return undefined;
+    // Plaintext key (current format).
+    if (config.key) {
+      return { key: config.key, authScheme: config.authScheme };
+    }
+    // Legacy SecureStore handle.
+    if (config.storeHandle && this.secureStore) {
+      try {
+        const key = await this.secureStore.retrieveSecret(config.storeHandle);
+        return key.trim() ? { key, authScheme: config.authScheme } : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /** Register a remote HTTP MCP endpoint; key storage and tool discovery are best effort. */
+  private async handleRegisterRemoteMcp(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseRegisterRemoteMcpPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.mcpStore) {
+      this.writeMcpStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const endpoint = parseRemoteHttpUrl(payload.endpoint).toString();
+      const key = payload.key?.trim() || payload.apiKey?.trim() || undefined;
+      const before = this.mcpStore.list(500);
+      const existing = before.find((row) => row.name === payload.name && row.endpoint === endpoint);
+      const suppliedTools = payload.tools?.length ? payload.tools : undefined;
+      let tools = suppliedTools ?? existing?.tools;
+      let discovered = false;
+      let discoveryError: string | undefined;
+      if (payload.discoverTools !== false && !suppliedTools) {
+        try {
+          const credentials = key
+            ? { key, authScheme: payload.authScheme ?? 'bearer' }
+            : existing
+              ? await this.retrieveMcpAuth(existing.id)
+              : undefined;
+          tools = await discoverRemoteMcpTools(endpoint, {
+            auth: credentials
+              ? { key: credentials.key, scheme: credentials.authScheme }
+              : undefined,
+            maxTools: 64,
+          });
+          discovered = true;
+        } catch (error) {
+          discoveryError = redactRemoteCapabilityError(error, key ? [key] : []);
+        }
+      }
+      const record = this.mcpStore.register({
+        id: existing?.id,
+        name: payload.name,
+        transport: 'remote-http',
+        endpoint,
+        tools: tools?.map((t) => ({
+          name: t.name,
+          description: t.description ?? '',
+          inputSchemaJson: t.inputSchemaJson,
+        })),
+        trusted: payload.trusted,
+        maxOutputBytes: payload.maxOutputBytes,
+        timeoutMs: payload.timeoutMs,
+        notes: payload.notes,
+      });
+      let storedAuth: { configured: boolean; authScheme: string };
+      try {
+        storedAuth = await this.persistMcpAuth(record.id, key, payload.authScheme);
+      } catch (error) {
+        this.rollbackMcpRegistration(record, existing);
+        void error;
+        throw new Error('MCP credential could not be stored securely');
+      }
+      const summary = this.toMcpServerSummary(record);
+      const event = this.appendEvent('provider', 'mcp.registered', {
+        mcpServerId: summary.mcpServerId,
+        name: summary.name,
+        transport: summary.transport,
+        toolCount: summary.tools.length,
+        trusted: summary.trusted,
+        updated: Boolean(existing),
+        remote: true,
+        authConfigured: storedAuth.configured,
+        discovered,
+      });
+      this.publishEvent(event);
+      const response: RegisterRemoteMcpResponse = {
+        server: {
+          ...summary,
+          authConfigured: storedAuth.configured,
+          authScheme: storedAuth.authScheme,
+        },
+        updated: Boolean(existing),
+        endpoint,
+        authConfigured: storedAuth.configured,
+        discovered,
+        ...(discoveryError ? { discoveryError } : {}),
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'mcp.registerRemote',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
   /**
    * Register MCP server metadata (�?.3). Does not spawn process or call remote tools.
    * Tool schemas are recorded for later allowlisted Context Packet injection.
    */
-  private handleRegisterMcpServer(socket: Socket, frame: Frame): void {
+  private async handleRegisterMcpServer(socket: Socket, frame: Frame): Promise<void> {
     const payload = parseRegisterMcpServerPayload(frame.payload);
     if (!payload) {
       this.writeMalformedPayload(socket, frame);
@@ -9556,6 +9837,15 @@ export class Runtime {
         timeoutMs: payload.timeoutMs,
         notes: payload.notes,
       });
+      const key = payload.key?.trim() || payload.apiKey?.trim() || undefined;
+      let auth: { configured: boolean; authScheme: string };
+      try {
+        auth = await this.persistMcpAuth(record.id, key, payload.authScheme);
+      } catch (error) {
+        this.rollbackMcpRegistration(record, existing);
+        void error;
+        throw new Error('MCP credential could not be stored securely');
+      }
       const summary = this.toMcpServerSummary(record);
       const event = this.appendEvent('provider', 'mcp.registered', {
         mcpServerId: summary.mcpServerId,
@@ -9564,10 +9854,14 @@ export class Runtime {
         toolCount: summary.tools.length,
         trusted: summary.trusted,
         updated: Boolean(existing),
+        authConfigured: auth.configured,
       });
       this.publishEvent(event);
       const response: RegisterMcpServerResponse = {
-        server: summary,
+        server: {
+          ...summary,
+          ...(auth.configured ? { authConfigured: true, authScheme: auth.authScheme } : {}),
+        },
         updated: Boolean(existing),
       };
       socket.write(
@@ -9628,6 +9922,74 @@ export class Runtime {
           id: frame.id,
           kind: 'response',
           type: 'mcp.setEnabled',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  /** Remove a registered MCP server; also drops agent allowlist references and auth config. */
+  private handleDeleteMcpServer(socket: Socket, frame: Frame): void {
+    const payload = parseDeleteMcpServerPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.mcpStore) {
+      this.writeMcpStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const existing = this.mcpStore.get(payload.mcpServerId);
+      if (!existing) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'mcp.delete',
+            payload: { mcpServerId: payload.mcpServerId, deleted: false },
+          }),
+        );
+        return;
+      }
+      // Drop the server from every global Agent allowlist (mcpServerIds).
+      if (this.globalAgentStore) {
+        const agents = this.globalAgentStore.list();
+        for (const agent of agents) {
+          if (!agent.mcpServerIds.includes(payload.mcpServerId)) continue;
+          this.globalAgentStore.update({
+            agentId: agent.id,
+            mcpServerIds: agent.mcpServerIds.filter((id) => id !== payload.mcpServerId),
+          });
+        }
+      }
+      // Clear persisted auth config (plaintext key / legacy handle). The
+      // settings store has no delete; an empty record makes readMcpAuthConfig
+      // return undefined, which matches "no key configured".
+      this.appSettingStore?.set(this.mcpAuthSettingKey(payload.mcpServerId), {
+        key: '',
+        authScheme: '',
+      });
+      this.mcpAuthHandles.delete(payload.mcpServerId);
+
+      const deleted = this.mcpStore.delete(payload.mcpServerId);
+      const event = this.appendEvent('provider', 'mcp.deleted', {
+        mcpServerId: existing.id,
+        name: existing.name,
+        toolCount: existing.tools.length,
+      });
+      this.publishEvent(event);
+      const response: DeleteMcpServerResponse = {
+        mcpServerId: existing.id,
+        deleted,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'mcp.delete',
           payload: response,
         }),
       );
@@ -9803,10 +10165,7 @@ export class Runtime {
       const activeIds = new Set(
         activations
           .filter((activation) => activation.active)
-          .map(
-            (activation) =>
-              `${activation.capabilityType}:${activation.capabilityId}`,
-          ),
+          .map((activation) => `${activation.capabilityType}:${activation.capabilityId}`),
       );
       const skillUsage = new Map(
         this.capabilityStore
@@ -11254,6 +11613,142 @@ export class Runtime {
       };
     }
 
+    if (row.transport === 'remote-http') {
+      const startedAt = Date.now();
+      let startFailure = '';
+      let failure = '';
+      let started = false;
+      try {
+        const start = this.productionExecutionStore.startMcpAction(actionFence);
+        started = start.startedNow;
+        if (!started) startFailure = 'mcp.action_fence_not_started';
+      } catch (error) {
+        startFailure = error instanceof Error ? error.message : 'mcp.action_fence_mismatch';
+      }
+
+      let remoteResult: Awaited<ReturnType<typeof callRemoteMcpTool>> | undefined;
+      let remoteAuthKey: string | undefined;
+      if (started && !gate.signal.aborted) {
+        try {
+          const auth = await this.retrieveMcpAuth(row.id);
+          remoteAuthKey = auth?.key;
+          remoteResult = await callRemoteMcpTool(row.endpoint, input.toolName, toolArguments, {
+            auth: auth ? { key: auth.key, scheme: auth.authScheme } : undefined,
+            signal: gate.signal,
+            timeoutMs: policy.timeoutMs,
+            maxBytes: policy.maxOutputBytes,
+          });
+        } catch (error) {
+          failure = redactRemoteCapabilityError(error, remoteAuthKey ? [remoteAuthKey] : []);
+        }
+      }
+
+      const enforced = enforceMcpOutputLimit(remoteResult?.text ?? '', policy, {
+        mcpServerId: input.mcpServerId,
+        toolName: input.toolName,
+        transport: row.transport,
+        timedOut: /abort|timeout/i.test(failure),
+      });
+      const result = {
+        ok: Boolean(remoteResult?.ok),
+        timedOut: /abort|timeout/i.test(failure),
+        truncated: enforced.truncated,
+        contentTrust: enforced.contentTrust,
+        rawBytes: enforced.rawBytes,
+        keptBytes: enforced.keptBytes,
+        policyLabel: formatMcpPolicyLabel(policy),
+        preview: previewMcpOutput(enforced.text),
+        auditNote: failure || enforced.audit.note,
+        spawned: false,
+        exitCode: null,
+        elapsedMs: Date.now() - startedAt,
+        command: `POST ${row.endpoint}`,
+        jsonRpcOk: Boolean(remoteResult),
+        toolResultText: enforced.text,
+        protocol: 'mcp-jsonrpc' as const,
+      };
+
+      let completedFence = false;
+      let calledEvent: Event | undefined;
+      if (result.ok && result.jsonRpcOk && !gate.signal.aborted && !startFailure && !failure) {
+        try {
+          calledEvent = this.completeMcpActionWithAudit(
+            actionFence,
+            {
+              mcpServerId: input.mcpServerId,
+              toolName: input.toolName,
+              ok: true,
+              timedOut: false,
+              truncated: result.truncated,
+              contentTrust: result.contentTrust,
+              remote: true,
+              jsonRpcOk: true,
+              elapsedMs: result.elapsedMs,
+              preview: result.preview.slice(0, 120),
+              source: input.source,
+              approvalRequestId: gate.approval?.id ?? null,
+              simulated: false,
+            },
+            validatedScope,
+            gate.signal,
+          );
+          completedFence = true;
+        } catch (error) {
+          failure = error instanceof Error ? error.message : 'mcp.action_completion_rejected';
+        }
+      }
+
+      const refusalReason = completedFence
+        ? undefined
+        : startFailure ||
+          (gate.signal.aborted ? 'mcp.action_cancelled' : '') ||
+          failure ||
+          (remoteResult?.ok === false ? 'mcp.remote_tool_returned_error' : '') ||
+          'mcp.action_execution_failed';
+      const response: CallMcpToolResponse = {
+        sensitivity: {
+          sensitive: sensitivity.sensitive,
+          reasons: sensitivity.reasons,
+          labelZh: sensitivity.labelZh,
+          toolOnCatalog: sensitivity.toolOnCatalog,
+        },
+        evaluation: evaluationResponse,
+        enqueued: false,
+        autoApproved: autoApproved || priorOk,
+        executed: completedFence,
+        simulated: false,
+        mcpServerId: input.mcpServerId,
+        serverName,
+        toolName: input.toolName,
+        trusted,
+        onAgentAllowlist: true,
+        refuseReason: refusalReason,
+        result: { ...result, ok: completedFence && result.ok },
+      };
+      if (calledEvent) {
+        this.publishEvent(calledEvent);
+      } else {
+        this.publishEvent(
+          this.appendOrchestrationMcpAudit(
+            'mcp.tool_refused',
+            {
+              mcpServerId: input.mcpServerId,
+              toolName: input.toolName,
+              reason: refusalReason,
+              source: input.source,
+              remote: true,
+              jsonRpcOk: result.jsonRpcOk,
+              timedOut: result.timedOut,
+              simulated: false,
+            },
+            validatedScope,
+            gate.actionDigest,
+          ),
+        );
+      }
+      return response;
+    }
+
     const worker = new LocalStdioMcpWorker();
     let completedOut: Record<string, unknown> | null = null;
     let failMessage = '';
@@ -11448,6 +11943,10 @@ export class Runtime {
         );
         return;
       }
+      if (row.transport === 'remote-http') {
+        await this.handleRefreshRemoteMcpTools(socket, frame, row, payload);
+        return;
+      }
 
       const previousToolCount = row.tools.length;
       const previousNames = new Set(row.tools.map((t) => t.name));
@@ -11617,6 +12116,129 @@ export class Runtime {
     }
   }
 
+  private async handleRefreshRemoteMcpTools(
+    socket: Socket,
+    frame: Frame,
+    row: import('@sync-think/storage').McpServerRecord,
+    payload: RefreshMcpToolsPayload,
+  ): Promise<void> {
+    const started = Date.now();
+    const previousToolCount = row.tools.length;
+    const previousNames = new Set(row.tools.map((tool) => tool.name));
+    const policy = normalizeMcpProcessPolicy({
+      maxOutputBytes: payload.maxOutputBytes ?? row.maxOutputBytes,
+      timeoutMs: payload.timeoutMs ?? row.timeoutMs,
+      trusted: row.trusted,
+    });
+    const auth = await this.retrieveMcpAuth(row.id);
+    let response: RefreshMcpToolsResponse;
+    try {
+      const discovered = await discoverRemoteMcpTools(row.endpoint, {
+        auth: auth ? { key: auth.key, scheme: auth.authScheme } : undefined,
+        timeoutMs: policy.timeoutMs,
+        maxBytes: policy.maxOutputBytes,
+        maxTools: payload.maxTools,
+      });
+      const updated = this.mcpStore!.register({
+        id: row.id,
+        name: row.name,
+        transport: row.transport,
+        endpoint: row.endpoint,
+        tools: discovered,
+        trusted: row.trusted,
+        maxOutputBytes: row.maxOutputBytes,
+        timeoutMs: row.timeoutMs,
+        notes: row.notes,
+      });
+      const server = this.toMcpServerSummary(updated);
+      const names = new Set(updated.tools.map((tool) => tool.name));
+      const addedToolNames = updated.tools
+        .map((tool) => tool.name)
+        .filter((name) => !previousNames.has(name));
+      const removedToolNames = [...previousNames].filter((name) => !names.has(name));
+      response = {
+        ok: true,
+        simulated: false,
+        spawned: false,
+        jsonRpcOk: true,
+        timedOut: false,
+        truncated: false,
+        contentTrust: row.trusted ? 'trusted' : 'untrusted',
+        mcpServerId: row.id,
+        serverName: row.name,
+        endpoint: row.endpoint,
+        transport: row.transport,
+        tools: server.tools,
+        previousToolCount,
+        toolCount: server.tools.length,
+        addedToolNames,
+        removedToolNames,
+        policyLabel: formatMcpPolicyLabel(policy),
+        preview: server.tools
+          .map((tool) => tool.name)
+          .join(', ')
+          .slice(0, 512),
+        auditNote: 'remote-http initialize -> notifications/initialized -> tools/list',
+        elapsedMs: Date.now() - started,
+        command: `POST ${row.endpoint}`,
+        args: [],
+        server,
+      };
+    } catch (error) {
+      const reason = redactRemoteCapabilityError(error, auth?.key ? [auth.key] : []);
+      response = {
+        ok: false,
+        simulated: false,
+        spawned: false,
+        jsonRpcOk: false,
+        timedOut: /abort|timeout/i.test(reason),
+        truncated: false,
+        contentTrust: row.trusted ? 'trusted' : 'untrusted',
+        mcpServerId: row.id,
+        serverName: row.name,
+        endpoint: row.endpoint,
+        transport: row.transport,
+        tools: this.toMcpServerSummary(row).tools,
+        previousToolCount,
+        toolCount: previousToolCount,
+        addedToolNames: [],
+        removedToolNames: [],
+        policyLabel: formatMcpPolicyLabel(policy),
+        preview: '',
+        auditNote: reason,
+        elapsedMs: Date.now() - started,
+        command: `POST ${row.endpoint}`,
+        args: [],
+        refuseReason: reason,
+      };
+    }
+    this.publishEvent(
+      this.appendEvent('provider', 'mcp.tools_refreshed', {
+        mcpServerId: row.id,
+        serverName: row.name,
+        transport: row.transport,
+        ok: response.ok,
+        jsonRpcOk: response.jsonRpcOk,
+        toolCount: response.toolCount,
+        previousToolCount,
+        addedToolNames: response.addedToolNames,
+        removedToolNames: response.removedToolNames,
+        elapsedMs: response.elapsedMs,
+        refuseReason: response.refuseReason ?? null,
+        remote: true,
+        simulated: false,
+      }),
+    );
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'mcp.tools.refresh',
+        payload: response,
+      }),
+    );
+  }
+
   private writeMcpStoreUnavailable(socket: Socket, frame: Frame): void {
     socket.write(
       encodeFrame({
@@ -11665,6 +12287,17 @@ export class Runtime {
       maxOutputBytes: record.maxOutputBytes,
       timeoutMs: record.timeoutMs,
       notes: record.notes,
+      ...(this.readMcpAuthConfig(record.id)
+        ? {
+            authConfigured: true,
+            authScheme: this.readMcpAuthConfig(record.id)!.authScheme,
+            // Plaintext echo for the register dialog; only meaningful for
+            // remote-http servers (local-stdio carries no auth key).
+            ...(record.transport === 'remote-http' && this.readMcpAuthConfig(record.id)!.key
+              ? { authKey: this.readMcpAuthConfig(record.id)!.key }
+              : {}),
+          }
+        : {}),
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
     };
@@ -13515,6 +14148,7 @@ export class Runtime {
                 const canRunWithoutWorkspace =
                   CHAT_AGENT_TOOL_NAMES.has(toolCall.name) ||
                   CHAT_SKILL_TOOL_NAMES.has(toolCall.name) ||
+                  CHAT_MCP_REGISTRY_TOOL_NAMES.has(toolCall.name) ||
                   CHAT_TEAM_TOOL_NAMES.has(toolCall.name) ||
                   CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name) ||
                   CHAT_BROWSER_WORKFLOW_TOOL_NAMES.has(toolCall.name);
@@ -13635,7 +14269,12 @@ export class Runtime {
                   toolCall,
                 });
               } else if (CHAT_SKILL_TOOL_NAMES.has(toolCall.name)) {
-                resultText = this.executeChatSkillTool({
+                resultText = await this.executeChatSkillTool({
+                  run: currentRun,
+                  toolCall,
+                });
+              } else if (CHAT_MCP_REGISTRY_TOOL_NAMES.has(toolCall.name)) {
+                resultText = await this.executeChatRemoteMcpTool({
                   run: currentRun,
                   toolCall,
                 });
@@ -13771,8 +14410,7 @@ export class Runtime {
     teamId?: string;
     skillVersionIds?: readonly string[];
   }): void {
-    const track =
-      input.track ?? (input.teamId ? 'team' : input.globalAgentId ? 'agent' : 'model');
+    const track = input.track ?? (input.teamId ? 'team' : input.globalAgentId ? 'agent' : 'model');
     const isAgentTrack = track === 'agent' || track === 'team';
     let effectiveGlobalAgentId = input.globalAgentId;
     if (input.teamId && this.teamStore) {
@@ -14224,6 +14862,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     teamId?: string;
     /** Exact per-turn subset. Undefined preserves the older full-allowlist behavior. */
     skillVersionIds?: readonly string[];
+    /** Read-only status/peek paths must not materialize immutable Skill bodies. */
+    skillContextMode?: 'run' | 'maintenance';
     reasoningEffort?: string;
     networkEnabled?: boolean;
     images?: Array<{
@@ -14336,12 +14976,14 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const agentMeta = this.resolveAgentManifestMeta(agentVersionId);
     const agentSkillIds = globalAgent ? [...globalAgent.skillIds] : agentMeta.skillVersionIds;
     const workspaceId = this.resolveEventWorkspaceId(input.threadId);
-    const track =
-      input.track ?? (input.teamId ? 'team' : input.globalAgentId ? 'agent' : 'model');
+    const track = input.track ?? (input.teamId ? 'team' : input.globalAgentId ? 'agent' : 'model');
     const isAgentTrack = track === 'agent' || track === 'team';
-    const selectedSkillVersionIds = isAgentTrack
-      ? input.skillVersionIds
-      : (input.skillVersionIds ?? []);
+    const selectedSkillVersionIds =
+      input.skillContextMode === 'maintenance'
+        ? []
+        : isAgentTrack
+          ? input.skillVersionIds
+          : (input.skillVersionIds ?? []);
     const skillSelectionPolicy = this.resolveSkillSelectionPolicy({
       workspaceId,
       isAgentTrack,
@@ -14354,9 +14996,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
     const skillSelection = resolveRunSkillSelection({
       allowlistedSkillVersionIds: skillSelectionPolicy.allowlistedSkillVersionIds,
-      inheritedSkillVersionIds: isAgentTrack
-        ? skillSelectionPolicy.agentDefaultSkillVersionIds
-        : undefined,
+      inheritedSkillVersionIds:
+        isAgentTrack && input.skillContextMode !== 'maintenance'
+          ? skillSelectionPolicy.agentDefaultSkillVersionIds
+          : undefined,
       selectedSkillVersionIds: skillSelectionPolicy.selectedSkillVersionIds,
       getSkill: (skillVersionId) => {
         const row = this.skillStore?.getVersionMetadata(skillVersionId);
@@ -14634,11 +15277,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     composeSelectedSkillVersionIds: string[];
     allowlistedSkillVersionIds: string[];
   } {
-    const selectedSkillVersionIds = [...new Set(
-      (input.selectedSkillVersionIds ?? []).map((skillVersionId) =>
-        String(skillVersionId ?? '').trim(),
+    const selectedSkillVersionIds = [
+      ...new Set(
+        (input.selectedSkillVersionIds ?? []).map((skillVersionId) =>
+          String(skillVersionId ?? '').trim(),
+        ),
       ),
-    )].filter(Boolean);
+    ].filter(Boolean);
     const agentDefaultSkillVersionIds = input.isAgentTrack
       ? this.capabilityStore
         ? this.capabilityStore.resolveAgentSkillVersionIds(input.agentBoundSkillVersionIds)
@@ -15408,6 +16053,54 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       timeoutMs: row.timeoutMs,
       trusted: row.trusted,
     });
+    if (row.transport === 'remote-http') {
+      let remoteAuthKey: string | undefined;
+      try {
+        const auth = await this.retrieveMcpAuth(row.id);
+        remoteAuthKey = auth?.key;
+        const remote = await callRemoteMcpTool(row.endpoint, input.toolName, toolArguments, {
+          auth: auth ? { key: auth.key, scheme: auth.authScheme } : undefined,
+          signal: input.signal,
+          timeoutMs: policy.timeoutMs,
+          maxBytes: policy.maxOutputBytes,
+        });
+        const enforced = enforceMcpOutputLimit(remote.text, policy, {
+          mcpServerId: input.mcpServerId,
+          toolName: input.toolName,
+          transport: row.transport,
+          timedOut: false,
+        });
+        this.recordMcpCallUsage(input, remote.ok ? 'success' : 'failed');
+        return JSON.stringify({
+          ok: remote.ok,
+          mcpServerId: input.mcpServerId,
+          toolName: input.toolName,
+          serverName: row.name,
+          result: {
+            remote: true,
+            jsonRpcOk: true,
+            contentTrust: enforced.contentTrust,
+            truncated: enforced.truncated,
+            rawBytes: enforced.rawBytes,
+            keptBytes: enforced.keptBytes,
+            preview: previewMcpOutput(enforced.text),
+            toolResultText: enforced.text,
+            auditNote: enforced.audit.note,
+          },
+        });
+      } catch (error) {
+        const failure = redactRemoteCapabilityError(error, remoteAuthKey ? [remoteAuthKey] : []);
+        this.recordMcpCallUsage(input, input.signal?.aborted ? 'cancelled' : 'failed');
+        return JSON.stringify({
+          ok: false,
+          error: failure,
+          mcpServerId: input.mcpServerId,
+          toolName: input.toolName,
+          serverName: row.name,
+          transport: 'remote-http',
+        });
+      }
+    }
     const worker = new LocalStdioMcpWorker();
     let completedOut: Record<string, unknown> | null = null;
     let failMessage = '';
@@ -15444,10 +16137,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     if (failMessage) {
-      this.recordMcpCallUsage(
-        input,
-        input.signal?.aborted ? 'cancelled' : 'failed',
-      );
+      this.recordMcpCallUsage(input, input.signal?.aborted ? 'cancelled' : 'failed');
       return JSON.stringify({
         ok: false,
         error: failMessage,
@@ -15508,51 +16198,38 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     this.recordedCapabilityUsageKeys.add(usageKey);
   }
 
-  private recordProviderContextCapabilityUsage(
-    run: DemoRunState,
-    snapshot: ContextSnapshot,
-  ): void {
-    const includedSources = snapshot.sources.filter(
-      (source) => source.disposition === 'included',
-    );
+  private recordProviderContextCapabilityUsage(run: DemoRunState, snapshot: ContextSnapshot): void {
+    const includedSources = snapshot.sources.filter((source) => source.disposition === 'included');
     for (const skillVersionId of run.skillVersionIds ?? []) {
       const source = includedSources.find(
         (candidate) =>
-          candidate.kind === 'skill-definition' &&
-          candidate.id === `skill:${skillVersionId}`,
+          candidate.kind === 'skill-definition' && candidate.id === `skill:${skillVersionId}`,
       );
       if (!source) continue;
-      this.appendCapabilityUsageOnce(
-        `${run.runId}:skill:${skillVersionId}:skill-context`,
-        {
-          capabilityType: 'skill',
-          capabilityId: skillVersionId,
-          run,
-          outcome: 'success',
-          contextTokens: source.tokens,
-        },
-      );
+      this.appendCapabilityUsageOnce(`${run.runId}:skill:${skillVersionId}:skill-context`, {
+        capabilityType: 'skill',
+        capabilityId: skillVersionId,
+        run,
+        outcome: 'success',
+        contextTokens: source.tokens,
+      });
     }
     for (const mcpServerId of run.mcpServerIds ?? []) {
       const contextTokens = includedSources.reduce(
         (total, source) =>
-          source.kind === 'tool-schema' &&
-          source.id.startsWith(`tool:${mcpServerId}:`)
+          source.kind === 'tool-schema' && source.id.startsWith(`tool:${mcpServerId}:`)
             ? total + source.tokens
             : total,
         0,
       );
       if (contextTokens <= 0) continue;
-      this.appendCapabilityUsageOnce(
-        `${run.runId}:mcp:${mcpServerId}:mcp-schema`,
-        {
-          capabilityType: 'mcp',
-          capabilityId: mcpServerId,
-          run,
-          outcome: 'success',
-          contextTokens,
-        },
-      );
+      this.appendCapabilityUsageOnce(`${run.runId}:mcp:${mcpServerId}:mcp-schema`, {
+        capabilityType: 'mcp',
+        capabilityId: mcpServerId,
+        run,
+        outcome: 'success',
+        contextTokens,
+      });
     }
   }
 
@@ -16074,10 +16751,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
    * permission gate passed (full-access, or approved on the approval card).
    * Import parses text only �?scripts are never executed (§9.2).
    */
-  private executeChatSkillTool(input: {
+  private async executeChatSkillTool(input: {
     run: DemoRunState;
     toolCall: import('@sync-think/adapters').ProviderToolCall;
-  }): string {
+  }): Promise<string> {
     let args: Record<string, unknown> = {};
     try {
       args = JSON.parse(input.toolCall.argumentsJson || '{}') as Record<string, unknown>;
@@ -16130,6 +16807,45 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         },
         sourceMd: record.sourceMd,
       });
+    }
+
+    if (input.toolCall.name === 'import_remote_skill') {
+      const url = typeof args.url === 'string' ? args.url.trim() : '';
+      if (!url) return JSON.stringify({ ok: false, error: 'url is required' });
+      try {
+        const fetched = await fetchRemoteSkillMd(url);
+        const parsed = parseSkillMd(fetched.skillMd);
+        const imported = this.finishSkillImport(fetched.skillMd, parsed, {
+          originType: 'market',
+          originRef:
+            typeof args.originRef === 'string' && args.originRef.trim()
+              ? args.originRef.trim()
+              : fetched.url,
+          skillId:
+            typeof args.skillId === 'string' && args.skillId.trim()
+              ? args.skillId.trim()
+              : undefined,
+        });
+        return JSON.stringify({
+          ok: true,
+          sourceUrl: fetched.url,
+          fetchedBytes: fetched.fetchedBytes,
+          skill: {
+            skillVersionId: imported.skill.skillVersionId,
+            skillId: imported.skill.skillId,
+            name: imported.skill.name,
+            version: imported.skill.version,
+            allowedTools: imported.skill.allowedTools,
+          },
+          deduped: imported.deduped,
+          requiresReapproval: Boolean(imported.reapprovalRequest),
+        });
+      } catch (error) {
+        return JSON.stringify({
+          ok: false,
+          error: redactRemoteCapabilityError(error),
+        });
+      }
     }
 
     if (input.toolCall.name === 'create_skill' || input.toolCall.name === 'update_skill') {
@@ -16217,6 +16933,90 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     return JSON.stringify({ ok: false, error: `Unsupported skill tool: ${input.toolCall.name}` });
+  }
+
+  /** Chat-tool entry point for one-time remote MCP registration. */
+  private async executeChatRemoteMcpTool(input: {
+    run: DemoRunState;
+    toolCall: import('@sync-think/adapters').ProviderToolCall;
+  }): Promise<string> {
+    let args: Record<string, unknown> = {};
+    try {
+      args = JSON.parse(input.toolCall.argumentsJson || '{}') as Record<string, unknown>;
+    } catch {
+      return JSON.stringify({ ok: false, error: 'Invalid tool arguments JSON' });
+    }
+    if (!this.mcpStore) {
+      return JSON.stringify({ ok: false, error: 'MCP store is not configured on this Runtime.' });
+    }
+    const name = typeof args.name === 'string' ? args.name.trim() : '';
+    const endpointRaw = typeof args.endpoint === 'string' ? args.endpoint.trim() : '';
+    if (!name || !endpointRaw) {
+      return JSON.stringify({ ok: false, error: 'name and endpoint are required' });
+    }
+    let endpoint: string;
+    try {
+      endpoint = parseRemoteHttpUrl(endpointRaw).toString();
+    } catch (error) {
+      return JSON.stringify({ ok: false, error: redactRemoteCapabilityError(error) });
+    }
+    const allowedFields = new Set(['name', 'endpoint', 'trusted', 'discoverTools']);
+    if (Object.keys(args).some((field) => !allowedFields.has(field))) {
+      return JSON.stringify({
+        ok: false,
+        error: 'mcp.metadata-only',
+        note: 'AI 只能登记名称、Endpoint 和可信标记。请让用户在能力中心的密码框配置 Key。',
+      });
+    }
+    const existing = this.mcpStore
+      .list(500)
+      .find((row) => row.name === name && row.endpoint === endpoint);
+    const record = this.mcpStore.register({
+      id: existing?.id,
+      name,
+      transport: 'remote-http',
+      endpoint,
+      tools: existing?.tools,
+      trusted: typeof args.trusted === 'boolean' ? args.trusted : existing?.trusted,
+      maxOutputBytes: existing?.maxOutputBytes,
+      timeoutMs: existing?.timeoutMs,
+      notes: existing?.notes,
+    });
+    const authConfig = this.readMcpAuthConfig(record.id);
+    const auth = {
+      configured: Boolean(authConfig),
+      authScheme: authConfig?.authScheme ?? 'bearer',
+    };
+    const summary = this.toMcpServerSummary(record);
+    this.publishEvent(
+      this.appendEvent('provider', 'mcp.registered', {
+        mcpServerId: record.id,
+        name: record.name,
+        transport: record.transport,
+        toolCount: record.tools.length,
+        updated: Boolean(existing),
+        remote: true,
+        registeredVia: 'chat-tool',
+        authConfigured: auth.configured,
+        discovered: false,
+        threadId: input.run.threadId,
+      }),
+    );
+    return JSON.stringify({
+      ok: true,
+      server: {
+        ...summary,
+        authConfigured: auth.configured,
+        authScheme: auth.authScheme,
+      },
+      updated: Boolean(existing),
+      endpoint,
+      authConfigured: auth.configured,
+      discovered: false,
+      note: auth.configured
+        ? '远端 MCP 公开元数据已登记，现有 Key 保持不变。'
+        : '远端 MCP 公开元数据已登记；请用户在「能力中心」的专用密码框配置 Key。',
+    });
   }
 
   /**
@@ -18529,6 +19329,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       options.toolsEnabled && this.browserWorkflowService,
     );
     const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
+    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
@@ -18545,6 +19346,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             includeDesktopTools: desktopToolsEnabled,
             includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
             includeMcpCatalogTools: mcpCatalogToolsEnabled,
+            includeMcpRegistryTools: mcpRegistryToolsEnabled,
             extraTools: mcpExtra.tools,
           })
         : undefined;
@@ -18582,14 +19384,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           '- skillIds must be approved skill version ids from list_agent_resources (max 8). Never invent ids.',
           '- Resolve update/archive targets by exact agent id when possible; names must be unique or the call fails.',
           '- Do NOT search the repository for a hidden createAgent API — use these tools.',
-          'Skill capability-center tools are ENABLED (list_skills, read_skill, create_skill, update_skill, delete_skill):',
+          'Skill capability-center tools are ENABLED (list_skills, read_skill, create_skill, update_skill, delete_skill, import_remote_skill):',
           '- When the user asks to 创建 Skill, write a complete SKILL.md (frontmatter: name / description / version / optional allowed-tools + markdown body with the workflow rules), then call create_skill.',
           '- When the user asks to 修改 Skill, FIRST call read_skill to get the current source, edit it, bump the version, and call update_skill. Old versions are kept; equipped agents stay on their pinned version until rebound.',
           '- When the user asks to 删除/卸载 Skill, call list_skills to find the exact skillVersionId, then delete_skill. If it is still equipped by an agent the call fails — report that instead of retrying.',
           '- Importing only parses text; scripts are never executed. Expanding allowed-tools enqueues a separate permission approval automatically.',
+          '- When the user gives a remote SKILL.md URL, call import_remote_skill; it records market origin metadata and returns the exact immutable version.',
           executionMode === 'full-access'
             ? '- Skill mutations execute immediately in full-access mode.'
             : '- Skill mutations (create_skill / update_skill / delete_skill) pause on an approval card outside full-access. If denied, hand the user the SKILL.md draft instead.',
+          'Remote MCP registry is ENABLED (list_mcp_tools, register_remote_mcp): call register_remote_mcp with name + endpoint metadata only. Never ask the user for a key in chat and never put a key in tool arguments; after registration, tell the user to configure the key in the capability center password field. Discovery is best effort; do not claim a tool is available when discoveryError is returned.',
           'Team Library tools are ENABLED (list_teams, create_team, update_team, delete_team):',
           '- When the user asks to 创建小队/组队, FIRST call list_teams and list_agent_resources to confirm existing teams and valid agent ids, THEN call create_team with a complete draft (name, mission, strategy, members with agent/title/role/dependsOn).',
           '- When the user asks to 修改某个小队, FIRST call list_teams to confirm the target team id, THEN call update_team with ONLY the fields to change. members is full-replace: include the complete final roster.',
@@ -18672,9 +19476,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (source.section === 'messages' && source.kind === 'message-excerpt') {
         return {
           ...source,
-          ...(messageExcerptText.trim()
-            ? { content: messageExcerptText }
-            : { content: undefined }),
+          ...(messageExcerptText.trim() ? { content: messageExcerptText } : { content: undefined }),
         };
       }
       return source;
@@ -18750,6 +19552,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       options.toolsEnabled && this.browserWorkflowService,
     );
     const mcpCatalogToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
+    const mcpRegistryToolsEnabled = Boolean(options.toolsEnabled && this.mcpStore);
     const tools =
       options.toolsEnabled &&
       (hasProjectTools ||
@@ -18767,6 +19570,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               includeDesktopTools: desktopToolsEnabled,
               includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
               includeMcpCatalogTools: mcpCatalogToolsEnabled,
+              includeMcpRegistryTools: mcpRegistryToolsEnabled,
               extraTools: mcpExtra.tools,
             }),
           ]

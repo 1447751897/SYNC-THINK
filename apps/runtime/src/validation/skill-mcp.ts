@@ -1,8 +1,10 @@
 // skill-mcp command payload parsers (extracted from command-validation.ts).
 import type {
   ImportSkillPayload,
+  ImportRemoteSkillPayload,
   ListSkillsPayload,
   RegisterMcpServerPayload,
+  RegisterRemoteMcpPayload,
   ListMcpServersPayload,
   ProbeMcpPolicyPayload,
   RequestMcpToolPayload,
@@ -11,6 +13,7 @@ import type {
   RefreshMcpToolsPayload,
   SetSkillEnabledPayload,
   SetMcpServerEnabledPayload,
+  DeleteMcpServerPayload,
   CapabilityWorkspaceListPayload,
   CapabilityWorkspaceSetActivePayload,
   CapabilityGovernanceListPayload,
@@ -86,6 +89,38 @@ export function parseImportSkillPayload(value: unknown): ImportSkillPayload | un
       typeof value.derivedFromSkillVersionId === 'string'
         ? value.derivedFromSkillVersionId.trim()
         : undefined,
+    skillId: typeof value.skillId === 'string' ? value.skillId.trim() : undefined,
+  };
+}
+
+export function parseImportRemoteSkillPayload(
+  value: unknown,
+): ImportRemoteSkillPayload | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['url', 'originRef', 'skillId'])) return undefined;
+  if (!boundedRequiredText(value.url, 2048)) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value.url.trim());
+  } catch {
+    return undefined;
+  }
+  if (
+    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+    parsed.username ||
+    parsed.password
+  ) return undefined;
+  for (const key of ['originRef', 'skillId'] as const) {
+    const entry = value[key];
+    if (
+      entry !== undefined &&
+      (typeof entry !== 'string' || entry.trim().length === 0 || entry.length > 512)
+    ) {
+      return undefined;
+    }
+  }
+  return {
+    url: parsed.toString(),
+    originRef: typeof value.originRef === 'string' ? value.originRef.trim() : undefined,
     skillId: typeof value.skillId === 'string' ? value.skillId.trim() : undefined,
   };
 }
@@ -185,6 +220,18 @@ export function parseRegisterMcpServerPayload(
   if (value.endpoint !== undefined) {
     if (typeof value.endpoint !== 'string' || value.endpoint.length > 2048) return undefined;
   }
+  for (const key of ['key', 'apiKey'] as const) {
+    if (value[key] !== undefined && (typeof value[key] !== 'string' || value[key].length > 8192)) {
+      return undefined;
+    }
+  }
+  if (value.key !== undefined && value.apiKey !== undefined &&
+      typeof value.key === 'string' && typeof value.apiKey === 'string' &&
+      value.key.trim() && value.apiKey.trim() && value.key.trim() !== value.apiKey.trim()) {
+    return undefined;
+  }
+  if (value.authScheme !== undefined &&
+      (typeof value.authScheme !== 'string' || value.authScheme.trim().length > 64)) return undefined;
   if (value.trusted !== undefined && typeof value.trusted !== 'boolean') return undefined;
   if (value.maxOutputBytes !== undefined) {
     if (typeof value.maxOutputBytes !== 'number' || !Number.isFinite(value.maxOutputBytes))
@@ -228,10 +275,114 @@ export function parseRegisterMcpServerPayload(
     name: value.name.trim(),
     transport: typeof value.transport === 'string' ? value.transport : undefined,
     endpoint: typeof value.endpoint === 'string' ? value.endpoint : undefined,
+    key:
+      typeof value.key === 'string' && value.key.trim()
+        ? value.key.trim()
+        : undefined,
+    apiKey:
+      typeof value.apiKey === 'string' && value.apiKey.trim()
+        ? value.apiKey.trim()
+        : undefined,
+    authScheme: typeof value.authScheme === 'string' ? value.authScheme.trim() : undefined,
     tools,
     trusted: typeof value.trusted === 'boolean' ? value.trusted : undefined,
     maxOutputBytes: typeof value.maxOutputBytes === 'number' ? value.maxOutputBytes : undefined,
     timeoutMs: typeof value.timeoutMs === 'number' ? value.timeoutMs : undefined,
+    notes: typeof value.notes === 'string' ? value.notes : undefined,
+  };
+}
+
+export function parseRegisterRemoteMcpPayload(
+  value: unknown,
+): RegisterRemoteMcpPayload | undefined {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    'name',
+    'endpoint',
+    'key',
+    'apiKey',
+    'authScheme',
+    'discoverTools',
+    'tools',
+    'trusted',
+    'maxOutputBytes',
+    'timeoutMs',
+    'notes',
+  ])) {
+    return undefined;
+  }
+  if (!boundedRequiredText(value.name, 128) || !boundedRequiredText(value.endpoint, 2048)) {
+    return undefined;
+  }
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value.endpoint.trim());
+  } catch {
+    return undefined;
+  }
+  if (
+    (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') ||
+    endpoint.username ||
+    endpoint.password
+  ) return undefined;
+  for (const key of ['key', 'apiKey'] as const) {
+    const candidate = value[key];
+    if (candidate !== undefined && (typeof candidate !== 'string' || candidate.length > 8192)) {
+      return undefined;
+    }
+  }
+  if (value.key !== undefined && value.apiKey !== undefined) {
+    if (typeof value.key !== 'string' || typeof value.apiKey !== 'string') return undefined;
+    if (value.key.trim() && value.apiKey.trim() && value.key.trim() !== value.apiKey.trim()) {
+      return undefined;
+    }
+  }
+  if (value.authScheme !== undefined &&
+      (typeof value.authScheme !== 'string' || value.authScheme.trim().length > 64)) {
+    return undefined;
+  }
+  if (value.discoverTools !== undefined && typeof value.discoverTools !== 'boolean') return undefined;
+  if (value.trusted !== undefined && typeof value.trusted !== 'boolean') return undefined;
+  if (value.maxOutputBytes !== undefined &&
+      (typeof value.maxOutputBytes !== 'number' || !Number.isFinite(value.maxOutputBytes))) return undefined;
+  if (value.timeoutMs !== undefined &&
+      (typeof value.timeoutMs !== 'number' || !Number.isFinite(value.timeoutMs))) return undefined;
+  if (value.notes !== undefined && (typeof value.notes !== 'string' || value.notes.length > 2000)) return undefined;
+
+  let tools: RegisterRemoteMcpPayload['tools'];
+  if (value.tools !== undefined) {
+    if (!Array.isArray(value.tools) || value.tools.length > 64) return undefined;
+    tools = [];
+    for (const raw of value.tools) {
+      if (!isRecord(raw) || !boundedRequiredText(raw.name, 128)) return undefined;
+      if (raw.description !== undefined &&
+          (typeof raw.description !== 'string' || raw.description.length > 1000)) return undefined;
+      if (raw.inputSchemaJson !== undefined &&
+          (typeof raw.inputSchemaJson !== 'string' || raw.inputSchemaJson.length > 16_000)) return undefined;
+      tools.push({
+        name: raw.name.trim(),
+        description: typeof raw.description === 'string' ? raw.description : '',
+        inputSchemaJson: typeof raw.inputSchemaJson === 'string' ? raw.inputSchemaJson : undefined,
+      });
+    }
+  }
+
+  const key =
+    typeof value.key === 'string' && value.key.trim()
+      ? value.key.trim()
+      : typeof value.apiKey === 'string' && value.apiKey.trim()
+        ? value.apiKey.trim()
+        : undefined;
+  return {
+    name: value.name.trim(),
+    endpoint: endpoint.toString(),
+    ...(key ? { key } : {}),
+    ...(typeof value.apiKey === 'string' && value.apiKey.trim() ? { apiKey: value.apiKey.trim() } : {}),
+    authScheme: typeof value.authScheme === 'string' ? value.authScheme.trim() : undefined,
+    discoverTools: value.discoverTools as boolean | undefined,
+    tools,
+    trusted: value.trusted as boolean | undefined,
+    maxOutputBytes: value.maxOutputBytes as number | undefined,
+    timeoutMs: value.timeoutMs as number | undefined,
     notes: typeof value.notes === 'string' ? value.notes : undefined,
   };
 }
@@ -267,6 +418,20 @@ export function parseSetMcpServerEnabledPayload(
     return undefined;
   }
   return { mcpServerId: value.mcpServerId.trim(), enabled: value.enabled };
+}
+
+export function parseDeleteMcpServerPayload(
+  value: unknown,
+): DeleteMcpServerPayload | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.mcpServerId !== 'string' ||
+    value.mcpServerId.trim().length === 0 ||
+    value.mcpServerId.length > 256
+  ) {
+    return undefined;
+  }
+  return { mcpServerId: value.mcpServerId.trim() };
 }
 
 export function parseCapabilityWorkspaceListPayload(
