@@ -433,6 +433,23 @@ export function ChatView({
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [goalState, setGoalState] = useState<
+    import('@sync-think/protocol').GoalGetResponse | undefined
+  >();
+  const refreshGoal = useCallback(() => {
+    const api = bridge();
+    if (!conversation || !api?.getGoal) return;
+    void api
+      .getGoal({ conversationId: String(conversation.id) })
+      .then(setGoalState)
+      .catch(() => setGoalState(undefined));
+  }, [conversation]);
+  useEffect(() => {
+    refreshGoal();
+    // 每轮 run 结束后刷新目标状态（评估器可能已推进/达成）。
+    const timer = window.setInterval(refreshGoal, 30_000);
+    return () => window.clearInterval(timer);
+  }, [refreshGoal]);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     (conversation.executionMode as PermissionMode) || 'full-access',
   );
@@ -2625,6 +2642,109 @@ export function ChatView({
       return;
     }
 
+    // NewMax `/goal`: goal mode only triggers when the input starts with /goal.
+    if (
+      slashCmd.kind === 'goal' ||
+      slashCmd.kind === 'goal-with-condition' ||
+      slashCmd.kind === 'goal-clear'
+    ) {
+      if (attachments.length > 0) {
+        setLocalErrors((errs) => [
+          ...errs,
+          {
+            id: `goal-attach-${Date.now()}`,
+            role: 'system',
+            tone: 'warning',
+            text: '执行 /goal 前请先移除附件',
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+      const api = bridge();
+      const conversationId = String(conversation.id);
+      try {
+        if (slashCmd.kind === 'goal-clear') {
+          if (!api?.clearGoal) return;
+          await api.clearGoal({ conversationId });
+          await refreshGoal();
+          setLocalErrors((errs) => [
+            ...errs,
+            {
+              id: `goal-cleared-${Date.now()}`,
+              role: 'system',
+              tone: 'success',
+              text: '目标已清除',
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+        } else if (slashCmd.kind === 'goal-with-condition') {
+          if (!api?.setGoal) return;
+          if (slashCmd.condition.length > 4000) {
+            setLocalErrors((errs) => [
+              ...errs,
+              {
+                id: `goal-len-${Date.now()}`,
+                role: 'system',
+                tone: 'warning',
+                text: '目标条件过长（最多 4000 字符）',
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+            return;
+          }
+          const result = await api.setGoal({ conversationId, condition: slashCmd.condition });
+          await refreshGoal();
+          setLocalErrors((errs) => [
+            ...errs,
+            {
+              id: `goal-set-${Date.now()}`,
+              role: 'system',
+              tone: 'success',
+              text: result?.evaluatorConfigured
+                ? '目标已设置：每轮结束后将自动评估并续跑'
+                : '目标已设置，但尚未配置评估模型（设置 → 模型 → 目标模式评估模型）',
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+        } else {
+          // Bare /goal — show current goal or the required format.
+          const current = goalState?.goal;
+          setLocalErrors((errs) => [
+            ...errs,
+            {
+              id: `goal-help-${Date.now()}`,
+              role: 'system',
+              tone: 'info',
+              text: current
+                ? `当前目标：${current.condition}（已运行 ${Math.floor(
+                    (Date.now() - Date.parse(current.startedAt)) / 60_000,
+                  )} 分钟 · 评估 ${current.turnCount} 轮）——使用 /goal <完成条件> 更新目标，/goal clear 清除`
+                : '目标模式：使用 /goal <完成条件> 设置目标，如 /goal 完成所有测试；每轮结束后由独立评估模型判断是否达成',
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+        }
+      } catch (error) {
+        const raw = error instanceof Error ? error.message : String(error);
+        setLocalErrors((errs) => [
+          ...errs,
+          {
+            id: `goal-err-${Date.now()}`,
+            role: 'system',
+            tone: 'error',
+            text: `目标模式操作失败: ${raw}`,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      } finally {
+        setInput('');
+        closeComposePickers();
+        window.requestAnimationFrame(() => resizeComposeInput());
+      }
+      return;
+    }
+
     const snapshot = attachments;
     if (runIsActive) {
       const request = createQueuedComposeRequest({
@@ -2660,10 +2780,12 @@ export function ChatView({
     closeComposePickers,
     commitQueuedComposeRequests,
     conversation.id,
+    goalState,
     input,
     modelOverride,
     netEnabled,
     reasoningEffort,
+    refreshGoal,
     resizeComposeInput,
     runIsActive,
     runManualCompact,
@@ -3587,6 +3709,19 @@ export function ChatView({
               />
             ))}
             {showTaskCapsule && liveTaskView ? <RunTaskCapsule view={liveTaskView} /> : null}
+            {goalState?.goal ? (
+              <GoalCapsule
+                goal={goalState.goal}
+                evaluatorConfigured={Boolean(goalState.evaluatorConfigured)}
+                onClear={() => {
+                  const api = bridge();
+                  if (!conversation || !api?.clearGoal) return;
+                  void api
+                    .clearGoal({ conversationId: String(conversation.id) })
+                    .then(refreshGoal);
+                }}
+              />
+            ) : null}
             {compactProgress ? (
               <div
                 className="shell-compact-capsule"
@@ -4016,33 +4151,37 @@ export function ChatView({
                     />
                   </div>
 
-                  {/* Stop remains immediate. Send stays available during streaming,
-                      but creates an editable queued draft instead of interrupting. */}
-                  {canStop && (
+                  {/* Dynamic single button: while a run is active with an empty
+                      composer it becomes 暂停 (stop the current task); typing a
+                      new message flips it back to 发送 (send = interject), and
+                      after the message is dispatched with the input cleared it
+                      flips back to 暂停 while the task is still running. */}
+                  {canStop && !input.trim() && attachments.length === 0 ? (
                     <button
                       type="button"
                       className="shell-compose__send is-stop"
                       onClick={() => void handleStop()}
                       disabled={stopping}
-                      title="停止生成"
+                      title="暂停任务"
                       data-testid="compose-stop"
                     >
                       <Square size={12} fill="currentColor" />
                     </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="shell-compose__send"
+                      onClick={() => void handleSend()}
+                      disabled={
+                        (!input.trim() && attachments.length === 0) ||
+                        compactProgress?.status === 'running'
+                      }
+                      title="发送 (Enter)"
+                      data-testid="compose-send"
+                    >
+                      <SendHorizonal size={15} />
+                    </button>
                   )}
-                  <button
-                    type="button"
-                    className="shell-compose__send"
-                    onClick={() => void handleSend()}
-                    disabled={
-                      (!input.trim() && attachments.length === 0) ||
-                      compactProgress?.status === 'running'
-                    }
-                    title="发送 (Enter)"
-                    data-testid="compose-send"
-                  >
-                    <SendHorizonal size={15} />
-                  </button>
                 </div>
               </div>
             </div>
@@ -5120,6 +5259,76 @@ function RunTaskCapsule({ view }: { view: RunProcessView }) {
         <span className="shell-task-capsule__count">
           {doneCount}/{total}
         </span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Goal capsule（NewMax /goal：目标模式进行中/已达成状态展示） ────────────────
+
+function GoalCapsule({
+  goal,
+  evaluatorConfigured,
+  onClear,
+}: {
+  goal: import('@sync-think/protocol').GoalStatus;
+  evaluatorConfigured: boolean;
+  onClear: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  if (goal.status !== 'active' && goal.status !== 'achieved') return null;
+  const elapsedMinutes = Math.max(
+    0,
+    Math.floor((Date.now() - Date.parse(goal.startedAt)) / 60_000),
+  );
+  return (
+    <div
+      className="shell-goal-capsule-wrap"
+      data-status={goal.status}
+      data-testid="goal-capsule"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {hovered ? (
+        <div className="shell-task-capsule__pop shell-goal-capsule__pop">
+          <div className="shell-task-capsule__pop-title">
+            {goal.status === 'achieved' ? '目标已达成' : '目标模式进行中'}
+          </div>
+          <div className="shell-goal-capsule__condition" title={goal.condition}>
+            {goal.condition}
+          </div>
+          <div className="shell-goal-capsule__meta">
+            已运行 {elapsedMinutes} 分钟 · 评估 {goal.turnCount} 轮
+            {!evaluatorConfigured ? ' · 评估模型未配置' : ''}
+          </div>
+          {goal.lastReason ? (
+            <div className="shell-goal-capsule__reason">最近评估：{goal.lastReason}</div>
+          ) : null}
+          {goal.status === 'active' ? (
+            <button
+              type="button"
+              className="shell-goal-capsule__clear"
+              onClick={onClear}
+              title="清除目标"
+            >
+              <X size={12} />
+              清除目标
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="shell-task-capsule shell-goal-capsule">
+        {goal.status === 'active' ? (
+          <LoaderCircle size={13} className="shell-process-spin" />
+        ) : (
+          <Check size={13} className="text-[var(--color-success)]" />
+        )}
+        <span className="shell-task-capsule__label">
+          {goal.status === 'achieved' ? '目标已达成' : '目标进行中'}
+        </span>
+        {goal.status === 'active' ? (
+          <span className="shell-task-capsule__count">{goal.turnCount} 轮</span>
+        ) : null}
       </div>
     </div>
   );

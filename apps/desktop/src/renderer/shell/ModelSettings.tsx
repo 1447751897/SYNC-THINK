@@ -56,6 +56,7 @@ import {
   Server,
   Settings2,
   Sparkles,
+  Target,
   Trash2,
   Video,
   X,
@@ -658,11 +659,14 @@ export const ModelSettings = forwardRef<
   const [ccSwitchLoading, setCcSwitchLoading] = useState(false);
   const [ccSwitchImporting, setCcSwitchImporting] = useState(false);
   const [modelTab, setModelTab] = useState<'text' | 'image' | 'video' | 'voice' | 'usage'>('text');
-  const [detailView, setDetailView] = useState<'provider' | 'vision' | 'plan-act'>('provider');
+  const [detailView, setDetailView] = useState<
+    'provider' | 'vision' | 'plan-act' | 'goal-evaluator'
+  >('provider');
   const [visionFallback, setVisionFallback] = useState<VisionFallbackSetting>({
     enabled: false,
     modelId: null,
   });
+  const [goalEvaluatorModelId, setGoalEvaluatorModelId] = useState<string | null>(null);
   const [planAct, setPlanAct] = useState<PlanActSetting>({
     enabled: false,
     planModelId: null,
@@ -723,13 +727,19 @@ export const ModelSettings = forwardRef<
     try {
       const [listed, settings] = await Promise.all([
         api.listProviders({}),
-        api.getSettings?.({ keys: ['vision-fallback', 'plan-act'] }) ??
+        api.getSettings?.({ keys: ['vision-fallback', 'plan-act', 'goal.evaluator-model'] }) ??
           Promise.resolve({ settings: {} as Record<string, unknown> }),
       ]);
       const next = [...listed.providers].sort((a, b) => a.sortOrder - b.sortOrder);
       setProviders(next);
       setVisionFallback(parseVisionFallback(settings.settings?.['vision-fallback']));
       setPlanAct(parsePlanAct(settings.settings?.['plan-act']));
+      const storedEvaluator = settings.settings?.['goal.evaluator-model'];
+      setGoalEvaluatorModelId(
+        typeof storedEvaluator === 'string' && storedEvaluator.trim()
+          ? storedEvaluator.trim()
+          : null,
+      );
       setSelectedId((prev) => {
         if (prev && next.some((p) => p.providerId === prev)) return prev;
         return next[0]?.providerId ?? null;
@@ -1493,6 +1503,25 @@ export const ModelSettings = forwardRef<
     );
   };
 
+  const handleSaveGoalEvaluator = (modelId: string | null) => {
+    const previous = goalEvaluatorModelId;
+    setGoalEvaluatorModelId(modelId);
+    void withBusy(
+      { kind: 'save-preference', label: '正在保存目标模式评估模型…' },
+      async () => {
+        const api = bridge();
+        if (!api?.setSetting) throw new Error('Runtime 未连接');
+        try {
+          await api.setSetting({ key: 'goal.evaluator-model', value: modelId });
+        } catch (error) {
+          setGoalEvaluatorModelId(previous);
+          throw error;
+        }
+      },
+      modelId ? '目标模式评估模型已更新' : '已停用目标模式评估器',
+    );
+  };
+
   const createDraftDirty =
     showCreate &&
     createStep === 'form' &&
@@ -1874,6 +1903,7 @@ export const ModelSettings = forwardRef<
                   type="button"
                   className={detailView === 'plan-act' ? 'is-active' : undefined}
                   aria-pressed={detailView === 'plan-act'}
+                  data-testid="model-strategy-plan-act"
                   onClick={() => {
                     void confirmDiscardChanges().then((ok) => {
                       if (!ok) return;
@@ -1884,6 +1914,22 @@ export const ModelSettings = forwardRef<
                 >
                   <Sparkles size={13} />
                   <span>规划 & 执行模型</span>
+                </button>
+                <button
+                  type="button"
+                  className={detailView === 'goal-evaluator' ? 'is-active' : undefined}
+                  aria-pressed={detailView === 'goal-evaluator'}
+                  data-testid="model-strategy-goal-evaluator"
+                  onClick={() => {
+                    void confirmDiscardChanges().then((ok) => {
+                      if (!ok) return;
+                      setShowCreate(false);
+                      setDetailView('goal-evaluator');
+                    });
+                  }}
+                >
+                  <Target size={13} />
+                  <span>目标模式评估模型</span>
                 </button>
               </div>
             </aside>
@@ -1975,6 +2021,13 @@ export const ModelSettings = forwardRef<
                     value={planAct}
                     busy={operation?.kind === 'save-preference'}
                     onChange={handleSavePlanAct}
+                  />
+                ) : detailView === 'goal-evaluator' ? (
+                  <GoalEvaluatorPanel
+                    allModels={allModels}
+                    value={goalEvaluatorModelId}
+                    busy={operation?.kind === 'save-preference'}
+                    onChange={handleSaveGoalEvaluator}
                   />
                 ) : selected ? (
                   <ProviderDetail
@@ -3805,6 +3858,58 @@ function VisionFallbackPanel({
         </Field>
         <p className="model-strategy-panel__hint">更改会立即保存。</p>
       </div>
+    </div>
+  );
+}
+
+function GoalEvaluatorPanel({
+  allModels,
+  value,
+  busy,
+  onChange,
+}: {
+  allModels: Array<{
+    modelId: string;
+    displayName: string;
+    providerName: string;
+    enabled: boolean;
+  }>;
+  value: string | null;
+  busy: boolean;
+  onChange(value: string | null): void;
+}) {
+  const options = enabledModelOptions(allModels);
+  return (
+    <div className="model-strategy-panel">
+      <div className="model-strategy-panel__head">
+        <span className="model-strategy-panel__icon">
+          <Target size={16} />
+        </span>
+        <div>
+          <h2>目标模式评估模型</h2>
+          <p>每轮任务结束后，用独立的小模型判断完成条件是否满足（NewMax /goal 语义）。</p>
+        </div>
+      </div>
+      <div className="model-strategy-panel__fields">
+        <Field label="评估模型（留空 = 停用目标模式）">
+          <select
+            className="st-field-input"
+            value={value ?? ''}
+            disabled={busy}
+            onChange={(event) => onChange(event.target.value || null)}
+          >
+            <option value="">（未配置）</option>
+            {options.map((option) => (
+              <option key={option.modelId} value={option.modelId}>
+                {option.providerName} · {option.displayName}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <p className="model-strategy-panel__note">
+        评估器使用独立模型判断完成条件（不调用工具，只读对话内容）；不配置则目标模式不会自动启动。
+      </p>
     </div>
   );
 }

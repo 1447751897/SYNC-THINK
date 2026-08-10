@@ -12,12 +12,44 @@ export interface CurrentContextImage {
   dataUrl: string;
 }
 
+/** One tool invocation executed by an interrupted run, restored into context. */
+export interface InterruptedRunToolTrace {
+  toolName: string;
+  argumentsText?: string;
+  resultText?: string;
+  failed?: boolean;
+}
+
 export interface BuildProviderMessagesInput {
   messages: readonly Message[];
   compact?: CompactContextBoundary;
   currentUserText: string;
   currentImages?: readonly CurrentContextImage[];
   resolveImageDataUrl?: (storageRef: string, mimeType: string) => string | undefined;
+  /**
+   * Tool traces of interrupted (cancelled) runs, keyed by run id. When a run
+   * was stopped mid-way, its executed tool calls are restored into the next
+   * model context so a "continue" message can pick up seamlessly instead of
+   * losing the execution trail (NewMax-style session continuity).
+   */
+  toolTracesByRunId?: ReadonlyMap<string, readonly InterruptedRunToolTrace[]>;
+}
+
+function truncateTraceText(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…（已截断）` : text;
+}
+
+function formatToolTraceText(traces: readonly InterruptedRunToolTrace[]): string {
+  const lines = traces.map((trace, index) => {
+    const args = trace.argumentsText?.trim() ? `(${truncateTraceText(trace.argumentsText.trim(), 240)})` : '()';
+    const outcome = trace.failed
+      ? ` → 失败${trace.resultText?.trim() ? `：${truncateTraceText(trace.resultText.trim(), 400)}` : ''}`
+      : trace.resultText?.trim()
+        ? ` → ${truncateTraceText(trace.resultText.trim(), 400)}`
+        : '';
+    return `${index + 1}. ${trace.toolName}${args}${outcome}`;
+  });
+  return `中断前已执行的工具调用轨迹：\n${lines.join('\n')}`;
 }
 
 function textFromMessage(message: Message): string {
@@ -136,6 +168,14 @@ export function buildProviderMessagesFromDurableMessages(
           role: 'system',
           content: '[上一轮回答已被用户中止，以下是中止前产生的部分内容]',
         });
+        const traces = input.toolTracesByRunId?.get(String(message.runId ?? ''));
+        if (traces && traces.length > 0) {
+          messages.push({
+            role: 'assistant',
+            phase: 'commentary',
+            content: formatToolTraceText(traces),
+          });
+        }
       }
       messages.push(...restored);
       continue;

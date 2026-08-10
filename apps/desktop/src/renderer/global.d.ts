@@ -441,6 +441,15 @@ declare global {
         deleteConversation(
           payload: import('@sync-think/protocol').DeleteConversationPayload,
         ): Promise<Record<string, never>>;
+        setGoal(
+          payload: import('@sync-think/protocol').GoalSetPayload,
+        ): Promise<import('@sync-think/protocol').GoalSetResponse>;
+        getGoal(
+          payload: import('@sync-think/protocol').GoalGetPayload,
+        ): Promise<import('@sync-think/protocol').GoalGetResponse>;
+        clearGoal(
+          payload: import('@sync-think/protocol').GoalClearPayload,
+        ): Promise<import('@sync-think/protocol').GoalClearResponse>;
         importSkill(payload: ImportSkillPayload): Promise<ImportSkillResponse>;
         importRemoteSkill(payload: ImportRemoteSkillPayload): Promise<ImportRemoteSkillResponse>;
         listSkills(payload?: ListSkillsPayload): Promise<ListSkillsResponse>;

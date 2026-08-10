@@ -87,6 +87,28 @@ describe('parseSlashCommand', () => {
     expect(parseSlashCommand('请先 /compact')).toEqual({ kind: 'none' });
     expect(parseSlashCommand('/plan')).toEqual({ kind: 'unknown', command: '/plan' });
   });
+
+  it('parses /goal with condition, bare, and clear forms', () => {
+    expect(parseSlashCommand('/goal 完成所有测试')).toEqual({
+      kind: 'goal-with-condition',
+      condition: '完成所有测试',
+    });
+    expect(parseSlashCommand('  /goal  完成所有测试  ')).toEqual({
+      kind: 'goal-with-condition',
+      condition: '完成所有测试',
+    });
+    expect(parseSlashCommand('/goal')).toEqual({ kind: 'goal' });
+    expect(parseSlashCommand('/goal clear')).toEqual({ kind: 'goal-clear' });
+    expect(parseSlashCommand('/goal CLEAR')).toEqual({ kind: 'goal-clear' });
+    // Goal only triggers at the start — mid-text /goal is a normal message.
+    expect(parseSlashCommand('请 /goal 继续')).toEqual({ kind: 'none' });
+  });
+
+  it('only goal mode for /goal — other input stays normal messages', () => {
+    expect(parseSlashCommand('继续目标')).toEqual({ kind: 'none' });
+    expect(parseSlashCommand('检查目标状态')).toEqual({ kind: 'none' });
+    expect(parseSlashCommand('/goals 列表')).toEqual({ kind: 'unknown', command: '/goals' });
+  });
 });
 
 describe('resolveSystemMessageTone', () => {

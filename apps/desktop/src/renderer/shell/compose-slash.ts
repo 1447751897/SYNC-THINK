@@ -54,9 +54,10 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
     id: 'goal',
     command: '/goal',
     label: '目标模式',
-    description: '自主循环执行直到目标完成（即将支持）',
-    kind: 'coming-soon',
-    keywords: ['autonomous', '目标', '循环'],
+    description: '插入命令；发送后才设置目标（可附加完成条件，如 /goal 完成所有测试）',
+    // Insert into the composer only — execution happens when the user presses Send.
+    kind: 'prefix',
+    keywords: ['autonomous', '目标', '循环', 'goal'],
   },
 ];
 
@@ -113,6 +114,9 @@ export function formatCompactElapsed(startedAt: number, now: number = Date.now()
 export type ParsedSlashCommand =
   | { kind: 'compact' }
   | { kind: 'compact-with-trailing'; trailing: string }
+  | { kind: 'goal' }
+  | { kind: 'goal-with-condition'; condition: string }
+  | { kind: 'goal-clear' }
   | { kind: 'unknown'; command: string }
   | { kind: 'none' };
 
@@ -130,6 +134,11 @@ export function parseSlashCommand(text: string): ParsedSlashCommand {
   if (command === '/compact') {
     if (trailing) return { kind: 'compact-with-trailing', trailing };
     return { kind: 'compact' };
+  }
+  if (command === '/goal') {
+    if (/^clear$/i.test(trailing)) return { kind: 'goal-clear' };
+    if (trailing) return { kind: 'goal-with-condition', condition: trailing };
+    return { kind: 'goal' };
   }
   return { kind: 'unknown', command };
 }

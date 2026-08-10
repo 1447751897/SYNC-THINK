@@ -34,3 +34,7 @@ apps/desktop/release
 /_*.mjs
 .sync-think/
 .session-runtime-events.tsv
+
+# Local scratch / temp artifacts
+.codex/
+sync-think-arch.html

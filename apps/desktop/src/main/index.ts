@@ -132,6 +132,33 @@ import {
   parseCallMcpToolPayload,
   parseRefreshMcpToolsPayload,
 } from '../agent-payloads.js';
+
+function goalConversationId(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.conversationId !== 'string' || !record.conversationId.trim()) return undefined;
+  return record.conversationId.trim();
+}
+
+function parseGoalSetPayloadLocal(value: unknown): import('@sync-think/protocol').GoalSetPayload | undefined {
+  const conversationId = goalConversationId(value);
+  if (!conversationId || !value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const condition = typeof (value as Record<string, unknown>).condition === 'string'
+    ? ((value as Record<string, unknown>).condition as string).trim()
+    : '';
+  if (!condition || condition.length > 4000) return undefined;
+  return { conversationId, condition };
+}
+
+function parseGoalGetPayloadLocal(value: unknown): import('@sync-think/protocol').GoalGetPayload | undefined {
+  const conversationId = goalConversationId(value);
+  return conversationId ? { conversationId } : undefined;
+}
+
+function parseGoalClearPayloadLocal(value: unknown): import('@sync-think/protocol').GoalClearPayload | undefined {
+  const conversationId = goalConversationId(value);
+  return conversationId ? { conversationId } : undefined;
+}
 import {
   parseCapabilityGovernanceListPayload,
   parseCapabilityWorkspaceListPayload,
@@ -1807,6 +1834,21 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request('skill.importRemote', parseImportRemoteSkillPayload(value), {
       timeoutMs: 30_000,
     });
+  });
+  ipcMain.handle('runtime:goal-set', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('goal.set', parseGoalSetPayloadLocal(value));
+  });
+  ipcMain.handle('runtime:goal-get', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('goal.get', parseGoalGetPayloadLocal(value));
+  });
+  ipcMain.handle('runtime:goal-clear', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('goal.clear', parseGoalClearPayloadLocal(value));
   });
   ipcMain.handle('runtime:skill-list', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

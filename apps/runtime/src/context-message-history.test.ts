@@ -160,4 +160,74 @@ describe('buildProviderMessagesFromDurableMessages', () => {
       { role: 'user', content: '按我的新要求继续' },
     ]);
   });
+
+  it('restores tool traces of a cancelled run before the partial output so a continue message can pick up', () => {
+    const cancelledMessage = message(1, 'assistant', '', '2026-07-27T01:00:00.000Z', [
+      { type: 'text', text: '中止前的部分回答。' },
+      {
+        type: 'error',
+        payload: {
+          terminalState: 'cancelled',
+        },
+      },
+    ]);
+    const result = buildProviderMessagesFromDurableMessages({
+      messages: [
+        { ...cancelledMessage, runId: 'run-aborted-1' as Message['runId'] },
+        message(2, 'user', '继续任务', '2026-07-27T01:01:00.000Z'),
+      ],
+      currentUserText: '',
+      toolTracesByRunId: new Map([
+        [
+          'run-aborted-1',
+          [
+            { toolName: 'search_files', argumentsText: '{ "pattern": "todo" }', resultText: '找到 3 个匹配' },
+            { toolName: 'read_file', argumentsText: '{ "path": "a.ts" }', resultText: '文件内容…', failed: true },
+          ],
+        ],
+      ]),
+    });
+
+    expect(result.messages).toEqual([
+      {
+        role: 'system',
+        content: '[上一轮回答已被用户中止，以下是中止前产生的部分内容]',
+      },
+      {
+        role: 'assistant',
+        phase: 'commentary',
+        content: '中断前已执行的工具调用轨迹：\n1. search_files({ "pattern": "todo" }) → 找到 3 个匹配\n2. read_file({ "path": "a.ts" }) → 失败：文件内容…',
+      },
+      { role: 'assistant', phase: 'final_answer', content: '中止前的部分回答。' },
+      { role: 'user', content: '继续任务' },
+    ]);
+  });
+
+  it('does not inject tool traces when none are provided (backward compatible)', () => {
+    const cancelledMessage = message(1, 'assistant', '', '2026-07-27T01:00:00.000Z', [
+      { type: 'text', text: '部分回答。' },
+      {
+        type: 'error',
+        payload: {
+          terminalState: 'cancelled',
+        },
+      },
+    ]);
+    const result = buildProviderMessagesFromDurableMessages({
+      messages: [
+        { ...cancelledMessage, runId: 'run-aborted-1' as Message['runId'] },
+        message(2, 'user', '继续任务', '2026-07-27T01:01:00.000Z'),
+      ],
+      currentUserText: '',
+    });
+
+    expect(result.messages).toEqual([
+      {
+        role: 'system',
+        content: '[上一轮回答已被用户中止，以下是中止前产生的部分内容]',
+      },
+      { role: 'assistant', phase: 'final_answer', content: '部分回答。' },
+      { role: 'user', content: '继续任务' },
+    ]);
+  });
 });

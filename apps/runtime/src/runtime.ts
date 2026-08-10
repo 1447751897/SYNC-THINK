@@ -102,6 +102,10 @@ import {
   type MemoryChangeSummary,
   type DurableMemoryEntrySummary,
   type DiagnosticSummary,
+  type GoalSetResponse,
+  type GoalGetResponse,
+  type GoalClearResponse,
+  type GoalStatus,
   type PlanDraftResponse,
   type PlanReviseResponse,
   type PlanListRevisionsResponse,
@@ -363,7 +367,10 @@ import {
   type ContextSnapshot,
   type ContextSnapshotSource,
 } from './context-snapshot.js';
-import { buildProviderMessagesFromDurableMessages } from './context-message-history.js';
+import {
+  buildProviderMessagesFromDurableMessages,
+  type InterruptedRunToolTrace,
+} from './context-message-history.js';
 import { shouldCreateRuntimeCheckpoint } from './runtime-checkpoint-policy.js';
 import { resolveHistoricalMessageImageDataUrl } from './message-image-context.js';
 import {
@@ -505,6 +512,11 @@ import {
   parseContinueDesktopCommandPayload,
   parseCancelDesktopCommandPayload,
 } from './command-validation.js';
+import {
+  parseGoalSetPayload,
+  parseGoalGetPayload,
+  parseGoalClearPayload,
+} from './validation/goal.js';
 import { createPipeServer, type PipeServerHandlers } from './pipe/server.js';
 import { healthcheck, type HealthcheckResult, type HealthcheckError } from './healthcheck.js';
 import { Scheduler } from './orchestration/scheduler.js';
@@ -704,6 +716,122 @@ function runtimeRecord(value: unknown): Record<string, unknown> | undefined {
 
 function cursorForEvent(event: Event): EventReplayCursor {
   return { sequence: event.sequence, eventId: String(event.id) };
+}
+
+/** One checklist item as maintained by the model via update_task_plan. */
+export interface ModelTaskPlanItem {
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+/** Latest task checklist snapshot for a thread (NewMax-style todo list). */
+export interface ModelTaskPlan {
+  items: ModelTaskPlanItem[];
+  total: number;
+  completed: number;
+}
+
+function parseJsonObjectText(raw: unknown): Record<string, unknown> | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Extract the latest update_task_plan checklist for a thread from the recent
+ * event buffer. Prefers the executed result ({ok:true, plan:{items}}) from
+ * tool.completed; falls back to the request arguments so the model can read
+ * back the checklist as soon as the call is streamed. NewMax-style: the
+ * checklist is part of the model context, not just a UI signal.
+ */
+export function extractLatestTaskPlanFromEvents(
+  events: readonly Event[],
+  threadId: string,
+): ModelTaskPlan | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.category !== 'tool') continue;
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    if (payload.threadId !== threadId || payload.toolName !== 'update_task_plan') continue;
+    let rawItems: unknown;
+    if (event.type === 'tool.completed' || event.type === 'tool.failed') {
+      const result = parseJsonObjectText(payload.result ?? payload.output);
+      if (result?.ok === true) {
+        const plan = result.plan;
+        rawItems =
+          plan && typeof plan === 'object'
+            ? (plan as Record<string, unknown>).items
+            : undefined;
+      }
+    } else if (event.type === 'tool.requested') {
+      rawItems =
+        payload.arguments && typeof payload.arguments === 'object'
+          ? (payload.arguments as Record<string, unknown>).items
+          : undefined;
+    }
+    if (rawItems === undefined) continue;
+    return normalizeModelTaskPlan(rawItems);
+  }
+  return undefined;
+}
+
+function normalizeModelTaskPlan(raw: unknown): ModelTaskPlan | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const items: ModelTaskPlanItem[] = [];
+  for (const entry of raw.slice(0, 20)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const rec = entry as Record<string, unknown>;
+    const title = typeof rec.title === 'string' ? rec.title.trim() : '';
+    if (!title) continue;
+    const status =
+      rec.status === 'in_progress' || rec.status === 'completed' ? rec.status : 'pending';
+    items.push({ title, status });
+  }
+  if (items.length === 0) return undefined;
+  const completed = items.filter((item) => item.status === 'completed').length;
+  return { items, total: items.length, completed };
+}
+
+/** Parse the goal evaluator's JSON answer ({met, reason}) with lenient extraction. */
+export function parseGoalEvaluatorOutput(output: string): { met: boolean; reason: string } | undefined {
+  if (!output || typeof output !== 'string') return undefined;
+  const trimmed = output.trim();
+  const jsonStart = trimmed.indexOf('{');
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(trimmed.slice(jsonStart)) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        if (typeof record.met === 'boolean') {
+          return {
+            met: record.met,
+            reason: typeof record.reason === 'string' ? record.reason.slice(0, 240) : '',
+          };
+        }
+      }
+    } catch {
+      // fall through to keyword matching
+    }
+  }
+  if (/\btrue\b/i.test(trimmed) || /^\s*(yes|是|满足|完成|达成)\b/i.test(trimmed)) {
+    return { met: true, reason: trimmed.slice(0, 240) };
+  }
+  return { met: false, reason: trimmed.slice(0, 240) };
+}
+
+/** NewMax-style checkbox checklist text injected into the model context. */
+export function formatTaskPlanForModel(plan: ModelTaskPlan): string {
+  const lines = plan.items.map((item) => {
+    const mark = item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[~]' : '[ ]';
+    return `- ${mark} ${item.title}`;
+  });
+  return `当前任务清单（${plan.completed}/${plan.total} 已完成）：\n${lines.join('\n')}`;
 }
 
 function sameCursor(left: EventReplayCursor, right: EventReplayCursor): boolean {
@@ -1191,6 +1319,18 @@ export class Runtime {
         }
         if (frame.type === 'conversation.unsubscribeTransientStream') {
           this.handleUnsubscribeConversationTransientStream(socket, frame);
+          return;
+        }
+        if (frame.type === 'goal.set') {
+          this.handleGoalSet(socket, frame);
+          return;
+        }
+        if (frame.type === 'goal.get') {
+          this.handleGoalGet(socket, frame);
+          return;
+        }
+        if (frame.type === 'goal.clear') {
+          this.handleGoalClear(socket, frame);
           return;
         }
         if (frame.type === 'workspace.create') {
@@ -13091,6 +13231,303 @@ export class Runtime {
     if (demoRunId) void this.executeDemoRun(demoRunId);
   }
 
+  // ===== Goal mode (NewMax-style /goal) =====
+
+  private readonly activeGoals = new Map<string, GoalStatus>();
+
+  private loadGoal(conversationId: string): GoalStatus | undefined {
+    const inMemory = this.activeGoals.get(conversationId);
+    if (inMemory) return inMemory;
+    const record = this.appSettingStore?.get(`goal.${conversationId}`);
+    if (!record) return undefined;
+    const goal = record.value as GoalStatus | undefined;
+    if (!goal || typeof goal !== 'object' || typeof goal.condition !== 'string') return undefined;
+    this.activeGoals.set(conversationId, goal);
+    return goal;
+  }
+
+  private saveGoal(goal: GoalStatus): void {
+    this.activeGoals.set(goal.conversationId, goal);
+    this.appSettingStore?.set(`goal.${goal.conversationId}`, goal);
+  }
+
+  /** Evaluator model id from settings; goal mode stays inert until configured. */
+  private evaluatorModelId(): string | undefined {
+    const record = this.appSettingStore?.get('goal.evaluator-model');
+    const value = record?.value as string | undefined;
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  private handleGoalSet(socket: Socket, frame: Frame): void {
+    const payload = parseGoalSetPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const now = new Date().toISOString();
+    const goal: GoalStatus = {
+      conversationId: payload.conversationId,
+      condition: payload.condition,
+      status: 'active',
+      startedAt: now,
+      turnCount: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+    };
+    this.saveGoal(goal);
+    const evaluatorConfigured = Boolean(this.evaluatorModelId());
+    const started = evaluatorConfigured;
+    if (started) void this.triggerGoalTurn(payload.conversationId, goal);
+    const response: GoalSetResponse = { goal, started, evaluatorConfigured };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'goal.set',
+        payload: response,
+      }),
+    );
+  }
+
+  private handleGoalGet(socket: Socket, frame: Frame): void {
+    const payload = parseGoalGetPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const response: GoalGetResponse = {
+      goal: this.loadGoal(payload.conversationId),
+      evaluatorConfigured: Boolean(this.evaluatorModelId()),
+    };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'goal.get',
+        payload: response,
+      }),
+    );
+  }
+
+  private handleGoalClear(socket: Socket, frame: Frame): void {
+    const payload = parseGoalClearPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const goal = this.loadGoal(payload.conversationId);
+    let cleared = false;
+    if (goal && goal.status === 'active') {
+      this.saveGoal({ ...goal, status: 'cleared' });
+      cleared = true;
+    }
+    const response: GoalClearResponse = { cleared, goal };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'goal.clear',
+        payload: response,
+      }),
+    );
+  }
+
+  /** Resolve the thread id backing a conversation (goal turns run on its thread). */
+  private resolveConversationThreadId(conversationId: string): string | undefined {
+    const conversation = this.conversationStore?.get(
+      conversationId as import('@sync-think/shared').ConversationId,
+    );
+    if (!conversation) return undefined;
+    if (!conversation.taskId) return undefined;
+    const task = this.workspaceStore?.getTask(conversation.taskId);
+    return task?.threadId ? String(task.threadId) : undefined;
+  }
+
+  /** Conversation id for a thread (goal state is conversation-scoped). */
+  private resolveConversationIdForThread(threadId: string): string | undefined {
+    const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+    const conversation = task && this.conversationStore
+      ? this.conversationStore.getByTaskId(task.id)
+      : undefined;
+    return conversation ? String(conversation.id) : undefined;
+  }
+
+  private buildGoalTranscript(threadId: string): string {
+    const messages = this.listDurableContextMessages(threadId, 16_000);
+    const lines: string[] = [];
+    for (const message of messages.slice(-12)) {
+      const text = message.blocks
+        .map((block) => (typeof block.text === 'string' ? block.text : ''))
+        .join(' ')
+        .trim();
+      if (!text) continue;
+      lines.push(`${message.role === 'user' ? '用户' : '助手'}：${text.slice(0, 800)}`);
+    }
+    return lines.join('\n');
+  }
+
+  /**
+   * One evaluator call with the configured small model: the completion
+   * condition plus the recent transcript → met / not-met + short reason.
+   * The evaluator never runs tools; it only judges what the conversation
+   * already surfaced (NewMax /goal semantics).
+   */
+  private async evaluateGoal(
+    conversationId: string,
+    goal: GoalStatus,
+  ): Promise<{ met: boolean; reason: string }> {
+    const evaluatorModelId = this.evaluatorModelId();
+    if (!evaluatorModelId) return { met: false, reason: '评估模型未配置（goal.evaluator-model）' };
+    const threadId = this.resolveConversationThreadId(conversationId);
+    if (!threadId) return { met: false, reason: '找不到对话对应的线程' };
+    if (!this.providerStore || !this.secureStore) return { met: false, reason: 'provider 存储不可用' };
+    const model = this.providerStore.getModel(evaluatorModelId as ModelId);
+    const provider = model ? this.providerStore.getProvider(model.providerId) : undefined;
+    const credentialRef = provider
+      ? this.providerStore.getPrimaryCredentialRef(provider.id)
+      : undefined;
+    const adapter = provider
+      ? (this.resolveDiscoveryAdapter(provider.protocol) ?? this.demoProvider)
+      : undefined;
+    if (!model || !provider || !adapter || !credentialRef) {
+      return { met: false, reason: '评估模型配置不完整（模型/供应商/凭据）' };
+    }
+    const storeHandle = this.providerStore.getCredentialStoreHandle(credentialRef.id);
+    if (!storeHandle) return { met: false, reason: '评估凭据不可用' };
+    const apiKey = await this.secureStore.retrieveSecret(storeHandle);
+    if (!apiKey || apiKey.trim().length === 0) return { met: false, reason: '评估凭据为空' };
+
+    const transcript = this.buildGoalTranscript(threadId);
+    const control = new AbortController();
+    const timer = setTimeout(() => control.abort(), 60_000);
+    try {
+      const messages: import('@sync-think/adapters').ProviderMessage[] = [
+        {
+          role: 'system',
+          content:
+            '你是任务完成条件评估器。只根据对话中已呈现的内容判断完成条件是否满足。' +
+            '不调用任何工具。只回答 JSON：{"met": true|false, "reason": "简短原因（≤120字）"}',
+        },
+        {
+          role: 'user',
+          content: `完成条件：${goal.condition}\n\n最近对话内容：\n${transcript.slice(0, 12_000)}`,
+        },
+      ];
+      let output = '';
+      for await (const event of adapter.call({
+        protocol: provider.protocol,
+        baseUrl: provider.baseUrl,
+        modelId: model.providerModelId ?? evaluatorModelId,
+        apiKey,
+        idempotencyKey: `goal-eval-${conversationId}-${Date.now()}`,
+        signal: control.signal,
+        messages,
+        stream: true,
+        maxOutputTokens: 300,
+        temperature: 0,
+      })) {
+        if (event.type === 'text-delta') output += event.text;
+        if (event.type === 'error') return { met: false, reason: '评估调用失败' };
+      }
+      return parseGoalEvaluatorOutput(output) ?? { met: false, reason: '评估输出无法解析' };
+    } catch {
+      return { met: false, reason: '评估调用异常' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** After a run finishes on a thread with an active goal: evaluate → continue or achieve. */
+  private maybeEvaluateGoalAfterRun(threadId: string): void {
+    const conversationId = this.resolveConversationIdForThread(threadId);
+    if (!conversationId) return;
+    const goal = this.loadGoal(conversationId);
+    if (!goal || goal.status !== 'active') return;
+    void this.evaluateAndContinueGoal(conversationId, goal);
+  }
+
+  private async evaluateAndContinueGoal(conversationId: string, goal: GoalStatus): Promise<void> {
+    const { met, reason } = await this.evaluateGoal(conversationId, goal);
+    const current = this.loadGoal(conversationId);
+    if (!current || current.status !== 'active') return;
+    const updated: GoalStatus = { ...current, turnCount: current.turnCount + 1, lastReason: reason };
+    if (met) {
+      this.saveGoal({ ...updated, status: 'achieved', achievedAt: new Date().toISOString() });
+      return;
+    }
+    this.saveGoal(updated);
+    void this.triggerGoalTurn(conversationId, updated);
+  }
+
+  /** Start a goal turn: persist the condition as a user message and run it. */
+  private triggerGoalTurn(conversationId: string, goal: GoalStatus): void {
+    const threadId = this.resolveConversationThreadId(conversationId);
+    if (!threadId || !this.stateStore || !this.canStartModelRun()) return;
+    const alreadyActive = [...this.demoRuns.values()].some(
+      (run) => run.threadId === threadId && this.inFlight.has(String(run.runId)),
+    );
+    if (alreadyActive) return;
+    const runId = ulid() as RunId;
+    try {
+      const prepared = this.prepareRunBinding({
+        runId,
+        threadId: threadId as ThreadId,
+        userText: goal.condition,
+        skillVersionIds: [],
+      });
+      const demoRun = prepared.run;
+      const occurredAt = new Date().toISOString();
+      const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+      const messageEventDraft: EventDraft = {
+        id: ulid() as Event['id'],
+        workspaceId: task?.workspaceId ?? this.workspaceId,
+        taskId: task?.id,
+        runId,
+        category: 'message',
+        type: 'message.appended',
+        occurredAt,
+        payload: {
+          threadId,
+          role: 'user',
+          text: `【目标模式】继续执行目标：${goal.condition}${goal.lastReason ? `\n（上一轮评估：${goal.lastReason}）` : ''}`,
+        },
+      };
+      const projectedRuns = new Map(this.demoRuns);
+      projectedRuns.set(runId, demoRun);
+      const packetEvent: EventDraft = {
+        id: ulid() as Event['id'],
+        workspaceId: task?.workspaceId ?? this.workspaceId,
+        taskId: task?.id,
+        runId,
+        category: 'context',
+        type: 'context.packet.built',
+        occurredAt,
+        payload: {
+          threadId,
+          packetId: prepared.packetId,
+          proofHash: prepared.proofHash,
+          modelId: demoRun.modelId,
+          providerModelId: demoRun.providerModelId,
+          resolutionSource: demoRun.resolutionSource,
+          credentialRefId: demoRun.credentialRefId,
+          skillVersionIds: prepared.skillVersionIds,
+          mcpServerIds: prepared.mcpServerIds,
+        },
+      };
+      const events = this.persistProjectedEvents(
+        [messageEventDraft, packetEvent],
+        new Map(this.threadVersions),
+        projectedRuns,
+      );
+      this.recordCommittedEvents(events);
+      this.demoRuns.set(runId, demoRun);
+      for (const event of events) this.publishEvent(event);
+      void this.executeDemoRun(runId);
+    } catch {
+      // Goal turns must never break the session; the goal stays active for retry.
+    }
+  }
+
   private handleCancelRun(socket: Socket, frame: Frame): void {
     const payload = parseCancelRunPayload(frame.payload);
     if (!payload) {
@@ -13662,6 +14099,16 @@ export class Runtime {
                 nextAdapterEventIndex: currentRun.nextAdapterEventIndex + 1,
                 legacyPendingText: currentRun.legacyPendingText + adapterEvent.text,
               });
+              // Stream every delta immediately so the UI renders
+              // character-by-character instead of buffering the whole
+              // response and flushing it as one block.
+              this.publishTransientDelta({
+                threadId: currentRun.threadId as ThreadId,
+                runId,
+                kind: 'text',
+                textDelta: adapterEvent.text,
+                occurredAt: new Date().toISOString(),
+              });
               providerEventIndex++;
               continue;
             }
@@ -13952,6 +14399,10 @@ export class Runtime {
                   closeCommentaryTimelineSegment(currentRun, projectionOccurredAt),
                   projection.payload,
                 );
+                // NewMax-style goal mode: after each finished turn, a separate
+                // evaluator checks the completion condition and either continues
+                // the goal loop or marks the goal achieved.
+                this.maybeEvaluateGoalAfterRun(String(currentRun.threadId));
               } else if (projection.terminal && projection.type === 'run.failed') {
                 this.persistAssistantTerminalMessage(
                   runId,
@@ -15921,13 +16372,88 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       currentImages: resolvedImages,
       resolveImageDataUrl: (storageRef, mimeType) =>
         resolveHistoricalMessageImageDataUrl(storageRef, mimeType),
+      toolTracesByRunId: this.collectInterruptedRunToolTraces(durableMessages),
     });
+    // NewMax-style: the latest task checklist is part of the model context so
+    // the model can read back its own plan every turn (not just a UI signal).
+    const taskPlan = extractLatestTaskPlanFromEvents(this.events, run.threadId);
+    if (taskPlan) {
+      built.messages.unshift({ role: 'system', content: formatTaskPlanForModel(taskPlan) });
+    }
     run.compactSummary = built.compactSummary;
     run.compactedAt = built.compactedAt;
     return selectRecentMessagesWithinBudget(
       built.messages,
       Math.max(1, Math.floor((run.contextWindow ?? 128_000) * 0.82)),
     );
+  }
+
+  /**
+   * Restore the executed tool calls of previously interrupted (cancelled)
+   * runs from durable events, so a follow-up "continue" message can pick up
+   * the work with full context (NewMax-style session continuity). Only
+   * cancelled assistant messages in the current context window are queried.
+   */
+  private collectInterruptedRunToolTraces(
+    messages: readonly import('@sync-think/shared').Message[],
+  ): ReadonlyMap<string, readonly InterruptedRunToolTrace[]> | undefined {
+    const cancelledRunIds = new Set<string>();
+    for (const message of messages) {
+      if (message.role !== 'assistant' || !message.runId) continue;
+      const cancelled = message.blocks.some(
+        (block) =>
+          block.type === 'error' &&
+          block.payload !== undefined &&
+          block.payload !== null &&
+          typeof block.payload === 'object' &&
+          (block.payload as { terminalState?: unknown }).terminalState === 'cancelled',
+      );
+      if (cancelled) cancelledRunIds.add(String(message.runId));
+    }
+    if (cancelledRunIds.size === 0 || !this.stateStore?.listEventsByRun) return undefined;
+
+    const tracesByRunId = new Map<string, readonly InterruptedRunToolTrace[]>();
+    for (const runId of cancelledRunIds) {
+      const events = this.stateStore.listEventsByRun(runId as import('@sync-think/shared').RunId);
+      const requestedByCallId = new Map<string, { name: string; argumentsText?: string }>();
+      const traces: InterruptedRunToolTrace[] = [];
+      for (const event of events) {
+        if (event.category !== 'tool') continue;
+        const payload = (event.payload ?? {}) as Record<string, unknown>;
+        if (event.type === 'tool.requested') {
+          const callId = String(payload.toolCallId ?? '');
+          let argumentsText = '';
+          if (payload.arguments && typeof payload.arguments === 'object') {
+            argumentsText = JSON.stringify(payload.arguments);
+          } else if (payload.toolCall && typeof payload.toolCall === 'object') {
+            argumentsText = String(
+              (payload.toolCall as { argumentsJson?: unknown }).argumentsJson ?? '',
+            );
+          }
+          requestedByCallId.set(callId, {
+            name: String(payload.toolName ?? 'unknown'),
+            argumentsText,
+          });
+        } else if (event.type === 'tool.completed' || event.type === 'tool.failed') {
+          const callId = String(payload.toolCallId ?? '');
+          const requested = requestedByCallId.get(callId);
+          const resultText =
+            typeof payload.result === 'string'
+              ? payload.result
+              : typeof payload.errorSummary === 'string'
+                ? payload.errorSummary
+                : undefined;
+          traces.push({
+            toolName: requested?.name ?? String(payload.toolName ?? 'unknown'),
+            argumentsText: requested?.argumentsText,
+            resultText,
+            failed: event.type === 'tool.failed' || payload.failed === true,
+          });
+        }
+      }
+      if (traces.length > 0) tracesByRunId.set(runId, traces);
+    }
+    return tracesByRunId.size > 0 ? tracesByRunId : undefined;
   }
 
   /**
@@ -20278,14 +20804,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
 
     this.demoRuns.set(input.runId, nextRun);
-    this.publishTransientDelta({
-      threadId: nextRun.threadId as ThreadId,
-      runId: input.runId,
-      kind: input.phase === 'commentary' ? 'commentary' : 'text',
-      textDelta,
-      ...(input.phase === 'commentary' ? { afterSequence: this.eventSequence } : {}),
-      occurredAt: input.occurredAt,
-    });
+    // The full text was already streamed live delta-by-delta; only the
+    // commentary phase emits a boundary frame (empty delta + afterSequence)
+    // so the UI can close the segment without re-rendering duplicate text.
+    if (input.phase === 'commentary') {
+      this.publishTransientDelta({
+        threadId: nextRun.threadId as ThreadId,
+        runId: input.runId,
+        kind: 'commentary',
+        textDelta: '',
+        afterSequence: this.eventSequence,
+        occurredAt: input.occurredAt,
+      });
+    }
     this.updateTransientTextSnapshot({
       threadId: nextRun.threadId as ThreadId,
       runId: input.runId,

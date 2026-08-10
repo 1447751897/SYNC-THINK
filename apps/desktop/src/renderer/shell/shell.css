@@ -742,6 +742,69 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ─── Goal capsule（NewMax /goal 目标模式） ─────────────────────────────── */
+
+.shell-goal-capsule-wrap {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  margin: 0 auto 8px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.shell-goal-capsule-wrap[data-status='achieved'] .shell-goal-capsule {
+  border-color: color-mix(in srgb, var(--color-success) 34%, var(--color-border));
+  background: color-mix(in srgb, var(--color-success) 12%, var(--color-surface));
+}
+
+.shell-goal-capsule-wrap[data-status='achieved'] .shell-goal-capsule__label {
+  color: var(--color-success);
+}
+
+.shell-goal-capsule__pop {
+  min-width: 300px;
+  max-width: 460px;
+}
+
+.shell-goal-capsule__condition {
+  margin: 6px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text);
+  word-break: break-word;
+}
+
+.shell-goal-capsule__meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.shell-goal-capsule__reason {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-accent-text);
+}
+
+.shell-goal-capsule__clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-error) 34%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-error);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.shell-goal-capsule__clear:hover {
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+}
+
 .shell-task-capsule__pop {
   /* bottom:100% + 自身 padding 充当间距，保证鼠标从胶囊移入弹层不丢 hover。 */
   position: absolute;

@@ -111,7 +111,10 @@ export type Feature =
   | 'memory.decide'
   | 'memory.propose'
   | 'memory.list'
-  | 'memory.rollback';
+  | 'memory.rollback'
+  | 'goal.set'
+  | 'goal.get'
+  | 'goal.clear';
 
 export const DEFAULT_FEATURES: Feature[] = [
   'workspace.bindFolder',
@@ -133,6 +136,9 @@ export const DEFAULT_FEATURES: Feature[] = [
   'plan.revise',
   'plan.listRevisions',
   'plan.approve',
+  'goal.set',
+  'goal.get',
+  'goal.clear',
   'run.getGraph',
   'run.pause',
   'run.resume',

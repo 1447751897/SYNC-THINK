@@ -185,7 +185,10 @@ export type CommandType =
   | 'approval.list'
   | 'approval.evaluate'
   | 'approval.enqueue'
-  | 'approval.decide';
+  | 'approval.decide'
+  | 'goal.set'
+  | 'goal.get'
+  | 'goal.clear';
 
 export interface CommandRequest<T = unknown> {
   /** Routed by type; runtime dispatches by union. */
@@ -3667,6 +3670,57 @@ export interface CancelBrowserHandoffResponse {
   replayed: boolean;
   runId: RunId;
   stepId: StepId;
+}
+
+// --- Goal mode (NewMax-style /goal: keep working until a completion
+// condition is met; a separate evaluator model checks after every turn) ---
+
+export type GoalStatusState = 'active' | 'achieved' | 'cleared';
+
+export interface GoalStatus {
+  /** Conversation-scoped goal identity (conversation id). */
+  conversationId: string;
+  condition: string;
+  status: GoalStatusState;
+  startedAt: string;
+  /** Number of turns evaluated so far (resets on session resume). */
+  turnCount: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** Most recent evaluator reason ("why the condition is or isn't met"). */
+  lastReason?: string;
+  achievedAt?: string;
+}
+
+export interface GoalSetPayload {
+  conversationId: string;
+  /** Completion condition, up to 4000 chars. Setting a new goal replaces the active one. */
+  condition: string;
+}
+
+export interface GoalSetResponse {
+  goal: GoalStatus;
+  /** Immediately starts a goal turn when the evaluator model is configured. */
+  started: boolean;
+  evaluatorConfigured: boolean;
+}
+
+export interface GoalGetPayload {
+  conversationId: string;
+}
+
+export interface GoalGetResponse {
+  goal?: GoalStatus;
+  evaluatorConfigured: boolean;
+}
+
+export interface GoalClearPayload {
+  conversationId: string;
+}
+
+export interface GoalClearResponse {
+  cleared: boolean;
+  goal?: GoalStatus;
 }
 
 // Helper: build a typed request envelope.

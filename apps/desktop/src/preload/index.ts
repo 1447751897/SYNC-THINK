@@ -648,6 +648,18 @@ const api = {
       ipcRenderer.invoke('runtime:conversation-compact', payload) as Promise<
         import('@sync-think/protocol').ConversationCompactResponse
       >,
+    setGoal: (payload: import('@sync-think/protocol').GoalSetPayload) =>
+      ipcRenderer.invoke('runtime:goal-set', payload) as Promise<
+        import('@sync-think/protocol').GoalSetResponse
+      >,
+    getGoal: (payload: import('@sync-think/protocol').GoalGetPayload) =>
+      ipcRenderer.invoke('runtime:goal-get', payload) as Promise<
+        import('@sync-think/protocol').GoalGetResponse
+      >,
+    clearGoal: (payload: import('@sync-think/protocol').GoalClearPayload) =>
+      ipcRenderer.invoke('runtime:goal-clear', payload) as Promise<
+        import('@sync-think/protocol').GoalClearResponse
+      >,
     importSkill: (payload: ImportSkillPayload) =>
       ipcRenderer.invoke('runtime:skill-import', payload) as Promise<ImportSkillResponse>,
     importRemoteSkill: (payload: ImportRemoteSkillPayload) =>
