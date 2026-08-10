@@ -384,11 +384,17 @@ export class SqliteCapabilityStore {
     return this.resolveGloballyEffectiveIds('skill', agentBoundSkillVersionIds);
   }
 
+  /**
+   * MCP servers are global: an MCP registered once is available everywhere
+   * (per workspace activation no longer gates MCP). Effective set = enabled
+   * servers only. The workspaceId parameter is retained for call-site
+   * compatibility but no longer filters the result.
+   */
   resolveEffectiveMcpServerIds(
-    workspaceId: string,
+    _workspaceId: string,
     agentBoundMcpServerIds: readonly string[],
   ): string[] {
-    return this.resolveWorkspaceEffectiveIds('mcp', workspaceId, agentBoundMcpServerIds);
+    return this.resolveGloballyEffectiveIds('mcp', agentBoundMcpServerIds);
   }
 
   listActiveCapabilityIds(

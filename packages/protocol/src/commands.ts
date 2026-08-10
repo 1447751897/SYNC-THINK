@@ -151,13 +151,16 @@ export type CommandType =
   | 'desktop.command.continue'
   | 'desktop.command.cancel'
   | 'skill.import'
+  | 'skill.importRemote'
   | 'skill.list'
   | 'skill.get'
   | 'skill.delete'
   | 'skill.setEnabled'
   | 'mcp.register'
+  | 'mcp.registerRemote'
   | 'mcp.list'
   | 'mcp.setEnabled'
+  | 'mcp.delete'
   | 'capability.workspace.list'
   | 'capability.workspace.setActive'
   | 'capability.governance.list'
@@ -1915,6 +1918,21 @@ export interface ImportSkillResponse {
   reapprovalRequest?: ApprovalRequestSummary;
 }
 
+/** Fetch a remote SKILL.md and import it as an immutable market version. */
+export interface ImportRemoteSkillPayload {
+  /** Absolute HTTP(S) URL to a SKILL.md document (GitHub blob URLs are normalized). */
+  url: string;
+  /** Optional stable source pointer; defaults to the normalized response URL. */
+  originRef?: string;
+  /** Preserve an existing Skill family when importing a remote update. */
+  skillId?: string;
+}
+
+export interface ImportRemoteSkillResponse extends ImportSkillResponse {
+  sourceUrl: string;
+  fetchedBytes: number;
+}
+
 export interface ListSkillsPayload {
   limit?: number;
   /** Current workspace for ordinary Compose and "/" discovery. */
@@ -1979,6 +1997,16 @@ export interface McpServerSummary {
   maxOutputBytes: number;
   timeoutMs: number;
   notes: string;
+  /** True when a remote authentication key is configured. */
+  authConfigured?: boolean;
+  /** Header scheme used for the stored key. */
+  authScheme?: 'bearer' | 'api-key' | string;
+  /**
+   * Plaintext remote auth key, echoed back for the register/update dialog.
+   * Product requirement: the latest key is shown again when reopening the
+   * dialog, so keys are stored in plaintext app settings (not SecureStore).
+   */
+  authKey?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1987,6 +2015,11 @@ export interface RegisterMcpServerPayload {
   name: string;
   transport?: 'local-stdio' | 'remote-http' | string;
   endpoint?: string;
+  /** Optional remote auth key; accepted for backwards-compatible registration. */
+  key?: string;
+  /** Alias for key used by provider integrations. */
+  apiKey?: string;
+  authScheme?: 'bearer' | 'api-key' | string;
   tools?: McpToolSchemaSummary[];
   trusted?: boolean;
   maxOutputBytes?: number;
@@ -1998,6 +2031,32 @@ export interface RegisterMcpServerResponse {
   server: McpServerSummary;
   /** True when an existing name+endpoint row was updated in place. */
   updated: boolean;
+}
+
+/** Register a remote HTTP MCP endpoint and optionally persist its key securely. */
+export interface RegisterRemoteMcpPayload {
+  name: string;
+  endpoint: string;
+  /** User-provided key. It is written to SecureStore and never echoed back. */
+  key?: string;
+  /** Alias accepted for integrations that call the field apiKey. */
+  apiKey?: string;
+  /** How the key is sent to the server (default: bearer). */
+  authScheme?: 'bearer' | 'api-key' | string;
+  /** Discover tools via tools/list after registration (best effort, default true). */
+  discoverTools?: boolean;
+  tools?: McpToolSchemaSummary[];
+  trusted?: boolean;
+  maxOutputBytes?: number;
+  timeoutMs?: number;
+  notes?: string;
+}
+
+export interface RegisterRemoteMcpResponse extends RegisterMcpServerResponse {
+  endpoint: string;
+  authConfigured: boolean;
+  discovered: boolean;
+  discoveryError?: string;
 }
 
 export interface ListMcpServersPayload {
@@ -2015,6 +2074,16 @@ export interface SetMcpServerEnabledPayload {
 
 export interface SetMcpServerEnabledResponse {
   server: McpServerSummary;
+}
+
+export interface DeleteMcpServerPayload {
+  mcpServerId: string;
+}
+
+export interface DeleteMcpServerResponse {
+  mcpServerId: string;
+  /** True when the row was removed; false when the server did not exist. */
+  deleted: boolean;
 }
 
 // --- Capability governance (global enablement ∩ workspace activation ∩ Agent binding) ---
@@ -2428,7 +2497,7 @@ export interface RefreshMcpToolsResponse {
   serverName?: string;
   endpoint?: string;
   transport: string;
-  /** Tool catalog after refresh (empty on failure). */
+  /** Tool catalog after refresh; the previous catalog is preserved on failure. */
   tools: McpToolSchemaSummary[];
   previousToolCount: number;
   toolCount: number;

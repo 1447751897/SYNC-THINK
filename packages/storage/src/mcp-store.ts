@@ -172,6 +172,13 @@ export class SqliteMcpStore {
     return this.get(id);
   }
 
+  /** Remove a registry row. Callers must ensure no authorization/binding references exist. */
+  delete(mcpServerId: McpServerId | string): boolean {
+    const id = String(mcpServerId ?? '').trim();
+    if (!id) return false;
+    return this.raw.prepare(`DELETE FROM mcp_server WHERE id = ?`).run(id).changes > 0;
+  }
+
   /**
    * Register (or update tools of) an MCP server stub.
    * When the same name+endpoint exists, updates tools/trust metadata in place

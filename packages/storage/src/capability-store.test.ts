@@ -75,6 +75,8 @@ describe('SqliteCapabilityStore', () => {
       expect(
         capabilityStore.resolveEffectiveSkillVersionIds('workspace-alpha', [skill.id]),
       ).toEqual([skill.id]);
+      // MCP is global: enabled alone makes it effective (workspace activation
+      // is no longer consulted for MCP).
       expect(
         capabilityStore.resolveEffectiveMcpServerIds('workspace-alpha', [mcp.id]),
       ).toEqual([mcp.id]);
@@ -102,6 +104,11 @@ describe('SqliteCapabilityStore', () => {
       ).toEqual([skill.id]);
       expect(
         capabilityStore.resolveEffectiveMcpServerIds('workspace-alpha', [mcp.id]),
+      ).toEqual([mcp.id]);
+
+      // MCP remains effective in another workspace that never activated it.
+      expect(
+        capabilityStore.resolveEffectiveMcpServerIds('workspace-beta', [mcp.id]),
       ).toEqual([mcp.id]);
     } finally {
       close();

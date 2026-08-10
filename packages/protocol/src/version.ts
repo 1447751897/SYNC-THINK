@@ -90,6 +90,7 @@ export type Feature =
   | 'mcp.register'
   | 'mcp.list'
   | 'mcp.setEnabled'
+  | 'mcp.delete'
   | 'capability.workspace.list'
   | 'capability.workspace.setActive'
   | 'capability.governance.list'
@@ -194,6 +195,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'mcp.register',
   'mcp.list',
   'mcp.setEnabled',
+  'mcp.delete',
   'capability.workspace.list',
   'capability.workspace.setActive',
   'capability.governance.list',
