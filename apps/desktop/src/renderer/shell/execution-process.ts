@@ -2,15 +2,7 @@ import type { Event } from '@sync-think/shared';
 
 export type ProcessStepStatus = 'running' | 'done' | 'error';
 export type ProcessToolKind =
-  | 'read'
-  | 'list'
-  | 'write'
-  | 'bash'
-  | 'git'
-  | 'browser'
-  | 'search'
-  | 'mcp'
-  | 'other';
+  'read' | 'list' | 'write' | 'bash' | 'git' | 'browser' | 'search' | 'mcp' | 'other';
 
 export interface ExecutionProcessStep {
   id: string;
@@ -72,10 +64,7 @@ export interface ExecutionProcessView {
   completedAt?: string;
 }
 
-const TOOL_META: Record<
-  string,
-  { verb: string; kind: ProcessToolKind; zh: string }
-> = {
+const TOOL_META: Record<string, { verb: string; kind: ProcessToolKind; zh: string }> = {
   read_file: { verb: 'Read', kind: 'read', zh: '读取文件' },
   write_file: { verb: 'Edit', kind: 'write', zh: '写入文件' },
   edit_file: { verb: 'Edit', kind: 'write', zh: '编辑文件' },
@@ -200,7 +189,10 @@ function extractToolCallId(payload: Record<string, unknown>, eventId: string): s
   return eventId;
 }
 
-function buildLabel(toolName: string, args?: Record<string, unknown>): {
+function buildLabel(
+  toolName: string,
+  args?: Record<string, unknown>,
+): {
   label: string;
   verb: string;
   zh: string;
@@ -438,9 +430,16 @@ export function projectExecutionProcess(
     const toolCallId = extractToolCallId(payload, event.id);
     const toolName = extractToolName(payload);
 
-    // update_task_plan is a pure UI signal: project the checklist, keep it out
-    // of the tool step list (it would be noise there).
-    if (toolName === 'update_task_plan') {
+    // Task-plan tools are pure UI signals: project the checklist, keep them
+    // out of the tool step list (they would be noise there). update_task_plan
+    // covers legacy runs; TaskCreate/TaskUpdate/TaskList are the persisted
+    // NewMax-style tools (their results echo the same plan snapshot).
+    if (
+      toolName === 'update_task_plan' ||
+      toolName === 'TaskCreate' ||
+      toolName === 'TaskUpdate' ||
+      toolName === 'TaskList'
+    ) {
       const parsedPlan = extractTaskPlan(payload);
       if (parsedPlan) taskPlan = parsedPlan;
       continue;
@@ -507,15 +506,12 @@ export function projectExecutionProcess(
             : failed && typeof payload.errorMessage === 'string'
               ? payload.errorMessage
               : resultFailed
-                ? extractToolResultError(payload.result ?? payload.output) ?? resultSummary.preview
+                ? (extractToolResultError(payload.result ?? payload.output) ??
+                  resultSummary.preview)
                 : undefined,
         occurredAt: event.occurredAt,
       });
-      if (
-        completed &&
-        (toolName === 'write_file' || toolName === 'edit_file') &&
-        built.path
-      ) {
+      if (completed && (toolName === 'write_file' || toolName === 'edit_file') && built.path) {
         fileChanges.push({
           path: built.path,
           action: resultSummary.created ? 'created' : 'edited',
@@ -535,18 +531,14 @@ export function projectExecutionProcess(
             ? payload.errorMessage
             : existing.error;
     } else if (completed) {
-      const summary = summarizeResult(
-        toolName,
-        payload.result ?? payload.output,
-        argsForSummary,
-      );
+      const summary = summarizeResult(toolName, payload.result ?? payload.output, argsForSummary);
       const resultFailed = isToolResultFailure(payload.result ?? payload.output, summary);
-      existing.status =
-        existing.status === 'error' || resultFailed ? 'error' : 'done';
+      existing.status = existing.status === 'error' || resultFailed ? 'error' : 'done';
       existing.preview = summary.preview ?? existing.preview;
       existing.exitCode = summary.exitCode ?? existing.exitCode;
       if (resultFailed && !existing.error) {
-        existing.error = extractToolResultError(payload.result ?? payload.output) ?? existing.preview;
+        existing.error =
+          extractToolResultError(payload.result ?? payload.output) ?? existing.preview;
       }
       if (
         (toolName === 'write_file' || toolName === 'edit_file') &&
@@ -668,9 +660,7 @@ function normalizeTaskPlanItems(raw: unknown): TaskPlanView | undefined {
     const title = typeof rec?.title === 'string' ? rec.title.trim() : '';
     if (!title) continue;
     const status =
-      rec?.status === 'in_progress' || rec?.status === 'completed'
-        ? rec.status
-        : 'pending';
+      rec?.status === 'in_progress' || rec?.status === 'completed' ? rec.status : 'pending';
     items.push({ title, status });
   }
   if (items.length === 0) return undefined;
@@ -681,10 +671,7 @@ function normalizeTaskPlanItems(raw: unknown): TaskPlanView | undefined {
   };
 }
 
-function isToolResultFailure(
-  resultRaw: unknown,
-  summary: { exitCode?: number },
-): boolean {
+function isToolResultFailure(resultRaw: unknown, summary: { exitCode?: number }): boolean {
   if (typeof summary.exitCode === 'number' && summary.exitCode !== 0) return true;
   const parsed = parseMaybeJson(resultRaw);
   const obj = asRecord(parsed);
@@ -744,8 +731,7 @@ export function formatCompactRunMetrics(options: {
     options.tokensIn !== undefined || options.tokensOut !== undefined
       ? (options.tokensIn ?? 0) + (options.tokensOut ?? 0)
       : undefined;
-  const tokens =
-    totalTokens !== undefined ? formatCompactCount(totalTokens) : undefined;
+  const tokens = totalTokens !== undefined ? formatCompactCount(totalTokens) : undefined;
   if (duration && tokens) return `${duration} · ${tokens}`;
   if (duration) return duration;
   if (tokens) return tokens;

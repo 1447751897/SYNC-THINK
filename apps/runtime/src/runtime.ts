@@ -229,6 +229,7 @@ import {
   type SqliteSkillStore,
   type SqliteMcpStore,
   type SqliteCapabilityStore,
+  type SqliteTaskPlanStore,
   type SqliteApprovalStore,
   type SqlitePolicyStore,
   type SqliteAuthorizationStore,
@@ -324,6 +325,7 @@ import {
   CHAT_BROWSER_WORKFLOW_TOOL_NAMES,
   CHAT_DESKTOP_TOOL_NAMES,
   CHAT_PLAN_TOOL_NAMES,
+  CHAT_TASK_PLAN_TOOL_NAMES,
   CHAT_MCP_CATALOG_TOOL_NAMES,
   CHAT_MCP_REGISTRY_TOOL_NAMES,
   CHAT_SKILL_TOOL_NAMES,
@@ -343,6 +345,9 @@ import {
   executeChatBrowserWorkflowTool,
   executeChatDesktopTool,
   executeChatPlanTool,
+  executeTaskCreateTool,
+  executeTaskUpdateTool,
+  executeTaskListTool,
   foldLongToolOutputsInMessages,
   foldToolOutputText,
   isChatToolAllowed,
@@ -624,6 +629,8 @@ export interface RuntimeOptions {
   stepExecutor?: StepExecutor;
   skillStore?: SqliteSkillStore;
   mcpStore?: SqliteMcpStore;
+  /** NewMax-style persisted task checklist store (workspace-scoped). */
+  taskPlanStore?: SqliteTaskPlanStore;
   capabilityStore?: SqliteCapabilityStore;
   secureStore?: SecureStore;
   /** Shared Browser Host. Persistent Runtime supplies the production CDP Host. */
@@ -765,9 +772,7 @@ export function extractLatestTaskPlanFromEvents(
       if (result?.ok === true) {
         const plan = result.plan;
         rawItems =
-          plan && typeof plan === 'object'
-            ? (plan as Record<string, unknown>).items
-            : undefined;
+          plan && typeof plan === 'object' ? (plan as Record<string, unknown>).items : undefined;
       }
     } else if (event.type === 'tool.requested') {
       rawItems =
@@ -799,7 +804,9 @@ function normalizeModelTaskPlan(raw: unknown): ModelTaskPlan | undefined {
 }
 
 /** Parse the goal evaluator's JSON answer ({met, reason}) with lenient extraction. */
-export function parseGoalEvaluatorOutput(output: string): { met: boolean; reason: string } | undefined {
+export function parseGoalEvaluatorOutput(
+  output: string,
+): { met: boolean; reason: string } | undefined {
   if (!output || typeof output !== 'string') return undefined;
   const trimmed = output.trim();
   const jsonStart = trimmed.indexOf('{');
@@ -828,7 +835,8 @@ export function parseGoalEvaluatorOutput(output: string): { met: boolean; reason
 /** NewMax-style checkbox checklist text injected into the model context. */
 export function formatTaskPlanForModel(plan: ModelTaskPlan): string {
   const lines = plan.items.map((item) => {
-    const mark = item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[~]' : '[ ]';
+    const mark =
+      item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[~]' : '[ ]';
     return `- ${mark} ${item.title}`;
   });
   return `当前任务清单（${plan.completed}/${plan.total} 已完成）：\n${lines.join('\n')}`;
@@ -1035,6 +1043,7 @@ export class Runtime {
   private readonly scheduler?: Scheduler;
   private readonly skillStore?: SqliteSkillStore;
   private readonly mcpStore?: SqliteMcpStore;
+  private readonly taskPlanStore?: SqliteTaskPlanStore;
   private readonly capabilityStore?: SqliteCapabilityStore;
   private readonly recordedCapabilityUsageKeys = new Set<string>();
   private readonly secureStore?: SecureStore;
@@ -1193,6 +1202,7 @@ export class Runtime {
         : undefined;
     this.skillStore = opts.skillStore;
     this.mcpStore = opts.mcpStore;
+    this.taskPlanStore = opts.taskPlanStore;
     this.capabilityStore = opts.capabilityStore;
     this.secureStore = opts.secureStore;
     this.browserHost = opts.browserHost;
@@ -1786,7 +1796,7 @@ export class Runtime {
           return;
         }
         if (frame.type === 'mcp.list') {
-          this.handleListMcpServers(socket, frame);
+          this.trackBackgroundTask(this.handleListMcpServers(socket, frame));
           return;
         }
         if (frame.type === 'mcp.setEnabled') {
@@ -9769,9 +9779,7 @@ export class Runtime {
     const plainKey = typeof rec.key === 'string' ? rec.key.trim() : '';
     const handle = typeof rec.storeHandle === 'string' ? rec.storeHandle.trim() : '';
     if (!plainKey && !handle) return undefined;
-    const config = plainKey
-      ? { key: plainKey, authScheme }
-      : { storeHandle: handle, authScheme };
+    const config = plainKey ? { key: plainKey, authScheme } : { storeHandle: handle, authScheme };
     this.mcpAuthHandles.set(id, config);
     return config;
   }
@@ -10017,7 +10025,29 @@ export class Runtime {
     }
   }
 
-  private handleListMcpServers(socket: Socket, frame: Frame): void {
+  private async hydrateLegacyMcpAuthKeys(): Promise<void> {
+    if (!this.mcpStore || !this.secureStore) return;
+    for (const server of this.mcpStore.list(500)) {
+      const auth = this.readMcpAuthConfig(server.id);
+      if (!auth?.storeHandle || auth.key) continue;
+      try {
+        const key = (await this.secureStore.retrieveSecret(auth.storeHandle)).trim();
+        if (!key) continue;
+        const migrated = { key, authScheme: auth.authScheme };
+        this.mcpAuthHandles.set(String(server.id), migrated);
+        try {
+          this.appSettingStore?.set(this.mcpAuthSettingKey(server.id), migrated);
+        } catch {
+          // The in-memory value still lets this session display and use the key.
+        }
+      } catch {
+        // Keep legacy auth status when its stored secret is no longer readable.
+      }
+    }
+  }
+
+  private async handleListMcpServers(socket: Socket, frame: Frame): Promise<void> {
+    await this.hydrateLegacyMcpAuthKeys();
     skillQueries.handleListMcpServers(this.skillQueryContext(), socket, frame);
   }
 
@@ -13346,9 +13376,8 @@ export class Runtime {
   /** Conversation id for a thread (goal state is conversation-scoped). */
   private resolveConversationIdForThread(threadId: string): string | undefined {
     const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
-    const conversation = task && this.conversationStore
-      ? this.conversationStore.getByTaskId(task.id)
-      : undefined;
+    const conversation =
+      task && this.conversationStore ? this.conversationStore.getByTaskId(task.id) : undefined;
     return conversation ? String(conversation.id) : undefined;
   }
 
@@ -13380,7 +13409,8 @@ export class Runtime {
     if (!evaluatorModelId) return { met: false, reason: '评估模型未配置（goal.evaluator-model）' };
     const threadId = this.resolveConversationThreadId(conversationId);
     if (!threadId) return { met: false, reason: '找不到对话对应的线程' };
-    if (!this.providerStore || !this.secureStore) return { met: false, reason: 'provider 存储不可用' };
+    if (!this.providerStore || !this.secureStore)
+      return { met: false, reason: 'provider 存储不可用' };
     const model = this.providerStore.getModel(evaluatorModelId as ModelId);
     const provider = model ? this.providerStore.getProvider(model.providerId) : undefined;
     const credentialRef = provider
@@ -13450,7 +13480,11 @@ export class Runtime {
     const { met, reason } = await this.evaluateGoal(conversationId, goal);
     const current = this.loadGoal(conversationId);
     if (!current || current.status !== 'active') return;
-    const updated: GoalStatus = { ...current, turnCount: current.turnCount + 1, lastReason: reason };
+    const updated: GoalStatus = {
+      ...current,
+      turnCount: current.turnCount + 1,
+      lastReason: reason,
+    };
     if (met) {
       this.saveGoal({ ...updated, status: 'achieved', achievedAt: new Date().toISOString() });
       return;
@@ -14677,7 +14711,26 @@ export class Runtime {
                   }
                 ).mcpToolDispatch?.get(toolCall.name) ?? parseMcpProviderToolName(toolCall.name);
               if (CHAT_PLAN_TOOL_NAMES.has(toolCall.name)) {
-                resultText = executeChatPlanTool(toolCall.argumentsJson);
+                if (CHAT_TASK_PLAN_TOOL_NAMES.has(toolCall.name) && this.taskPlanStore) {
+                  const workspaceId = this.resolveEventWorkspaceId(currentRun.threadId);
+                  if (toolCall.name === 'TaskCreate') {
+                    resultText = executeTaskCreateTool(
+                      toolCall.argumentsJson,
+                      workspaceId,
+                      this.taskPlanStore,
+                    );
+                  } else if (toolCall.name === 'TaskUpdate') {
+                    resultText = executeTaskUpdateTool(toolCall.argumentsJson, this.taskPlanStore);
+                  } else {
+                    resultText = executeTaskListTool(
+                      toolCall.argumentsJson,
+                      workspaceId,
+                      this.taskPlanStore,
+                    );
+                  }
+                } else {
+                  resultText = executeChatPlanTool(toolCall.argumentsJson);
+                }
               } else if (CHAT_BROWSER_TOOL_NAMES.has(toolCall.name)) {
                 resultText = await this.executeChatBrowserWorkerTool({
                   runId,
@@ -16374,11 +16427,34 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         resolveHistoricalMessageImageDataUrl(storageRef, mimeType),
       toolTracesByRunId: this.collectInterruptedRunToolTraces(durableMessages),
     });
-    // NewMax-style: the latest task checklist is part of the model context so
-    // the model can read back its own plan every turn (not just a UI signal).
-    const taskPlan = extractLatestTaskPlanFromEvents(this.events, run.threadId);
-    if (taskPlan) {
-      built.messages.unshift({ role: 'system', content: formatTaskPlanForModel(taskPlan) });
+    // NewMax-style: the persisted task checklist is part of the model context
+    // so the model can read back its own plan every turn (not just a UI
+    // signal). Prefer the workspace-scoped persisted plan (TaskCreate/
+    // TaskUpdate/TaskList); fall back to the event-extracted run plan for
+    // conversations that still use update_task_plan.
+    const persistedPlan = this.taskPlanStore
+      ? this.taskPlanStore.list(this.resolveEventWorkspaceId(run.threadId), {
+          statuses: ['pending', 'in_progress', 'completed'],
+        })
+      : [];
+    if (persistedPlan.length > 0) {
+      const plan: ModelTaskPlan = {
+        items: persistedPlan.map((row) => ({
+          title: row.title,
+          status:
+            row.status === 'in_progress' || row.status === 'completed'
+              ? (row.status as 'in_progress' | 'completed')
+              : 'pending',
+        })),
+        total: persistedPlan.length,
+        completed: persistedPlan.filter((row) => row.status === 'completed').length,
+      };
+      built.messages.unshift({ role: 'system', content: formatTaskPlanForModel(plan) });
+    } else {
+      const taskPlan = extractLatestTaskPlanFromEvents(this.events, run.threadId);
+      if (taskPlan) {
+        built.messages.unshift({ role: 'system', content: formatTaskPlanForModel(taskPlan) });
+      }
     }
     run.compactSummary = built.compactSummary;
     run.compactedAt = built.compactedAt;

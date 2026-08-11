@@ -68,12 +68,35 @@ export const CHAT_BUILT_IN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       required: ['pattern'],
       properties: {
         pattern: { type: 'string', description: 'JavaScript regular expression source (no flags)' },
-        path: { type: 'string', description: 'Subdirectory to search, relative to the project folder (default: whole project)' },
-        caseInsensitive: { type: 'boolean', description: 'Match case-insensitively (default: false)' },
-        globInclude: { type: 'string', description: 'Only search files matching this glob, e.g. "**/*.ts"' },
-        globExclude: { type: 'string', description: 'Skip files matching this glob, e.g. "**/*.test.ts"' },
-        contextLines: { type: 'integer', minimum: 0, maximum: 5, description: 'Context lines before/after each match (default: 0)' },
-        maxResults: { type: 'integer', minimum: 1, maximum: 200, description: 'Max matches to report (default: 50)' },
+        path: {
+          type: 'string',
+          description:
+            'Subdirectory to search, relative to the project folder (default: whole project)',
+        },
+        caseInsensitive: {
+          type: 'boolean',
+          description: 'Match case-insensitively (default: false)',
+        },
+        globInclude: {
+          type: 'string',
+          description: 'Only search files matching this glob, e.g. "**/*.ts"',
+        },
+        globExclude: {
+          type: 'string',
+          description: 'Skip files matching this glob, e.g. "**/*.test.ts"',
+        },
+        contextLines: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 5,
+          description: 'Context lines before/after each match (default: 0)',
+        },
+        maxResults: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 200,
+          description: 'Max matches to report (default: 50)',
+        },
       },
     },
   },
@@ -525,9 +548,282 @@ export const CHAT_PLAN_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       },
     },
   },
+  {
+    name: 'TaskCreate',
+    description:
+      'Create one persisted task in the current workspace checklist (NewMax-style). Returns the created task with its id. Use for multi-step work that should survive across conversations; keep titles short and imperative.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['title'],
+      properties: {
+        title: { type: 'string', description: 'Short imperative task title (≤80 chars)' },
+        description: { type: 'string', description: 'Optional detail' },
+        priority: {
+          type: 'string',
+          enum: ['low', 'medium', 'high'],
+          description: 'Default medium',
+        },
+        dependsOn: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Task ids this task depends on (optional DAG edges)',
+        },
+      },
+    },
+  },
+  {
+    name: 'TaskUpdate',
+    description:
+      'Update an existing persisted task (status, priority, title, order). Lifecycle timestamps follow status transitions automatically (in_progress sets actual start, completed/cancelled sets actual end). Returns the updated task.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskId'],
+      properties: {
+        taskId: { type: 'string', description: 'Task id returned by TaskCreate/TaskList' },
+        title: { type: 'string' },
+        status: {
+          type: 'string',
+          enum: ['pending', 'in_progress', 'completed', 'cancelled'],
+        },
+        priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+        sortOrder: { type: 'number', description: 'Position in the checklist (ascending)' },
+      },
+    },
+  },
+  {
+    name: 'TaskList',
+    description:
+      'List the current workspace task checklist (persisted, ordered). Returns every task with id/title/status/priority/dependencies. Call this before TaskUpdate to resolve task ids; also useful to plan the next step.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        statuses: {
+          type: 'array',
+          items: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] },
+          description: 'Optional status filter',
+        },
+      },
+    },
+  },
 ];
 
 export const CHAT_PLAN_TOOL_NAMES = new Set(CHAT_PLAN_TOOL_SCHEMAS.map((tool) => tool.name));
+export const CHAT_TASK_PLAN_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate', 'TaskList']);
+
+/**
+ * Persisted task-plan execution (NewMax-style). Each result echoes a `plan`
+ * snapshot ({items, completed, total}) so the renderer capsule keeps working
+ * through the same tool.completed event extraction as update_task_plan.
+ */
+export interface ChatTaskPlanSnapshot {
+  items: Array<{ title: string; status: 'pending' | 'in_progress' | 'completed' }>;
+  completed: number;
+  total: number;
+}
+
+function toSnapshot(
+  store: {
+    list(
+      workspaceId: string,
+      options?: { statuses?: readonly string[] },
+    ): Array<{
+      id: string;
+      title: string;
+      status: string;
+      priority: string;
+      dependsOn: string[];
+    }>;
+  },
+  workspaceId: string,
+): ChatTaskPlanSnapshot {
+  const rows = store.list(workspaceId, { statuses: ['pending', 'in_progress', 'completed'] });
+  const items: ChatTaskPlanSnapshot['items'] = rows.map((row) => ({
+    title: row.title,
+    status: row.status === 'in_progress' || row.status === 'completed' ? row.status : 'pending',
+  }));
+  return {
+    items,
+    completed: items.filter((item) => item.status === 'completed').length,
+    total: items.length,
+  };
+}
+
+function fail(tool: string, message: string): string {
+  return JSON.stringify({ ok: false, error: `${tool}: ${message}` });
+}
+
+function readJson(argumentsJson: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(argumentsJson || '{}') as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function executeTaskCreateTool(
+  argumentsJson: string,
+  workspaceId: string,
+  store: {
+    create(input: {
+      workspaceId: string;
+      title: string;
+      description?: string;
+      priority?: string;
+      status?: string;
+      dependsOn?: readonly string[];
+    }): { id: string; title: string; status: string; priority: string; dependsOn: string[] };
+    list(
+      workspaceId: string,
+      options?: { statuses?: readonly string[] },
+    ): Array<{
+      id: string;
+      title: string;
+      status: string;
+      priority: string;
+      dependsOn: string[];
+    }>;
+  },
+): string {
+  const args = readJson(argumentsJson);
+  if (!args || typeof args.title !== 'string' || !args.title.trim()) {
+    return fail('TaskCreate', 'title is required.');
+  }
+  if (!workspaceId) return fail('TaskCreate', 'no active workspace.');
+  const task = store.create({
+    workspaceId,
+    title: args.title.trim().slice(0, 80),
+    description: typeof args.description === 'string' ? args.description.trim().slice(0, 400) : '',
+    priority: args.priority === 'low' || args.priority === 'high' ? args.priority : 'medium',
+    dependsOn: Array.isArray(args.dependsOn)
+      ? args.dependsOn.filter((v): v is string => typeof v === 'string').slice(0, 20)
+      : undefined,
+  });
+  return JSON.stringify({
+    ok: true,
+    task: {
+      taskId: task.id,
+      title: task.title,
+      status: task.status,
+      priority: task.priority,
+      dependsOn: task.dependsOn,
+    },
+    plan: toSnapshot(store, workspaceId),
+  });
+}
+
+export function executeTaskUpdateTool(
+  argumentsJson: string,
+  store: {
+    update(input: {
+      taskId: string;
+      title?: string;
+      status?: string;
+      priority?: string;
+      sortOrder?: number;
+    }):
+      | { id: string; title: string; status: string; priority: string; dependsOn: string[] }
+      | undefined;
+    get(taskId: string): { workspaceId: string } | undefined;
+    list(
+      workspaceId: string,
+      options?: { statuses?: readonly string[] },
+    ): Array<{
+      id: string;
+      title: string;
+      status: string;
+      priority: string;
+      dependsOn: string[];
+    }>;
+  },
+): string {
+  const args = readJson(argumentsJson);
+  if (!args || typeof args.taskId !== 'string' || !args.taskId.trim()) {
+    return fail('TaskUpdate', 'taskId is required.');
+  }
+  const existing = store.get(args.taskId.trim());
+  if (!existing) return fail('TaskUpdate', `task not found: ${args.taskId}`);
+  const updated = store.update({
+    taskId: args.taskId.trim(),
+    title:
+      typeof args.title === 'string' && args.title.trim()
+        ? args.title.trim().slice(0, 80)
+        : undefined,
+    status:
+      args.status === 'pending' ||
+      args.status === 'in_progress' ||
+      args.status === 'completed' ||
+      args.status === 'cancelled'
+        ? args.status
+        : undefined,
+    priority:
+      args.priority === 'low' || args.priority === 'high'
+        ? args.priority
+        : args.priority === 'medium'
+          ? 'medium'
+          : undefined,
+    sortOrder:
+      typeof args.sortOrder === 'number' && Number.isFinite(args.sortOrder)
+        ? Math.trunc(args.sortOrder)
+        : undefined,
+  });
+  if (!updated) return fail('TaskUpdate', 'update failed.');
+  return JSON.stringify({
+    ok: true,
+    task: {
+      taskId: updated.id,
+      title: updated.title,
+      status: updated.status,
+      priority: updated.priority,
+      dependsOn: updated.dependsOn,
+    },
+    plan: toSnapshot(store, existing.workspaceId),
+  });
+}
+
+export function executeTaskListTool(
+  argumentsJson: string,
+  workspaceId: string,
+  store: {
+    list(
+      workspaceId: string,
+      options?: { statuses?: readonly string[] },
+    ): Array<{
+      id: string;
+      title: string;
+      status: string;
+      priority: string;
+      dependsOn: string[];
+    }>;
+  },
+): string {
+  const args = readJson(argumentsJson);
+  const statuses = Array.isArray(args?.statuses)
+    ? args.statuses.filter(
+        (v): v is string =>
+          typeof v === 'string' &&
+          (v === 'pending' || v === 'in_progress' || v === 'completed' || v === 'cancelled'),
+      )
+    : undefined;
+  if (!workspaceId) return fail('TaskList', 'no active workspace.');
+  const rows = store.list(workspaceId, statuses ? { statuses } : undefined);
+  return JSON.stringify({
+    ok: true,
+    tasks: rows.map((row) => ({
+      taskId: row.id,
+      title: row.title,
+      status: row.status,
+      priority: row.priority,
+      dependsOn: row.dependsOn,
+    })),
+    plan: toSnapshot(store, workspaceId),
+  });
+}
 
 /**
  * Browser Automation Studio tools operate on local Workflow metadata. They are
@@ -599,7 +895,8 @@ export const CHAT_BROWSER_WORKFLOW_TOOL_SCHEMAS: readonly ProviderToolSchema[] =
       properties: {
         taskId: {
           type: 'string',
-          description: 'Exact automation task id. The latest published Version of this task is executed.',
+          description:
+            'Exact automation task id. The latest published Version of this task is executed.',
         },
         variables: {
           type: 'object',

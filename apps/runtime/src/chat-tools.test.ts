@@ -337,10 +337,13 @@ describe('chat execution mode tool gating', () => {
       networkEnabled: true,
       includeProjectTools: false,
     }).map((t) => t.name);
-    // update_task_plan is a UI-only tool that is always present; browser tools
-    // ride on the 联网 switch alongside web_search / web_fetch.
+    // Task-plan tools are UI-only and always present; browser tools ride on
+    // the 联网 switch alongside web_search / web_fetch.
     expect(networkOnly).toEqual([
       'update_task_plan',
+      'TaskCreate',
+      'TaskUpdate',
+      'TaskList',
       'web_search',
       'web_fetch',
       'browser_open',
@@ -378,6 +381,112 @@ describe('chat execution mode tool gating', () => {
     // Invalid payloads fail gracefully.
     expect(JSON.parse(executeChatPlanTool('not json')).ok).toBe(false);
     expect(JSON.parse(executeChatPlanTool(JSON.stringify({ items: [] }))).ok).toBe(false);
+  });
+
+  it('TaskCreate/TaskUpdate/TaskList: persisted NewMax-style checklist tools', async () => {
+    const {
+      executeTaskCreateTool,
+      executeTaskUpdateTool,
+      executeTaskListTool,
+      chatToolRequiresApproval,
+    } = await import('./chat-tools.js');
+    // In-memory store stub mirroring SqliteTaskPlanStore semantics.
+    const rows: Array<{
+      id: string;
+      workspaceId: string;
+      title: string;
+      status: string;
+      priority: string;
+      dependsOn: string[];
+      sortOrder: number;
+    }> = [];
+    let nextId = 0;
+    const store = {
+      create(input: {
+        workspaceId: string;
+        title: string;
+        priority?: string;
+        dependsOn?: readonly string[];
+      }) {
+        const row = {
+          id: `task-${++nextId}`,
+          workspaceId: input.workspaceId,
+          title: input.title,
+          status: 'pending',
+          priority: input.priority ?? 'medium',
+          dependsOn: [...(input.dependsOn ?? [])],
+          sortOrder: rows.length,
+        };
+        rows.push(row);
+        return row;
+      },
+      get(taskId: string) {
+        return rows.find((row) => row.id === taskId);
+      },
+      update(input: { taskId: string; title?: string; status?: string; sortOrder?: number }) {
+        const row = rows.find((r) => r.id === input.taskId);
+        if (!row) return undefined;
+        if (input.title !== undefined) row.title = input.title;
+        if (input.status !== undefined) row.status = input.status;
+        if (input.sortOrder !== undefined) row.sortOrder = input.sortOrder;
+        return row;
+      },
+      list(_workspaceId: string, options?: { statuses?: readonly string[] }) {
+        return rows
+          .filter((row) => !options?.statuses || options.statuses.includes(row.status))
+          .sort((a, b) => a.sortOrder - b.sortOrder);
+      },
+    };
+
+    // TaskCreate
+    const created = JSON.parse(
+      executeTaskCreateTool(
+        JSON.stringify({ title: '设计接口', priority: 'high' }),
+        'ws-alpha',
+        store,
+      ),
+    );
+    expect(created.ok).toBe(true);
+    expect(created.task.title).toBe('设计接口');
+    expect(created.task.priority).toBe('high');
+    expect(created.plan.total).toBe(1);
+
+    // TaskCreate with dependency
+    const child = JSON.parse(
+      executeTaskCreateTool(
+        JSON.stringify({ title: '实现服务', dependsOn: [created.task.taskId] }),
+        'ws-alpha',
+        store,
+      ),
+    );
+    expect(child.task.dependsOn).toEqual([created.task.taskId]);
+
+    // TaskUpdate
+    const updated = JSON.parse(
+      executeTaskUpdateTool(
+        JSON.stringify({ taskId: created.task.taskId, status: 'completed' }),
+        store,
+      ),
+    );
+    expect(updated.ok).toBe(true);
+    expect(updated.task.status).toBe('completed');
+    expect(updated.plan.completed).toBe(1);
+    expect(updated.plan.total).toBe(2);
+
+    // TaskList
+    const listed = JSON.parse(executeTaskListTool('{}', 'ws-alpha', store));
+    expect(listed.ok).toBe(true);
+    expect(listed.tasks.length).toBe(2);
+
+    // Failures: missing title / unknown task / no workspace
+    expect(JSON.parse(executeTaskCreateTool('{}', 'ws-alpha', store)).ok).toBe(false);
+    expect(JSON.parse(executeTaskUpdateTool(JSON.stringify({ taskId: 'nope' }), store)).ok).toBe(
+      false,
+    );
+    expect(JSON.parse(executeTaskListTool('{}', '', store)).ok).toBe(false);
+    // UI-only: never approval-gated.
+    expect(chatToolRequiresApproval('ask', 'TaskCreate')).toBe(false);
+    expect(chatToolRequiresApproval('workspace', 'TaskUpdate')).toBe(false);
   });
 
   it('browser_open: network-gated, http(s) only', async () => {
@@ -769,6 +878,9 @@ describe('Browser Workflow chat tools', () => {
     }).map((tool) => tool.name);
     expect(enabled).toEqual([
       'update_task_plan',
+      'TaskCreate',
+      'TaskUpdate',
+      'TaskList',
       'browser_workflow_list',
       'browser_workflow_get',
       'browser_workflow_create_draft',

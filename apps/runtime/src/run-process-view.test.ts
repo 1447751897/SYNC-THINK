@@ -14,6 +14,114 @@ function event(input: Partial<Event> & Pick<Event, 'id' | 'sequence' | 'type' | 
 }
 
 describe('projectRunProcess', () => {
+  it('projects task tools as a checklist without mixing them into execution steps', () => {
+    const runId = 'run-task-plan-tools' as RunId;
+    const events = [
+      event({
+        id: 'event-task-create-requested' as EventId,
+        sequence: 1,
+        runId,
+        type: 'tool.requested',
+        payload: {
+          toolCallId: 'call-task-create',
+          toolName: 'TaskCreate',
+          arguments: { title: 'Inspect the workspace' },
+        },
+      }),
+      event({
+        id: 'event-task-create-completed' as EventId,
+        sequence: 2,
+        runId,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'call-task-create',
+          toolName: 'TaskCreate',
+          result: JSON.stringify({
+            ok: true,
+            task: { taskId: 'task-1', title: 'Inspect the workspace', status: 'in_progress' },
+            plan: {
+              items: [
+                { title: 'Inspect the workspace', status: 'in_progress' },
+                { title: 'Report the result', status: 'pending' },
+              ],
+            },
+          }),
+        },
+      }),
+      event({
+        id: 'event-task-update-completed' as EventId,
+        sequence: 3,
+        runId,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'call-task-update',
+          toolName: 'TaskUpdate',
+          result: JSON.stringify({
+            ok: true,
+            task: { taskId: 'task-1', title: 'Inspect the workspace', status: 'completed' },
+            plan: {
+              items: [
+                { title: 'Inspect the workspace', status: 'completed' },
+                { title: 'Report the result', status: 'in_progress' },
+              ],
+            },
+          }),
+        },
+      }),
+      event({
+        id: 'event-task-list-completed' as EventId,
+        sequence: 4,
+        runId,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'call-task-list',
+          toolName: 'TaskList',
+          result: JSON.stringify({
+            ok: true,
+            tasks: [
+              { taskId: 'task-1', title: 'Inspect the workspace', status: 'completed' },
+              { taskId: 'task-2', title: 'Report the result', status: 'in_progress' },
+            ],
+            plan: {
+              items: [
+                { title: 'Inspect the workspace', status: 'completed' },
+                { title: 'Report the result', status: 'in_progress' },
+              ],
+            },
+          }),
+        },
+      }),
+      event({
+        id: 'event-read-file' as EventId,
+        sequence: 5,
+        runId,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'call-read-file',
+          toolName: 'read_file',
+          arguments: { path: 'README.md' },
+          result: JSON.stringify({ content: '# Sync Think' }),
+        },
+      }),
+    ];
+
+    const view = projectRunProcess(runId, events);
+
+    expect(view.taskPlan).toEqual({
+      items: [
+        { title: 'Inspect the workspace', status: 'completed' },
+        { title: 'Report the result', status: 'in_progress' },
+      ],
+      completed: 1,
+      total: 2,
+    });
+    expect(view.steps).toHaveLength(1);
+    expect(view.steps[0]?.toolName).toBe('read_file');
+    expect(
+      view.steps.some((step) => ['TaskCreate', 'TaskUpdate', 'TaskList'].includes(step.toolName)),
+    ).toBe(false);
+  });
+
   it('settles a running tool when the Run is paused', () => {
     const runId = 'run-paused' as RunId;
     const view = projectRunProcess(runId, [

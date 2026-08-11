@@ -31,6 +31,9 @@ const TOOL_META: Record<string, { verb: string; kind: ProcessToolKind; zh: strin
   web_fetch: { verb: 'Fetch', kind: 'browser', zh: '读取网页' },
 };
 
+/** Task-plan tools update the checklist projection; they are not execution steps. */
+const TASK_PLAN_TOOL_NAMES = new Set(['update_task_plan', 'TaskCreate', 'TaskUpdate', 'TaskList']);
+
 function shortText(value: string, max = 48): string {
   const text = value.trim();
   if (text.length <= max) return text;
@@ -428,9 +431,11 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
     const toolCallId = extractToolCallId(payload, event.id);
     const toolName = extractToolName(payload);
 
-    // update_task_plan is a pure UI signal: project the checklist, keep it out
-    // of the tool step list (it would be noise there).
-    if (toolName === 'update_task_plan') {
+    // Task-plan tools are pure UI signals: project the checklist, keep them
+    // out of the tool step list (they would be noise there). The persisted
+    // NewMax-style tools echo the current plan in their result; legacy
+    // update_task_plan carries it in the request arguments/result as before.
+    if (TASK_PLAN_TOOL_NAMES.has(toolName)) {
       const parsedPlan = extractTaskPlan(payload);
       if (parsedPlan) taskPlan = parsedPlan;
       continue;
@@ -504,7 +509,7 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
                 : undefined,
         sequence: event.sequence,
         startedAt: event.occurredAt,
-        ...((completed || failed) ? { completedAt: event.occurredAt } : {}),
+        ...(completed || failed ? { completedAt: event.occurredAt } : {}),
         occurredAt: event.occurredAt,
       });
       if (completed && (toolName === 'write_file' || toolName === 'edit_file') && built.path) {
