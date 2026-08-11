@@ -32,11 +32,7 @@ export interface WorkspaceFilesPaneTab {
 }
 
 export type WorkspacePaneTab =
-  | ConversationPaneTab
-  | FilePaneTab
-  | TerminalPaneTab
-  | BrowserPaneTab
-  | WorkspaceFilesPaneTab;
+  ConversationPaneTab | FilePaneTab | TerminalPaneTab | BrowserPaneTab | WorkspaceFilesPaneTab;
 
 export type PaneResourceRef =
   | { type: 'conversation'; id: string }
@@ -172,9 +168,7 @@ function limitPaneTabs(
     remainingCapacity,
     activeTabId,
   );
-  const keptIds = new Set(
-    [...limitedStatefulTabs, ...limitedConversations].map((tab) => tab.id),
-  );
+  const keptIds = new Set([...limitedStatefulTabs, ...limitedConversations].map((tab) => tab.id));
   return tabs.filter((tab) => keptIds.has(tab.id));
 }
 
@@ -195,8 +189,7 @@ function limitTabsByCount(
 
 function paneHasOnlyStatefulTabsAtLimit(pane: WorkspacePane): boolean {
   return (
-    pane.tabs.length >= MAX_TABS_PER_PANE &&
-    pane.tabs.every((tab) => tab.type !== 'conversation')
+    pane.tabs.length >= MAX_TABS_PER_PANE && pane.tabs.every((tab) => tab.type !== 'conversation')
   );
 }
 
@@ -223,7 +216,11 @@ function replacePaneNode(node: PaneNode, paneId: string, replacement: PaneNode):
   return { ...node, children: [left, right] };
 }
 
-function updateNode(node: PaneNode, nodeId: string, update: (node: PaneNode) => PaneNode): PaneNode {
+function updateNode(
+  node: PaneNode,
+  nodeId: string,
+  update: (node: PaneNode) => PaneNode,
+): PaneNode {
   if (node.id === nodeId) return update(node);
   if (node.type === 'pane') return node;
   const left = updateNode(node.children[0], nodeId, update);
@@ -292,7 +289,10 @@ function removeConversationWithoutCollapsing(
   };
 }
 
-function findConversationPane(layout: WorkspacePaneLayout, conversationId: string): string | undefined {
+function findConversationPane(
+  layout: WorkspacePaneLayout,
+  conversationId: string,
+): string | undefined {
   return paneIdsInTree(layout.root).find((paneId) =>
     layout.panes[paneId]?.tabs.some(
       (tab) => tab.type === 'conversation' && tab.conversationId === conversationId,
@@ -316,9 +316,7 @@ function findTerminalPane(layout: WorkspacePaneLayout, terminalId: string): stri
 
 function findBrowserPane(layout: WorkspacePaneLayout, browserId: string): string | undefined {
   return paneIdsInTree(layout.root).find((paneId) =>
-    layout.panes[paneId]?.tabs.some(
-      (tab) => tab.type === 'browser' && tab.browserId === browserId,
-    ),
+    layout.panes[paneId]?.tabs.some((tab) => tab.type === 'browser' && tab.browserId === browserId),
   );
 }
 
@@ -361,9 +359,7 @@ function removePaneTabWithoutCollapsing(
   if (index < 0) return layout;
   const tabs = pane.tabs.filter((tab) => tab.id !== tabId);
   const activeTabId =
-    pane.activeTabId === tabId
-      ? (tabs[index]?.id ?? tabs[index - 1]?.id)
-      : pane.activeTabId;
+    pane.activeTabId === tabId ? (tabs[index]?.id ?? tabs[index - 1]?.id) : pane.activeTabId;
   return {
     ...layout,
     panes: { ...layout.panes, [paneId]: { ...pane, tabs, activeTabId } },
@@ -391,13 +387,7 @@ export function createWorkspacePaneLayout(
 ): WorkspacePaneLayout {
   const prefix = workspacePrefix(workspaceId);
   const paneId = `${prefix}:pane:root`;
-  const ids = [
-    ...new Set(
-      conversationIds
-        .map((id) => id.trim())
-        .filter((id) => id.length > 0),
-    ),
-  ];
+  const ids = [...new Set(conversationIds.map((id) => id.trim()).filter((id) => id.length > 0))];
   const tabs = ids.map(conversationTab);
   const activeId = activeConversationId?.trim();
   const activeTabId = tabs.find((tab) => tab.conversationId === activeId)?.id ?? tabs.at(-1)?.id;
@@ -453,9 +443,7 @@ export function activateFilePaneTab(
 ): WorkspacePaneLayout {
   const normalizedPath = path.trim();
   const pane = layout.panes[paneId];
-  const tab = pane?.tabs.find(
-    (item) => item.type === 'file' && item.path === normalizedPath,
-  );
+  const tab = pane?.tabs.find((item) => item.type === 'file' && item.path === normalizedPath);
   if (!pane || !tab) return layout;
   if (layout.focusedPaneId === paneId && pane.activeTabId === tab.id) return layout;
   return {
@@ -491,9 +479,7 @@ export function activateBrowserPaneTab(
 ): WorkspacePaneLayout {
   const normalizedId = browserId.trim();
   const pane = layout.panes[paneId];
-  const tab = pane?.tabs.find(
-    (item) => item.type === 'browser' && item.browserId === normalizedId,
-  );
+  const tab = pane?.tabs.find((item) => item.type === 'browser' && item.browserId === normalizedId);
   if (!pane || !tab) return layout;
   if (layout.focusedPaneId === paneId && pane.activeTabId === tab.id) return layout;
   return {
@@ -551,6 +537,53 @@ export function openFileInPane(
     panes: {
       ...layout.panes,
       [paneId]: nextPane,
+    },
+  };
+}
+
+export function replaceFileInPane(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+  fromPath: string,
+  toPath: string,
+): WorkspacePaneLayout {
+  const sourcePath = fromPath.trim();
+  const destinationPath = toPath.trim();
+  if (!sourcePath || !destinationPath) return layout;
+  if (sourcePath === destinationPath) {
+    return activateFilePaneTab(layout, paneId, destinationPath);
+  }
+
+  const sourcePane = layout.panes[paneId];
+  const sourceIndex =
+    sourcePane?.tabs.findIndex((tab) => tab.type === 'file' && tab.path === sourcePath) ?? -1;
+  if (!sourcePane || sourceIndex < 0) return layout;
+
+  const existingPaneId = findFilePane(layout, destinationPath);
+  if (existingPaneId) {
+    let next = removePaneTabWithoutCollapsing(layout, paneId, sourcePane.tabs[sourceIndex]!.id);
+    next = activateFilePaneTab(next, existingPaneId, destinationPath);
+    if (next.panes[paneId]?.tabs.length === 0 && Object.keys(next.panes).length > 1) {
+      next = closePane(next, paneId);
+    }
+    return next;
+  }
+
+  const replacement = fileTab(destinationPath);
+  const tabs = sourcePane.tabs.map((tab, index) => (index === sourceIndex ? replacement : tab));
+  return {
+    ...layout,
+    focusedPaneId: paneId,
+    panes: {
+      ...layout.panes,
+      [paneId]: {
+        ...sourcePane,
+        tabs,
+        activeTabId:
+          sourcePane.activeTabId === sourcePane.tabs[sourceIndex]?.id
+            ? replacement.id
+            : sourcePane.activeTabId,
+      },
     },
   };
 }
@@ -652,9 +685,10 @@ export function replaceConversationInPane(
   if (!sourcePaneId) return layout;
 
   const sourcePane = layout.panes[sourcePaneId];
-  const sourceIndex = sourcePane?.tabs.findIndex(
-    (tab) => tab.type === 'conversation' && tab.conversationId === fromId,
-  ) ?? -1;
+  const sourceIndex =
+    sourcePane?.tabs.findIndex(
+      (tab) => tab.type === 'conversation' && tab.conversationId === fromId,
+    ) ?? -1;
   if (!sourcePane || sourceIndex < 0) return layout;
 
   const existingPaneId = findConversationPane(layout, toId);
@@ -945,13 +979,10 @@ export function closeFilePaneTab(
 ): WorkspacePaneLayout {
   const normalizedPath = path.trim();
   const pane = layout.panes[paneId];
-  const index = pane?.tabs.findIndex(
-    (tab) => tab.type === 'file' && tab.path === normalizedPath,
-  ) ?? -1;
+  const index =
+    pane?.tabs.findIndex((tab) => tab.type === 'file' && tab.path === normalizedPath) ?? -1;
   if (!pane || index < 0) return layout;
-  const tabs = pane.tabs.filter(
-    (tab) => tab.type !== 'file' || tab.path !== normalizedPath,
-  );
+  const tabs = pane.tabs.filter((tab) => tab.type !== 'file' || tab.path !== normalizedPath);
   const activeTabId =
     pane.activeTabId === pane.tabs[index]?.id
       ? (tabs[index]?.id ?? tabs[index - 1]?.id)
@@ -971,9 +1002,8 @@ export function closeTerminalPaneTab(
 ): WorkspacePaneLayout {
   const normalizedId = terminalId.trim();
   const pane = layout.panes[paneId];
-  const index = pane?.tabs.findIndex(
-    (tab) => tab.type === 'terminal' && tab.terminalId === normalizedId,
-  ) ?? -1;
+  const index =
+    pane?.tabs.findIndex((tab) => tab.type === 'terminal' && tab.terminalId === normalizedId) ?? -1;
   if (!pane || index < 0) return layout;
   const tabs = pane.tabs.filter(
     (tab) => tab.type !== 'terminal' || tab.terminalId !== normalizedId,
@@ -1043,8 +1073,13 @@ export function pruneWorkspacePaneLayout(
     panes[paneId] = normalizePane({ ...normalized, tabs });
   }
 
-  const nonEmpty = new Set(Object.values(panes).filter((pane) => pane.tabs.length > 0).map((pane) => pane.id));
-  const keepEmptyPaneId = nonEmpty.size === 0 ? orderedPaneIds.find((paneId) => panes[paneId]) : undefined;
+  const nonEmpty = new Set(
+    Object.values(panes)
+      .filter((pane) => pane.tabs.length > 0)
+      .map((pane) => pane.id),
+  );
+  const keepEmptyPaneId =
+    nonEmpty.size === 0 ? orderedPaneIds.find((paneId) => panes[paneId]) : undefined;
   const pruneNode = (node: PaneNode): PaneNode | null => {
     if (node.type === 'pane') {
       return nonEmpty.has(node.paneId) || node.paneId === keepEmptyPaneId ? node : null;
@@ -1131,16 +1166,14 @@ export function parseWorkspacePaneLayout(raw: unknown): WorkspacePaneLayout | nu
   ) {
     return null;
   }
-  const rawPanes = Object.entries(record.panes as Record<string, unknown>).slice(0, MAX_SNAPSHOT_PANES);
+  const rawPanes = Object.entries(record.panes as Record<string, unknown>).slice(
+    0,
+    MAX_SNAPSHOT_PANES,
+  );
   const panes: Record<string, WorkspacePane> = {};
   for (const [rawPaneId, value] of rawPanes) {
     const paneId = rawPaneId.trim();
-    if (
-      !isSafeRecordKey(paneId) ||
-      !value ||
-      typeof value !== 'object' ||
-      Array.isArray(value)
-    ) {
+    if (!isSafeRecordKey(paneId) || !value || typeof value !== 'object' || Array.isArray(value)) {
       continue;
     }
     const paneRecord = value as Record<string, unknown>;

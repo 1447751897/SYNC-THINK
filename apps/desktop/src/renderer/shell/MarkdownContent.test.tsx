@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MarkdownContent } from './MarkdownContent.js';
+
+const shellCss = readFileSync(new URL('./shell.css', import.meta.url), 'utf8');
 
 describe('MarkdownContent', () => {
   it('renders headings, lists, and inline code from GFM markdown', () => {
@@ -18,6 +21,13 @@ describe('MarkdownContent', () => {
     expect(html).toContain('inline');
     expect(html).toContain('shell-md-section__toggle');
     expect(html).toContain('aria-expanded="true"');
+  });
+
+  it('keeps short table tokens intact while wide tables remain scrollable', () => {
+    expect(shellCss).toMatch(/\.shell-md-table-wrap\s*\{[^}]*overflow:\s*auto;/s);
+    expect(shellCss).toMatch(
+      /\.shell-md th,\s*\.shell-md td\s*\{[^}]*overflow-wrap:\s*break-word;[^}]*word-break:\s*normal;/s,
+    );
   });
 
   it('keeps level-two markers inside fenced code as code instead of sections', () => {

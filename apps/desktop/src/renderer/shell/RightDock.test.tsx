@@ -12,7 +12,7 @@ vi.mock('./BrowserPanel.js', () => ({
   ),
 }));
 
-import { RightDock } from './RightDock.js';
+import { RightDock, WorkspaceFilesPanel } from './RightDock.js';
 
 afterEach(() => {
   cleanup();
@@ -85,11 +85,7 @@ describe('RightDock project content search', () => {
 
   it('keeps legacy files/workspace initial tabs inside the unified workspace files panel', () => {
     const { rerender } = render(
-      <RightDock
-        projectFolder="C:/workspace"
-        initialTab="workspace"
-        onClose={vi.fn()}
-      />,
+      <RightDock projectFolder="C:/workspace" initialTab="workspace" onClose={vi.fn()} />,
     );
 
     expect(screen.getByTestId('workspace-files-panel')).toBeTruthy();
@@ -99,16 +95,42 @@ describe('RightDock project content search', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Git' }));
     expect(screen.getByRole('tab', { name: 'Git' }).getAttribute('aria-selected')).toBe('true');
 
-    rerender(
-      <RightDock
-        projectFolder="C:/workspace"
-        initialTab="files"
-        onClose={vi.fn()}
-      />,
-    );
+    rerender(<RightDock projectFolder="C:/workspace" initialTab="files" onClose={vi.fn()} />);
     expect(screen.getByRole('button', { name: '工作区文件' }).getAttribute('data-active')).toBe(
       'true',
     );
     expect(screen.getByRole('tab', { name: '文件' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('offers current-file and new-tab actions when embedded in a file view', async () => {
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: {
+        runtime: {
+          listProjectDir: vi.fn(async () => ({
+            dir: '',
+            entries: [{ path: 'src/app.ts', name: 'app.ts', kind: 'file' }],
+          })),
+          listProjectFiles: vi.fn(async () => ({ root: 'C:/workspace', files: [] })),
+        },
+      },
+    });
+    const onOpenFile = vi.fn();
+    const onOpenFileInNewTab = vi.fn();
+
+    render(
+      <WorkspaceFilesPanel
+        projectFolder="C:/workspace"
+        activeFilePath="src/current.ts"
+        onOpenFile={onOpenFile}
+        onOpenFileInNewTab={onOpenFileInNewTab}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '在当前文件标签打开 src/app.ts' }));
+    expect(onOpenFile).toHaveBeenCalledWith('src/app.ts', undefined);
+
+    fireEvent.click(screen.getByRole('button', { name: '在新文件标签打开 src/app.ts' }));
+    expect(onOpenFileInNewTab).toHaveBeenCalledWith('src/app.ts', undefined);
   });
 });

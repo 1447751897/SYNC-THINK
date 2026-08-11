@@ -20,9 +20,15 @@ const runtime = {
   listSkills: vi.fn().mockResolvedValue({ skills: [] }),
   getSkill: vi.fn(),
   renameConversation: vi.fn().mockResolvedValue({ conversation: { id: 'created-conversation' } }),
-  setConversationPinned: vi.fn().mockResolvedValue({ conversation: { id: 'created-conversation' } }),
-  setConversationArchived: vi.fn().mockResolvedValue({ conversation: { id: 'created-conversation' } }),
-  setConversationExecutionMode: vi.fn().mockResolvedValue({ conversation: { id: 'created-conversation' } }),
+  setConversationPinned: vi
+    .fn()
+    .mockResolvedValue({ conversation: { id: 'created-conversation' } }),
+  setConversationArchived: vi
+    .fn()
+    .mockResolvedValue({ conversation: { id: 'created-conversation' } }),
+  setConversationExecutionMode: vi
+    .fn()
+    .mockResolvedValue({ conversation: { id: 'created-conversation' } }),
   deleteConversation: vi.fn().mockResolvedValue({}),
   createConversation: vi.fn().mockResolvedValue({
     conversation: {
@@ -70,7 +76,11 @@ function clickNewConversationResource(button?: HTMLElement): void {
 }
 
 vi.mock('../runtime-connection.js', () => ({
-  startRuntimeConnection: ({ onConnected }: { onConnected(result: { snapshot: unknown[] }): void }) => {
+  startRuntimeConnection: ({
+    onConnected,
+  }: {
+    onConnected(result: { snapshot: unknown[] }): void;
+  }) => {
     onConnected({ snapshot: [] });
     return vi.fn();
   },
@@ -87,8 +97,7 @@ vi.mock('./TopBar.js', () => ({
         {
           type: 'button',
           'data-testid': 'mock-switch-workspace',
-          onClick: () =>
-            (props.onSelectWorkspace as ((id: string) => void) | undefined)?.('ws-b'),
+          onClick: () => (props.onSelectWorkspace as ((id: string) => void) | undefined)?.('ws-b'),
         },
         '切换工作区',
       ),
@@ -98,7 +107,10 @@ vi.mock('./TopBar.js', () => ({
 vi.mock('./ChatView.js', () => ({
   ChatView: (props: Record<string, unknown>) => {
     chatViewProps.current = props;
-    return createElement('div', { 'data-testid': 'mock-chat-view' });
+    return createElement('div', {
+      'data-testid': 'mock-chat-view',
+      'data-conversation-id': (props.conversation as { id?: string } | undefined)?.id,
+    });
   },
 }));
 vi.mock('./TerminalPane.js', () => ({
@@ -122,7 +134,8 @@ vi.mock('./Sidebar.js', () => ({
         key: 'abilities',
         type: 'button',
         'data-testid': 'nav-abilities',
-        onClick: () => (props.onSelectStage as ((stage: string) => void) | undefined)?.('abilities'),
+        onClick: () =>
+          (props.onSelectStage as ((stage: string) => void) | undefined)?.('abilities'),
       }),
       ...conversations.map((c) =>
         createElement(
@@ -130,8 +143,7 @@ vi.mock('./Sidebar.js', () => ({
           {
             key: c.id,
             type: 'button',
-            onClick: () =>
-              (props.onOpenConversation as ((id: string) => void) | undefined)?.(c.id),
+            onClick: () => (props.onOpenConversation as ((id: string) => void) | undefined)?.(c.id),
           },
           c.title || c.id,
         ),
@@ -215,8 +227,12 @@ beforeEach(() => {
   runtime.getSkill.mockReset();
   runtime.renameConversation.mockResolvedValue({ conversation: { id: 'created-conversation' } });
   runtime.setConversationPinned.mockResolvedValue({ conversation: { id: 'created-conversation' } });
-  runtime.setConversationArchived.mockResolvedValue({ conversation: { id: 'created-conversation' } });
-  runtime.setConversationExecutionMode.mockResolvedValue({ conversation: { id: 'created-conversation' } });
+  runtime.setConversationArchived.mockResolvedValue({
+    conversation: { id: 'created-conversation' },
+  });
+  runtime.setConversationExecutionMode.mockResolvedValue({
+    conversation: { id: 'created-conversation' },
+  });
   runtime.deleteConversation.mockResolvedValue({});
   runtime.createConversation.mockResolvedValue({
     conversation: {
@@ -285,10 +301,7 @@ describe('ShellApp abilities navigation', () => {
 describe('ShellApp settings modal', () => {
   it('centers and restores a dragged position without transform-based text rasterization', async () => {
     installRuntime();
-    window.localStorage.setItem(
-      'sync-think-settings-pos',
-      JSON.stringify({ dx: 18.4, dy: -9.2 }),
-    );
+    window.localStorage.setItem('sync-think-settings-pos', JSON.stringify({ dx: 18.4, dy: -9.2 }));
 
     render(<ShellApp />);
     fireEvent.click(screen.getByTestId('nav-settings'));
@@ -341,9 +354,7 @@ describe('ShellApp settings modal', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭设置' }));
 
     expect(confirmSpy).toHaveBeenCalledTimes(1);
-    expect(confirmSpy).toHaveBeenCalledWith(
-      '当前有未提交的模型配置草稿，确认放弃并关闭设置吗？',
-    );
+    expect(confirmSpy).toHaveBeenCalledWith('当前有未提交的模型配置草稿，确认放弃并关闭设置吗？');
     expect(screen.getByRole('button', { name: '关闭设置' })).toBeTruthy();
   });
 
@@ -396,7 +407,9 @@ describe('ShellApp workspace context', () => {
     const selectWorkspace = topBarProps.current?.onSelectWorkspace as (id: string) => void;
     act(() => selectWorkspace('ws-b'));
     await waitFor(() => {
-      expect((screen.getByTestId('file-pane-editor') as HTMLTextAreaElement).value).toBe('B before');
+      expect((screen.getByTestId('file-pane-editor') as HTMLTextAreaElement).value).toBe(
+        'B before',
+      );
       expect(screen.queryByTestId('file-tab-dirty-notes.txt')).toBeNull();
     });
 
@@ -417,9 +430,30 @@ describe('ShellApp workspace context', () => {
     });
     runtime.listConversations.mockResolvedValue({
       conversations: [
-        { id: 'a1', workspaceId: 'ws-a', track: 'model', targetRef: 'model-a', title: 'A1', executionMode: 'full-access' },
-        { id: 'a2', workspaceId: 'ws-a', track: 'agent', targetRef: 'agent-a', title: 'A2', executionMode: 'full-access' },
-        { id: 'b1', workspaceId: 'ws-b', track: 'model', targetRef: 'model-a', title: 'B1', executionMode: 'full-access' },
+        {
+          id: 'a1',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'A1',
+          executionMode: 'full-access',
+        },
+        {
+          id: 'a2',
+          workspaceId: 'ws-a',
+          track: 'agent',
+          targetRef: 'agent-a',
+          title: 'A2',
+          executionMode: 'full-access',
+        },
+        {
+          id: 'b1',
+          workspaceId: 'ws-b',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'B1',
+          executionMode: 'full-access',
+        },
       ],
     });
     const baseA = createWorkspacePaneLayout('ws-a', ['a1', 'a2'], 'a1');
@@ -434,14 +468,14 @@ describe('ShellApp workspace context', () => {
     render(<ShellApp />);
     await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2));
 
-    const selectWorkspace = topBarProps.current?.onSelectWorkspace as ((id: string) => void);
+    const selectWorkspace = topBarProps.current?.onSelectWorkspace as (id: string) => void;
     selectWorkspace('ws-b');
     await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(1));
     selectWorkspace('ws-a');
     await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2));
   });
 
-  it('mounts at most two ChatViews from a deeper restored pane tree without dropping tabs', async () => {
+  it('shows a loadable parked surface instead of a blank third conversation pane', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
       workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
@@ -467,18 +501,92 @@ describe('ShellApp workspace context', () => {
     render(<ShellApp />);
 
     await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2));
-    fireEvent.click(
-      within(screen.getByTestId('conversation-tab-c2')).getByRole('button', { name: 'C2' }),
-    );
+    const parked = screen.getByTestId('parked-conversation-c2');
+    expect(parked.textContent).toContain('点击加载');
+    fireEvent.click(parked);
     await waitFor(() => {
       expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2);
-      expect(chatViewProps.current?.conversation).toMatchObject({ id: 'c2' });
+      expect(document.querySelector('[data-conversation-id="c2"]')).toBeTruthy();
+      expect(screen.queryByTestId('parked-conversation-c2')).toBeNull();
+      expect(screen.getAllByTestId(/^parked-conversation-/)).toHaveLength(1);
     });
     const stored = JSON.parse(
       window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}',
     );
     expect(paneConversationIds(stored.workspaces['ws-a'])).toEqual(['c1', 'c2', 'c3']);
     expect(document.querySelectorAll('.shell-workspace-pane')).toHaveLength(3);
+  });
+
+  it('moves a conversation across panes through the native drag payload and collapses the empty source pane', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'c1',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'C1',
+          executionMode: 'full-access',
+        },
+        {
+          id: 'c2',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'C2',
+          executionMode: 'full-access',
+        },
+      ],
+    });
+    const initial = createWorkspacePaneLayout('ws-a', ['c1', 'c2'], 'c1');
+    const split = splitPaneWithConversation(initial, initial.focusedPaneId, 'horizontal', 'c2');
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.workspacePaneLayouts',
+      JSON.stringify({ version: 1, workspaces: { 'ws-a': split } }),
+    );
+
+    const payloads = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      setData: vi.fn((type: string, value: string) => payloads.set(type, value)),
+      getData: vi.fn((type: string) => payloads.get(type) ?? ''),
+    };
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(2));
+
+    const sourceTab = screen.getByTestId('conversation-tab-c1');
+    const targetTab = screen.getByTestId('conversation-tab-c2');
+    const targetPane = targetTab.closest<HTMLElement>('[data-testid^="workspace-pane-"]');
+    const targetDropSurface = targetPane?.firstElementChild as HTMLElement | null;
+    expect(targetDropSurface).toBeTruthy();
+
+    fireEvent.dragStart(sourceTab, { dataTransfer });
+    await waitFor(() => {
+      expect(dataTransfer.setData).toHaveBeenCalledWith(
+        'application/x-sync-think-pane-resource',
+        JSON.stringify({ type: 'conversation', id: 'c1' }),
+      );
+    });
+    fireEvent.dragOver(targetDropSurface!, { dataTransfer });
+    await waitFor(() =>
+      expect(targetDropSurface?.querySelector('.shell-pane-drop-overlay')).toBeTruthy(),
+    );
+    fireEvent.drop(targetDropSurface!, { dataTransfer });
+
+    await waitFor(() => expect(document.querySelectorAll('.shell-workspace-pane')).toHaveLength(1));
+    expect(screen.getByTestId('conversation-tab-c1')).toBeTruthy();
+    expect(screen.getByTestId('conversation-tab-c2')).toBeTruthy();
+    const stored = JSON.parse(
+      window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}',
+    );
+    expect(paneConversationIds(stored.workspaces['ws-a'])).toEqual(['c2', 'c1']);
   });
 
   it('opens a terminal in the focused pane and persists only its cwd in the layout', async () => {
@@ -512,9 +620,7 @@ describe('ShellApp workspace context', () => {
     act(() => (topBarProps.current?.onOpenTerminal as (() => void) | undefined)?.());
     await waitFor(() => expect(screen.getByTestId('mock-terminal-pane')).toBeTruthy());
 
-    let stored = JSON.parse(
-      window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}',
-    );
+    let stored = JSON.parse(window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}');
     const terminal = Object.values(stored.workspaces['ws-a'].panes)
       .flatMap((pane) => (pane as { tabs: unknown[] }).tabs)
       .find((tab) => (tab as { type?: string }).type === 'terminal') as {
@@ -528,9 +634,7 @@ describe('ShellApp workspace context', () => {
       (terminalPaneProps.current?.onCwdChange as ((cwd: string) => void) | undefined)?.('src'),
     );
     await waitFor(() => {
-      stored = JSON.parse(
-        window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}',
-      );
+      stored = JSON.parse(window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}');
       const updated = Object.values(stored.workspaces['ws-a'].panes)
         .flatMap((pane) => (pane as { tabs: Array<{ terminalId?: string; cwd?: string }> }).tabs)
         .find((tab) => tab.terminalId === terminal.terminalId);
@@ -545,13 +649,33 @@ describe('ShellApp workspace context', () => {
     });
     runtime.listConversations.mockResolvedValue({
       conversations: [
-        { id: 'c1', workspaceId: 'ws-a', track: 'model', targetRef: 'model-a', title: 'C1', executionMode: 'full-access' },
-        { id: 'c2', workspaceId: 'ws-a', track: 'model', targetRef: 'model-a', title: 'C2', executionMode: 'full-access' },
+        {
+          id: 'c1',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'C1',
+          executionMode: 'full-access',
+        },
+        {
+          id: 'c2',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'C2',
+          executionMode: 'full-access',
+        },
       ],
     });
     window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
-    window.localStorage.setItem('sync-think.openConversationTabs', JSON.stringify({ 'ws-a': ['c1', 'c2'] }));
-    window.localStorage.setItem('sync-think.selectedConversationByWorkspace', JSON.stringify({ 'ws-a': 'c1' }));
+    window.localStorage.setItem(
+      'sync-think.openConversationTabs',
+      JSON.stringify({ 'ws-a': ['c1', 'c2'] }),
+    );
+    window.localStorage.setItem(
+      'sync-think.selectedConversationByWorkspace',
+      JSON.stringify({ 'ws-a': 'c1' }),
+    );
 
     render(<ShellApp />);
     await waitFor(() => expect(screen.getAllByTestId('mock-chat-view')).toHaveLength(1));
@@ -592,11 +716,7 @@ describe('ShellApp workspace context', () => {
         },
       ],
     });
-    const initial = createWorkspacePaneLayout(
-      'ws-a',
-      ['model-chat', 'agent-chat'],
-      'model-chat',
-    );
+    const initial = createWorkspacePaneLayout('ws-a', ['model-chat', 'agent-chat'], 'model-chat');
     const firstPaneId = initial.focusedPaneId;
     const split = splitPaneWithConversation(initial, firstPaneId, 'horizontal', 'agent-chat');
     const layout = focusPane(split, firstPaneId);
@@ -747,8 +867,7 @@ describe('ShellApp workspace context', () => {
     const onNewConversation = sidebarProps.current?.onNewConversation as (() => void) | undefined;
     act(() => onNewConversation?.());
     const draft = await waitFor(() => {
-      const conversations =
-        (sidebarProps.current?.conversations as Array<{ id: string }>) ?? [];
+      const conversations = (sidebarProps.current?.conversations as Array<{ id: string }>) ?? [];
       return conversations.find((conversation) => conversation.id.startsWith('draft:'))!;
     });
 
@@ -762,15 +881,14 @@ describe('ShellApp workspace context', () => {
     );
     expect(screen.queryByTestId(`conversation-tab-${draft.id}`)).toBeNull();
     expect(
-      ((sidebarProps.current?.conversations as Array<{ id: string }>) ?? []).some(
-        (conversation) => conversation.id.startsWith('draft:'),
+      ((sidebarProps.current?.conversations as Array<{ id: string }>) ?? []).some((conversation) =>
+        conversation.id.startsWith('draft:'),
       ),
     ).toBe(false);
 
     act(() => onNewConversation?.());
     const disposableDraft = await waitFor(() => {
-      const conversations =
-        (sidebarProps.current?.conversations as Array<{ id: string }>) ?? [];
+      const conversations = (sidebarProps.current?.conversations as Array<{ id: string }>) ?? [];
       return conversations.find((conversation) => conversation.id.startsWith('draft:'))!;
     });
     fireEvent.click(screen.getByTestId(`conversation-tab-close-${disposableDraft.id}`));
@@ -820,8 +938,7 @@ describe('ShellApp workspace context', () => {
     await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
 
     const selectWorkspace = topBarProps.current?.onSelectWorkspace as
-      | ((workspaceId: string) => void)
-      | undefined;
+      ((workspaceId: string) => void) | undefined;
     expect(selectWorkspace).toBeTypeOf('function');
     selectWorkspace?.('ws-b');
 
@@ -873,8 +990,7 @@ describe('ShellApp workspace context', () => {
     expect(screen.getByTestId('mock-chat-view')).toBeTruthy();
 
     const selectWorkspace = topBarProps.current?.onSelectWorkspace as
-      | ((workspaceId: string) => void)
-      | undefined;
+      ((workspaceId: string) => void) | undefined;
     selectWorkspace?.('ws-b');
     await waitFor(() => expect(screen.queryByTestId('conversation-tab-conv-a')).toBeNull());
 
@@ -1201,9 +1317,9 @@ describe('ShellApp empty conversation compose', () => {
       expect.objectContaining({ track: 'agent', targetRef: 'agent-a' }),
     );
     expect(
-      JSON.parse(
-        window.localStorage.getItem('sync-think.conversationModelOverrides') ?? '{}',
-      )['created-conversation'],
+      JSON.parse(window.localStorage.getItem('sync-think.conversationModelOverrides') ?? '{}')[
+        'created-conversation'
+      ],
     ).toBe('model-b');
     expect(runtime.getSkill).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId('mock-chat-view')).toBeTruthy());
@@ -1586,7 +1702,6 @@ describe('ShellApp empty conversation compose', () => {
     expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('1/8');
   });
 
-
   it('uses selected permission and reasoning for the first message', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
@@ -1647,17 +1762,13 @@ describe('ShellApp empty conversation compose', () => {
     fireEvent.click(screen.getByTestId('welcome-track-agent'));
     await waitFor(() => expect(screen.getByTestId('mock-new-conversation-dialog')).toBeTruthy());
     const pick = newConversationDialogProps.current?.onPick as
-      | ((targetRef: string) => void)
-      | undefined;
+      ((targetRef: string) => void) | undefined;
     pick?.('agent-a');
 
     await waitFor(() => expect(screen.queryByTestId('mock-new-conversation-dialog')).toBeNull());
     expect(runtime.createConversation).not.toHaveBeenCalled();
     expect(runtime.sendConversationMessage).not.toHaveBeenCalled();
-    expect(screen.getByTestId('empty-compose-input')).toHaveProperty(
-      'value',
-      '不要延迟发送',
-    );
+    expect(screen.getByTestId('empty-compose-input')).toHaveProperty('value', '不要延迟发送');
 
     // First send is what materializes the conversation in Runtime / sidebar.
     fireEvent.click(screen.getByTestId('empty-compose-send'));
@@ -1689,10 +1800,7 @@ describe('ShellApp duplicate conversation', () => {
       updatedAt: '2026-07-25T00:00:00.000Z',
     };
     runtime.listConversations.mockResolvedValue({ conversations: [sourceConversation] });
-    window.localStorage.setItem(
-      'sync-think.activeWorkspaceId',
-      'ws-a',
-    );
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
     window.localStorage.setItem(
       'sync-think.conversationGroups',
       JSON.stringify({
@@ -1745,9 +1853,7 @@ describe('ShellApp duplicate conversation', () => {
     expect(runtime.renameConversation).not.toHaveBeenCalled();
 
     // The duplicate inherits the source's group membership.
-    const stored = JSON.parse(
-      window.localStorage.getItem('sync-think.conversationGroups') ?? '{}',
-    );
+    const stored = JSON.parse(window.localStorage.getItem('sync-think.conversationGroups') ?? '{}');
     expect(stored.workspaces['ws-a'].model[0].conversationIds).toContain('conv-dup');
   });
 
@@ -1800,11 +1906,7 @@ describe('ShellApp duplicate conversation', () => {
           resolveCreate = resolve;
         }),
     );
-    const layoutA = createWorkspacePaneLayout(
-      'ws-a',
-      ['conv-src', 'conv-a2'],
-      'conv-src',
-    );
+    const layoutA = createWorkspacePaneLayout('ws-a', ['conv-src', 'conv-a2'], 'conv-src');
     const layoutB = createWorkspacePaneLayout('ws-b', ['conv-b1'], 'conv-b1');
     window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
     window.localStorage.setItem(
@@ -1842,8 +1944,7 @@ describe('ShellApp duplicate conversation', () => {
       expect(paneConversationIds(stored.workspaces['ws-a'])).toContain('conv-dup');
       expect(window.localStorage.getItem('sync-think.activeWorkspaceId')).toBe('ws-b');
       expect(
-        (sidebarProps.current?.nav as { selectedConversationId?: string })
-          .selectedConversationId,
+        (sidebarProps.current?.nav as { selectedConversationId?: string }).selectedConversationId,
       ).toBe('conv-b1');
     });
   });

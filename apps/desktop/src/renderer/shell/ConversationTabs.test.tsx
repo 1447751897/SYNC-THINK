@@ -188,6 +188,40 @@ describe('ConversationTabs pane actions', () => {
     expect(onCloseFile).toHaveBeenCalledWith('src/index.ts');
   });
 
+  it('publishes a native drag payload so a conversation can move across panes', () => {
+    const onTabDragStateChange = vi.fn();
+    const values = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      setData: vi.fn((type: string, value: string) => values.set(type, value)),
+      getData: vi.fn((type: string) => values.get(type) ?? ''),
+    };
+
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1']}
+        activeId="c1"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+        onTabDragStateChange={onTabDragStateChange}
+      />,
+    );
+
+    const tab = screen.getByTestId('conversation-tab-c1');
+    expect(tab.getAttribute('draggable')).toBe('true');
+    fireEvent.dragStart(tab, { dataTransfer });
+
+    expect(dataTransfer.setData).toHaveBeenCalledWith(
+      'application/x-sync-think-pane-resource',
+      JSON.stringify({ type: 'conversation', id: 'c1' }),
+    );
+    expect(onTabDragStateChange).toHaveBeenCalledWith({ type: 'conversation', id: 'c1' });
+  });
+
   it('renders terminal resources and exposes a pane-local terminal command', () => {
     const onSelectTerminal = vi.fn();
     const onCloseTerminal = vi.fn();

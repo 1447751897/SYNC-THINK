@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, FileCode2, Loader2, RefreshCw, Save } from 'lucide-react';
+import {
+  AlertTriangle,
+  FileCode2,
+  Loader2,
+  PanelRightClose,
+  PanelRightOpen,
+  RefreshCw,
+  Save,
+} from 'lucide-react';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 
 export interface FileRevealTarget extends ProjectTextLocation {
@@ -51,11 +59,15 @@ export function FilePane({
   path,
   onDirtyChange,
   revealTarget,
+  workspaceFilesOpen,
+  onToggleWorkspaceFiles,
 }: {
   projectFolder?: string;
   path: string;
   onDirtyChange?(dirty: boolean): void;
   revealTarget?: FileRevealTarget;
+  workspaceFilesOpen?: boolean;
+  onToggleWorkspaceFiles?(): void;
 }) {
   const sessionKey = projectFolder ? filePaneSessionKey(projectFolder, path) : undefined;
   const initialSession = sessionKey ? filePaneSessions.get(sessionKey) : undefined;
@@ -64,7 +76,9 @@ export function FilePane({
   const [loading, setLoading] = useState(!initialSession);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [diskChange, setDiskChange] = useState<DiskChange | null>(initialSession?.diskChange ?? null);
+  const [diskChange, setDiskChange] = useState<DiskChange | null>(
+    initialSession?.diskChange ?? null,
+  );
   const [cleanStatus, setCleanStatus] = useState<'已同步' | '已保存'>(
     initialSession?.cleanStatus ?? '已同步',
   );
@@ -195,20 +209,17 @@ export function FilePane({
   useEffect(() => {
     const api = fileBridge();
     if (!projectFolder || !api?.watchProjectFile) return;
-    const subscription = api.watchProjectFile(
-      { root: projectFolder, path },
-      (change) => {
-        if (savingRef.current || dirtyRef.current) {
-          setDiskChange({
-            exists: change.exists,
-            mtimeMs: change.mtimeMs,
-            size: change.size,
-          });
-          return;
-        }
-        void loadFromDisk(false);
-      },
-    );
+    const subscription = api.watchProjectFile({ root: projectFolder, path }, (change) => {
+      if (savingRef.current || dirtyRef.current) {
+        setDiskChange({
+          exists: change.exists,
+          mtimeMs: change.mtimeMs,
+          size: change.size,
+        });
+        return;
+      }
+      void loadFromDisk(false);
+    });
     void subscription.ready.catch(() => undefined);
     return () => {
       void subscription.unsubscribe();
@@ -234,7 +245,9 @@ export function FilePane({
       lineStart = nextBreak + 1;
     }
     const lineEnd = draft.indexOf('\n', lineStart);
-    const lineText = draft.slice(lineStart, lineEnd < 0 ? draft.length : lineEnd).replace(/\r$/, '');
+    const lineText = draft
+      .slice(lineStart, lineEnd < 0 ? draft.length : lineEnd)
+      .replace(/\r$/, '');
     const columnOffset = [...lineText].slice(0, targetColumn - 1).join('').length;
     const offset = Math.min(draft.length, lineStart + columnOffset);
     editor.focus();
@@ -327,6 +340,19 @@ export function FilePane({
         >
           {status}
         </span>
+        {onToggleWorkspaceFiles ? (
+          <button
+            type="button"
+            className="shell-file-pane-icon-button"
+            data-testid="file-pane-workspace-files-toggle"
+            aria-label={workspaceFilesOpen ? '隐藏工作区文件' : '展开工作区文件'}
+            aria-pressed={Boolean(workspaceFilesOpen)}
+            title={workspaceFilesOpen ? '隐藏工作区文件' : '展开工作区文件'}
+            onClick={onToggleWorkspaceFiles}
+          >
+            {workspaceFilesOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
+          </button>
+        ) : null}
         <button
           type="button"
           className="shell-file-pane-icon-button"

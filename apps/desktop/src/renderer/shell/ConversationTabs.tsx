@@ -23,7 +23,6 @@ import type { PaneResourceRef, PaneSplitDirection } from './pane-layout.js';
 import {
   DndContext,
   KeyboardSensor,
-  PointerSensor,
   closestCenter,
   useSensor,
   useSensors,
@@ -239,15 +238,49 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const hasWorkspaceFilesTab = props.workspaceFilesTab ?? props.workspaceFilesActive ?? false;
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+  const nativeConversationDragIdRef = useRef<string | null>(null);
 
   const handleTabDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     props.onTabDragStateChange?.(null);
     if (!over || active.id === over.id) return;
     props.onReorder?.(String(active.id), String(over.id));
+  };
+
+  const beginConversationDrag = (
+    event: React.DragEvent<HTMLDivElement>,
+    conversationId: string,
+  ) => {
+    nativeConversationDragIdRef.current = conversationId;
+    beginResourceDrag(
+      event,
+      { type: 'conversation', id: conversationId },
+      props.onTabDragStateChange,
+    );
+  };
+
+  const handleConversationDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!nativeConversationDragIdRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleConversationDrop = (
+    event: React.DragEvent<HTMLDivElement>,
+    targetConversationId: string,
+  ) => {
+    const sourceConversationId = nativeConversationDragIdRef.current;
+    if (!sourceConversationId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    nativeConversationDragIdRef.current = null;
+    props.onTabDragStateChange?.(null);
+    if (sourceConversationId !== targetConversationId) {
+      props.onReorder?.(sourceConversationId, targetConversationId);
+    }
   };
 
   const requestSplit = (direction: PaneSplitDirection) => {
@@ -311,6 +344,13 @@ export function ConversationTabs(props: ConversationTabsProps) {
                     setCtxMenu({ id, x: e.clientX, y: e.clientY });
                   }}
                   hasSplitAction={Boolean(props.onOpenInSplit)}
+                  onNativeDragStart={(event) => beginConversationDrag(event, id)}
+                  onNativeDragOver={handleConversationDragOver}
+                  onNativeDrop={(event) => handleConversationDrop(event, id)}
+                  onNativeDragEnd={() => {
+                    nativeConversationDragIdRef.current = null;
+                    props.onTabDragStateChange?.(null);
+                  }}
                 />
               );
             })}
@@ -810,6 +850,10 @@ function SortableConversationTab(props: {
   onClose(): void;
   onRename(): void;
   onContextMenu(e: React.MouseEvent): void;
+  onNativeDragStart(e: React.DragEvent<HTMLDivElement>): void;
+  onNativeDragOver(e: React.DragEvent<HTMLDivElement>): void;
+  onNativeDrop(e: React.DragEvent<HTMLDivElement>): void;
+  onNativeDragEnd(): void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({
     id: props.conversationId,
@@ -819,6 +863,7 @@ function SortableConversationTab(props: {
       ref={setNodeRef}
       data-testid={`conversation-tab-${props.conversationId}`}
       data-active={props.active ? 'true' : 'false'}
+      draggable
       className={clsx(
         'st-row-motion group relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
         props.active
@@ -838,6 +883,10 @@ function SortableConversationTab(props: {
       {...attributes}
       {...listeners}
       onContextMenu={props.onContextMenu}
+      onDragStart={props.onNativeDragStart}
+      onDragOver={props.onNativeDragOver}
+      onDrop={props.onNativeDrop}
+      onDragEnd={props.onNativeDragEnd}
     >
       {/* Status marker sits at the left of each conversation tab: a pulsing
           dot while running/thinking, a static dot when finished-but-unread.

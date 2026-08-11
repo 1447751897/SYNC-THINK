@@ -10,6 +10,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   FileCode2,
   FileText,
   Folder,
@@ -62,15 +63,15 @@ export function RightDock(props: {
   initialTab?: DockTab;
   /** 提供该回调时，文件树把文件交给 Workspace Pane 宿主打开。 */
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
+  /** 嵌入文件视图中显式创建另一个文件标签。 */
+  onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
   /** 当前活动文件（用于树/搜索列表高亮）。 */
   activeFilePath?: string | null;
   onClose(): void;
 }) {
   const requestedTab =
     props.initialTab === 'browser' || !props.initialTab ? 'browser' : 'workspace-files';
-  const [tab, setTab] = useState<'browser' | 'workspace-files'>(
-    requestedTab,
-  );
+  const [tab, setTab] = useState<'browser' | 'workspace-files'>(requestedTab);
 
   useEffect(() => {
     setTab(requestedTab);
@@ -133,6 +134,7 @@ export function RightDock(props: {
             <WorkspaceFilesPanel
               projectFolder={props.projectFolder}
               onOpenFile={props.onOpenFile}
+              onOpenFileInNewTab={props.onOpenFileInNewTab}
               activeFilePath={props.activeFilePath}
             />
           </div>
@@ -145,6 +147,7 @@ export function RightDock(props: {
 export function WorkspaceFilesPanel(props: {
   projectFolder?: string;
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
+  onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
   activeFilePath?: string | null;
 }) {
   const [section, setSection] = useState<WorkspaceFilesSection>('files');
@@ -176,10 +179,7 @@ export function WorkspaceFilesPanel(props: {
           type="button"
           role="tab"
           aria-selected={section === 'git'}
-          className={clsx(
-            'shell-workspace-files-switcher__tab',
-            section === 'git' && 'is-active',
-          )}
+          className={clsx('shell-workspace-files-switcher__tab', section === 'git' && 'is-active')}
           onClick={() => setSection('git')}
         >
           <GitBranch size={12} />
@@ -192,6 +192,7 @@ export function WorkspaceFilesPanel(props: {
             <FilesPanel
               projectFolder={props.projectFolder}
               onOpenFile={props.onOpenFile}
+              onOpenFileInNewTab={props.onOpenFileInNewTab}
               activeFilePath={props.activeFilePath}
             />
           </div>
@@ -216,10 +217,12 @@ interface TreeDirState {
 function FilesPanel({
   projectFolder,
   onOpenFile,
+  onOpenFileInNewTab,
   activeFilePath,
 }: {
   projectFolder?: string;
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
+  onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
   activeFilePath?: string | null;
 }) {
   const [query, setQuery] = useState('');
@@ -364,7 +367,15 @@ function FilesPanel({
   }, [projectFolder, query, searchKind, searchMode]);
 
   const openFile = useCallback(
-    (path: string, location?: ProjectTextLocation) => {
+    (
+      path: string,
+      location?: ProjectTextLocation,
+      disposition: 'current' | 'new-tab' = 'current',
+    ) => {
+      if (disposition === 'new-tab' && onOpenFileInNewTab) {
+        onOpenFileInNewTab(path, location);
+        return;
+      }
       // 分屏模式：直接交给宿主在主区域打开文件面板（IDE 式）。
       if (onOpenFile) {
         onOpenFile(path, location);
@@ -380,7 +391,7 @@ function FilesPanel({
         .catch(() => setPreview({ path, content: null, error: '读取失败' }))
         .finally(() => setPreviewLoading(false));
     },
-    [projectFolder, onOpenFile],
+    [projectFolder, onOpenFile, onOpenFileInNewTab],
   );
 
   if (!projectFolder) {
@@ -464,6 +475,16 @@ function FilesPanel({
                   onOpen={(match) =>
                     openFile(match.path, { line: match.line, column: match.column })
                   }
+                  onOpenInNewTab={
+                    onOpenFileInNewTab
+                      ? (match) =>
+                          openFile(
+                            match.path,
+                            { line: match.line, column: match.column },
+                            'new-tab',
+                          )
+                      : undefined
+                  }
                 />
               )
             ) : files.length === 0 ? (
@@ -472,23 +493,41 @@ function FilesPanel({
               <ul className="p-1">
                 {files.map((file) => (
                   <li key={file.path}>
-                    <button
-                      type="button"
+                    <div
                       className={clsx(
-                        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px]',
-                        selected === file.path
-                          ? 'bg-accent-soft text-accent-text'
-                          : 'text-text hover:bg-hover',
+                        'shell-workspace-file-row',
+                        selected === file.path ? 'is-active' : undefined,
                       )}
                       title={file.path}
-                      onClick={() => openFile(file.path)}
                     >
-                      <FileCode2 size={12} className="shrink-0 text-text-faint" />
-                      <span className="min-w-0 flex-1 truncate">{file.name}</span>
-                      <span className="max-w-[45%] shrink-0 truncate text-[10.5px] text-text-faint">
-                        {file.path}
-                      </span>
-                    </button>
+                      <button
+                        type="button"
+                        className="shell-workspace-file-row__primary"
+                        aria-label={
+                          onOpenFileInNewTab
+                            ? `在当前文件标签打开 ${file.path}`
+                            : `打开文件 ${file.path}`
+                        }
+                        onClick={() => openFile(file.path)}
+                      >
+                        <FileCode2 size={12} className="shrink-0 text-text-faint" />
+                        <span className="min-w-0 flex-1 truncate">{file.name}</span>
+                        <span className="max-w-[45%] shrink-0 truncate text-[10.5px] text-text-faint">
+                          {file.path}
+                        </span>
+                      </button>
+                      {onOpenFileInNewTab ? (
+                        <button
+                          type="button"
+                          className="shell-workspace-file-row__new-tab"
+                          aria-label={`在新文件标签打开 ${file.path}`}
+                          title="在新文件标签打开"
+                          onClick={() => openFile(file.path, undefined, 'new-tab')}
+                        >
+                          <ExternalLink size={11} />
+                        </button>
+                      ) : null}
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -505,6 +544,9 @@ function FilesPanel({
                 selected={selected}
                 onToggleDir={toggleDir}
                 onOpenFile={openFile}
+                onOpenFileInNewTab={
+                  onOpenFileInNewTab ? (path) => openFile(path, undefined, 'new-tab') : undefined
+                }
               />
             </div>
           )}
@@ -553,40 +595,59 @@ function ContentSearchResults({
   result: searchResult,
   selected,
   onOpen,
+  onOpenInNewTab,
 }: {
   result: SearchProjectContentResult;
   selected: string | null;
   onOpen(match: ProjectContentMatch): void;
+  onOpenInNewTab?(match: ProjectContentMatch): void;
 }) {
   return (
     <div>
       <ul className="p-1">
         {searchResult.results.map((result, index) => (
           <li key={`${result.path}:${result.line}:${result.column}:${index}`}>
-            <button
-              type="button"
+            <div
               className={clsx(
-                'w-full rounded-md px-2 py-1.5 text-left',
-                selected === result.path
-                  ? 'bg-accent-soft text-accent-text'
-                  : 'text-text hover:bg-hover',
+                'shell-workspace-file-row shell-workspace-file-row--search',
+                selected === result.path ? 'is-active' : undefined,
               )}
-              aria-label={`打开 ${result.path} 第 ${result.line} 行第 ${result.column} 列`}
-              onClick={() => onOpen(result)}
             >
-              <span className="flex min-w-0 items-center gap-2">
-                <FileCode2 size={12} className="shrink-0 text-text-faint" />
-                <span className="min-w-0 flex-1 truncate text-[11.5px]" title={result.path}>
-                  {result.path}
+              <button
+                type="button"
+                className="shell-workspace-file-row__primary shell-workspace-file-row__primary--search"
+                aria-label={
+                  onOpenInNewTab
+                    ? `在当前文件标签打开 ${result.path} 第 ${result.line} 行第 ${result.column} 列`
+                    : `打开 ${result.path} 第 ${result.line} 行第 ${result.column} 列`
+                }
+                onClick={() => onOpen(result)}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <FileCode2 size={12} className="shrink-0 text-text-faint" />
+                  <span className="min-w-0 flex-1 truncate text-[11.5px]" title={result.path}>
+                    {result.path}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10px] text-text-faint">
+                    {result.line}:{result.column}
+                  </span>
                 </span>
-                <span className="shrink-0 font-mono text-[10px] text-text-faint">
-                  {result.line}:{result.column}
+                <span className="mt-0.5 block truncate pl-5 font-mono text-[10.5px] text-text-faint">
+                  {result.preview}
                 </span>
-              </span>
-              <span className="mt-0.5 block truncate pl-5 font-mono text-[10.5px] text-text-faint">
-                {result.preview}
-              </span>
-            </button>
+              </button>
+              {onOpenInNewTab ? (
+                <button
+                  type="button"
+                  className="shell-workspace-file-row__new-tab"
+                  aria-label={`在新文件标签打开 ${result.path} 第 ${result.line} 行第 ${result.column} 列`}
+                  title="在新文件标签打开"
+                  onClick={() => onOpenInNewTab(result)}
+                >
+                  <ExternalLink size={11} />
+                </button>
+              ) : null}
+            </div>
           </li>
         ))}
       </ul>
@@ -608,6 +669,7 @@ function FileTreeLevel({
   selected,
   onToggleDir,
   onOpenFile,
+  onOpenFileInNewTab,
 }: {
   dir: string;
   depth: number;
@@ -616,6 +678,7 @@ function FileTreeLevel({
   selected: string | null;
   onToggleDir(dir: string): void;
   onOpenFile(path: string): void;
+  onOpenFileInNewTab?(path: string): void;
 }) {
   const state = dirs[dir];
   if (!state || (state.loading && !state.loaded)) {
@@ -671,26 +734,43 @@ function FileTreeLevel({
                 selected={selected}
                 onToggleDir={onToggleDir}
                 onOpenFile={onOpenFile}
+                onOpenFileInNewTab={onOpenFileInNewTab}
               />
             ) : null}
           </li>
         ) : (
           <li key={entry.path}>
-            <button
-              type="button"
+            <div
               className={clsx(
-                'flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[12px]',
-                selected === entry.path
-                  ? 'bg-accent-soft text-accent-text'
-                  : 'text-text hover:bg-hover',
+                'shell-workspace-file-row',
+                selected === entry.path ? 'is-active' : undefined,
               )}
               style={{ paddingLeft: 8 + depth * 14 + 15 }}
               title={entry.path}
-              onClick={() => onOpenFile(entry.path)}
             >
-              <FileCode2 size={12} className="shrink-0 text-text-faint" />
-              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-            </button>
+              <button
+                type="button"
+                className="shell-workspace-file-row__primary"
+                aria-label={
+                  onOpenFileInNewTab ? `在当前文件标签打开 ${entry.path}` : `打开文件 ${entry.path}`
+                }
+                onClick={() => onOpenFile(entry.path)}
+              >
+                <FileCode2 size={12} className="shrink-0 text-text-faint" />
+                <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+              </button>
+              {onOpenFileInNewTab ? (
+                <button
+                  type="button"
+                  className="shell-workspace-file-row__new-tab"
+                  aria-label={`在新文件标签打开 ${entry.path}`}
+                  title="在新文件标签打开"
+                  onClick={() => onOpenFileInNewTab(entry.path)}
+                >
+                  <ExternalLink size={11} />
+                </button>
+              ) : null}
+            </div>
           </li>
         ),
       )}

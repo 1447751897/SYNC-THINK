@@ -125,7 +125,7 @@ import {
   type ReasoningEffort,
 } from './compose-toolbar.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
-import { FileChangesCard, formatExecutionStepTitle } from './ExecutionProcessBlock.js';
+import { FileChangesCard } from './ExecutionProcessBlock.js';
 import { ExecutionTimeline } from './ExecutionTimeline.js';
 import {
   formatCompactCount,
@@ -2570,10 +2570,7 @@ export function ChatView({
       const stripped = stripSlashToken(input, slash);
       setInput(stripped.text);
       setSelectedSkillVersionIds((current) =>
-        resolveAppendSkillVersionIds(conversation.track, [
-          ...current,
-          skill.skillVersionId,
-        ]),
+        resolveAppendSkillVersionIds(conversation.track, [...current, skill.skillVersionId]),
       );
       closeComposePickers();
       window.requestAnimationFrame(() => {
@@ -3444,15 +3441,16 @@ export function ChatView({
     }
   }, [eventHistory, projectFolder, threadId]);
 
-  // Live task progress for the active run — powers the spinner capsule above
-  // the composer (hover reveals the full step list, NewMax-style).
+  // Live task progress for the active run — powers the checklist capsule above
+  // the composer. Tool calls remain in the execution process timeline and are
+  // never presented as checklist items.
   const liveTaskView = projected.activeRunId
     ? displayRunProcessById.get(projected.activeRunId)
     : undefined;
   const showTaskCapsule = Boolean(
     (sending || projected.streaming) &&
     liveTaskView &&
-    (liveTaskView.steps.length > 0 || (liveTaskView.taskPlan?.total ?? 0) > 0),
+    (liveTaskView.taskPlan?.items.length ?? 0) > 0,
   );
 
   return (
@@ -3460,7 +3458,7 @@ export function ChatView({
       {/* ─── Chat column ───────────────────────────────────────────── */}
       {/* min-w 从 360 降到 260：三栏（聊天列+文件分屏+右栏）同开时硬性下限
           之和必须小于中等窗口宽度，否则父容器 overflow:hidden 会裁掉行末的右栏。 */}
-      <div className="flex min-h-0 min-w-[260px] flex-1 flex-col overflow-hidden bg-chat">
+      <div className="shell-chat-column flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-chat">
         {!hasProjectFolder ? (
           <div className="shell-warning-banner border-b px-4 py-2 text-[12px] leading-relaxed">
             当前对话没有绑定本地项目文件夹，所以 AI 不能读取工作区目录。 请先在工作区 Tab
@@ -3716,9 +3714,7 @@ export function ChatView({
                 onClear={() => {
                   const api = bridge();
                   if (!conversation || !api?.clearGoal) return;
-                  void api
-                    .clearGoal({ conversationId: String(conversation.id) })
-                    .then(refreshGoal);
+                  void api.clearGoal({ conversationId: String(conversation.id) }).then(refreshGoal);
                 }}
               />
             ) : null}
@@ -5134,88 +5130,21 @@ function ToolApprovalCard({
 
 // ─── Run task capsule（输入框上方居中 + hover 展开可滚动任务清单） ─────────────
 //
-// NewMax 语义：优先展示模型通过 update_task_plan 维护的「任务清单」（真正的
-// 待办，不是工具调用流水）；模型没报清单时回退为工具步骤概览。
+// NewMax 语义：只展示模型维护的「任务清单」（真正的待办），工具调用
+// 流水由执行过程区域单独展示，不混入任务清单。
 
-function RunTaskCapsule({ view }: { view: RunProcessView }) {
+export function RunTaskCapsule({ view }: { view: RunProcessView }) {
   const [hovered, setHovered] = useState(false);
   const plan = view.taskPlan;
 
-  // 清单模式（首选）：模型自己维护的任务列表。
-  if (plan && plan.items.length > 0) {
-    const runningItem = plan.items.find((item) => item.status === 'in_progress');
-    const label = runningItem
-      ? runningItem.title
-      : plan.completed >= plan.total
-        ? '任务已全部完成'
-        : plan.items[0]!.title;
-    return (
-      <div
-        className="shell-task-capsule-wrap"
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        data-testid="run-task-capsule"
-        data-mode="plan"
-      >
-        {hovered ? (
-          <div className="shell-task-capsule__pop" role="list" aria-label="本轮任务清单">
-            <div className="shell-task-capsule__pop-title">
-              任务清单（{plan.completed}/{plan.total}）
-            </div>
-            <ul className="shell-task-capsule__pop-list">
-              {plan.items.map((item, index) => (
-                <li
-                  key={`${index}-${item.title}`}
-                  className="shell-task-capsule__pop-item"
-                  data-status={
-                    item.status === 'in_progress'
-                      ? 'running'
-                      : item.status === 'completed'
-                        ? 'done'
-                        : 'pending'
-                  }
-                >
-                  {item.status === 'in_progress' ? (
-                    <LoaderCircle size={12} className="shell-process-spin text-accent" />
-                  ) : item.status === 'completed' ? (
-                    <Check size={12} className="text-[var(--color-success)]" />
-                  ) : (
-                    <span className="shell-task-capsule__dot" aria-hidden />
-                  )}
-                  <span
-                    className="shell-task-capsule__pop-text"
-                    data-done={item.status === 'completed' ? 'true' : undefined}
-                    title={item.title}
-                  >
-                    {item.title}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        <div className="shell-task-capsule">
-          {view.running ? (
-            <LoaderCircle size={13} className="shell-process-spin" />
-          ) : (
-            <Check size={13} className="text-[var(--color-success)]" />
-          )}
-          <span className="shell-task-capsule__label">{label}</span>
-          <span className="shell-task-capsule__count">
-            {plan.completed}/{plan.total}
-          </span>
-        </div>
-      </div>
-    );
-  }
+  if (!plan || plan.items.length === 0) return null;
 
-  // 回退模式：工具步骤概览（模型没维护清单时）。
-  const total = view.steps.length;
-  const doneCount = view.steps.filter((s) => s.status === 'done').length;
-  const runningStep = view.steps.find((s) => s.status === 'running');
-  const label = runningStep
-    ? formatExecutionStepTitle(runningStep)
-    : `已完成 ${doneCount}/${total} 个步骤`;
+  const runningItem = plan.items.find((item) => item.status === 'in_progress');
+  const label = runningItem
+    ? runningItem.title
+    : plan.completed >= plan.total
+      ? '任务已全部完成'
+      : plan.items[0]!.title;
 
   return (
     <div
@@ -5223,30 +5152,39 @@ function RunTaskCapsule({ view }: { view: RunProcessView }) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       data-testid="run-task-capsule"
-      data-mode="steps"
+      data-mode="plan"
     >
       {hovered ? (
-        <div className="shell-task-capsule__pop" role="list" aria-label="本轮执行步骤">
+        <div className="shell-task-capsule__pop" role="list" aria-label="本轮任务清单">
           <div className="shell-task-capsule__pop-title">
-            执行步骤（{doneCount}/{total}）
+            任务清单（{plan.completed}/{plan.total}）
           </div>
           <ul className="shell-task-capsule__pop-list">
-            {view.steps.map((step) => (
-              <li key={step.id} className="shell-task-capsule__pop-item" data-status={step.status}>
-                {step.status === 'running' ? (
+            {plan.items.map((item, index) => (
+              <li
+                key={`${index}-${item.title}`}
+                className="shell-task-capsule__pop-item"
+                data-status={
+                  item.status === 'in_progress'
+                    ? 'running'
+                    : item.status === 'completed'
+                      ? 'done'
+                      : 'pending'
+                }
+              >
+                {item.status === 'in_progress' ? (
                   <LoaderCircle size={12} className="shell-process-spin text-accent" />
-                ) : step.status === 'error' ? (
-                  <AlertCircle size={12} className="text-[var(--color-error)]" />
-                ) : step.status === 'done' ? (
+                ) : item.status === 'completed' ? (
                   <Check size={12} className="text-[var(--color-success)]" />
                 ) : (
                   <span className="shell-task-capsule__dot" aria-hidden />
                 )}
                 <span
                   className="shell-task-capsule__pop-text"
-                  title={formatExecutionStepTitle(step)}
+                  data-done={item.status === 'completed' ? 'true' : undefined}
+                  title={item.title}
                 >
-                  {formatExecutionStepTitle(step)}
+                  {item.title}
                 </span>
               </li>
             ))}
@@ -5254,10 +5192,14 @@ function RunTaskCapsule({ view }: { view: RunProcessView }) {
         </div>
       ) : null}
       <div className="shell-task-capsule">
-        <LoaderCircle size={13} className="shell-process-spin" />
+        {view.running ? (
+          <LoaderCircle size={13} className="shell-process-spin" />
+        ) : (
+          <Check size={13} className="text-[var(--color-success)]" />
+        )}
         <span className="shell-task-capsule__label">{label}</span>
         <span className="shell-task-capsule__count">
-          {doneCount}/{total}
+          {plan.completed}/{plan.total}
         </span>
       </div>
     </div>

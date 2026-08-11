@@ -283,7 +283,10 @@ html,
 body,
 #root {
   height: 100%;
+  width: 100%;
+  min-width: 0;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
@@ -1327,11 +1330,12 @@ body {
 .capability-dialog,
 .capability-drawer,
 .capability-dialog-overlay {
-  /* Keep the capability center on the same warm/cool ramp as the shell. */
-  --color-cap-bg: var(--color-page);
+  /* Keep the capability center on the same stage ramp as the shell. The
+     page token is the outer gutter; the chat token is the actual work area. */
+  --color-cap-bg: var(--color-chat);
   --color-cap-surface: var(--color-surface);
   --color-cap-surface-raised: var(--color-elevated);
-  --color-cap-surface-soft: color-mix(in srgb, var(--color-surface) 76%, var(--color-elevated));
+  --color-cap-surface-soft: color-mix(in srgb, var(--color-elevated) 82%, var(--color-chat));
   --color-cap-border: var(--color-border);
   --color-cap-border-strong: var(--color-border-strong);
   --color-cap-text: var(--color-text);
@@ -1341,7 +1345,7 @@ body {
   --color-cap-green-deep: var(--color-accent-text);
   --color-cap-yellow: var(--color-warning);
   --color-cap-red: var(--color-error);
-  --color-cap-surface-deep: color-mix(in srgb, var(--color-page) 45%, var(--color-surface));
+  --color-cap-surface-deep: color-mix(in srgb, var(--color-chat) 82%, var(--color-surface));
   --color-cap-surface-selected: var(--color-active);
   --color-cap-accent-fg: var(--color-accent-fg);
   --color-cap-green-bright: color-mix(in srgb, var(--color-accent) 84%, var(--color-text));
@@ -1374,7 +1378,7 @@ body {
   --color-cap-hover: var(--color-hover);
   --color-cap-active: var(--color-active);
   --color-cap-control: var(--color-elevated);
-  --color-cap-row: var(--color-surface);
+  --color-cap-row: var(--color-elevated);
   --color-cap-form: var(--color-overlay);
   --color-cap-overlay-border: var(--color-border);
   --color-cap-shadow: var(--color-modal-shadow);
@@ -1431,6 +1435,8 @@ body {
 
 .capability-center__header {
   display: flex;
+  box-sizing: border-box;
+  height: 64px;
   flex: 0 0 auto;
   align-items: center;
   gap: 24px;
@@ -1443,9 +1449,17 @@ body {
 
 .capability-center__heading {
   display: flex;
-  min-width: 215px;
+  width: 300px;
+  min-width: 300px;
+  max-width: 300px;
+  flex: 0 0 300px;
   align-items: center;
   gap: 11px;
+  overflow: hidden;
+}
+
+.capability-center__heading > div {
+  min-width: 0;
 }
 
 .capability-center__heading-icon {
@@ -1469,13 +1483,18 @@ body {
 
 .capability-center__heading p {
   margin: 3px 0 0;
+  overflow: hidden;
   color: var(--cap-muted);
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .capability-center__section-switch {
   display: flex;
+  flex: 0 0 auto;
   gap: 3px;
+  min-width: 177px;
   padding: 3px;
   border: 1px solid var(--cap-border);
   border-radius: 10px;
@@ -1499,10 +1518,16 @@ body {
 }
 
 .capability-center__section-switch button {
-  min-width: 77px;
-  padding: 7px 11px;
+  box-sizing: border-box;
+  width: 84px;
+  min-width: 84px;
+  height: 32px;
+  flex: 0 0 84px;
+  border: 1px solid transparent;
+  padding: 0 8px;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .capability-center__section-switch button:hover,
@@ -1791,6 +1816,7 @@ body {
   overflow-x: hidden;
   overflow-y: auto;
   padding: 16px 22px 24px;
+  background: var(--cap-bg);
   animation: capability-content-in 180ms ease-out both;
 }
 
@@ -1842,7 +1868,7 @@ body {
   flex-direction: column;
   border: 1px solid var(--cap-border);
   border-radius: 8px;
-  background: var(--cap-surface);
+  background: var(--cap-surface-raised);
   overflow: hidden;
   transition:
     border-color 150ms ease,
@@ -2256,8 +2282,7 @@ body {
 /* MCP governance list dropped the workspace-activation column (global MCP). */
 .capability-governance-list--mcp .capability-governance-list__header,
 .capability-governance-list--mcp .capability-governance-row {
-  grid-template-columns:
-    minmax(280px, 2.25fr) minmax(110px, 0.9fr) 80px 88px 66px 64px;
+  grid-template-columns: minmax(280px, 2.25fr) minmax(110px, 0.9fr) 80px 88px 66px 64px;
 }
 
 .capability-governance-list__header {
@@ -2662,6 +2687,7 @@ body {
   outline: 0;
   color: var(--cap-text);
   background: var(--color-cap-surface);
+  overflow: hidden;
   box-shadow:
     0 24px 70px var(--color-cap-shadow),
     0 1px 0 var(--color-cap-inset-highlight) inset;
@@ -2705,15 +2731,12 @@ body {
 }
 
 .capability-drawer {
-  top: 0;
-  right: 0;
-  bottom: 0;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
   width: min(520px, 100vw);
-  border-top: 0;
-  border-right: 0;
-  border-bottom: 0;
-  border-radius: 18px 0 0 18px;
-  animation-name: capability-drawer-in;
+  border-radius: 16px;
+  animation-name: capability-fade-in;
 }
 
 .capability-drawer__header,
@@ -2837,6 +2860,13 @@ body {
   font-size: 12px;
   line-height: 1.65;
   overflow-wrap: anywhere;
+}
+
+.capability-effect-chain__note {
+  margin: 8px 0 0;
+  color: var(--cap-muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .capability-detail-status-grid,
@@ -3237,11 +3267,14 @@ body {
 .capability-register-section {
   display: grid;
   gap: 12px;
+  border: 1px solid var(--cap-border);
+  border-radius: 12px;
+  padding: 13px;
+  background: color-mix(in srgb, var(--cap-surface-raised) 72%, var(--cap-surface));
 }
 
 .capability-register-section + .capability-register-section {
-  padding-top: 14px;
-  border-top: 1px solid var(--cap-border);
+  padding-top: 13px;
 }
 
 .capability-register-section__title {
@@ -3809,12 +3842,10 @@ body {
 @keyframes capability-drawer-in {
   from {
     opacity: 0;
-    transform: translateX(18px);
   }
 
   to {
     opacity: 1;
-    transform: none;
   }
 }
 
@@ -3867,6 +3898,7 @@ body {
 
 @media (max-width: 900px) {
   .capability-center__header {
+    height: auto;
     flex-wrap: wrap;
     gap: 10px 16px;
     padding: 12px 16px;
@@ -3874,6 +3906,8 @@ body {
 
   .capability-center__heading {
     min-width: 0;
+    width: auto;
+    max-width: none;
     flex: 1 1 auto;
   }
 
@@ -4026,8 +4060,11 @@ body {
   }
 
   .capability-drawer {
-    width: 100%;
-    border-radius: 15px 0 0 15px;
+    top: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: calc(100% - 16px);
+    border-radius: 14px;
   }
 
   .capability-dialog {
@@ -4208,6 +4245,11 @@ body {
 }
 
 /* Shared chat content width: message column and compose share the same edges. */
+.shell-chat-column {
+  container-name: shell-chat;
+  container-type: inline-size;
+}
+
 .shell-chat-content-wrap {
   padding-left: 16px;
   padding-right: 16px;
@@ -5422,7 +5464,7 @@ body {
   background: color-mix(in srgb, var(--color-error) 92%, var(--color-text));
 }
 
-@media (max-width: 620px) {
+@container shell-chat (max-width: 620px) {
   .shell-compose-queue__hint {
     display: none;
   }
@@ -5456,7 +5498,56 @@ body {
   }
 
   .shell-compose__model-btn {
-    max-width: min(150px, 42vw);
+    max-width: min(150px, 42cqw);
+  }
+}
+
+@container shell-chat (max-width: 420px) {
+  .shell-chat-content-wrap {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .shell-compose__input {
+    min-height: 48px;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .shell-compose__bar {
+    gap: 3px;
+    padding-right: 5px;
+    padding-left: 5px;
+  }
+
+  .shell-compose__bar-left,
+  .shell-compose__bar-right {
+    gap: 2px;
+  }
+
+  .shell-compose__tool {
+    width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .shell-compose__tool-label {
+    display: none;
+  }
+
+  .shell-compose__model-btn {
+    max-width: min(118px, 36cqw);
+    padding-inline: 5px;
+  }
+
+  .shell-compose__ctx {
+    width: 27px;
+    height: 27px;
+  }
+
+  .shell-compose__send {
+    width: 30px;
+    height: 30px;
   }
 }
 
@@ -6146,6 +6237,10 @@ body {
   border-bottom: 1px solid var(--color-border);
   text-align: left;
   vertical-align: top;
+  /* Keep short tokens (especially numeric IDs) intact. The table wrapper
+     already provides horizontal scrolling for genuinely wide cells. */
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .shell-md th {
@@ -11361,6 +11456,10 @@ body {
  * difference from our previous flush-column shell.
  */
 .shell-boards {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  box-sizing: border-box;
   gap: var(--shell-board-gap);
   /* Inset on all four edges: the boards float with breathing room from the
      window edges (including top/bottom), while staying level with each other. */
@@ -11782,6 +11881,65 @@ body {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 42%, transparent);
 }
 
+.shell-chat-parked {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 0;
+  padding: 24px;
+  background: var(--color-chat);
+  color: var(--color-text-faint);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--shell-motion-fast) var(--shell-ease),
+    color var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-chat-parked:hover {
+  background: color-mix(in srgb, var(--color-hover) 58%, var(--color-chat));
+  color: var(--color-text-secondary);
+}
+
+.shell-chat-parked:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 72%, transparent);
+  outline-offset: -3px;
+}
+
+.shell-chat-parked > svg {
+  flex: 0 0 auto;
+  color: var(--color-accent-text);
+}
+
+.shell-chat-parked > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.shell-chat-parked strong,
+.shell-chat-parked small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-chat-parked strong {
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 620;
+}
+
+.shell-chat-parked small {
+  color: var(--color-text-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+
 .shell-pane-tree-divider {
   position: relative;
   z-index: 2;
@@ -11847,6 +12005,72 @@ body {
   flex-direction: column;
   overflow: hidden;
   background: var(--color-page);
+}
+
+.shell-file-workbench {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: var(--color-page);
+  container-name: shell-file-workbench;
+  container-type: inline-size;
+}
+
+.shell-file-workbench__layout {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.shell-file-workbench[data-explorer-open='true'] .shell-file-workbench__layout {
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 30%);
+}
+
+.shell-file-workbench__editor,
+.shell-file-workbench__explorer {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.shell-file-workbench__explorer {
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+@container shell-file-workbench (max-width: 520px) {
+  .shell-file-workbench__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shell-file-workbench[data-explorer-open='true'] .shell-file-workbench__layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(180px, 3fr) minmax(150px, 2fr);
+  }
+
+  .shell-file-workbench__editor {
+    grid-column: 1;
+    grid-row: 1;
+    width: 100%;
+  }
+
+  .shell-file-workbench__explorer {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100%;
+    min-width: 0;
+    border-top: 1px solid var(--color-border);
+    border-left: 0;
+  }
 }
 
 .shell-file-pane-header {
@@ -12340,7 +12564,87 @@ body {
 }
 
 .shell-workspace-files-panel {
+  width: 100%;
+  min-width: 0;
   background: var(--color-surface);
+}
+
+.shell-workspace-file-row {
+  display: flex;
+  min-width: 0;
+  min-height: 26px;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  transition:
+    background var(--shell-motion-fast) var(--shell-ease),
+    color var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-workspace-file-row:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.shell-workspace-file-row.is-active {
+  background: var(--color-active);
+  color: var(--color-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.shell-workspace-file-row__primary {
+  display: flex;
+  min-width: 0;
+  min-height: 26px;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.shell-workspace-file-row__primary--search {
+  display: block;
+  padding-block: 5px;
+}
+
+.shell-workspace-file-row__new-tab {
+  display: inline-flex;
+  width: 26px;
+  min-width: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-left: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-faint);
+  opacity: 0.62;
+  transition:
+    background var(--shell-motion-fast) var(--shell-ease),
+    color var(--shell-motion-fast) var(--shell-ease),
+    opacity var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-workspace-file-row:hover .shell-workspace-file-row__new-tab,
+.shell-workspace-file-row__new-tab:focus-visible {
+  border-left-color: color-mix(in srgb, var(--color-border) 72%, transparent);
+  color: var(--color-accent-text);
+  opacity: 1;
+}
+
+.shell-workspace-file-row__new-tab:hover {
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+}
+
+.shell-workspace-file-row__primary:focus-visible,
+.shell-workspace-file-row__new-tab:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -2px;
 }
 
 .shell-workspace-files-switcher {

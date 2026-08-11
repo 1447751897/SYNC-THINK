@@ -18,6 +18,7 @@ import {
   parseWorkspacePaneLayout,
   parseWorkspacePaneLayouts,
   pruneWorkspacePaneLayout,
+  replaceFileInPane,
   replaceConversationInPane,
   reorderPaneTabs,
   setSplitRatio,
@@ -198,6 +199,32 @@ describe('workspace pane layout', () => {
     expect(closed.panes[paneId]?.activeTabId).toBe('conversation:c1');
   });
 
+  it('reuses the current file tab when the embedded explorer opens another file', () => {
+    const initial = createWorkspacePaneLayout('ws-a', ['c1'], 'c1');
+    const paneId = rootPaneId(initial);
+    const opened = openFileInPane(initial, 'src/first.ts', paneId);
+    const replaced = replaceFileInPane(opened, paneId, 'src/first.ts', 'src/second.ts');
+
+    expect(replaced.panes[paneId]?.tabs).toEqual([
+      expect.objectContaining({ type: 'conversation', conversationId: 'c1' }),
+      expect.objectContaining({ type: 'file', path: 'src/second.ts' }),
+    ]);
+    expect(replaced.panes[paneId]?.activeTabId).toBe('file:src/second.ts');
+  });
+
+  it('activates an existing destination instead of duplicating it when replacing a file tab', () => {
+    const initial = createWorkspacePaneLayout('ws-a', ['c1'], 'c1');
+    const paneId = rootPaneId(initial);
+    const withFirst = openFileInPane(initial, 'src/first.ts', paneId);
+    const withSecond = openFileInPane(withFirst, 'src/second.ts', paneId);
+    const replaced = replaceFileInPane(withSecond, paneId, 'src/first.ts', 'src/second.ts');
+
+    expect(replaced.panes[paneId]?.tabs.filter((tab) => tab.type === 'file')).toEqual([
+      expect.objectContaining({ type: 'file', path: 'src/second.ts' }),
+    ]);
+    expect(replaced.panes[paneId]?.activeTabId).toBe('file:src/second.ts');
+  });
+
   it('opens, restores, activates, and closes a terminal tab as a pane resource', () => {
     const initial = createWorkspacePaneLayout('ws-a', ['c1'], 'c1');
     const paneId = rootPaneId(initial);
@@ -217,11 +244,7 @@ describe('workspace pane layout', () => {
     );
 
     const conversationActive = activatePaneTab(restored!, paneId, 'c1');
-    const terminalActive = activateTerminalPaneTab(
-      conversationActive,
-      paneId,
-      'terminal-one',
-    );
+    const terminalActive = activateTerminalPaneTab(conversationActive, paneId, 'terminal-one');
     expect(terminalActive.panes[paneId]?.activeTabId).toBe('terminal:terminal-one');
 
     const movedCwd = updateTerminalPaneCwd(terminalActive, paneId, 'terminal-one', 'src/app');
@@ -241,8 +264,16 @@ describe('workspace pane layout', () => {
     const secondPaneId = split.focusedPaneId;
 
     const moved = moveConversationToPane(split, 'c3', secondPaneId);
-    expect(moved.panes[firstPaneId]?.tabs.map((tab) => tab.type === 'conversation' && tab.conversationId)).toEqual(['c1']);
-    expect(moved.panes[secondPaneId]?.tabs.map((tab) => tab.type === 'conversation' && tab.conversationId)).toEqual(['c2', 'c3']);
+    expect(
+      moved.panes[firstPaneId]?.tabs.map(
+        (tab) => tab.type === 'conversation' && tab.conversationId,
+      ),
+    ).toEqual(['c1']);
+    expect(
+      moved.panes[secondPaneId]?.tabs.map(
+        (tab) => tab.type === 'conversation' && tab.conversationId,
+      ),
+    ).toEqual(['c2', 'c3']);
     expect(focusedConversationId(moved)).toBe('c3');
 
     const collapsed = moveConversationToPane(moved, 'c1', secondPaneId);

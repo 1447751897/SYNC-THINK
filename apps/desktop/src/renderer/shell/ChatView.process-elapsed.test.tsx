@@ -4,7 +4,11 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommentaryTimelineSegment, RunProcessView } from '@sync-think/protocol';
-import { AssistantProcessGroup, formatAssistantProcessElapsed } from './ChatView.js';
+import {
+  AssistantProcessGroup,
+  formatAssistantProcessElapsed,
+  RunTaskCapsule,
+} from './ChatView.js';
 
 function processView(overrides: Partial<RunProcessView> = {}): RunProcessView {
   return {
@@ -271,5 +275,42 @@ describe('AssistantProcessGroup elapsed clock', () => {
         false,
       ),
     ).toBeUndefined();
+  });
+});
+
+describe('RunTaskCapsule checklist projection', () => {
+  const toolStep: RunProcessView['steps'][number] = {
+    id: 'call-read',
+    label: 'Read · README.md',
+    verb: 'Read',
+    zh: '读取文件',
+    toolName: 'read_file',
+    kind: 'read',
+    status: 'done',
+  };
+
+  it('does not render a checklist when a run only has tool steps', () => {
+    render(<RunTaskCapsule view={processView({ steps: [toolStep] })} />);
+
+    expect(screen.queryByTestId('run-task-capsule')).toBeNull();
+  });
+
+  it('renders authored task items without exposing tool-call labels', () => {
+    render(
+      <RunTaskCapsule
+        view={processView({
+          steps: [toolStep],
+          taskPlan: {
+            items: [{ title: '检查项目', status: 'in_progress' }],
+            completed: 0,
+            total: 1,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('run-task-capsule').getAttribute('data-mode')).toBe('plan');
+    expect(screen.getByText('检查项目')).toBeTruthy();
+    expect(screen.queryByText('读取文件 · README.md')).toBeNull();
   });
 });

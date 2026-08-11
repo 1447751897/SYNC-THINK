@@ -21,14 +21,19 @@ describe('unified file pane shell wiring', () => {
     expect(shellSource).toContain("title: '关闭未保存的文件'");
     expect(shellSource).toContain('fileTabs={localFileTabs}');
     expect(shellSource).toContain('activeFilePath={activeFilePath}');
-    expect(shellSource).toContain('<FilePane');
+    expect(shellSource).toContain('<WorkspaceFileView');
     expect(shellSource).toContain('path={activeTab.path}');
     expect(shellSource).toContain('onDirtyChange={(dirty) =>');
+    expect(shellSource).toContain('onOpenFileInCurrentTab={(path, location) =>');
+    expect(shellSource).toContain('handleOpenFileInCurrentTab(');
+    expect(shellSource).toContain('onOpenFileInNewTab={(path, location) =>');
   });
 
   it('routes the right-dock file tree to the shell and removes the legacy chat-owned split', () => {
     expect(shellSource).toContain('handleOpenFileInPane(pane.id, path, location)');
-    expect(chatSource).toContain('onOpenFile?: (path: string, location?: ProjectTextLocation) => void');
+    expect(chatSource).toContain(
+      'onOpenFile?: (path: string, location?: ProjectTextLocation) => void',
+    );
     expect(chatSource).toContain('onOpenFile={onOpenFile}');
     expect(chatSource).not.toContain('data-testid="file-split-pane"');
     expect(chatSource).not.toContain('const [splitFile');

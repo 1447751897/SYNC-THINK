@@ -18,7 +18,6 @@ import type { WorkspaceSummary } from '@sync-think/protocol';
 import {
   DndContext,
   KeyboardSensor,
-  PointerSensor,
   closestCenter,
   useSensor,
   useSensors,
@@ -42,11 +41,7 @@ export interface TopBarProps {
   sidebarCollapsed: boolean;
   onSelectWorkspace(workspaceId: string): void;
   onOpenFolder(): void;
-  onCreateWorkspace(input: {
-    name: string;
-    folderPath: string;
-    icon?: string;
-  }): Promise<boolean>;
+  onCreateWorkspace(input: { name: string; folderPath: string; icon?: string }): Promise<boolean>;
   onUpdateWorkspace(input: {
     workspaceId: string;
     name?: string;
@@ -92,13 +87,13 @@ export function TopBar(props: TopBarProps) {
     visibleWorkspaces.map((w) => w.workspaceId),
   );
   const isDraggingRef = useRef(false);
+  const nativeDraggingWorkspaceIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (isDraggingRef.current) return;
     setOrderIds(props.workspaces.filter((w) => !w.hidden).map((w) => w.workspaceId));
   }, [props.workspaces]);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
@@ -106,13 +101,9 @@ export function TopBar(props: TopBarProps) {
     isDraggingRef.current = true;
   };
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    isDraggingRef.current = false;
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
+  const reorderWorkspace = (activeId: string, overId: string) => {
+    if (activeId === overId) return;
     setOrderIds((current) => {
-      const activeId = String(active.id);
-      const overId = String(over.id);
       const oldIndex = current.indexOf(activeId);
       const newIndex = current.indexOf(overId);
       if (oldIndex < 0 || newIndex < 0) return current;
@@ -120,6 +111,42 @@ export function TopBar(props: TopBarProps) {
       void props.onReorderWorkspaces?.(next);
       return next;
     });
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    isDraggingRef.current = false;
+    const { active, over } = event;
+    if (!over) return;
+    reorderWorkspace(String(active.id), String(over.id));
+  };
+
+  const beginNativeWorkspaceDrag = (
+    event: React.DragEvent<HTMLDivElement>,
+    workspaceId: string,
+  ) => {
+    isDraggingRef.current = true;
+    nativeDraggingWorkspaceIdRef.current = workspaceId;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-sync-think-workspace', workspaceId);
+    event.dataTransfer.setData('text/plain', workspaceId);
+  };
+
+  const handleNativeWorkspaceDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!nativeDraggingWorkspaceIdRef.current) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleNativeWorkspaceDrop = (
+    event: React.DragEvent<HTMLDivElement>,
+    targetWorkspaceId: string,
+  ) => {
+    const sourceWorkspaceId = nativeDraggingWorkspaceIdRef.current;
+    if (!sourceWorkspaceId) return;
+    event.preventDefault();
+    nativeDraggingWorkspaceIdRef.current = null;
+    isDraggingRef.current = false;
+    reorderWorkspace(sourceWorkspaceId, targetWorkspaceId);
   };
 
   useLayoutEffect(() => {
@@ -210,9 +237,7 @@ export function TopBar(props: TopBarProps) {
         >
           <SortableContext items={orderIds} strategy={horizontalListSortingStrategy}>
             {orderIds.map((workspaceId) => {
-              const workspace = props.workspaces.find(
-                (w) => w.workspaceId === workspaceId,
-              );
+              const workspace = props.workspaces.find((w) => w.workspaceId === workspaceId);
               if (!workspace) return null;
               return (
                 <SortableProjectTab
@@ -222,14 +247,19 @@ export function TopBar(props: TopBarProps) {
                   icon={workspace.icon}
                   title={workspace.folderPath}
                   active={props.activeWorkspaceId === workspace.workspaceId}
-                  running={
-                    props.workspaceActivity?.get(workspace.workspaceId)?.running ?? false
-                  }
-                  unread={
-                    props.workspaceActivity?.get(workspace.workspaceId)?.unread ?? false
-                  }
+                  running={props.workspaceActivity?.get(workspace.workspaceId)?.running ?? false}
+                  unread={props.workspaceActivity?.get(workspace.workspaceId)?.unread ?? false}
                   onClick={() => props.onSelectWorkspace(workspace.workspaceId)}
                   onHide={() => props.onSetWorkspaceHidden?.(workspace.workspaceId, true)}
+                  onNativeDragStart={(event) =>
+                    beginNativeWorkspaceDrag(event, workspace.workspaceId)
+                  }
+                  onNativeDragOver={handleNativeWorkspaceDragOver}
+                  onNativeDrop={(event) => handleNativeWorkspaceDrop(event, workspace.workspaceId)}
+                  onNativeDragEnd={() => {
+                    nativeDraggingWorkspaceIdRef.current = null;
+                    isDraggingRef.current = false;
+                  }}
                 />
               );
             })}
@@ -499,16 +529,21 @@ function ProjectTab(props: {
   onClick(): void;
   /** Hide this workspace from the folder row (data untouched). */
   onHide?(): void;
+  onNativeDragStart(e: React.DragEvent<HTMLDivElement>): void;
+  onNativeDragOver(e: React.DragEvent<HTMLDivElement>): void;
+  onNativeDrop(e: React.DragEvent<HTMLDivElement>): void;
+  onNativeDragEnd(): void;
   sortableProps?: {
-    ref(node: HTMLButtonElement | null): void;
+    ref(node: HTMLDivElement | null): void;
     attributes: Record<string, unknown>;
     listeners: Record<string, unknown>;
   };
 }) {
   return (
-    <button
+    <div
       ref={props.sortableProps?.ref}
       data-testid={`project-tab-${props.label}`}
+      draggable
       title={
         props.running
           ? `${props.title ?? props.label} · 有任务正在运行`
@@ -518,6 +553,10 @@ function ProjectTab(props: {
       }
       {...props.sortableProps?.attributes}
       {...props.sortableProps?.listeners}
+      onDragStart={props.onNativeDragStart}
+      onDragOver={props.onNativeDragOver}
+      onDrop={props.onNativeDrop}
+      onDragEnd={props.onNativeDragEnd}
       className={clsx(
         'st-row-motion group relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
         props.active
@@ -581,7 +620,7 @@ function ProjectTab(props: {
           <X size={11} />
         </span>
       ) : null}
-    </button>
+    </div>
   );
 }
 
@@ -595,6 +634,10 @@ function SortableProjectTab(props: {
   unread?: boolean;
   onClick(): void;
   onHide?(): void;
+  onNativeDragStart(e: React.DragEvent<HTMLDivElement>): void;
+  onNativeDragOver(e: React.DragEvent<HTMLDivElement>): void;
+  onNativeDrop(e: React.DragEvent<HTMLDivElement>): void;
+  onNativeDragEnd(): void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({
     id: props.workspaceId,
@@ -609,12 +652,14 @@ function SortableProjectTab(props: {
       unread={props.unread}
       dragging={isDragging}
       dragTransform={
-        transform
-          ? CSS.Transform.toString({ ...transform, scaleX: 1, scaleY: 1 })
-          : undefined
+        transform ? CSS.Transform.toString({ ...transform, scaleX: 1, scaleY: 1 }) : undefined
       }
       onClick={props.onClick}
       onHide={props.onHide}
+      onNativeDragStart={props.onNativeDragStart}
+      onNativeDragOver={props.onNativeDragOver}
+      onNativeDrop={props.onNativeDrop}
+      onNativeDragEnd={props.onNativeDragEnd}
       sortableProps={{
         ref: setNodeRef,
         attributes: attributes as unknown as Record<string, unknown>,
@@ -756,9 +801,7 @@ function WorkspaceFormDialog(props: {
                 type="button"
                 className={clsx(
                   'flex h-8 w-8 items-center justify-center rounded-(--radius-row) border text-[15px]',
-                  icon === preset
-                    ? 'border-accent bg-accent-soft'
-                    : 'border-border hover:bg-hover',
+                  icon === preset ? 'border-accent bg-accent-soft' : 'border-border hover:bg-hover',
                 )}
                 onClick={() => setIcon(preset)}
                 title={preset}
