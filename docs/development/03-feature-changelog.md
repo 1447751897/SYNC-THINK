@@ -2815,3 +2815,68 @@ Desktop typecheck/build：passed
 ### Boundary
 
 - 当前仍只重启本地源码实例，未生成安装包、未提交、未推送；远端 MCP Key 继续只保存在 SecureStore，列表、Renderer、事件和日志不回显。
+
+## 2026-08-11 · Markdown 表格数字单元格断行修复
+
+### Fixed
+
+- 覆盖 Markdown 容器继承的 `overflow-wrap: anywhere`，表格单元格改用可控断行并恢复正常 `word-break`，避免序号 `10`、`11` 等被拆成上下两行。
+- 保留表格外层横向滚动，长 URL 或宽内容仍可完整查看，不影响普通正文的换行。
+
+### Verification
+
+- `MarkdownContent.test.tsx`：15/15 通过，新增表格断行回归检查。
+- Desktop 全量回归：151 个测试文件、1109 个测试全部通过。
+- Desktop typecheck、lint 和 build 通过；lint 仍仅保留仓库已有的 5 条 hooks warnings，无 errors。
+- 新源码实例实窗复核通过：Electron PID `34480`、Runtime PID `20188`、CDP `127.0.0.1:9352`；含 `8`–`14` 序号的表格每行高度约 39px，数字保持单行。截图：`.data/local-restart-20260811-markdown-table/markdown-table-fixed.png`。
+
+### Boundary
+
+- 本轮只重启本地源码实例，未生成安装包、未提交、未推送。
+
+## 2026-08-11 · 能力中心主题与任务清单显示修复
+
+### Fixed
+
+- 能力中心主背景改用 Shell 工作区主体的 `chat/surface/elevated` 语义层，浅色和深色不再单独显示米色或纯黑背景。
+- Skill/MCP 顶部切换器固定标题列、按钮宽高和边框盒尺寸，切换能力类型时位置不再跳动。
+- 标题栏固定桌面端高度，副标题保持单行并截断；MCP 副标题不再换行撑高整栏，实窗切换前后按钮 `x/y/width/height` 完全一致。
+- Skill 详情抽屉精简“生效路径”说明；抽屉改为四边稳定圆角、独立滚动正文和常驻 footer，并移除横向位移动画，降低 Chromium 下中文文字发虚。
+- MCP 配置弹窗按服务配置、远端鉴权、其他设置分组，四边圆角并裁切 footer；已保存服务 Key 会回填到密码框，仍可通过眼睛按钮查看，删除冗余辅助描述。
+- 按最新产品要求，远端 MCP Key 改为 App Setting 明文保存并随 MCP 摘要回填 Renderer，默认仍以密码形式遮罩；旧 SecureStore `storeHandle` 会在首次 MCP 列表读取时解密迁移。事件、日志和诊断导出仍不得写入 Key。
+- MCP 重新发现失败时保留原工具目录并返回部分成功状态；远端注册/刷新/调用使用覆盖完整握手预算的长超时；AI 元数据登记入口会拒绝隐藏的 `key/apiKey/authScheme` 字段。
+- MCP 管理页移除误用的“Skill 有两条生效路径”说明。
+- 任务清单只投影模型维护的高层任务；`update_task_plan`、`TaskCreate`、`TaskUpdate`、`TaskList` 不再混入普通工具执行步骤，没有真实任务计划时也不显示任务清单胶囊。
+
+### Verification
+
+- `AbilitiesPage.test.tsx`：30/30；Runtime 远端能力：7/7；`run-process-view.test.ts`：12/12；`ChatView.process-elapsed.test.tsx`：10/10。
+- Runtime Chat 工具：58/58；Desktop 执行过程：11/11；Storage 任务清单：4/4。Desktop 全量：151 files / 1114 tests；本轮早前 Runtime、Storage 全量也已通过。
+- Desktop、Runtime、Storage、Protocol typecheck 通过；Desktop/Runtime/Storage lint 通过，Desktop 为 0 errors、保留 5 条既有 hooks warnings；design token、Prettier、build 和 `git diff --check` 通过。
+- 最新源码实例：Electron PID `25712`、Runtime PID `33080`、CDP `127.0.0.1:9353`；日志位于 `.data/local-restart-20260811-154206-capability-tasklist/desktop-restart-final.*.log`。
+- 实窗证据：浅色/深色能力页 `qa-abilities-light-final.png`、`qa-abilities-dark.png`，Skill 抽屉/编辑器 `qa-skill-drawer.png`、`qa-skill-editor.png`，MCP Key 回显 `qa-mcp-key-echo-final.png`，无计划工具调用不显示任务胶囊 `qa-tasklist-projection-final.png`；均位于上述隔离目录。
+
+### Boundary
+
+- 本轮只验证本地源码实例，不生成安装包、不提交、不推送。
+
+## 2026-08-11 · 多 Pane 拖拽、对话休眠与嵌入文件工作台修复
+
+### Fixed
+
+- 工作区标签和 Pane 内资源标签的鼠标拖拽统一使用原生 `DragEvent/DataTransfer`；应用根节点、Boards 和 Pane Tree 补齐收缩与溢出边界，跨 Pane 拖放不再通过 transform 扩大页面横向滚动范围。
+- 保留最多两路实时 `ChatView` 订阅；第三路活动对话显示可点击、可聚焦的休眠面，不再返回空白正文。点击休眠面后目标对话进入实时挂载。
+- Composer 改为按所在 Pane 的容器宽度响应；窄 Pane 下工具区换行、隐藏次要文字并保留图标和可访问名称，输入框、上下文入口和发送按钮不再溢出。
+- 新增嵌入式 `WorkspaceFileView`。点击工作区文件后生成普通文件标签，正文同时显示编辑器与文件树；文件名点击替换当前文件标签，独立图标新增文件标签，脏文件替换自动退化为新标签打开。
+- 文件工作台宽于 520px 时使用左右并列，窄 Pane 使用上下嵌入；隐藏文件树后编辑器占满全部区域，再次展开恢复对应布局，不再出现文件树覆盖编辑器或折叠后保留空白列的问题。
+
+### Verification
+
+- 全量测试通过：Desktop `153 files / 1126 tests`，Runtime `84 files / 562 tests`，Storage `38 files / 410 tests`。系统剩余内存不足时双 worker 首次在收集阶段触发 `esbuild cannot allocate memory`，关闭本地源码实例并用单 worker 完整重跑后全部通过。
+- 根级 lint `11/11` 通过，Desktop 为 `0 errors / 5` 条既有 hooks warnings，design token 检查通过；根级 typecheck `20/20`、build `11/11` 通过。
+- 双显示器实测：`1440×860` 窗口从 `DISPLAY1` 移到 `DISPLAY2` 后恢复原位置和尺寸。文件标签跨 Pane 移动及恢复期间始终保持 `document.scrollWidth === clientWidth === 1424`。
+- 文件工作台实测：278px Pane 下编辑区与文件树为 `278×440`、`278×293` 的上下布局；609px Pane 下为 `389×733`、`220×733` 的左右布局。当前标签替换、新标签打开、隐藏和展开均通过。
+
+### Boundary
+
+- 本轮只构建并重启本地源码实例，不生成安装包、不提交、不推送；工作树中此前未提交改动继续保留。

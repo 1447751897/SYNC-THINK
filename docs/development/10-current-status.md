@@ -1,3 +1,22 @@
+## 当前状态：2026-08-11 · Markdown 表格数字断行修复
+
+### 当前结论
+
+- 已修复助手 Markdown 表格中序号 `10`、`11` 等被拆成上下两行的问题；表格单元格不再继承 `overflow-wrap: anywhere` 的最小宽度行为，宽内容仍由外层容器横向滚动承载。
+- 已新增 Markdown 表格 CSS 回归检查，并完成可见 Electron 实窗复核。
+
+### 当前验证
+
+- Desktop 全量测试：151 个测试文件、1109 个测试全部通过。
+- Desktop typecheck、lint（0 errors，保留 5 条既有 hooks warnings）、build 和 `git diff --check` 通过。
+- 当前本地源码实例：Electron PID `34480`、managed Runtime PID `20188`、CDP `127.0.0.1:9352`；窗口可见、Responding，位置 `(40,40)`，尺寸 `1280×820`。
+- 实窗证据：`.data/local-restart-20260811-markdown-table/markdown-table-fixed.png`。
+
+### 工作树与后续动作
+
+- 当前修改尚未提交或推送，也未生成安装包；保持本地源码实例运行供手测。
+- 手测重点：在助手回复中查看含两位及多位序号的 Markdown 表格，确认数字保持单行，长正文仍正常换行。
+
 ## 当前状态：2026-08-09 · Skill / MCP 治理与分屏工作台阶段性提交快照
 
 ### 当前结论
@@ -781,3 +800,65 @@
 
 - 本轮不生成安装包、不提交、不推送；真实数据库未触碰，闭测数据只写入上述隔离目录。
 - 远端 MCP 的 Key 不会出现在 SQLite、Renderer 状态、能力列表、事件、日志或诊断导出中；Key 轮换/删除仍需要后续独立入口。
+
+## 当前状态：2026-08-11 · 能力中心与任务清单修复已收口
+
+### 已完成
+
+- 能力中心主背景、卡片层级和表单层级已改用 Shell `chat/surface/elevated` 主题语义；Skill/MCP 顶部切换器使用固定几何尺寸，切换时位置稳定。
+- 桌面端标题栏固定高度且副标题不换行；实窗往返切换 Skill/MCP 时两个按钮均保持 `84×32`，位置固定在 `(675, 59.5)` 与 `(762, 59.5)`。
+- Skill 详情抽屉已精简生效路径文案并移除横向位移动画；MCP 配置弹窗已分区重排、四边圆角、常驻 footer，已保存 Key 通过 uncontrolled ref 回填且默认遮罩显示。
+- 最新产品要求覆盖此前“Key 只进 SecureStore”的边界：MCP Key 现在以 App Setting 明文保存并回填 Renderer；旧 SecureStore 句柄在首次列表读取时迁移。Key 仍不进入事件、日志和诊断导出。
+- MCP 发现失败会保留旧工具目录并明确报告部分成功；远端命令超时覆盖完整握手预算；AI 元数据登记拒绝隐藏 Key 字段。
+- MCP 页不再显示 Skill 专属的两条生效路径说明。
+- Runtime 与 Desktop 任务投影已把四类任务计划工具从普通执行步骤中排除；没有计划时不显示输入框上方任务清单胶囊。
+
+### 最终验证
+
+- 能力页 30/30、远端 MCP 7/7、Runtime 任务投影 12/12、Desktop 任务胶囊 10/10、Runtime Chat 工具 58/58、Desktop 执行过程 11/11、Storage 任务清单 4/4。
+- Desktop 全量 151 files / 1114 tests；本轮早前 Runtime、Storage 全量通过。Desktop、Runtime、Storage、Protocol typecheck 通过。
+- Desktop/Runtime/Storage lint 通过；Desktop 0 errors、保留 5 条既有 hooks warnings。design token、Prettier、Desktop/Runtime build 和 `git diff --check` 通过。
+- 实窗已验证浅色/深色背景、稳定切换矩形、Skill 抽屉和编辑器、MCP Key 回显及任务胶囊隔离。截图位于 `.data/local-restart-20260811-154206-capability-tasklist/`。
+
+### 当前源码实例
+
+- Electron PID `25712`、managed Runtime PID `33080`，CDP `127.0.0.1:9353`；两者 `Responding=True`。
+- 启动日志 `.data/local-restart-20260811-154206-capability-tasklist/desktop-restart-final.stdout.log` 已包含 `pipe ready`、`database ready`、`hello accepted`；当前已恢复浅色主题。
+
+### 当前边界
+
+- 不生成安装包、不提交、不推送；现有工作树中的其他缓存、计价、存储和运行态改动继续保留。
+
+## 当前状态：2026-08-11 · 多 Pane 与文件工作台修复已收口
+
+### 已完成
+
+- 工作区与 Pane 资源标签使用原生拖放协议，键盘排序保持可用；根节点和 Pane Tree 的横向溢出已收敛到明确的局部滚动区。
+- 第三路及后续活动对话显示“此对话暂时休眠，点击加载”，不再出现只有标签栏、正文完全空白的 Pane。
+- Composer 使用 Pane 容器断点。实窗把聊天 Pane 缩到约 218px 后，输入区 `scrollWidth === clientWidth === 200`，发送按钮和工具图标仍在 Pane 内。
+- 文件标签改为完整文件工作台：编辑器内嵌工作区文件树，支持替换当前文件标签、独立新标签打开、脏稿保护，以及编辑时隐藏或展开文件树。
+- 宽文件 Pane 使用图四式左右并列；不超过 520px 时改为上下嵌入，保证文件内容和文件树都能同时查看，折叠后编辑器占满全部宽高。
+
+### 最终门禁
+
+- Desktop 全量：`153 files / 1126 tests`；Runtime 全量：`84 files / 562 tests`；Storage 全量：`38 files / 410 tests`。
+- 根级 lint：`11/11`，Desktop `0 errors / 5` 条既有 hooks warnings；design token 检查通过。
+- 根级 typecheck：`20/20`；根级 build：`11/11`；最终 `git diff --check` 和全部变更代码/文档的 Prettier 检查均通过。
+- 首次 Desktop 双 worker 全量在测试收集前因系统仅余约 1.3GB 物理内存而触发 `esbuild cannot allocate memory`；关闭源码实例、改为单 worker 后完整 `153/1126` 全绿，未把环境失败计入产品缺陷。
+
+### 实窗验收
+
+- 双屏窗口往返：`DISPLAY1 -> DISPLAY2 -> DISPLAY1`，移动前后保持 `1440×860`；最终重启窗口为 `1440×900`，视口 `1424×861`。
+- 文件标签 `.dockerignore` 已从右 Pane 原生拖到中间 Pane 并恢复，两个阶段页面均为 `scrollWidth === clientWidth === 1424`。
+- 工作区文件点击 `.devserver.log` 后出现文件标签；随后点击 `.dockerignore` 替换当前标签，点击 `.env.example` 的新标签图标后同时保留两个文件标签。隐藏时编辑器为 `278×733`，展开后窄布局为编辑器 `278×440`、文件树 `278×293`。
+- 宽布局工作台为 `609×733`，编辑器 `389×733`、文件树 `220×733`。最终截图位于 `.data/local-restart-20260811-pane-file-workbench/final-restarted-source.png`。
+
+### 当前源码实例
+
+- Electron PID `56592`、managed Runtime PID `57440`、CDP `127.0.0.1:9353`，窗口 `Responding=True`。
+- Install ID `pane-file-20260811`；数据库继续使用 `.data/SYNC-THINK/sync-think.db`；复用原 `.data/local-restart-20260811-154206-capability-tasklist/user-data`，保留工作区、主题和登录态。
+- 启动日志：`.data/local-restart-20260811-pane-file-workbench/desktop-ready.stdout.log` 与 `desktop-ready.stderr.log`；已出现 `pipe ready`、`database ready`、`hello accepted`。
+
+### 当前边界
+
+- 不生成安装包、不提交、不推送；现有工作树中的能力、缓存、计价、任务清单和存储改动继续一并保留。
