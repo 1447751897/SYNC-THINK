@@ -17,9 +17,7 @@ vi.mock('./Dialog.js', () => ({
 // Give the project-bootstrap market entry a remote sourceUrl so the
 // remote-install branch can be exercised without network access.
 vi.mock('./abilities/capability-market.js', async (importOriginal) => {
-  const actual = await importOriginal<
-    typeof import('./abilities/capability-market.js')
-  >();
+  const actual = await importOriginal<typeof import('./abilities/capability-market.js')>();
   return {
     ...actual,
     SKILL_MARKET: actual.SKILL_MARKET.map((item) =>
@@ -322,6 +320,15 @@ describe('AbilitiesPage', () => {
     expect(await screen.findByText(/已注册 MCP/)).toBeTruthy();
   });
 
+  it('does not show the Skill activation-path note in MCP management', async () => {
+    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('abilities-section-mcp'));
+    fireEvent.click(screen.getByTestId('mcp-tab-mine'));
+
+    await waitFor(() => expect(runtime.listMcpServers).toHaveBeenCalledWith({ limit: 100 }));
+    expect(screen.queryByText('Skill 有两条生效路径')).toBeNull();
+  });
+
   it('registers a remote MCP with a one-time secret and shows only auth status', async () => {
     const secret = 'key-only-entered-once';
     const server = {
@@ -612,6 +619,42 @@ describe('AbilitiesPage', () => {
     expect(screen.queryByText(secret)).toBeNull();
   });
 
+  it('echoes a stored MCP Key when reopening the configuration dialog', async () => {
+    const server = {
+      mcpServerId: 'mcp-key-echo',
+      name: 'Key Echo MCP',
+      transport: 'remote-http' as const,
+      endpoint: 'https://mcp.example.test/key-echo',
+      tools: [],
+      trusted: true,
+      enabled: true,
+      maxOutputBytes: 1_000_000,
+      timeoutMs: 30_000,
+      notes: '',
+      authConfigured: true,
+      authScheme: 'api-key' as const,
+      authKey: 'stored-service-key',
+      createdAt: '2026-08-10T00:00:00.000Z',
+      updatedAt: '2026-08-10T00:00:00.000Z',
+    };
+    runtime.listMcpServers.mockResolvedValue({ servers: [server] });
+
+    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('abilities-section-mcp'));
+    fireEvent.click(screen.getByTestId('mcp-tab-mine'));
+    fireEvent.click(await screen.findByRole('button', { name: /Key Echo MCP/ }));
+    fireEvent.click(await screen.findByTestId('mcp-configure-key'));
+
+    const keyInput = screen.getByTestId('mcp-api-key-input') as HTMLInputElement;
+    expect(keyInput.value).toBe('stored-service-key');
+    expect(keyInput.type).toBe('password');
+    expect(screen.queryByText('Key 由 Runtime 安全保存，列表和日志不会回显。')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '显示服务 Key' }));
+    expect(keyInput.type).toBe('text');
+    expect(keyInput.value).toBe('stored-service-key');
+  });
+
   it('keeps the activation-code entry and exposes the local channel placeholder', async () => {
     render(<AbilitiesPage onGoToAgents={vi.fn()} />);
 
@@ -707,6 +750,34 @@ describe('AbilitiesPage', () => {
     // 用户自己的 skill：编辑与删除按钮都保留
     expect(screen.getByRole('button', { name: '编辑' })).toBeTruthy();
     expect(document.querySelector('.capability-row-actions__danger')).toBeTruthy();
+  });
+
+  it('keeps the Skill effect-path explanation concise in the detail drawer', async () => {
+    const skill = {
+      skillVersionId: 'sv-path',
+      skillId: 'skill-path',
+      name: 'path-skill',
+      description: 'A path skill.',
+      version: '1.0.0',
+      allowedTools: ['read-file'],
+      contentFingerprint: 'path-fingerprint',
+      hasScripts: false,
+      warnings: [],
+      createdAt: '2026-08-09T00:00:00.000Z',
+      enabled: true,
+    };
+    runtime.listSkills.mockResolvedValue({ skills: [skill] });
+
+    render(<AbilitiesPage onGoToAgents={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('skill-tab-mine'));
+    fireEvent.click(await screen.findByRole('button', { name: /path-skill/ }));
+
+    expect(
+      screen.getByText(
+        'Compose 需工作区激活；Agent / Team 按自身绑定注入；全局停用会阻断两条路径。',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/所在工作区是否激活不影响默认注入/)).toBeNull();
   });
 
   it('installs a market Skill from its remote sourceUrl when present', async () => {
@@ -1095,8 +1166,9 @@ Publish this workflow.`;
     fireEvent.click(await screen.findByRole('button', { name: /Tools MCP/ }));
 
     // 初始折叠：描述一行截断（data-expanded=0），chevron 未旋转
-    const desc = (await screen.findByText(/very long tool description/))
-      .closest('.capability-mcp-tool-item__desc') as HTMLElement;
+    const desc = (await screen.findByText(/very long tool description/)).closest(
+      '.capability-mcp-tool-item__desc',
+    ) as HTMLElement;
     expect(desc.getAttribute('data-expanded')).toBe('0');
 
     // 点击行头展开

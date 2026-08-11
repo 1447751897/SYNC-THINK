@@ -253,6 +253,7 @@ async function openLegacyConflictStore() {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     await runMigrations(dbPath);
   } finally {

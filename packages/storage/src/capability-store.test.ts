@@ -77,18 +77,16 @@ describe('SqliteCapabilityStore', () => {
       ).toEqual([skill.id]);
       // MCP is global: enabled alone makes it effective (workspace activation
       // is no longer consulted for MCP).
-      expect(
-        capabilityStore.resolveEffectiveMcpServerIds('workspace-alpha', [mcp.id]),
-      ).toEqual([mcp.id]);
+      expect(capabilityStore.resolveEffectiveMcpServerIds('workspace-alpha', [mcp.id])).toEqual([
+        mcp.id,
+      ]);
 
       skillStore.setEnabled(skill.id, false);
       mcpStore.setEnabled(mcp.id, false);
       expect(
         capabilityStore.resolveEffectiveSkillVersionIds('workspace-alpha', [skill.id]),
       ).toEqual([]);
-      expect(
-        capabilityStore.resolveEffectiveMcpServerIds('workspace-alpha', [mcp.id]),
-      ).toEqual([]);
+      expect(capabilityStore.resolveEffectiveMcpServerIds('workspace-alpha', [mcp.id])).toEqual([]);
 
       expect(
         capabilityStore.getWorkspaceActivation('skill', skill.id, 'workspace-alpha'),
@@ -102,14 +100,14 @@ describe('SqliteCapabilityStore', () => {
       expect(
         capabilityStore.resolveEffectiveSkillVersionIds('workspace-alpha', [skill.id]),
       ).toEqual([skill.id]);
-      expect(
-        capabilityStore.resolveEffectiveMcpServerIds('workspace-alpha', [mcp.id]),
-      ).toEqual([mcp.id]);
+      expect(capabilityStore.resolveEffectiveMcpServerIds('workspace-alpha', [mcp.id])).toEqual([
+        mcp.id,
+      ]);
 
       // MCP remains effective in another workspace that never activated it.
-      expect(
-        capabilityStore.resolveEffectiveMcpServerIds('workspace-beta', [mcp.id]),
-      ).toEqual([mcp.id]);
+      expect(capabilityStore.resolveEffectiveMcpServerIds('workspace-beta', [mcp.id])).toEqual([
+        mcp.id,
+      ]);
     } finally {
       close();
     }
@@ -383,7 +381,9 @@ describe('SqliteCapabilityStore', () => {
 describe('0040 capability governance migration', () => {
   it('enables historical capabilities and creates governance tables', async () => {
     const dbPath = makeDbPath();
-    const start = MIGRATIONS.findIndex((migration) => migration.name === '0039_capability_enablement');
+    const start = MIGRATIONS.findIndex(
+      (migration) => migration.name === '0039_capability_enablement',
+    );
     expect(start).toBeGreaterThanOrEqual(0);
     const trailing = MIGRATIONS.splice(start);
     try {
@@ -432,11 +432,14 @@ describe('0040 capability governance migration', () => {
     expect((await runMigrations(dbPath)).applied).toEqual([
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     const after = await openDatabaseAsync({ path: dbPath });
     try {
       expect(
-        after.raw.prepare('SELECT enabled FROM skill_version WHERE id = ?').get('skill-version-history'),
+        after.raw
+          .prepare('SELECT enabled FROM skill_version WHERE id = ?')
+          .get('skill-version-history'),
       ).toEqual({ enabled: 1 });
       expect(
         after.raw.prepare('SELECT enabled FROM mcp_server WHERE id = ?').get('mcp-history'),

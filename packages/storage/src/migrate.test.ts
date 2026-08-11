@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -84,6 +84,7 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -297,6 +298,7 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -478,10 +480,7 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
 describe('migration planner (pure)', () => {
   it('keeps message pagination, the event cursor, and Browser persistence ordered last', () => {
     expect(
-      migrationNamesBetween(
-        '0022_optional_project_folder',
-        '0030_browser_persistence_permissions',
-      ),
+      migrationNamesBetween('0022_optional_project_folder', '0030_browser_persistence_permissions'),
     ).toEqual([
       '0022_optional_project_folder',
       '0023_provider_execution_checkpoint',
@@ -561,6 +560,7 @@ describe('migration planner (pure)', () => {
           '0038_browser_automation_workflow',
           '0039_capability_enablement',
           '0040_capability_governance',
+          '0041_task_plan',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -637,9 +637,7 @@ describe('migration planner (pure)', () => {
   });
 
   it('reserves 0016 for production execution fencing after frozen 0015', () => {
-    expect(
-      migrationNamesBetween('0015_capability_authorization', '0017_reviewer_rework'),
-    ).toEqual([
+    expect(migrationNamesBetween('0015_capability_authorization', '0017_reviewer_rework')).toEqual([
       '0015_capability_authorization',
       '0016_production_execution',
       '0017_reviewer_rework',
@@ -671,6 +669,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
   });
 
@@ -706,6 +705,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
   });
 
@@ -749,6 +749,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
   });
 
@@ -785,6 +786,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
   });
 
@@ -820,6 +822,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
   });
 
@@ -872,6 +875,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -917,6 +921,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -965,6 +970,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1017,6 +1023,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1070,6 +1077,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1124,6 +1132,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1179,6 +1188,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1236,6 +1246,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1285,6 +1296,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1331,6 +1343,7 @@ describe('migration planner (pure)', () => {
       '0038_browser_automation_workflow',
       '0039_capability_enablement',
       '0040_capability_governance',
+      '0041_task_plan',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1582,6 +1595,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1686,6 +1700,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1747,6 +1762,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1759,7 +1775,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         upgraded.raw.close();
       }
     } finally {
-      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0040_capability_governance') {
+      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0041_task_plan') {
         MIGRATIONS.push(...trailingMigrations);
       }
       rmSync(dir, { recursive: true, force: true });
@@ -2129,6 +2145,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2203,6 +2220,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2252,6 +2270,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2300,6 +2319,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2355,6 +2375,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2478,6 +2499,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2552,6 +2574,7 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0038_browser_automation_workflow',
         '0039_capability_enablement',
         '0040_capability_governance',
+        '0041_task_plan',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {

@@ -369,6 +369,64 @@ describe('remote capability commands', () => {
     database.raw.close();
   }, 30_000);
 
+  it('migrates a legacy MCP credential so the configuration dialog can echo its key', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-remote-mcp-legacy-key-'));
+    tempDirs.push(dir);
+    const secret = 'legacy-mcp-key-canary';
+    const dbPath = join(dir, 'sync-think.db');
+    await runMigrations(dbPath);
+    const database = await openDatabaseAsync({ path: dbPath });
+    const mcpStore = new SqliteMcpStore(database.raw);
+    const appSettingStore = new SqliteAppSettingStore(database.raw);
+    const secureStore = new SecureStore(new XorDevBackend(join(dir, 'secure', 'key.bin')));
+    const server = mcpStore.register({
+      name: 'legacy-key-server',
+      transport: 'remote-http',
+      endpoint: 'https://mcp.example.test/legacy',
+    });
+    const storeHandle = await secureStore.storeSecret(secret);
+    appSettingStore.set(`mcp.auth.${server.id}`, { storeHandle, authScheme: 'bearer' });
+    const installId = `legacy-key-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const runtime = new Runtime({
+      installId,
+      allowNoToken: true,
+      mcpStore,
+      appSettingStore,
+      secureStore,
+    });
+    let client: Awaited<ReturnType<typeof connectAndHello>> | undefined;
+    try {
+      await runtime.start();
+      client = await connectAndHello(installId);
+      const listed = await request(client.socket, client.reader, {
+        id: 'legacy-key-list',
+        kind: 'request',
+        type: 'mcp.list',
+        payload: {},
+      });
+      expect(listed.error).toBeUndefined();
+      expect(listed.payload).toMatchObject({
+        servers: [
+          expect.objectContaining({
+            mcpServerId: server.id,
+            authConfigured: true,
+            authScheme: 'bearer',
+            authKey: secret,
+          }),
+        ],
+      });
+      expect(appSettingStore.get(`mcp.auth.${server.id}`)?.value).toEqual({
+        key: secret,
+        authScheme: 'bearer',
+      });
+    } finally {
+      client?.socket.destroy();
+      await runtime.stop();
+      secureStore.shutdown();
+      database.raw.close();
+    }
+  }, 30_000);
+
   it('preserves an existing MCP catalog when re-discovery fails', async () => {
     const secret = 'preserve-tools-secret';
     const fixture = await startFixtureServer(secret);
@@ -609,9 +667,8 @@ describe('remote capability commands', () => {
       },
     });
     expect(registered.error).toBeUndefined();
-    const mcpServerId = (
-      registered.payload as { server: { mcpServerId: string } }
-    ).server.mcpServerId;
+    const mcpServerId = (registered.payload as { server: { mcpServerId: string } }).server
+      .mcpServerId;
 
     const deleted = await request(client.socket, client.reader, {
       id: 'remote-delete-command',

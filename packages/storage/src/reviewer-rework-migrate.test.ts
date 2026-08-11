@@ -194,14 +194,16 @@ describe('0017_reviewer_rework migration', () => {
     const browserRecordingIndex = names.indexOf('0037_browser_recording');
     const browserAutomationIndex = names.indexOf('0038_browser_automation_workflow');
     const capabilityEnablementIndex = names.indexOf('0039_capability_enablement');
-    const latestIndex = names.indexOf('0040_capability_governance');
+    const capabilityGovernanceIndex = names.indexOf('0040_capability_governance');
+    const latestIndex = names.indexOf('0041_task_plan');
 
     expect(frozenIndex).toBeGreaterThanOrEqual(0);
     expect(reviewerReworkIndex).toBe(frozenIndex + 1);
     expect(browserRecordingIndex).toBe(names.indexOf('0036_browser_profile_site_sessions') + 1);
     expect(browserAutomationIndex).toBe(browserRecordingIndex + 1);
     expect(capabilityEnablementIndex).toBe(browserAutomationIndex + 1);
-    expect(latestIndex).toBe(capabilityEnablementIndex + 1);
+    expect(capabilityGovernanceIndex).toBe(capabilityEnablementIndex + 1);
+    expect(latestIndex).toBe(capabilityGovernanceIndex + 1);
     expect(latestIndex).toBe(names.length - 1);
     expect(names.slice(frozenIndex, reviewerReworkIndex + 2)).toEqual([
       '0016_production_execution',
