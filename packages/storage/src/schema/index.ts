@@ -1,6 +1,6 @@
 ﻿export * from './workspace.js';
 export * from './task.js';
-export * from './thread.js';   // thread + message tables live together (1:1 area)
+export * from './thread.js'; // thread + message tables live together (1:1 area)
 export * from './event.js';
 export * from './checkpoint.js';
 export * from './provider.js';
@@ -22,6 +22,8 @@ export * from './app-setting.js';
 export * from './browser.js';
 export * from './capability.js';
 
-
 export * from './desktop.js';
 export * from './agent-context.js';
+// NewMax-style structured task checklists (workspace-scoped, with dependency
+// and execution tracking).
+export * from './task-plan.js';

@@ -37,6 +37,7 @@ export * from './cc-switch-db.js';
 
 export * from './desktop-store.js';
 export * from './agent-context-store.js';
+export * from './task-plan-store.js';
 export * from './event-payload-backfill-executor.js';
 export * from './event-payload-backfill-rollback.js';
 export * from './event-payload-sidecar-gc.js';

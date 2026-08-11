@@ -170,7 +170,63 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     name: '0040_capability_governance',
     sql: capabilityGovernanceDdlSql(),
   },
+  {
+    name: '0041_task_plan',
+    sql: taskPlanDdlSql(),
+  },
 ];
+
+function taskPlanDdlSql(): string {
+  return `
+CREATE TABLE task_plan (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  estimated_minutes INTEGER,
+  planned_start_at TEXT,
+  planned_end_at TEXT,
+  actual_start_at TEXT,
+  actual_end_at TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  CONSTRAINT task_plan_status_check CHECK (status IN ('pending', 'in_progress', 'completed', 'cancelled')),
+  CONSTRAINT task_plan_priority_check CHECK (priority IN ('low', 'medium', 'high')),
+  FOREIGN KEY (workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
+);
+CREATE INDEX task_plan_workspace_order_idx ON task_plan(workspace_id, sort_order, created_at);
+CREATE INDEX task_plan_workspace_status_idx ON task_plan(workspace_id, status);
+
+CREATE TABLE task_plan_dependency (
+  task_id TEXT NOT NULL,
+  depends_on_task_id TEXT NOT NULL,
+  PRIMARY KEY (task_id, depends_on_task_id),
+  FOREIGN KEY (task_id) REFERENCES task_plan(id) ON DELETE CASCADE,
+  FOREIGN KEY (depends_on_task_id) REFERENCES task_plan(id) ON DELETE CASCADE
+);
+CREATE INDEX task_plan_dependency_depends_idx ON task_plan_dependency(depends_on_task_id);
+
+CREATE TABLE task_plan_execution (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  conversation_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  started_at TEXT,
+  finished_at TEXT,
+  error TEXT,
+  is_retry INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  CONSTRAINT task_plan_execution_status_check
+    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+  CONSTRAINT task_plan_execution_retry_check CHECK (is_retry IN (0, 1)),
+  FOREIGN KEY (task_id) REFERENCES task_plan(id) ON DELETE CASCADE
+);
+CREATE INDEX task_plan_execution_task_idx ON task_plan_execution(task_id, created_at);
+`;
+}
 
 function capabilityGovernanceDdlSql(): string {
   return `
