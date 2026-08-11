@@ -619,7 +619,7 @@ export function AbilitiesPage(props: {
             <p>
               {section === 'skills'
                 ? '管理可复用指令、工作区激活和智能体装备'
-                : '管理全局外部工具服务；注册后对所有工作区可用，启用即生效'}
+                : '管理全局外部工具服务，注册后启用即生效'}
             </p>
           </div>
         </div>
@@ -1399,7 +1399,6 @@ function McpSurface(props: {
         onSourceFilterChange={() => undefined}
         onOrganize={props.onOrganize}
       />
-      <GovernanceRuleNote />
       <div className="capability-list-shell">
         {props.loading ? (
           <LoadingState label="正在读取 MCP..." />
@@ -1966,9 +1965,8 @@ function SkillDetailDrawer(props: {
                       </span>
                     </div>
                   </div>
-                  <p>
-                    Compose 需要工作区激活才能被发现和选择；Agent / Team 使用自身装备的
-                    Skill，所在工作区是否激活不影响默认注入。全局停用会同时阻断两条路径。
+                  <p className="capability-effect-chain__note">
+                    Compose 需工作区激活；Agent / Team 按自身绑定注入；全局停用会阻断两条路径。
                   </p>
                 </section>
                 <section className="capability-detail-section">
@@ -2130,11 +2128,7 @@ function McpToolItem({ name, description }: { name: string; description: string 
       className={`capability-mcp-tool-item${expanded ? ' is-expanded' : ''}`}
       onClick={() => setExpanded((value) => !value)}
     >
-      <button
-        type="button"
-        className="capability-mcp-tool-item__head"
-        aria-expanded={expanded}
-      >
+      <button type="button" className="capability-mcp-tool-item__head" aria-expanded={expanded}>
         <strong>{name}</strong>
         <ChevronDown size={13} className="capability-mcp-tool-item__chevron" />
       </button>
@@ -2216,11 +2210,7 @@ function McpDetailDrawer(props: {
                     label="上下文"
                     value={`${formatTokens(usage?.contextTokens ?? 0)} tokens`}
                   />
-                  <DetailMetric
-                    label="归属"
-                    value="全局"
-                    tone="muted"
-                  />
+                  <DetailMetric label="归属" value="全局" tone="muted" />
                 </div>
                 <section className="capability-detail-section">
                   <h3>连接信息</h3>
@@ -3133,9 +3123,7 @@ function McpRegisterDialog(props: {
                       value={transport}
                       disabled={Boolean(existingServer)}
                       onChange={(event) => {
-                        const nextTransport = event.target.value as
-                          | 'local-stdio'
-                          | 'remote-http';
+                        const nextTransport = event.target.value as 'local-stdio' | 'remote-http';
                         setTransport(nextTransport);
                         setHasApiKey(false);
                       }}
@@ -3192,10 +3180,11 @@ function McpRegisterDialog(props: {
                     <div className="capability-secret-input">
                       <input
                         ref={apiKeyRef}
+                        defaultValue={existingServer?.authKey ?? ''}
                         data-testid="mcp-api-key-input"
                         type={showApiKey ? 'text' : 'password'}
                         autoComplete="new-password"
-                        placeholder="仅在本次注册时输入"
+                        placeholder={existingServer?.authKey ? '' : '输入服务 Key'}
                         onChange={(event) => setHasApiKey(Boolean(event.target.value.trim()))}
                       />
                       <button
@@ -3207,7 +3196,6 @@ function McpRegisterDialog(props: {
                         {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
                       </button>
                     </div>
-                    <small>Key 由 Runtime 安全保存，列表和日志不会回显。</small>
                   </label>
                 </div>
                 <label className="capability-check-option">
@@ -3236,7 +3224,9 @@ function McpRegisterDialog(props: {
               </label>
               <button
                 type="button"
-                className={trusted ? 'capability-trust-option is-active' : 'capability-trust-option'}
+                className={
+                  trusted ? 'capability-trust-option is-active' : 'capability-trust-option'
+                }
                 onClick={() => setTrusted((value) => !value)}
               >
                 <span>{trusted ? <Check size={11} /> : null}</span>
