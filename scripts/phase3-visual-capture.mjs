@@ -76,6 +76,47 @@ export const PHASE3_VISUAL_MATRIX = Object.freeze([
     width: 760,
     height: 640,
   },
+  {
+    id: 'workspace-file-light',
+    fixture: 'workspace-file',
+    theme: 'light',
+    scale: 1,
+    width: 1280,
+    height: 800,
+  },
+  {
+    id: 'workspace-file-dark',
+    fixture: 'workspace-file',
+    theme: 'dark',
+    scale: 1,
+    width: 1280,
+    height: 800,
+  },
+  {
+    id: 'workspace-file-source-light',
+    fixture: 'workspace-file',
+    state: 'source-copied',
+    theme: 'light',
+    scale: 1,
+    width: 1280,
+    height: 800,
+  },
+  {
+    id: 'workspace-file-compact',
+    fixture: 'workspace-file',
+    theme: 'light',
+    scale: 1,
+    width: 760,
+    height: 640,
+  },
+  {
+    id: 'workspace-file-reference-tall',
+    fixture: 'workspace-file',
+    theme: 'dark',
+    scale: 1,
+    width: 735,
+    height: 1014,
+  },
 ]);
 
 export function parsePhase3VisualArgs(argv) {

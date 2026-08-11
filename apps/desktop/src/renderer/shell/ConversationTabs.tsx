@@ -6,7 +6,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Bot,
   Columns2,
-  FileCode2,
   Folder,
   Globe,
   MessageSquare,
@@ -35,6 +34,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { FileTypeIcon } from './FileTypeIcon.js';
 
 export interface ConversationTabsProps {
   paneId?: string;
@@ -295,11 +295,11 @@ export function ConversationTabs(props: ConversationTabsProps) {
   return (
     <div
       data-testid="conversation-tabs"
-      className="shell-conversation-tabs flex h-9 shrink-0 items-start px-2 pt-1"
+      className="shell-conversation-tabs flex h-9 shrink-0 items-center px-2"
     >
       {/* Scrollable tab area is isolated from the right-side action group so
           pane actions stay visible even when many tabs overflow. */}
-      <div className="flex min-w-0 flex-1 items-start gap-0.5 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -379,11 +379,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               }
               onDragEnd={() => props.onTabDragStateChange?.(null)}
             >
-              <FileCode2
-                size={12}
-                className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
-                aria-hidden
-              />
+              <FileTypeIcon path={file.path} size={12} className="shrink-0" />
               <button
                 type="button"
                 className="min-w-0 flex-1 truncate text-left"
@@ -594,7 +590,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
             type="button"
             data-testid="conversation-tab-new"
             className={clsx(
-              'st-icon-motion mt-0.5 flex h-7 w-7 items-center justify-center rounded-(--radius-row)',
+              'st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row)',
               newResourceMenuOpen
                 ? 'bg-active text-text'
                 : 'text-text-secondary hover:bg-hover hover:text-text',
@@ -676,7 +672,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
         </div>
       </div>
 
-      <div className="mt-0.5 ml-2 flex shrink-0 items-center gap-0.5">
+      <div className="ml-2 flex shrink-0 items-center gap-0.5">
         {props.onToggleWorkspaceFilesPane ? (
           <button
             type="button"

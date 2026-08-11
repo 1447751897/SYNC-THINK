@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
@@ -23,9 +23,31 @@ import bash from 'highlight.js/lib/languages/bash';
 import python from 'highlight.js/lib/languages/python';
 import yaml from 'highlight.js/lib/languages/yaml';
 import sql from 'highlight.js/lib/languages/sql';
+import c from 'highlight.js/lib/languages/c';
+import cmake from 'highlight.js/lib/languages/cmake';
+import cpp from 'highlight.js/lib/languages/cpp';
+import csharp from 'highlight.js/lib/languages/csharp';
+import dart from 'highlight.js/lib/languages/dart';
+import diff from 'highlight.js/lib/languages/diff';
+import dockerfile from 'highlight.js/lib/languages/dockerfile';
+import dos from 'highlight.js/lib/languages/dos';
+import go from 'highlight.js/lib/languages/go';
+import graphql from 'highlight.js/lib/languages/graphql';
+import ini from 'highlight.js/lib/languages/ini';
+import java from 'highlight.js/lib/languages/java';
+import kotlin from 'highlight.js/lib/languages/kotlin';
+import less from 'highlight.js/lib/languages/less';
+import lua from 'highlight.js/lib/languages/lua';
+import makefile from 'highlight.js/lib/languages/makefile';
+import php from 'highlight.js/lib/languages/php';
+import powershell from 'highlight.js/lib/languages/powershell';
+import protobuf from 'highlight.js/lib/languages/protobuf';
+import ruby from 'highlight.js/lib/languages/ruby';
+import rust from 'highlight.js/lib/languages/rust';
+import scss from 'highlight.js/lib/languages/scss';
+import swift from 'highlight.js/lib/languages/swift';
 import type { ExecutionProcessStep, ProcessToolKind, RunProcessView } from '@sync-think/protocol';
 
-// Register a compact set of languages for NewMax-like file previews.
 let hljsReady = false;
 function ensureHljs(): void {
   if (hljsReady) return;
@@ -41,61 +63,118 @@ function ensureHljs(): void {
   hljs.registerLanguage('python', python);
   hljs.registerLanguage('yaml', yaml);
   hljs.registerLanguage('sql', sql);
+  hljs.registerLanguage('c', c);
+  hljs.registerLanguage('cmake', cmake);
+  hljs.registerLanguage('cpp', cpp);
+  hljs.registerLanguage('csharp', csharp);
+  hljs.registerLanguage('dart', dart);
+  hljs.registerLanguage('diff', diff);
+  hljs.registerLanguage('dockerfile', dockerfile);
+  hljs.registerLanguage('dos', dos);
+  hljs.registerLanguage('go', go);
+  hljs.registerLanguage('graphql', graphql);
+  hljs.registerLanguage('ini', ini);
+  hljs.registerLanguage('java', java);
+  hljs.registerLanguage('kotlin', kotlin);
+  hljs.registerLanguage('less', less);
+  hljs.registerLanguage('lua', lua);
+  hljs.registerLanguage('makefile', makefile);
+  hljs.registerLanguage('php', php);
+  hljs.registerLanguage('powershell', powershell);
+  hljs.registerLanguage('protobuf', protobuf);
+  hljs.registerLanguage('ruby', ruby);
+  hljs.registerLanguage('rust', rust);
+  hljs.registerLanguage('scss', scss);
+  hljs.registerLanguage('swift', swift);
   hljsReady = true;
 }
+
+const LANGUAGE_BY_FILENAME: Readonly<Record<string, string>> = {
+  dockerfile: 'dockerfile',
+  makefile: 'makefile',
+  'cmakelists.txt': 'cmake',
+  '.bashrc': 'bash',
+  '.zshrc': 'bash',
+};
+
+const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
+  ts: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
+  tsx: 'typescript',
+  js: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  jsx: 'javascript',
+  json: 'json',
+  jsonc: 'json',
+  md: 'markdown',
+  mdx: 'markdown',
+  css: 'css',
+  scss: 'scss',
+  sass: 'scss',
+  less: 'less',
+  html: 'html',
+  htm: 'html',
+  svg: 'html',
+  vue: 'html',
+  svelte: 'html',
+  xml: 'xml',
+  yml: 'yaml',
+  yaml: 'yaml',
+  py: 'python',
+  pyw: 'python',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  fish: 'bash',
+  ps1: 'powershell',
+  psm1: 'powershell',
+  psd1: 'powershell',
+  bat: 'dos',
+  cmd: 'dos',
+  ini: 'ini',
+  toml: 'ini',
+  conf: 'ini',
+  config: 'ini',
+  properties: 'ini',
+  sql: 'sql',
+  rs: 'rust',
+  graphql: 'graphql',
+  gql: 'graphql',
+  go: 'go',
+  java: 'java',
+  kt: 'kotlin',
+  kts: 'kotlin',
+  swift: 'swift',
+  c: 'c',
+  h: 'c',
+  cc: 'cpp',
+  cpp: 'cpp',
+  cxx: 'cpp',
+  hpp: 'cpp',
+  hxx: 'cpp',
+  cs: 'csharp',
+  rb: 'ruby',
+  php: 'php',
+  lua: 'lua',
+  dart: 'dart',
+  diff: 'diff',
+  patch: 'diff',
+  mk: 'makefile',
+  cmake: 'cmake',
+  proto: 'protobuf',
+};
 
 function languageFromPath(path?: string): string | undefined {
   if (!path) return undefined;
   const base = path.split(/[\\/]/).pop()?.toLowerCase() ?? '';
-  if (base === 'dockerfile' || base.startsWith('dockerfile.')) return 'bash';
-  if (base === 'makefile' || base === 'cmakelists.txt') return 'bash';
+  if (base === 'dockerfile' || base.startsWith('dockerfile.')) return 'dockerfile';
+  if (base.startsWith('.env')) return 'ini';
+  const namedLanguage = LANGUAGE_BY_FILENAME[base];
+  if (namedLanguage) return namedLanguage;
   const ext = base.includes('.') ? base.slice(base.lastIndexOf('.') + 1) : '';
-  switch (ext) {
-    case 'ts':
-    case 'mts':
-    case 'cts':
-      return 'typescript';
-    case 'tsx':
-      return 'typescript';
-    case 'js':
-    case 'mjs':
-    case 'cjs':
-      return 'javascript';
-    case 'jsx':
-      return 'javascript';
-    case 'json':
-    case 'jsonc':
-      return 'json';
-    case 'md':
-    case 'mdx':
-      return 'markdown';
-    case 'css':
-    case 'scss':
-    case 'less':
-      return 'css';
-    case 'html':
-    case 'htm':
-    case 'svg':
-    case 'vue':
-    case 'svelte':
-      return 'html';
-    case 'yml':
-    case 'yaml':
-      return 'yaml';
-    case 'py':
-      return 'python';
-    case 'sh':
-    case 'bash':
-    case 'zsh':
-    case 'ps1':
-      return 'bash';
-    case 'sql':
-      return 'sql';
-    case 'xml':
-      return 'xml';
-    default:
-      return undefined;
-  }
+  return LANGUAGE_BY_EXTENSION[ext];
 }
 
 function isStatusOnlyPreview(preview?: string): boolean {
@@ -283,14 +362,17 @@ export function CodePreview({
   path,
   maxHeight,
   compact = false,
+  highlightLine,
 }: {
   text: string;
   path?: string;
   maxHeight?: number | string;
   compact?: boolean;
+  highlightLine?: number;
 }) {
   ensureHljs();
   const language = languageFromPath(path);
+  const previewRef = useRef<HTMLDivElement>(null);
   const normalized = text.replace(/\r\n/g, '\n');
   const rawLines = normalized.split('\n');
   const display =
@@ -324,8 +406,19 @@ export function CodePreview({
       ? { maxHeight: typeof maxHeight === 'number' ? `${maxHeight}px` : maxHeight }
       : undefined;
 
+  useEffect(() => {
+    if (!highlightLine || highlightLine < 1) return;
+    const frame = window.requestAnimationFrame(() => {
+      previewRef.current
+        ?.querySelector<HTMLElement>(`[data-line="${Math.floor(highlightLine)}"]`)
+        ?.scrollIntoView({ block: 'center' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [highlightLine, normalized]);
+
   return (
     <div
+      ref={previewRef}
       className={`shell-code-preview ${compact ? 'is-compact' : ''}`}
       role="region"
       aria-label="文件内容预览"
@@ -335,7 +428,11 @@ export function CodePreview({
       <table className="shell-code-preview__table">
         <tbody>
           {display.map((line, i) => (
-            <tr key={i} className="shell-code-preview__row">
+            <tr
+              key={i}
+              className={`shell-code-preview__row${highlightLine === i + 1 ? ' is-highlighted' : ''}`}
+              data-line={i + 1}
+            >
               <td className="shell-code-preview__ln" aria-hidden="true">
                 {i + 1}
               </td>

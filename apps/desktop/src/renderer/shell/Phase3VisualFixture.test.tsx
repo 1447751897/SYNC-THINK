@@ -41,7 +41,8 @@ describe('Phase3VisualFixture routing', () => {
     );
     expect(resolvePhase3VisualCase('?phase3-visual=streaming-follow')).toBe('streaming-follow');
     expect(resolvePhase3VisualCase('?phase3-visual=composer-context')).toBe('composer-context');
-    expect(PHASE3_VISUAL_CASES).toHaveLength(7);
+    expect(resolvePhase3VisualCase('?phase3-visual=workspace-file')).toBe('workspace-file');
+    expect(PHASE3_VISUAL_CASES).toHaveLength(8);
   });
 });
 

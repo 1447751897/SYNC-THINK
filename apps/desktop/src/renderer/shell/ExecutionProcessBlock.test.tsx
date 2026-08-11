@@ -4,7 +4,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ExecutionProcessStep, RunProcessView } from '@sync-think/protocol';
-import { ExecutionProcessBlock } from './ExecutionProcessBlock.js';
+import { CodePreview, ExecutionProcessBlock } from './ExecutionProcessBlock.js';
 
 function step(overrides: Partial<ExecutionProcessStep> = {}): ExecutionProcessStep {
   return {
@@ -89,5 +89,31 @@ describe('ExecutionProcessBlock step collapse', () => {
 
     expect(headerRow()?.getAttribute('data-open')).toBe('0');
     expect(screen.getByText('执行 · git status')).toBeTruthy();
+  });
+});
+
+describe('CodePreview language adaptation', () => {
+  it.each([
+    ['Dockerfile', 'FROM node:20\nRUN corepack enable', 'dockerfile'],
+    ['scripts/setup.ps1', '$ErrorActionPreference = "Stop"', 'powershell'],
+    ['config/app.toml', '[server]\nenabled = true', 'ini'],
+    ['src/main.rs', 'fn main() { println!("ready"); }', 'rust'],
+    ['schema/api.graphql', 'type Query { status: String! }', 'graphql'],
+  ])('uses the matching grammar for %s', (path, text, language) => {
+    render(<CodePreview path={path} text={text} />);
+
+    const preview = screen.getByRole('region', { name: '文件内容预览' });
+    expect(preview.getAttribute('data-language')).toBe(language);
+    cleanup();
+  });
+
+  it('keeps unsupported formats readable as unmodified plain text', () => {
+    const text = 'alpha <raw-tag> & untouched';
+    render(<CodePreview path="fixtures/sample.unknown-format" text={text} />);
+
+    const preview = screen.getByRole('region', { name: '文件内容预览' });
+    expect(preview.getAttribute('data-language')).toBe('text');
+    expect(preview.textContent).toContain(text);
+    expect(preview.querySelector('.hljs-keyword')).toBeNull();
   });
 });

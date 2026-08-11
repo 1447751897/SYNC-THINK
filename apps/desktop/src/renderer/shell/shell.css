@@ -7059,7 +7059,8 @@ body {
 
 /* ─── Code preview (editor density, soft gutter) ──────────────────────────── */
 .shell-code-preview {
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--color-page);
   max-height: 100%;
 }
@@ -7071,7 +7072,7 @@ body {
 .shell-code-preview__table {
   width: 100%;
   border-collapse: collapse;
-  table-layout: auto;
+  table-layout: fixed;
   font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 1.6;
@@ -7081,9 +7082,13 @@ body {
   background: color-mix(in srgb, var(--color-hover) 55%, transparent);
 }
 
+.shell-code-preview__row.is-highlighted {
+  background: color-mix(in srgb, var(--color-accent) 11%, var(--color-page));
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
 .shell-code-preview__ln {
-  width: 1%;
-  min-width: 2.75em;
+  width: 48px;
   padding: 0 12px 0 14px;
   text-align: right;
   user-select: none;
@@ -7096,13 +7101,18 @@ body {
 }
 
 .shell-code-preview__code {
+  min-width: 0;
   padding: 0 16px 0 14px;
   color: var(--color-text);
-  white-space: pre;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
   vertical-align: top;
 }
 
 .shell-code-preview__code code {
+  display: block;
+  min-width: 0;
   font: inherit;
   color: inherit;
   background: transparent;
@@ -12004,10 +12014,17 @@ body {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  background: var(--color-page);
+  background: var(--shell-file-editor-background, var(--color-page));
 }
 
 .shell-file-workbench {
+  --shell-file-header-height: 36px;
+  --shell-file-control-height: 26px;
+  --shell-file-row-height: 26px;
+  --shell-file-action-width: 26px;
+  --shell-file-editor-background: var(--color-chat);
+  --shell-file-explorer-background: var(--color-chat);
+  --shell-file-header-background: var(--color-surface);
   position: relative;
   display: flex;
   width: 100%;
@@ -12015,7 +12032,7 @@ body {
   min-height: 0;
   flex: 1;
   overflow: hidden;
-  background: var(--color-page);
+  background: var(--shell-file-editor-background);
   container-name: shell-file-workbench;
   container-type: inline-size;
 }
@@ -12042,9 +12059,13 @@ body {
   overflow: hidden;
 }
 
+.shell-file-workbench__editor {
+  background: var(--shell-file-editor-background);
+}
+
 .shell-file-workbench__explorer {
   border-left: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: var(--shell-file-explorer-background);
 }
 
 @container shell-file-workbench (max-width: 520px) {
@@ -12075,42 +12096,154 @@ body {
 
 .shell-file-pane-header {
   display: flex;
-  flex: 0 0 34px;
+  height: var(--shell-file-header-height);
+  min-height: var(--shell-file-header-height);
+  flex: 0 0 var(--shell-file-header-height);
   min-width: 0;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px 0 10px;
+  gap: 7px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
-}
-
-.shell-file-pane-path {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  color: var(--color-text);
-  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
-  font-size: 11px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  background: var(--shell-file-header-background, var(--color-surface));
 }
 
 .shell-file-pane-status {
   flex: 0 0 auto;
   color: var(--color-text-faint);
   font-size: 10px;
+  line-height: 1;
 }
 
 .shell-file-pane-status.is-dirty {
   color: var(--color-warning);
 }
 
+.shell-file-pane-view-tabs {
+  display: inline-flex;
+  width: 54px;
+  height: var(--shell-file-control-height);
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-page);
+}
+
+.shell-file-pane-view-tabs button {
+  display: inline-flex;
+  width: 24px;
+  height: 20px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-text-faint);
+  background: transparent;
+  transition:
+    color var(--shell-motion-fast) var(--shell-ease),
+    background var(--shell-motion-fast) var(--shell-ease),
+    transform var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-file-pane-view-tabs button:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.shell-file-pane-view-tabs button:active {
+  transform: translateY(1px);
+}
+
+.shell-file-pane-view-tabs button.is-active {
+  color: var(--color-accent-text);
+  background: var(--color-accent-soft);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 9%, transparent);
+}
+
+.shell-file-pane-view-tabs button:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.shell-file-pane-actions {
+  display: flex;
+  min-width: 0;
+  margin-left: auto;
+  align-items: center;
+  gap: 3px;
+}
+
+.shell-file-pane-copy-button {
+  display: inline-flex;
+  height: var(--shell-file-control-height);
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--color-text-faint);
+  background: transparent;
+  font-size: 10.5px;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    color var(--shell-motion-fast) var(--shell-ease),
+    background var(--shell-motion-fast) var(--shell-ease),
+    border-color var(--shell-motion-fast) var(--shell-ease),
+    transform var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-file-pane-copy-button:hover,
+.shell-file-pane-copy-button:focus-visible {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.shell-file-pane-copy-button:active {
+  transform: translateY(1px);
+}
+
+.shell-file-pane-copy-button:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.shell-file-pane-copy-button.is-copied {
+  animation: shell-file-pane-copy-success 220ms var(--shell-ease-out, ease-out) both;
+  border-color: color-mix(in srgb, var(--color-success) 28%, transparent);
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 9%, transparent);
+}
+
+.shell-file-pane-copy-button.is-error {
+  border-color: color-mix(in srgb, var(--color-error) 24%, transparent);
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 8%, transparent);
+}
+
+@keyframes shell-file-pane-copy-success {
+  from {
+    opacity: 0.72;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .shell-file-pane-icon-button {
   display: inline-flex;
-  width: 26px;
-  height: 26px;
-  flex: 0 0 26px;
+  width: var(--shell-file-control-height);
+  height: var(--shell-file-control-height);
+  flex: 0 0 var(--shell-file-control-height);
   align-items: center;
   justify-content: center;
   border: 0;
@@ -12182,6 +12315,36 @@ body {
   flex: 1;
 }
 
+.shell-file-pane-view {
+  animation: shell-file-pane-view-in 150ms var(--shell-ease-out, ease-out) both;
+}
+
+.shell-file-pane-preview {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.shell-file-pane-preview .shell-code-preview {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  background: var(--shell-file-editor-background, var(--color-chat));
+}
+
+@keyframes shell-file-pane-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .shell-file-pane-loading {
   display: flex;
   flex: 1;
@@ -12203,11 +12366,15 @@ body {
   padding: 12px 14px 28px;
   color: var(--color-text);
   caret-color: var(--color-accent);
-  background: var(--color-page);
+  background: var(--shell-file-editor-background, var(--color-chat));
   font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
   font-size: 12px;
   line-height: 1.6;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
   tab-size: 2;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .shell-file-pane-editor:focus {
@@ -12216,6 +12383,97 @@ body {
 
 .shell-file-pane-editor:disabled {
   opacity: 0.72;
+}
+
+.shell-file-type-icon {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-faint);
+}
+
+.shell-file-type-icon.is-badge > span {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border-radius: 1px;
+  font-family: var(--font-sans);
+  font-size: 7px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.shell-file-type-icon[data-file-type='javascript'] {
+  color: var(--color-syntax-number);
+}
+
+.shell-file-type-icon[data-file-type='javascript'] > span {
+  color: var(--color-page);
+  background: var(--color-syntax-number);
+}
+
+.shell-file-type-icon[data-file-type='typescript'] {
+  color: var(--color-syntax-title);
+}
+
+.shell-file-type-icon[data-file-type='typescript'] > span {
+  color: var(--color-page);
+  background: var(--color-syntax-title);
+}
+
+.shell-file-type-icon[data-file-type='python'] {
+  color: var(--color-syntax-title);
+}
+
+.shell-file-type-icon[data-file-type='python'] > span {
+  color: var(--color-page);
+  background: var(--color-syntax-title);
+}
+
+.shell-file-type-icon[data-file-type='markdown'],
+.shell-file-type-icon[data-file-type='json'] {
+  color: var(--color-info);
+}
+
+.shell-file-type-icon[data-file-type='markdown'] > span {
+  border: 1px solid currentColor;
+  color: currentColor;
+  background: transparent;
+}
+
+.shell-file-type-icon[data-file-type='shell'],
+.shell-file-type-icon[data-file-type='git'] {
+  color: var(--color-success);
+}
+
+.shell-file-type-icon[data-file-type='css'] {
+  color: var(--color-syntax-keyword);
+}
+
+.shell-file-type-icon[data-file-type='xml'],
+.shell-file-type-icon[data-file-type='docker'],
+.shell-file-type-icon[data-file-type='package'] {
+  color: var(--color-warning);
+}
+
+.shell-file-type-icon[data-file-type='config'],
+.shell-file-type-icon[data-file-type='database'],
+.shell-file-type-icon[data-file-type='spreadsheet'] {
+  color: var(--color-syntax-builtin);
+}
+
+.shell-file-type-icon[data-file-type='image'] {
+  color: var(--color-avatar-5);
+}
+
+.shell-file-type-icon[data-file-type='archive'],
+.shell-file-type-icon[data-file-type='lock'] {
+  color: var(--color-text-secondary);
 }
 
 .shell-terminal-pane {
@@ -12564,16 +12822,23 @@ body {
 }
 
 .shell-workspace-files-panel {
+  --shell-file-header-height: 36px;
+  --shell-file-control-height: 26px;
+  --shell-file-row-height: 26px;
+  --shell-file-action-width: 26px;
+  --shell-file-explorer-background: var(--color-chat);
+  --shell-file-header-background: var(--color-surface);
   width: 100%;
   min-width: 0;
-  background: var(--color-surface);
+  background: var(--shell-file-explorer-background);
 }
 
 .shell-workspace-file-row {
   display: flex;
+  height: var(--shell-file-row-height);
   min-width: 0;
-  min-height: 26px;
-  align-items: stretch;
+  min-height: var(--shell-file-row-height);
+  align-items: center;
   overflow: hidden;
   border-radius: 6px;
   color: var(--color-text-secondary);
@@ -12595,28 +12860,41 @@ body {
 
 .shell-workspace-file-row__primary {
   display: flex;
+  height: 100%;
   min-width: 0;
-  min-height: 26px;
+  min-height: 0;
   flex: 1;
   align-items: center;
   gap: 6px;
-  padding: 4px 7px;
+  padding: 0 7px;
   border: 0;
   background: transparent;
   color: inherit;
   font-size: 11.5px;
+  line-height: 1;
   text-align: left;
+}
+
+.shell-workspace-file-row--search {
+  height: auto;
+  min-height: 42px;
+  align-items: stretch;
 }
 
 .shell-workspace-file-row__primary--search {
   display: block;
+  height: auto;
+  min-height: 42px;
   padding-block: 5px;
+  line-height: normal;
 }
 
 .shell-workspace-file-row__new-tab {
   display: inline-flex;
-  width: 26px;
-  min-width: 26px;
+  width: var(--shell-file-action-width);
+  height: 100%;
+  min-width: var(--shell-file-action-width);
+  flex: 0 0 var(--shell-file-action-width);
   align-items: center;
   justify-content: center;
   border: 0;
@@ -12649,19 +12927,21 @@ body {
 
 .shell-workspace-files-switcher {
   display: flex;
+  height: var(--shell-file-header-height);
+  min-height: var(--shell-file-header-height);
   align-items: center;
   gap: 3px;
-  min-height: 36px;
-  padding: 5px 8px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-surface) 92%, var(--color-page));
+  background: var(--shell-file-header-background);
 }
 
 .shell-workspace-files-switcher__tab {
   display: inline-flex;
+  height: var(--shell-file-control-height);
   align-items: center;
   gap: 5px;
-  min-height: 26px;
+  min-height: var(--shell-file-control-height);
   padding: 0 10px;
   border: 1px solid transparent;
   border-radius: 7px;
@@ -12673,6 +12953,115 @@ body {
     background var(--shell-motion-fast) var(--shell-ease),
     border-color var(--shell-motion-fast) var(--shell-ease),
     transform var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-workspace-files-search {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 7px 8px 8px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--shell-file-explorer-background);
+}
+
+.shell-workspace-files-search__modes {
+  display: grid;
+  height: var(--shell-file-control-height);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-page);
+}
+
+.shell-workspace-files-search__mode {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+  line-height: 1;
+  transition:
+    color var(--shell-motion-fast) var(--shell-ease),
+    background var(--shell-motion-fast) var(--shell-ease),
+    box-shadow var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-workspace-files-search__mode:hover {
+  color: var(--color-text);
+}
+
+.shell-workspace-files-search__mode.is-active {
+  color: var(--color-text);
+  background: var(--color-surface);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 10%, transparent);
+}
+
+.shell-workspace-files-search__field {
+  position: relative;
+  height: var(--shell-file-control-height);
+}
+
+.shell-workspace-files-search__icon {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  z-index: 1;
+  color: var(--color-text-faint);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.shell-workspace-files-search__input {
+  width: 100%;
+  height: 100%;
+  padding: 0 8px 0 26px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text);
+  background: var(--color-page);
+  font-size: 11.5px;
+  line-height: 1;
+  transition:
+    border-color var(--shell-motion-fast) var(--shell-ease),
+    box-shadow var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-workspace-files-search__input:focus {
+  border-color: var(--color-accent);
+  outline: 0;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.shell-workspace-file-directory {
+  display: flex;
+  width: 100%;
+  height: var(--shell-file-row-height);
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding-top: 0;
+  padding-right: 8px;
+  padding-bottom: 0;
+  border-radius: 6px;
+  color: var(--color-text);
+  font-size: 12px;
+  line-height: 1;
+  text-align: left;
+  transition:
+    color var(--shell-motion-fast) var(--shell-ease),
+    background var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-workspace-file-directory:hover {
+  background: var(--color-hover);
+}
+
+.shell-workspace-file-directory:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -2px;
 }
 
 .shell-workspace-files-switcher__tab:hover {
@@ -12807,12 +13196,16 @@ body {
   .shell-right-dock,
   .shell-dock-panel.is-active,
   .shell-pane-drop-overlay,
-  .shell-new-resource-menu {
+  .shell-new-resource-menu,
+  .shell-file-pane-view,
+  .shell-file-pane-copy-button.is-copied {
     animation: none;
   }
 
   .shell-workspace-files-switcher__tab,
-  .shell-new-resource-menu__item {
+  .shell-new-resource-menu__item,
+  .shell-file-pane-view-tabs button,
+  .shell-file-pane-copy-button {
     transition: none;
   }
 }
@@ -14177,6 +14570,60 @@ body {
 
 /* Phase 3 deterministic visual-acceptance fixture. This route reuses product
    components and tokens while avoiding Runtime state or external services. */
+.phase3-workspace-file {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: 38px minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--color-page);
+}
+
+.phase3-workspace-file__tabs {
+  display: flex;
+  min-width: 0;
+  align-items: end;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.phase3-workspace-file__tab {
+  display: inline-flex;
+  height: 31px;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+
+.phase3-workspace-file__tab.is-active {
+  border-color: var(--color-border);
+  color: var(--color-text);
+  background: var(--color-page);
+}
+
+.phase3-workspace-file__tab span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phase3-workspace-file__content {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .phase3-visual {
   display: grid;
   width: 100%;

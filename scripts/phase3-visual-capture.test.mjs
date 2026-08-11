@@ -29,6 +29,7 @@ describe('Phase 3 visual matrix', () => {
       'long-trace-open',
       'streaming-follow',
       'welcome',
+      'workspace-file',
     ]);
     assert.deepEqual([...themes].sort(), ['dark', 'light']);
     assert.ok(PHASE3_VISUAL_MATRIX.some((item) => item.scale === 1.25));
@@ -37,6 +38,39 @@ describe('Phase 3 visual matrix', () => {
       PHASE3_VISUAL_MATRIX.some(
         (item) =>
           item.fixture === 'long-trace-open' && item.theme === 'dark' && item.width === 1280,
+      ),
+    );
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) =>
+          item.fixture === 'workspace-file' && item.theme === 'light' && item.width === 1280,
+      ),
+    );
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) =>
+          item.fixture === 'workspace-file' && item.theme === 'dark' && item.width === 1280,
+      ),
+    );
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) =>
+          item.fixture === 'workspace-file' &&
+          item.state === 'source-copied' &&
+          item.theme === 'light',
+      ),
+    );
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) => item.fixture === 'workspace-file' && item.width <= 760,
+      ),
+    );
+    assert.ok(
+      PHASE3_VISUAL_MATRIX.some(
+        (item) =>
+          item.id === 'workspace-file-reference-tall' &&
+          item.width === 735 &&
+          item.height === 1014,
       ),
     );
   });
@@ -84,5 +118,17 @@ describe('Phase 3 visual matrix', () => {
     assert.match(driver, /execution_timeline_closed_invalid/);
     assert.match(driver, /connection_code_invalid/);
     assert.match(driver, /streaming_follow_invalid/);
+    assert.match(driver, /workspace_file_invalid/);
+    assert.match(driver, /workspace_file_source_invalid/);
+    assert.match(driver, /workspace_file_json_invalid/);
+    assert.match(driver, /workspace_file_alignment_invalid/);
+    assert.match(driver, /workspace_file_background_invalid/);
+    assert.match(driver, /editorBody/);
+    assert.match(driver, /explorerBody/);
+    assert.match(driver, /previewBody/);
+    assert.match(driver, /sourceBody/);
+    assert.match(driver, /expectedChatBody/);
+    assert.match(driver, /resolvedTokenBackground/);
+    assert.match(driver, /--color-chat/);
   });
 });

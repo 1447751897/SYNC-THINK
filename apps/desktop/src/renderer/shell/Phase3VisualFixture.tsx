@@ -21,8 +21,10 @@ import { AssistantProcessGroup } from './ChatView.js';
 import { ContextRing } from './compose-toolbar.js';
 import { ExecutionTimeline } from './ExecutionTimeline.js';
 import { FirstLaunchGuide, FIRST_LAUNCH_GUIDE_KEY } from './FirstLaunchGuide.js';
+import { FileTypeIcon } from './FileTypeIcon.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { DataDiagnosticsSection } from './SettingsPage.js';
+import { WorkspaceFileView } from './WorkspaceFileView.js';
 
 export const PHASE3_VISUAL_CASES = [
   'welcome',
@@ -32,6 +34,7 @@ export const PHASE3_VISUAL_CASES = [
   'streaming-follow',
   'diagnostics',
   'composer-context',
+  'workspace-file',
 ] as const;
 
 export type Phase3VisualCase = (typeof PHASE3_VISUAL_CASES)[number];
@@ -487,11 +490,298 @@ function ComposerContextFixture() {
   );
 }
 
+const WORKSPACE_LONG_VALUE = 'workspace-segment/'.repeat(90);
+
+const WORKSPACE_FILE_CONTENTS: Record<string, string> = {
+  'install-all.sh': `#!/usr/bin/env bash
+set -euo pipefail
+
+TOOL="auto"
+SOURCE="local"
+REPOSITORY="1447751897/ai-project-command-skills"
+BRANCH="master"
+CODEX_TARGET_ROOT="\${HOME}/.agents/skills"
+CLAUDE_TARGET_ROOT="\${HOME}/.claude/skills"
+DRY_RUN=0
+CACHE_KEY="${WORKSPACE_LONG_VALUE}"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --tool)
+      TOOL="\${2:?Missing value for --tool}"
+      shift 2
+      ;;
+    --source)
+      SOURCE="\${2:?Missing value for --source}"
+      shift 2
+      ;;
+    --repository)
+      REPOSITORY="\${2:?Missing value for --repository}"
+      shift 2
+      ;;
+    --branch)
+      BRANCH="\${2:?Missing value for --branch}"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+printf 'Installing %s from %s@%s\n' "$TOOL" "$REPOSITORY" "$BRANCH"
+`,
+  'package.json': `{
+  "name": "workspace-file-fixture",
+  "private": true,
+  "scripts": {
+    "check": "pnpm lint && pnpm test",
+    "build": "pnpm --filter @sync-think/desktop build:shell"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.8"
+  }
+}
+`,
+  'settings.json': `{
+  "editor": {
+    "fontSize": 12,
+    "lineNumbers": true,
+    "wordWrap": false
+  },
+  "files": {
+    "exclude": ["dist", "node_modules"]
+  }
+}
+`,
+  'README.md': `# Workspace files
+
+Open a file from the explorer, then switch between preview and source.
+
+- Preview keeps syntax highlighting and line numbers.
+- Source keeps editing, saving, and conflict handling.
+- File icons follow each file format.
+`,
+  '.gitignore': `node_modules
+dist
+.turbo
+*.log
+`,
+  'src/FilePreview.tsx': `import { useMemo } from 'react';
+
+type FilePreviewProps = {
+  path: string;
+  source: string;
+};
+
+export function FilePreview({ path, source }: FilePreviewProps) {
+  const lineCount = useMemo(() => source.split('\\n').length, [source]);
+
+  return (
+    <section aria-label={\`Preview \${path}\`}>
+      <strong>{path}</strong>
+      <span>{lineCount} lines</span>
+      <pre>{source}</pre>
+    </section>
+  );
+}
+`,
+  'scripts/check_workspace.py': `from pathlib import Path
+
+
+def project_files(root: Path) -> list[Path]:
+    return sorted(path for path in root.rglob("*") if path.is_file())
+
+
+if __name__ == "__main__":
+    files = project_files(Path.cwd())
+    print(f"workspace files: {len(files)}")
+`,
+  'styles/workspace.css': `.workspace-file-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  min-height: 0;
+  color: var(--color-text);
+  background: var(--color-page);
+}
+
+.workspace-file-view:focus-within {
+  outline: 1px solid var(--color-accent);
+}
+`,
+  'data/report.csv': `file,type,status
+install-all.sh,shell,ready
+src/FilePreview.tsx,typescript,ready
+scripts/check_workspace.py,python,ready
+`,
+  'docker-compose.yml': `services:
+  desktop:
+    build: .
+    command: pnpm --filter @sync-think/desktop dev
+`,
+};
+
+const WORKSPACE_FILE_DIRS: Record<
+  string,
+  Array<{ path: string; name: string; kind: 'file' | 'dir' }>
+> = {
+  '': [
+    { path: 'src', name: 'src', kind: 'dir' },
+    { path: 'scripts', name: 'scripts', kind: 'dir' },
+    { path: 'styles', name: 'styles', kind: 'dir' },
+    { path: 'data', name: 'data', kind: 'dir' },
+    { path: '.gitignore', name: '.gitignore', kind: 'file' },
+    { path: 'docker-compose.yml', name: 'docker-compose.yml', kind: 'file' },
+    { path: 'install-all.sh', name: 'install-all.sh', kind: 'file' },
+    { path: 'package.json', name: 'package.json', kind: 'file' },
+    { path: 'README.md', name: 'README.md', kind: 'file' },
+    { path: 'settings.json', name: 'settings.json', kind: 'file' },
+  ],
+  src: [{ path: 'src/FilePreview.tsx', name: 'FilePreview.tsx', kind: 'file' }],
+  scripts: [
+    { path: 'scripts/check_workspace.py', name: 'check_workspace.py', kind: 'file' },
+  ],
+  styles: [{ path: 'styles/workspace.css', name: 'workspace.css', kind: 'file' }],
+  data: [{ path: 'data/report.csv', name: 'report.csv', kind: 'file' }],
+};
+
+const workspaceFileMtimes = new Map(
+  Object.keys(WORKSPACE_FILE_CONTENTS).map((path, index) => [path, 1000 + index]),
+);
+
+function installWorkspaceFileFixtureRuntime() {
+  const fixtureWindow = window as Window & { __phase3CopiedText?: string };
+  fixtureWindow.__phase3CopiedText = '';
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText: async (text: string) => {
+        fixtureWindow.__phase3CopiedText = text;
+      },
+    },
+  });
+  Object.defineProperty(window, 'syncThink', {
+    configurable: true,
+    value: {
+      runtime: {
+        readProjectFile: async ({ path }: { path: string }) => {
+          const content = WORKSPACE_FILE_CONTENTS[path];
+          return {
+            path,
+            content: content ?? null,
+            error: content === undefined ? 'File not found' : null,
+            errorCode: content === undefined ? 'not-found' : null,
+            mtimeMs: workspaceFileMtimes.get(path) ?? null,
+            size: content?.length ?? null,
+          };
+        },
+        writeProjectFile: async ({ path, content }: { path: string; content: string }) => {
+          WORKSPACE_FILE_CONTENTS[path] = content;
+          const mtimeMs = (workspaceFileMtimes.get(path) ?? 1000) + 1;
+          workspaceFileMtimes.set(path, mtimeMs);
+          return {
+            ok: true,
+            conflict: false,
+            error: null,
+            errorCode: null,
+            mtimeMs,
+            size: content.length,
+          };
+        },
+        watchProjectFile: () => ({
+          ready: Promise.resolve(),
+          unsubscribe: async () => undefined,
+        }),
+        listProjectDir: async ({ dir = '' }: { dir?: string }) => ({
+          dir,
+          entries: WORKSPACE_FILE_DIRS[dir] ?? [],
+        }),
+        listProjectFiles: async ({ query = '' }: { query?: string }) => {
+          const normalizedQuery = query.trim().toLowerCase();
+          const files = Object.keys(WORKSPACE_FILE_CONTENTS)
+            .filter((path) => path.toLowerCase().includes(normalizedQuery))
+            .map((path) => ({
+              path,
+              name: path.split('/').pop() ?? path,
+              kind: 'file' as const,
+            }));
+          return { root: 'C:/workspace', files };
+        },
+        searchProjectContent: async ({ query = '' }: { query?: string }) => {
+          const normalizedQuery = query.trim().toLowerCase();
+          const results = Object.entries(WORKSPACE_FILE_CONTENTS).flatMap(([path, content]) => {
+            const lines = content.split('\n');
+            const lineIndex = lines.findIndex((line) =>
+              line.toLowerCase().includes(normalizedQuery),
+            );
+            if (lineIndex < 0) return [];
+            return [{ path, line: lineIndex + 1, column: 1, preview: lines[lineIndex] ?? '' }];
+          });
+          return { root: 'C:/workspace', query, results, truncated: false, timedOut: false };
+        },
+        getGitInfo: async () => ({
+          branch: 'feature/workspace-file-preview',
+          branches: ['feature/workspace-file-preview', 'main'],
+          changes: [
+            { status: 'M', path: 'apps/desktop/src/renderer/shell/FilePane.tsx' },
+            { status: 'A', path: 'apps/desktop/src/renderer/shell/FileTypeIcon.tsx' },
+          ],
+          recentCommits: [
+            { hash: '9f38a7c', subject: 'feat: add workspace file preview' },
+            { hash: 'd162bb4', subject: 'style: align workspace file explorer' },
+          ],
+          isRepo: true,
+        }),
+      },
+    },
+  });
+}
+
+function WorkspaceFileFixture() {
+  const [path, setPath] = useState(() => {
+    installWorkspaceFileFixtureRuntime();
+    return 'install-all.sh';
+  });
+
+  return (
+    <main
+      className="phase3-workspace-file"
+      data-phase3-ready="true"
+      aria-label="Workspace file preview"
+    >
+      <header className="phase3-workspace-file__tabs">
+        <div className="phase3-workspace-file__tab is-active">
+          <FileTypeIcon path={path} size={13} />
+          <span>{path}</span>
+        </div>
+        <div className="phase3-workspace-file__tab">
+          <span>工作区文件</span>
+        </div>
+      </header>
+      <section className="phase3-workspace-file__content">
+        <WorkspaceFileView
+          projectFolder="C:/workspace"
+          path={path}
+          onOpenFileInCurrentTab={(nextPath) => setPath(nextPath)}
+          onOpenFileInNewTab={(nextPath) => setPath(nextPath)}
+        />
+      </section>
+    </main>
+  );
+}
+
 export function Phase3VisualFixture({ visualCase }: { visualCase: Phase3VisualCase }) {
   if (visualCase === 'welcome') return <WelcomeFixture />;
   if (visualCase === 'diagnostics') return <DiagnosticsFixture />;
   if (visualCase === 'connection-and-code') return <ConnectionAndCodeFixture />;
   if (visualCase === 'streaming-follow') return <StreamingFollowFixture />;
   if (visualCase === 'composer-context') return <ComposerContextFixture />;
+  if (visualCase === 'workspace-file') return <WorkspaceFileFixture />;
   return <TraceFixture open={visualCase === 'long-trace-open'} />;
 }

@@ -11,8 +11,6 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
-  FileCode2,
-  FileText,
   Folder,
   FolderOpen,
   GitBranch,
@@ -29,6 +27,8 @@ import type {
   SearchProjectContentResult,
 } from '../../workspace-tools-contract.js';
 import { BrowserPanel } from './BrowserPanel.js';
+import { CodePreview } from './ExecutionProcessBlock.js';
+import { FileTypeIcon } from './FileTypeIcon.js';
 
 /** Preload bridge accessor (undefined in bare unit-test DOM). */
 function dockBridge() {
@@ -406,9 +406,9 @@ function FilesPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border p-2">
+      <div className="shell-workspace-files-search shrink-0">
         <div
-          className="mb-1.5 grid grid-cols-2 rounded-md border border-border bg-page p-0.5"
+          className="shell-workspace-files-search__modes"
           role="group"
           aria-label="搜索范围"
         >
@@ -419,10 +419,8 @@ function FilesPanel({
               aria-label={kind === 'filename' ? '文件名' : '内容'}
               aria-pressed={searchKind === kind}
               className={clsx(
-                'h-6 rounded text-[10.5px] transition-colors',
-                searchKind === kind
-                  ? 'bg-surface text-text shadow-sm'
-                  : 'text-text-faint hover:text-text',
+                'shell-workspace-files-search__mode',
+                searchKind === kind && 'is-active',
               )}
               onClick={() => setSearchKind(kind)}
             >
@@ -430,13 +428,13 @@ function FilesPanel({
             </button>
           ))}
         </div>
-        <div className="relative">
+        <div className="shell-workspace-files-search__field">
           <Search
             size={11}
-            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-text-faint"
+            className="shell-workspace-files-search__icon"
           />
           <input
-            className="h-7 w-full rounded-md border border-border bg-page pl-6.5 pr-2 text-[11.5px] text-text focus:border-accent focus:outline-none"
+            className="shell-workspace-files-search__input"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={searchKind === 'filename' ? '搜索文件名…' : '搜索文件内容…'}
@@ -510,7 +508,7 @@ function FilesPanel({
                         }
                         onClick={() => openFile(file.path)}
                       >
-                        <FileCode2 size={12} className="shrink-0 text-text-faint" />
+                        <FileTypeIcon path={file.path} size={12} className="shrink-0" />
                         <span className="min-w-0 flex-1 truncate">{file.name}</span>
                         <span className="max-w-[45%] shrink-0 truncate text-[10.5px] text-text-faint">
                           {file.path}
@@ -554,7 +552,7 @@ function FilesPanel({
         {!onOpenFile && selected ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3">
-              <FileText size={12} className="shrink-0 text-text-faint" />
+              <FileTypeIcon path={selected} size={12} className="shrink-0" />
               <span
                 className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-text"
                 title={selected}
@@ -581,7 +579,7 @@ function FilesPanel({
               ) : preview?.error ? (
                 <div className="px-3 py-3 text-[11.5px] text-text-faint">{preview.error}</div>
               ) : (
-                <pre className="shell-dock-file-preview">{preview?.content ?? ''}</pre>
+                <CodePreview text={preview?.content ?? ''} path={selected} />
               )}
             </div>
           </div>
@@ -624,7 +622,7 @@ function ContentSearchResults({
                 onClick={() => onOpen(result)}
               >
                 <span className="flex min-w-0 items-center gap-2">
-                  <FileCode2 size={12} className="shrink-0 text-text-faint" />
+                  <FileTypeIcon path={result.path} size={12} className="shrink-0" />
                   <span className="min-w-0 flex-1 truncate text-[11.5px]" title={result.path}>
                     {result.path}
                   </span>
@@ -708,7 +706,7 @@ function FileTreeLevel({
           <li key={entry.path}>
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[12px] text-text hover:bg-hover"
+              className="shell-workspace-file-directory"
               style={{ paddingLeft: 8 + depth * 14 }}
               title={entry.path}
               onClick={() => onToggleDir(entry.path)}
@@ -756,7 +754,7 @@ function FileTreeLevel({
                 }
                 onClick={() => onOpenFile(entry.path)}
               >
-                <FileCode2 size={12} className="shrink-0 text-text-faint" />
+                <FileTypeIcon path={entry.path} size={12} className="shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{entry.name}</span>
               </button>
               {onOpenFileInNewTab ? (

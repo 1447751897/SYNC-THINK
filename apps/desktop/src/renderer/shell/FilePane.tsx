@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
   AlertTriangle,
+  Check,
+  Copy,
+  Eye,
   FileCode2,
   Loader2,
   PanelRightClose,
@@ -9,6 +12,7 @@ import {
   Save,
 } from 'lucide-react';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
+import { CodePreview } from './ExecutionProcessBlock.js';
 
 export interface FileRevealTarget extends ProjectTextLocation {
   nonce: number;
@@ -54,6 +58,24 @@ function fileBridge() {
   return window.syncThink?.runtime;
 }
 
+async function copySourceText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.inset = '-9999px auto auto -9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('copy_failed');
+}
+
 export function FilePane({
   projectFolder,
   path,
@@ -82,6 +104,8 @@ export function FilePane({
   const [cleanStatus, setCleanStatus] = useState<'已同步' | '已保存'>(
     initialSession?.cleanStatus ?? '已同步',
   );
+  const [view, setView] = useState<'preview' | 'source'>('preview');
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const loadedRef = useRef<LoadedFile | null>(initialSession?.loaded ?? null);
   const dirtyRef = useRef(
     Boolean(initialSession && initialSession.draft !== initialSession.loaded.content),
@@ -90,6 +114,7 @@ export function FilePane({
   const requestSequenceRef = useRef(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const revealedNonceRef = useRef<number>();
+  const copyResetTimerRef = useRef<number>();
 
   const loadFromDisk = useCallback(
     async (showLoading: boolean) => {
@@ -202,6 +227,19 @@ export function FilePane({
   }, [loadFromDisk, sessionKey, verifyCachedSession]);
 
   useEffect(() => {
+    setCopyState('idle');
+    if (copyResetTimerRef.current !== undefined) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = undefined;
+    }
+    return () => {
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    };
+  }, [path]);
+
+  useEffect(() => {
     if (!sessionKey || !loaded) return;
     filePaneSessions.set(sessionKey, { loaded, draft, diskChange, cleanStatus });
   }, [cleanStatus, diskChange, draft, loaded, sessionKey]);
@@ -250,12 +288,12 @@ export function FilePane({
       .replace(/\r$/, '');
     const columnOffset = [...lineText].slice(0, targetColumn - 1).join('').length;
     const offset = Math.min(draft.length, lineStart + columnOffset);
-    editor.focus();
     editor.setSelectionRange(offset, offset);
     const lineHeight = Number.parseFloat(getComputedStyle(editor).lineHeight) || 19.2;
     editor.scrollTop = Math.max(0, (targetLine - 1) * lineHeight - editor.clientHeight / 3);
+    if (view === 'source') editor.focus();
     revealedNonceRef.current = revealTarget.nonce;
-  }, [draft, loaded, revealTarget]);
+  }, [draft, loaded, revealTarget, view]);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -325,45 +363,115 @@ export function FilePane({
     }
   };
 
+  const handleCopySource = useCallback(async () => {
+    if (copyResetTimerRef.current !== undefined) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+    try {
+      await copySourceText(draft);
+      setCopyState('copied');
+    } catch {
+      setCopyState('error');
+    }
+    copyResetTimerRef.current = window.setTimeout(() => {
+      setCopyState('idle');
+      copyResetTimerRef.current = undefined;
+    }, 1500);
+  }, [draft]);
+
   const status = saving ? '保存中' : dirty ? '未保存' : cleanStatus;
 
   return (
     <div className="shell-file-pane" data-testid="file-pane">
       <header className="shell-file-pane-header">
-        <FileCode2 size={14} className="shrink-0 text-text-faint" aria-hidden="true" />
-        <span className="shell-file-pane-path" title={path}>
-          {path}
-        </span>
+        <div className="shell-file-pane-view-tabs" role="tablist" aria-label="文件查看方式">
+          <button
+            type="button"
+            role="tab"
+            aria-label="高亮预览"
+            title="高亮预览"
+            aria-selected={view === 'preview'}
+            className={view === 'preview' ? 'is-active' : undefined}
+            onClick={() => setView('preview')}
+          >
+            <Eye size={13} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-label="源码"
+            title="源码"
+            aria-selected={view === 'source'}
+            className={view === 'source' ? 'is-active' : undefined}
+            onClick={() => setView('source')}
+          >
+            <FileCode2 size={13} aria-hidden="true" />
+          </button>
+        </div>
         <span
           className={dirty ? 'shell-file-pane-status is-dirty' : 'shell-file-pane-status'}
           data-testid="file-pane-status"
         >
           {status}
         </span>
-        {onToggleWorkspaceFiles ? (
+        <div className="shell-file-pane-actions">
+          {view === 'source' ? (
+            <button
+              type="button"
+              className={`shell-file-pane-copy-button is-${copyState}`}
+              aria-label={
+                copyState === 'copied'
+                  ? '源码已复制'
+                  : copyState === 'error'
+                    ? '复制失败，重试'
+                    : '复制源码'
+              }
+              title={copyState === 'error' ? '复制失败，点击重试' : '复制源码'}
+              onClick={() => void handleCopySource()}
+            >
+              {copyState === 'copied' ? (
+                <Check size={12} aria-hidden="true" />
+              ) : (
+                <Copy size={12} aria-hidden="true" />
+              )}
+              <span>
+                {copyState === 'copied'
+                  ? '已复制'
+                  : copyState === 'error'
+                    ? '重试复制'
+                    : '复制源码'}
+              </span>
+            </button>
+          ) : null}
+          {onToggleWorkspaceFiles ? (
+            <button
+              type="button"
+              className="shell-file-pane-icon-button"
+              data-testid="file-pane-workspace-files-toggle"
+              aria-label={workspaceFilesOpen ? '隐藏工作区文件' : '展开工作区文件'}
+              aria-pressed={Boolean(workspaceFilesOpen)}
+              title={workspaceFilesOpen ? '隐藏工作区文件' : '展开工作区文件'}
+              onClick={onToggleWorkspaceFiles}
+            >
+              {workspaceFilesOpen ? (
+                <PanelRightClose size={13} />
+              ) : (
+                <PanelRightOpen size={13} />
+              )}
+            </button>
+          ) : null}
           <button
             type="button"
             className="shell-file-pane-icon-button"
-            data-testid="file-pane-workspace-files-toggle"
-            aria-label={workspaceFilesOpen ? '隐藏工作区文件' : '展开工作区文件'}
-            aria-pressed={Boolean(workspaceFilesOpen)}
-            title={workspaceFilesOpen ? '隐藏工作区文件' : '展开工作区文件'}
-            onClick={onToggleWorkspaceFiles}
+            data-testid="file-pane-save"
+            aria-label="保存文件"
+            title="保存文件"
+            disabled={!dirty || saving || loading}
+            onClick={() => void saveFile(false)}
           >
-            {workspaceFilesOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
           </button>
-        ) : null}
-        <button
-          type="button"
-          className="shell-file-pane-icon-button"
-          data-testid="file-pane-save"
-          aria-label="保存文件"
-          title="保存文件"
-          disabled={!dirty || saving || loading}
-          onClick={() => void saveFile(false)}
-        >
-          {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-        </button>
+        </div>
       </header>
 
       {diskChange ? (
@@ -395,29 +503,43 @@ export function FilePane({
             <span>读取中</span>
           </div>
         ) : loaded ? (
-          <textarea
-            ref={editorRef}
-            className="shell-file-pane-editor"
-            data-testid="file-pane-editor"
-            aria-label={`编辑 ${path}`}
-            value={draft}
-            disabled={saving}
-            spellCheck={false}
-            onChange={(event) => {
-              const next = event.currentTarget.value;
-              setDraft(next);
-              dirtyRef.current = next !== loadedRef.current?.content;
-              if (sessionKey && loadedRef.current) {
-                filePaneSessions.set(sessionKey, {
-                  loaded: loadedRef.current,
-                  draft: next,
-                  diskChange,
-                  cleanStatus,
-                });
-              }
-            }}
-            onKeyDown={handleEditorKeyDown}
-          />
+          <>
+            <div
+              className="shell-file-pane-view shell-file-pane-preview"
+              data-testid="file-pane-preview"
+              role="tabpanel"
+              aria-label={`预览 ${path}`}
+              hidden={view !== 'preview'}
+            >
+              <CodePreview text={draft} path={path} highlightLine={revealTarget?.line} />
+            </div>
+            <textarea
+              ref={editorRef}
+              className="shell-file-pane-editor shell-file-pane-view"
+              data-testid="file-pane-editor"
+              aria-label={`编辑 ${path}`}
+              role="tabpanel"
+              value={draft}
+              disabled={saving}
+              hidden={view !== 'source'}
+              wrap="soft"
+              spellCheck={false}
+              onChange={(event) => {
+                const next = event.currentTarget.value;
+                setDraft(next);
+                dirtyRef.current = next !== loadedRef.current?.content;
+                if (sessionKey && loadedRef.current) {
+                  filePaneSessions.set(sessionKey, {
+                    loaded: loadedRef.current,
+                    draft: next,
+                    diskChange,
+                    cleanStatus,
+                  });
+                }
+              }}
+              onKeyDown={handleEditorKeyDown}
+            />
+          </>
         ) : null}
       </div>
     </div>

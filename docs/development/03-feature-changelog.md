@@ -2880,3 +2880,33 @@ Desktop typecheck/build：passed
 ### Boundary
 
 - 本轮只构建并重启本地源码实例，不生成安装包、不提交、不推送；工作树中此前未提交改动继续保留。
+
+## 2026-08-11 · 文件工作台背景色带对齐修复
+
+### Fixed
+
+- 文件工作台新增编辑正文、文件浏览区和标题栏背景语义变量；编辑器标题栏与文件/Git 切换栏统一使用标题背景，文件工作台容器、代码预览、源码编辑器、搜索区与文件树正文统一使用对话 Pane 的 `--color-chat` 背景。
+- 移除深色主题下贯穿右侧文件正文与文件浏览区的灰色或纯黑背景带，使整个工作区文件正文与左侧对话正文同色，并通过边框、活动行和控件状态保留局部层级。
+- Electron 视觉采集新增计算样式断言，校验文件工作台、代码预览、源码编辑器与文件树正文均匹配对话背景，同时保持左右标题栏背景一致、搜索区与文件面板背景一致。
+
+### Verification
+
+- 本轮定向组件回归通过：4 files / 19 tests；Phase 3 脚本测试 8/8 通过。
+- Desktop typecheck、Desktop build 与 `git diff --check` 通过。
+- Electron `capturePage` 视觉矩阵 14/14 通过，覆盖浅色、深色、760px 紧凑布局与 `735×1014` 参考尺寸；深色像素采样确认文件预览、源码编辑器与文件树主背景均为 `#1e1f1f`。
+- 最新源码实例已重启：Electron PID `144940`、Runtime PID `144788`，窗口标题为 `SYNC-THINK` 且响应正常；启动日志与实窗截图位于 `.data/local-restart-20260811-221649-workspace-editor-chat-match/`。实窗浅色主题像素采样确认左右对话正文、文件编辑正文与文件树正文均为 `#faf9f5`。
+
+## 2026-08-11 · 文件源码与高亮预览体验优化
+
+### Changed
+
+- 文件正文标题栏移除重复的文件名，仅保留与参考界面一致的“高亮预览 / 源码”双图标分段控件；文件标签和文件树统一改用按格式匹配的文件图标。
+- 源码模式新增“复制源码”操作，复制当前完整草稿并提供“已复制”成功态、错误重试态和短时反馈动效；无 Clipboard API 时保留 DOM copy 回退。
+- 高亮预览新增 Dockerfile、PowerShell、TOML/INI、Rust、GraphQL、Go、Java、Kotlin、Swift、C/C++、C#、Ruby、PHP、Lua、Dart、Diff、Makefile、CMake、SCSS、Less、Protobuf 等格式映射；未知格式完整显示原始文本。
+- 高亮预览改为固定行号列和可折行代码列，源码编辑器启用软换行；超长无空格内容不再产生横向滚动，窄 Pane 与高窄窗口均可直接阅读完整内容。
+- Phase 3 文件视觉夹具加入超长 Shell 内容、Clipboard mock、源码复制、JSON 高亮切换、活动文件回切与格式图标验证；两次文件切换使用独立等待周期，避免高亮渲染耗时导致误判。
+
+### Verification
+
+- 定向组件测试、Desktop typecheck、目标 ESLint、design token、Phase 3 脚本测试、Desktop build、`node --check` 与 `git diff --check` 通过。
+- Electron `capturePage` 视觉矩阵 15/15 通过，覆盖 `1280×800` 浅色/深色与源码复制成功态、`760×640` 紧凑布局及 `735×1014` 参考比例；断言确认预览与源码横向溢出不超过 1px、长行实际增高、复制内容完整、JSON/Shell 高亮可切换且内容区没有重复文件名。

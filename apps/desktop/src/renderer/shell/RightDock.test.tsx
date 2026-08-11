@@ -133,4 +133,28 @@ describe('RightDock project content search', () => {
     fireEvent.click(screen.getByRole('button', { name: '在新文件标签打开 src/app.ts' }));
     expect(onOpenFileInNewTab).toHaveBeenCalledWith('src/app.ts', undefined);
   });
+
+  it('uses file-format icons in the workspace tree', async () => {
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: {
+        runtime: {
+          listProjectDir: vi.fn(async () => ({
+            dir: '',
+            entries: [
+              { path: 'scripts/check.cjs', name: 'check.cjs', kind: 'file' },
+              { path: 'scripts/report.py', name: 'report.py', kind: 'file' },
+            ],
+          })),
+          listProjectFiles: vi.fn(async () => ({ root: 'C:/workspace', files: [] })),
+        },
+      },
+    });
+
+    render(<WorkspaceFilesPanel projectFolder="C:/workspace" />);
+
+    expect(await screen.findByText('check.cjs')).toBeTruthy();
+    expect(document.querySelector('[data-file-type="javascript"]')).toBeTruthy();
+    expect(document.querySelector('[data-file-type="python"]')).toBeTruthy();
+  });
 });

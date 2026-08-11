@@ -43,13 +43,88 @@ function installBridge() {
   };
 }
 
+function installClipboard() {
+  const writeText = vi.fn(async () => undefined);
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  });
+  return writeText;
+}
+
 afterEach(() => {
   cleanup();
   clearFilePaneSession('C:/workspace', 'notes.txt');
+  clearFilePaneSession('C:/workspace', 'src/example.ts');
   Reflect.deleteProperty(window, 'syncThink');
+  Reflect.deleteProperty(navigator, 'clipboard');
 });
 
 describe('FilePane', () => {
+  it('uses compact view controls without repeating the filename', async () => {
+    const bridge = installBridge();
+    bridge.readProjectFile.mockResolvedValue({
+      path: 'src/example.ts',
+      content: 'const answer: number = 42;',
+      error: null,
+      errorCode: null,
+      mtimeMs: 10,
+      size: 26,
+    });
+
+    render(<FilePane projectFolder="C:/workspace" path="src/example.ts" />);
+
+    const preview = await screen.findByTestId('file-pane-preview');
+    expect(preview.hidden).toBe(false);
+    expect(preview.querySelector('[data-language="typescript"]')).toBeTruthy();
+    expect(preview.querySelector('.hljs-keyword')?.textContent).toBe('const');
+    expect(
+      screen.getByRole('tab', { name: '高亮预览' }).getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(screen.getByRole('tab', { name: '高亮预览' }).textContent).toBe('');
+    expect(screen.getByRole('tab', { name: '源码' }).textContent).toBe('');
+    expect(document.querySelector('.shell-file-pane-path')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: '源码' }));
+    const editor = screen.getByTestId('file-pane-editor') as HTMLTextAreaElement;
+    expect(editor.hidden).toBe(false);
+    fireEvent.change(editor, { target: { value: 'const answer: number = 43;' } });
+
+    fireEvent.click(screen.getByRole('tab', { name: '高亮预览' }));
+    expect(preview.textContent).toContain('43');
+  });
+
+  it('copies the complete current source and shows success feedback', async () => {
+    const bridge = installBridge();
+    const writeText = installClipboard();
+    bridge.readProjectFile.mockResolvedValue({
+      path: 'src/example.ts',
+      content: 'const answer: number = 42;\nexport { answer };\n',
+      error: null,
+      errorCode: null,
+      mtimeMs: 10,
+      size: 47,
+    });
+
+    render(<FilePane projectFolder="C:/workspace" path="src/example.ts" />);
+
+    await screen.findByTestId('file-pane-editor');
+    expect(screen.queryByRole('button', { name: '复制源码' })).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: '源码' }));
+    const editor = screen.getByTestId('file-pane-editor') as HTMLTextAreaElement;
+    fireEvent.change(editor, {
+      target: { value: 'const answer: number = 43;\nexport { answer };\n' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '复制源码' }));
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        'const answer: number = 43;\nexport { answer };\n',
+      ),
+    );
+    expect(screen.getByRole('button', { name: '源码已复制' }).textContent).toContain('已复制');
+  });
+
   it('loads metadata, tracks a dirty draft, and saves with optimistic concurrency', async () => {
     const bridge = installBridge();
     bridge.readProjectFile.mockResolvedValue({
