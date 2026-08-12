@@ -692,7 +692,7 @@ function AboutSection() {
           src={syncThinkLogo}
           alt="Sync-Think"
           draggable={false}
-          className="settings-app-mark object-contain"
+          className="sync-think-logo settings-app-mark object-contain"
         />
         <div>
           <h2>Sync-Think</h2>

@@ -2125,7 +2125,7 @@ function ShellAppInner() {
         )}
 
         <main
-          className="shell-board flex min-w-0 flex-1 flex-col overflow-hidden bg-panel"
+          className={`shell-board flex min-w-0 flex-1 flex-col overflow-hidden bg-panel${nav.stage === 'talk' ? ' shell-stage--talk' : ''}`}
           data-testid="shell-stage"
         >
           {/* Workspace tabs live inside the stage board (NewMax mid-stage),
@@ -2206,7 +2206,7 @@ function ShellAppInner() {
                     );
                     return (
                       <div
-                        className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+                        className="shell-pane-frame relative flex min-h-0 flex-1 flex-col overflow-hidden"
                         onDragOver={(event) => {
                           if (!tabDragResource || draggingFromThisPane) return;
                           event.preventDefault();
@@ -2291,107 +2291,111 @@ function ShellAppInner() {
                           }}
                           conversationActivity={conversationActivityView}
                         />
-                        {isDraftConversation ? (
-                          emptyTalk
-                        ) : conversation && shouldMountConversation ? (
-                          <ChatView
-                            key={conversation.id}
-                            conversation={conversation}
-                            modelName={resolveTargetName(conversation)}
-                            models={data.models}
-                            agents={data.agents}
-                            teams={data.teams}
-                            workspaces={data.workspaces}
-                            eventHistory={eventHistory}
-                            runActivityAuthority={runActivityAuthority}
-                            runtimeConnectionRevision={runtimeConnectionRevision}
-                            runtimeConnectionNotice={runtimeConnectionNotice}
-                            initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
-                              String(conversation.id),
-                            )}
-                            onInitialSkillSelectionConsumed={(conversationId) => {
-                              initialConversationSkillSelectionsRef.current.delete(conversationId);
-                            }}
-                            onTitleUpdated={() => void refresh()}
-                            onConversationUpdated={handleConversationUpdated}
-                            railOpen={canUseRail ? railOpen : false}
-                            onRailOpenChange={canUseRail ? handleRailOpenChange : undefined}
-                            onOpenFile={(path, location) =>
-                              handleOpenFileInPane(pane.id, path, location)
-                            }
-                          />
-                        ) : conversation ? (
-                          <button
-                            type="button"
-                            className="shell-chat-parked"
-                            data-testid={`parked-conversation-${conversation.id}`}
-                            onClick={() => handleFocusPane(pane.id)}
-                          >
-                            <MessageSquare size={18} aria-hidden="true" />
-                            <span>
-                              <strong>{conversation.title?.trim() || '未命名对话'}</strong>
-                              <small>此对话暂时休眠，点击加载</small>
-                            </span>
-                          </button>
-                        ) : activeTab?.type === 'browser' ? (
-                          <BrowserPanel
-                            key={activeTab.browserId}
-                            initialUrl={activeTab.url}
-                            onClose={() => handleCloseBrowserTab(pane.id, activeTab.browserId)}
-                            partition={`pane-browser-${activeTab.browserId}`}
-                            registerForAutomation={false}
-                          />
-                        ) : activeTab?.type === 'workspace-files' ? (
-                          <WorkspaceFilesPanel
-                            projectFolder={activeProjectFolder}
-                            activeFilePath={undefined}
-                            onOpenFile={(path, location) =>
-                              handleOpenFileInPane(pane.id, path, location)
-                            }
-                          />
-                        ) : activeTab?.type === 'file' ? (
-                          <WorkspaceFileView
-                            projectFolder={activeProjectFolder}
-                            path={activeTab.path}
-                            revealTarget={
-                              activeWorkspaceId
-                                ? fileRevealTargets.get(
-                                    fileTabDirtyKey(activeWorkspaceId, activeTab.path),
-                                  )
-                                : undefined
-                            }
-                            onDirtyChange={(dirty) => {
-                              if (activeWorkspaceId) {
-                                handleFileDirtyChange(activeWorkspaceId, activeTab.path, dirty);
+                        <div className="shell-pane-canvas relative flex min-h-0 flex-1 overflow-hidden">
+                          {isDraftConversation ? (
+                            emptyTalk
+                          ) : conversation && shouldMountConversation ? (
+                            <ChatView
+                              key={conversation.id}
+                              conversation={conversation}
+                              modelName={resolveTargetName(conversation)}
+                              models={data.models}
+                              agents={data.agents}
+                              teams={data.teams}
+                              workspaces={data.workspaces}
+                              eventHistory={eventHistory}
+                              runActivityAuthority={runActivityAuthority}
+                              runtimeConnectionRevision={runtimeConnectionRevision}
+                              runtimeConnectionNotice={runtimeConnectionNotice}
+                              initialSkillVersionIds={initialConversationSkillSelectionsRef.current.get(
+                                String(conversation.id),
+                              )}
+                              onInitialSkillSelectionConsumed={(conversationId) => {
+                                initialConversationSkillSelectionsRef.current.delete(conversationId);
+                              }}
+                              onTitleUpdated={() => void refresh()}
+                              onConversationUpdated={handleConversationUpdated}
+                              railOpen={canUseRail ? railOpen : false}
+                              onRailOpenChange={canUseRail ? handleRailOpenChange : undefined}
+                              onOpenFile={(path, location) =>
+                                handleOpenFileInPane(pane.id, path, location)
                               }
-                            }}
-                            onOpenFileInCurrentTab={(path, location) =>
-                              handleOpenFileInCurrentTab(pane.id, activeTab.path, path, location)
-                            }
-                            onOpenFileInNewTab={(path, location) =>
-                              handleOpenFileInPane(pane.id, path, location)
-                            }
-                          />
-                        ) : activeTab?.type === 'terminal' ? (
-                          <TerminalPane
-                            key={activeTab.terminalId}
-                            terminalId={activeTab.terminalId}
-                            projectFolder={activeProjectFolder}
-                            cwd={activeTab.cwd}
-                            onCwdChange={(cwd) =>
-                              handleTerminalCwdChange(pane.id, activeTab.terminalId, cwd)
-                            }
-                          />
-                        ) : null}
-                        {paneDropTargetId === pane.id ? (
-                          <div className="shell-pane-drop-overlay pointer-events-none absolute inset-0 z-30" />
-                        ) : null}
+                            />
+                          ) : conversation ? (
+                            <button
+                              type="button"
+                              className="shell-chat-parked"
+                              data-testid={`parked-conversation-${conversation.id}`}
+                              onClick={() => handleFocusPane(pane.id)}
+                            >
+                              <MessageSquare size={18} aria-hidden="true" />
+                              <span>
+                                <strong>{conversation.title?.trim() || '未命名对话'}</strong>
+                                <small>此对话暂时休眠，点击加载</small>
+                              </span>
+                            </button>
+                          ) : activeTab?.type === 'browser' ? (
+                            <BrowserPanel
+                              key={activeTab.browserId}
+                              initialUrl={activeTab.url}
+                              onClose={() => handleCloseBrowserTab(pane.id, activeTab.browserId)}
+                              partition={`pane-browser-${activeTab.browserId}`}
+                              registerForAutomation={false}
+                            />
+                          ) : activeTab?.type === 'workspace-files' ? (
+                            <WorkspaceFilesPanel
+                              projectFolder={activeProjectFolder}
+                              activeFilePath={undefined}
+                              onOpenFile={(path, location) =>
+                                handleOpenFileInPane(pane.id, path, location)
+                              }
+                            />
+                          ) : activeTab?.type === 'file' ? (
+                            <WorkspaceFileView
+                              projectFolder={activeProjectFolder}
+                              path={activeTab.path}
+                              revealTarget={
+                                activeWorkspaceId
+                                  ? fileRevealTargets.get(
+                                      fileTabDirtyKey(activeWorkspaceId, activeTab.path),
+                                    )
+                                  : undefined
+                              }
+                              onDirtyChange={(dirty) => {
+                                if (activeWorkspaceId) {
+                                  handleFileDirtyChange(activeWorkspaceId, activeTab.path, dirty);
+                                }
+                              }}
+                              onOpenFileInCurrentTab={(path, location) =>
+                                handleOpenFileInCurrentTab(pane.id, activeTab.path, path, location)
+                              }
+                              onOpenFileInNewTab={(path, location) =>
+                                handleOpenFileInPane(pane.id, path, location)
+                              }
+                            />
+                          ) : activeTab?.type === 'terminal' ? (
+                            <TerminalPane
+                              key={activeTab.terminalId}
+                              terminalId={activeTab.terminalId}
+                              projectFolder={activeProjectFolder}
+                              cwd={activeTab.cwd}
+                              onCwdChange={(cwd) =>
+                                handleTerminalCwdChange(pane.id, activeTab.terminalId, cwd)
+                              }
+                            />
+                          ) : null}
+                          {paneDropTargetId === pane.id ? (
+                            <div className="shell-pane-drop-overlay pointer-events-none absolute inset-0 z-30" />
+                          ) : null}
+                        </div>
                       </div>
                     );
                   }}
                 />
               ) : (
-                emptyTalk
+                <div className="shell-pane-canvas shell-pane-canvas--empty relative flex min-h-0 flex-1 overflow-hidden">
+                  {emptyTalk}
+                </div>
               )}
             </>
           ) : nav.stage === 'agents' ? (
@@ -2553,7 +2557,7 @@ export function EmptyTalk(props: {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-page">
+    <div className="flex min-h-0 flex-1 flex-col bg-chat">
       <div className="shell-welcome flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-8">
         <div className="flex flex-col items-center gap-1.5">
           <h2

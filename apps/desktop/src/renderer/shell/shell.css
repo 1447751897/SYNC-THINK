@@ -11456,6 +11456,28 @@ body {
   --shell-board-gap: 9px;
   --shell-board-radius: 12px;
   --shell-board-inset: 8px;
+  /* A pane frame contains both the resource tab row and the active resource.
+     Its gutter exposes the stage surface around one unified panel instead of
+     splitting the tabs and content into separate cards. */
+  --shell-pane-frame-gutter: 4px;
+  /* No top gap: the pane frame rises flush against the workspace tab bar so
+     the selected (chat-coloured) workspace tab pours seamlessly into the
+     panel below it, browser-tab style (reference image 2). */
+  --shell-pane-frame-top-gap: 0px;
+  --shell-pane-frame-radius: 12px;
+}
+
+/*
+ * Brand logo: the asset is a white ∞ mark on a transparent background, so it
+ * is invisible on light surfaces. Light theme inverts it (white → dark);
+ * the .dark theme keeps the original white mark.
+ */
+.sync-think-logo {
+  filter: invert(1) brightness(0.9);
+}
+
+.dark .sync-think-logo {
+  filter: none;
 }
 
 /* ─── Floating boards ─────────────────────────────────────────────────────
@@ -11545,16 +11567,16 @@ body {
 }
 
 /*
- * The conversation tab strip shares the chat canvas colour (--color-chat) so
- * the tab row and the message area read as one continuous surface. The
- * selected tab's own frame (--color-tab-active-border) separates it from the
- * canvas; unselected tabs stay transparent over the shared background.
+ * The conversation tab strip is the top edge of the same visual panel as the
+ * active chat/file/terminal/browser content. Its parent owns the outer radius
+ * and clips both regions together; this row only provides a subtle internal
+ * divider.
  */
 .shell-conversation-tabs {
   background: var(--color-chat);
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
   border-radius: 0;
-  border-left: 0;
-  border-right: 0;
 }
 
 .shell-workspace-tabs {
@@ -11566,21 +11588,26 @@ body {
 .shell-conversation-tabs {
   margin: 0;
   border-top: 0;
-  border-bottom: 0;
 }
 
 /*
  * Selected tabs are the first two links in the active path.
  * The selected *workspace* tab keeps the chat colour (--color-chat) so it
  * reads as the top edge of the active path — only its tab-active-border frame
- * marks it. The selected *conversation* tab is a solid tab-active-border pill
- * so it pops from the chat-coloured tab strip below it.
+ * marks it. Its bottom edge is open (border-bottom: 0) and the tab sinks 1px
+ * into the pane frame below (margin-bottom: -1px) so the tab pours seamlessly
+ * into the panel, browser-tab style (reference image 2): the top hairline of
+ * the pane frame stays visible under unselected tabs and is covered by the
+ * selected tab. The selected *conversation* tab is a solid tab-active-border
+ * pill so it pops from the chat-coloured tab strip below it.
  */
 .shell-workspace-tab-active {
   position: relative;
-  z-index: 1;
+  z-index: 3;
   border: 1px solid var(--color-tab-active-border);
+  border-bottom: 0;
   background: var(--color-chat);
+  margin-bottom: -1px;
 }
 
 .shell-conversation-tab-active {
@@ -11850,7 +11877,7 @@ body {
   display: flex;
   flex: 1;
   overflow: hidden;
-  background: var(--color-surface);
+  background: var(--color-stage-tabs);
 }
 
 .shell-pane-split {
@@ -11876,19 +11903,88 @@ body {
   flex: 1 1 0;
 }
 
+.shell-stage--talk {
+  background: var(--color-stage-tabs);
+}
+
 .shell-workspace-pane {
   position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
   overflow: hidden;
-  background: var(--color-surface);
-  box-shadow: inset 0 0 0 1px transparent;
+  background: var(--color-stage-tabs);
+  box-shadow: none;
   transition: box-shadow var(--shell-motion-fast) var(--shell-ease);
 }
 
+/*
+ * Pane composition (reference image 2): the conversation/resource tab row and
+ * its active content are one panel. The stage background stays visible only
+ * around this common frame, while the frame owns every outer corner, clipping
+ * and focus treatment. This keeps chats, welcome screens, files, terminals and
+ * browser resources visually stable when tabs change.
+ */
+.shell-pane-frame {
+  min-width: 0;
+  margin:
+    var(--shell-pane-frame-top-gap)
+    var(--shell-pane-frame-gutter)
+    var(--shell-pane-frame-gutter);
+  border-radius: var(--shell-pane-frame-radius);
+  background: var(--color-chat);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-border) 82%, transparent),
+    0 5px 16px color-mix(in srgb, var(--color-page) 10%, transparent);
+  isolation: isolate;
+}
+
+.shell-pane-frame > .shell-conversation-tabs {
+  border-radius: var(--shell-pane-frame-radius) var(--shell-pane-frame-radius) 0 0;
+}
+
+.shell-pane-canvas {
+  min-width: 0;
+  background: var(--color-chat);
+}
+
+.shell-pane-canvas > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+.shell-pane-canvas--empty {
+  margin: var(--shell-pane-frame-gutter);
+  border-radius: var(--shell-pane-frame-radius);
+  background: var(--color-chat);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-border) 82%, transparent),
+    0 5px 16px color-mix(in srgb, var(--color-page) 10%, transparent);
+  isolation: isolate;
+}
+
+.shell-pane-frame .shell-pane-drop-overlay,
+.shell-pane-canvas--empty .shell-pane-drop-overlay {
+  border-radius: inherit;
+}
+
 .shell-workspace-pane--focused {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 42%, transparent);
+  box-shadow: none;
+}
+
+.shell-workspace-pane--focused .shell-pane-frame,
+.shell-workspace-pane--focused .shell-pane-canvas--empty {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 30%, var(--color-border)),
+    0 5px 16px color-mix(in srgb, var(--color-page) 10%, transparent);
+}
+
+.shell-pane-branch--secondary > .shell-workspace-pane {
+  border-left: 0;
+}
+
+.shell-pane-split--vertical > .shell-pane-branch--secondary > .shell-workspace-pane {
+  border-top: 0;
 }
 
 .shell-chat-parked {
@@ -11961,13 +12057,15 @@ body {
 }
 
 .shell-pane-tree-divider--horizontal {
-  width: 5px;
-  margin: 0 -2px;
+  width: 3px;
+  margin: 0 -1px;
+  background: var(--color-stage-tabs);
 }
 
 .shell-pane-tree-divider--vertical {
-  height: 5px;
-  margin: -2px 0;
+  height: 3px;
+  margin: -1px 0;
+  background: var(--color-stage-tabs);
 }
 
 .shell-pane-tree-divider:hover,

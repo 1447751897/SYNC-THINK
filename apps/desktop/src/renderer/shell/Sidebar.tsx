@@ -175,7 +175,7 @@ export function Sidebar(props: SidebarProps) {
           src={syncThinkLogo}
           alt="Sync-Think"
           draggable={false}
-          className="h-5 w-5 shrink-0 rounded-md object-contain"
+          className="sync-think-logo h-5 w-5 shrink-0 rounded-md object-contain"
         />
         <span className="flex-1 truncate text-[13px] font-semibold tracking-tight text-text">
           Sync-Think
