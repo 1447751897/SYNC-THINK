@@ -40,6 +40,20 @@ describe('FakeProvider streaming', () => {
     expect(events.some((e) => e.type === 'error')).toBe(true);
   });
 
+  it('terminates promptly with an acceptance error when the signal aborts', async () => {
+    const controller = new AbortController();
+    const p = new FakeProvider({ tickMs: 10 });
+    const iter = p.call({ ...req('a long sentence that produces many words'), signal: controller.signal });
+    // Consume the first event, then abort mid-stream.
+    const first = await iter.next();
+    controller.abort();
+    const rest: string[] = [];
+    for await (const event of iter) rest.push(event.type);
+    expect(first.done).toBe(false);
+    expect(rest.at(-1)).toBe('error');
+    expect(JSON.stringify(rest)).not.toContain('finished');
+  });
+
   it('never leaks the apiKey into any emitted event', async () => {
     const secret = 'sk-LIVE_SECRET_FOR_ADAPTER_LEAK_001';
     const p = new FakeProvider();

@@ -7,6 +7,7 @@ import {
   resolveOutboundProxy,
   proxyLogLabel,
   createProxyAwareFetch,
+  clearOutboundProxyCache,
 } from './proxy-fetch.js';
 
 describe('parseProxyUrl', () => {
@@ -50,6 +51,8 @@ describe('resolveOutboundProxy', () => {
       else process.env[k] = saved[k];
     }
     for (const k of keys) delete saved[k];
+    // resolveOutboundProxy now caches per-process; reset between cases.
+    clearOutboundProxyCache();
   });
 
   function stash() {

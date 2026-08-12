@@ -50,8 +50,17 @@ export class FileRuntimeActivityCursorStore implements RuntimeActivityCursorStor
   save(cursor: EventReplayCursor): void {
     const next = parseCursor(cursor);
     if (!next) return;
-    const current = this.load();
-    if (compareCursors(next, current) <= 0) return;
+    // Re-read the persisted value instead of trusting this instance's loaded
+    // snapshot: with multiple Runtime/Desktop processes sharing the same file,
+    // comparing against stale in-memory state lets a lagging writer overwrite
+    // another process's progress (event-stream checkpoint regression).
+    let persisted: EventReplayCursor | null = null;
+    try {
+      persisted = parseCursor(JSON.parse(readFileSync(this.filePath, 'utf8')));
+    } catch {
+      // Missing or unreadable file: treat as no prior progress.
+    }
+    if (persisted && compareCursors(next, persisted) <= 0) return;
     this.persist(next);
   }
 
@@ -67,8 +76,20 @@ export class FileRuntimeActivityCursorStore implements RuntimeActivityCursorStor
     try {
       renameSync(temporaryPath, this.filePath);
     } catch {
-      writeFileSync(this.filePath, serialized, 'utf8');
-      rmSync(temporaryPath, { force: true });
+      // First rename failed (e.g. destination transiently locked on Windows).
+      // Retry through a distinct temp name; never fall back to a direct
+      // non-atomic write of the destination — a reader could observe a
+      // half-written file and reset the event-stream checkpoint to zero.
+      const fallbackPath = `${this.filePath}.${process.pid}.retry.tmp`;
+      try {
+        writeFileSync(fallbackPath, serialized, 'utf8');
+        renameSync(fallbackPath, this.filePath);
+        rmSync(temporaryPath, { force: true });
+      } catch (error) {
+        rmSync(temporaryPath, { force: true });
+        rmSync(fallbackPath, { force: true });
+        throw error;
+      }
     }
     this.cursor = cursor;
   }

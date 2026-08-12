@@ -106,16 +106,37 @@ export function readWindowsSystemProxy(): ResolvedProxy | null {
   }
 }
 
-/** Resolve outbound HTTP(S) proxy once per process. */
+let cachedProxy: ResolvedProxy | null = null;
+
+/** Drop the process-wide proxy cache (tests mutate env between calls). */
+export function clearOutboundProxyCache(): void {
+  cachedProxy = null;
+}
+
+/**
+ * Resolve outbound HTTP(S) proxy once per process.
+ * `readWindowsSystemProxy` spawns reg.exe synchronously (blocking the event
+ * loop for up to the exec timeout); caching turns that into a one-time cost
+ * instead of a per-request block. Env/registry are process-wide facts that
+ * do not change mid-run.
+ */
 export function resolveOutboundProxy(env: NodeJS.ProcessEnv = process.env): ResolvedProxy {
   // Allow callers to pass a synthetic env by temporarily reading process.env
   // for SYNC_* first — tests can set process.env before calling.
   void env;
+  if (cachedProxy) return { ...cachedProxy };
   const fromEnv = readEnvProxy();
-  if (fromEnv) return fromEnv;
+  if (fromEnv) {
+    cachedProxy = { ...fromEnv };
+    return { ...fromEnv };
+  }
   const fromWin = readWindowsSystemProxy();
-  if (fromWin) return fromWin;
-  return { url: '', host: '', port: 0, source: 'none' };
+  if (fromWin) {
+    cachedProxy = { ...fromWin };
+    return { ...fromWin };
+  }
+  cachedProxy = { url: '', host: '', port: 0, source: 'none' };
+  return { ...cachedProxy };
 }
 
 function headersToRecord(headers?: unknown): Record<string, string> {

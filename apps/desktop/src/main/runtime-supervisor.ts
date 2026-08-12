@@ -344,13 +344,24 @@ async function killOrphanRuntimeProcesses(installId: string): Promise<void> {
       '  } |',
       '  ForEach-Object {',
       "    Write-Output ('kill-runtime-pid=' + $_.ProcessId + ' name=' + $_.Name);",
-      '    Stop-Process -Id $_.ProcessId -Force',
+      '    try {',
+      '      Stop-Process -Id $_.ProcessId -Force',
+      '    } catch {',
+      "      Write-Output ('kill-failed-pid=' + $_.ProcessId);",
+      '    }',
       '  }',
     ].join(' ');
     try {
       const result = await runCommand('powershell.exe', ['-NoProfile', '-Command', ps]);
       const text = result.stdout.trim();
       if (text) console.log('[desktop]', text);
+      // AccessDenied on elevated orphans is silently swallowed by the sweep;
+      // surface it so a later EADDRINUSE on spawn is traceable.
+      if (result.stdout.includes('kill-failed-pid=')) {
+        console.warn(
+          '[desktop] orphan runtime sweep: some processes could not be killed (access denied?)',
+        );
+      }
     } catch (error) {
       console.warn('[desktop] orphan runtime sweep failed', error);
     }

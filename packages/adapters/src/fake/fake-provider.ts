@@ -34,6 +34,10 @@ export class FakeProvider implements ProviderAdapter {
 
     let eventCount = 0;
     for (let i = 0; i < words.length; i += chunksPerWord) {
+      if (request.signal.aborted) {
+        yield fakeAbortEvent();
+        return;
+      }
       const chunk = words.slice(i, i + chunksPerWord).join(' ') + ' ';
       eventCount++;
       if (failAfter !== undefined && eventCount > failAfter) {
@@ -45,7 +49,12 @@ export class FakeProvider implements ProviderAdapter {
         return;
       }
       yield { type: 'text-delta', text: chunk };
-      if (tickMs > 0) await sleep(tickMs);
+      if (tickMs > 0) await interruptibleSleep(tickMs, request.signal);
+    }
+
+    if (request.signal.aborted) {
+      yield fakeAbortEvent();
+      return;
     }
 
     // Tool-use emulation: when the user typed "TOOL:..." the fake emits a call
@@ -86,6 +95,26 @@ function synthesizeResponse(userText: string, modelId: string): string {
   return `${head}Echo from fake provider: ${userText}`;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+/**
+ * Abort-aware sleep. Mirrors the real adapters' contract (call-control.ts):
+ * an aborted request must terminate promptly instead of running to completion.
+ */
+function interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Mirrors real adapters' abort event shape (call-control.providerAbortEvent). */
+function fakeAbortEvent(): Extract<AdapterEvent, { type: 'error' }> {
+  return { type: 'error', failureClass: 'acceptance', message: 'Provider fake call aborted' };
 }

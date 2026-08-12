@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type SetStateAction,
 } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -176,6 +177,9 @@ import {
   writeConversationReasoningEffort,
 } from '../ui-preferences.js';
 import type { RunActivityAuthority } from '../run-activity-authority.js';
+
+/** Local error bubble FIFO cap: diagnostics are transient, keep them bounded. */
+const MAX_LOCAL_ERRORS = 50;
 
 export interface ChatMessage {
   id: string;
@@ -536,7 +540,17 @@ export function ChatView({
   const [threadId, setThreadId] = useState<string | undefined>(undefined);
   /** Optimistic user bubbles not yet present in durable event history. */
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessage[]>([]);
-  const [localErrors, setLocalErrors] = useState<ChatMessage[]>([]);
+  const [localErrors, setLocalErrorsRaw] = useState<ChatMessage[]>([]);
+  // Bounded FIFO: error bubbles are transient diagnostics; cap them so a
+  // failing subsystem cannot grow state (and every downstream merge/sort) unboundedly.
+  const setLocalErrors = useCallback((updater: SetStateAction<ChatMessage[]>) => {
+    setLocalErrorsRaw((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      return next.length > MAX_LOCAL_ERRORS
+        ? next.slice(next.length - MAX_LOCAL_ERRORS)
+        : next;
+    });
+  }, []);
   /** Paginated message store state. */
   const [loadedMessages, setLoadedMessages] = useState<ChatMessage[]>([]);
   const [runProcessById, setRunProcessById] = useState<Map<string, RunProcessView>>(
