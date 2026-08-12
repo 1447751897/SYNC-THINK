@@ -28,6 +28,10 @@ async function openInternal(opts: OpenDbOptions): Promise<{ db: Database; raw: B
     raw.pragma('query_only = ON');
   } else {
     raw.pragma('journal_mode = WAL');
+    // Concurrent writers (e.g. two Runtime instances migrating/opening the same
+    // database) wait up to 5s for a busy lock instead of failing immediately
+    // with SQLITE_BUSY (audit #6).
+    raw.pragma('busy_timeout = 5000');
   }
   raw.pragma('foreign_keys = ON');
   return { db: drizzle(raw, { schema }), raw };

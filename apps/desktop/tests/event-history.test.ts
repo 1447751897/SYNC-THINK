@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
-import { mergeEventHistory } from '../src/event-history.js';
+import { EVENT_HISTORY_LIMIT, mergeEventHistory } from '../src/event-history.js';
 import { projectConversation, projectM0EventHistory } from '../src/renderer/m0-projection.js';
 import {
   canSendRuntimeMessage,
@@ -152,6 +152,31 @@ describe('desktop runtime event history', () => {
 
     expect(liveBeforeSnapshot).toEqual(snapshotBeforeLive);
     expect(liveBeforeSnapshot.map((event) => event.sequence)).toEqual([1, 2, 3]);
+  });
+
+  it('caps history at the window, evicting oldest deltas while keeping structural anchors', () => {
+    const threadId = 'thread-window';
+    const events = Array.from({ length: EVENT_HISTORY_LIMIT + 300 }, (_, index) =>
+      eventAt(index + 1, {
+        category: 'message',
+        type: index % 3 === 0 ? 'message.appended' : 'message.delta',
+        payload: { threadId, textDelta: index % 3 === 0 ? undefined : 'x' },
+      }),
+    );
+
+    const history = mergeEventHistory([], events);
+
+    expect(history.length).toBeLessThanOrEqual(EVENT_HISTORY_LIMIT);
+    // Anchors survive eviction even though they are the oldest events.
+    const appended = history.filter((event) => event.type === 'message.appended');
+    expect(appended.length).toBe(events.filter((event) => event.type === 'message.appended').length);
+    // Only the oldest deltas were evicted.
+    const deltaSequences = history
+      .filter((event) => event.type === 'message.delta')
+      .map((event) => event.sequence);
+    const anchorSequences = appended.map((event) => event.sequence);
+    expect(Math.min(...deltaSequences)).toBeGreaterThan(Math.min(...anchorSequences));
+    expect(history[history.length - 1]!.sequence).toBe(events[events.length - 1]!.sequence);
   });
 
   it('sorts by sequence and id, removes repeated ids, and preserves duplicate sequences', () => {

@@ -16,6 +16,11 @@ import {
   providerAbortEvent,
 } from '../call-control.js';
 import { openAIPromptCacheBodyFields } from './prompt-cache.js';
+import {
+  degradeRequestBody,
+  pickDegradableParameters,
+  RESPONSES_DEGRADABLE_PARAMETERS,
+} from './gateway-degrade.js';
 
 export interface StreamOpenAIResponsesOptions {
   fetchImpl?: typeof fetch;
@@ -870,7 +875,7 @@ export async function* streamOpenAIResponses(
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const instructions = resolveInstructions(request);
   const input = toResponsesInput(request);
-  const body: Record<string, unknown> = {
+  let body: Record<string, unknown> = {
     model: request.modelId,
     input,
     stream: true,
@@ -900,10 +905,11 @@ export async function* streamOpenAIResponses(
     if (request.toolChoice) body.tool_choice = request.toolChoice;
   }
 
+  let degradedForGateway = false;
   try {
     let response: Response;
-    try {
-      response = await fetchImpl(joinResponsesUrl(request.baseUrl), {
+    const attemptFetch = (payload: Record<string, unknown>): Promise<Response> =>
+      fetchImpl(joinResponsesUrl(request.baseUrl), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -911,9 +917,11 @@ export async function* streamOpenAIResponses(
           Accept: 'text/event-stream',
           'Idempotency-Key': request.idempotencyKey,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(payload),
         signal: control.signal,
       });
+    try {
+      response = await attemptFetch(body);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         yield providerAbortEvent(control, 'Provider Responses call');
@@ -926,6 +934,38 @@ export async function* streamOpenAIResponses(
         message: `Provider Responses network error: ${scrubSecrets(raw, [apiKey])}`,
       };
       return;
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      const snippetRaw = scrubSecrets(text.slice(0, 240), [apiKey]);
+      // Some relays reject optional compatibility params with a 400
+      // "Unsupported parameter(s)". Degrade once, like stream-chat does
+      // (audit #13): drop only the rejected optional fields and retry.
+      const rejectedOptionalParameters = pickDegradableParameters(
+        snippetRaw,
+        body,
+        RESPONSES_DEGRADABLE_PARAMETERS,
+      );
+      if (!degradedForGateway && response.status === 400 && rejectedOptionalParameters.length > 0) {
+        degradedForGateway = true;
+        body = degradeRequestBody(body, rejectedOptionalParameters);
+        try {
+          response = await attemptFetch(body);
+        } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') {
+            yield providerAbortEvent(control, 'Provider Responses call');
+            return;
+          }
+          const raw = error instanceof Error ? error.message : 'network error';
+          yield {
+            type: 'error',
+            failureClass: 'transient',
+            message: `Provider Responses network error: ${scrubSecrets(raw, [apiKey])}`,
+          };
+          return;
+        }
+      }
     }
 
     if (!response.ok) {

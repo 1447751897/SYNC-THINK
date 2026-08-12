@@ -124,6 +124,11 @@ export async function runBoundedProcess(
   let spawnArgs = [...args];
   let windowsVerbatimArguments = false;
   if (process.platform === 'win32') {
+    // Enforce the allowlist here (not only at call sites): an allowlist entry
+    // like "node" must not run an arbitrary PATH-resolved binary (audit #11).
+    if (token.allowedCommands?.length && !isCommandAllowed(command, token.allowedCommands)) {
+      return spawnFailure('Command is not in the allowed list');
+    }
     const resolved = resolveWindowsExecutable(command);
     if (/\.(?:cmd|bat)$/i.test(resolved)) {
       const commandLine = buildSafeCmdShimCommand(resolved, args);
@@ -134,6 +139,21 @@ export async function runBoundedProcess(
       spawnArgs = ['/d', '/s', '/c', commandLine];
       windowsVerbatimArguments = true;
     } else {
+      // What actually executes is the resolved full path; make sure it still
+      // matches the allowlist (guards against PATH pointing at an unexpected
+      // same-named binary / stale entry). Entries may be bare names ("node")
+      // or full paths (process.execPath) — compare against both forms.
+      if (token.allowedCommands?.length) {
+        const resolvedNorm = normalizeCommand(resolved);
+        const resolvedBase = normalizeCommand(basename(resolved).replace(/\.[^.]+$/i, ''));
+        const stillAllowed = token.allowedCommands.some((candidate) => {
+          const normalized = normalizeCommand(candidate);
+          return normalized === resolvedBase || normalized === resolvedNorm;
+        });
+        if (!stillAllowed) {
+          return spawnFailure(`Resolved executable ${basename(resolved)} is not in the allowed list`);
+        }
+      }
       spawnCommand = resolved;
     }
   }

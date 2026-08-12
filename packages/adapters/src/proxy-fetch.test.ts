@@ -8,6 +8,8 @@ import {
   proxyLogLabel,
   createProxyAwareFetch,
   clearOutboundProxyCache,
+  decodeChunked,
+  parseHttpResponse,
 } from './proxy-fetch.js';
 
 describe('parseProxyUrl', () => {
@@ -85,6 +87,42 @@ describe('resolveOutboundProxy', () => {
     process.env.HTTPS_PROXY = 'http://127.0.0.1:7897';
     const fetchImpl = createProxyAwareFetch(resolveOutboundProxy());
     expect(typeof fetchImpl).toBe('function');
+  });
+});
+
+describe('parseHttpResponse / decodeChunked strictness', () => {
+  it('decodes a well-formed chunked body', () => {
+    const raw = Buffer.concat([
+      Buffer.from('5\r\nhello\r\n'),
+      Buffer.from('6\r\n world\r\n'),
+      Buffer.from('0\r\n\r\n'),
+    ]);
+    expect(decodeChunked(raw).toString('utf8')).toBe('hello world');
+  });
+
+  it('rejects a malformed chunk size instead of silently dropping bytes', () => {
+    const raw = Buffer.from('zz\r\nhello\r\n0\r\n\r\n');
+    expect(() => decodeChunked(raw)).toThrow(/malformed chunked body/);
+  });
+
+  it('rejects a chunk that exceeds the buffer instead of truncating', () => {
+    const raw = Buffer.from('10\r\nshort\r\n0\r\n\r\n');
+    expect(() => decodeChunked(raw)).toThrow(/chunk exceeds buffer/);
+  });
+
+  it('fails loudly when the body is shorter than Content-Length', () => {
+    const raw = Buffer.from(
+      'HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly-a-few-bytes',
+    );
+    expect(() => parseHttpResponse(raw)).toThrow(/truncated body/);
+  });
+
+  it('trims an over-long body to Content-Length', () => {
+    const raw = Buffer.from(
+      'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello-garbage-tail',
+    );
+    const parsed = parseHttpResponse(raw);
+    expect(parsed.body.toString('utf8')).toBe('hello');
   });
 });
 

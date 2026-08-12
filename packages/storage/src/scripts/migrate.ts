@@ -1,7 +1,7 @@
 ﻿// Migration runner: writes pending migrations, audit-records, and triggers a backup
 // BEFORE applying any migration (搂20 rule 10). Implemented to run as `pnpm db:migrate`.
 
-import { existsSync } from 'node:fs';
+import { closeSync, existsSync, openSync, rmSync, writeSync } from 'node:fs';
 import { openDatabaseAsync, type Database } from '../connection.js';
 import * as schema from '../schema/index.js';
 import { backupDatabase } from '../backup.js';
@@ -2714,8 +2714,60 @@ async function listApplied(db: Database): Promise<string[]> {
   return rows.map((r) => r.name);
 }
 
+const MIGRATION_LOCK_RETRIES = 10;
+const MIGRATION_LOCK_RETRY_DELAY_MS = 500;
+
+/**
+ * Exclusive migration lock (audit #6): two Runtime instances starting against
+ * the same database would otherwise both run the same migrations and race on
+ * the schema writes (SQLITE_BUSY without busy_timeout). The lock file lives
+ * next to the database; a crashed holder leaves it behind and the retry loop
+ * times out with a clear error instead of corrupting the schema.
+ */
+async function withMigrationLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
+  if (dbPath === ':memory:') return fn();
+  const lockPath = `${dbPath}.migrate.lock`;
+  for (let attempt = 0; attempt < MIGRATION_LOCK_RETRIES; attempt++) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(lockPath, 'wx');
+      writeSync(fd, String(process.pid));
+      try {
+        return await fn();
+      } finally {
+        if (fd !== undefined) {
+          closeSync(fd);
+          fd = undefined;
+        }
+        rmSync(lockPath, { force: true });
+      }
+    } catch (error) {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* already closed */
+        }
+      }
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        if (attempt < MIGRATION_LOCK_RETRIES - 1) {
+          await new Promise((resolve) => setTimeout(resolve, MIGRATION_LOCK_RETRY_DELAY_MS));
+          continue;
+        }
+        throw new Error(`migration lock not acquired after ${MIGRATION_LOCK_RETRIES} tries: ${lockPath}`);
+      }
+      throw error;
+    }
+  }
+  throw new Error(`migration lock not acquired: ${lockPath}`);
+}
+
 // Main entry invoked by pnpm db:migrate. Phase 0 dev skips backup for ':memory:'.
 export async function runMigrations(dbPath: string): Promise<MigrationPlanResult> {
+  return withMigrationLock(dbPath, () => runMigrationsUnlocked(dbPath));
+}
+
+async function runMigrationsUnlocked(dbPath: string): Promise<MigrationPlanResult> {
   const databaseExisted = dbPath !== ':memory:' && existsSync(dbPath);
   const { db, raw } = await openDatabaseAsync({ path: dbPath });
   try {

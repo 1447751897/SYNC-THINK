@@ -13,6 +13,12 @@ import {
   type ProviderCallControl,
 } from '../call-control.js';
 import { openAIPromptCacheBodyFields } from './prompt-cache.js';
+import {
+  CHAT_DEGRADABLE_PARAMETERS,
+  degradeRequestBody,
+  extractUnsupportedParameterNames,
+  pickDegradableParameters,
+} from './gateway-degrade.js';
 
 export class ProviderCallError extends Error {
   readonly failureClass: FailureClass;
@@ -251,14 +257,6 @@ function extractGatewayMessage(snippet: string): string | undefined {
   }
 }
 
-/** Backtick-quoted parameter names from `Unsupported parameter(s): \`a\`, \`b\``. */
-function extractUnsupportedParameterNames(snippet: string): string[] | undefined {
-  const match = /Unsupported parameter\(s\):\s*([^"]+)/i.exec(snippet);
-  if (!match) return undefined;
-  const names = match[1]!.match(/`([^`]+)`/g)?.map((name) => name.replace(/`/g, '')) ?? [];
-  return names.length > 0 ? names : undefined;
-}
-
 /**
  * User-readable failure reasons (Chinese UI). The raw gateway detail is kept
  * in the message tail so logs and tooltips still carry the full picture, while
@@ -444,16 +442,10 @@ export async function* streamOpenAIChatCompletions(
       // Some relays reject optional compatibility params with a 400
       // "Unsupported parameter(s)". Degrade once: drop only the rejected
       // optional fields and retry, so older gateways still stream normally.
-      const unsupportedParameters = extractUnsupportedParameterNames(snippetRaw) ?? [];
-      const degradableParameters = new Set([
-        'enable_thinking',
-        'prompt_cache_key',
-        'prompt_cache_options',
-        'prompt_cache_retention',
-        'stream_options',
-      ]);
-      const rejectedOptionalParameters = unsupportedParameters.filter(
-        (parameter) => degradableParameters.has(parameter) && body[parameter] !== undefined,
+      const rejectedOptionalParameters = pickDegradableParameters(
+        snippetRaw,
+        body,
+        CHAT_DEGRADABLE_PARAMETERS,
       );
       if (
         !degradedForGateway &&
@@ -461,13 +453,9 @@ export async function* streamOpenAIChatCompletions(
         rejectedOptionalParameters.length > 0
       ) {
         degradedForGateway = true;
-        const degradedBody = { ...body };
-        for (const parameter of rejectedOptionalParameters) {
-          delete degradedBody[parameter];
-        }
-        body = degradedBody;
+        body = degradeRequestBody(body, rejectedOptionalParameters);
         try {
-          response = await attemptProviderFetch(degradedBody);
+          response = await attemptProviderFetch(body);
         } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
             yield chatAbortEvent(control);

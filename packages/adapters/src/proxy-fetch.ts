@@ -168,7 +168,7 @@ function bodyToBuffer(body: unknown): Buffer | null {
   throw new Error('proxy-fetch: unsupported request body type');
 }
 
-function parseHttpResponse(raw: Buffer): {
+export function parseHttpResponse(raw: Buffer): {
   status: number;
   statusText: string;
   headers: Map<string, string>;
@@ -202,6 +202,12 @@ function parseHttpResponse(raw: Buffer): {
   if (cl && /^\d+$/.test(cl)) {
     const n = Number(cl);
     if (body.length > n) body = body.subarray(0, n);
+    else if (body.length < n) {
+      // Connection was cut before the declared length: fail loudly instead of
+      // silently streaming a truncated body (audit #9) — a truncated SSE body
+      // can swallow the tail of a tool call and look like a clean stop.
+      throw new Error(`proxy-fetch: truncated body (expected ${n} bytes, got ${body.length})`);
+    }
   }
 
   // Decode chunked transfer if needed (simple, full-buffer decode).
@@ -214,17 +220,24 @@ function parseHttpResponse(raw: Buffer): {
   return { status, statusText, headers, body };
 }
 
-function decodeChunked(buf: Buffer): Buffer {
+export function decodeChunked(buf: Buffer): Buffer {
   const parts: Buffer[] = [];
   let offset = 0;
   while (offset < buf.length) {
     const lineEnd = buf.indexOf('\r\n', offset);
-    if (lineEnd < 0) break;
+    if (lineEnd < 0) {
+      throw new Error('proxy-fetch: malformed chunked body (missing chunk-size line)');
+    }
     const sizeLine = buf.subarray(offset, lineEnd).toString('ascii').split(';')[0]!.trim();
     const size = parseInt(sizeLine, 16);
-    if (!Number.isFinite(size)) break;
+    if (!Number.isFinite(size) || size < 0) {
+      throw new Error(`proxy-fetch: malformed chunked body (bad chunk size '${sizeLine}')`);
+    }
     offset = lineEnd + 2;
-    if (size === 0) break;
+    if (size === 0) break; // final chunk
+    if (offset + size > buf.length) {
+      throw new Error('proxy-fetch: malformed chunked body (chunk exceeds buffer)');
+    }
     parts.push(buf.subarray(offset, offset + size));
     offset += size + 2; // skip chunk + CRLF
   }

@@ -109,6 +109,35 @@ describe('streamOpenAIResponses', () => {
     expect(body.input[0]).toMatchObject({ role: 'user', content: 'hello responses' });
   });
 
+  it('degrades once on gateway 400 "Unsupported parameter(s)" and retries', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        headers: { get: () => 'text/plain' },
+        text: async () => 'Unsupported parameter(s): `instructions`',
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'text/event-stream' },
+        body: sseStream([
+          'data: {"type":"response.output_text.delta","delta":"degraded ok"}\n\n',
+          'data: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n\n',
+        ]),
+        text: async () => '',
+      } as unknown as Response);
+
+    const events = await collect(
+      streamOpenAIResponses(req(), { fetchImpl: fetchMock as unknown as typeof fetch }),
+    );
+    expect(textFromEvents(events)).toBe('degraded ok');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retryBody = JSON.parse((fetchMock.mock.calls[1]![1] as { body: string }).body);
+    expect(retryBody).not.toHaveProperty('instructions');
+    expect(retryBody).toMatchObject({ model: 'gpt-5-mini', stream: true });
+  });
+
   it('streams unphased Responses text as final_answer and deduplicates the phased terminal snapshot', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
