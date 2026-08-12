@@ -389,9 +389,31 @@ function resolveWindowsExecutable(command: string): string {
   return command;
 }
 
+/**
+ * cmd.exe argument parsing is notoriously fragile (audit #5): black-lists miss
+ * a metacharacter and injection sneaks through. Use a strict white-list:
+ * printable ASCII (space..~) minus cmd metacharacters/wildcards, plus any
+ * non-ASCII printable (Unicode usernames/paths). Controls, `" % ^ ! & | < >`
+ * and `* ?` are always rejected - .bat/.cmd shims only need paths,
+ * identifiers and simple values.
+ */
+const SAFE_CMD_SHIM_METACHARS: ReadonlySet<string> = new Set([
+  '"', '%', '^', '!', '&', '|', '<', '>', '*', '?',
+]);
+
+function isSafeCmdShimValue(value: string): boolean {
+  for (const ch of value) {
+    if (SAFE_CMD_SHIM_METACHARS.has(ch)) return false;
+    // Control characters (incl. CR/LF/DEL) are never allowed in a shim value.
+    if (ch < ' ' || ch === String.fromCharCode(127)) return false;
+  }
+  return true;
+}
+
+
 function buildSafeCmdShimCommand(command: string, args: readonly string[]): string | undefined {
   const values = [command, ...args];
-  if (values.some((value) => /["%^!&|<>\r\n]/.test(value))) return undefined;
+  if (values.some((value) => !isSafeCmdShimValue(value))) return undefined;
   const commandLine = [
     `"${command}"`,
     ...args.map((value) => (/\s/.test(value) ? `"${value}"` : value)),

@@ -2783,7 +2783,7 @@ async function runMigrationsUnlocked(dbPath: string): Promise<MigrationPlanResul
 
     let backupPath: string | undefined;
     if (databaseExisted && plan.applied.length > 0) {
-      const backup = backupDatabase(dbPath);
+      const backup = await backupDatabase(dbPath);
       backupPath = backup.backupPath;
     }
     for (const name of plan.applied) {
