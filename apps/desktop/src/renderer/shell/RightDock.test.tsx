@@ -1,107 +1,50 @@
 /** @vitest-environment jsdom */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./BrowserPanel.js', () => ({
-  BrowserPanel: (props: { partition?: string; registerForAutomation?: boolean }) => (
-    <div
-      data-testid="browser-panel"
-      data-partition={props.partition}
-      data-register-for-automation={String(props.registerForAutomation)}
-    />
-  ),
-}));
+import type { RunProcessView } from '@sync-think/protocol';
+import { ReviewPanel, WorkspaceFilesPanel } from './RightDock.js';
 
-import { RightDock, WorkspaceFilesPanel } from './RightDock.js';
+class PointerEventPolyfill extends MouseEvent {
+  readonly pointerId: number;
+  readonly pointerType: string;
+  readonly isPrimary: boolean;
+
+  constructor(type: string, init: PointerEventInit = {}) {
+    super(type, init);
+    this.pointerId = init.pointerId ?? 0;
+    this.pointerType = init.pointerType ?? 'mouse';
+    this.isPrimary = init.isPrimary ?? true;
+  }
+}
+
+const nativePointerEvent = window.PointerEvent;
+
+beforeAll(() => {
+  Object.defineProperty(window, 'PointerEvent', {
+    configurable: true,
+    writable: true,
+    value: PointerEventPolyfill,
+  });
+});
+
+afterAll(() => {
+  Object.defineProperty(window, 'PointerEvent', {
+    configurable: true,
+    writable: true,
+    value: nativePointerEvent,
+  });
+});
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   Reflect.deleteProperty(window, 'syncThink');
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
 });
 
-describe('RightDock project content search', () => {
-  it('keeps the right-side browser as an ephemeral preview, separate from AI automation Profiles', () => {
-    render(<RightDock initialTab="browser" onClose={vi.fn()} />);
-
-    const preview = screen.getByTestId('browser-panel');
-    expect(preview.getAttribute('data-partition')).toBe('browser-preview');
-    expect(preview.getAttribute('data-register-for-automation')).toBe('false');
-    expect(screen.getByRole('button', { name: '预览' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '工作区文件' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '工作区' })).toBeNull();
-  });
-
-  it('switches from filename search to bounded content matches and opens the exact line', async () => {
-    const searchProjectContent = vi.fn(async () => ({
-      engine: 'rg' as const,
-      results: [
-        {
-          path: 'src/app.ts',
-          line: 7,
-          column: 17,
-          preview: 'const marker = "Needle";',
-          matchText: 'Needle',
-        },
-      ],
-      truncated: false,
-      timedOut: false,
-    }));
-    Object.defineProperty(window, 'syncThink', {
-      configurable: true,
-      value: {
-        runtime: {
-          listProjectDir: vi.fn(async () => ({ dir: '', entries: [] })),
-          listProjectFiles: vi.fn(async () => ({ root: 'C:/workspace', files: [] })),
-          searchProjectContent,
-        },
-      },
-    });
-    const onOpenFile = vi.fn();
-
-    render(
-      <RightDock
-        projectFolder="C:/workspace"
-        initialTab="files"
-        onOpenFile={onOpenFile}
-        onClose={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: '内容' }));
-    fireEvent.change(screen.getByTestId('dock-files-search'), { target: { value: 'Needle' } });
-
-    await waitFor(() =>
-      expect(searchProjectContent).toHaveBeenCalledWith({
-        root: 'C:/workspace',
-        query: 'Needle',
-        maxResults: 200,
-      }),
-    );
-    expect(await screen.findByText('7:17')).toBeTruthy();
-    expect(screen.getByText('const marker = "Needle";')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /src\/app\.ts.*7.*17/i }));
-    expect(onOpenFile).toHaveBeenCalledWith('src/app.ts', { line: 7, column: 17 });
-  });
-
-  it('keeps legacy files/workspace initial tabs inside the unified workspace files panel', () => {
-    const { rerender } = render(
-      <RightDock projectFolder="C:/workspace" initialTab="workspace" onClose={vi.fn()} />,
-    );
-
-    expect(screen.getByTestId('workspace-files-panel')).toBeTruthy();
-    expect(screen.getByRole('tab', { name: '文件' }).getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByRole('tab', { name: 'Git' }).getAttribute('aria-selected')).toBe('false');
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Git' }));
-    expect(screen.getByRole('tab', { name: 'Git' }).getAttribute('aria-selected')).toBe('true');
-
-    rerender(<RightDock projectFolder="C:/workspace" initialTab="files" onClose={vi.fn()} />);
-    expect(screen.getByRole('button', { name: '工作区文件' }).getAttribute('data-active')).toBe(
-      'true',
-    );
-    expect(screen.getByRole('tab', { name: '文件' }).getAttribute('aria-selected')).toBe('true');
-  });
-
+describe('WorkspaceFilesPanel', () => {
   it('offers current-file and new-tab actions when embedded in a file view', async () => {
     Object.defineProperty(window, 'syncThink', {
       configurable: true,
@@ -188,5 +131,221 @@ describe('RightDock project content search', () => {
     ).toBeTruthy();
     expect(document.querySelector('[data-preview-kind="markdown"]')).toBeTruthy();
     expect(document.querySelector('.shell-code-preview__ln')).toBeNull();
+  });
+
+  it('switches between 文件 / Git / Review sections and renders the Review panel', () => {
+    render(<WorkspaceFilesPanel projectFolder="C:/workspace" />);
+
+    expect(screen.getByRole('tab', { name: '文件' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Git' }).getAttribute('aria-selected')).toBe('false');
+    expect(screen.getByRole('tab', { name: 'Review' }).getAttribute('aria-selected')).toBe('false');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Review' }));
+    expect(screen.getByRole('tab', { name: 'Review' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('review-panel')).toBeTruthy();
+    expect(screen.getByText('暂无本轮变更')).toBeTruthy();
+  });
+});
+
+describe('ReviewPanel', () => {
+  const reviewView = {
+    runId: 'run-1',
+    steps: [],
+    fileChanges: [
+      {
+        path: 'src/app.ts',
+        action: 'edited',
+        previousContent: 'const value = 1;',
+        content: 'const value = 2;',
+      },
+      {
+        path: 'scripts/report.py',
+        action: 'created',
+        previousContent: '',
+        content: 'print("ready")',
+      },
+    ],
+    running: false,
+    doneCount: 1,
+    errorCount: 0,
+  } as unknown as RunProcessView;
+
+  it('renders a standalone file tree and switches the selected diff', () => {
+    render(<ReviewPanel view={reviewView} projectFolder={'D:\\projects\\SYNC-THINK'} standalone />);
+
+    expect(screen.getByTestId('review-panel').className).toContain('is-standalone');
+    expect(screen.getByText('src')).toBeTruthy();
+    expect(screen.getByText('scripts')).toBeTruthy();
+    expect(document.querySelector('[data-file-type="typescript"]')).toBeTruthy();
+    expect(document.querySelector('[data-file-type="python"]')).toBeTruthy();
+    expect(document.querySelector('[data-path="src/app.ts"]')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('listitem', { name: /report\.py/ }));
+    expect(document.querySelector('[data-path="scripts/report.py"]')).toBeTruthy();
+  });
+
+  it('opens the selected file and exposes its absolute path', () => {
+    const onOpenFile = vi.fn();
+    render(
+      <ReviewPanel
+        view={reviewView}
+        projectFolder={'D:\\projects\\SYNC-THINK'}
+        onOpenFile={onOpenFile}
+      />,
+    );
+
+    const appItem = screen.getByRole('listitem', { name: /app\.ts/ });
+    expect(appItem.getAttribute('title')).toBe('D:\\projects\\SYNC-THINK\\src\\app.ts');
+    fireEvent.click(screen.getByRole('button', { name: '打开' }));
+    expect(onOpenFile).toHaveBeenCalledWith('src/app.ts');
+  });
+
+  it('resizes the standalone change list with pointer and keyboard controls', () => {
+    render(<ReviewPanel view={reviewView} standalone />);
+
+    const panel = screen.getByTestId('review-panel');
+    const reviewList = screen.getByRole('list', { name: '本轮变动文件' });
+    const separator = screen.getByRole('separator', { name: '调整本轮变动宽度' });
+    vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({
+      width: 900,
+      height: 700,
+      top: 0,
+      right: 900,
+      bottom: 700,
+      left: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(reviewList, 'getBoundingClientRect').mockReturnValue({
+      width: 280,
+      height: 700,
+      top: 0,
+      right: 900,
+      bottom: 700,
+      left: 620,
+      x: 620,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    expect(separator.getAttribute('aria-orientation')).toBe('vertical');
+    expect(separator.getAttribute('aria-valuenow')).toBe('280');
+    fireEvent.pointerDown(separator, { clientX: 620, pointerId: 1 });
+    expect(document.body.style.cursor).toBe('col-resize');
+    expect(document.body.style.userSelect).toBe('none');
+    fireEvent.pointerMove(separator, { clientX: 540, pointerId: 1 });
+    expect(separator.getAttribute('aria-valuenow')).toBe('360');
+    expect(panel.style.getPropertyValue('--shell-review-list-width')).toBe('360px');
+    fireEvent.pointerUp(separator, { pointerId: 1 });
+    expect(document.body.style.cursor).toBe('');
+    expect(document.body.style.userSelect).toBe('');
+
+    fireEvent.keyDown(separator, { key: 'ArrowRight' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('344');
+    fireEvent.keyDown(separator, { key: 'ArrowLeft' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('360');
+    fireEvent.keyDown(separator, { key: 'Home' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('220');
+    fireEvent.keyDown(separator, { key: 'End' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('440');
+    fireEvent.doubleClick(separator);
+    expect(separator.getAttribute('aria-valuenow')).toBe('280');
+  });
+
+  it('keeps enough room for the diff while resizing the change list', () => {
+    render(<ReviewPanel view={reviewView} standalone />);
+
+    const panel = screen.getByTestId('review-panel');
+    const reviewList = screen.getByRole('list', { name: '本轮变动文件' });
+    const separator = screen.getByRole('separator', { name: '调整本轮变动宽度' });
+    vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({
+      width: 600,
+      height: 700,
+      top: 0,
+      right: 600,
+      bottom: 700,
+      left: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(reviewList, 'getBoundingClientRect').mockReturnValue({
+      width: 280,
+      height: 700,
+      top: 0,
+      right: 600,
+      bottom: 700,
+      left: 320,
+      x: 320,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.pointerDown(separator, { clientX: 320, pointerId: 2 });
+    fireEvent.pointerMove(separator, { clientX: -500, pointerId: 2 });
+    expect(separator.getAttribute('aria-valuenow')).toBe('295');
+    fireEvent.pointerUp(separator, { pointerId: 2 });
+  });
+
+  it('restores the intended list width after a temporary narrow layout', () => {
+    let resizeCallback: ResizeObserverCallback | undefined;
+    class ResizeObserverMock {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+      }
+
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+
+    render(<ReviewPanel view={reviewView} standalone />);
+
+    const panel = screen.getByTestId('review-panel');
+    const separator = screen.getByRole('separator', { name: '调整本轮变动宽度' });
+    vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({
+      width: 900,
+      height: 700,
+      top: 0,
+      right: 900,
+      bottom: 700,
+      left: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    act(() => {
+      resizeCallback?.(
+        [{ contentRect: { width: 525 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    expect(separator.getAttribute('aria-valuenow')).toBe('220');
+
+    act(() => {
+      resizeCallback?.(
+        [{ contentRect: { width: 900 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    expect(separator.getAttribute('aria-valuenow')).toBe('280');
+
+    fireEvent.keyDown(separator, { key: 'ArrowLeft' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('296');
+
+    act(() => {
+      resizeCallback?.(
+        [{ contentRect: { width: 525 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+      resizeCallback?.(
+        [{ contentRect: { width: 900 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    expect(separator.getAttribute('aria-valuenow')).toBe('296');
   });
 });

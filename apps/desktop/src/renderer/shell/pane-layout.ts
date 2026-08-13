@@ -31,15 +31,27 @@ export interface WorkspaceFilesPaneTab {
   type: 'workspace-files';
 }
 
+export interface ReviewPaneTab {
+  id: string;
+  type: 'review';
+  runId: string;
+}
+
 export type WorkspacePaneTab =
-  ConversationPaneTab | FilePaneTab | TerminalPaneTab | BrowserPaneTab | WorkspaceFilesPaneTab;
+  | ConversationPaneTab
+  | FilePaneTab
+  | TerminalPaneTab
+  | BrowserPaneTab
+  | WorkspaceFilesPaneTab
+  | ReviewPaneTab;
 
 export type PaneResourceRef =
   | { type: 'conversation'; id: string }
   | { type: 'file'; id: string }
   | { type: 'terminal'; id: string }
   | { type: 'browser'; id: string }
-  | { type: 'workspace-files'; id: 'workspace-files' };
+  | { type: 'workspace-files'; id: 'workspace-files' }
+  | { type: 'review'; id: string };
 
 export interface WorkspacePane {
   id: string;
@@ -139,11 +151,16 @@ function workspaceFilesTab(): WorkspaceFilesPaneTab {
   return { id: 'workspace-files', type: 'workspace-files' };
 }
 
+function reviewTab(runId: string): ReviewPaneTab {
+  return { id: `review:${runId}`, type: 'review', runId };
+}
+
 function tabResourceKey(tab: WorkspacePaneTab): string {
   if (tab.type === 'conversation') return `conversation:${tab.conversationId}`;
   if (tab.type === 'file') return `file:${tab.path}`;
   if (tab.type === 'terminal') return `terminal:${tab.terminalId}`;
   if (tab.type === 'browser') return `browser:${tab.browserId}`;
+  if (tab.type === 'review') return `review:${tab.runId}`;
   return 'workspace-files';
 }
 
@@ -206,6 +223,15 @@ function paneIdsInTree(node: PaneNode): string[] {
 function findPaneNode(node: PaneNode, paneId: string): PaneLeafNode | undefined {
   if (node.type === 'pane') return node.paneId === paneId ? node : undefined;
   return findPaneNode(node.children[0], paneId) ?? findPaneNode(node.children[1], paneId);
+}
+
+function adjacentPaneIds(node: PaneNode, paneId: string): string[] | undefined {
+  if (node.type === 'pane') return node.paneId === paneId ? [] : undefined;
+  const left = adjacentPaneIds(node.children[0], paneId);
+  if (left) return [...left, ...paneIdsInTree(node.children[1])];
+  const right = adjacentPaneIds(node.children[1], paneId);
+  if (right) return [...right, ...paneIdsInTree(node.children[0])];
+  return undefined;
 }
 
 function replacePaneNode(node: PaneNode, paneId: string, replacement: PaneNode): PaneNode {
@@ -318,6 +344,32 @@ function findBrowserPane(layout: WorkspacePaneLayout, browserId: string): string
   return paneIdsInTree(layout.root).find((paneId) =>
     layout.panes[paneId]?.tabs.some((tab) => tab.type === 'browser' && tab.browserId === browserId),
   );
+}
+
+function findReviewPane(layout: WorkspacePaneLayout, runId: string): string | undefined {
+  return paneIdsInTree(layout.root).find((paneId) =>
+    layout.panes[paneId]?.tabs.some((tab) => tab.type === 'review' && tab.runId === runId),
+  );
+}
+
+function findReusableResourcePane(
+  layout: WorkspacePaneLayout,
+  targetPaneId: string,
+): string | undefined {
+  const canReuse = (paneId: string): boolean => {
+    const pane = layout.panes[paneId];
+    return Boolean(
+      pane &&
+      pane.tabs.every((tab) => tab.type !== 'conversation') &&
+      !paneHasOnlyStatefulTabsAtLimit(pane),
+    );
+  };
+  if (canReuse(targetPaneId)) return targetPaneId;
+
+  const adjacent = adjacentPaneIds(layout.root, targetPaneId) ?? [];
+  const neighboringPaneId = adjacent.find(canReuse);
+  if (neighboringPaneId) return neighboringPaneId;
+  return paneIdsInTree(layout.root).find((paneId) => paneId !== targetPaneId && canReuse(paneId));
 }
 
 export function findWorkspaceFilesPane(layout: WorkspacePaneLayout): string | undefined {
@@ -489,12 +541,60 @@ export function activateBrowserPaneTab(
   };
 }
 
+/**
+ * Update the URL of an existing browser tab and focus it (AI browser_open
+ * navigation target now that the right rail is gone — tabs are the chrome).
+ * Returns the layout unchanged when the tab is missing.
+ */
+export function navigateBrowserPaneTab(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+  browserId: string,
+  url: string,
+): WorkspacePaneLayout {
+  const normalizedId = browserId.trim();
+  const pane = layout.panes[paneId];
+  const tab = pane?.tabs.find((item) => item.type === 'browser' && item.browserId === normalizedId);
+  if (!pane || !tab || tab.type !== 'browser') return layout;
+  if (tab.url === url) return activateBrowserPaneTab(layout, paneId, normalizedId);
+  const nextTab: BrowserPaneTab = { ...tab, url };
+  return {
+    ...layout,
+    focusedPaneId: paneId,
+    panes: {
+      ...layout.panes,
+      [paneId]: {
+        ...pane,
+        tabs: pane.tabs.map((item) => (item === tab ? nextTab : item)),
+        activeTabId: tab.id,
+      },
+    },
+  };
+}
+
 export function activateWorkspaceFilesPaneTab(
   layout: WorkspacePaneLayout,
   paneId: string,
 ): WorkspacePaneLayout {
   const pane = layout.panes[paneId];
   const tab = pane?.tabs.find((item) => item.type === 'workspace-files');
+  if (!pane || !tab) return layout;
+  if (layout.focusedPaneId === paneId && pane.activeTabId === tab.id) return layout;
+  return {
+    ...layout,
+    focusedPaneId: paneId,
+    panes: { ...layout.panes, [paneId]: { ...pane, activeTabId: tab.id } },
+  };
+}
+
+export function activateReviewPaneTab(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+  runId: string,
+): WorkspacePaneLayout {
+  const normalizedId = runId.trim();
+  const pane = layout.panes[paneId];
+  const tab = pane?.tabs.find((item) => item.type === 'review' && item.runId === normalizedId);
   if (!pane || !tab) return layout;
   if (layout.focusedPaneId === paneId && pane.activeTabId === tab.id) return layout;
   return {
@@ -821,6 +921,98 @@ export function splitPaneWithConversation(
   };
 }
 
+export function splitPaneWithFile(
+  layout: WorkspacePaneLayout,
+  targetPaneId: string,
+  path: string,
+  direction: PaneSplitDirection = 'horizontal',
+): WorkspacePaneLayout {
+  const normalizedPath = path.trim();
+  if (!normalizedPath) return layout;
+  const existingPaneId = findFilePane(layout, normalizedPath);
+  if (existingPaneId) return activateFilePaneTab(layout, existingPaneId, normalizedPath);
+  const reusablePaneId = findReusableResourcePane(layout, targetPaneId);
+  if (reusablePaneId) return openFileInPane(layout, normalizedPath, reusablePaneId);
+
+  const targetPane = layout.panes[targetPaneId];
+  const targetNode = findPaneNode(layout.root, targetPaneId);
+  if (!targetPane || !targetNode) return layout;
+
+  const newPaneId = nextId('pane');
+  const newPaneNode: PaneLeafNode = { type: 'pane', id: nextId('node'), paneId: newPaneId };
+  const splitNode: PaneSplitNode = {
+    type: 'split',
+    id: nextId('split'),
+    direction,
+    ratio: 0.55,
+    children: [targetNode, newPaneNode],
+  };
+  const tab = fileTab(normalizedPath);
+  return {
+    ...layout,
+    panes: {
+      ...layout.panes,
+      [newPaneId]: { id: newPaneId, tabs: [tab], activeTabId: tab.id },
+    },
+    root: replacePaneNode(layout.root, targetPaneId, splitNode),
+    focusedPaneId: newPaneId,
+  };
+}
+
+export function splitPaneWithReview(
+  layout: WorkspacePaneLayout,
+  targetPaneId: string,
+  runId: string,
+  direction: PaneSplitDirection = 'horizontal',
+): WorkspacePaneLayout {
+  const normalizedId = runId.trim();
+  if (!normalizedId || !isSafeRecordKey(normalizedId)) return layout;
+  const existingPaneId = findReviewPane(layout, normalizedId);
+  if (existingPaneId) return activateReviewPaneTab(layout, existingPaneId, normalizedId);
+  const reusablePaneId = findReusableResourcePane(layout, targetPaneId);
+  if (reusablePaneId) {
+    const pane = layout.panes[reusablePaneId];
+    if (!pane) return layout;
+    const tab = reviewTab(normalizedId);
+    return {
+      ...layout,
+      focusedPaneId: reusablePaneId,
+      panes: {
+        ...layout.panes,
+        [reusablePaneId]: normalizePane({
+          ...pane,
+          tabs: [...pane.tabs, tab],
+          activeTabId: tab.id,
+        }),
+      },
+    };
+  }
+
+  const targetPane = layout.panes[targetPaneId];
+  const targetNode = findPaneNode(layout.root, targetPaneId);
+  if (!targetPane || !targetNode) return layout;
+
+  const newPaneId = nextId('pane');
+  const newPaneNode: PaneLeafNode = { type: 'pane', id: nextId('node'), paneId: newPaneId };
+  const splitNode: PaneSplitNode = {
+    type: 'split',
+    id: nextId('split'),
+    direction,
+    ratio: 0.52,
+    children: [targetNode, newPaneNode],
+  };
+  const tab = reviewTab(normalizedId);
+  return {
+    ...layout,
+    panes: {
+      ...layout.panes,
+      [newPaneId]: { id: newPaneId, tabs: [tab], activeTabId: tab.id },
+    },
+    root: replacePaneNode(layout.root, targetPaneId, splitNode),
+    focusedPaneId: newPaneId,
+  };
+}
+
 export function splitPaneWithWorkspaceFiles(
   layout: WorkspacePaneLayout,
   targetPaneId: string = layout.focusedPaneId,
@@ -869,6 +1061,9 @@ export function movePaneResourceToPane(
     }
     if (resource.type === 'browser') {
       return activateBrowserPaneTab(layout, targetPaneId, resource.id);
+    }
+    if (resource.type === 'review') {
+      return activateReviewPaneTab(layout, targetPaneId, resource.id);
     }
     return activateWorkspaceFilesPaneTab(layout, targetPaneId);
   }
@@ -922,6 +1117,14 @@ export function closeWorkspaceFilesPaneTab(
     type: 'workspace-files',
     id: 'workspace-files',
   });
+}
+
+export function closeReviewPaneTab(
+  layout: WorkspacePaneLayout,
+  paneId: string,
+  runId: string,
+): WorkspacePaneLayout {
+  return closePaneTabByResource(layout, paneId, { type: 'review', id: runId });
 }
 
 export function setSplitRatio(
@@ -1200,6 +1403,12 @@ export function parseWorkspacePaneLayout(raw: unknown): WorkspacePaneLayout | nu
               const url = typeof tabRecord.url === 'string' ? tabRecord.url : '';
               return browserId && browserId.length <= 200 && isSafeRecordKey(browserId)
                 ? browserTab(browserId, url)
+                : null;
+            }
+            if (tabRecord.type === 'review') {
+              const runId = typeof tabRecord.runId === 'string' ? tabRecord.runId.trim() : '';
+              return runId && runId.length <= 200 && isSafeRecordKey(runId)
+                ? reviewTab(runId)
                 : null;
             }
             if (tabRecord.type === 'workspace-files') return workspaceFilesTab();

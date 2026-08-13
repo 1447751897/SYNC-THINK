@@ -69,7 +69,6 @@ import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import { BrowserHandoffCard, BrowserHandoffQueryError } from './BrowserHandoffCard.js';
 import { DesktopWaitingCard, DesktopWaitingQueryError } from './DesktopWaitingCard.js';
-import { RightDock } from './RightDock.js';
 import type { ModelOption } from './NewConversationDialog.js';
 import {
   addAttachment,
@@ -414,13 +413,11 @@ interface ChatViewProps {
   /** One-shot selection carried from the welcome-page first send. */
   initialSkillVersionIds?: readonly string[];
   onInitialSkillSelectionConsumed?(conversationId: string): void;
-  /**
-   * Right-rail open state is owned by the stage tab strip so the duplicate
-   * in-chat title bar can stay gone (NewMax: tabs are the only chrome).
-   */
-  railOpen?: boolean;
-  onRailOpenChange?(open: boolean): void;
+  /** Latest run with file changes, reported up so the workspace-files tab
+   *  (ConversationTabs) can render the Review panel. */
+  onLatestReviewChange?(view: RunProcessView | null): void;
   onOpenFile?: (path: string, location?: ProjectTextLocation) => void;
+  onOpenReview?: (view: RunProcessView) => void;
 }
 
 function bridge() {
@@ -453,9 +450,9 @@ export function ChatView({
   onConversationUpdated,
   initialSkillVersionIds,
   onInitialSkillSelectionConsumed,
-  railOpen: railOpenProp,
-  onRailOpenChange,
+  onLatestReviewChange,
   onOpenFile,
+  onOpenReview,
 }: ChatViewProps) {
   const skillOwner = useMemo(
     () => resolveConversationSkillOwner(conversation, agents, teams),
@@ -525,17 +522,6 @@ export function ChatView({
     [clearCompactDismissTimer],
   );
   useEffect(() => () => clearCompactDismissTimer(), [clearCompactDismissTimer]);
-  /** Uncontrolled fallback when the stage does not own the rail. */
-  const [railOpenInternal, setRailOpenInternal] = useState(false);
-  const railOpen = railOpenProp ?? railOpenInternal;
-  const setRailOpen = useCallback(
-    (next: boolean | ((prev: boolean) => boolean)) => {
-      const value = typeof next === 'function' ? next(railOpen) : next;
-      if (onRailOpenChange) onRailOpenChange(value);
-      else setRailOpenInternal(value);
-    },
-    [onRailOpenChange, railOpen],
-  );
   /** Resolved thread for this conversation (from bound task). */
   const [threadId, setThreadId] = useState<string | undefined>(undefined);
   /** Optimistic user bubbles not yet present in durable event history. */
@@ -855,12 +841,14 @@ export function ChatView({
     stickToBottomRef.current = true;
     bottomPinIntentRef.current = null;
     lastTouchClientYRef.current = null;
-    // Right-rail open state is owned by the stage; do not force-close it on switch.
+    // 注意：不能把 conversation.executionMode 放进依赖——权限切换会经
+    // onConversationUpdated → refresh 更新该字段，导致此「切换对话」重置
+    // effect 被误触发：消息被清空而 loadMessages 不重跑，聊天区永远停在
+    // 「加载中…」。权限模式由 setPermission 自行同步，这里只需跟随 id。
   }, [
     clearCompactDismissTimer,
     clearRunProcessRetryState,
     conversation.id,
-    conversation.executionMode,
   ]);
 
   // Resolve threadId from the bound task so we can project history for this conversation.
@@ -1110,6 +1098,10 @@ export function ChatView({
     }
     return latest;
   }, [displayRunProcessById]);
+  /** Report up so the workspace-files tab (ConversationTabs) can render Review. */
+  useEffect(() => {
+    onLatestReviewChange?.(latestReviewView);
+  }, [latestReviewView, onLatestReviewChange]);
   const runAgentIdentityById = useMemo(
     () => projectRunAgentIdentities(eventHistory),
     [eventHistory],
@@ -2327,15 +2319,6 @@ export function ChatView({
     [messages, sendUserText, sending],
   );
 
-  const openChangeInRail = useCallback(
-    (_path: string) => {
-      // R2/H2: open empty right shell only (no real Changes data this cut).
-      setRailOpen(true);
-    },
-    [setRailOpen],
-  );
-  const expandRail = useCallback(() => setRailOpen(true), [setRailOpen]);
-
   const boundWorkspace = conversation.workspaceId
     ? workspaces.find((workspace) => workspace.workspaceId === conversation.workspaceId)
     : undefined;
@@ -3416,58 +3399,6 @@ export function ChatView({
   const showTyping = sending || projected.streaming;
   const canStop = Boolean(projected.activeRunId) && (sending || projected.streaming);
 
-  // AI browser_open 工具 → 打开右栏并把 URL 推给浏览器面板。
-  // seq 递增保证同一 URL 重复打开也会重新导航。
-  const [aiBrowserNav, setAiBrowserNav] = useState<{ url: string; seq: number } | null>(null);
-  const seenBrowserOpenIdsRef = useRef<Set<string>>(new Set());
-  const browserNavPrimedRef = useRef(false);
-  useEffect(() => {
-    // 首轮只登记历史事件，不回放——避免重开会话时右栏自动弹出。
-    const priming = !browserNavPrimedRef.current;
-    browserNavPrimedRef.current = true;
-    let latest: { id: string; url: string } | undefined;
-    for (const event of eventHistory) {
-      if (event.type !== 'tool.completed' && event.type !== 'execution.tool.completed') continue;
-      const payload = event.payload as {
-        toolName?: unknown;
-        tool?: unknown;
-        result?: unknown;
-        toolCallId?: unknown;
-      };
-      const toolName =
-        typeof payload.toolName === 'string'
-          ? payload.toolName
-          : typeof payload.tool === 'string'
-            ? payload.tool
-            : '';
-      if (toolName !== 'browser_open') continue;
-      const eventKey =
-        typeof payload.toolCallId === 'string' && payload.toolCallId
-          ? payload.toolCallId
-          : String(event.id);
-      if (seenBrowserOpenIdsRef.current.has(eventKey)) continue;
-      if (priming) {
-        // 历史回放：全部登记为已见，绝不自动弹出右栏。
-        seenBrowserOpenIdsRef.current.add(eventKey);
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(String(payload.result ?? '')) as { ok?: boolean; url?: string };
-        if (parsed.ok === true && typeof parsed.url === 'string') {
-          latest = { id: eventKey, url: parsed.url };
-        }
-      } catch {
-        /* malformed result — ignore */
-      }
-    }
-    if (latest) {
-      seenBrowserOpenIdsRef.current.add(latest.id);
-      const url = latest.url;
-      setRailOpen(true);
-      setAiBrowserNav((current) => ({ url, seq: (current?.seq ?? 0) + 1 }));
-    }
-  }, [eventHistory, setRailOpen]);
-
   // 迁移期兼容桥：新 Runtime 已由 Browser Worker 执行真实命令，不再发此事件。
   // 保留旧 Runtime 的 browser.command_requested 回传，历史事件仍只登记、不重放。
   const seenBrowserCommandIdsRef = useRef<Set<string>>(new Set());
@@ -3691,8 +3622,9 @@ export function ChatView({
                     fallbackAgent={conversationAgent}
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
-                    onOpenChange={openChangeInRail}
-                    onExpandRail={expandRail}
+                    onOpenChange={onOpenFile}
+                    onOpenReview={onOpenReview}
+                    projectFolder={projectFolder}
                     onOpenImage={setLightbox}
                   />
                 </div>
@@ -3731,8 +3663,9 @@ export function ChatView({
                     fallbackAgent={conversationAgent}
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
-                    onOpenChange={openChangeInRail}
-                    onExpandRail={expandRail}
+                    onOpenChange={onOpenFile}
+                    onOpenReview={onOpenReview}
+                    projectFolder={projectFolder}
                     onOpenImage={setLightbox}
                   />
                 </div>
@@ -4293,23 +4226,6 @@ export function ChatView({
       </div>
       {/* end chat column */}
 
-      {/* 右栏：多面板 Dock（浏览器 / 文件 / 工作区）。带滑入动画。 */}
-      {railOpen && (
-        <aside
-          className="shell-right-dock flex shrink-0 flex-col border-l border-border bg-surface"
-          data-testid="right-rail-shell"
-        >
-          <RightDock
-            projectFolder={projectFolder}
-            browserUrl={aiBrowserNav?.url}
-            browserNavSeq={aiBrowserNav?.seq}
-            onOpenFile={onOpenFile}
-            onClose={() => setRailOpen(false)}
-            reviewView={latestReviewView}
-          />
-        </aside>
-      )}
-
       {lightbox && typeof document !== 'undefined'
         ? createPortal(
             <div
@@ -4410,7 +4326,8 @@ const MessageBubble = memo(function MessageBubble({
   regenerating,
   onRegenerate,
   onOpenChange,
-  onExpandRail,
+  onOpenReview,
+  projectFolder,
   onOpenImage,
 }: {
   message: ChatMessage;
@@ -4422,7 +4339,8 @@ const MessageBubble = memo(function MessageBubble({
   regenerating?: boolean;
   onRegenerate?: (messageId: string) => void;
   onOpenChange?: (path: string) => void;
-  onExpandRail?: () => void;
+  onOpenReview?: (view: RunProcessView) => void;
+  projectFolder?: string;
   onOpenImage?: (image: MessageImage) => void;
 }) {
   const isUser = message.role === 'user';
@@ -4699,7 +4617,8 @@ const MessageBubble = memo(function MessageBubble({
             view={processView}
             nested
             onOpenChange={onOpenChange}
-            onExpandRail={onExpandRail}
+            onOpenReview={onOpenReview}
+            projectFolder={projectFolder}
           />
         ) : null}
 

@@ -252,6 +252,48 @@ describe('ConversationTabs pane actions', () => {
     expect(onNewTerminal).toHaveBeenCalledOnce();
   });
 
+  it('renders review resources and routes select, close, and drag actions', () => {
+    const onSelectReview = vi.fn();
+    const onCloseReview = vi.fn();
+    const onTabDragStateChange = vi.fn();
+    const values = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      setData: vi.fn((type: string, value: string) => values.set(type, value)),
+      getData: vi.fn((type: string) => values.get(type) ?? ''),
+    };
+    render(
+      <ConversationTabs
+        paneId="pane-a"
+        conversations={conversations}
+        openIds={['c1']}
+        reviewTabs={[{ id: 'review:run-1', runId: 'run-1' }]}
+        activeReviewRunId="run-1"
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNew={vi.fn()}
+        onSelectReview={onSelectReview}
+        onCloseReview={onCloseReview}
+        onTabDragStateChange={onTabDragStateChange}
+      />,
+    );
+
+    const reviewTab = screen.getByTestId('review-tab-run-1');
+    expect(reviewTab.getAttribute('data-active')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '打开审阅 run-1' }));
+    expect(onSelectReview).toHaveBeenCalledWith('run-1');
+    fireEvent.click(screen.getByRole('button', { name: '关闭审阅 run-1' }));
+    expect(onCloseReview).toHaveBeenCalledWith('run-1');
+
+    fireEvent.dragStart(reviewTab, { dataTransfer });
+    expect(dataTransfer.setData).toHaveBeenCalledWith(
+      'application/x-sync-think-pane-resource',
+      JSON.stringify({ type: 'review', id: 'run-1' }),
+    );
+    expect(onTabDragStateChange).toHaveBeenCalledWith({ type: 'review', id: 'run-1' });
+  });
+
   it('keeps the plus button as a resource menu without splitting automatically', () => {
     const onNew = vi.fn();
     const onNewTerminal = vi.fn();

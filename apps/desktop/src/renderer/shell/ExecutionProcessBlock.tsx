@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   CheckCircle2,
   ChevronDown,
   CircleDashed,
   FileCode2,
+  FileDiff,
   FolderOpen,
   GitBranch,
   Globe,
@@ -358,6 +360,20 @@ function fileName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+export function resolveAbsoluteProjectPath(projectFolder?: string, filePath?: string): string {
+  const path = filePath?.trim();
+  if (!path) return '';
+  if (/^[a-zA-Z]:[\\/]/.test(path) || path.startsWith('/') || path.startsWith('\\\\')) {
+    return path;
+  }
+
+  const root = projectFolder?.trim().replace(/[\\/]+$/, '');
+  if (!root) return path;
+  const separator = root.includes('\\') ? '\\' : '/';
+  const relative = path.replace(/^[.][\\/]/, '').replace(/^[\\/]+/, '');
+  return `${root}${separator}${relative.replace(/[\\/]/g, separator)}`;
+}
+
 /**
  * NewMax-like code preview:
  * soft gutter (no hard vertical rule), optional syntax highlight, editor density.
@@ -468,15 +484,24 @@ export function FileChangesCard({
   view,
   nested = false,
   onOpenChange,
-  onExpandRail,
+  onOpenReview,
+  projectFolder,
 }: {
   view: RunProcessView;
   nested?: boolean;
+  /** Opens the file in a neighboring file pane. */
   onOpenChange?: (path: string) => void;
-  onExpandRail?: () => void;
+  onOpenReview?: (view: RunProcessView) => void;
+  projectFolder?: string;
 }) {
   // File changes stay folded by default; the user expands a file to see its diff.
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
+  const [pathTooltip, setPathTooltip] = useState<{
+    anchor: HTMLButtonElement;
+    itemKey: string;
+    path: string;
+  } | null>(null);
+  const pathTooltipId = useId();
 
   if (view.fileChanges.length === 0) return null;
 
@@ -506,53 +531,82 @@ export function FileChangesCard({
         <button
           type="button"
           className="shell-changes-card__action"
-          onClick={() => {
-            onExpandRail?.();
-            const first = view.fileChanges[0]?.path;
-            if (first) onOpenChange?.(first);
-          }}
+          onClick={() => onOpenReview?.(view)}
+          title="审阅本轮文件修改"
         >
-          侧栏查看
+          <FileDiff size={12} aria-hidden="true" />
+          审阅文件
         </button>
       </div>
       <ul className="shell-changes-card__list">
         {view.fileChanges.map((item) => {
+          const itemKey = `${item.action}:${item.path}`;
           const hasBody = !isStatusOnlyPreview(item.preview);
           const hasDiff = item.previousContent !== undefined && item.content !== undefined;
           const open = expandedPath === item.path;
           const counts = countLineChanges(item);
+          const absolutePath = resolveAbsoluteProjectPath(projectFolder, item.path);
           return (
             <li
-              key={`${item.action}:${item.path}`}
+              key={itemKey}
               className={`shell-changes-card__item ${open ? 'is-open' : ''}`}
             >
               <div className="shell-changes-card__row">
                 <button
                   type="button"
-                  className="shell-changes-card__toggle"
+                  className="shell-changes-card__expand"
+                  disabled={!hasBody && !hasDiff}
                   onClick={() => {
-                    if (!hasBody && !hasDiff) {
-                      onExpandRail?.();
-                      onOpenChange?.(item.path);
-                      return;
-                    }
                     setExpandedPath((prev) => (prev === item.path ? null : item.path));
                   }}
-                  title={open ? '收起 diff' : '展开 diff'}
+                  title={
+                    hasBody || hasDiff ? (open ? '收起 diff' : '展开 diff') : '暂无可展开内容'
+                  }
+                  aria-label={open ? `收起 ${item.path} diff` : `展开 ${item.path} diff`}
                 >
                   <ChevronDown
                     size={13}
                     className={`shell-changes-card__chevron ${open ? 'is-open' : ''}`}
                   />
+                </button>
+                <button
+                  type="button"
+                  className="shell-changes-card__file"
+                  onClick={() => onOpenChange?.(item.path)}
+                  onMouseEnter={(event) => {
+                    setPathTooltip({
+                      anchor: event.currentTarget,
+                      itemKey,
+                      path: absolutePath,
+                    });
+                  }}
+                  onMouseLeave={(event) => {
+                    setPathTooltip((current) =>
+                      current?.anchor === event.currentTarget ? null : current,
+                    );
+                  }}
+                  onFocus={(event) => {
+                    setPathTooltip({
+                      anchor: event.currentTarget,
+                      itemKey,
+                      path: absolutePath,
+                    });
+                  }}
+                  onBlur={(event) => {
+                    setPathTooltip((current) =>
+                      current?.anchor === event.currentTarget ? null : current,
+                    );
+                  }}
+                  aria-describedby={pathTooltip?.itemKey === itemKey ? pathTooltipId : undefined}
+                  aria-label={`打开文件 ${item.path}`}
+                >
                   <span
                     className={`shell-changes-card__badge is-${item.action}`}
                     data-action={item.action}
                   >
                     {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
                   </span>
-                  <span className="shell-changes-card__path" title={item.path}>
-                    {item.path}
-                  </span>
+                  <span className="shell-changes-card__path">{item.path}</span>
                   {counts ? (
                     <span className="shell-changes-card__file-lines">
                       <span className="is-add">+{counts.added}</span>
@@ -562,17 +616,6 @@ export function FileChangesCard({
                   <span className="shell-changes-card__action-label">
                     {actionLabel(item.action)}
                   </span>
-                </button>
-                <button
-                  type="button"
-                  className="shell-changes-card__open"
-                  onClick={() => {
-                    onExpandRail?.();
-                    onOpenChange?.(item.path);
-                  }}
-                  title="在侧栏打开"
-                >
-                  打开
                 </button>
               </div>
               {open && hasDiff ? (
@@ -593,7 +636,80 @@ export function FileChangesCard({
           );
         })}
       </ul>
+      {pathTooltip ? (
+        <FilePathTooltip
+          id={pathTooltipId}
+          anchor={pathTooltip.anchor}
+          absolutePath={pathTooltip.path}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function FilePathTooltip({
+  id,
+  anchor,
+  absolutePath,
+}: {
+  id: string;
+  anchor: HTMLButtonElement;
+  absolutePath: string;
+}) {
+  const tooltipRef = useRef<HTMLSpanElement>(null);
+  const [position, setPosition] = useState({ left: 12, top: 12 });
+
+  useLayoutEffect(() => {
+    const updatePosition = () => {
+      const tooltip = tooltipRef.current;
+      if (!tooltip || !anchor.isConnected) return;
+
+      const anchorRect = anchor.getBoundingClientRect();
+      const tooltipRect = tooltip.getBoundingClientRect();
+      const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const margin = 12;
+      const gap = 7;
+      const maximumLeft = Math.max(margin, viewportWidth - tooltipRect.width - margin);
+      const left = Math.min(Math.max(margin, anchorRect.left + 7), maximumLeft);
+      const fitsAbove = anchorRect.top - gap - tooltipRect.height >= margin;
+      const overflowsBelow =
+        anchorRect.bottom + gap + tooltipRect.height > viewportHeight - margin;
+      const preferredTop =
+        overflowsBelow && fitsAbove
+          ? anchorRect.top - gap - tooltipRect.height
+          : anchorRect.bottom + gap;
+      const maximumTop = Math.max(margin, viewportHeight - tooltipRect.height - margin);
+      const top = Math.min(Math.max(margin, preferredTop), maximumTop);
+
+      setPosition({ left, top });
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.visualViewport?.addEventListener('resize', updatePosition);
+    window.visualViewport?.addEventListener('scroll', updatePosition);
+    document.addEventListener('scroll', updatePosition, true);
+
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.visualViewport?.removeEventListener('resize', updatePosition);
+      window.visualViewport?.removeEventListener('scroll', updatePosition);
+      document.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [absolutePath, anchor]);
+
+  return createPortal(
+    <span
+      ref={tooltipRef}
+      id={id}
+      className="shell-changes-card__path-tip"
+      role="tooltip"
+      style={{ left: position.left, top: position.top }}
+    >
+      {absolutePath}
+    </span>,
+    document.body,
   );
 }
 

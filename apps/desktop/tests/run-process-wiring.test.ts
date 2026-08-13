@@ -52,7 +52,10 @@ describe('run process renderer wiring', () => {
   it('memoizes message bubbles and keeps list callbacks stable during process updates', () => {
     expect(chatViewSource).toContain('const MessageBubble = memo(function MessageBubble');
     expect(chatViewSource).toContain('onRegenerate={handleRegenerate}');
-    expect(chatViewSource).toContain('onExpandRail={expandRail}');
+    expect(chatViewSource).toContain('onOpenChange={onOpenFile}');
+    expect(chatViewSource).toContain('onOpenReview={onOpenReview}');
+    expect(chatViewSource).toContain('projectFolder={projectFolder}');
+    expect(chatViewSource).not.toContain('onExpandRail={expandRail}');
     expect(chatViewSource).not.toContain('onRegenerate={() => void handleRegenerate(msg.id)}');
   });
 

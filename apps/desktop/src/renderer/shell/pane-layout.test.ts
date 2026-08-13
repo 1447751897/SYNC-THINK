@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   activateFilePaneTab,
   activatePaneTab,
+  activateReviewPaneTab,
   activateTerminalPaneTab,
   closeFilePaneTab,
   closePane,
   closePaneTab,
+  closeReviewPaneTab,
   closeTerminalPaneTab,
   createWorkspacePaneLayout,
   focusedConversationId,
@@ -23,6 +25,8 @@ import {
   reorderPaneTabs,
   setSplitRatio,
   splitPaneWithConversation,
+  splitPaneWithFile,
+  splitPaneWithReview,
   updateTerminalPaneCwd,
 } from './pane-layout.js';
 
@@ -197,6 +201,64 @@ describe('workspace pane layout', () => {
       expect.objectContaining({ type: 'conversation', conversationId: 'c1' }),
     ]);
     expect(closed.panes[paneId]?.activeTabId).toBe('conversation:c1');
+  });
+
+  it('opens files and reviews in one neighboring resource pane', () => {
+    const initial = createWorkspacePaneLayout('ws-a', ['c1'], 'c1');
+    const conversationPaneId = rootPaneId(initial);
+    const withFirstFile = splitPaneWithFile(initial, conversationPaneId, 'src/first.ts');
+    const resourcePaneId = withFirstFile.focusedPaneId;
+    const withSecondFile = splitPaneWithFile(withFirstFile, conversationPaneId, 'src/second.ts');
+    const withReview = splitPaneWithReview(withSecondFile, conversationPaneId, 'run-1');
+
+    expect(Object.keys(withReview.panes)).toHaveLength(2);
+    expect(withReview.focusedPaneId).toBe(resourcePaneId);
+    expect(withReview.panes[conversationPaneId]?.tabs).toEqual([
+      expect.objectContaining({ type: 'conversation', conversationId: 'c1' }),
+    ]);
+    expect(withReview.panes[resourcePaneId]?.tabs).toEqual([
+      expect.objectContaining({ type: 'file', path: 'src/first.ts' }),
+      expect.objectContaining({ type: 'file', path: 'src/second.ts' }),
+      expect.objectContaining({ type: 'review', runId: 'run-1' }),
+    ]);
+    expect(withReview.panes[resourcePaneId]?.activeTabId).toBe('review:run-1');
+  });
+
+  it('focuses existing file and review resources instead of duplicating them', () => {
+    const initial = createWorkspacePaneLayout('ws-a', ['c1'], 'c1');
+    const conversationPaneId = rootPaneId(initial);
+    const withFile = splitPaneWithFile(initial, conversationPaneId, 'src/index.ts');
+    const resourcePaneId = withFile.focusedPaneId;
+    const withReview = splitPaneWithReview(withFile, conversationPaneId, 'run-1');
+    const fileFocused = splitPaneWithFile(withReview, conversationPaneId, 'src/index.ts');
+    const reviewFocused = splitPaneWithReview(fileFocused, conversationPaneId, 'run-1');
+
+    expect(Object.keys(reviewFocused.panes)).toHaveLength(2);
+    expect(reviewFocused.panes[resourcePaneId]?.tabs).toHaveLength(2);
+    expect(fileFocused.panes[resourcePaneId]?.activeTabId).toBe('file:src/index.ts');
+    expect(reviewFocused.panes[resourcePaneId]?.activeTabId).toBe('review:run-1');
+  });
+
+  it('restores, activates, and closes review resources', () => {
+    const initial = createWorkspacePaneLayout('ws-a', ['c1'], 'c1');
+    const conversationPaneId = rootPaneId(initial);
+    const opened = splitPaneWithReview(initial, conversationPaneId, 'run-1');
+    const reviewPaneId = opened.focusedPaneId;
+    const restored = parseWorkspacePaneLayout(JSON.parse(JSON.stringify(opened)));
+
+    expect(restored?.panes[reviewPaneId]?.tabs).toContainEqual({
+      id: 'review:run-1',
+      type: 'review',
+      runId: 'run-1',
+    });
+
+    const activated = activateReviewPaneTab(restored!, reviewPaneId, 'run-1');
+    expect(activated.focusedPaneId).toBe(reviewPaneId);
+    expect(activated.panes[reviewPaneId]?.activeTabId).toBe('review:run-1');
+
+    const closed = closeReviewPaneTab(activated, reviewPaneId, 'run-1');
+    expect(Object.keys(closed.panes)).toEqual([conversationPaneId]);
+    expect(closed.root.type).toBe('pane');
   });
 
   it('reuses the current file tab when the embedded explorer opens another file', () => {

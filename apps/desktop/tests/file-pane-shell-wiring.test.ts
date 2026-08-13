@@ -29,12 +29,17 @@ describe('unified file pane shell wiring', () => {
     expect(shellSource).toContain('onOpenFileInNewTab={(path, location) =>');
   });
 
-  it('routes the right-dock file tree to the shell and removes the legacy chat-owned split', () => {
+  it('routes file and review actions through the shell-owned pane layout', () => {
     expect(shellSource).toContain('handleOpenFileInPane(pane.id, path, location)');
+    expect(shellSource).toContain('handleOpenFileInSplit(pane.id, path, location)');
+    expect(shellSource).toContain('handleOpenReviewInSplit(pane.id, view)');
     expect(chatSource).toContain(
       'onOpenFile?: (path: string, location?: ProjectTextLocation) => void',
     );
-    expect(chatSource).toContain('onOpenFile={onOpenFile}');
+    expect(chatSource).toContain('onOpenReview?: (view: RunProcessView) => void');
+    expect(chatSource).toContain('onOpenChange={onOpenFile}');
+    expect(chatSource).toContain('onOpenReview={onOpenReview}');
+    expect(chatSource).not.toContain("import { RightDock } from './RightDock.js'");
     expect(chatSource).not.toContain('data-testid="file-split-pane"');
     expect(chatSource).not.toContain('const [splitFile');
   });

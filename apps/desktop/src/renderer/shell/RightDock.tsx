@@ -1,10 +1,18 @@
-// 右侧多面板 Dock（NewMax 式）：预览 / 工作区文件两个标签页。
-// - 预览面板始终保持挂载（display 切换），避免切标签丢失当前页面；
-// - AI 下发 URL 时，面板只展示结果；真实 Browser 工具仍由 Runtime 的系统浏览器执行；
-// - 工作区文件面板内部切换文件树与 Git 状态；
+// 工作区文件面板（NewMax 式）：文件 / Git / Review 三个视图，由对话标签行的
+// 「工作区文件」标签挂载（右栏已移除，标签是唯一 chrome）。
 // - 文件面板：搜索 + 预览项目内文本文件（主进程只读 IPC，防目录穿越）；
-// - Git 面板：当前分支 / 未提交变更 / 最近提交。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// - Git 面板：当前分支 / 未提交变更 / 最近提交；
+// - Review 面板：本轮文件变更（A/M/D）+ 行级 diff。
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent,
+} from 'react';
 import {
   AlertTriangle,
   Check,
@@ -16,7 +24,6 @@ import {
   FolderOpen,
   GitBranch,
   GitCommitHorizontal,
-  Globe,
   Loader2,
   RefreshCw,
   Search,
@@ -29,7 +36,6 @@ import type {
   ProjectTextLocation,
   SearchProjectContentResult,
 } from '../../workspace-tools-contract.js';
-import { BrowserPanel } from './BrowserPanel.js';
 import { FileContentPreview } from './FileContentPreview.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
 import { LineDiffView } from './ExecutionProcessBlock.js';
@@ -38,8 +44,6 @@ import { LineDiffView } from './ExecutionProcessBlock.js';
 function dockBridge() {
   return window.syncThink?.runtime;
 }
-
-export type DockTab = 'browser' | 'files' | 'workspace' | 'workspace-files';
 
 type WorkspaceFilesSection = 'files' | 'git' | 'review';
 
@@ -60,100 +64,6 @@ interface GitInfo {
     truncated: boolean;
   }>;
   isRepo: boolean;
-}
-
-export function RightDock(props: {
-  /** Bound project folder; files/workspace panels need it. */
-  projectFolder?: string;
-  /** URL pushed by the AI browser_open tool — switches to the browser tab. */
-  browserUrl?: string;
-  /** Bump this counter to re-navigate even when the URL string is unchanged. */
-  browserNavSeq?: number;
-  initialTab?: DockTab;
-  /** 提供该回调时，文件树把文件交给 Workspace Pane 宿主打开。 */
-  onOpenFile?(path: string, location?: ProjectTextLocation): void;
-  /** 嵌入文件视图中显式创建另一个文件标签。 */
-  onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
-  /** 当前活动文件（用于树/搜索列表高亮）。 */
-  activeFilePath?: string | null;
-  /** Latest run's file changes for the Review tab. */
-  reviewView?: RunProcessView | null;
-  onClose(): void;
-}) {
-  const requestedTab =
-    props.initialTab === 'browser' || !props.initialTab ? 'browser' : 'workspace-files';
-  const [tab, setTab] = useState<'browser' | 'workspace-files'>(requestedTab);
-
-  useEffect(() => {
-    setTab(requestedTab);
-  }, [requestedTab]);
-
-  // AI 下发新 URL → 自动切到浏览器标签。
-  useEffect(() => {
-    if (props.browserUrl) setTab('browser');
-  }, [props.browserUrl, props.browserNavSeq]);
-
-  return (
-    <div className="shell-dock flex h-full min-h-0 flex-col" data-testid="right-dock">
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border px-2">
-        <DockTabBtn
-          active={tab === 'browser'}
-          icon={<Globe size={13} />}
-          label="预览"
-          onClick={() => setTab('browser')}
-        />
-        <DockTabBtn
-          active={tab === 'workspace-files'}
-          icon={<FolderOpen size={13} />}
-          label="工作区文件"
-          onClick={() => setTab('workspace-files')}
-        />
-        <button
-          type="button"
-          className="ml-auto flex h-6 w-6 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text"
-          onClick={props.onClose}
-          title="关闭右栏"
-        >
-          <X size={13} />
-        </button>
-      </div>
-
-      <div className="relative min-h-0 flex-1 overflow-hidden">
-        {/* 预览常驻挂载：使用临时 partition，不承载 Runtime Profile 登录态。 */}
-        <div
-          className={clsx(
-            'shell-dock-panel absolute inset-0',
-            tab === 'browser' ? 'is-active' : 'is-hidden',
-          )}
-          aria-hidden={tab !== 'browser'}
-        >
-          <BrowserPanel
-            initialUrl={props.browserUrl}
-            navigateUrl={props.browserUrl}
-            navigateSeq={props.browserNavSeq}
-            onClose={props.onClose}
-            embedded
-            partition="browser-preview"
-            registerForAutomation={false}
-          />
-        </div>
-        {tab === 'workspace-files' ? (
-          <div
-            key={props.initialTab ?? 'workspace-files'}
-            className="shell-dock-panel absolute inset-0 is-active"
-          >
-            <WorkspaceFilesPanel
-              projectFolder={props.projectFolder}
-              onOpenFile={props.onOpenFile}
-              onOpenFileInNewTab={props.onOpenFileInNewTab}
-              activeFilePath={props.activeFilePath}
-              reviewView={props.reviewView}
-            />
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
 }
 
 export function WorkspaceFilesPanel(props: {
@@ -235,6 +145,7 @@ export function WorkspaceFilesPanel(props: {
           <div className="shell-dock-panel absolute inset-0 is-active">
             <ReviewPanel
               view={props.reviewView ?? null}
+              projectFolder={props.projectFolder}
               onOpenFile={props.onOpenFile}
               onOpenFileInNewTab={props.onOpenFileInNewTab}
             />
@@ -247,22 +158,203 @@ export function WorkspaceFilesPanel(props: {
 
 // ─── Review 面板（本轮文件变更 + 行级 diff） ──────────────────────────────────
 
-function ReviewPanel({
+function reviewDirectory(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts.length > 1 ? parts.slice(0, -1).join('/') : '项目根目录';
+}
+
+function reviewFileName(path: string): string {
+  return path.split(/[\\/]/).at(-1) || path;
+}
+
+function reviewAbsolutePath(projectFolder: string | undefined, path: string): string {
+  if (/^[a-zA-Z]:[\\/]/.test(path) || path.startsWith('/') || path.startsWith('\\\\')) {
+    return path;
+  }
+  const root = projectFolder?.trim().replace(/[\\/]+$/, '');
+  if (!root) return path;
+  const separator = root.includes('\\') ? '\\' : '/';
+  return `${root}${separator}${path.replace(/^[.][\\/]/, '').replace(/[\\/]/g, separator)}`;
+}
+
+const DEFAULT_REVIEW_LIST_WIDTH = 280;
+const MIN_REVIEW_LIST_WIDTH = 220;
+const MAX_REVIEW_LIST_WIDTH = 440;
+const MIN_REVIEW_DETAIL_WIDTH = 300;
+const REVIEW_DIVIDER_WIDTH = 5;
+const REVIEW_KEYBOARD_RESIZE_STEP = 16;
+
+interface ReviewResizeDrag {
+  startClientX: number;
+  startWidth: number;
+  pointerId: number;
+  target: HTMLDivElement;
+  previousCursor: string;
+  previousUserSelect: string;
+}
+
+function reviewListWidthBounds(panelWidth: number): { min: number; max: number } {
+  if (panelWidth <= 0) {
+    return { min: MIN_REVIEW_LIST_WIDTH, max: MAX_REVIEW_LIST_WIDTH };
+  }
+  const availableWidth = Math.max(0, panelWidth - MIN_REVIEW_DETAIL_WIDTH - REVIEW_DIVIDER_WIDTH);
+  const max = Math.min(MAX_REVIEW_LIST_WIDTH, availableWidth);
+  return {
+    min: Math.min(MIN_REVIEW_LIST_WIDTH, max),
+    max,
+  };
+}
+
+export function ReviewPanel({
   view,
   onOpenFile,
   onOpenFileInNewTab,
+  projectFolder,
+  standalone = false,
 }: {
   view: RunProcessView | null;
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
   onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
+  projectFolder?: string;
+  standalone?: boolean;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [reviewListWidth, setReviewListWidth] = useState(DEFAULT_REVIEW_LIST_WIDTH);
+  const [resizeBounds, setResizeBounds] = useState({
+    min: MIN_REVIEW_LIST_WIDTH,
+    max: MAX_REVIEW_LIST_WIDTH,
+  });
+  const [isResizing, setIsResizing] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const reviewListRef = useRef<HTMLDivElement>(null);
+  const resizeDragRef = useRef<ReviewResizeDrag | null>(null);
+  const desiredReviewListWidthRef = useRef(DEFAULT_REVIEW_LIST_WIDTH);
   const changes = view?.fileChanges ?? [];
   const selected = changes.find((item) => item.path === selectedPath) ?? changes[0];
+  const groupedChanges = useMemo(() => {
+    const groups = new Map<string, typeof changes>();
+    for (const item of changes) {
+      const directory = reviewDirectory(item.path);
+      const entries = groups.get(directory);
+      if (entries) entries.push(item);
+      else groups.set(directory, [item]);
+    }
+    return [...groups.entries()];
+  }, [changes]);
+
+  const currentPanelWidth = useCallback(() => {
+    return panelRef.current?.getBoundingClientRect().width ?? 0;
+  }, []);
+
+  const applyReviewListWidth = useCallback(
+    (value: number, panelWidth = currentPanelWidth()) => {
+      const nextBounds = reviewListWidthBounds(panelWidth);
+      desiredReviewListWidthRef.current = value;
+      setResizeBounds(nextBounds);
+      setReviewListWidth(Math.min(nextBounds.max, Math.max(nextBounds.min, value)));
+    },
+    [currentPanelWidth],
+  );
+
+  const finishResize = useCallback(() => {
+    const drag = resizeDragRef.current;
+    if (!drag) return;
+    resizeDragRef.current = null;
+    if (drag.target.hasPointerCapture?.(drag.pointerId)) {
+      drag.target.releasePointerCapture?.(drag.pointerId);
+    }
+    document.body.style.cursor = drag.previousCursor;
+    document.body.style.userSelect = drag.previousUserSelect;
+    setIsResizing(false);
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('blur', finishResize);
+    return () => {
+      window.removeEventListener('blur', finishResize);
+      finishResize();
+    };
+  }, [finishResize]);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!standalone || !panel || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? panel.getBoundingClientRect().width;
+      if (resizeDragRef.current) finishResize();
+      const nextBounds = reviewListWidthBounds(width);
+      setResizeBounds(nextBounds);
+      setReviewListWidth(
+        Math.min(nextBounds.max, Math.max(nextBounds.min, desiredReviewListWidthRef.current)),
+      );
+    });
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [finishResize, standalone]);
+
+  const beginResize = (event: PointerEvent<HTMLDivElement>) => {
+    const panelWidth = currentPanelWidth();
+    const startWidth = reviewListRef.current?.getBoundingClientRect().width ?? reviewListWidth;
+    if (
+      !standalone ||
+      !Number.isFinite(event.clientX) ||
+      panelWidth <= 0 ||
+      startWidth <= 0 ||
+      (event.pointerType === 'mouse' && event.button !== 0)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    resizeDragRef.current = {
+      startClientX: event.clientX,
+      startWidth,
+      pointerId: event.pointerId,
+      target: event.currentTarget,
+      previousCursor: document.body.style.cursor,
+      previousUserSelect: document.body.style.userSelect,
+    };
+    setResizeBounds(reviewListWidthBounds(panelWidth));
+    setIsResizing(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  const resizeWithPointer = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = resizeDragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId || !Number.isFinite(event.clientX)) return;
+    const panelWidth = currentPanelWidth();
+    const nextWidth = drag.startWidth - (event.clientX - drag.startClientX);
+    applyReviewListWidth(nextWidth, panelWidth);
+  };
+
+  const adjustWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    const panelWidth = currentPanelWidth();
+    const bounds = reviewListWidthBounds(panelWidth);
+    let next: number | undefined;
+    if (event.key === 'Home') next = bounds.min;
+    else if (event.key === 'End') next = bounds.max;
+    else if (event.key === 'ArrowLeft') next = reviewListWidth + REVIEW_KEYBOARD_RESIZE_STEP;
+    else if (event.key === 'ArrowRight') next = reviewListWidth - REVIEW_KEYBOARD_RESIZE_STEP;
+    if (next === undefined) return;
+    event.preventDefault();
+    applyReviewListWidth(next, panelWidth);
+  };
+
+  const panelStyle = standalone
+    ? ({
+        '--shell-review-list-width': `${reviewListWidth}px`,
+      } as CSSProperties)
+    : undefined;
 
   if (!view || changes.length === 0) {
     return (
-      <div className="shell-review-panel" data-testid="review-panel">
+      <div
+        ref={panelRef}
+        className={clsx('shell-review-panel', standalone && 'is-standalone')}
+        data-testid="review-panel"
+        style={panelStyle}
+      >
         <div className="shell-review-empty">
           <FileDiff size={22} />
           <div className="shell-review-empty__title">暂无本轮变更</div>
@@ -275,30 +367,71 @@ function ReviewPanel({
   }
 
   return (
-    <div className="shell-review-panel" data-testid="review-panel">
-      <div className="shell-review-list" role="list" aria-label="本轮变动文件">
-        {changes.map((item) => (
-          <button
-            key={item.path}
-            type="button"
-            role="listitem"
-            className={clsx(
-              'shell-review-list__item',
-              selected?.path === item.path && 'is-active',
-            )}
-            onClick={() => setSelectedPath(item.path)}
-            title={item.path}
-          >
-            <span
-              className={`shell-changes-card__badge is-${item.action}`}
-              data-action={item.action}
-            >
-              {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
-            </span>
-            <span className="shell-review-list__path">{item.path}</span>
-          </button>
+    <div
+      ref={panelRef}
+      className={clsx('shell-review-panel', standalone && 'is-standalone')}
+      data-testid="review-panel"
+      data-resizing={isResizing ? 'true' : 'false'}
+      style={panelStyle}
+    >
+      <div ref={reviewListRef} className="shell-review-list" role="list" aria-label="本轮变动文件">
+        <div className="shell-review-list__title">
+          <strong>本轮变动</strong>
+          <span>{changes.length}</span>
+        </div>
+        {groupedChanges.map(([directory, items]) => (
+          <div className="shell-review-list__group" key={directory}>
+            <div className="shell-review-list__directory" title={directory}>
+              <ChevronDown size={12} aria-hidden="true" />
+              <FolderOpen size={13} aria-hidden="true" />
+              <span>{directory}</span>
+              <small>{items.length}</small>
+            </div>
+            {items.map((item) => (
+              <button
+                key={item.path}
+                type="button"
+                role="listitem"
+                className={clsx(
+                  'shell-review-list__item',
+                  selected?.path === item.path && 'is-active',
+                )}
+                onClick={() => setSelectedPath(item.path)}
+                title={reviewAbsolutePath(projectFolder, item.path)}
+              >
+                <FileTypeIcon path={item.path} size={13} className="shrink-0" />
+                <span className="shell-review-list__path">{reviewFileName(item.path)}</span>
+                <span
+                  className={`shell-changes-card__badge is-${item.action}`}
+                  data-action={item.action}
+                >
+                  {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
+                </span>
+              </button>
+            ))}
+          </div>
         ))}
       </div>
+      {standalone ? (
+        <div
+          role="separator"
+          tabIndex={0}
+          aria-label="调整本轮变动宽度"
+          aria-orientation="vertical"
+          aria-valuemin={Math.round(resizeBounds.min)}
+          aria-valuemax={Math.round(resizeBounds.max)}
+          aria-valuenow={Math.round(reviewListWidth)}
+          className="shell-review-resizer"
+          data-testid="review-list-resizer"
+          onPointerDown={beginResize}
+          onPointerMove={resizeWithPointer}
+          onPointerUp={finishResize}
+          onPointerCancel={finishResize}
+          onLostPointerCapture={finishResize}
+          onDoubleClick={() => applyReviewListWidth(DEFAULT_REVIEW_LIST_WIDTH, currentPanelWidth())}
+          onKeyDown={adjustWithKeyboard}
+        />
+      ) : null}
       <div className="shell-review-detail">
         {selected ? (
           <>
@@ -327,12 +460,14 @@ function ReviewPanel({
                 ) : null}
               </div>
             </div>
-            <LineDiffView
-              oldText={selected.previousContent}
-              newText={selected.content}
-              path={selected.path}
-              truncated={selected.previousTruncated}
-            />
+            <div className="shell-changes-card__diff">
+              <LineDiffView
+                oldText={selected.previousContent}
+                newText={selected.content}
+                path={selected.path}
+                truncated={selected.previousTruncated}
+              />
+            </div>
           </>
         ) : null}
       </div>
@@ -1289,9 +1424,7 @@ type CommitTreeNode = {
 };
 
 /** 把提交变更的扁平路径列表构建为目录树。 */
-function buildCommitFileTree(
-  files: Array<{ status: string; path: string }>,
-): CommitTreeNode[] {
+function buildCommitFileTree(files: Array<{ status: string; path: string }>): CommitTreeNode[] {
   const root: CommitTreeNode[] = [];
   const dirMap = new Map<string, CommitTreeNode[]>();
   dirMap.set('', root);
@@ -1443,35 +1576,5 @@ function DockEmpty({
       <p className="text-[12px] text-text-faint">{title}</p>
       <p className="px-4 text-[11px] text-text-faint opacity-70">{subtitle}</p>
     </div>
-  );
-}
-
-function DockTabBtn({
-  active,
-  icon,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  icon: React.ReactNode;
-  label: string;
-  onClick(): void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      data-active={active ? 'true' : 'false'}
-      aria-pressed={active}
-      className={clsx(
-        'flex h-7 items-center gap-1 rounded-md px-2 text-[11.5px] transition-colors',
-        active
-          ? 'bg-accent-soft text-accent-text'
-          : 'text-text-faint hover:bg-hover hover:text-text',
-      )}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
   );
 }

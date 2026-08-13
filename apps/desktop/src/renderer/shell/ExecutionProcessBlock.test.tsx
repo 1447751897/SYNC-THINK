@@ -1,10 +1,16 @@
 /**
  * @vitest-environment jsdom
  */
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
+import { vi } from 'vitest';
 import type { ExecutionProcessStep, RunProcessView } from '@sync-think/protocol';
-import { CodePreview, ExecutionProcessBlock } from './ExecutionProcessBlock.js';
+import {
+  CodePreview,
+  ExecutionProcessBlock,
+  FileChangesCard,
+  resolveAbsoluteProjectPath,
+} from './ExecutionProcessBlock.js';
 
 function step(overrides: Partial<ExecutionProcessStep> = {}): ExecutionProcessStep {
   return {
@@ -28,6 +34,21 @@ function processView(steps: ExecutionProcessStep[]): RunProcessView {
     running: true,
     doneCount: 0,
     errorCount: 0,
+  } as unknown as RunProcessView;
+}
+
+function processViewWithChanges(): RunProcessView {
+  return {
+    ...processView([]),
+    fileChanges: [
+      {
+        path: 'src/app.ts',
+        action: 'edited',
+        preview: 'const value = 2;',
+        previousContent: 'const value = 1;',
+        content: 'const value = 2;',
+      },
+    ],
   } as unknown as RunProcessView;
 }
 
@@ -115,5 +136,111 @@ describe('CodePreview language adaptation', () => {
     expect(preview.getAttribute('data-language')).toBe('text');
     expect(preview.textContent).toContain(text);
     expect(preview.querySelector('.hljs-keyword')).toBeNull();
+  });
+});
+
+describe('FileChangesCard interactions', () => {
+  it('opens a file without toggling its inline diff', () => {
+    const onOpenChange = vi.fn();
+    render(
+      <FileChangesCard
+        view={processViewWithChanges()}
+        projectFolder={'D:\\projects\\SYNC-THINK'}
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '打开文件 src/app.ts' }));
+
+    expect(onOpenChange).toHaveBeenCalledWith('src/app.ts');
+    expect(screen.queryByText('自动换行')).toBeNull();
+  });
+
+  it('uses the chevron only to toggle the inline diff', () => {
+    const onOpenChange = vi.fn();
+    render(<FileChangesCard view={processViewWithChanges()} onOpenChange={onOpenChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '展开 src/app.ts diff' }));
+
+    expect(screen.getByText('自动换行')).toBeTruthy();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('passes the current run to review', () => {
+    const view = processViewWithChanges();
+    const onOpenReview = vi.fn();
+    render(
+      <FileChangesCard
+        view={view}
+        projectFolder={'D:\\projects\\SYNC-THINK'}
+        onOpenReview={onOpenReview}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '审阅文件' }));
+
+    expect(onOpenReview).toHaveBeenCalledWith(view);
+  });
+
+  it('portals the absolute path tooltip outside the scrollable card on hover', () => {
+    const { container } = render(
+      <FileChangesCard
+        view={processViewWithChanges()}
+        projectFolder={'D:\\projects\\SYNC-THINK'}
+      />,
+    );
+    const fileButton = screen.getByRole('button', { name: '打开文件 src/app.ts' });
+    vi.spyOn(fileButton, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 100,
+      width: 320,
+      height: 32,
+      top: 100,
+      right: 420,
+      bottom: 132,
+      left: 100,
+      toJSON: () => undefined,
+    } as DOMRect);
+
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    fireEvent.mouseEnter(fileButton);
+
+    const tooltip = screen.getByRole('tooltip');
+    expect(tooltip.textContent).toBe('D:\\projects\\SYNC-THINK\\src\\app.ts');
+    expect(tooltip.parentElement).toBe(document.body);
+    expect(container.contains(tooltip)).toBe(false);
+    expect(tooltip.getAttribute('style')).toContain('left: 107px');
+    expect(tooltip.getAttribute('style')).toContain('top: 139px');
+    expect(fileButton.getAttribute('aria-describedby')).toBe(tooltip.id);
+
+    fireEvent.mouseLeave(fileButton);
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('shows the path tooltip for keyboard focus', () => {
+    render(
+      <FileChangesCard
+        view={processViewWithChanges()}
+        projectFolder={'D:\\projects\\SYNC-THINK'}
+      />,
+    );
+    const fileButton = screen.getByRole('button', { name: '打开文件 src/app.ts' });
+
+    fireEvent.focus(fileButton);
+    expect(screen.getByRole('tooltip').textContent).toBe(
+      'D:\\projects\\SYNC-THINK\\src\\app.ts',
+    );
+
+    fireEvent.blur(fileButton);
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('resolves project-relative paths without changing absolute paths', () => {
+    expect(resolveAbsoluteProjectPath('D:\\projects\\SYNC-THINK', './src/app.ts')).toBe(
+      'D:\\projects\\SYNC-THINK\\src\\app.ts',
+    );
+    expect(resolveAbsoluteProjectPath('D:\\projects\\SYNC-THINK', 'C:\\temp\\file.ts')).toBe(
+      'C:\\temp\\file.ts',
+    );
   });
 });

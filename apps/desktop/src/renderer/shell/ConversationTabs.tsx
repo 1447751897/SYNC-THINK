@@ -6,6 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Bot,
   Columns2,
+  FileDiff,
   Folder,
   Globe,
   MessageSquare,
@@ -47,6 +48,8 @@ export interface ConversationTabsProps {
   activeTerminalId?: string;
   browserTabs?: readonly { id: string; browserId: string; url: string }[];
   activeBrowserId?: string;
+  reviewTabs?: readonly { id: string; runId: string }[];
+  activeReviewRunId?: string;
   workspaceFilesActive?: boolean;
   workspaceFilesTab?: boolean;
   workspaceFilesPaneOpen?: boolean;
@@ -63,6 +66,8 @@ export interface ConversationTabsProps {
   onSelectBrowser?(browserId: string): void;
   onCloseBrowser?(browserId: string): void;
   onNewBrowser?(): void;
+  onSelectReview?(runId: string): void;
+  onCloseReview?(runId: string): void;
   onSelectWorkspaceFiles?(): void;
   onCloseWorkspaceFiles?(): void;
   onToggleWorkspaceFilesPane?(): void;
@@ -299,7 +304,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
     >
       {/* Scrollable tab area is isolated from the right-side action group so
           pane actions stay visible even when many tabs overflow. */}
-      <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+      <div className="shell-conversation-tabs__scroller flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -521,6 +526,60 @@ export function ConversationTabs(props: ConversationTabsProps) {
                 onClick={(event) => {
                   event.stopPropagation();
                   props.onCloseBrowser?.(browser.browserId);
+                }}
+              >
+                <X size={11} />
+              </button>
+            </div>
+          );
+        })}
+
+        {(props.reviewTabs ?? []).map((review) => {
+          const active = review.runId === props.activeReviewRunId;
+          const resource: PaneResourceRef = { type: 'review', id: review.runId };
+          return (
+            <div
+              key={review.id}
+              data-testid={`review-tab-${review.runId}`}
+              data-active={active ? 'true' : 'false'}
+              data-pane-resource-type="review"
+              draggable
+              className={clsx(
+                'st-row-motion group relative flex h-7 max-w-[180px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+                active
+                  ? 'shell-conversation-tab-active font-medium text-text'
+                  : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+              )}
+              onDragStart={(event) =>
+                beginResourceDrag(event, resource, props.onTabDragStateChange)
+              }
+              onDragEnd={() => props.onTabDragStateChange?.(null)}
+            >
+              <FileDiff
+                size={12}
+                className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
+                aria-hidden="true"
+              />
+              <button
+                type="button"
+                className="min-w-0 flex-1 truncate text-left"
+                aria-label={`打开审阅 ${review.runId}`}
+                title="审阅本轮修改"
+                onClick={() => props.onSelectReview?.(review.runId)}
+              >
+                审阅
+              </button>
+              <button
+                type="button"
+                className={clsx(
+                  'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+                  active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
+                )}
+                aria-label={`关闭审阅 ${review.runId}`}
+                title="关闭审阅标签"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  props.onCloseReview?.(review.runId);
                 }}
               >
                 <X size={11} />
