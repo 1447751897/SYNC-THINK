@@ -862,3 +862,52 @@
 ### 当前边界
 
 - 不生成安装包、不提交、不推送；现有工作树中的能力、缓存、计价、任务清单和存储改动继续一并保留。
+
+## 当前状态：2026-08-13 · 智能体对话头像一致性修复
+
+### 已完成
+
+- 已确认头像数据的存储、Runtime 返回和 `ShellApp` 刷新链路正常；缺陷位于新版 `ChatView` 没有把持久化消息与 `run.started` 中的智能体身份重新关联。
+- 助手消息采用“消息身份 → Run 身份快照 → 当前 Agent 会话绑定”的回退顺序，并始终从最新智能体目录读取头像。修改头像后，已打开对话和历史回复会随目录刷新同步更新。
+- 输入框身份按钮、身份选择菜单、助手回复及等待态使用同一头像组件；换绑后的旧 Run 保留原智能体身份，模型直聊保持默认助手图标。
+
+### 验证结果
+
+- 新增头像回归 4 条；与身份切换组合定向测试为 2 files / 12 tests。
+- Desktop 全量为 155 files / 1141 tests，全部通过；Desktop lint 为 0 errors、5 条既有 hooks warnings，design token 与 typecheck 通过。
+- Desktop 正式 build、Prettier 和 `git diff --check` 通过。
+
+### 当前边界与下一步
+
+- 本地源码实例已复用原数据库、user-data 和 Install ID 重启：Electron PID `11708`、Runtime PID `35824`、CDP `127.0.0.1:9353`；窗口标题 `SYNC-THINK`、`Responding=True`，healthcheck 为 `ok=true` 且无活动 Run。
+- 实窗已打开既有“前端工程师”会话；输入框身份头像和助手回复头像都与智能体目录中的 3923 字符 WebP 完整相同，回复不再显示默认 Bot，页面 `scrollWidth === clientWidth === 1424`。
+- 启动日志与截图位于 `.data/local-restart-20260813-agent-avatar/`，最终截图为 `frontend-agent-avatar-fixed.png`；实例保持运行供手测。
+- 本轮不生成安装包、不提交、不推送。
+
+## 当前状态：2026-08-13 · 文件工作台调宽与 Markdown 预览已收口
+
+### 已完成
+
+- 文件标签中的嵌入式工作区文件树新增左右拖拽调宽。默认 30%，同时保证文件树至少 220px、编辑区至少 280px；键盘方向键、Home/End、双击复位均可用。
+- 拖拽采用 Pointer Capture，并覆盖释放、取消、捕获丢失、窗口失焦和布局 resize 清理；520px 及以下保持上下嵌入，不显示横向拖柄。
+- `.md`、`.markdown` 默认显示真正的 Markdown 文档预览，源码模式继续可编辑。内容搜索会自动切换源码并定位命中行；独立工作区预览使用同一规则。
+- Markdown 文件预览不会执行 fenced HTML；Mermaid、GFM 表格、列表与代码高亮保留。其他可读文本继续使用语法高亮或纯文本行号预览。
+
+### 验证结果
+
+- 定向回归 5 files / 41 tests；Desktop 单 worker 全量 155 files / 1148 tests，全部通过。
+- 默认并发全量首次有 4 条异步按钮查询在 CPU 争用下超时；相关 2 files 串行复跑 18/18 通过，单 worker 全量进一步确认没有功能回归。
+- Desktop typecheck、build、Prettier、design token 和 `git diff --check` 通过；lint 为 0 errors、5 条既有 hooks warnings。
+
+### 实窗验收
+
+- 当前源码实例复用原数据库、user-data 与 Install ID `pane-file-20260811`：Electron PID `36968`、managed Runtime PID `15676`、CDP `127.0.0.1:9353`；数据库为 `.data/SYNC-THINK/sync-think.db`，实例保持运行供手测。
+- 340px 窄文件工作台已自动切为上下布局并隐藏拖柄；592px 宽布局中，文件树可由约 241px 连续拖到 307px，编辑区准确限制在至少 280px。Home 将文件树收至 220px，End 将其扩至约 307px；鼠标释放后继续移动不会误拖，光标和 `user-select` 均已清理。
+- `README.md` 文档预览实测渲染出 1 个 H1、5 个 H2、列表和 2 个代码块；源码模式完整显示 3407 字符、67 行，未改动时保持“已同步”，切回文档预览后内容与 Pane 比例正常恢复。
+- 全程页面 `scrollWidth === clientWidth === 1424`，没有页面级横向溢出。证据位于 `.data/local-restart-20260813-workspace-markdown/`，主要截图为 `workspace-markdown-wide-reset.png`、`workspace-markdown-source.png` 与 `workspace-markdown-restored.png`。
+
+### 支持边界
+
+- 工作台可读取不超过 512KiB 且不含 NUL 的 UTF-8 文本；`.md`、`.markdown` 有专用文档预览，已映射的代码与配置格式有语法高亮，其他文本按纯文本显示。
+- 图片、PDF、Office、音视频等当前没有文件工作台专用预览；通常会因二进制内容被拒绝，不能以文本预览替代。
+- 本轮不生成安装包、不提交、不推送；当前源码实例继续保持运行，下一步由用户直接进行页面手测。

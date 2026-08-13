@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import type { ProviderMessage, ProviderToolCall, ProviderToolSchema } from '@sync-think/adapters';
 import type {
   BrowserAutomationTaskSummary,
@@ -2415,12 +2417,60 @@ function userContentWithImages(
   return parts;
 }
 
+/**
+ * Pre-write snapshot captured by executeChatBuiltInTool when a write_file call
+ * overwrites an existing text file. Carried separately from the tool result so
+ * the provider transcript (which echoes the full result) stays clean.
+ */
+export interface ChatWriteSnapshot {
+  /** Full pre-write content (existing UTF-8 text file only). */
+  previousContent?: string;
+  /** True when previousContent was truncated to SNAPSHOT_MAX_BYTES. */
+  previousTruncated?: boolean;
+}
+
+const SNAPSHOT_MAX_BYTES = 512 * 1024;
+const SNAPSHOT_MAX_FILE_BYTES = 1024 * 1024;
+
+/**
+ * Best-effort pre-write snapshot: reads an existing file before it is
+ * overwritten. Binary or oversized files are skipped (UI degrades to
+ * "no diff available"). Never throws — snapshot failure must not block the write.
+ */
+async function captureWriteSnapshot(
+  workspaceRoot: string,
+  relativePath: string,
+): Promise<ChatWriteSnapshot> {
+  try {
+    const absolute = resolve(workspaceRoot, relativePath);
+    if (!absolute.startsWith(resolve(workspaceRoot))) return {};
+    const fileStat = await stat(absolute);
+    if (!fileStat.isFile() || fileStat.size > SNAPSHOT_MAX_FILE_BYTES) return {};
+    const content = await readFile(absolute, 'utf8');
+    if (Buffer.byteLength(content, 'utf8') > SNAPSHOT_MAX_BYTES) {
+      return {
+        previousContent: content.slice(
+          0,
+          Math.max(0, Math.floor((SNAPSHOT_MAX_BYTES / 4) * 0.9)),
+        ),
+        previousTruncated: true,
+      };
+    }
+    return { previousContent: content };
+  } catch {
+    // ENOENT (created file), directory, permission error, or non-text bytes — no snapshot.
+    return {};
+  }
+}
+
 export async function executeChatBuiltInTool(input: {
   workspaceRoot?: string;
   toolCall: ProviderToolCall;
   signal?: AbortSignal;
   networkEnabled?: boolean;
   fetchImpl?: typeof fetch;
+  /** Optional out-parameter receiving the pre-write snapshot of a write_file call. */
+  snapshotOut?: ChatWriteSnapshot;
 }): Promise<string> {
   let args: Record<string, unknown> = {};
   try {
@@ -2519,6 +2569,14 @@ export async function executeChatBuiltInTool(input: {
         );
         break;
       case 'write_file':
+        // Snapshot the pre-write content before the worker overwrites the file.
+        if (input.snapshotOut) {
+          const snapshot = await captureWriteSnapshot(workspaceRoot, String(args.path ?? ''));
+          if (snapshot.previousContent !== undefined) {
+            input.snapshotOut.previousContent = snapshot.previousContent;
+            input.snapshotOut.previousTruncated = snapshot.previousTruncated;
+          }
+        }
         events = new FileSystemWorker().exec(
           {
             workingDir: workspaceRoot,

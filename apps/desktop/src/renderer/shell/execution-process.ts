@@ -30,6 +30,12 @@ export interface FileChangeItem {
   action: 'created' | 'edited' | 'deleted';
   toolCallId?: string;
   preview?: string;
+  /** Full pre-write content when a snapshot was taken (existing text file). */
+  previousContent?: string;
+  /** True when previousContent was truncated to bound the event payload. */
+  previousTruncated?: boolean;
+  /** Full post-write content when the written body was captured from the tool call. */
+  content?: string;
 }
 
 /** NewMax-style model-authored task checklist (update_task_plan tool). */
@@ -517,6 +523,10 @@ export function projectExecutionProcess(
           action: resultSummary.created ? 'created' : 'edited',
           toolCallId,
           preview: resultSummary.content ?? resultSummary.preview,
+          ...snapshotFields(payload),
+          ...(typeof resultSummary.content === 'string' && resultSummary.content.length > 0
+            ? { content: resultSummary.content }
+            : {}),
         });
       }
       continue;
@@ -552,12 +562,19 @@ export function projectExecutionProcess(
         if (already) {
           if (contentPreview) already.preview = contentPreview;
           if (summary.created) already.action = 'created';
+          if (typeof summary.content === 'string' && summary.content.length > 0) {
+            already.content = summary.content;
+          }
         } else {
           fileChanges.push({
             path,
             action: summary.created ? 'created' : 'edited',
             toolCallId,
             preview: contentPreview,
+            ...snapshotFields(payload),
+            ...(typeof summary.content === 'string' && summary.content.length > 0
+              ? { content: summary.content }
+              : {}),
           });
         }
       }
@@ -630,6 +647,22 @@ export function projectExecutionProcess(
     modelId,
     startedAt,
     completedAt,
+  };
+}
+
+/**
+ * Forward the pre-write snapshot carried on tool.completed payloads
+ * (captured by the runtime write_file executor) into FileChangeItem fields.
+ */
+function snapshotFields(
+  payload: Record<string, unknown>,
+): { previousContent?: string; previousTruncated?: boolean } {
+  if (typeof payload.previousContent !== 'string' || payload.previousContent.length === 0) {
+    return {};
+  }
+  return {
+    previousContent: payload.previousContent,
+    ...(payload.previousTruncated === true ? { previousTruncated: true } : {}),
   };
 }
 

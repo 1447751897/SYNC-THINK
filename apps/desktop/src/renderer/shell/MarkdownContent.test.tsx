@@ -147,6 +147,19 @@ describe('MarkdownContent', () => {
     expect(decoded).not.toContain('body{min-height:100vh}');
   });
 
+  it('keeps fenced html passive when embedded in a local file preview', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        text: '```html\n<script>fetch("https://example.test/beacon")</script>\n```',
+        interactiveEmbeds: false,
+      }),
+    );
+    expect(html).toContain('shell-md-code');
+    expect(html).toContain('fetch');
+    expect(html).not.toContain('html-sandbox');
+    expect(html).not.toContain('data:text/html');
+  });
+
   it('offers a preview/source view switcher on the html sandbox', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {

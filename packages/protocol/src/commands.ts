@@ -3072,6 +3072,33 @@ export interface FileChangeItem {
   toolCallId?: string;
   preview?: string;
   artifactRef?: string;
+  /** Full pre-write content when a snapshot was taken (existing text file). */
+  previousContent?: string;
+  /** True when previousContent was truncated to bound the event payload. */
+  previousTruncated?: boolean;
+  /** Full post-write content when the written body was captured from the tool call. */
+  content?: string;
+}
+
+export interface ConversationGetFileDiffPayload {
+  runId: RunId;
+  path: string;
+}
+
+export interface FileDiffView {
+  path: string;
+  action: 'created' | 'edited' | 'deleted';
+  /** Old content. Empty string when the file did not exist before (created). */
+  oldContent: string;
+  /** New content. Empty string when the file was deleted. */
+  newContent: string;
+  /** True when no snapshot was taken (binary / oversized) — UI must degrade. */
+  unavailable: boolean;
+  reason?: 'binary' | 'oversized' | 'not-found';
+}
+
+export interface ConversationGetFileDiffResponse {
+  diff: FileDiffView;
 }
 
 export interface TaskPlanItem {

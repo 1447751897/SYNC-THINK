@@ -204,6 +204,38 @@ export interface ChatMessage {
   globalAgentName?: string;
 }
 
+interface RunAgentIdentity {
+  id?: string;
+  name?: string;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+/** Recover the immutable agent binding stamped on each Run. */
+export function projectRunAgentIdentities(events: readonly Event[]): Map<string, RunAgentIdentity> {
+  const identities = new Map<string, RunAgentIdentity>();
+  for (const event of events) {
+    if (event.type !== 'run.started') continue;
+    const payloadRun =
+      event.payload.run && typeof event.payload.run === 'object'
+        ? (event.payload.run as Record<string, unknown>)
+        : undefined;
+    const runId =
+      (event.runId ? String(event.runId) : undefined) ??
+      nonEmptyString(event.payload.runId) ??
+      nonEmptyString(payloadRun?.id);
+    if (!runId) continue;
+    const id =
+      nonEmptyString(event.payload.globalAgentId) ?? nonEmptyString(payloadRun?.globalAgentId);
+    const name =
+      nonEmptyString(event.payload.globalAgentName) ?? nonEmptyString(payloadRun?.globalAgentName);
+    if (id || name) identities.set(runId, { id, name });
+  }
+  return identities;
+}
+
 export type RuntimeConnectionNotice =
   { state: 'retrying'; text: string } | { state: 'failed'; text: string } | null;
 
@@ -1049,6 +1081,50 @@ export function ChatView({
     }
     return display;
   }, [runProcessById, runTerminalById]);
+  /** NewMax-style Review: latest run with file changes (drives the Review tab). */
+  const latestReviewView = useMemo(() => {
+    let latest: RunProcessView | null = null;
+    for (const process of displayRunProcessById.values()) {
+      if (process.fileChanges.length === 0) continue;
+      if (!latest) {
+        latest = process;
+        continue;
+      }
+      const candidateStamp = process.completedAt ?? process.startedAt ?? '';
+      const latestStamp = latest.completedAt ?? latest.startedAt ?? '';
+      if (candidateStamp > latestStamp) latest = process;
+    }
+    return latest;
+  }, [displayRunProcessById]);
+  const runAgentIdentityById = useMemo(
+    () => projectRunAgentIdentities(eventHistory),
+    [eventHistory],
+  );
+  const conversationAgent = useMemo(
+    () =>
+      conversation.track === 'agent'
+        ? agents.find((agent) => String(agent.id) === String(conversation.targetRef))
+        : undefined,
+    [agents, conversation.targetRef, conversation.track],
+  );
+  const conversationTeam = useMemo(
+    () =>
+      conversation.track === 'team'
+        ? teams.find((team) => String(team.id) === String(conversation.targetRef))
+        : undefined,
+    [conversation.targetRef, conversation.track, teams],
+  );
+  const activeRunAgent = useMemo(() => {
+    const identity = projected.activeRunId
+      ? runAgentIdentityById.get(String(projected.activeRunId))
+      : undefined;
+    if (!identity) return conversationAgent;
+    return agents.find(
+      (agent) =>
+        (identity.id && String(agent.id) === identity.id) ||
+        (!identity.id && identity.name && agent.name === identity.name),
+    );
+  }, [agents, conversationAgent, projected.activeRunId, runAgentIdentityById]);
   const runIsActive = sending || projected.streaming || Boolean(projected.activeRunId);
 
   const pausedRunNotice = useMemo(
@@ -3277,17 +3353,16 @@ export function ChatView({
   // 对话对象（模型 / 智能体 / 小队）标识与换绑。
   const identityLabel = useMemo(() => {
     if (conversation.track === 'agent') {
-      const agent = agents.find((a) => String(a.id) === String(conversation.targetRef));
-      return agent?.name ?? '智能体';
+      return conversationAgent?.name ?? '智能体';
     }
     if (conversation.track === 'team') {
-      const team = teams.find((t) => String(t.id) === String(conversation.targetRef));
-      return team?.name ?? '小队';
+      return conversationTeam?.name ?? '小队';
     }
     return '模型';
-  }, [conversation.track, conversation.targetRef, agents, teams]);
+  }, [conversation.track, conversationAgent?.name, conversationTeam?.name]);
   const IdentityIcon =
     conversation.track === 'agent' ? Bot : conversation.track === 'team' ? Users : MessageSquare;
+  const identityAvatar = conversationAgent ?? conversationTeam;
   const handlePickIdentity = useCallback(
     async (option: IdentityOption) => {
       const api = bridge();
@@ -3596,6 +3671,10 @@ export function ChatView({
                     processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
                     models={models}
                     agents={agents}
+                    runAgentIdentity={
+                      msg.runId ? runAgentIdentityById.get(String(msg.runId)) : undefined
+                    }
+                    fallbackAgent={conversationAgent}
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
                     onOpenChange={openChangeInRail}
@@ -3632,6 +3711,10 @@ export function ChatView({
                     processView={msg.runId ? displayRunProcessById.get(msg.runId) : undefined}
                     models={models}
                     agents={agents}
+                    runAgentIdentity={
+                      msg.runId ? runAgentIdentityById.get(String(msg.runId)) : undefined
+                    }
+                    fallbackAgent={conversationAgent}
                     regenerating={sending}
                     onRegenerate={handleRegenerate}
                     onOpenChange={openChangeInRail}
@@ -3651,7 +3734,7 @@ export function ChatView({
               ))}
               {showTyping &&
                 !messages.some((message) => message.streaming) &&
-                pendingApprovals.length === 0 && <TypingIndicator />}
+                pendingApprovals.length === 0 && <TypingIndicator agent={activeRunAgent} />}
               <div ref={messagesEndRef} />
             </div>
           </div>
@@ -4076,7 +4159,15 @@ export function ChatView({
                       onClick={() => setMenu((m) => (m === 'identity' ? null : 'identity'))}
                       title={`对话对象：${identityLabel}`}
                     >
-                      <IdentityIcon size={15} />
+                      {identityAvatar?.avatar?.trim() ? (
+                        <AgentAvatarView
+                          name={identityAvatar.name}
+                          avatar={identityAvatar.avatar}
+                          size={18}
+                        />
+                      ) : (
+                        <IdentityIcon size={15} />
+                      )}
                       <span className="shell-compose__tool-label">{identityLabel}</span>
                     </button>
                     <IdentityPickerMenu
@@ -4085,11 +4176,13 @@ export function ChatView({
                         id: String(a.id),
                         name: a.name,
                         description: a.description,
+                        avatar: a.avatar,
                       }))}
                       teams={teams.map((t) => ({
                         id: String(t.id),
                         name: t.name,
                         description: t.mission,
+                        avatar: t.avatar,
                       }))}
                       currentTrack={conversation.track}
                       currentTargetRef={String(conversation.targetRef ?? '')}
@@ -4198,6 +4291,7 @@ export function ChatView({
             browserNavSeq={aiBrowserNav?.seq}
             onOpenFile={onOpenFile}
             onClose={() => setRailOpen(false)}
+            reviewView={latestReviewView}
           />
         </aside>
       )}
@@ -4297,6 +4391,8 @@ const MessageBubble = memo(function MessageBubble({
   processView,
   models,
   agents,
+  runAgentIdentity,
+  fallbackAgent,
   regenerating,
   onRegenerate,
   onOpenChange,
@@ -4307,6 +4403,8 @@ const MessageBubble = memo(function MessageBubble({
   processView?: RunProcessView;
   models?: readonly ModelOption[];
   agents?: readonly GlobalAgent[];
+  runAgentIdentity?: RunAgentIdentity;
+  fallbackAgent?: GlobalAgent;
   regenerating?: boolean;
   onRegenerate?: (messageId: string) => void;
   onOpenChange?: (path: string) => void;
@@ -4473,36 +4571,46 @@ const MessageBubble = memo(function MessageBubble({
   }
 
   // AI message — thinking + process + file changes + markdown + NewMax-style footer
-  const agentLabel = message.globalAgentName?.trim();
+  const explicitAgentId = message.globalAgentId?.trim() || runAgentIdentity?.id;
+  const visibleAgentLabel = message.globalAgentName?.trim();
+  const explicitAgentLabel = visibleAgentLabel || runAgentIdentity?.name;
+  const canUseConversationFallback = !explicitAgentId && !explicitAgentLabel;
+  const agentId =
+    explicitAgentId || (canUseConversationFallback ? String(fallbackAgent?.id ?? '') : '');
+  const agentLabel =
+    explicitAgentLabel || (canUseConversationFallback ? fallbackAgent?.name.trim() : undefined);
   // Resolve the live agent record so chat shows the exact avatar designed in
   // the library (emoji or imported image); fall back to name lookup for runs
   // recorded before agent ids were stamped on events.
   const agentRecord = agents?.find(
     (a) =>
-      (message.globalAgentId && a.id === message.globalAgentId) ||
-      (!message.globalAgentId && agentLabel && a.name === agentLabel),
+      (agentId && String(a.id) === agentId) || (!agentId && agentLabel && a.name === agentLabel),
   );
   const hasAnswerText = Boolean(message.text.trim());
   const showFooter = !message.streaming && (hasAnswerText || Boolean(processView));
   return (
     <div className="shell-msg shell-msg--assistant group relative flex items-start gap-3">
-      {agentRecord || agentLabel ? (
-        <div className="mt-0.5" data-agent-id={message.globalAgentId || undefined}>
+      {agentRecord?.avatar?.trim() ? (
+        <div className="mt-0.5" data-agent-id={agentId || undefined}>
           <AgentAvatarView
             name={agentRecord?.name ?? agentLabel ?? '助手'}
             avatar={agentRecord?.avatar}
             size={26}
-            title={agentLabel || '助手'}
+            title={agentRecord?.name ?? agentLabel ?? '助手'}
           />
         </div>
       ) : (
-        <div className="shell-ai-avatar mt-0.5" title="助手">
+        <div
+          className="shell-ai-avatar mt-0.5"
+          data-agent-id={agentId || undefined}
+          title={agentRecord?.name ?? agentLabel ?? '助手'}
+        >
           <Bot size={13} />
         </div>
       )}
       <div className="min-w-0 flex-1 pt-0.5">
-        {agentLabel ? (
-          <div className="mb-1 text-[11.5px] font-medium text-text-faint">{agentLabel}</div>
+        {visibleAgentLabel ? (
+          <div className="mb-1 text-[11.5px] font-medium text-text-faint">{visibleAgentLabel}</div>
         ) : null}
         {message.processStatus ? (
           <div
@@ -5288,12 +5396,18 @@ function TypingDots({ inline = false }: { inline?: boolean }) {
   );
 }
 
-function TypingIndicator() {
+function TypingIndicator({ agent }: { agent?: GlobalAgent }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="shell-ai-avatar mt-0.5">
-        <Bot size={13} />
-      </div>
+      {agent?.avatar?.trim() ? (
+        <div className="mt-0.5" data-agent-id={String(agent.id)}>
+          <AgentAvatarView name={agent.name} avatar={agent.avatar} size={26} />
+        </div>
+      ) : (
+        <div className="shell-ai-avatar mt-0.5" title={agent?.name ?? '助手'}>
+          <Bot size={13} />
+        </div>
+      )}
       <TypingDots />
     </div>
   );

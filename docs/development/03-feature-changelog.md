@@ -2910,3 +2910,45 @@ Desktop typecheck/build：passed
 
 - 定向组件测试、Desktop typecheck、目标 ESLint、design token、Phase 3 脚本测试、Desktop build、`node --check` 与 `git diff --check` 通过。
 - Electron `capturePage` 视觉矩阵 15/15 通过，覆盖 `1280×800` 浅色/深色与源码复制成功态、`760×640` 紧凑布局及 `735×1014` 参考比例；断言确认预览与源码横向溢出不超过 1px、长行实际增高、复制内容完整、JSON/Shell 高亮可切换且内容区没有重复文件名。
+
+## 2026-08-13 · 智能体头像在对话中统一显示
+
+### Fixed
+
+- 修复新版 `ChatView` 绕过旧消息身份投影后，持久化助手消息缺少 `globalAgentId/globalAgentName` 并固定显示默认机器人图标的问题。
+- 助手消息现在优先使用消息自身身份，其次读取对应 `run.started` 的智能体快照；仅当旧 Run 没有身份记录且当前是 Agent 对话时，才回退到会话 `targetRef` 绑定的智能体。
+- 头像始终从最新 `GlobalAgent` 记录动态读取；智能体修改头像并刷新目录后，当前对话和历史回复会同步显示新头像，同时保留换绑前旧 Run 的原智能体身份。
+- 输入框右侧当前对话对象、身份选择菜单和发送后的等待态统一复用 `AgentAvatarView`；模型直聊和没有可用自定义头像的场景继续显示默认图标。
+
+### Verification
+
+- 新增 `ChatView.agent-avatar.test.tsx` 4 条回归，覆盖旧持久化消息回退、输入框身份头像、头像实时更新、换绑后的 Run 身份优先级和模型直聊回退。
+- 定向回归：2 files / 12 tests；Desktop 全量：155 files / 1141 tests，全部通过。
+- Desktop lint 通过，0 errors、保留 5 条既有 hooks warnings；design token、typecheck、Prettier、正式 build 和 `git diff --check` 通过。
+- 本地源码实例实窗通过：智能体目录、输入框身份和助手回复三处均使用同一条 3923 字符 WebP 头像，回复行不再渲染默认 Bot；截图为 `.data/local-restart-20260813-agent-avatar/frontend-agent-avatar-fixed.png`。
+
+### Boundary
+
+- 本轮只构建并重启本地源码实例，不生成安装包、不提交、不推送。
+
+## 2026-08-13 · 工作区文件拖拽调宽与 Markdown 文档预览
+
+### Fixed
+
+- 宽文件工作台在编辑区与嵌入式工作区文件树之间新增可拖拽分隔条，默认占 30%，动态范围同时保护文件树至少 220px、编辑区至少 280px；支持键盘方向键、Home/End 和双击恢复默认宽度。
+- 拖拽改用 Pointer Capture，并在 `pointerup`、`pointercancel`、捕获丢失、窗口失焦和布局尺寸变化时统一清理，避免跨窗口释放后继续误拖或残留全局光标。
+- `.md`、`.markdown` 从源码高亮升级为文档预览，支持 GFM 标题、列表、表格、代码块和 Mermaid；源码仍可编辑，搜索命中时自动切回源码并定位精确行列。
+- 文件文档预览禁用可执行 HTML 嵌入，fenced HTML 只显示代码；独立工作区文件预览和文件标签共用同一渲染规则。未知文本格式继续按纯文本和行号完整显示。
+- 520px 及以下继续使用上下布局并隐藏横向拖柄，文件正文和工作区文件各自滚动且不产生页面级横向溢出。
+
+### Verification
+
+- 文件工作台、文件正文、独立右栏、Markdown 和头像组合定向回归为 5 files / 41 tests，全部通过。
+- Desktop 单 worker 全量为 155 files / 1148 tests，全部通过；默认并发首次有 4 条异步按钮查询受 CPU 争用超时，两个相关文件串行复跑 18/18 通过，单 worker 全量进一步确认没有产品回归。
+- Desktop typecheck、正式 build、Prettier、design token 和 `git diff --check` 通过；lint 为 0 errors、5 条既有 hooks warnings。
+- 本地源码实例实窗通过：Electron PID `36968`、Runtime PID `15676`、CDP `127.0.0.1:9353`。340px 窄布局自动上下排列且隐藏拖柄；592px 宽布局可连续调宽，文件树/编辑区最小值分别稳定在 220px/280px，释放指针后不会残留拖动状态。
+- `README.md` 文档态实测包含 H1/H2、列表和代码块，源码态完整显示 3407 字符、67 行；切换前后内容与未保存状态正确，页面始终没有横向溢出。截图位于 `.data/local-restart-20260813-workspace-markdown/`。
+
+### Boundary
+
+- 本轮只构建并重启本地源码实例，不生成安装包、不提交、不推送；实例保持运行供用户手测。

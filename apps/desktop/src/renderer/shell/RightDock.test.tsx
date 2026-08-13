@@ -157,4 +157,36 @@ describe('RightDock project content search', () => {
     expect(document.querySelector('[data-file-type="javascript"]')).toBeTruthy();
     expect(document.querySelector('[data-file-type="python"]')).toBeTruthy();
   });
+
+  it('renders Markdown documents in the standalone workspace-file preview', async () => {
+    Object.defineProperty(window, 'syncThink', {
+      configurable: true,
+      value: {
+        runtime: {
+          listProjectDir: vi.fn(async () => ({
+            dir: '',
+            entries: [{ path: 'README.md', name: 'README.md', kind: 'file' }],
+          })),
+          listProjectFiles: vi.fn(async () => ({ root: 'C:/workspace', files: [] })),
+          readProjectFile: vi.fn(async () => ({
+            path: 'README.md',
+            content: '# Standalone preview\n\n- Rendered item',
+            error: null,
+            errorCode: null,
+            mtimeMs: 10,
+            size: 39,
+          })),
+        },
+      },
+    });
+
+    render(<WorkspaceFilesPanel projectFolder="C:/workspace" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '打开文件 README.md' }));
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Standalone preview' }),
+    ).toBeTruthy();
+    expect(document.querySelector('[data-preview-kind="markdown"]')).toBeTruthy();
+    expect(document.querySelector('.shell-code-preview__ln')).toBeNull();
+  });
 });

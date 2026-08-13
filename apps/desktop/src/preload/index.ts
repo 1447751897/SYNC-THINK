@@ -1010,7 +1010,12 @@ const api = {
         branch: string | null;
         branches: string[];
         changes: Array<{ status: string; path: string }>;
-        recentCommits: Array<{ hash: string; subject: string }>;
+        recentCommits: Array<{
+          hash: string;
+          subject: string;
+          files: Array<{ status: string; path: string }>;
+          truncated: boolean;
+        }>;
         isRepo: boolean;
       }>,
     /** 右栏「工作区」面板：切换分支（脏工作区需显式 stash/force 策略）。 */

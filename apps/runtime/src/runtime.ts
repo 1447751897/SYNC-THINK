@@ -14482,6 +14482,7 @@ export class Runtime {
             appendActiveRoundTranscript('complete');
 
             const completedResults: Array<{ toolCallId: string; content: string }> = [];
+            const writeSnapshot: import('./chat-tools.js').ChatWriteSnapshot = {};
             for (let toolIndex = 0; toolIndex < pendingToolCalls.length; toolIndex++) {
               const toolCall = pendingToolCalls[toolIndex]!;
               if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
@@ -14804,11 +14805,23 @@ export class Runtime {
                   toolCall,
                   signal: abort.signal,
                   networkEnabled,
+                  ...(toolCall.name === 'write_file' ? { snapshotOut: writeSnapshot } : {}),
                 });
               }
               if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
               // Publish full result for UI/trace; fold only the in-memory provider transcript.
-              this.publishToolCompleted(runId, currentRun.threadId, toolCall, resultText);
+              this.publishToolCompleted(
+                runId,
+                currentRun.threadId,
+                toolCall,
+                resultText,
+                toolCall.name === 'write_file' && writeSnapshot.previousContent !== undefined
+                  ? {
+                      previousContent: writeSnapshot.previousContent,
+                      ...(writeSnapshot.previousTruncated ? { previousTruncated: true } : {}),
+                    }
+                  : undefined,
+              );
               const foldedForModel = foldToolOutputText(resultText).text;
               completedResults.push({ toolCallId: toolCall.id, content: foldedForModel });
               chatMessages = [
@@ -16878,6 +16891,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     threadId: string,
     toolCall: import('@sync-think/adapters').ProviderToolCall,
     resultText: string,
+    snapshot?: { previousContent: string; previousTruncated?: boolean },
   ): void {
     let failed = false;
     let errorSummary: string | undefined;
@@ -16915,6 +16929,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           result: persistedResult,
           ...(failed ? { failed: true } : {}),
           ...(persistedErrorSummary ? { errorSummary: persistedErrorSummary } : {}),
+          ...(snapshot && toolCall.name === 'write_file'
+            ? {
+                previousContent: snapshot.previousContent,
+                ...(snapshot.previousTruncated ? { previousTruncated: true } : {}),
+              }
+            : {}),
         },
       },
       new Map(this.demoRuns),

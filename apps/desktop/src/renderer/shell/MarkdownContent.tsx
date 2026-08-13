@@ -10,6 +10,8 @@ interface MarkdownContentProps {
   text: string;
   /** When true, show a trailing caret for streaming replies. */
   streaming?: boolean;
+  /** File previews disable executable HTML embeds while keeping passive Markdown rendering. */
+  interactiveEmbeds?: boolean;
   className?: string;
 }
 
@@ -152,7 +154,15 @@ function markdownUrlTransform(url: string): string {
   return defaultUrlTransform(url);
 }
 
-function MarkdownRenderer({ text, streaming }: { text: string; streaming: boolean }) {
+function MarkdownRenderer({
+  text,
+  streaming,
+  interactiveEmbeds,
+}: {
+  text: string;
+  streaming: boolean;
+  interactiveEmbeds: boolean;
+}) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -185,7 +195,7 @@ function MarkdownRenderer({ text, streaming }: { text: string; streaming: boolea
             return <MermaidChart code={raw.replace(/\n$/, '')} />;
           }
           if (language === 'html' || language === 'htm') {
-            if (streaming) {
+            if (streaming || !interactiveEmbeds) {
               return <CodeBlock language={language}>{children}</CodeBlock>;
             }
             return <HtmlSandbox code={raw} />;
@@ -208,10 +218,12 @@ function CollapsibleSection({
   title,
   body,
   streaming,
+  interactiveEmbeds,
 }: {
   title: string;
   body: string;
   streaming: boolean;
+  interactiveEmbeds: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
   return (
@@ -229,7 +241,11 @@ function CollapsibleSection({
       </h2>
       <div className="shell-md-section__body" aria-hidden={!expanded}>
         <div className="shell-md-section__body-inner">
-          <MarkdownRenderer text={body} streaming={streaming} />
+          <MarkdownRenderer
+            text={body}
+            streaming={streaming}
+            interactiveEmbeds={interactiveEmbeds}
+          />
         </div>
       </div>
     </section>
@@ -243,7 +259,12 @@ function CollapsibleSection({
  * - fenced code with language label + copy + inline expand/collapse
  * - syntax highlight via highlight.js tokens (theme in shell.css)
  */
-export function MarkdownContent({ text, streaming = false, className }: MarkdownContentProps) {
+export function MarkdownContent({
+  text,
+  streaming = false,
+  interactiveEmbeds = true,
+  className,
+}: MarkdownContentProps) {
   const sections = useMemo(() => splitMarkdownSections(text), [text]);
   return (
     <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
@@ -254,9 +275,15 @@ export function MarkdownContent({ text, streaming = false, className }: Markdown
             title={section.title}
             body={section.body}
             streaming={streaming}
+            interactiveEmbeds={interactiveEmbeds}
           />
         ) : (
-          <MarkdownRenderer key={`intro:${index}`} text={section.body} streaming={streaming} />
+          <MarkdownRenderer
+            key={`intro:${index}`}
+            text={section.body}
+            streaming={streaming}
+            interactiveEmbeds={interactiveEmbeds}
+          />
         ),
       )}
       {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}

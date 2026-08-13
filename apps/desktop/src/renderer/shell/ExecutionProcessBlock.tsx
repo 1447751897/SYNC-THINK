@@ -46,7 +46,12 @@ import ruby from 'highlight.js/lib/languages/ruby';
 import rust from 'highlight.js/lib/languages/rust';
 import scss from 'highlight.js/lib/languages/scss';
 import swift from 'highlight.js/lib/languages/swift';
-import type { ExecutionProcessStep, ProcessToolKind, RunProcessView } from '@sync-think/protocol';
+import type {
+  ExecutionProcessStep,
+  FileChangeItem,
+  ProcessToolKind,
+  RunProcessView,
+} from '@sync-think/protocol';
 
 let hljsReady = false;
 function ensureHljs(): void {
@@ -409,9 +414,12 @@ export function CodePreview({
   useEffect(() => {
     if (!highlightLine || highlightLine < 1) return;
     const frame = window.requestAnimationFrame(() => {
-      previewRef.current
-        ?.querySelector<HTMLElement>(`[data-line="${Math.floor(highlightLine)}"]`)
-        ?.scrollIntoView({ block: 'center' });
+      const target = previewRef.current?.querySelector<HTMLElement>(
+        `[data-line="${Math.floor(highlightLine)}"]`,
+      );
+      if (typeof target?.scrollIntoView === 'function') {
+        target.scrollIntoView({ block: 'center' });
+      }
     });
     return () => window.cancelAnimationFrame(frame);
   }, [highlightLine, normalized]);
@@ -467,15 +475,34 @@ export function FileChangesCard({
   onOpenChange?: (path: string) => void;
   onExpandRail?: () => void;
 }) {
-  // File changes stay folded by default; the user expands a file to see its preview.
+  // File changes stay folded by default; the user expands a file to see its diff.
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
 
   if (view.fileChanges.length === 0) return null;
+
+  const totals = view.fileChanges.reduce<{ added: number; removed: number; countable: boolean }>(
+    (acc, item) => {
+      const counts = countLineChanges(item);
+      if (!counts) return acc;
+      return {
+        added: acc.added + counts.added,
+        removed: acc.removed + counts.removed,
+        countable: true,
+      };
+    },
+    { added: 0, removed: 0, countable: false },
+  );
 
   return (
     <div className={`shell-changes-card ${nested ? 'is-nested' : ''}`}>
       <div className="shell-changes-card__header">
         <span className="shell-changes-card__title">已更改 {view.fileChanges.length} 个文件</span>
+        {totals.countable ? (
+          <span className="shell-changes-card__lines" title="新增 / 删除行数">
+            <span className="is-add">+{totals.added}</span>
+            <span className="is-del">−{totals.removed}</span>
+          </span>
+        ) : null}
         <button
           type="button"
           className="shell-changes-card__action"
@@ -491,7 +518,9 @@ export function FileChangesCard({
       <ul className="shell-changes-card__list">
         {view.fileChanges.map((item) => {
           const hasBody = !isStatusOnlyPreview(item.preview);
+          const hasDiff = item.previousContent !== undefined && item.content !== undefined;
           const open = expandedPath === item.path;
+          const counts = countLineChanges(item);
           return (
             <li
               key={`${item.action}:${item.path}`}
@@ -502,14 +531,14 @@ export function FileChangesCard({
                   type="button"
                   className="shell-changes-card__toggle"
                   onClick={() => {
-                    if (!hasBody) {
+                    if (!hasBody && !hasDiff) {
                       onExpandRail?.();
                       onOpenChange?.(item.path);
                       return;
                     }
                     setExpandedPath((prev) => (prev === item.path ? null : item.path));
                   }}
-                  title={open ? '收起预览' : '展开预览'}
+                  title={open ? '收起 diff' : '展开 diff'}
                 >
                   <ChevronDown
                     size={13}
@@ -524,6 +553,12 @@ export function FileChangesCard({
                   <span className="shell-changes-card__path" title={item.path}>
                     {item.path}
                   </span>
+                  {counts ? (
+                    <span className="shell-changes-card__file-lines">
+                      <span className="is-add">+{counts.added}</span>
+                      <span className="is-del">−{counts.removed}</span>
+                    </span>
+                  ) : null}
                   <span className="shell-changes-card__action-label">
                     {actionLabel(item.action)}
                   </span>
@@ -540,7 +575,16 @@ export function FileChangesCard({
                   打开
                 </button>
               </div>
-              {open && hasBody && item.preview ? (
+              {open && hasDiff ? (
+                <div className="shell-changes-card__diff">
+                  <LineDiffView
+                    oldText={item.previousContent}
+                    newText={item.content}
+                    path={item.path}
+                    truncated={item.previousTruncated}
+                  />
+                </div>
+              ) : open && hasBody && item.preview ? (
                 <div className="shell-changes-card__preview">
                   <CodePreview text={item.preview} path={item.path} compact maxHeight={220} />
                 </div>
@@ -549,6 +593,164 @@ export function FileChangesCard({
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+interface DiffLine {
+  kind: 'add' | 'del' | 'ctx';
+  oldLine?: number;
+  newLine?: number;
+  text: string;
+}
+
+const LINE_DIFF_MAX_ROWS = 400;
+
+/**
+ * Compute a line-level LCS diff between two texts. Returns undefined when a
+ * snapshot is missing or the file is too large to diff (UI degrades).
+ */
+export function computeLineDiff(
+  oldText: string | undefined,
+  newText: string | undefined,
+): DiffLine[] | undefined {
+  if (oldText === undefined || newText === undefined) return undefined;
+  const splitLines = (text: string) => {
+    const lines = text.replace(/\r\n/g, '\n').split('\n');
+    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+    return lines;
+  };
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
+  if (oldLines.length > LINE_DIFF_MAX_ROWS || newLines.length > LINE_DIFF_MAX_ROWS) {
+    return undefined;
+  }
+  const n = oldLines.length;
+  const m = newLines.length;
+  const width = m + 1;
+  const matrix = new Int32Array((n + 1) * width);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      matrix[i * width + j] =
+        oldLines[i] === newLines[j]
+          ? matrix[(i + 1) * width + j + 1] + 1
+          : Math.max(matrix[(i + 1) * width + j], matrix[i * width + j + 1]);
+    }
+  }
+  const lines: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (oldLines[i] === newLines[j]) {
+      lines.push({ kind: 'ctx', oldLine: i + 1, newLine: j + 1, text: oldLines[i]! });
+      i++;
+      j++;
+    } else if (matrix[(i + 1) * width + j] >= matrix[i * width + j + 1]) {
+      lines.push({ kind: 'del', oldLine: i + 1, text: oldLines[i]! });
+      i++;
+    } else {
+      lines.push({ kind: 'add', newLine: j + 1, text: newLines[j]! });
+      j++;
+    }
+  }
+  while (i < n) {
+    lines.push({ kind: 'del', oldLine: i + 1, text: oldLines[i]! });
+    i++;
+  }
+  while (j < m) {
+    lines.push({ kind: 'add', newLine: j + 1, text: newLines[j]! });
+    j++;
+  }
+  return lines;
+}
+
+/** Added/removed line counts for a change item. Undefined when not countable. */
+export function countLineChanges(
+  item: Pick<FileChangeItem, 'action' | 'previousContent' | 'content'>,
+): { added: number; removed: number } | undefined {
+  if (item.action === 'created') {
+    if (item.content === undefined) return undefined;
+    const lines = item.content.replace(/\r\n/g, '\n').split('\n');
+    const count = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
+    return { added: count, removed: 0 };
+  }
+  if (item.action === 'deleted') {
+    if (item.previousContent === undefined) return undefined;
+    const lines = item.previousContent.replace(/\r\n/g, '\n').split('\n');
+    const count = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
+    return { added: 0, removed: count };
+  }
+  const diff = computeLineDiff(item.previousContent, item.content);
+  if (!diff) return undefined;
+  let added = 0;
+  let removed = 0;
+  for (const line of diff) {
+    if (line.kind === 'add') added++;
+    else if (line.kind === 'del') removed++;
+  }
+  return { added, removed };
+}
+
+/**
+ * Lightweight line-level diff view (NewMax-style Review body).
+ * Purely presentational: LCS diff computed once, rendered with +/- gutters.
+ */
+export function LineDiffView({
+  oldText,
+  newText,
+  path,
+  truncated = false,
+}: {
+  oldText: string | undefined;
+  newText: string | undefined;
+  path?: string;
+  truncated?: boolean;
+}) {
+  const lines = computeLineDiff(oldText, newText);
+  const [wrap, setWrap] = useState(true);
+  if (!lines) {
+    return (
+      <div className="shell-changes-card__diff-empty">
+        {truncated
+          ? '文件过大，已截断快照，无法显示行级 diff'
+          : oldText === undefined
+            ? '无写前快照，无法显示行级 diff'
+            : '文件过大，无法显示行级 diff'}
+      </div>
+    );
+  }
+  return (
+    <div className="shell-changes-card__diff-body">
+      <div className="shell-changes-card__diff-toolbar">
+        <label className="shell-changes-card__diff-wrap">
+          <input
+            type="checkbox"
+            checked={wrap}
+            onChange={(event) => setWrap(event.target.checked)}
+          />
+          自动换行
+        </label>
+      </div>
+      <div className={`shell-changes-card__diff-lines ${wrap ? 'is-wrap' : ''}`} data-path={path}>
+        {lines.map((line, index) => (
+          <div
+            key={index}
+            className={`shell-changes-card__diff-line is-${line.kind}`}
+            data-kind={line.kind}
+          >
+            <span className="shell-changes-card__diff-gutter" aria-hidden="true">
+              {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
+            </span>
+            <span className="shell-changes-card__diff-no" aria-hidden="true">
+              {line.kind === 'add' ? line.newLine : ''}
+            </span>
+            <span className="shell-changes-card__diff-no" aria-hidden="true">
+              {line.kind === 'del' ? line.oldLine : ''}
+            </span>
+            <code className="shell-changes-card__diff-text">{line.text || ' '}</code>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

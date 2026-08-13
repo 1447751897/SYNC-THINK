@@ -7057,6 +7057,148 @@ body {
   color: var(--color-text-faint);
 }
 
+/* ─── File changes: line counts + line-level diff (Review) ────────────────── */
+.shell-changes-card__lines {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-changes-card__lines .is-add,
+.shell-changes-card__file-lines .is-add {
+  color: var(--color-success);
+}
+
+.shell-changes-card__lines .is-del,
+.shell-changes-card__file-lines .is-del {
+  color: var(--color-error);
+}
+
+.shell-changes-card__file-lines {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-changes-card__diff {
+  margin: 0 8px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--color-page);
+}
+
+.shell-changes-card__diff-body {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+}
+
+.shell-changes-card__diff-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-surface) 55%, var(--color-elevated));
+}
+
+.shell-changes-card__diff-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  user-select: none;
+}
+
+.shell-changes-card__diff-wrap input {
+  accent-color: var(--color-accent);
+}
+
+.shell-changes-card__diff-lines {
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.shell-changes-card__diff-line {
+  display: flex;
+  align-items: baseline;
+  min-height: 21px;
+  padding: 0 8px;
+  white-space: pre;
+}
+
+.shell-changes-card__diff-lines.is-wrap .shell-changes-card__diff-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.shell-changes-card__diff-line.is-add {
+  background: color-mix(in srgb, var(--color-success) 11%, transparent);
+}
+
+.shell-changes-card__diff-line.is-del {
+  background: color-mix(in srgb, var(--color-error) 11%, transparent);
+}
+
+.shell-changes-card__diff-line.is-ctx {
+  color: var(--color-text-secondary);
+}
+
+.shell-changes-card__diff-gutter {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  user-select: none;
+  font-weight: 600;
+}
+
+.shell-changes-card__diff-line.is-add .shell-changes-card__diff-gutter {
+  color: var(--color-success);
+}
+
+.shell-changes-card__diff-line.is-del .shell-changes-card__diff-gutter {
+  color: var(--color-error);
+}
+
+.shell-changes-card__diff-no {
+  flex-shrink: 0;
+  width: 34px;
+  text-align: right;
+  padding-right: 6px;
+  user-select: none;
+  color: color-mix(in srgb, var(--color-text-faint) 85%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.shell-changes-card__diff-text {
+  min-width: 0;
+  flex: 1;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+}
+
+.shell-changes-card__diff-empty {
+  padding: 14px 12px;
+  font-size: 11.5px;
+  color: var(--color-text-faint);
+  text-align: center;
+}
+
 /* ─── Code preview (editor density, soft gutter) ──────────────────────────── */
 .shell-code-preview {
   overflow-x: hidden;
@@ -11927,9 +12069,7 @@ body {
  */
 .shell-pane-frame {
   min-width: 0;
-  margin:
-    var(--shell-pane-frame-top-gap)
-    var(--shell-pane-frame-gutter)
+  margin: var(--shell-pane-frame-top-gap) var(--shell-pane-frame-gutter)
     var(--shell-pane-frame-gutter);
   border-radius: var(--shell-pane-frame-radius);
   background: var(--color-chat);
@@ -12146,7 +12286,9 @@ body {
 }
 
 .shell-file-workbench[data-explorer-open='true'] .shell-file-workbench__layout {
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 30%);
+  grid-template-columns:
+    minmax(0, 1fr) 5px
+    clamp(220px, var(--shell-file-explorer-width, 30%), min(60%, calc(100% - 285px)));
 }
 
 .shell-file-workbench__editor,
@@ -12161,8 +12303,47 @@ body {
   background: var(--shell-file-editor-background);
 }
 
+.shell-file-workbench__divider {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  min-height: 0;
+  cursor: col-resize;
+  outline: 0;
+  background: transparent;
+  touch-action: none;
+}
+
+.shell-file-workbench__divider::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 2px;
+  width: 1px;
+  background: var(--color-border);
+  transition: background var(--shell-motion-fast) var(--shell-ease);
+}
+
+.shell-file-workbench__divider::after {
+  content: '';
+  position: absolute;
+  inset: 0 -3px;
+}
+
+.shell-file-workbench__divider:hover,
+.shell-file-workbench__divider:focus-visible {
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+}
+
+.shell-file-workbench__divider:hover::before,
+.shell-file-workbench__divider:focus-visible::before {
+  background: var(--color-accent);
+}
+
+.shell-file-workbench__divider:focus-visible {
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
 .shell-file-workbench__explorer {
-  border-left: 1px solid var(--color-border);
   background: var(--shell-file-explorer-background);
 }
 
@@ -12174,6 +12355,10 @@ body {
   .shell-file-workbench[data-explorer-open='true'] .shell-file-workbench__layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(180px, 3fr) minmax(150px, 2fr);
+  }
+
+  .shell-file-workbench__divider {
+    display: none;
   }
 
   .shell-file-workbench__editor {
@@ -12430,6 +12615,23 @@ body {
   height: 100%;
   max-height: none;
   background: var(--shell-file-editor-background, var(--color-chat));
+}
+
+.shell-file-document-preview {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px clamp(16px, 4cqw, 34px) 32px;
+  background: var(--shell-file-editor-background, var(--color-chat));
+}
+
+.shell-file-document-preview__content {
+  width: min(100%, 78ch);
+  margin: 0 auto;
+  font-size: 13px;
+  line-height: 1.68;
 }
 
 @keyframes shell-file-pane-view-in {
@@ -13177,6 +13379,145 @@ body {
   border-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
 
+/* ─── Review 面板（本轮文件变更 + 行级 diff） ──────────────────────────────── */
+.shell-review-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.shell-review-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--color-text-faint);
+  text-align: center;
+}
+
+.shell-review-empty__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.shell-review-empty__hint {
+  max-width: 220px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.shell-review-list {
+  flex-shrink: 0;
+  max-height: 38%;
+  overflow: auto;
+  padding: 6px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.shell-review-list__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.shell-review-list__item:hover {
+  background: var(--color-hover);
+}
+
+.shell-review-list__item.is-active {
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+
+.shell-review-list__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.shell-review-detail {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 6px;
+}
+
+.shell-review-detail__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px 8px;
+}
+
+.shell-review-detail__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+
+.shell-review-detail__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.shell-review-detail__btn {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.shell-review-detail__btn:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.shell-review-detail > .shell-changes-card__diff {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+}
+
+.shell-review-detail > .shell-changes-card__diff .shell-changes-card__diff-body {
+  max-height: none;
+  height: 100%;
+}
+
+.shell-review-detail > .shell-changes-card__diff .shell-changes-card__diff-lines {
+  flex: 1;
+  min-height: 0;
+}
+
 .shell-new-resource-menu {
   position: absolute;
   z-index: 70;
@@ -13303,6 +13644,8 @@ body {
   .shell-workspace-files-switcher__tab,
   .shell-new-resource-menu__item,
   .shell-file-pane-view-tabs button,
+  .shell-file-workbench__divider,
+  .shell-file-workbench__divider::before,
   .shell-file-pane-copy-button {
     transition: none;
   }

@@ -525,4 +525,64 @@ describe('projectRunProcess', () => {
     expect(failed.running).toBe(false);
     expect(failed.errorCount).toBe(1);
   });
+
+  it('forwards the pre-write snapshot and written body into fileChanges for diff rendering', () => {
+    const runId = 'run-snapshot-diff' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-write-requested' as EventId,
+        sequence: 1,
+        runId,
+        type: 'tool.requested',
+        payload: {
+          toolCallId: 'call-write',
+          toolName: 'write_file',
+          arguments: { path: 'src/app.ts', content: 'export const v = 2;\n' },
+        },
+      }),
+      event({
+        id: 'event-write-completed' as EventId,
+        sequence: 2,
+        runId,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'call-write',
+          toolName: 'write_file',
+          result: JSON.stringify({ ok: true, created: false }),
+          previousContent: 'export const v = 1;\n',
+        },
+      }),
+    ]);
+
+    expect(view.fileChanges).toHaveLength(1);
+    expect(view.fileChanges[0]).toMatchObject({
+      path: 'src/app.ts',
+      action: 'edited',
+      previousContent: 'export const v = 1;\n',
+      content: 'export const v = 2;\n',
+    });
+    expect(view.fileChanges[0]?.previousTruncated).toBeUndefined();
+  });
+
+  it('omits snapshot fields when the event carries no pre-write content', () => {
+    const runId = 'run-snapshot-none' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-create-completed' as EventId,
+        sequence: 1,
+        runId,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'call-create',
+          toolName: 'write_file',
+          arguments: { path: 'new.txt', content: 'hello' },
+          result: JSON.stringify({ ok: true, created: true }),
+        },
+      }),
+    ]);
+
+    expect(view.fileChanges[0]).toMatchObject({ path: 'new.txt', action: 'created' });
+    expect(view.fileChanges[0]?.previousContent).toBeUndefined();
+    expect(view.fileChanges[0]?.content).toBe('hello');
+  });
 });

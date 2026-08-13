@@ -518,6 +518,10 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
           action: resultSummary.created ? 'created' : 'edited',
           toolCallId,
           preview: resultSummary.preview,
+          ...snapshotFields(payload),
+          ...(typeof resultSummary.content === 'string' && resultSummary.content.length > 0
+            ? { content: resultSummary.content }
+            : {}),
         });
       }
       continue;
@@ -555,12 +559,19 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
         if (already) {
           if (contentPreview) already.preview = contentPreview;
           if (summary.created) already.action = 'created';
+          if (typeof summary.content === 'string' && summary.content.length > 0) {
+            already.content = summary.content;
+          }
         } else {
           fileChanges.push({
             path,
             action: summary.created ? 'created' : 'edited',
             toolCallId,
             preview: contentPreview,
+            ...snapshotFields(payload),
+            ...(typeof summary.content === 'string' && summary.content.length > 0
+              ? { content: summary.content }
+              : {}),
           });
         }
       }
@@ -728,4 +739,20 @@ function extractToolResultError(resultRaw: unknown): string | undefined {
   if (typeof obj?.error === 'string' && obj.error.trim()) return obj.error;
   if (typeof obj?.message === 'string' && obj.message.trim()) return obj.message;
   return undefined;
+}
+
+/**
+ * Forward the pre-write snapshot carried on tool.completed payloads
+ * (captured by the chat write_file executor) into FileChangeItem fields.
+ */
+function snapshotFields(
+  payload: Record<string, unknown>,
+): { previousContent?: string; previousTruncated?: boolean } {
+  if (typeof payload.previousContent !== 'string' || payload.previousContent.length === 0) {
+    return {};
+  }
+  return {
+    previousContent: payload.previousContent,
+    ...(payload.previousTruncated === true ? { previousTruncated: true } : {}),
+  };
 }

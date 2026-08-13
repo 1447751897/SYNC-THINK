@@ -3029,6 +3029,43 @@ function setupRuntimeBridge(): void {
   });
 
   // Read-only Git branch, status, and recent-commit summary for the workspace panel.
+  const MAX_FILES_PER_COMMIT = 100;
+  function parseRecentCommitBlocks(
+    stdout: string,
+  ): Array<{ hash: string; subject: string; files: Array<{ status: string; path: string }>; truncated: boolean }> {
+    const normalized = stdout.replace(/\r\n/g, '\n');
+    const blocks = normalized.split(/\n{2,}/).filter((block) => block.trim().length > 0);
+    const commits: Array<{
+      hash: string;
+      subject: string;
+      files: Array<{ status: string; path: string }>;
+      truncated: boolean;
+    }> = [];
+    for (const block of blocks) {
+      const lines = block.split('\n').filter((line) => line.length > 0);
+      if (lines.length === 0) continue;
+      const [hash, subject = ''] = lines[0]!.split('\x00');
+      if (!hash) continue;
+      const files: Array<{ status: string; path: string }> = [];
+      let truncated = false;
+      for (const line of lines.slice(1)) {
+        if (files.length >= MAX_FILES_PER_COMMIT) {
+          truncated = true;
+          break;
+        }
+        const parts = line.split('\t');
+        if (parts.length < 2) continue;
+        const status = parts[0]!;
+        // 重命名 R100\told\tnew → 以新路径作为树节点展示。
+        const path = parts[parts.length - 1]!;
+        if (!path) continue;
+        files.push({ status, path });
+      }
+      commits.push({ hash, subject, files, truncated });
+    }
+    return commits;
+  }
+
   ipcMain.handle('desktop:git-info', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -3067,14 +3104,13 @@ function setupRuntimeBridge(): void {
       .filter(Boolean)
       .slice(0, 100)
       .map((line) => ({ status: line.slice(0, 2).trim(), path: line.slice(3).trim() }));
-    const logRaw = await run(['log', '--oneline', '-8']);
-    const recentCommits = logRaw
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => {
-        const sep = line.indexOf(' ');
-        return { hash: line.slice(0, sep), subject: line.slice(sep + 1) };
-      });
+    const logRaw = await run([
+      'log',
+      '-8',
+      '--name-status',
+      '--format=%h%x00%s',
+    ]);
+    const recentCommits = parseRecentCommitBlocks(logRaw);
     return { branch, branches, changes, recentCommits, isRepo: true };
   });
 }

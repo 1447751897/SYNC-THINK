@@ -1,11 +1,7 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  FilePane,
-  clearFilePaneSession,
-  isFilePaneSessionDirty,
-} from './FilePane.js';
+import { FilePane, clearFilePaneSession, isFilePaneSessionDirty } from './FilePane.js';
 
 interface Change {
   path: string;
@@ -56,6 +52,7 @@ afterEach(() => {
   cleanup();
   clearFilePaneSession('C:/workspace', 'notes.txt');
   clearFilePaneSession('C:/workspace', 'src/example.ts');
+  clearFilePaneSession('C:/workspace', 'README.md');
   Reflect.deleteProperty(window, 'syncThink');
   Reflect.deleteProperty(navigator, 'clipboard');
 });
@@ -78,9 +75,9 @@ describe('FilePane', () => {
     expect(preview.hidden).toBe(false);
     expect(preview.querySelector('[data-language="typescript"]')).toBeTruthy();
     expect(preview.querySelector('.hljs-keyword')?.textContent).toBe('const');
-    expect(
-      screen.getByRole('tab', { name: '高亮预览' }).getAttribute('aria-selected'),
-    ).toBe('true');
+    expect(screen.getByRole('tab', { name: '高亮预览' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
     expect(screen.getByRole('tab', { name: '高亮预览' }).textContent).toBe('');
     expect(screen.getByRole('tab', { name: '源码' }).textContent).toBe('');
     expect(document.querySelector('.shell-file-pane-path')).toBeNull();
@@ -92,6 +89,60 @@ describe('FilePane', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: '高亮预览' }));
     expect(preview.textContent).toContain('43');
+  });
+
+  it('renders Markdown as a document preview while preserving editable source', async () => {
+    const bridge = installBridge();
+    bridge.readProjectFile.mockResolvedValue({
+      path: 'README.md',
+      content:
+        '# Preview title\n\n- First item\n- Second item\n\n| Name | Value |\n| --- | --- |\n| Cache | 42 |',
+      error: null,
+      errorCode: null,
+      mtimeMs: 10,
+      size: 92,
+    });
+
+    render(<FilePane projectFolder="C:/workspace" path="README.md" />);
+
+    const preview = await screen.findByTestId('file-pane-preview');
+    expect(preview.querySelector('[data-preview-kind="markdown"]')).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Preview title' })).toBeTruthy();
+    expect(preview.querySelectorAll('li')).toHaveLength(2);
+    expect(preview.querySelector('table')?.textContent).toContain('Cache');
+    expect(preview.querySelector('.shell-code-preview__ln')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: '源码' }));
+    const editor = screen.getByTestId('file-pane-editor') as HTMLTextAreaElement;
+    expect(editor.value).toContain('# Preview title');
+    fireEvent.change(editor, { target: { value: '# Updated title\n\nNew body' } });
+    fireEvent.click(screen.getByRole('tab', { name: '文档预览' }));
+    expect(screen.getByRole('heading', { level: 1, name: 'Updated title' })).toBeTruthy();
+  });
+
+  it('opens a Markdown content-search hit in source mode so the exact line remains visible', async () => {
+    const bridge = installBridge();
+    bridge.readProjectFile.mockResolvedValue({
+      path: 'README.md',
+      content: '# Title\n\nFirst paragraph\n\nNeedle line\n',
+      error: null,
+      errorCode: null,
+      mtimeMs: 10,
+      size: 42,
+    });
+
+    render(
+      <FilePane
+        projectFolder="C:/workspace"
+        path="README.md"
+        revealTarget={{ line: 5, column: 1, nonce: 7 }}
+      />,
+    );
+
+    const editor = (await screen.findByTestId('file-pane-editor')) as HTMLTextAreaElement;
+    await waitFor(() => expect(editor.hidden).toBe(false));
+    expect(screen.getByRole('tab', { name: '源码' }).getAttribute('aria-selected')).toBe('true');
+    expect(editor.selectionStart).toBe('# Title\n\nFirst paragraph\n\n'.length);
   });
 
   it('copies the complete current source and shows success feedback', async () => {
@@ -118,9 +169,7 @@ describe('FilePane', () => {
     fireEvent.click(screen.getByRole('button', { name: '复制源码' }));
 
     await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith(
-        'const answer: number = 43;\nexport { answer };\n',
-      ),
+      expect(writeText).toHaveBeenCalledWith('const answer: number = 43;\nexport { answer };\n'),
     );
     expect(screen.getByRole('button', { name: '源码已复制' }).textContent).toContain('已复制');
   });
@@ -147,11 +196,7 @@ describe('FilePane', () => {
     const onDirtyChange = vi.fn();
 
     render(
-      <FilePane
-        projectFolder="C:/workspace"
-        path="notes.txt"
-        onDirtyChange={onDirtyChange}
-      />,
+      <FilePane projectFolder="C:/workspace" path="notes.txt" onDirtyChange={onDirtyChange} />,
     );
     const editor = await screen.findByTestId('file-pane-editor');
     expect((editor as HTMLTextAreaElement).value).toBe('before');
@@ -195,13 +240,17 @@ describe('FilePane', () => {
       });
 
     render(<FilePane projectFolder="C:/workspace" path="notes.txt" />);
-    expect((await screen.findByTestId('file-pane-editor') as HTMLTextAreaElement).value).toBe('before');
+    expect(((await screen.findByTestId('file-pane-editor')) as HTMLTextAreaElement).value).toBe(
+      'before',
+    );
     await waitFor(() => expect(bridge.watchProjectFile).toHaveBeenCalledTimes(1));
 
     bridge.emitChange({ path: 'notes.txt', exists: true, mtimeMs: 30, size: 9 });
 
     await waitFor(() =>
-      expect((screen.getByTestId('file-pane-editor') as HTMLTextAreaElement).value).toBe('from disk'),
+      expect((screen.getByTestId('file-pane-editor') as HTMLTextAreaElement).value).toBe(
+        'from disk',
+      ),
     );
     expect(screen.queryByTestId('file-pane-conflict')).toBeNull();
   });
@@ -231,7 +280,9 @@ describe('FilePane', () => {
     fireEvent.change(editor, { target: { value: 'local draft' } });
     bridge.emitChange({ path: 'notes.txt', exists: true, mtimeMs: 30, size: 9 });
 
-    expect((await screen.findByTestId('file-pane-conflict')).textContent).toContain('磁盘上的文件已变化');
+    expect((await screen.findByTestId('file-pane-conflict')).textContent).toContain(
+      '磁盘上的文件已变化',
+    );
     expect((editor as HTMLTextAreaElement).value).toBe('local draft');
     fireEvent.click(screen.getByRole('button', { name: '加载磁盘版本' }));
 

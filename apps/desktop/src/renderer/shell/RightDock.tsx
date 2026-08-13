@@ -11,9 +11,11 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  FileDiff,
   Folder,
   FolderOpen,
   GitBranch,
+  GitCommitHorizontal,
   Globe,
   Loader2,
   RefreshCw,
@@ -21,14 +23,16 @@ import {
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
+import type { RunProcessView } from '@sync-think/protocol';
 import type {
   ProjectContentMatch,
   ProjectTextLocation,
   SearchProjectContentResult,
 } from '../../workspace-tools-contract.js';
 import { BrowserPanel } from './BrowserPanel.js';
-import { CodePreview } from './ExecutionProcessBlock.js';
+import { FileContentPreview } from './FileContentPreview.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
+import { LineDiffView } from './ExecutionProcessBlock.js';
 
 /** Preload bridge accessor (undefined in bare unit-test DOM). */
 function dockBridge() {
@@ -37,7 +41,7 @@ function dockBridge() {
 
 export type DockTab = 'browser' | 'files' | 'workspace' | 'workspace-files';
 
-type WorkspaceFilesSection = 'files' | 'git';
+type WorkspaceFilesSection = 'files' | 'git' | 'review';
 
 interface ProjectFileEntry {
   path: string;
@@ -49,7 +53,12 @@ interface GitInfo {
   branch: string | null;
   branches?: string[];
   changes: Array<{ status: string; path: string }>;
-  recentCommits: Array<{ hash: string; subject: string }>;
+  recentCommits: Array<{
+    hash: string;
+    subject: string;
+    files: Array<{ status: string; path: string }>;
+    truncated: boolean;
+  }>;
   isRepo: boolean;
 }
 
@@ -67,6 +76,8 @@ export function RightDock(props: {
   onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
   /** 当前活动文件（用于树/搜索列表高亮）。 */
   activeFilePath?: string | null;
+  /** Latest run's file changes for the Review tab. */
+  reviewView?: RunProcessView | null;
   onClose(): void;
 }) {
   const requestedTab =
@@ -136,6 +147,7 @@ export function RightDock(props: {
               onOpenFile={props.onOpenFile}
               onOpenFileInNewTab={props.onOpenFileInNewTab}
               activeFilePath={props.activeFilePath}
+              reviewView={props.reviewView}
             />
           </div>
         ) : null}
@@ -149,6 +161,8 @@ export function WorkspaceFilesPanel(props: {
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
   onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
   activeFilePath?: string | null;
+  /** Latest run's file changes for the Review tab (NewMax-style per-run review). */
+  reviewView?: RunProcessView | null;
 }) {
   const [section, setSection] = useState<WorkspaceFilesSection>('files');
 
@@ -185,6 +199,19 @@ export function WorkspaceFilesPanel(props: {
           <GitBranch size={12} />
           Git
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={section === 'review'}
+          className={clsx(
+            'shell-workspace-files-switcher__tab',
+            section === 'review' && 'is-active',
+          )}
+          onClick={() => setSection('review')}
+        >
+          <FileDiff size={12} />
+          Review
+        </button>
       </div>
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {section === 'files' ? (
@@ -196,11 +223,118 @@ export function WorkspaceFilesPanel(props: {
               activeFilePath={props.activeFilePath}
             />
           </div>
+        ) : section === 'git' ? (
+          <div className="shell-dock-panel absolute inset-0 is-active">
+            <WorkspacePanel
+              projectFolder={props.projectFolder}
+              onOpenFile={props.onOpenFile}
+              onOpenFileInNewTab={props.onOpenFileInNewTab}
+            />
+          </div>
         ) : (
           <div className="shell-dock-panel absolute inset-0 is-active">
-            <WorkspacePanel projectFolder={props.projectFolder} />
+            <ReviewPanel
+              view={props.reviewView ?? null}
+              onOpenFile={props.onOpenFile}
+              onOpenFileInNewTab={props.onOpenFileInNewTab}
+            />
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Review 面板（本轮文件变更 + 行级 diff） ──────────────────────────────────
+
+function ReviewPanel({
+  view,
+  onOpenFile,
+  onOpenFileInNewTab,
+}: {
+  view: RunProcessView | null;
+  onOpenFile?(path: string, location?: ProjectTextLocation): void;
+  onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
+}) {
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const changes = view?.fileChanges ?? [];
+  const selected = changes.find((item) => item.path === selectedPath) ?? changes[0];
+
+  if (!view || changes.length === 0) {
+    return (
+      <div className="shell-review-panel" data-testid="review-panel">
+        <div className="shell-review-empty">
+          <FileDiff size={22} />
+          <div className="shell-review-empty__title">暂无本轮变更</div>
+          <div className="shell-review-empty__hint">
+            让 AI 修改文件后，这里会显示本轮的文件清单与行级 diff。
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="shell-review-panel" data-testid="review-panel">
+      <div className="shell-review-list" role="list" aria-label="本轮变动文件">
+        {changes.map((item) => (
+          <button
+            key={item.path}
+            type="button"
+            role="listitem"
+            className={clsx(
+              'shell-review-list__item',
+              selected?.path === item.path && 'is-active',
+            )}
+            onClick={() => setSelectedPath(item.path)}
+            title={item.path}
+          >
+            <span
+              className={`shell-changes-card__badge is-${item.action}`}
+              data-action={item.action}
+            >
+              {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
+            </span>
+            <span className="shell-review-list__path">{item.path}</span>
+          </button>
+        ))}
+      </div>
+      <div className="shell-review-detail">
+        {selected ? (
+          <>
+            <div className="shell-review-detail__header">
+              <span className="shell-review-detail__path" title={selected.path}>
+                {selected.path}
+              </span>
+              <div className="shell-review-detail__actions">
+                {onOpenFile ? (
+                  <button
+                    type="button"
+                    className="shell-review-detail__btn"
+                    onClick={() => onOpenFile(selected.path)}
+                  >
+                    打开
+                  </button>
+                ) : null}
+                {onOpenFileInNewTab ? (
+                  <button
+                    type="button"
+                    className="shell-review-detail__btn"
+                    onClick={() => onOpenFileInNewTab(selected.path)}
+                  >
+                    新标签打开
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <LineDiffView
+              oldText={selected.previousContent}
+              newText={selected.content}
+              path={selected.path}
+              truncated={selected.previousTruncated}
+            />
+          </>
+        ) : null}
       </div>
     </div>
   );
@@ -407,11 +541,7 @@ function FilesPanel({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="shell-workspace-files-search shrink-0">
-        <div
-          className="shell-workspace-files-search__modes"
-          role="group"
-          aria-label="搜索范围"
-        >
+        <div className="shell-workspace-files-search__modes" role="group" aria-label="搜索范围">
           {(['filename', 'content'] as const).map((kind) => (
             <button
               key={kind}
@@ -429,10 +559,7 @@ function FilesPanel({
           ))}
         </div>
         <div className="shell-workspace-files-search__field">
-          <Search
-            size={11}
-            className="shell-workspace-files-search__icon"
-          />
+          <Search size={11} className="shell-workspace-files-search__icon" />
           <input
             className="shell-workspace-files-search__input"
             value={query}
@@ -579,7 +706,7 @@ function FilesPanel({
               ) : preview?.error ? (
                 <div className="px-3 py-3 text-[11.5px] text-text-faint">{preview.error}</div>
               ) : (
-                <CodePreview text={preview?.content ?? ''} path={selected} />
+                <FileContentPreview text={preview?.content ?? ''} path={selected} />
               )}
             </div>
           </div>
@@ -778,9 +905,21 @@ function FileTreeLevel({
 
 // ─── 工作区（git）面板 ────────────────────────────────────────────────────────
 
-function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
+function WorkspacePanel({
+  projectFolder,
+  onOpenFile,
+  onOpenFileInNewTab,
+}: {
+  projectFolder?: string;
+  onOpenFile?(path: string): void;
+  onOpenFileInNewTab?(path: string): void;
+}) {
   const [info, setInfo] = useState<GitInfo | null>(null);
   const [loading, setLoading] = useState(false);
+  // 提交展开状态：数据加载后默认展开最新一条。
+  const [expandedCommits, setExpandedCommits] = useState<Set<string>>(new Set());
+  // 提交内文件树的目录展开状态。
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   // 分支切换：picker 打开态 / 目标分支 / 脏工作区确认弹层 / 进行中 / 错误。
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const [pendingBranch, setPendingBranch] = useState<string | null>(null);
@@ -804,6 +943,31 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // 数据首次加载完成后，默认展开最新一条提交。
+  useEffect(() => {
+    if (!info || expandedCommits.size > 0) return;
+    const latest = info.recentCommits[0];
+    if (latest) setExpandedCommits(new Set([latest.hash]));
+  }, [info, expandedCommits.size]);
+
+  const toggleCommit = useCallback((hash: string) => {
+    setExpandedCommits((current) => {
+      const next = new Set(current);
+      if (next.has(hash)) next.delete(hash);
+      else next.add(hash);
+      return next;
+    });
+  }, []);
+
+  const toggleDir = useCallback((dir: string) => {
+    setExpandedDirs((current) => {
+      const next = new Set(current);
+      if (next.has(dir)) next.delete(dir);
+      else next.add(dir);
+      return next;
+    });
+  }, []);
 
   /** 发起切换：先 check 探测；脏则弹确认（stash 后切 / 取消）。 */
   const requestCheckout = useCallback(
@@ -1053,22 +1217,212 @@ function WorkspacePanel({ projectFolder }: { projectFolder?: string }) {
             <div className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wide text-text-faint">
               最近提交
             </div>
-            <ul className="space-y-1">
-              {info.recentCommits.map((commit) => (
-                <li key={commit.hash} className="flex items-baseline gap-2 text-[11.5px]">
-                  <span className="shrink-0 font-mono text-[10.5px] text-text-faint">
-                    {commit.hash}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-text" title={commit.subject}>
-                    {commit.subject}
-                  </span>
-                </li>
-              ))}
+            <ul className="space-y-0.5">
+              {info.recentCommits.map((commit) => {
+                const commitExpanded = expandedCommits.has(commit.hash);
+                return (
+                  <li key={commit.hash} className="rounded-md">
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[11.5px] hover:bg-hover"
+                      title={commit.subject}
+                      onClick={() => toggleCommit(commit.hash)}
+                    >
+                      {commitExpanded ? (
+                        <ChevronDown size={11} className="shrink-0 text-text-faint" />
+                      ) : (
+                        <ChevronRight size={11} className="shrink-0 text-text-faint" />
+                      )}
+                      <GitCommitHorizontal size={11} className="shrink-0 text-accent" />
+                      <span className="shrink-0 font-mono text-[10.5px] text-text-faint">
+                        {commit.hash}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-text" title={commit.subject}>
+                        {commit.subject}
+                      </span>
+                    </button>
+                    {commitExpanded ? (
+                      <div className="mt-0.5 border-l border-border pl-1.5">
+                        {commit.files.length === 0 ? (
+                          <div className="px-2 py-1 text-[11px] text-text-faint opacity-70">
+                            合并提交（无文件变更列表）
+                          </div>
+                        ) : (
+                          <>
+                            <CommitFileTree
+                              nodes={buildCommitFileTree(commit.files)}
+                              depth={0}
+                              expandedDirs={expandedDirs}
+                              onToggleDir={toggleDir}
+                              onOpenFile={onOpenFile}
+                              onOpenFileInNewTab={onOpenFileInNewTab}
+                            />
+                            {commit.truncated ? (
+                              <div className="px-2 py-1 text-[10.5px] text-text-faint">
+                                … 其余文件已省略
+                              </div>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         </>
       ) : null}
     </div>
+  );
+}
+
+// ─── 提交文件树 ────────────────────────────────────────────────────────────────
+
+/** 递归文件树节点（目录 / 文件）。 */
+type CommitTreeNode = {
+  name: string;
+  full: string;
+  kind: 'dir' | 'file';
+  status?: string;
+  children?: CommitTreeNode[];
+};
+
+/** 把提交变更的扁平路径列表构建为目录树。 */
+function buildCommitFileTree(
+  files: Array<{ status: string; path: string }>,
+): CommitTreeNode[] {
+  const root: CommitTreeNode[] = [];
+  const dirMap = new Map<string, CommitTreeNode[]>();
+  dirMap.set('', root);
+  for (const file of files) {
+    const segments = file.path.split('/').filter(Boolean);
+    if (segments.length === 0) continue;
+    let dir = '';
+    for (let i = 0; i < segments.length - 1; i += 1) {
+      const child = dir ? `${dir}/${segments[i]}` : segments[i]!;
+      let children = dirMap.get(child);
+      if (!children) {
+        const node: CommitTreeNode = { name: segments[i]!, full: child, kind: 'dir', children: [] };
+        dirMap.get(dir)!.push(node);
+        children = node.children!;
+        dirMap.set(child, children);
+      }
+      dir = child;
+    }
+    const leaf: CommitTreeNode = {
+      name: segments[segments.length - 1]!,
+      full: file.path,
+      kind: 'file',
+      status: file.status,
+    };
+    dirMap.get(dir)!.push(leaf);
+  }
+  return root;
+}
+
+/** 状态码 → 颜色 class（与「未提交变更」区块一致）。 */
+function commitFileStatusClass(status: string): string {
+  if (status.startsWith('A') || status.startsWith('?')) return 'text-[var(--color-success)]';
+  if (status.startsWith('D') || status.startsWith('R')) return 'text-[var(--color-error)]';
+  return 'text-accent';
+}
+
+function CommitFileTree({
+  nodes,
+  depth,
+  expandedDirs,
+  onToggleDir,
+  onOpenFile,
+  onOpenFileInNewTab,
+}: {
+  nodes: CommitTreeNode[];
+  depth: number;
+  expandedDirs: Set<string>;
+  onToggleDir(dir: string): void;
+  onOpenFile?(path: string): void;
+  onOpenFileInNewTab?(path: string): void;
+}) {
+  return (
+    <ul>
+      {nodes.map((node) =>
+        node.kind === 'dir' && node.children ? (
+          <li key={node.full}>
+            <button
+              type="button"
+              className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[11.5px] hover:bg-hover"
+              style={{ paddingLeft: 4 + depth * 14 }}
+              title={node.full}
+              onClick={() => onToggleDir(node.full)}
+            >
+              {expandedDirs.has(node.full) ? (
+                <ChevronDown size={10} className="shrink-0 text-text-faint" />
+              ) : (
+                <ChevronRight size={10} className="shrink-0 text-text-faint" />
+              )}
+              {expandedDirs.has(node.full) ? (
+                <FolderOpen size={11} className="shrink-0 text-accent" />
+              ) : (
+                <Folder size={11} className="shrink-0 text-text-faint" />
+              )}
+              <span className="min-w-0 flex-1 truncate">{node.name}</span>
+            </button>
+            {expandedDirs.has(node.full) ? (
+              <CommitFileTree
+                nodes={node.children ?? []}
+                depth={depth + 1}
+                expandedDirs={expandedDirs}
+                onToggleDir={onToggleDir}
+                onOpenFile={onOpenFile}
+                onOpenFileInNewTab={onOpenFileInNewTab}
+              />
+            ) : null}
+          </li>
+        ) : (
+          <li key={node.full}>
+            <div
+              className="flex items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] hover:bg-hover"
+              style={{ paddingLeft: 4 + depth * 14 + 13 }}
+              title={node.full}
+            >
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                aria-label={`打开文件 ${node.full}`}
+                onClick={() => {
+                  if (onOpenFile) onOpenFile(node.full);
+                }}
+              >
+                <FileTypeIcon path={node.full} size={11} className="shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-text">{node.name}</span>
+              </button>
+              {node.status ? (
+                <span
+                  className={clsx(
+                    'shrink-0 font-mono text-[10px]',
+                    commitFileStatusClass(node.status),
+                  )}
+                  title={node.status}
+                >
+                  {node.status}
+                </span>
+              ) : null}
+              {onOpenFileInNewTab ? (
+                <button
+                  type="button"
+                  className="shrink-0 rounded p-0.5 text-text-faint hover:bg-hover hover:text-text"
+                  aria-label={`在新文件标签打开 ${node.full}`}
+                  title="在新文件标签打开"
+                  onClick={() => onOpenFileInNewTab(node.full)}
+                >
+                  <ExternalLink size={10} />
+                </button>
+              ) : null}
+            </div>
+          </li>
+        ),
+      )}
+    </ul>
   );
 }
 

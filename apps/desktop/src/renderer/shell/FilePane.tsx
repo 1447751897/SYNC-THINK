@@ -12,7 +12,7 @@ import {
   Save,
 } from 'lucide-react';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
-import { CodePreview } from './ExecutionProcessBlock.js';
+import { FileContentPreview, isRenderedMarkdownPath } from './FileContentPreview.js';
 
 export interface FileRevealTarget extends ProjectTextLocation {
   nonce: number;
@@ -271,6 +271,10 @@ export function FilePane({
     if (!editor || !loaded || !revealTarget || revealedNonceRef.current === revealTarget.nonce) {
       return;
     }
+    if (isRenderedMarkdownPath(path) && view !== 'source') {
+      setView('source');
+      return;
+    }
     const targetLine = Math.max(1, Math.floor(revealTarget.line));
     const targetColumn = Math.max(1, Math.floor(revealTarget.column));
     let lineStart = 0;
@@ -293,7 +297,7 @@ export function FilePane({
     editor.scrollTop = Math.max(0, (targetLine - 1) * lineHeight - editor.clientHeight / 3);
     if (view === 'source') editor.focus();
     revealedNonceRef.current = revealTarget.nonce;
-  }, [draft, loaded, revealTarget, view]);
+  }, [draft, loaded, path, revealTarget, view]);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -380,6 +384,7 @@ export function FilePane({
   }, [draft]);
 
   const status = saving ? '保存中' : dirty ? '未保存' : cleanStatus;
+  const previewLabel = isRenderedMarkdownPath(path) ? '文档预览' : '高亮预览';
 
   return (
     <div className="shell-file-pane" data-testid="file-pane">
@@ -388,8 +393,8 @@ export function FilePane({
           <button
             type="button"
             role="tab"
-            aria-label="高亮预览"
-            title="高亮预览"
+            aria-label={previewLabel}
+            title={previewLabel}
             aria-selected={view === 'preview'}
             className={view === 'preview' ? 'is-active' : undefined}
             onClick={() => setView('preview')}
@@ -453,11 +458,7 @@ export function FilePane({
               title={workspaceFilesOpen ? '隐藏工作区文件' : '展开工作区文件'}
               onClick={onToggleWorkspaceFiles}
             >
-              {workspaceFilesOpen ? (
-                <PanelRightClose size={13} />
-              ) : (
-                <PanelRightOpen size={13} />
-              )}
+              {workspaceFilesOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
             </button>
           ) : null}
           <button
@@ -511,7 +512,7 @@ export function FilePane({
               aria-label={`预览 ${path}`}
               hidden={view !== 'preview'}
             >
-              <CodePreview text={draft} path={path} highlightLine={revealTarget?.line} />
+              <FileContentPreview text={draft} path={path} highlightLine={revealTarget?.line} />
             </div>
             <textarea
               ref={editorRef}

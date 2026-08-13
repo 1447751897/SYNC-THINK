@@ -638,7 +638,12 @@ declare global {
           branch: string | null;
           branches: string[];
           changes: Array<{ status: string; path: string }>;
-          recentCommits: Array<{ hash: string; subject: string }>;
+          recentCommits: Array<{
+            hash: string;
+            subject: string;
+            files: Array<{ status: string; path: string }>;
+            truncated: boolean;
+          }>;
           isRepo: boolean;
         }>;
         gitCheckout(payload: {

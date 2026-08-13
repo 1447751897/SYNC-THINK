@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import type { ContextStatusSection, ContextStatusSectionType } from '@sync-think/protocol';
+import { AgentAvatarView } from './AgentAvatarView.js';
 import type { ModelOption } from './NewConversationDialog.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
@@ -294,8 +295,8 @@ export interface IdentityOption {
  */
 export function IdentityPickerMenu(props: {
   open: boolean;
-  agents: readonly { id: string; name: string; description?: string }[];
-  teams: readonly { id: string; name: string; description?: string }[];
+  agents: readonly { id: string; name: string; description?: string; avatar?: string }[];
+  teams: readonly { id: string; name: string; description?: string; avatar?: string }[];
   currentTrack: 'model' | 'agent' | 'team';
   currentTargetRef: string;
   anchorEl: HTMLElement | null;
@@ -306,7 +307,7 @@ export function IdentityPickerMenu(props: {
   const sections: Array<{
     key: 'agent' | 'team';
     heading: string;
-    items: readonly { id: string; name: string; description?: string }[];
+    items: readonly { id: string; name: string; description?: string; avatar?: string }[];
   }> = [
     { key: 'agent', heading: '智能体', items: props.agents },
     { key: 'team', heading: '小队', items: props.teams },
@@ -368,7 +369,11 @@ export function IdentityPickerMenu(props: {
                     }}
                   >
                     <span className="shell-menu__item-icon-wrap" data-active={active ? '1' : '0'}>
-                      <Icon size={15} />
+                      {item.avatar?.trim() ? (
+                        <AgentAvatarView name={item.name} avatar={item.avatar} size={22} />
+                      ) : (
+                        <Icon size={15} />
+                      )}
                     </span>
                     <div className="shell-menu__item-text">
                       <div className="shell-menu__item-title">{item.name}</div>
