@@ -285,101 +285,139 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
             aria-modal="true"
             aria-label={isNew ? '新建小队' : '编辑小队'}
           >
-            {/* Drawer header */}
-            <div className="shell-library-drawer__header">
-              <span className="text-[14px] font-semibold text-text">
-                {isNew ? '新建小队' : `编辑小队${draft.name ? ` · ${draft.name}` : ''}`}
-              </span>
-              <button
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-text-faint hover:bg-hover hover:text-text"
-                onClick={closeDrawer}
+            {/* 身份卡：图标 + 名称 + 使命，常驻顶部（替代旧 header） */}
+            {!isNew ? (
+              <div
+                className="shell-agent-identity"
+                data-testid="team-identity-card"
               >
-                <X size={15} />
-              </button>
-            </div>
+                <div className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-full bg-accent-soft text-[24px] leading-none">
+                  {draft.avatar || '👥'}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[15px] font-semibold text-text">
+                    {draft.name || '未命名小队'}
+                  </div>
+                  {draft.mission ? (
+                    <p className="mt-0.5 line-clamp-2 text-[12px] leading-relaxed text-text-secondary">
+                      {draft.mission}
+                    </p>
+                  ) : (
+                    <p className="mt-0.5 text-[12px] text-text-faint">暂无使命</p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="shell-agent-identity__close"
+                  onClick={closeDrawer}
+                  title="关闭"
+                  aria-label="关闭"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            ) : (
+              /* 新建态顶端仅放标题+关闭 */
+              <div className="shell-agent-identity shell-agent-identity--bare">
+                <span className="text-[13px] font-medium text-text">新建小队</span>
+                <button
+                  type="button"
+                  className="shell-agent-identity__close"
+                  onClick={closeDrawer}
+                  title="关闭"
+                  aria-label="关闭"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            )}
 
-            {/* Two-column form */}
+            {/* 单列分组卡片表单：身份 / 策略 / 成员 */}
             <div className="shell-library-drawer__body">
-              {/* ── Left column: identity & coordinator ── */}
-              <div className="space-y-5">
-                {/* Avatar + Name */}
-                <div className="flex gap-3">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[11px] text-text-faint">图标</label>
-                    <input
-                      className="h-9 w-14 rounded-lg border border-border bg-page text-center text-[18px] focus:border-accent focus:outline-none"
-                      value={draft.avatar}
-                      onChange={(e) => setDraft((d) => ({ ...d, avatar: e.target.value }))}
-                      maxLength={2}
-                    />
+              <div className="shell-library-pane">
+
+                {/* ── 基本信息 ── */}
+                <div className="shell-agent-setting-group space-y-5">
+                  <SectionTitle>基本信息</SectionTitle>
+                  {/* Avatar + Name */}
+                  <div className="flex gap-3">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[11px] text-text-faint">图标</label>
+                      <input
+                        className="h-9 w-14 rounded-lg border border-border bg-page text-center text-[18px] focus:border-accent focus:outline-none"
+                        value={draft.avatar}
+                        onChange={(e) => setDraft((d) => ({ ...d, avatar: e.target.value }))}
+                        maxLength={2}
+                      />
+                    </div>
+                    <div className="flex flex-1 flex-col gap-1">
+                      <label className="text-[11px] text-text-faint">名称 *</label>
+                      <input
+                        ref={nameRef}
+                        className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                        placeholder="交付小队"
+                        value={draft.name}
+                        onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+                      />
+                    </div>
                   </div>
-                  <div className="flex flex-1 flex-col gap-1">
-                    <label className="text-[11px] text-text-faint">名称 *</label>
-                    <input
-                      ref={nameRef}
-                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                      placeholder="交付小队"
-                      value={draft.name}
-                      onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+                  {/* Mission */}
+                  <Field label="使命 / 总目标">
+                    <textarea
+                      className="w-full resize-y rounded-lg border border-border bg-page px-3 py-2 text-[12.5px] text-text focus:border-accent focus:outline-none"
+                      rows={5}
+                      placeholder="负责完整交付功能：从设计到实现到测试"
+                      value={draft.mission}
+                      onChange={(e) => setDraft((d) => ({ ...d, mission: e.target.value }))}
                     />
-                  </div>
+                  </Field>
                 </div>
 
-                {/* Mission */}
-                <Field label="使命 / 总目标">
-                  <textarea
-                    className="w-full resize-none rounded-lg border border-border bg-page px-3 py-2 text-[12.5px] text-text focus:border-accent focus:outline-none"
-                    rows={4}
-                    placeholder="负责完整交付功能：从设计到实现到测试"
-                    value={draft.mission}
-                    onChange={(e) => setDraft((d) => ({ ...d, mission: e.target.value }))}
-                  />
-                </Field>
-
-                {/* Strategy */}
-                <Field label="协作策略">
-                  <div className="flex gap-2">
-                    {(['serial', 'parallel'] as TeamStrategy[]).map((s) => (
-                      <button
-                        key={s}
-                        className={clsx(
-                          'shell-library-option flex-1',
-                          draft.strategy === s
-                            ? 'shell-library-option--selected'
-                            : undefined,
-                        )}
-                        onClick={() => setDraft((d) => ({ ...d, strategy: s }))}
-                      >
-                        {s === 'serial' ? '串行' : '并行'}
-                        <span className="ml-1 text-[10px] text-text-faint">
-                          {s === 'serial' ? '（依次执行）' : '（同时执行）'}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </Field>
-
-                {/* Coordinator */}
-                {draft.members.length > 0 && (
-                  <Field label="统筹智能体（可代审分工卡）">
-                    <select
-                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                      value={draft.coordinatorAgentId}
-                      onChange={(e) => setDraft((d) => ({ ...d, coordinatorAgentId: e.target.value }))}
-                    >
-                      <option value="">无（由用户确认）</option>
-                      {draft.members.map((m) => {
-                        const a = agents.find((ag) => ag.id === m.agentId);
-                        return a ? <option key={m.agentId} value={m.agentId}>{a.name}</option> : null;
-                      })}
-                    </select>
+                {/* ── 协作策略 ── */}
+                <div className="shell-agent-setting-group space-y-5">
+                  <SectionTitle>协作策略</SectionTitle>
+                  <Field label="执行方式">
+                    <div className="flex gap-2">
+                      {(['serial', 'parallel'] as TeamStrategy[]).map((s) => (
+                        <button
+                          key={s}
+                          className={clsx(
+                            'shell-library-option flex-1',
+                            draft.strategy === s
+                              ? 'shell-library-option--selected'
+                              : undefined,
+                          )}
+                          onClick={() => setDraft((d) => ({ ...d, strategy: s }))}
+                        >
+                          {s === 'serial' ? '串行' : '并行'}
+                          <span className="ml-1 text-[10px] text-text-faint">
+                            {s === 'serial' ? '（依次执行）' : '（同时执行）'}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
                   </Field>
-                )}
-              </div>
+                  {/* Coordinator — only meaningful when there are members */}
+                  {draft.members.length > 0 && (
+                    <Field label="统筹智能体（可代审分工卡）">
+                      <select
+                        className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                        value={draft.coordinatorAgentId}
+                        onChange={(e) => setDraft((d) => ({ ...d, coordinatorAgentId: e.target.value }))}
+                      >
+                        <option value="">无（由用户确认）</option>
+                        {draft.members.map((m) => {
+                          const a = agents.find((ag) => ag.id === m.agentId);
+                          return a ? <option key={m.agentId} value={m.agentId}>{a.name}</option> : null;
+                        })}
+                      </select>
+                    </Field>
+                  )}
+                </div>
 
-              {/* ── Right column: members ── */}
-              <div className="space-y-5">
-                <Field label={`成员（${draft.members.length}）`}>
+                {/* ── 成员 ── */}
+                <div className="shell-agent-setting-group space-y-5">
+                  <SectionTitle>成员（{draft.members.length}）</SectionTitle>
                   <div className="space-y-1.5">
                     {draft.members.map((m) => {
                       const agent = agents.find((a) => a.id === m.agentId);
@@ -433,7 +471,7 @@ export function TeamLibrary({ teams, agents, onRefresh, onStartConversation }: P
                       {unusedAgents.length === 0 ? '所有智能体均已加入' : '添加成员…'}
                     </button>
                   </div>
-                </Field>
+                </div>
               </div>
             </div>
 
@@ -817,6 +855,10 @@ function EmptyTeams({ onNew }: { onNew(): void }) {
       </button>
     </div>
   );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <div className="shell-library-section-title">{children}</div>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

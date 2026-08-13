@@ -170,6 +170,9 @@ describe('AgentLibrary tabbed detail drawer', () => {
     renderLibrary(undefined, {
       teams: [team],
       conversations: [assignedConversation],
+      workspaces: [
+        { workspaceId: 'workspace-1' as never, name: '工作区 一', createdAt: '', updatedAt: '' } as never,
+      ],
       onOpenConversation,
     });
     openDrawer();
@@ -179,7 +182,13 @@ describe('AgentLibrary tabbed detail drawer', () => {
 
     fireEvent.click(screen.getByTestId('agent-drawer-tab-work'));
     expect(screen.getByTestId('agent-drawer-work')).toBeTruthy();
-    expect(screen.getByText('Agent Alpha 的对话')).toBeTruthy();
+    // 工作区行存在,初始折叠 → 对话尚未渲染
+    const wsRow = screen.getByTestId('agent-work-workspace-workspace-1');
+    expect(wsRow).toBeTruthy();
+
+    // 展开工作区 → 对话行出现
+    fireEvent.click(wsRow);
+    expect(screen.getByTestId('agent-work-open-conversation-1')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('agent-work-open-conversation-1'));
     expect(onOpenConversation).toHaveBeenCalledWith('conversation-1');
@@ -220,6 +229,8 @@ describe('AgentLibrary tabbed detail drawer', () => {
     openDrawer();
 
     fireEvent.click(screen.getByTestId('agent-drawer-tab-abilities'));
+    // 子 tab 默认是 skills;切到 persona 才有 textarea
+    fireEvent.click(screen.getByTestId('agent-ability-subtab-persona'));
     const abilities = screen.getByTestId('agent-drawer-abilities');
     expect(abilities.querySelector('textarea')).toBeTruthy();
 

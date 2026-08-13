@@ -5,7 +5,9 @@
 import {
   ArrowUpRight,
   Bot,
+  ChevronDown,
   ChevronRight,
+  Folder,
   ImagePlus,
   Plus,
   Trash2,
@@ -16,6 +18,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import type { Conversation, GlobalAgent, ModelId, Team } from '@sync-think/shared';
+import type { WorkspaceSummary } from '@sync-think/protocol';
 import type { ModelOption } from './NewConversationDialog.js';
 import { useDialog } from './Dialog.js';
 import { AgentAvatarView, isImageAvatar, readAvatarImage } from './AgentAvatarView.js';
@@ -34,11 +37,14 @@ interface Props {
   teams?: readonly Team[];
   /** Full conversation list — used to list conversations assigned to an agent. */
   conversations?: readonly Conversation[];
+  /** Workspaces — used to group the work tab by workspace and resolve names. */
+  workspaces?: readonly WorkspaceSummary[];
   /** Focus/open an existing conversation by id. */
   onOpenConversation?(conversationId: string): void;
 }
 
 type DrawerTab = 'overview' | 'work' | 'abilities' | 'settings';
+type AbilitySubTab = 'skills' | 'mcp' | 'persona';
 
 type DraftAgent = {
   name: string;
@@ -110,12 +116,15 @@ export function AgentLibrary({
   skillCatalogRevision = 0,
   teams = [],
   conversations = [],
+  workspaces = [],
   onOpenConversation,
 }: Props) {
   const dialog = useDialog();
   const [selected, setSelected] = useState<GlobalAgent | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>('overview');
+  const [abilitySubTab, setAbilitySubTab] = useState<AbilitySubTab>('skills');
+  const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(() => new Set());
   const [draft, setDraft] = useState<DraftAgent>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -399,6 +408,38 @@ export function AgentLibrary({
     [conversations, selected],
   );
 
+  // Group assigned conversations by workspace for the work tab's accordion.
+  // Each group carries the resolved workspace name/icon (falls back to the id).
+  const groupedByWorkspace = useMemo(() => {
+    const groups = new Map<
+      string,
+      { workspaceId: string; name: string; icon?: string; conversations: Conversation[] }
+    >();
+    for (const c of assignedConversations) {
+      const wid = String(c.workspaceId);
+      const ws = workspaces.find((w) => w.workspaceId === wid);
+      const bucket = groups.get(wid) ?? {
+        workspaceId: wid,
+        name: ws?.name ?? wid,
+        icon: ws?.icon,
+        conversations: [],
+      };
+      bucket.conversations.push(c);
+      groups.set(wid, bucket);
+    }
+    // Stable order: by workspace name then id.
+    return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name) || a.workspaceId.localeCompare(b.workspaceId));
+  }, [assignedConversations, workspaces]);
+
+  const toggleWorkspace = useCallback((workspaceId: string) => {
+    setExpandedWorkspaces((current) => {
+      const next = new Set(current);
+      if (next.has(workspaceId)) next.delete(workspaceId);
+      else next.add(workspaceId);
+      return next;
+    });
+  }, []);
+
   return (
     <div className="shell-library-page">
       {/* ── Library panel ─────────────────────────────────────────── */}
@@ -455,21 +496,50 @@ export function AgentLibrary({
             aria-modal="true"
             aria-label={isNew ? '新建智能体' : `编辑智能体${draft.name ? ` · ${draft.name}` : ''}`}
           >
-            {/* Drawer header */}
-            <div className="shell-library-drawer__header">
-              <div className="flex items-center gap-3">
-                <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={30} />
-                <span className="text-[14px] font-semibold text-text">
-                  {isNew ? '新建智能体' : `编辑智能体${draft.name ? ` · ${draft.name}` : ''}`}
-                </span>
-              </div>
-              <button
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-text-faint hover:bg-hover hover:text-text"
-                onClick={closeDrawer}
+            {/* 身份卡：头像 + 名称 + 简介 + 关闭，常驻 tab 之上（替代旧 header） */}
+            {!isNew ? (
+              <div
+                className="shell-agent-identity"
+                data-testid="agent-identity-card"
               >
-                <X size={15} />
-              </button>
-            </div>
+                <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={52} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[15px] font-semibold text-text">
+                    {draft.name || '未命名智能体'}
+                  </div>
+                  {draft.description ? (
+                    <p className="mt-0.5 line-clamp-2 text-[12px] leading-relaxed text-text-secondary">
+                      {draft.description}
+                    </p>
+                  ) : (
+                    <p className="mt-0.5 text-[12px] text-text-faint">暂无简介</p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="shell-agent-identity__close"
+                  onClick={closeDrawer}
+                  title="关闭"
+                  aria-label="关闭"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            ) : (
+              /* 新建态无身份卡,顶端仅放关闭条 */
+              <div className="shell-agent-identity shell-agent-identity--bare">
+                <span className="text-[13px] font-medium text-text">新建智能体</span>
+                <button
+                  type="button"
+                  className="shell-agent-identity__close"
+                  onClick={closeDrawer}
+                  title="关闭"
+                  aria-label="关闭"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            )}
 
             {/* Tab row */}
             <div className="shell-agent-tabs" role="tablist" aria-label="智能体详情">
@@ -490,27 +560,11 @@ export function AgentLibrary({
 
             {/* ── 概览：只读基本信息 ── */}
             {drawerTab === 'overview' && (
-              <div
-                className="shell-library-drawer__body shell-agent-drawer__body--single"
-                data-testid="agent-drawer-overview"
-              >
-                <div className="space-y-5">
-                  <div className="flex items-center gap-4">
-                    <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={56} />
-                    <div className="min-w-0">
-                      <div className="truncate text-[15px] font-semibold text-text">
-                        {draft.name || '未命名智能体'}
-                      </div>
-                      <div className="mt-0.5 text-[11.5px] text-text-faint">
-                        ID · {selected?.id ?? '-'}
-                      </div>
-                    </div>
-                  </div>
-
-                  <Field label="简介">
-                    <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-text">
-                      {draft.description || '—'}
-                    </p>
+              <div className="shell-library-drawer__body" data-testid="agent-drawer-overview">
+                <div className="shell-library-pane">
+                  <div className="space-y-5">
+                  <Field label="ID">
+                    <p className="font-mono text-[11.5px] text-text-faint">{selected?.id ?? '-'}</p>
                   </Field>
 
                   <Field label="所在小队">
@@ -579,367 +633,475 @@ export function AgentLibrary({
                       {draft.persona || '—'}
                     </pre>
                   </Field>
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* ── 工作：已分配对话 ── */}
+            {/* ── 工作：按工作区分组的手风琴 ── */}
             {drawerTab === 'work' && (
-              <div
-                className="shell-library-drawer__body shell-agent-drawer__body--single"
-                data-testid="agent-drawer-work"
-              >
-                {assignedConversations.length === 0 ? (
+              <div className="shell-library-drawer__body" data-testid="agent-drawer-work">
+                <div className="shell-library-pane">
+                {groupedByWorkspace.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center">
                     <p className="m-0 text-[12px] text-text-faint">
                       暂无已分配对话。在对话中切换对象为该智能体后，对话会出现在这里。
                     </p>
                   </div>
                 ) : (
-                  <div className="space-y-1.5">
-                    {assignedConversations.map((c) => (
-                      <div
-                        key={c.id}
-                        className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-[12.5px] text-text">
-                            {c.title || '未命名对话'}
-                          </div>
-                          <div className="text-[11px] text-text-faint">
-                            {c.lastMessageAt
-                              ? new Date(c.lastMessageAt).toLocaleString()
-                              : '尚无消息'}
+                  <div className="space-y-2" data-testid="agent-work-workspace-list">
+                    {groupedByWorkspace.map((group) => {
+                      const isOpen = expandedWorkspaces.has(group.workspaceId);
+                      return (
+                        <div
+                          key={group.workspaceId}
+                          className={clsx(
+                            'shell-agent-workspace',
+                            isOpen && 'is-open',
+                          )}
+                        >
+                          <button
+                            type="button"
+                            className="shell-agent-workspace__head"
+                            aria-expanded={isOpen}
+                            data-testid={`agent-work-workspace-${group.workspaceId}`}
+                            onClick={() => toggleWorkspace(group.workspaceId)}
+                          >
+                            <span className="shell-agent-workspace__icon">
+                              {group.icon ? (
+                                <span className="text-[14px] leading-none">{group.icon}</span>
+                              ) : (
+                                <Folder size={14} className="text-accent" />
+                              )}
+                            </span>
+                            <span
+                              className="min-w-0 flex-1 truncate text-[13px] font-medium text-text"
+                              title={group.name}
+                            >
+                              {group.name}
+                            </span>
+                            <span className="shell-agent-workspace__count">
+                              {group.conversations.length}
+                            </span>
+                            <ChevronDown
+                              size={14}
+                              className={clsx(
+                                'shell-agent-workspace__chevron shrink-0 text-text-faint',
+                              )}
+                            />
+                          </button>
+                          <div className="shell-agent-workspace__body" aria-hidden={!isOpen}>
+                            {isOpen && (
+                              <div className="space-y-1.5 shell-agent-sub-enter" data-testid={`agent-work-conversations-${group.workspaceId}`}>
+                                {group.conversations.map((c) => (
+                                  <div
+                                    key={c.id}
+                                    className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2 transition-colors hover:border-border-strong"
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <div className="truncate text-[12.5px] text-text">
+                                        {c.title || '未命名对话'}
+                                      </div>
+                                      <div className="text-[11px] text-text-faint">
+                                        {c.lastMessageAt
+                                          ? new Date(c.lastMessageAt).toLocaleString()
+                                          : '尚无消息'}
+                                      </div>
+                                    </div>
+                                    {onOpenConversation ? (
+                                      <button
+                                        type="button"
+                                        data-testid={`agent-work-open-${c.id}`}
+                                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-faint transition-colors hover:bg-hover hover:text-text"
+                                        title="打开该对话"
+                                        onClick={() => onOpenConversation(String(c.id))}
+                                      >
+                                        <ArrowUpRight size={15} />
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
-                        {onOpenConversation ? (
-                          <button
-                            type="button"
-                            data-testid={`agent-work-open-${c.id}`}
-                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-text-faint hover:bg-hover hover:text-text"
-                            title="打开该对话"
-                            onClick={() => onOpenConversation(String(c.id))}
-                          >
-                            <ArrowUpRight size={15} />
-                          </button>
-                        ) : null}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
+                </div>
               </div>
             )}
 
-            {/* ── 能力：Skill / MCP / 人设（可编辑） ── */}
+            {/* ── 能力：子 tab 切换 Skill / MCP / 人设 ── */}
             {drawerTab === 'abilities' && (
               <div className="shell-library-drawer__body" data-testid="agent-drawer-abilities">
-                <div className="space-y-5">
-                  <SectionTitle>
-                    <span className="inline-flex items-center gap-1">
-                      <Sparkles size={12} /> Skill 绑定
-                    </span>
-                  </SectionTitle>
-                  <Field label={catalogLoading ? '加载中…' : `已选 ${draft.skillIds.length} 个`}>
-                    {skillCatalogError ? (
-                      <div className="flex items-center justify-between gap-2 rounded-lg bg-error/10 px-3 py-2 text-[11.5px] text-error">
-                        <span className="min-w-0 truncate">Skill 加载失败：{skillCatalogError}</span>
-                        {onManageSkills ? (
-                          <button type="button" className="shrink-0 underline" onClick={onManageSkills}>
-                            打开能力中心
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : skills.length === 0 ? (
-                      <div className="rounded-lg border border-dashed border-border px-3 py-3 text-center">
-                        <p className="m-0 text-[11.5px] text-text-faint">暂无已导入 Skill</p>
-                        {onManageSkills ? (
-                          <button
-                            type="button"
-                            data-testid="manage-skills-from-agent"
-                            className="shell-library-secondary-action mt-2"
-                            onClick={onManageSkills}
-                          >
-                            去能力中心导入
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <div className="shell-library-subpanel max-h-44 space-y-1 overflow-y-auto p-2">
-                        {skills.map((s) => {
-                          const checked = draft.skillIds.includes(s.id);
-                          return (
-                            <label
-                              key={s.id}
-                              className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
-                              title={s.description || s.id}
-                            >
-                              <input
-                                type="checkbox"
-                                className="mt-0.5 accent-[var(--color-accent)]"
-                                checked={checked}
-                                disabled={!checked && draft.skillIds.length >= 8}
-                                onChange={() =>
-                                  setDraft((d) => ({
-                                    ...d,
-                                    skillIds: toggleId(d.skillIds, s.id),
-                                  }))
-                                }
-                              />
-                              <span className="min-w-0 flex-1">
-                                <span className="block truncate text-[12.5px] text-text">
-                                  {s.name}
-                                  {s.version ? (
-                                    <span className="ml-1 text-[11px] text-text-faint">@{s.version}</span>
-                                  ) : null}
-                                </span>
-                                {s.description ? (
-                                  <span className="block truncate text-[11px] text-text-faint">
-                                    {s.description}
-                                  </span>
-                                ) : null}
-                              </span>
-                            </label>
-                          );
-                        })}
+                <div className="shell-library-pane">
+                  <div className="shell-agent-subtabs" role="tablist" aria-label="能力子分类">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={abilitySubTab === 'skills'}
+                      data-testid="agent-ability-subtab-skills"
+                      className={clsx('shell-agent-subtab', abilitySubTab === 'skills' && 'is-active')}
+                      onClick={() => setAbilitySubTab('skills')}
+                    >
+                      <Sparkles size={12} /> Skill
+                      <span className="shell-agent-subtab__count">{draft.skillIds.length}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={abilitySubTab === 'mcp'}
+                      data-testid="agent-ability-subtab-mcp"
+                      className={clsx('shell-agent-subtab', abilitySubTab === 'mcp' && 'is-active')}
+                      onClick={() => setAbilitySubTab('mcp')}
+                    >
+                      <Wrench size={12} /> MCP
+                      <span className="shell-agent-subtab__count">{draft.mcpServerIds.length}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={abilitySubTab === 'persona'}
+                      data-testid="agent-ability-subtab-persona"
+                      className={clsx('shell-agent-subtab', abilitySubTab === 'persona' && 'is-active')}
+                      onClick={() => setAbilitySubTab('persona')}
+                    >
+                      人设指令
+                    </button>
+                  </div>
+
+                  <div className="shell-agent-subpanel" data-testid="agent-ability-content">
+                    {/* ── Skill 绑定 ── */}
+                    {abilitySubTab === 'skills' && (
+                      <div className="space-y-3 shell-agent-sub-enter" role="tabpanel">
+                        <SectionTitle>
+                          <span className="inline-flex items-center gap-1">
+                            <Sparkles size={12} /> Skill 绑定
+                          </span>
+                        </SectionTitle>
+                        <Field label={catalogLoading ? '加载中…' : `已选 ${draft.skillIds.length} 个`}>
+                          {skillCatalogError ? (
+                            <div className="flex items-center justify-between gap-2 rounded-lg bg-error/10 px-3 py-2 text-[11.5px] text-error">
+                              <span className="min-w-0 truncate">Skill 加载失败：{skillCatalogError}</span>
+                              {onManageSkills ? (
+                                <button type="button" className="shrink-0 underline" onClick={onManageSkills}>
+                                  打开能力中心
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : skills.length === 0 ? (
+                            <div className="rounded-lg border border-dashed border-border px-3 py-3 text-center">
+                              <p className="m-0 text-[11.5px] text-text-faint">暂无已导入 Skill</p>
+                              {onManageSkills ? (
+                                <button
+                                  type="button"
+                                  data-testid="manage-skills-from-agent"
+                                  className="shell-library-secondary-action mt-2"
+                                  onClick={onManageSkills}
+                                >
+                                  去能力中心导入
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <div className="shell-library-subpanel max-h-[420px] space-y-1 overflow-y-auto p-2">
+                              {skills.map((s) => {
+                                const checked = draft.skillIds.includes(s.id);
+                                return (
+                                  <label
+                                    key={s.id}
+                                    className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
+                                    title={s.description || s.id}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="mt-0.5 accent-[var(--color-accent)]"
+                                      checked={checked}
+                                      disabled={!checked && draft.skillIds.length >= 8}
+                                      onChange={() =>
+                                        setDraft((d) => ({
+                                          ...d,
+                                          skillIds: toggleId(d.skillIds, s.id),
+                                        }))
+                                      }
+                                    />
+                                    <span className="min-w-0 flex-1">
+                                      <span className="block truncate text-[12.5px] text-text">
+                                        {s.name}
+                                        {s.version ? (
+                                          <span className="ml-1 text-[11px] text-text-faint">@{s.version}</span>
+                                        ) : null}
+                                      </span>
+                                      {s.description ? (
+                                        <span className="block truncate text-[11px] text-text-faint">
+                                          {s.description}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {draft.skillIds.length >= 8 ? (
+                            <p className="mt-1 text-[11px] text-warning">最多装备 8 个 Skill；请先取消一个再选择。</p>
+                          ) : draft.skillIds.length > 0 ? (
+                            <p className="mt-1 text-[11px] text-text-faint">最多可装备 8 个 Skill</p>
+                          ) : null}
+                        </Field>
                       </div>
                     )}
-                    {draft.skillIds.length >= 8 ? (
-                      <p className="mt-1 text-[11px] text-warning">最多装备 8 个 Skill；请先取消一个再选择。</p>
-                    ) : draft.skillIds.length > 0 ? (
-                      <p className="mt-1 text-[11px] text-text-faint">最多可装备 8 个 Skill</p>
-                    ) : null}
-                  </Field>
 
-                  <SectionTitle>
-                    <span className="inline-flex items-center gap-1">
-                      <Wrench size={12} /> MCP 绑定
-                    </span>
-                  </SectionTitle>
-                  <Field label={catalogLoading ? '加载中…' : `已选 ${draft.mcpServerIds.length} 个`}>
-                    {mcpServers.length === 0 ? (
-                      <p className="text-[11.5px] text-text-faint">
-                        暂无已注册 MCP 服务器。注册后可在此绑定，对话内可调用其工具。
-                      </p>
-                    ) : (
-                      <div className="shell-library-subpanel max-h-44 space-y-1 overflow-y-auto p-2">
-                        {mcpServers.map((s) => {
-                          const checked = draft.mcpServerIds.includes(s.id);
-                          return (
-                            <label
-                              key={s.id}
-                              className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
-                            >
-                              <input
-                                type="checkbox"
-                                className="accent-[var(--color-accent)]"
-                                checked={checked}
-                                onChange={() =>
-                                  setDraft((d) => ({
-                                    ...d,
-                                    mcpServerIds: toggleId(d.mcpServerIds, s.id),
-                                  }))
-                                }
-                              />
-                              <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">
-                                {s.name}
-                              </span>
-                              <span className="shrink-0 text-[11px] text-text-faint">
-                                {s.toolCount} 工具{s.trusted ? ' · 信任' : ''}
-                              </span>
-                            </label>
-                          );
-                        })}
+                    {/* ── MCP 绑定 ── */}
+                    {abilitySubTab === 'mcp' && (
+                      <div className="space-y-3 shell-agent-sub-enter" role="tabpanel">
+                        <SectionTitle>
+                          <span className="inline-flex items-center gap-1">
+                            <Wrench size={12} /> MCP 绑定
+                          </span>
+                        </SectionTitle>
+                        <Field label={catalogLoading ? '加载中…' : `已选 ${draft.mcpServerIds.length} 个`}>
+                          {mcpServers.length === 0 ? (
+                            <p className="text-[11.5px] text-text-faint">
+                              暂无已注册 MCP 服务器。注册后可在此绑定，对话内可调用其工具。
+                            </p>
+                          ) : (
+                            <div className="shell-library-subpanel max-h-[420px] space-y-1 overflow-y-auto p-2">
+                              {mcpServers.map((s) => {
+                                const checked = draft.mcpServerIds.includes(s.id);
+                                return (
+                                  <label
+                                    key={s.id}
+                                    className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 hover:bg-hover"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="accent-[var(--color-accent)]"
+                                      checked={checked}
+                                      onChange={() =>
+                                        setDraft((d) => ({
+                                          ...d,
+                                          mcpServerIds: toggleId(d.mcpServerIds, s.id),
+                                        }))
+                                      }
+                                    />
+                                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">
+                                      {s.name}
+                                    </span>
+                                    <span className="shrink-0 text-[11px] text-text-faint">
+                                      {s.toolCount} 工具{s.trusted ? ' · 信任' : ''}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </Field>
                       </div>
                     )}
-                  </Field>
-                </div>
 
-                <div className="space-y-5">
-                  <SectionTitle>系统 / 人设指令</SectionTitle>
-                  <Field label="人设 / 系统指令">
-                    <textarea
-                      className="w-full resize-y rounded-lg border border-border bg-page px-3 py-2 font-mono text-[12.5px] leading-relaxed text-text focus:border-accent focus:outline-none"
-                      rows={12}
-                      placeholder="你是一名经验丰富的前端工程师，专注于 React 和 TypeScript…"
-                      value={draft.persona}
-                      onChange={(e) => setDraft((d) => ({ ...d, persona: e.target.value }))}
-                    />
-                  </Field>
+                    {/* ── 人设 / 系统指令 ── */}
+                    {abilitySubTab === 'persona' && (
+                      <div className="space-y-3 shell-agent-sub-enter" role="tabpanel">
+                        <SectionTitle>系统 / 人设指令</SectionTitle>
+                        <Field label="人设 / 系统指令">
+                          <textarea
+                            className="w-full resize-y rounded-lg border border-border bg-page px-3 py-2 font-mono text-[12.5px] leading-relaxed text-text focus:border-accent focus:outline-none"
+                            rows={16}
+                            placeholder="你是一名经验丰富的前端工程师，专注于 React 和 TypeScript…"
+                            value={draft.persona}
+                            onChange={(e) => setDraft((d) => ({ ...d, persona: e.target.value }))}
+                          />
+                        </Field>
+                        {draft.persona.trim() ? (
+                          <p className="text-[11px] text-text-faint">
+                            {draft.persona.length} 字符
+                          </p>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* ── 设置：身份与模型（可编辑） ── */}
+            {/* ── 设置：单列分组卡片 —— 身份 / 模型 ── */}
             {drawerTab === 'settings' && (
               <div className="shell-library-drawer__body" data-testid="agent-drawer-settings">
-                <div className="space-y-5">
-                  <SectionTitle>基本信息</SectionTitle>
+                <div className="shell-library-pane">
+                  {/* 身份 */}
+                  <div className="shell-agent-setting-group space-y-5">
+                    <SectionTitle>基本信息</SectionTitle>
 
-                  {/* Avatar picker: live preview + emoji input + image import */}
-                  <div className="flex items-center gap-4">
-                    <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={56} />
-                    <div className="flex flex-1 flex-col gap-1.5">
-                      <label className="text-[11px] text-text-faint">头像</label>
-                      <div className="flex items-center gap-2">
-                        {!isImageAvatar(draft.avatar) && (
-                          <input
-                            className="h-9 w-16 rounded-lg border border-border bg-page text-center text-[18px] focus:border-accent focus:outline-none"
-                            value={draft.avatar}
-                            onChange={(e) => setDraft((d) => ({ ...d, avatar: e.target.value }))}
-                            maxLength={2}
-                            title="输入一个 emoji 或字母"
-                          />
-                        )}
-                        <button
-                          type="button"
-                          className="flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] text-text-secondary hover:bg-hover"
-                          onClick={() => avatarFileRef.current?.click()}
-                        >
-                          <ImagePlus size={13} /> 导入图片
-                        </button>
-                        {isImageAvatar(draft.avatar) && (
+                    {/* Avatar picker: live preview + emoji input + image import */}
+                    <div className="flex items-center gap-4">
+                      <AgentAvatarView name={draft.name || '?'} avatar={draft.avatar} size={56} />
+                      <div className="flex flex-1 flex-col gap-1.5">
+                        <label className="text-[11px] text-text-faint">头像</label>
+                        <div className="flex items-center gap-2">
+                          {!isImageAvatar(draft.avatar) && (
+                            <input
+                              className="h-9 w-16 rounded-lg border border-border bg-page text-center text-[18px] focus:border-accent focus:outline-none"
+                              value={draft.avatar}
+                              onChange={(e) => setDraft((d) => ({ ...d, avatar: e.target.value }))}
+                              maxLength={2}
+                              title="输入一个 emoji 或字母"
+                            />
+                          )}
                           <button
                             type="button"
-                            className="h-9 rounded-lg px-2 text-[12px] text-text-faint hover:bg-hover hover:text-text"
-                            onClick={() => setDraft((d) => ({ ...d, avatar: '🤖' }))}
+                            className="flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] text-text-secondary hover:bg-hover"
+                            onClick={() => avatarFileRef.current?.click()}
                           >
-                            恢复 emoji
+                            <ImagePlus size={13} /> 导入图片
                           </button>
-                        )}
-                        <input
-                          ref={avatarFileRef}
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={(e) => {
-                            void handleAvatarFile(e.target.files?.[0]);
-                            e.target.value = '';
-                          }}
-                        />
+                          {isImageAvatar(draft.avatar) && (
+                            <button
+                              type="button"
+                              className="h-9 rounded-lg px-2 text-[12px] text-text-faint hover:bg-hover hover:text-text"
+                              onClick={() => setDraft((d) => ({ ...d, avatar: '🤖' }))}
+                            >
+                              恢复 emoji
+                            </button>
+                          )}
+                          <input
+                            ref={avatarFileRef}
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              void handleAvatarFile(e.target.files?.[0]);
+                              e.target.value = '';
+                            }}
+                          />
+                        </div>
                       </div>
                     </div>
+
+                    <Field label="名称 *">
+                      <input
+                        ref={nameRef}
+                        className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                        placeholder="前端小张"
+                        value={draft.name}
+                        onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+                      />
+                    </Field>
+
+                    <Field label="简介">
+                      <input
+                        className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                        placeholder="擅长前端开发与调试"
+                        value={draft.description}
+                        onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+                      />
+                    </Field>
                   </div>
 
-                  <Field label="名称 *">
-                    <input
-                      ref={nameRef}
-                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                      placeholder="前端小张"
-                      value={draft.name}
-                      onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-                    />
-                  </Field>
+                  {/* 模型 */}
+                  <div className="shell-agent-setting-group space-y-5">
+                    <SectionTitle>模型</SectionTitle>
 
-                  <Field label="简介">
-                    <input
-                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                      placeholder="擅长前端开发与调试"
-                      value={draft.description}
-                      onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
-                    />
-                  </Field>
-                </div>
-
-                <div className="space-y-5">
-                  <SectionTitle>模型</SectionTitle>
-
-                  {/* Default model — required; empty value is rejected by protocol.
-                      Two-level provider → model picker (same widget as the compose bar).
-                      Both the label and the control open the picker so pressing
-                      the field text is never a silent no-op. */}
-                  <Field
-                    label="默认模型 *"
-                    onLabelClick={() => setModelMenuOpen((o) => !o)}
-                  >
-                    <div
-                      className="shell-library-control flex h-9 cursor-pointer items-center px-1.5"
-                      onClick={(e) => {
-                        // The trigger button handles its own click; only open
-                        // when pressing elsewhere in the control area.
-                        if ((e.target as HTMLElement).closest('button')) return;
-                        setModelMenuOpen((o) => !o);
-                      }}
+                    {/* Default model — required; empty value is rejected by protocol.
+                        Two-level provider → model picker (same widget as the compose bar).
+                        Both the label and the control open the picker so pressing
+                        the field text is never a silent no-op. */}
+                    <Field
+                      label="默认模型 *"
+                      onLabelClick={() => setModelMenuOpen((o) => !o)}
                     >
-                      <ModelTrigger
-                        label={defaultModelLabel}
-                        open={modelMenuOpen}
-                        buttonRef={setModelAnchorEl}
-                        onClick={() => setModelMenuOpen((o) => !o)}
-                      />
-                    </div>
-                    <ModelPickerMenu
-                      open={modelMenuOpen}
-                      models={models}
-                      selectedModelId={draft.defaultModelId}
-                      defaultLabel="请选择模型"
-                      anchorEl={modelAnchorEl}
-                      onClose={() => setModelMenuOpen(false)}
-                      onPick={(modelId) => {
-                        setDraft((d) => ({
-                          ...d,
-                          defaultModelId: modelId,
-                          fallbackModelIds: d.fallbackModelIds.filter((id) => id !== modelId),
-                        }));
-                      }}
-                    />
-                  </Field>
-
-                  <Field label="备用模型（主模型失败后按顺序尝试）">
-                    {fallbackCandidates.length === 0 ? (
-                      <p className="text-[11.5px] text-text-faint">
-                        没有其它可选模型。请先在设置里导入更多模型。
-                      </p>
-                    ) : (
-                      <div className="shell-library-subpanel max-h-36 space-y-2 overflow-y-auto p-2">
-                        {fallbackGroups.map(([providerName, providerModels]) => (
-                          <div key={providerName}>
-                            <div className="px-1.5 pb-0.5 text-[10.5px] font-medium text-text-faint">
-                              {providerName}
-                            </div>
-                            {providerModels.map((m) => {
-                              const checked = draft.fallbackModelIds.includes(m.modelId);
-                              return (
-                                <label
-                                  key={m.modelId}
-                                  className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-hover"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    className="accent-[var(--color-accent)]"
-                                    checked={checked}
-                                    onChange={() =>
-                                      setDraft((d) => ({
-                                        ...d,
-                                        fallbackModelIds: toggleId(d.fallbackModelIds, m.modelId),
-                                      }))
-                                    }
-                                  />
-                                  <span className="truncate text-[12.5px] text-text">{m.displayName}</span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        ))}
+                      <div
+                        className="shell-library-control flex h-9 cursor-pointer items-center px-1.5"
+                        onClick={(e) => {
+                          // The trigger button handles its own click; only open
+                          // when pressing elsewhere in the control area.
+                          if ((e.target as HTMLElement).closest('button')) return;
+                          setModelMenuOpen((o) => !o);
+                        }}
+                      >
+                        <ModelTrigger
+                          label={defaultModelLabel}
+                          open={modelMenuOpen}
+                          buttonRef={setModelAnchorEl}
+                          onClick={() => setModelMenuOpen((o) => !o)}
+                        />
                       </div>
-                    )}
-                    {draft.fallbackModelIds.length > 0 && (
-                      <p className="mt-1 text-[11px] text-text-faint">
-                        已选 {draft.fallbackModelIds.length} 个备用
-                      </p>
-                    )}
-                  </Field>
+                      <ModelPickerMenu
+                        open={modelMenuOpen}
+                        models={models}
+                        selectedModelId={draft.defaultModelId}
+                        defaultLabel="请选择模型"
+                        anchorEl={modelAnchorEl}
+                        onClose={() => setModelMenuOpen(false)}
+                        onPick={(modelId) => {
+                          setDraft((d) => ({
+                            ...d,
+                            defaultModelId: modelId,
+                            fallbackModelIds: d.fallbackModelIds.filter((id) => id !== modelId),
+                          }));
+                        }}
+                      />
+                    </Field>
 
-                  <Field label="推理强度">
-                    <select
-                      className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
-                      value={draft.reasoningEffort}
-                      onChange={(e) => setDraft((d) => ({ ...d, reasoningEffort: e.target.value }))}
-                    >
-                      {REASONING_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  </Field>
+                    <Field label="备用模型（主模型失败后按顺序尝试）">
+                      {fallbackCandidates.length === 0 ? (
+                        <p className="text-[11.5px] text-text-faint">
+                          没有其它可选模型。请先在设置里导入更多模型。
+                        </p>
+                      ) : (
+                        <div className="shell-library-subpanel max-h-40 space-y-2 overflow-y-auto p-2">
+                          {fallbackGroups.map(([providerName, providerModels]) => (
+                            <div key={providerName}>
+                              <div className="px-1.5 pb-0.5 text-[10.5px] font-medium text-text-faint">
+                                {providerName}
+                              </div>
+                              {providerModels.map((m) => {
+                                const checked = draft.fallbackModelIds.includes(m.modelId);
+                                return (
+                                  <label
+                                    key={m.modelId}
+                                    className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-hover"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="accent-[var(--color-accent)]"
+                                      checked={checked}
+                                      onChange={() =>
+                                        setDraft((d) => ({
+                                          ...d,
+                                          fallbackModelIds: toggleId(d.fallbackModelIds, m.modelId),
+                                        }))
+                                      }
+                                    />
+                                    <span className="truncate text-[12.5px] text-text">{m.displayName}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {draft.fallbackModelIds.length > 0 && (
+                        <p className="mt-1 text-[11px] text-text-faint">
+                          已选 {draft.fallbackModelIds.length} 个备用
+                        </p>
+                      )}
+                    </Field>
+
+                    <Field label="推理强度">
+                      <select
+                        className="h-9 w-full rounded-lg border border-border bg-page px-3 text-[13px] text-text focus:border-accent focus:outline-none"
+                        value={draft.reasoningEffort}
+                        onChange={(e) => setDraft((d) => ({ ...d, reasoningEffort: e.target.value }))}
+                      >
+                        {REASONING_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  </div>
                 </div>
               </div>
             )}
