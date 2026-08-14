@@ -42,7 +42,10 @@ describe('Phase3VisualFixture routing', () => {
     expect(resolvePhase3VisualCase('?phase3-visual=streaming-follow')).toBe('streaming-follow');
     expect(resolvePhase3VisualCase('?phase3-visual=composer-context')).toBe('composer-context');
     expect(resolvePhase3VisualCase('?phase3-visual=workspace-file')).toBe('workspace-file');
-    expect(PHASE3_VISUAL_CASES).toHaveLength(8);
+    expect(resolvePhase3VisualCase('?phase3-visual=execution-auto-disclosure')).toBe(
+      'execution-auto-disclosure',
+    );
+    expect(PHASE3_VISUAL_CASES).toHaveLength(9);
   });
 });
 
@@ -110,6 +113,38 @@ describe('Phase3VisualFixture accessibility', () => {
     expect(closedToggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByTestId('execution-timeline')).toBeNull();
     expect(screen.queryByTestId('execution-commentary-item')).toBeNull();
+  });
+
+  it('follows thinking, active tools, continued thinking and final-answer disclosure states', () => {
+    render(<Phase3VisualFixture visualCase="execution-auto-disclosure" />);
+
+    const outerToggle = screen.getByRole('button', { name: /^执行过程/ });
+    expect(outerToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('先检查项目配置，再运行相关测试。')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '工具运行' }));
+    expect(outerToggle.getAttribute('aria-expanded')).toBe('true');
+    const batchToggle = screen.getByRole('button', { name: /调用了 2 个工具/ });
+    expect(batchToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(
+      screen
+        .getByRole('button', { name: /读取配置 · package\.json/ })
+        .getAttribute('aria-expanded'),
+    ).toBe('true');
+    expect(
+      screen.getByRole('button', { name: /运行测试 · pnpm test/ }).getAttribute('aria-expanded'),
+    ).toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: '工具完成' }));
+    expect(outerToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(batchToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByText('工具批次已经完成，继续整理最终结论。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /读取配置 · package\.json/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '最终回答' }));
+    expect(outerToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByTestId('execution-timeline')).toBeNull();
+    expect(screen.getByText('验证完成，最终回答已经开始输出。')).toBeTruthy();
   });
 
   it('renders the real diagnostics privacy ledger and live status region', () => {

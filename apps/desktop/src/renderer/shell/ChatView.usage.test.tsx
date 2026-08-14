@@ -54,6 +54,7 @@ const processView = {
 } as unknown as RunProcessView;
 
 beforeEach(() => {
+  window.localStorage.clear();
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-usage' } });
   runtime.getConversationContextStatus.mockReset().mockResolvedValue({
     modelId: 'model-usage',
@@ -206,9 +207,11 @@ describe('ChatView reply usage details', () => {
 
   it('does not let a stale usage response overwrite the newly selected conversation', async () => {
     let resolveOld!: (value: Awaited<ReturnType<typeof runtime.getUsageSummary>>) => void;
-    const oldSummary = new Promise<Awaited<ReturnType<typeof runtime.getUsageSummary>>>((resolve) => {
-      resolveOld = resolve;
-    });
+    const oldSummary = new Promise<Awaited<ReturnType<typeof runtime.getUsageSummary>>>(
+      (resolve) => {
+        resolveOld = resolve;
+      },
+    );
     runtime.getUsageSummary
       .mockImplementationOnce(() => oldSummary)
       .mockResolvedValueOnce({
@@ -240,12 +243,14 @@ describe('ChatView reply usage details', () => {
     );
     view.rerender(
       <ChatView
-        conversation={{
-          ...conversation,
-          id: 'conversation-usage-b',
-          taskId: 'task-usage-b',
-          title: 'Usage details B',
-        } as unknown as Conversation}
+        conversation={
+          {
+            ...conversation,
+            id: 'conversation-usage-b',
+            taskId: 'task-usage-b',
+            title: 'Usage details B',
+          } as unknown as Conversation
+        }
         modelName="GPT-5"
         models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
         eventHistory={[]}
@@ -506,13 +511,11 @@ describe('ChatView reply usage details', () => {
       />,
     );
 
-    const trigger = await screen.findByTitle('推理强度：高');
-    expect(trigger.getAttribute('data-active')).toBe('1');
-    window.localStorage.removeItem('sync-think.conversationReasoningEfforts');
+    const trigger = await screen.findByTitle('切换模型，思考强度：高');
+    expect(trigger.textContent).toContain('高');
   });
 
-  it('persists the reasoning effort when the user changes it in the menu', async () => {
-    window.localStorage.removeItem('sync-think.conversationReasoningEfforts');
+  it('persists the reasoning effort when the user changes it from the model menu', async () => {
     render(
       <ChatView
         conversation={conversation}
@@ -523,17 +526,66 @@ describe('ChatView reply usage details', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByTitle('推理强度：自动'));
-    fireEvent.click(screen.getByRole('menuitemradio', { name: '高' }));
+    fireEvent.click(await screen.findByTitle('切换模型，思考强度：自动'));
+    fireEvent.click(await screen.findByTestId('model-reasoning-trigger'));
+    fireEvent.click(await screen.findByTestId('model-reasoning-option-high'));
 
     await waitFor(() =>
-      expect(screen.getByTitle('推理强度：高').getAttribute('data-active')).toBe('1'),
+      expect(screen.getByTitle('切换模型，思考强度：高').textContent).toContain('高'),
     );
     expect(
-      JSON.parse(
-        window.localStorage.getItem('sync-think.conversationReasoningEfforts') ?? '{}',
-      ),
+      JSON.parse(window.localStorage.getItem('sync-think.conversationReasoningEfforts') ?? '{}'),
     ).toEqual({ 'conversation-usage': 'high' });
-    window.localStorage.removeItem('sync-think.conversationReasoningEfforts');
+  });
+
+  it('moves network search into the @ menu and persists it for the conversation', async () => {
+    const view = render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTitle(/联网已开/)).toBeNull();
+    const input = await screen.findByTestId('compose-input');
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
+
+    const popover = await screen.findByTestId('compose-mention-pop');
+    expect(within(popover).getByText('设置')).toBeTruthy();
+    expect(within(popover).getByText('联网搜索')).toBeTruthy();
+    fireEvent.keyDown(input, { key: 'Tab' });
+    const enableNetwork = within(popover).getByRole('button', { name: '开启联网搜索' });
+    expect(document.activeElement).toBe(enableNetwork);
+    fireEvent.keyDown(enableNetwork, { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    await waitFor(() => expect(screen.queryByTestId('compose-mention-pop')).toBeNull());
+
+    fireEvent.change(input, { target: { value: '', selectionStart: 0 } });
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
+    const reopenedPopover = await screen.findByTestId('compose-mention-pop');
+    fireEvent.click(within(reopenedPopover).getByRole('button', { name: '关闭联网搜索' }));
+
+    expect(
+      JSON.parse(window.localStorage.getItem('sync-think.conversationNetworkEnabled') ?? '{}'),
+    ).toEqual({ 'conversation-usage': false });
+
+    view.unmount();
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="GPT-5"
+        models={[{ modelId: 'model-usage', displayName: 'GPT-5', providerName: 'Provider' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+    const restoredInput = await screen.findByTestId('compose-input');
+    fireEvent.change(restoredInput, { target: { value: '@', selectionStart: 1 } });
+    expect(
+      (await screen.findByRole('button', { name: '关闭联网搜索' })).getAttribute('aria-pressed'),
+    ).toBe('true');
   });
 });

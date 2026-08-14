@@ -9,10 +9,19 @@ import { ChatView } from './ChatView.js';
 const runtime = {
   appendMessage: vi.fn(),
   detectKernels: vi.fn(),
+  installKernel: vi.fn(),
   listConversationMessages: vi.fn(),
   openTask: vi.fn(),
   sendConversationMessage: vi.fn(),
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((onResolve) => {
+    resolve = onResolve;
+  });
+  return { promise, resolve };
+}
 
 function conversation(id = 'conversation-kernel'): Conversation {
   return {
@@ -59,7 +68,31 @@ const kernels = [
     executablePath: 'C:/codex',
     knownGood: true,
   },
+  {
+    kernelId: 'pi',
+    name: 'Pi',
+    icon: 'pi',
+    capabilities: {
+      permission: 'none' as const,
+      permissionBridge: false,
+      pause: 'kill' as const,
+      compress: 'own' as const,
+      usageReport: false,
+      protocols: [],
+    },
+    installed: false,
+    version: null,
+    executablePath: null,
+    knownGood: false,
+    installCommand: 'npm i -g pi',
+  },
 ];
+
+const installedKernels = kernels.map((kernel) =>
+  kernel.kernelId === 'pi'
+    ? { ...kernel, installed: true, version: '1.2.3', executablePath: 'C:/pi', knownGood: true }
+    : kernel,
+);
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -73,6 +106,7 @@ beforeEach(() => {
     messageId: 'msg-kernel-1',
     taskVersion: 1,
   });
+  runtime.installKernel.mockReset();
   runtime.detectKernels.mockReset().mockResolvedValue({ kernels });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
@@ -145,5 +179,74 @@ describe('ChatView kernel selection', () => {
     expect(runtime.appendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ kernelId: 'claude-code' }),
     );
+  });
+
+  it('installs Pi, re-detects it, and only then allows selection', async () => {
+    runtime.installKernel.mockResolvedValue({ ok: true });
+    runtime.detectKernels
+      .mockResolvedValueOnce({ kernels })
+      .mockResolvedValueOnce({ kernels: installedKernels });
+    renderChat();
+
+    fireEvent.click(screen.getByTitle(/切换模型/));
+    const piOption = await screen.findByTestId('kernel-option-pi');
+    expect(piOption.hasAttribute('aria-disabled')).toBe(false);
+    fireEvent.click(piOption);
+
+    await waitFor(() => expect(runtime.installKernel).toHaveBeenCalledWith('pi'));
+    await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装成功 v1.2.3'),
+    );
+    expect(screen.getByTestId('kernel-option-pi').hasAttribute('aria-disabled')).toBe(false);
+
+    fireEvent.click(screen.getByTestId('kernel-option-pi'));
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem('sync-think.conversationKernelOverrides') ?? '{}'),
+      ).toEqual({ 'conversation-kernel': 'pi' }),
+    );
+  });
+
+  it('shows the Pi install error and keeps the kernel unselected', async () => {
+    runtime.installKernel.mockResolvedValue({ ok: false, error: '权限不足' });
+    renderChat();
+
+    fireEvent.click(screen.getByTitle(/切换模型/));
+    fireEvent.click(await screen.findByTestId('kernel-option-pi'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装失败 · 权限不足'),
+    );
+    expect(runtime.detectKernels).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem('sync-think.conversationKernelOverrides')).toBeNull();
+  });
+
+  it('keeps one Pi install running when the menu closes or the item is clicked repeatedly', async () => {
+    const install = deferred<{ ok: true }>();
+    runtime.installKernel.mockReturnValue(install.promise);
+    runtime.detectKernels
+      .mockResolvedValueOnce({ kernels })
+      .mockResolvedValueOnce({ kernels: installedKernels });
+    renderChat();
+
+    const modelTrigger = screen.getByTitle(/切换模型/);
+    fireEvent.click(modelTrigger);
+    const piOption = await screen.findByTestId('kernel-option-pi');
+    fireEvent.click(piOption);
+    fireEvent.click(piOption);
+    await waitFor(() => expect(runtime.installKernel).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装中');
+
+    fireEvent.click(modelTrigger);
+    await waitFor(() => expect(screen.queryByTestId('kernel-option-pi')).toBeNull());
+    install.resolve({ ok: true });
+    await waitFor(() => expect(runtime.detectKernels).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(modelTrigger);
+    await waitFor(() =>
+      expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装成功 v1.2.3'),
+    );
+    expect(runtime.installKernel).toHaveBeenCalledTimes(1);
   });
 });

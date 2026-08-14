@@ -7,7 +7,6 @@ import type {
 } from '@sync-think/protocol';
 import {
   Bot,
-  Brain,
   CheckCircle2,
   FileCode2,
   MessageSquare,
@@ -35,6 +34,7 @@ export const PHASE3_VISUAL_CASES = [
   'diagnostics',
   'composer-context',
   'workspace-file',
+  'execution-auto-disclosure',
 ] as const;
 
 export type Phase3VisualCase = (typeof PHASE3_VISUAL_CASES)[number];
@@ -381,6 +381,144 @@ function StreamingFollowFixture() {
   );
 }
 
+type ExecutionDisclosurePhase = 'thinking' | 'tools' | 'continued' | 'final';
+
+const EXECUTION_DISCLOSURE_STARTED_AT = '2026-08-14T01:00:00.000Z';
+const EXECUTION_DISCLOSURE_STEPS: RunProcessView['steps'] = [
+  {
+    id: 'disclosure-read',
+    label: 'Read package',
+    verb: 'Read',
+    zh: '读取配置',
+    toolName: 'read_file',
+    kind: 'read',
+    status: 'done',
+    path: 'package.json',
+    preview: '已读取工作区脚本与依赖。',
+    sequence: 11,
+    startedAt: '2026-08-14T01:00:02.000Z',
+    completedAt: '2026-08-14T01:00:03.000Z',
+  },
+  {
+    id: 'disclosure-test',
+    label: 'Run tests',
+    verb: 'Run',
+    zh: '运行测试',
+    toolName: 'run_command',
+    kind: 'bash',
+    status: 'running',
+    command: 'pnpm test',
+    preview: '正在执行组件回归。',
+    sequence: 12,
+    startedAt: '2026-08-14T01:00:03.000Z',
+  },
+];
+
+function executionDisclosureView(phase: ExecutionDisclosurePhase): RunProcessView {
+  const final = phase === 'final';
+  const toolsRunning = phase === 'tools';
+  const steps = phase === 'thinking' ? [] : EXECUTION_DISCLOSURE_STEPS;
+  return {
+    runId: 'phase3-execution-auto-disclosure' as RunProcessView['runId'],
+    running: !final,
+    startedAt: EXECUTION_DISCLOSURE_STARTED_AT,
+    ...(final ? { completedAt: '2026-08-14T01:00:08.000Z', durationMs: 8_000 } : {}),
+    doneCount: steps.length === 0 ? 0 : toolsRunning ? 1 : 2,
+    errorCount: 0,
+    steps: steps.map((step) =>
+      step.id === 'disclosure-test' && !toolsRunning
+        ? {
+            ...step,
+            status: 'done' as const,
+            completedAt: '2026-08-14T01:00:06.000Z',
+            preview: '组件回归全部通过。',
+          }
+        : step,
+    ),
+    fileChanges: [],
+  };
+}
+
+function ExecutionAutoDisclosureFixture() {
+  const [phase, setPhase] = useState<ExecutionDisclosurePhase>('thinking');
+  const processView = executionDisclosureView(phase);
+  const commentarySegments: CommentaryTimelineSegment[] = [
+    {
+      id: 'disclosure-thinking-before',
+      text: '先检查项目配置，再运行相关测试。',
+      startedAt: '2026-08-14T01:00:01.000Z',
+      ...(phase === 'thinking' ? {} : { completedAt: '2026-08-14T01:00:02.000Z' }),
+      afterSequence: 10,
+    },
+    ...(phase === 'continued' || phase === 'final'
+      ? [
+          {
+            id: 'disclosure-thinking-after',
+            text: '工具批次已经完成，继续整理最终结论。',
+            startedAt: '2026-08-14T01:00:07.000Z',
+            ...(phase === 'final' ? { completedAt: '2026-08-14T01:00:08.000Z' } : {}),
+            afterSequence: 12,
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <FixtureFrame label="执行过程自动展开与折叠">
+      <div className="phase3-visual__conversation" data-execution-disclosure-phase={phase}>
+        <div className="phase3-visual__conversation-column">
+          <div className="flex flex-wrap gap-2 px-4 pt-4" aria-label="执行阶段切换">
+            {(
+              [
+                ['thinking', '思考'],
+                ['tools', '工具运行'],
+                ['continued', '工具完成'],
+                ['final', '最终回答'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className="rounded border border-border bg-surface px-3 py-1.5 text-xs text-text"
+                aria-pressed={phase === value}
+                onClick={() => setPhase(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <article
+            className="shell-message-window-item phase3-visual__message phase3-visual__trace"
+            data-role="assistant"
+            aria-label="执行过程自动折叠示例"
+          >
+            <div className="phase3-visual__avatar" aria-hidden="true">
+              <Bot size={13} />
+            </div>
+            <div className="phase3-visual__trace-content">
+              <strong>SYNC-THINK</strong>
+              <AssistantProcessGroup
+                processView={processView}
+                commentarySegments={commentarySegments}
+                commentaryText={commentarySegments.map((segment) => segment.text).join('\n\n')}
+                streaming={phase !== 'final'}
+                answerStarted={phase === 'final'}
+              >
+                <ExecutionTimeline
+                  commentarySegments={commentarySegments}
+                  processView={processView}
+                  streaming={phase === 'thinking' || phase === 'continued'}
+                />
+              </AssistantProcessGroup>
+              {phase === 'final' ? <p>验证完成，最终回答已经开始输出。</p> : null}
+            </div>
+          </article>
+        </div>
+      </div>
+    </FixtureFrame>
+  );
+}
+
 const COMPOSER_CONTEXT_SECTIONS = [
   { type: 'system', tokens: 2_160 },
   { type: 'agent', tokens: 4_880 },
@@ -440,10 +578,6 @@ function ComposerContextFixture() {
                   <Zap size={15} />
                   <span className="shell-compose__tool-label">完全访问</span>
                 </button>
-                <button type="button" className="shell-compose__tool" title="推理强度：自动">
-                  <Brain size={15} />
-                  <span className="shell-compose__tool-label">自动</span>
-                </button>
                 <button type="button" className="shell-compose__tool" title="本轮技能：0/8">
                   <Puzzle size={15} />
                   <span className="shell-compose__tool-label">0/8</span>
@@ -466,8 +600,13 @@ function ComposerContextFixture() {
                   sessionTokens={246_780}
                   title="查看对话总上下文"
                 />
-                <button type="button" className="shell-compose__model-btn" title="切换模型">
+                <button
+                  type="button"
+                  className="shell-compose__model-btn"
+                  title="切换模型，思考强度：自动"
+                >
                   <span className="shell-compose__model-label">GPT-5.6 Luna</span>
+                  <span className="shell-compose__model-reasoning">自动</span>
                 </button>
                 <button
                   type="button"
@@ -644,9 +783,7 @@ const WORKSPACE_FILE_DIRS: Record<
     { path: 'settings.json', name: 'settings.json', kind: 'file' },
   ],
   src: [{ path: 'src/FilePreview.tsx', name: 'FilePreview.tsx', kind: 'file' }],
-  scripts: [
-    { path: 'scripts/check_workspace.py', name: 'check_workspace.py', kind: 'file' },
-  ],
+  scripts: [{ path: 'scripts/check_workspace.py', name: 'check_workspace.py', kind: 'file' }],
   styles: [{ path: 'styles/workspace.css', name: 'workspace.css', kind: 'file' }],
   data: [{ path: 'data/report.csv', name: 'report.csv', kind: 'file' }],
 };
@@ -783,5 +920,6 @@ export function Phase3VisualFixture({ visualCase }: { visualCase: Phase3VisualCa
   if (visualCase === 'streaming-follow') return <StreamingFollowFixture />;
   if (visualCase === 'composer-context') return <ComposerContextFixture />;
   if (visualCase === 'workspace-file') return <WorkspaceFileFixture />;
+  if (visualCase === 'execution-auto-disclosure') return <ExecutionAutoDisclosureFixture />;
   return <TraceFixture open={visualCase === 'long-trace-open'} />;
 }

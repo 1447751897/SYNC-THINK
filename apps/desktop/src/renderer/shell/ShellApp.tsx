@@ -3,17 +3,7 @@
 // welcome empty state · settings modal.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import {
-  Bot,
-  Brain,
-  Globe,
-  MessageSquare,
-  SendHorizonal,
-  Sparkles,
-  Users,
-  Zap,
-  X,
-} from 'lucide-react';
+import { Bot, MessageSquare, SendHorizonal, Sparkles, Users, Zap, X } from 'lucide-react';
 import type {
   Conversation,
   ConversationTrack,
@@ -52,6 +42,7 @@ import { BrowserStage } from './BrowserStage.js';
 import { SettingsPage } from './SettingsPage.js';
 import { FirstLaunchGuide } from './FirstLaunchGuide.js';
 import {
+  ComposeAtSettingsMenu,
   ContextRing,
   estimateContextWindow,
   ModelPickerMenu,
@@ -59,10 +50,10 @@ import {
   PermissionMenu,
   PERMISSION_OPTIONS,
   REASONING_LABELS,
-  ReasoningMenu,
   type PermissionMode,
   type ReasoningEffort,
 } from './compose-toolbar.js';
+import { detectMentionQuery, stripMentionToken, type MentionQuery } from './compose-mention.js';
 import {
   resolveAppendSkillVersionIds,
   resolveConversationSkillOwner,
@@ -115,6 +106,8 @@ import {
   writeNewConversationDraft,
   writeNewConversationModel,
   writeConversationModelOverride,
+  writeConversationNetworkEnabled,
+  writeConversationReasoningEffort,
   writeOpenConversationTabs,
   writeSelectedConversationByWorkspace,
   writeWorkspacePaneLayouts,
@@ -661,9 +654,7 @@ function ShellAppInner() {
   const handleCloseReviewTab = useCallback(
     (paneId: string, runId: string) => {
       if (!activeWorkspaceId) return;
-      commitPaneLayout(activeWorkspaceId, (current) =>
-        closeReviewPaneTab(current, paneId, runId),
-      );
+      commitPaneLayout(activeWorkspaceId, (current) => closeReviewPaneTab(current, paneId, runId));
     },
     [activeWorkspaceId, commitPaneLayout],
   );
@@ -1288,14 +1279,18 @@ function ShellAppInner() {
         workspaceId: workspaceId as WorkspaceId,
         executionMode: firstMessage?.permissionMode ?? readDefaultPermission(),
       });
+      const createdConversationId = String(created.conversation.id);
       const initialModelId = firstMessage?.modelId?.trim();
       if (initialModelId) {
-        const conversationId = String(created.conversation.id);
-        writeConversationModelOverride(conversationId, initialModelId);
+        writeConversationModelOverride(createdConversationId, initialModelId);
         setModelOverrides((current) => ({
           ...current,
-          [conversationId]: initialModelId,
+          [createdConversationId]: initialModelId,
         }));
+      }
+      if (firstMessage) {
+        writeConversationReasoningEffort(createdConversationId, firstMessage.reasoningEffort);
+        writeConversationNetworkEnabled(createdConversationId, firstMessage.networkEnabled);
       }
 
       if (firstMessage?.text.trim()) {
@@ -1313,8 +1308,7 @@ function ShellAppInner() {
           role: 'user',
           text: firstMessage.text,
           modelId: firstMessage.modelId as Parameters<typeof api.appendMessage>[0]['modelId'],
-          reasoningEffort:
-            firstMessage.reasoningEffort === 'auto' ? undefined : firstMessage.reasoningEffort,
+          reasoningEffort: firstMessage.reasoningEffort,
           networkEnabled: firstMessage.networkEnabled || undefined,
           skillVersionIds,
         });
@@ -1324,7 +1318,6 @@ function ShellAppInner() {
         );
       }
 
-      const createdConversationId = String(created.conversation.id);
       const materializedDraft = draftSessionRef.current;
       if (materializedDraft?.workspaceId === workspaceId) {
         commitPaneLayout(workspaceId, (current) =>
@@ -2459,7 +2452,9 @@ function ShellAppInner() {
                                 String(conversation.id),
                               )}
                               onInitialSkillSelectionConsumed={(conversationId) => {
-                                initialConversationSkillSelectionsRef.current.delete(conversationId);
+                                initialConversationSkillSelectionsRef.current.delete(
+                                  conversationId,
+                                );
                               }}
                               onTitleUpdated={() => void refresh()}
                               onConversationUpdated={handleConversationUpdated}
@@ -2679,12 +2674,13 @@ export function EmptyTalk(props: {
     readDefaultPermission(),
   );
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('auto');
+  const [atQuery, setAtQuery] = useState<MentionQuery | null>(null);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
-  const [reasoningMenuOpen, setReasoningMenuOpen] = useState(false);
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const networkSettingRef = useRef<HTMLDivElement>(null);
   const permissionButtonRef = useRef<HTMLButtonElement>(null);
-  const reasoningButtonRef = useRef<HTMLButtonElement>(null);
   const modelButtonRef = useRef<HTMLButtonElement>(null);
   const selectedModel =
     props.models.find((model) => model.modelId === props.selectedModelId) ?? props.models[0];
@@ -2728,8 +2724,27 @@ export function EmptyTalk(props: {
     });
   };
 
+  const changeNetworkSetting = (enabled: boolean) => {
+    setNetworkEnabled(enabled);
+    if (!atQuery) return;
+    const stripped = stripMentionToken(props.draft, atQuery);
+    props.onDraftChange(stripped.text);
+    setAtQuery(null);
+    window.requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(stripped.caret, stripped.caret);
+    });
+  };
+
+  const dismissNetworkSetting = () => {
+    setAtQuery(null);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-chat">
+    <div className="shell-chat-column flex min-h-0 flex-1 flex-col bg-chat">
       <div className="shell-welcome flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-8">
         <div className="flex flex-col items-center gap-1.5">
           <h2
@@ -2784,12 +2799,37 @@ export function EmptyTalk(props: {
           <div className="shell-chat-content mx-auto">
             <div className="shell-compose relative" data-testid="empty-compose">
               <textarea
+                ref={inputRef}
                 data-testid="empty-compose-input"
                 className="shell-compose__input"
                 placeholder="有什么我能帮你的吗？"
                 value={props.draft}
-                onChange={(event) => props.onDraftChange(event.target.value)}
+                onChange={(event) => {
+                  props.onDraftChange(event.target.value);
+                  setAtQuery(
+                    detectMentionQuery(
+                      event.target.value,
+                      event.target.selectionStart ?? event.target.value.length,
+                    ),
+                  );
+                }}
                 onKeyDown={(event) => {
+                  if (event.key === 'Escape' && atQuery) {
+                    event.preventDefault();
+                    setAtQuery(null);
+                    return;
+                  }
+                  if (event.key === 'Tab' && atQuery) {
+                    const segments = networkSettingRef.current?.querySelectorAll<HTMLButtonElement>(
+                      '.shell-mention-setting__segment',
+                    );
+                    const target = segments?.[event.shiftKey ? segments.length - 1 : 0];
+                    if (target) {
+                      event.preventDefault();
+                      target.focus();
+                      return;
+                    }
+                  }
                   if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     void submit();
@@ -2797,6 +2837,15 @@ export function EmptyTalk(props: {
                 }}
                 rows={1}
                 disabled={props.sending}
+              />
+              <ComposeAtSettingsMenu
+                open={Boolean(atQuery)}
+                enabled={networkEnabled}
+                anchorEl={inputRef.current}
+                networkSettingRef={networkSettingRef}
+                onClose={() => setAtQuery(null)}
+                onDismiss={dismissNetworkSetting}
+                onChange={changeNetworkSetting}
               />
               <div className="shell-compose__bar">
                 <div className="shell-compose__bar-left">
@@ -2825,37 +2874,6 @@ export function EmptyTalk(props: {
                       onChange={setPermissionMode}
                     />
                   </div>
-                  <button
-                    type="button"
-                    className="shell-compose__tool"
-                    data-active={networkEnabled ? '1' : '0'}
-                    onClick={() => setNetworkEnabled((value) => !value)}
-                    title={networkEnabled ? '联网已开（点击关闭）' : '联网已关（点击开启）'}
-                  >
-                    <Globe size={15} />
-                  </button>
-                  <div className="shell-compose__tool-wrap">
-                    <button
-                      ref={reasoningButtonRef}
-                      type="button"
-                      className="shell-compose__tool"
-                      data-active={reasoningMenuOpen ? '1' : '0'}
-                      title={`推理强度：${REASONING_LABELS[reasoningEffort]}`}
-                      onClick={() => setReasoningMenuOpen((value) => !value)}
-                    >
-                      <Brain size={15} />
-                      <span className="shell-compose__tool-label">
-                        {REASONING_LABELS[reasoningEffort]}
-                      </span>
-                    </button>
-                    <ReasoningMenu
-                      open={reasoningMenuOpen}
-                      value={reasoningEffort}
-                      anchorEl={reasoningButtonRef.current}
-                      onClose={() => setReasoningMenuOpen(false)}
-                      onChange={setReasoningEffort}
-                    />
-                  </div>
                   <TurnSkillControl
                     owner={skillOwner}
                     workspaceId={props.workspaceId}
@@ -2879,6 +2897,7 @@ export function EmptyTalk(props: {
                   <div className="shell-compose__tool-wrap">
                     <ModelTrigger
                       label={selectedModel?.displayName ?? '选择模型'}
+                      reasoningLabel={REASONING_LABELS[reasoningEffort]}
                       open={modelMenuOpen}
                       buttonRef={modelButtonRef}
                       onClick={() => setModelMenuOpen((value) => !value)}
@@ -2888,9 +2907,11 @@ export function EmptyTalk(props: {
                       models={props.models}
                       selectedModelId={selectedModel?.modelId ?? ''}
                       defaultLabel="选择模型"
+                      reasoningEffort={reasoningEffort}
                       anchorEl={modelButtonRef.current}
                       onClose={() => setModelMenuOpen(false)}
                       onPick={props.onModelChange}
+                      onReasoningChange={setReasoningEffort}
                     />
                   </div>
                   <button

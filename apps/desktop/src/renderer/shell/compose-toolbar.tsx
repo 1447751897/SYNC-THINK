@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Globe,
   Lock,
+  LoaderCircle,
   MessageSquare,
   Puzzle,
   Shield,
@@ -655,6 +656,12 @@ export function SkillPickerMenu(props: {
  * the provider row and model panel in one menu tree avoids the stale DOMRect and
  * hover-gap races that made the old hand-positioned portal drift across viewports.
  */
+export type KernelInstallState =
+  | { status: 'installing' }
+  | { status: 'verifying' }
+  | { status: 'success' }
+  | { status: 'error'; error: string };
+
 export function ModelPickerMenu(props: {
   open: boolean;
   models: readonly ModelOption[];
@@ -665,7 +672,9 @@ export function ModelPickerMenu(props: {
   /** Kernel selector data (Slice 6); empty hides the kernel group. */
   kernels?: readonly KernelDetectionResult[];
   selectedKernelId?: string;
+  kernelInstallStates?: Readonly<Record<string, KernelInstallState | undefined>>;
   onPickKernel?(kernelId: string): void;
+  onInstallKernel?(kernelId: string): void;
   onClose(): void;
   onPick(modelId: string): void;
   onReasoningChange?(value: ReasoningEffort): void;
@@ -751,7 +760,28 @@ export function ModelPickerMenu(props: {
                 <div className="shell-menu__group-label">内核</div>
                 {props.kernels.map((kernel) => {
                   const active = kernel.kernelId === props.selectedKernelId;
-                  const disabled = !kernel.installed;
+                  const installState = props.kernelInstallStates?.[kernel.kernelId];
+                  const installPending =
+                    installState?.status === 'installing' || installState?.status === 'verifying';
+                  const canInstall =
+                    kernel.kernelId === 'pi' && !kernel.installed && Boolean(props.onInstallKernel);
+                  const disabled = installPending || (!kernel.installed && !canInstall);
+                  let hint: string;
+                  if (installState?.status === 'installing') {
+                    hint = '安装中 · npm i -g pi';
+                  } else if (installState?.status === 'verifying') {
+                    hint = '安装成功 · 正在检测';
+                  } else if (installState?.status === 'error') {
+                    hint = `安装失败 · ${installState.error}`;
+                  } else if (installState?.status === 'success' && kernel.installed) {
+                    hint = kernel.version ? `安装成功 v${kernel.version}` : '安装成功';
+                  } else if (kernel.installed) {
+                    hint = kernel.version
+                      ? `已安装 v${kernel.version}${kernel.knownGood ? '' : '（版本未验证）'}`
+                      : '已安装';
+                  } else {
+                    hint = kernel.installCommand ? `未安装 · ${kernel.installCommand}` : '未安装';
+                  }
                   return (
                     <DropdownMenu.Item
                       key={kernel.kernelId}
@@ -762,31 +792,44 @@ export function ModelPickerMenu(props: {
                       className={`shell-menu__item shell-menu__item--kernel ${
                         active ? 'is-active' : ''
                       } ${disabled ? 'is-disabled' : ''}`}
-                      onSelect={() => {
-                        if (!disabled && props.onPickKernel) {
+                      onSelect={(event) => {
+                        if (kernel.installed && props.onPickKernel) {
                           props.onPickKernel(kernel.kernelId);
                           props.onClose();
+                          return;
+                        }
+                        if (canInstall && !installPending && props.onInstallKernel) {
+                          event.preventDefault();
+                          props.onInstallKernel(kernel.kernelId);
                         }
                       }}
                     >
                       <span className="shell-menu__selection-slot" aria-hidden="true">
-                        {active ? <Check size={14} /> : null}
+                        {installPending ? (
+                          <LoaderCircle size={14} className="shell-menu__kernel-spinner" />
+                        ) : active ? (
+                          <Check size={14} />
+                        ) : null}
                       </span>
                       <div className="shell-menu__item-text">
                         <div className="shell-menu__item-title">
                           <span className="shell-menu__kernel-name">{kernel.name}</span>
                           <span className={`shell-kernel-badge shell-kernel-badge--${kernel.icon}`}>
-                            {kernel.icon === 'native' ? '原生' : kernel.icon === 'claude-code' ? 'Claude Code' : kernel.icon === 'codex' ? 'Codex' : 'Pi'}
+                            {kernel.icon === 'native'
+                              ? '原生'
+                              : kernel.icon === 'claude-code'
+                                ? 'Claude Code'
+                                : kernel.icon === 'codex'
+                                  ? 'Codex'
+                                  : 'Pi'}
                           </span>
                         </div>
-                        <div className="shell-menu__item-hint">
-                          {kernel.installed
-                            ? kernel.version
-                              ? `已安装 v${kernel.version}${kernel.knownGood ? '' : '（版本未验证）'}`
-                              : '已安装'
-                            : kernel.installCommand
-                              ? `未安装 · ${kernel.installCommand}`
-                              : '未安装'}
+                        <div
+                          className={`shell-menu__item-hint ${
+                            installState?.status === 'error' ? 'is-error' : ''
+                          }`}
+                        >
+                          {hint}
                         </div>
                       </div>
                     </DropdownMenu.Item>

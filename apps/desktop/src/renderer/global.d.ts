@@ -248,6 +248,7 @@ declare global {
         connect(): Promise<RuntimeConnectOutcome>;
         appendMessage(payload: AppendMessagePayload): Promise<AppendMessageResponse>;
         detectKernels(): Promise<import('@sync-think/protocol').KernelDetectResponse>;
+        installKernel(kernelId: string): Promise<{ ok: true } | { ok: false; error: string }>;
         cancelRun(payload: CancelRunPayload): Promise<PauseResumeCancelResponse>;
         createWorkspace(payload: CreateWorkspacePayload): Promise<CreateWorkspaceResponse>;
         bindWorkspaceFolder(

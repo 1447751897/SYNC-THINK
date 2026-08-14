@@ -5271,6 +5271,14 @@ body {
   cursor: not-allowed;
 }
 
+.shell-menu__kernel-spinner {
+  animation: shell-orb-spin 0.8s linear infinite;
+}
+
+.shell-menu__item-hint.is-error {
+  color: var(--color-error);
+}
+
 .shell-menu__kernel-name {
   font-weight: 600;
 }

@@ -1103,6 +1103,39 @@ describe('ShellApp pane visibility activity', () => {
 });
 
 describe('ShellApp empty conversation compose', () => {
+  it('keeps @ keyboard focus inside the EmptyTalk pane that opened the menu', async () => {
+    const props = {
+      hasWorkspace: true,
+      models: [],
+      agents: [],
+      teams: [],
+      draft: '',
+      selectedModelId: '',
+      sending: false,
+      onDraftChange: vi.fn(),
+      onModelChange: vi.fn(),
+      onSend: vi.fn(async () => true),
+      onOpenWorkspaceMenu: vi.fn(),
+      onPickTrack: vi.fn(),
+    };
+    render(
+      <div>
+        <EmptyTalk {...props} />
+        <EmptyTalk {...props} />
+      </div>,
+    );
+
+    const inputs = screen.getAllByTestId('empty-compose-input');
+    fireEvent.change(inputs[0]!, { target: { value: '@', selectionStart: 1 } });
+    fireEvent.change(inputs[1]!, { target: { value: '@', selectionStart: 1 } });
+    const dialogs = await screen.findAllByRole('dialog', { name: '添加上下文和设置' });
+    const secondEnable = within(dialogs[1]!).getByRole('button', { name: '开启联网搜索' });
+
+    fireEvent.keyDown(inputs[1]!, { key: 'Tab' });
+
+    expect(document.activeElement).toBe(secondEnable);
+  });
+
   it('creates a full-access model conversation and sends the first message', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
@@ -1266,10 +1299,10 @@ describe('ShellApp empty conversation compose', () => {
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
-    fireEvent.click(screen.getByTitle('切换模型'));
+    fireEvent.click(screen.getByTitle(/切换模型/));
     const provider = await screen.findByTestId('model-provider-Provider A');
     provider.focus();
-    fireEvent.keyDown(provider, { key: 'ArrowLeft' });
+    fireEvent.keyDown(provider, { key: 'ArrowRight' });
     fireEvent.click(await screen.findByText('Model B'));
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
@@ -1340,10 +1373,10 @@ describe('ShellApp empty conversation compose', () => {
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
     );
-    fireEvent.click(screen.getByTitle('切换模型'));
+    fireEvent.click(screen.getByTitle(/切换模型/));
     const teamProvider = await screen.findByTestId('model-provider-Provider A');
     teamProvider.focus();
-    fireEvent.keyDown(teamProvider, { key: 'ArrowLeft' });
+    fireEvent.keyDown(teamProvider, { key: 'ArrowRight' });
     fireEvent.click(await screen.findByText('Model A'));
     await waitFor(() =>
       expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8'),
@@ -1722,8 +1755,9 @@ describe('ShellApp empty conversation compose', () => {
     await waitFor(() => expect(screen.getByTestId('empty-compose')).toBeTruthy());
     fireEvent.click(screen.getByTitle('权限：完全访问'));
     fireEvent.click(await screen.findByRole('menuitemradio', { name: /询问批准/ }));
-    fireEvent.click(screen.getByTitle('推理强度：自动'));
-    fireEvent.click(await screen.findByRole('menuitemradio', { name: '高' }));
+    fireEvent.click(screen.getByTitle('切换模型，思考强度：自动'));
+    fireEvent.click(await screen.findByTestId('model-reasoning-trigger'));
+    fireEvent.click(await screen.findByTestId('model-reasoning-option-high'));
     fireEvent.change(screen.getByTestId('empty-compose-input'), {
       target: { value: '按当前参数发送' },
     });
@@ -1736,6 +1770,51 @@ describe('ShellApp empty conversation compose', () => {
     expect(runtime.appendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ reasoningEffort: 'high' }),
     );
+    expect(
+      JSON.parse(window.localStorage.getItem('sync-think.conversationReasoningEfforts') ?? '{}'),
+    ).toEqual(expect.objectContaining({ 'created-conversation': 'high' }));
+  });
+
+  it('opens network search from @ and carries the choice into the first conversation', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listProviders.mockResolvedValue({
+      providers: [
+        {
+          providerId: 'provider-a',
+          name: 'Provider A',
+          enabled: true,
+          models: [{ modelId: 'model-a', displayName: 'Model A' }],
+        },
+      ],
+    });
+
+    render(<ShellApp />);
+    const input = await screen.findByTestId('empty-compose-input');
+    expect(screen.getByTestId('empty-compose').closest('.shell-chat-column')).toBeTruthy();
+    expect(screen.queryByTitle(/联网已开/)).toBeNull();
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
+    const enableNetwork = await screen.findByRole('button', { name: '开启联网搜索' });
+    fireEvent.keyDown(input, { key: 'Tab' });
+    expect(document.activeElement).toBe(enableNetwork);
+    fireEvent.keyDown(enableNetwork, { key: 'Tab', shiftKey: true });
+    await waitFor(() => expect(document.activeElement).toBe(input));
+
+    fireEvent.change(input, { target: { value: '', selectionStart: 0 } });
+    fireEvent.change(input, { target: { value: '@', selectionStart: 1 } });
+    fireEvent.click(await screen.findByRole('button', { name: '关闭联网搜索' }));
+    fireEvent.change(input, { target: { value: '不要联网', selectionStart: 4 } });
+    fireEvent.click(screen.getByTestId('empty-compose-send'));
+
+    await waitFor(() => expect(runtime.appendMessage).toHaveBeenCalledTimes(1));
+    expect(runtime.appendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ networkEnabled: undefined, reasoningEffort: 'auto' }),
+    );
+    expect(
+      JSON.parse(window.localStorage.getItem('sync-think.conversationNetworkEnabled') ?? '{}'),
+    ).toEqual(expect.objectContaining({ 'created-conversation': false }));
   });
 
   it('clears a pending agent submission when the target picker is cancelled', async () => {

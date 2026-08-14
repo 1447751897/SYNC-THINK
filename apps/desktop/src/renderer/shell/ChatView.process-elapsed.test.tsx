@@ -48,8 +48,8 @@ describe('AssistantProcessGroup elapsed clock', () => {
 
     const toggle = screen.getByRole('button');
     expect(toggle.textContent).toContain('执行过程 · 5秒');
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByText('process body')).toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('process body')).toBeTruthy();
 
     act(() => {
       vi.advanceTimersByTime(1_000);
@@ -156,9 +156,15 @@ describe('AssistantProcessGroup elapsed clock', () => {
     expect(screen.queryByText('process body')).toBeNull();
   });
 
-  it('does not auto-expand when streaming starts or finishes', () => {
+  it('auto-expands while thinking and folds when the final answer starts', () => {
     const { rerender } = render(
-      <AssistantProcessGroup processView={processView({ running: false })}>
+      <AssistantProcessGroup
+        processView={processView({
+          running: false,
+          completedAt: '2026-08-04T00:00:08.000Z',
+          durationMs: 8_000,
+        })}
+      >
         <div>process body</div>
       </AssistantProcessGroup>,
     );
@@ -169,21 +175,40 @@ describe('AssistantProcessGroup elapsed clock', () => {
         <div>process body</div>
       </AssistantProcessGroup>,
     );
-    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
-
-    act(() => screen.getByRole('button').click());
     expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('process body')).toBeTruthy();
+
     rerender(
-      <AssistantProcessGroup
-        processView={processView({
-          running: false,
-          completedAt: '2026-08-04T00:00:08.000Z',
-        })}
-      >
+      <AssistantProcessGroup processView={processView()} streaming answerStarted>
         <div>process body</div>
       </AssistantProcessGroup>,
     );
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('process body')).toBeNull();
+  });
+
+  it('preserves a manual fold while the active process keeps updating', () => {
+    const { rerender } = render(
+      <AssistantProcessGroup processView={processView()} streaming>
+        <div>process body</div>
+      </AssistantProcessGroup>,
+    );
+
     expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('true');
+    act(() => screen.getByRole('button').click());
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+
+    rerender(
+      <AssistantProcessGroup
+        processView={processView({ doneCount: 1, steps: [] })}
+        commentaryText="继续分析。"
+        streaming
+      >
+        <div>process body updated</div>
+      </AssistantProcessGroup>,
+    );
+    expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('process body updated')).toBeNull();
   });
 
   it('follows appended commentary, pauses on upward user scroll, and resumes at the bottom', () => {

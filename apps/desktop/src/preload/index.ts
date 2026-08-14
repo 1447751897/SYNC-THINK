@@ -302,6 +302,10 @@ const api = {
       ipcRenderer.invoke('runtime:append-message', payload) as Promise<AppendMessageResponse>,
     detectKernels: () =>
       ipcRenderer.invoke('runtime:kernel-detect') as Promise<KernelDetectResponse>,
+    installKernel: (kernelId: string) =>
+      ipcRenderer.invoke('desktop:kernel-install', kernelId) as Promise<
+        { ok: true } | { ok: false; error: string }
+      >,
     cancelRun: (payload: CancelRunPayload) =>
       ipcRenderer.invoke('runtime:run-cancel', payload) as Promise<PauseResumeCancelResponse>,
     createWorkspace: (payload: CreateWorkspacePayload) =>

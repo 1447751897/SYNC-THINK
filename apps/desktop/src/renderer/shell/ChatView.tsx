@@ -122,6 +122,7 @@ import {
   REASONING_LABELS,
   resolveFloatingMenuStyle,
   type IdentityOption,
+  type KernelInstallState,
   type PermissionMode,
   type ReasoningEffort,
 } from './compose-toolbar.js';
@@ -506,6 +507,18 @@ export function ChatView({
   );
   // Kernel registry sweep for the selector (cached per conversation view).
   const [kernelRegistry, setKernelRegistry] = useState<KernelDetectionResult[] | null>(null);
+  const [kernelInstallStates, setKernelInstallStates] = useState<
+    Record<string, KernelInstallState | undefined>
+  >({});
+  const kernelInstallPromisesRef = useRef(new Map<string, Promise<void>>());
+  const kernelDetectionGenerationRef = useRef(0);
+  const kernelInstallMountedRef = useRef(true);
+  useEffect(() => {
+    kernelInstallMountedRef.current = true;
+    return () => {
+      kernelInstallMountedRef.current = false;
+    };
+  }, []);
   const [netEnabled, setNetEnabled] = useState(
     () => readConversationNetworkEnabled(String(conversation.id)) ?? true,
   );
@@ -859,27 +872,89 @@ export function ChatView({
     // 「加载中…」。权限模式由 setPermission 自行同步，这里只需跟随 id。
   }, [clearCompactDismissTimer, clearRunProcessRetryState, conversation.id]);
 
+  const detectKernels = useCallback(async (): Promise<KernelDetectionResult[] | null> => {
+    const api = bridge();
+    if (!api?.detectKernels) return null;
+    const generation = (kernelDetectionGenerationRef.current += 1);
+    try {
+      const response = await api.detectKernels();
+      if (Array.isArray(response?.kernels)) {
+        if (
+          kernelInstallMountedRef.current &&
+          generation === kernelDetectionGenerationRef.current
+        ) {
+          setKernelRegistry(response.kernels);
+        }
+        return response.kernels;
+      }
+    } catch {
+      if (kernelInstallMountedRef.current && generation === kernelDetectionGenerationRef.current) {
+        setKernelRegistry(null);
+      }
+    }
+    return null;
+  }, []);
+
   // Kernel registry sweep for the selector. Probe once per conversation view;
   // failures degrade to an empty list (the kernel group hides).
   useEffect(() => {
-    let cancelled = false;
     setKernelRegistry(null);
-    const api = bridge();
-    if (!api?.detectKernels) return;
-    api
-      .detectKernels()
-      .then((response) => {
-        if (!cancelled && Array.isArray(response?.kernels)) {
-          setKernelRegistry(response.kernels);
+    void detectKernels();
+  }, [conversation.id, detectKernels]);
+
+  const installKernel = useCallback(
+    (kernelId: string) => {
+      const existing = kernelInstallPromisesRef.current.get(kernelId);
+      if (existing) return existing;
+      const api = bridge();
+      if (!api?.installKernel) {
+        setKernelInstallStates((current) => ({
+          ...current,
+          [kernelId]: { status: 'error', error: '当前桌面版本不支持内核安装' },
+        }));
+        return Promise.resolve();
+      }
+
+      const installPromise = (async () => {
+        setKernelInstallStates((current) => ({
+          ...current,
+          [kernelId]: { status: 'installing' },
+        }));
+        try {
+          const result = await api.installKernel(kernelId);
+          if (!result.ok) {
+            throw new Error(result.error || '安装命令执行失败');
+          }
+          if (!kernelInstallMountedRef.current) return;
+          setKernelInstallStates((current) => ({
+            ...current,
+            [kernelId]: { status: 'verifying' },
+          }));
+          const detected = await detectKernels();
+          if (!detected?.some((kernel) => kernel.kernelId === kernelId && kernel.installed)) {
+            throw new Error('安装完成，但未检测到 Pi，请检查 npm 全局目录是否在 PATH 中');
+          }
+          if (!kernelInstallMountedRef.current) return;
+          setKernelInstallStates((current) => ({
+            ...current,
+            [kernelId]: { status: 'success' },
+          }));
+        } catch (error) {
+          if (!kernelInstallMountedRef.current) return;
+          const message = error instanceof Error ? error.message : String(error);
+          setKernelInstallStates((current) => ({
+            ...current,
+            [kernelId]: { status: 'error', error: message || '未知错误' },
+          }));
+        } finally {
+          kernelInstallPromisesRef.current.delete(kernelId);
         }
-      })
-      .catch(() => {
-        if (!cancelled) setKernelRegistry(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [conversation.id]);
+      })();
+      kernelInstallPromisesRef.current.set(kernelId, installPromise);
+      return installPromise;
+    },
+    [detectKernels],
+  );
 
   // Resolve threadId from the bound task so we can project history for this conversation.
   useEffect(() => {
@@ -4260,8 +4335,10 @@ export function ChatView({
                       reasoningEffort={reasoningEffort}
                       kernels={kernelRegistry ?? undefined}
                       selectedKernelId={kernelOverride}
+                      kernelInstallStates={kernelInstallStates}
                       anchorEl={modelBtnRef.current}
                       onClose={() => setMenu(null)}
+                      onInstallKernel={(kernelId) => void installKernel(kernelId)}
                       onPickKernel={(kernelId) => {
                         setKernelOverride(kernelId);
                         writeConversationKernelOverride(String(conversation.id), kernelId);

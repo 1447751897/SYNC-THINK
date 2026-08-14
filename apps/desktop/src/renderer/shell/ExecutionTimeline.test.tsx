@@ -84,7 +84,7 @@ describe('ExecutionTimeline', () => {
 
     expect(timeline.map((item) => `${item.type}:${item.id}`)).toEqual([
       'commentary:commentary-before',
-      'tools:tools:tool-1:tool-2',
+      'tools:tools:tool-1',
       'commentary:commentary-after',
       'tools:tools:tool-3',
     ]);
@@ -138,6 +138,70 @@ describe('ExecutionTimeline', () => {
     expect(firstTool.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('first output')).toBeTruthy();
     expect(secondTool.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('expands an active tool batch and every tool detail until the whole batch finishes', () => {
+    const runningSteps = [
+      step({
+        status: 'running',
+        completedAt: undefined,
+        preview: 'reading output',
+      }),
+      step({
+        id: 'tool-2',
+        zh: '搜索代码',
+        toolName: 'search_files',
+        kind: 'search',
+        path: 'apps/desktop/src',
+        sequence: 12,
+        startedAt: '2026-08-08T01:02:05.000Z',
+        completedAt: '2026-08-08T01:02:06.000Z',
+        preview: 'search output',
+      }),
+    ];
+    const { rerender } = render(<ExecutionTimeline processView={processView(runningSteps)} />);
+
+    const groupToggle = screen.getByRole('button', { name: /调用了 2 个工具/ });
+    expect(groupToggle.getAttribute('aria-expanded')).toBe('true');
+    const firstTool = screen.getByRole('button', { name: /读取文件 · src\/main\.ts/ });
+    const secondTool = screen.getByRole('button', { name: /搜索代码 · apps\/desktop\/src/ });
+    expect(firstTool.getAttribute('aria-expanded')).toBe('true');
+    expect(secondTool.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('reading output')).toBeTruthy();
+    expect(screen.getByText('search output')).toBeTruthy();
+
+    rerender(
+      <ExecutionTimeline
+        processView={processView([
+          { ...runningSteps[0], status: 'done', completedAt: '2026-08-08T01:02:07.000Z' },
+          runningSteps[1],
+        ])}
+      />,
+    );
+
+    expect(groupToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('button', { name: /读取文件 · src\/main\.ts/ })).toBeNull();
+    expect(screen.queryByText('reading output')).toBeNull();
+  });
+
+  it('keeps a manual batch fold while tools continue running', () => {
+    const running = step({
+      status: 'running',
+      completedAt: undefined,
+      preview: 'first output',
+    });
+    const { rerender } = render(<ExecutionTimeline processView={processView([running])} />);
+    const groupToggle = screen.getByRole('button', { name: /调用了 1 个工具/ });
+
+    expect(groupToggle.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(groupToggle);
+    expect(groupToggle.getAttribute('aria-expanded')).toBe('false');
+
+    rerender(
+      <ExecutionTimeline processView={processView([{ ...running, preview: 'updated output' }])} />,
+    );
+    expect(groupToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('updated output')).toBeNull();
   });
 
   it('renders tools alone when the provider did not return commentary', () => {

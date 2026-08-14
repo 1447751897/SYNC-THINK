@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import type {
   CommentaryTimelineSegment,
   ExecutionProcessStep,
@@ -7,6 +7,7 @@ import type {
 import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useAutoDisclosure } from './auto-disclosure.js';
 import { ExecutionProcessStepCard } from './ExecutionProcessBlock.js';
 
 type RawExecutionTimelineItem =
@@ -72,7 +73,8 @@ function groupAdjacentTools(items: readonly RawExecutionTimelineItem[]): Executi
     const previous = grouped[grouped.length - 1];
     if (previous?.type === 'tools') {
       previous.steps.push(item.step);
-      previous.id = `tools:${previous.steps.map((step) => step.id).join(':')}`;
+      // Keep the first tool id stable as more calls join this batch so manual
+      // disclosure choices survive streaming updates.
       previous.completedAt = item.completedAt ?? previous.completedAt;
       continue;
     }
@@ -206,7 +208,11 @@ function ExecutionToolsGroup({
   steps: readonly ExecutionProcessStep[];
   onOpenChange?: (path: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const batchActive = steps.some((step) => step.status === 'running');
+  const { open, toggle } = useAutoDisclosure({
+    autoOpen: batchActive,
+    resetKey: steps[0]?.id,
+  });
 
   return (
     <div className="shell-execution-tools" data-open={open ? '1' : '0'}>
@@ -214,7 +220,7 @@ function ExecutionToolsGroup({
         type="button"
         className="shell-execution-tools__toggle"
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggle}
       >
         <span>调用了 {steps.length} 个工具</span>
         <ChevronDown
@@ -227,7 +233,11 @@ function ExecutionToolsGroup({
         <div className="shell-execution-tools__body">
           {steps.map((step) => (
             <div key={step.id} className="shell-execution-tools__step">
-              <ExecutionProcessStepCard step={step} onOpenChange={onOpenChange} />
+              <ExecutionProcessStepCard
+                step={step}
+                autoOpen={batchActive}
+                onOpenChange={onOpenChange}
+              />
             </div>
           ))}
         </div>

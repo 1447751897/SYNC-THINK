@@ -181,6 +181,7 @@ describe('ModelPickerMenu', () => {
     const anchor = document.createElement('button');
     document.body.appendChild(anchor);
     const onPickKernel = vi.fn();
+    const onInstallKernel = vi.fn();
 
     render(
       <ModelPickerMenu
@@ -226,6 +227,7 @@ describe('ModelPickerMenu', () => {
         ]}
         selectedKernelId="native"
         onPickKernel={onPickKernel}
+        onInstallKernel={onInstallKernel}
       />,
     );
 
@@ -236,18 +238,81 @@ describe('ModelPickerMenu', () => {
     expect(ccOption.textContent).toContain('Claude Code');
     expect(ccOption.textContent).toContain('已安装 v2.1.222');
 
-    // Uninstalled kernels are disabled and show install guidance.
+    // Installable kernels remain actionable and route to the bounded install callback.
     const piOption = await screen.findByTestId('kernel-option-pi');
-    expect(piOption.hasAttribute('aria-disabled')).toBe(true);
+    expect(piOption.hasAttribute('aria-disabled')).toBe(false);
     expect(piOption.textContent).toContain('未安装');
     expect(piOption.textContent).toContain('npm i -g pi');
+    fireEvent.click(piOption);
+    expect(onInstallKernel).toHaveBeenCalledWith('pi');
 
     // Selecting an installed kernel routes through onPickKernel.
     fireEvent.click(ccOption);
     expect(onPickKernel).toHaveBeenCalledWith('claude-code');
-
-    // Selecting a disabled kernel is a no-op.
-    fireEvent.click(piOption);
     expect(onPickKernel).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders installing, verifying, success, and failure status for Pi', async () => {
+    const anchor = document.createElement('button');
+    document.body.appendChild(anchor);
+    const baseProps = {
+      open: true,
+      models: [{ modelId: 'model-a', displayName: 'Model A', providerName: 'Provider A' }],
+      selectedModelId: 'model-a',
+      defaultLabel: '选择模型',
+      anchorEl: anchor,
+      onClose: vi.fn(),
+      onPick: vi.fn(),
+      kernels: [
+        {
+          kernelId: 'pi',
+          name: 'Pi',
+          icon: 'pi' as const,
+          capabilities: {
+            permission: 'none' as const,
+            permissionBridge: false,
+            pause: 'kill' as const,
+            compress: 'own' as const,
+            usageReport: false,
+            protocols: [],
+          },
+          installed: false,
+          version: null,
+          executablePath: null,
+          knownGood: false,
+          installCommand: 'npm i -g pi',
+        },
+      ],
+      selectedKernelId: 'native',
+      onPickKernel: vi.fn(),
+      onInstallKernel: vi.fn(),
+    };
+    const { rerender } = render(
+      <ModelPickerMenu {...baseProps} kernelInstallStates={{ pi: { status: 'installing' } }} />,
+    );
+
+    expect((await screen.findByTestId('kernel-option-pi')).textContent).toContain('安装中');
+
+    rerender(
+      <ModelPickerMenu {...baseProps} kernelInstallStates={{ pi: { status: 'verifying' } }} />,
+    );
+    expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装成功 · 正在检测');
+
+    rerender(
+      <ModelPickerMenu
+        {...baseProps}
+        kernels={[{ ...baseProps.kernels[0]!, installed: true, version: '1.2.3' }]}
+        kernelInstallStates={{ pi: { status: 'success' } }}
+      />,
+    );
+    expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装成功 v1.2.3');
+
+    rerender(
+      <ModelPickerMenu
+        {...baseProps}
+        kernelInstallStates={{ pi: { status: 'error', error: '权限不足' } }}
+      />,
+    );
+    expect(screen.getByTestId('kernel-option-pi').textContent).toContain('安装失败 · 权限不足');
   });
 });

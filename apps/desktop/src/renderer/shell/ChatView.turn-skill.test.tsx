@@ -266,10 +266,10 @@ describe('ChatView turn Skill draft', () => {
     expect(screen.getByTestId('turn-skill-trigger').textContent).toContain('0/8');
     await toggleSkill('skill-a', 1);
 
-    fireEvent.click(screen.getByTitle('切换模型'));
+    fireEvent.click(screen.getByTitle(/切换模型/));
     const provider = await screen.findByTestId('model-provider-Provider');
     provider.focus();
-    fireEvent.keyDown(provider, { key: 'ArrowLeft' });
+    fireEvent.keyDown(provider, { key: 'ArrowRight' });
     fireEvent.click(await screen.findByText('Model B'));
 
     await waitFor(() =>

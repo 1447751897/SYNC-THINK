@@ -370,6 +370,8 @@ let desktopUpdateController: DesktopUpdateController | null = null;
 let desktopUpdateRollbackCoordinator: DesktopUpdateRollbackCoordinator | null = null;
 let desktopUpdateRollbackHealthPromise: Promise<void> | null = null;
 let desktopShutdownPromise: Promise<void> | null = null;
+type KernelInstallResult = { ok: true } | { ok: false; error: string };
+let piKernelInstallPromise: Promise<KernelInstallResult> | null = null;
 const transientCleanupRegisteredSenders = new Set<number>();
 const projectFileWatchCleanupRegisteredSenders = new Set<number>();
 const projectFileWatchSubscriptions = new Map<string, { senderId: number; dispose: () => void }>();
@@ -1132,6 +1134,57 @@ function assertRuntimeIpcSource(event: IpcMainInvokeEvent): void {
   );
 }
 
+function installPiKernel(): Promise<KernelInstallResult> {
+  if (piKernelInstallPromise) return piKernelInstallPromise;
+  piKernelInstallPromise = new Promise<KernelInstallResult>((resolve) => {
+    void import('node:child_process')
+      .then(({ spawn }) => {
+        const executable = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'npm';
+        const args =
+          process.platform === 'win32'
+            ? ['/d', '/s', '/c', 'npm', 'i', '-g', 'pi']
+            : ['i', '-g', 'pi'];
+        const child = spawn(executable, args, {
+          shell: false,
+          windowsHide: true,
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let stderr = '';
+        const timeout = setTimeout(() => child.kill(), 5 * 60_000);
+        child.stderr?.setEncoding('utf8');
+        child.stderr?.on('data', (chunk: string) => {
+          if (stderr.length < 8_192) stderr += chunk.slice(0, 8_192 - stderr.length);
+        });
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          resolve({ ok: false, error: `无法启动 npm：${error.message}` });
+        });
+        child.once('close', (code, signal) => {
+          clearTimeout(timeout);
+          if (code === 0) {
+            resolve({ ok: true });
+            return;
+          }
+          const detail = stderr.trim().split(/\r?\n/).slice(-4).join('\n');
+          resolve({
+            ok: false,
+            error:
+              detail ||
+              (signal
+                ? `npm 安装被终止（${signal}）`
+                : `npm 安装失败（退出码 ${code ?? 'unknown'}）`),
+          });
+        });
+      })
+      .catch((error: unknown) => {
+        resolve({ ok: false, error: `无法加载进程执行能力：${errorMessage(error)}` });
+      });
+  }).finally(() => {
+    piKernelInstallPromise = null;
+  });
+  return piKernelInstallPromise;
+}
+
 function setupRuntimeBridge(): void {
   ipcMain.handle('desktop:update-get-state', (event) => {
     assertRuntimeIpcSource(event);
@@ -1545,6 +1598,13 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request<KernelDetectResponse>('kernel.detect', {});
+  });
+  ipcMain.handle('desktop:kernel-install', (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    if (value !== 'pi') {
+      throw new Error('Unsupported kernel install request');
+    }
+    return installPiKernel();
   });
   ipcMain.handle('runtime:agent-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

@@ -54,6 +54,7 @@ import type {
   ProcessToolKind,
   RunProcessView,
 } from '@sync-think/protocol';
+import { useAutoDisclosure } from './auto-disclosure.js';
 
 let hljsReady = false;
 function ensureHljs(): void {
@@ -246,11 +247,13 @@ function hasRichOutput(step: ExecutionProcessStep): boolean {
 export function ExecutionProcessStepCard({
   step,
   onOpenChange,
+  autoOpen = false,
 }: {
   step: ExecutionProcessStep;
   onOpenChange?: (path: string) => void;
+  autoOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const { open, toggle } = useAutoDisclosure({ autoOpen, resetKey: step.id });
   const title = formatExecutionStepTitle(step);
   const output = step.error || step.preview;
   const showOutput = hasRichOutput(step);
@@ -263,7 +266,7 @@ export function ExecutionProcessStepCard({
       <button
         type="button"
         className="shell-tool-card__header"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         aria-expanded={open}
       >
         <span className="shell-tool-card__kind">

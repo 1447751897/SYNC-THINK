@@ -113,10 +113,10 @@ async function queueRequest(text: string) {
 }
 
 async function selectLuna() {
-  fireEvent.click(screen.getByTitle('切换模型'));
+  fireEvent.click(screen.getByTitle(/切换模型/));
   const provider = await screen.findByTestId('model-provider-Provider');
   provider.focus();
-  fireEvent.keyDown(provider, { key: 'ArrowLeft' });
+  fireEvent.keyDown(provider, { key: 'ArrowRight' });
   fireEvent.click(await screen.findByText('GPT-5.6 Luna'));
 }
 
