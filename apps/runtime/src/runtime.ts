@@ -538,6 +538,7 @@ import {
 } from './kernel/mcp-broker.js';
 import {
   executePlatformTool,
+  buildPlatformMcpToolDefinitions,
   PLATFORM_MCP_TOOL_DEFINITIONS,
   type PlatformToolContext,
 } from './kernel/platform-tools.js';
@@ -15110,9 +15111,20 @@ export class Runtime {
       return undefined;
     }
     const workspaceRoot = request.workspaceDir;
+    const tools = buildPlatformMcpToolDefinitions({
+      executionMode: this.resolveChatExecutionMode(run.threadId),
+      networkEnabled: run.networkEnabled === true,
+      includeAgentTools: Boolean(this.globalAgentStore),
+      includeBrowserTools: Boolean(this.browserController),
+      includeDesktopTools: Boolean(this.desktopController && this.isComputerUsePluginEnabled()),
+      includeTaskTools: Boolean(this.taskPlanStore),
+      includeMcpTools: Boolean(this.mcpStore),
+      includeSkillTools: Boolean(this.skillStore),
+      includeTeamTools: Boolean(this.teamStore && this.globalAgentStore),
+    });
     const broker = await startKernelMcpBroker({
       workspaceDir: workspaceRoot,
-      tools: PLATFORM_MCP_TOOL_DEFINITIONS,
+      tools,
       onToolCall: (call) => this.handlePlatformMcpToolCall(runId, run, workspaceRoot, call),
     });
     request.platformBroker = {

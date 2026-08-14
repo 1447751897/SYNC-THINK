@@ -12,6 +12,18 @@
 import { readFile, readdir, writeFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { PlatformMcpToolDefinition } from './mcp-broker.js';
+import {
+  CHAT_AGENT_TOOL_SCHEMAS,
+  CHAT_BROWSER_TOOL_SCHEMAS,
+  CHAT_DESKTOP_TOOL_SCHEMAS,
+  CHAT_MCP_CATALOG_TOOL_SCHEMAS,
+  CHAT_MCP_REGISTRY_TOOL_SCHEMAS,
+  CHAT_PLAN_TOOL_SCHEMAS,
+  CHAT_SKILL_TOOL_SCHEMAS,
+  CHAT_TEAM_TOOL_SCHEMAS,
+  chatToolRequiresApproval,
+  normalizeChatExecutionMode,
+} from '../chat-tools.js';
 
 const MAX_FILE_READ_BYTES = 1 << 20; // 1 MiB
 const MAX_WRITE_BYTES = 1 << 20;
@@ -96,6 +108,58 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
 ];
+export interface PlatformToolCatalogOptions {
+  executionMode?: string;
+  networkEnabled?: boolean;
+  includeAgentTools?: boolean;
+  includeBrowserTools?: boolean;
+  includeDesktopTools?: boolean;
+  includeTaskTools?: boolean;
+  includeMcpTools?: boolean;
+  includeTeamTools?: boolean;
+  includeSkillTools?: boolean;
+}
+
+function toPlatformDefinition(
+  schema: { name: string; description?: string; inputSchema: Record<string, unknown> },
+  executionMode: string,
+): PlatformMcpToolDefinition {
+  return {
+    name: schema.name,
+    description: schema.description ?? schema.name,
+    inputSchema: schema.inputSchema,
+    approval: chatToolRequiresApproval(executionMode, schema.name)
+      ? 'outside-full-access'
+      : 'never',
+  };
+}
+
+/** Build the per-run host catalog from the authoritative chat tool schemas. */
+export function buildPlatformMcpToolDefinitions(
+  options: PlatformToolCatalogOptions = {},
+): readonly PlatformMcpToolDefinition[] {
+  const executionMode = normalizeChatExecutionMode(options.executionMode);
+  const definitions = [...PLATFORM_MCP_TOOL_DEFINITIONS];
+  const seen = new Set(definitions.map((definition) => definition.name));
+  const add = (schemas: readonly { name: string; description?: string; inputSchema: Record<string, unknown> }[]) => {
+    for (const schema of schemas) {
+      if (seen.has(schema.name)) continue;
+      seen.add(schema.name);
+      definitions.push(toPlatformDefinition(schema, executionMode));
+    }
+  };
+  if (options.includeTaskTools) add(CHAT_PLAN_TOOL_SCHEMAS);
+  if (options.includeAgentTools) add(CHAT_AGENT_TOOL_SCHEMAS);
+  if (options.includeSkillTools) add(CHAT_SKILL_TOOL_SCHEMAS);
+  if (options.includeTeamTools) add(CHAT_TEAM_TOOL_SCHEMAS);
+  if (options.includeMcpTools) {
+    add(CHAT_MCP_CATALOG_TOOL_SCHEMAS);
+    add(CHAT_MCP_REGISTRY_TOOL_SCHEMAS);
+  }
+  if (options.networkEnabled && options.includeBrowserTools) add(CHAT_BROWSER_TOOL_SCHEMAS);
+  if (options.includeDesktopTools) add(CHAT_DESKTOP_TOOL_SCHEMAS);
+  return definitions;
+}
 
 /** Stores + context the executors need; supplied by the runtime. */
 export interface PlatformToolContext {
@@ -119,6 +183,7 @@ export interface PlatformToolContext {
     listLatestVersions(): Array<{ agentId: string; name: string; version: string }>;
   };
   resolveWorkspaceId?: () => string;
+  catalog?: readonly PlatformMcpToolDefinition[];
 }
 
 /** Root an input path inside the workspace; throws on escape attempts. */
@@ -148,7 +213,7 @@ export async function executePlatformTool(
           runId: ctx.runId ?? null,
           threadId: ctx.threadId ?? null,
           workspaceDir: ctx.workspaceDir,
-          tools: PLATFORM_MCP_TOOL_DEFINITIONS.map((definition) => definition.name),
+          tools: buildPlatformMcpToolDefinitions().map((definition) => definition.name),
         },
         null,
         0,

@@ -30,7 +30,7 @@ export interface PlatformMcpToolDefinition {
    * (mirrors the native path: workspace/full-access trust workspace-scoped
    * mutations, ask pauses on a card).
    */
-  approval: 'never' | 'ask-mode';
+  approval: 'never' | 'ask-mode' | 'outside-full-access';
 }
 
 export interface PlatformMcpToolCall {

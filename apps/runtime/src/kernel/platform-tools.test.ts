@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  buildPlatformMcpToolDefinitions,
   executePlatformTool,
   resolveWithinWorkspace,
 } from './platform-tools.js';
@@ -26,6 +27,37 @@ function makeBroker(overrides: Partial<PlatformBrokerInfo> = {}): PlatformBroker
 }
 
 describe('platform tools', () => {
+  it('builds a per-run catalog from authoritative chat schemas and approval rules', () => {
+    const definitions = buildPlatformMcpToolDefinitions({
+      executionMode: 'workspace',
+      networkEnabled: true,
+      includeAgentTools: true,
+      includeBrowserTools: true,
+      includeDesktopTools: true,
+      includeTaskTools: true,
+      includeMcpTools: true,
+      includeSkillTools: true,
+      includeTeamTools: true,
+    });
+    const byName = new Map(definitions.map((definition) => [definition.name, definition]));
+    expect(byName.has('create_agent')).toBe(true);
+    expect(byName.has('browser_open')).toBe(true);
+    expect(byName.has('desktop_list_windows')).toBe(true);
+    expect(byName.get('create_agent')?.approval).toBe('outside-full-access');
+    expect(byName.get('file_write')?.approval).toBe('ask-mode');
+    expect(byName.get('list_skills')?.inputSchema).toBeDefined();
+  });
+
+  it('does not expose optional tools when their run capabilities are disabled', () => {
+    const names = buildPlatformMcpToolDefinitions().map((definition) => definition.name);
+    expect(names).toEqual(
+      expect.arrayContaining(['platform_context', 'file_read', 'file_write', 'task_list', 'agent_list']),
+    );
+    expect(names).not.toContain('browser_open');
+    expect(names).not.toContain('desktop_list_windows');
+    expect(names).not.toContain('create_agent');
+  });
+
   it('serves platform_context identity', async () => {
     const content = await executePlatformTool('platform_context', {}, {
       workspaceDir: 'C:/workspace',
