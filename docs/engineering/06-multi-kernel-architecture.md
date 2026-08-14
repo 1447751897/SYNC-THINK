@@ -2,7 +2,7 @@
 
 > **文档定位**：本文件是「SYNC-THINK 多内核改造」的完整设计基线，交付给负责实现适配的开发者/模型使用。文档自包含——所有关键事实（代码实证、NewMax 本机日志实证、官方文档调研）均写入正文，不需要额外的对话上下文即可开工。
 >
-> **状态**：设计已与需求方逐轮确认定稿，待实现。
+> **状态**：阶段性实现已推入 `feature/multi-kernel`；Native / Claude Code / Codex 主链、内核选择 UI、MCP broker 与平台文件工具已落地，但平台业务工具分派、审批取消/幂等、事件映射和真实 Electron 验收矩阵尚未收口，当前不能声明完整交付。
 > **相关文档**：`02-development-principles.md`（开发原则）、`04-tech-decisions.md`（技术决策总集）、`05-tech-decisions-mcp-global.md`（MCP 全局化）。
 
 ---
@@ -13,19 +13,19 @@
 
 SYNC-THINK 是自研 runtime 直连模型 API 的对话产品。runtime 拥有原生双协议 adapter（`openai-chat` 直连 Chat Completions、`anthropic-messages` 直连 Messages），并实现了完整的平台能力：
 
-| 现有资产（改造中复用） | 位置/机制 |
-|---|---|
+| 现有资产（改造中复用）               | 位置/机制                                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------ |
 | 模型层重试 + 备用模型链 + 供应商熔断 | `shouldRetrySameModel` / `tryContinueWithFallback` / `providerFailureCounts`（runtime.ts） |
-| 失败分类体系（八类） | `FailureClass`（transient/auth/protocol/permission/acceptance/rate-limit/timeout/unknown） |
-| 审批卡机制 | `tool.approval_requested` 事件 + `approval.decide` 命令 |
-| 对话权限三档位 | full-access / ask / workspace |
-| 凭据组 | `CredentialGroupRecord` + per-model `credentialRefId` |
-| 用量计费 | `provider.usage` 事件 → `pricing.ts` 四档计费 |
-| 任务清单三表 | `task_plan` / `task_plan_dependency` / `task_plan_execution` |
-| 事件流持久化 | 流式即写库，重启可恢复 |
-| 平台工具组 | create_agent / browser_* / desktop_* / Skill / MCP / 小队管理 |
-| 输入框任务胶囊 | RunTaskCapsule（从工具结果提取 plan 快照） |
-| 插话队列 | ComposeRequestQueue（排队、可编辑/删除/插话/重试、持久化） |
+| 失败分类体系（八类）                 | `FailureClass`（transient/auth/protocol/permission/acceptance/rate-limit/timeout/unknown） |
+| 审批卡机制                           | `tool.approval_requested` 事件 + `approval.decide` 命令                                    |
+| 对话权限三档位                       | full-access / ask / workspace                                                              |
+| 凭据组                               | `CredentialGroupRecord` + per-model `credentialRefId`                                      |
+| 用量计费                             | `provider.usage` 事件 → `pricing.ts` 四档计费                                              |
+| 任务清单三表                         | `task_plan` / `task_plan_dependency` / `task_plan_execution`                               |
+| 事件流持久化                         | 流式即写库，重启可恢复                                                                     |
+| 平台工具组                           | create_agent / browser_* / desktop_* / Skill / MCP / 小队管理                              |
+| 输入框任务胶囊                       | RunTaskCapsule（从工具结果提取 plan 快照）                                                 |
+| 插话队列                             | ComposeRequestQueue（排队、可编辑/删除/插话/重试、持久化）                                 |
 
 ### 1.2 目标
 
@@ -38,12 +38,12 @@ SYNC-THINK 是自研 runtime 直连模型 API 的对话产品。runtime 拥有�
 
 ### 1.3 核心概念澄清
 
-| 概念 | 定义 |
-|---|---|
-| **模型** | 发动机——只提供有限上下文窗口的 API，不做窗口管理 |
-| **Agent** | 驾驶行为——"模型 + 系统提示 + 工具循环"的行为主体 |
+| 概念               | 定义                                                                                                                                                              |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **模型**           | 发动机——只提供有限上下文窗口的 API，不做窗口管理                                                                                                                  |
+| **Agent**          | 驾驶行为——"模型 + 系统提示 + 工具循环"的行为主体                                                                                                                  |
 | **内核（kernel）** | 整辆车——承载 agent 循环的可执行 harness：协议适配、工具执行、上下文管理、权限、I/O 的完整外壳。`claude.exe` / `codex` / `pi` / SYNC-THINK 自己的 runtime 都是内核 |
-| **宿主（host）** | SYNC-THINK 应用本身：UI、事件持久化、平台工具、审批卡、小队管理 |
+| **宿主（host）**   | SYNC-THINK 应用本身：UI、事件持久化、平台工具、审批卡、小队管理                                                                                                   |
 
 **"多内核"的正确定义**：让 SYNC-THINK 成为宿主 harness，spawn 并驱动多个外部 harness 子进程，把它们的输出归一化成统一事件流。
 
@@ -53,12 +53,12 @@ SYNC-THINK 是自研 runtime 直连模型 API 的对话产品。runtime 拥有�
 
 ### 2.1 宿主不管的事（内核自治域）
 
-| 领域 | 归属 | 宿主行为 |
-|---|---|---|
+| 领域                                     | 归属 | 宿主行为                                                                                |
+| ---------------------------------------- | ---- | --------------------------------------------------------------------------------------- |
 | **上下文压缩**（何时触发/怎么摘要/阈值） | 内核 | **完全不管**。内核自己的压缩逻辑跑，宿主不干预、**不二次压缩**（双重压缩=信息损失翻倍） |
-| 模型调用重试 | 内核 | 内核内部失败让内核自己处理 |
-| 工具执行循环 | 内核 | 内核自己的工具循环 |
-| 内核会话管理 | 内核 | 内核自己的 session/resume 机制 |
+| 模型调用重试                             | 内核 | 内核内部失败让内核自己处理                                                              |
+| 工具执行循环                             | 内核 | 内核自己的工具循环                                                                      |
+| 内核会话管理                             | 内核 | 内核自己的 session/resume 机制                                                          |
 
 ### 2.2 宿主必须做的事
 
@@ -69,11 +69,11 @@ SYNC-THINK 是自研 runtime 直连模型 API 的对话产品。runtime 拥有�
 
 ### 2.3 宿主的三件横向职责（与"不管压缩"零冲突）
 
-| 职责 | 说明 | 实证依据 |
-|---|---|---|
-| **① 上下文容量配置** | 模型记录存 `contextWindow` → spawn 内核时注入 → 统计时除以它算百分比。压缩**时机**由内核决定，容量**值**由宿主配置 | NewMax 日志 `window=1000000 pct=20%` |
-| **② 备用模型链** | 内核失败 → 宿主查链 → 切换"内核+模型"二元组继续。**内核之间互不知道对方存在**，这层天然属于宿主 | NewMax 日志 `fallback: { providerId, model: 'grok-4.5' }`（宿主层切换） |
-| **③ 用量统计** | 读内核报告的 usage 事件 → 持久化 → UI 展示。**"不干预压缩" ≠ "不读用量报告"**：报告是内核对外输出，读它是适配协议的一部分 | NewMax 日志 `[ClaudeProxy][RealUsage] real=209623 window=1000000 pct=21%` |
+| 职责                 | 说明                                                                                                                      | 实证依据                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **① 上下文容量配置** | 模型记录存 `contextWindow` → spawn 内核时注入 → 统计时除以它算百分比。压缩**时机**由内核决定，容量**值**由宿主配置        | NewMax 日志 `window=1000000 pct=20%`                                      |
+| **② 备用模型链**     | 内核失败 → 宿主查链 → 切换"内核+模型"二元组继续。**内核之间互不知道对方存在**，这层天然属于宿主                           | NewMax 日志 `fallback: { providerId, model: 'grok-4.5' }`（宿主层切换）   |
+| **③ 用量统计**       | 读内核报告的 usage 事件 → 持久化 → UI 展示。**"不干预压缩" ≠ "不读用量报告"**：报告是内核对外输出，读它是适配协议的一部分 | NewMax 日志 `[ClaudeProxy][RealUsage] real=209623 window=1000000 pct=21%` |
 
 ---
 
@@ -139,29 +139,29 @@ flowchart TB
 interface KernelAdapter {
   // 身份
   id: 'native' | 'claude-code' | 'codex' | 'pi' | string;
-  name: string;                          // 显示名
-  icon: string;                          // 内核图标（选择器 UI 用）
+  name: string; // 显示名
+  icon: string; // 内核图标（选择器 UI 用）
 
   // 能力声明（驱动 UI 降级与权限策略）
   capabilities: {
     protocols: Array<'anthropic-messages' | 'openai-chat' | 'openai-responses'>;
-    permission: 'own' | 'none';          // 内核有无自身权限体系
-    permissionBridge: boolean;           // 是否支持权限请求桥接到宿主（permission-prompt-tool 类机制）
+    permission: 'own' | 'none'; // 内核有无自身权限体系
+    permissionBridge: boolean; // 是否支持权限请求桥接到宿主（permission-prompt-tool 类机制）
     pause: 'executor' | 'turn' | 'session' | 'kill';
-        // executor = 执行器级暂停/恢复（native）
-        // turn     = 只能停当前 turn（Claude Code，Esc 语义）
-        // session  = 暂停即关会话（Codex，Ctrl+C 语义）
-        // kill     = 杀进程树，无恢复（Pi）
-    compress: 'own' | 'none';            // 内核是否自带压缩（全部外部内核为 'own'）
-    usageReport: boolean;                // 内核是否报告 usage 事件
+    // executor = 执行器级暂停/恢复（native）
+    // turn     = 只能停当前 turn（Claude Code，Esc 语义）
+    // session  = 暂停即关会话（Codex，Ctrl+C 语义）
+    // kill     = 杀进程树，无恢复（Pi）
+    compress: 'own' | 'none'; // 内核是否自带压缩（全部外部内核为 'own'）
+    usageReport: boolean; // 内核是否报告 usage 事件
   };
 
   // 版本（跟随更新策略，见 §9）
-  knownGoodVersions: string[];           // 测试通过的版本号
+  knownGoodVersions: string[]; // 测试通过的版本号
   detectVersion(): Promise<string | null>; // 本地探测：PATH / 注册表 / --version
 
   // 生命周期
-  start(req: KernelRequest): AsyncIterable<KernelEvent>;  // spawn + 注入配置，返回事件流
+  start(req: KernelRequest): AsyncIterable<KernelEvent>; // spawn + 注入配置，返回事件流
   stop(): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
@@ -170,25 +170,28 @@ interface KernelAdapter {
 
   // 权限桥接（仅 permissionBridge = true 的内核实现）
   onPermissionRequest(cb: (req: KernelPermissionRequest) => void): void;
-  respondPermission(reqId: string, decision: { allow: boolean; updatedInput?: unknown; message?: string }): void;
+  respondPermission(
+    reqId: string,
+    decision: { allow: boolean; updatedInput?: unknown; message?: string },
+  ): void;
 
   // 用量报告（仅 usageReport = true 的内核实现）
   onUsage(cb: (u: KernelUsage) => void): void;
 }
 
 interface KernelRequest {
-  model: string;                          // 内核模型标识（透传）
-  contextWindow: number;                  // ① 宿主配置的窗口容量
-  credential: KernelCredential;           // 凭据（见 §8）
-  systemContext: string;                  // 共享事实 + 小队上下文（见 §10）
-  platformTools: PlatformToolDefinition[];// 平台工具注入（见 §7.3）
-  permissionMode: 'full-access' | 'ask' | 'workspace';  // 三档位映射（见 §7.1）
+  model: string; // 内核模型标识（透传）
+  contextWindow: number; // ① 宿主配置的窗口容量
+  credential: KernelCredential; // 凭据（见 §8）
+  systemContext: string; // 共享事实 + 小队上下文（见 §10）
+  platformTools: PlatformToolDefinition[]; // 平台工具注入（见 §7.3）
+  permissionMode: 'full-access' | 'ask' | 'workspace'; // 三档位映射（见 §7.1）
   workspaceDir: string;
 }
 
 interface KernelUsage {
-  real: number;                           // 内核报告的真实 token
-  window: number;                         // 回显的窗口容量
+  real: number; // 内核报告的真实 token
+  window: number; // 回显的窗口容量
   // 可选：input/output/cached 分项（各内核粒度不同，见 §12.2 对齐规则）
 }
 
@@ -206,17 +209,18 @@ interface KernelPermissionRequest {
 
 ```ts
 type KernelEvent =
-  | { type: 'delta'; text: string }                     // 回复增量
-  | { type: 'reasoning'; text: string }                 // 思考过程增量
+  | { type: 'delta'; text: string } // 回复增量
+  | { type: 'reasoning'; text: string } // 思考过程增量
   | { type: 'tool-call'; toolId: string; name: string; argsJson: string; partial: boolean }
   | { type: 'tool-result'; toolId: string; output: string; isError: boolean }
   | { type: 'permission-request'; requestId: string; toolName: string; toolInput: unknown }
   | { type: 'usage'; usage: KernelUsage }
-  | { type: 'compacted' }                               // 内核报告发生压缩（可选，仅通知用）
+  | { type: 'compacted' } // 内核报告发生压缩（可选，仅通知用）
   | { type: 'terminal'; status: 'completed' | 'failed'; error?: string };
 ```
 
 **映射原则**：
+
 - 内核输出**未知事件类型 → 忽略 + 记录日志**（NewMax 日志 `unhandled event type` 先例），不崩溃、不中断流
 - 内核**没有的事件类型 → 宿主降级**（如 Pi 无 reasoning 事件，UI 不显示思考区）
 - reasoning 语义各家不同（CC 无显式 reasoning 事件、Codex 有 `reasoning_text.delta`）——映射时尽力而为，映射不了就丢弃并记录
@@ -238,6 +242,7 @@ type KernelEvent =
 **协议**：只讲 Anthropic Messages（+ Bedrock/Vertex）。**不支持 OpenAI 协议**。
 
 **启动参数（关键）**：
+
 ```bash
 claude \
   --output-format stream-json \
@@ -247,17 +252,19 @@ claude \
   --model <透传模型名>
 # 不使用 -p 参数；用户消息通过 stdin 的 JSON 控制消息发送
 ```
+
 - `--permission-prompt-tool stdio`：把内核权限请求通过控制协议发给宿主（`control_request`），宿主回 `control_response`（allow 必须带 `updatedInput`，deny 必须带 `message`，`request_id` 必须匹配）。**内核会阻塞等待答复（默认超时约 60s）**。不加此参数时，非交互模式下工具**自动拒绝**
 - 流式参数展示：stream-json 有 tool_use 的 partial_json 增量事件，映射到 `tool-call` 的 `partial: true`
 
 **接入 OpenAI 系模型的两条路（优先级从上到下）**：
 
-| 路径 | 做法 | 代价 |
-|---|---|---|
-| **A. 中转站 Messages 端点（首选）** | `ANTHROPIC_BASE_URL` 指向中转站的 `/v1/messages`，模型名透传。用户的中转站兼容 Anthropic 协议，此路**零翻译层** | 无 |
-| B. 宿主翻译层（备选，仅当中转站不支持 Messages） | NewMax ClaudeProxy 模式：宿主内建 Messages → Responses 翻译（见 §5.5 实证）。每处 `Stripped`/`unhandled` 都是能力损耗 | 高 |
+| 路径                                             | 做法                                                                                                                  | 代价 |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ---- |
+| **A. 中转站 Messages 端点（首选）**              | `ANTHROPIC_BASE_URL` 指向中转站的 `/v1/messages`，模型名透传。用户的中转站兼容 Anthropic 协议，此路**零翻译层**       | 无   |
+| B. 宿主翻译层（备选，仅当中转站不支持 Messages） | NewMax ClaudeProxy 模式：宿主内建 Messages → Responses 翻译（见 §5.5 实证）。每处 `Stripped`/`unhandled` 都是能力损耗 | 高   |
 
 **已知 bug（适配时必须实测并兜底）**：
+
 1. `ExitPlanMode` 的批准经 stdin `control_response` 回复会被静默忽略，进程停止输出并挂起（anthropics/claude-code#39666）。**规避**：启动时加 `--permission-mode acceptEdits` 绕过 plan mode
 2. `.claude/skills/`、`.claude/agents/`、`.claude/commands/` 写入在 stream-json 模式下被静默拒绝，**且不发出任何 control_request**——宿主无从弹卡，agent 卡死在 "Claude requested permissions..."（#54850）。**规避**：平台工具注册时避开这些路径；或在能力探测时发现该行为
 3. settings 文件 `permissions.allow` 规则对 Write 工具在 stream-json 下可能不生效（#13468）
@@ -306,6 +313,7 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 ### 5.6 新内核接入（插件化）
 
 新增内核 = 实现一个 `KernelAdapter` + 图标 + 能力声明 + 注册进适配器注册表。验收标准：
+
 - 事件流归一化完整（§4.1 全类型覆盖或声明降级）
 - 权限策略明确（own + 桥接 / own 无桥接 / none → 宿主接管）
 - pause 档位声明真实（实测验证）
@@ -317,11 +325,11 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 ### 6.1 三档位 → 内核映射
 
-| 宿主档位 | Claude Code | Codex | Pi | 平台工具（所有内核一致） |
-|---|---|---|---|---|
-| **完全控制** | `--dangerously-skip-permissions` | `--approval-policy never` | 宿主代理工具免批 | 免批 |
-| **询问批准** | 权限请求桥接 → 宿主审批卡 | `--approval-policy on-request`（或桥接） | 宿主代理工具全批 | 全批 |
-| **为我批准** | 只读放行，写/命令桥接弹卡 | `--approval-policy on-failure` | 宿主代理工具中间态 | 中间态 |
+| 宿主档位     | Claude Code                      | Codex                                    | Pi                 | 平台工具（所有内核一致） |
+| ------------ | -------------------------------- | ---------------------------------------- | ------------------ | ------------------------ |
+| **完全控制** | `--dangerously-skip-permissions` | `--approval-policy never`                | 宿主代理工具免批   | 免批                     |
+| **询问批准** | 权限请求桥接 → 宿主审批卡        | `--approval-policy on-request`（或桥接） | 宿主代理工具全批   | 全批                     |
+| **为我批准** | 只读放行，写/命令桥接弹卡        | `--approval-policy on-failure`           | 宿主代理工具中间态 | 中间态                   |
 
 ### 6.2 统一入口：所有权限请求汇到宿主审批卡
 
@@ -341,23 +349,23 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 ## 7. 凭据管理（已定稿）
 
-| 项 | 决策 |
-|---|---|
-| **注入方式** | **环境变量**（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`）。**禁止命令行参数**——Windows 上 `wmic` 可读任何进程命令行（NewMax 取证时即用此法） |
-| **来源** | SYNC-THINK 现有 `CredentialGroupRecord` 凭据组 → 内核凭据映射（per-model `credentialRefId`） |
-| **登录态红利** | 本地已安装内核时，**优先复用用户本地登录态**（CC 的 OAuth / Codex 的 ChatGPT 登录），检测到则不注入 key——宿主不处理内核自己的认证流程 |
-| **脱敏** | 错误消息注入前脱敏（复用现有 `scrubDiagnosticMessage`），防 key 泄漏进事件/UI |
+| 项             | 决策                                                                                                                                      |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **注入方式**   | **环境变量**（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`）。**禁止命令行参数**——Windows 上 `wmic` 可读任何进程命令行（NewMax 取证时即用此法） |
+| **来源**       | SYNC-THINK 现有 `CredentialGroupRecord` 凭据组 → 内核凭据映射（per-model `credentialRefId`）                                              |
+| **登录态红利** | 本地已安装内核时，**优先复用用户本地登录态**（CC 的 OAuth / Codex 的 ChatGPT 登录），检测到则不注入 key——宿主不处理内核自己的认证流程     |
+| **脱敏**       | 错误消息注入前脱敏（复用现有 `scrubDiagnosticMessage`），防 key 泄漏进事件/UI                                                             |
 
 ---
 
 ## 8. 进程生命周期（已定稿）
 
-| 层 | 机制 |
-|---|---|
-| **宿主死 → 内核死** | Windows **Job Object**：spawn 时挂入 Job，`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，宿主退出由 OS 内核级保证带走全部内核子进程 |
-| **宿主崩溃后回收** | spawn 时给内核环境变量注入宿主标记（token/PID）→ 宿主重启时扫描带标记的孤儿进程 → 回收 |
+| 层                      | 机制                                                                                                                                                                              |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **宿主死 → 内核死**     | Windows **Job Object**：spawn 时挂入 Job，`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，宿主退出由 OS 内核级保证带走全部内核子进程                                                        |
+| **宿主崩溃后回收**      | spawn 时给内核环境变量注入宿主标记（token/PID）→ 宿主重启时扫描带标记的孤儿进程 → 回收                                                                                            |
 | **内核崩溃 → 事件不丢** | 宿主**流式即写库**（现有持久化模式）→ 监听内核 exit → 归类（正常/崩溃/被杀）→ 发 `run.failed`（exit code + stderr 尾部）→ 已持久化的部分事件全部保留，用户看到"内核崩溃于第 N 步" |
-| **文件写一半** | **不做自动回滚**。UI 提示"内核异常终止，最近文件改动请检查" + 提供 git diff 入口（`git_status` / `git_diff` 工具现成） |
+| **文件写一半**          | **不做自动回滚**。UI 提示"内核异常终止，最近文件改动请检查" + 提供 git diff 入口（`git_status` / `git_diff` 工具现成）                                                            |
 
 ---
 
@@ -373,11 +381,11 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 内核更新频繁（CC 已到 v2.1.x 级别），锁版本会天天失配：
 
-| 策略 | 做法 |
-|---|---|
-| **容错解析** | 事件解析器对未知事件类型**忽略 + 记录日志**（NewMax `unhandled event type` 先例）——内核加新事件不会弄挂适配器 |
+| 策略                 | 做法                                                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **容错解析**         | 事件解析器对未知事件类型**忽略 + 记录日志**（NewMax `unhandled event type` 先例）——内核加新事件不会弄挂适配器                |
 | **已知良好版本提示** | `knownGoodVersions` 声明测试过的版本 → spawn 前探测，发现未验证的新版本 → 黄条提示"该内核版本未经测试，可能异常"，**继续用** |
-| **更新后回归** | 内核更新后跑适配器回归测试（§13） |
+| **更新后回归**       | 内核更新后跑适配器回归测试（§13）                                                                                            |
 
 ---
 
@@ -417,12 +425,12 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 按 `capabilities.pause` 档位：
 
-| pause 档位 | 「暂停」行为 | 「继续」按钮 |
-|---|---|---|
-| executor（native） | 执行器级挂起 | 显示 |
-| turn（CC） | 停当前 turn | 不显示（显示「发新指令」） |
-| session（Codex） | 取消 + 下次续跑 | 不显示（提示可续会话） |
-| kill（Pi） | 杀进程 | 不显示 |
+| pause 档位         | 「暂停」行为    | 「继续」按钮               |
+| ------------------ | --------------- | -------------------------- |
+| executor（native） | 执行器级挂起    | 显示                       |
+| turn（CC）         | 停当前 turn     | 不显示（显示「发新指令」） |
+| session（Codex）   | 取消 + 下次续跑 | 不显示（提示可续会话）     |
+| kill（Pi）         | 杀进程          | 不显示                     |
 
 ### 11.3 审批卡复用
 
@@ -441,13 +449,13 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 ## 13. 测试策略
 
-| 项 | 做法 |
-|---|---|
-| **适配器单测** | 每个内核适配器配 **fixture 进程**（mock 内核输出固定事件流），验证事件归一化全覆盖 |
-| **权限桥接测试** | fixture 发 `control_request` → 验证宿主审批卡弹出 → `control_response` 回填 → fixture 确认收到 |
+| 项               | 做法                                                                                                        |
+| ---------------- | ----------------------------------------------------------------------------------------------------------- |
+| **适配器单测**   | 每个内核适配器配 **fixture 进程**（mock 内核输出固定事件流），验证事件归一化全覆盖                          |
+| **权限桥接测试** | fixture 发 `control_request` → 验证宿主审批卡弹出 → `control_response` 回填 → fixture 确认收到              |
 | **生命周期测试** | 模拟内核崩溃（fixture 中途 exit 非零）→ 验证 run.failed + 部分事件保留；宿主退出 → 验证 Job Object 带走内核 |
-| **版本回归** | 内核更新后跑一次全量适配器回归（手动命令或 CI） |
-| **回归矩阵** | 内核数 × 平台工具数 × 权限档位数 |
+| **版本回归**     | 内核更新后跑一次全量适配器回归（手动命令或 CI）                                                             |
+| **回归矩阵**     | 内核数 × 平台工具数 × 权限档位数                                                                            |
 
 ---
 
@@ -482,38 +490,46 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 
 ## 15. 风险与已知坑清单
 
-| # | 风险/坑 | 应对 |
-|---|---|---|
-| 1 | CC stream-json 权限协议**官方无文档**，依赖社区逆向 | 以实测为准，适配器加容错日志 |
-| 2 | CC `ExitPlanMode` 批准被静默忽略 → 挂起（#39666） | 启动加 `--permission-mode acceptEdits` |
-| 3 | CC `.claude/skills/` 等写入静默拒绝且不发 control_request（#54850） | 平台工具避开这些路径，实测兜底 |
-| 4 | 翻译层摩擦（路径 B 时） | 优先中转站 Messages 端点（路径 A） |
-| 5 | 权限体系被内核穿透（宿主管不了内核内部文件访问） | 三档位映射 + 平台工具一律宿主审批 + cwd 显示项 |
-| 6 | 平台工具副作用重复（内核崩溃重试） | 写库工具幂等 |
-| 7 | 内核压缩后 UI 历史与内核实际上下文不一致 | 展示以内核报告为准，宿主不二次压缩 |
-| 8 | 内核更新破坏事件格式 | 容错解析 + knownGoodVersions 黄条 + 回归 |
-| 9 | 双内核并行改同一文件 | 写事件流集合 + UI 风险提示 |
-| 10 | 暂停语义差异（四内核四种） | capabilities.pause 档位 + UI 降级 |
+| #   | 风险/坑                                                             | 应对                                           |
+| --- | ------------------------------------------------------------------- | ---------------------------------------------- |
+| 1   | CC stream-json 权限协议**官方无文档**，依赖社区逆向                 | 以实测为准，适配器加容错日志                   |
+| 2   | CC `ExitPlanMode` 批准被静默忽略 → 挂起（#39666）                   | 启动加 `--permission-mode acceptEdits`         |
+| 3   | CC `.claude/skills/` 等写入静默拒绝且不发 control_request（#54850） | 平台工具避开这些路径，实测兜底                 |
+| 4   | 翻译层摩擦（路径 B 时）                                             | 优先中转站 Messages 端点（路径 A）             |
+| 5   | 权限体系被内核穿透（宿主管不了内核内部文件访问）                    | 三档位映射 + 平台工具一律宿主审批 + cwd 显示项 |
+| 6   | 平台工具副作用重复（内核崩溃重试）                                  | 写库工具幂等                                   |
+| 7   | 内核压缩后 UI 历史与内核实际上下文不一致                            | 展示以内核报告为准，宿主不二次压缩             |
+| 8   | 内核更新破坏事件格式                                                | 容错解析 + knownGoodVersions 黄条 + 回归       |
+| 9   | 双内核并行改同一文件                                                | 写事件流集合 + UI 风险提示                     |
+| 10  | 暂停语义差异（四内核四种）                                          | capabilities.pause 档位 + UI 降级              |
 
 ---
 
-## 16. 待实现时验证事项（检查清单）
+## 16. 实现验证事项（检查清单）
 
-实现时逐项打勾，未验证前不要声称完成：
+已验证项按当前分支事实勾选；未勾选项仍是收口门禁：
 
-- [ ] CC：`--permission-prompt-tool stdio` 在当前安装版本的行为（权限请求是否真实到达宿主）
-- [ ] CC：stream-json 下 tool_use partial_json 增量事件的格式
-- [ ] CC：`--permission-mode acceptEdits` 是否规避 ExitPlanMode 挂起
-- [ ] CC：用户本地 OAuth 登录态在 spawn 子进程时是否可直接复用
-- [ ] Codex：`request_permissions` 类事件能否桥接宿主审批卡（还是降级为 approval-policy 静态映射）
-- [ ] Codex：exec JSONL 事件类型全集（对照 §4.1 归一化覆盖度）
-- [ ] Pi：多供应商 provider 配置的 baseUrl 字段名与格式
-- [ ] 中转站 `/v1/messages` 端点兼容性（CC 内核路径 A 的前提）
-- [ ] Job Object 在 Electron 主进程下的可用性（Electron 自身已在 Job 中时的嵌套行为）
-- [ ] 各内核 `--version` 输出格式（探测解析）
-- [ ] 各内核 usage 报告的字段粒度（§12.2 对齐）
-- [ ] 内核冷启动到首 token 的延迟实测（决定是否预启动/常驻策略）
+- [x] CC 2.1.222：`--permission-prompt-tool stdio` 可产生权限请求并接受匹配 `request_id` 的 `control_response`
+- [ ] CC：`stream_event/content_block_delta/partial_json` 增量映射及真实 tool-result 完整时间线
+- [ ] CC：`--permission-mode acceptEdits` 对 ExitPlanMode 的长期稳定性矩阵
+- [x] CC：用户本地登录态可由 spawn 子进程复用；凭据注入仅走环境变量
+- [x] Codex 0.145.0：无动态权限桥时采用 approval-policy 静态映射，平台 MCP 工具仍走宿主审批
+- [ ] Codex：exec JSONL 事件全集、reasoning/compacted 投影及真实 MCP tool name/arguments 保真
+- [ ] Pi：内核适配器与多供应商 baseUrl 配置；当前仅完成安装 UI/重探
+- [ ] 中转站 `/v1/messages` 端点兼容性矩阵（CC 内核路径 A 的前提）
+- [x] Job Object：Windows 嵌套 Job + taskkill/父进程兜底实现与 fixture 回归
+- [x] `claude --version` / `codex --version` 探测；Pi 仍待真实安装版本样本
+- [ ] Codex usage 的 cached/input 字段不变量与去重口径
+- [x] 真实 CLI 冷启动样本：Codex 0.145.0、Claude Code 2.1.222 已跑通；尚未形成 Electron 三内核矩阵
+
+### 16.1 当前未完成门禁（2026-08-14）
+
+1. `buildPlatformMcpToolDefinitions` 已按 Run/Store/权限模式生成 Browser、Desktop、Agent、Skill、Team、Task、MCP 管理 schema，但 `handlePlatformMcpToolCall` 仍只调用纯 `executePlatformTool`；业务工具必须复用 Runtime 现有 controller/Store 执行器后才算可用。
+2. MCP server 超时/取消尚未向 broker/Runtime 传播；待审批工具在内核超时后可能留下孤儿审批。必须增加取消帧、AbortSignal 清理与“晚批准不得执行副作用”回归。
+3. `create_agent`、`TaskCreate` 等创建类工具缺少稳定 idempotency key / 创建前查重，尚不满足设计中的崩溃重试幂等要求。
+4. CC partial/tool-result、Codex reasoning/compacted/MCP 标识和 cached usage 口径仍需用真实 JSONL fixture 补齐。
+5. 真实 Electron 仅完成内核菜单探测；原生、CC、Codex 对话、审批 approve/deny、usage、重启后历史一致性的隔离数据矩阵和截图仍未完成。
 
 ---
 
-*文档基线版本：2026-08-13，基于与需求方的多轮设计讨论定稿（内核自治原则、三件宿主职责、权限统一入口、小队共享事实、进程生命周期、版本跟随策略均已逐项确认）。*
+_文档基线版本：2026-08-14；设计基线保持不变，状态与验证清单已按 `feature/multi-kernel` 当前实现事实更新。_

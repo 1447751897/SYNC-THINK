@@ -954,3 +954,34 @@
 - 浅色、深色、`1280×760` 窄 Pane 与 `1280×280` 矮视口均完成实窗检查。窄 Pane 无横向溢出，思考二级菜单自动换到左侧；矮视口中的 `@` 弹层顶部夹在 8px 且不越界。
 - Tab、Escape、Shift+Tab 焦点闭环已实测，测试后主题恢复浅色、思考恢复超高、联网偏好恢复原值。日志和截图位于 `.data/local-restart-20260814-111719-composer-toolbar-final/`。
 - 本轮不生成安装包、不提交、不推送；源码实例保持运行供用户手测。
+
+## 当前状态：2026-08-14 · 多内核阶段性实现已推送，尚未完整收口
+
+### 已完成
+
+- `feature/multi-kernel` 已落地统一 `KernelAdapter` 契约、内核注册表与探测、Native 薄适配、Windows Job Object/进程树回收，以及 Claude Code 2.1.222、Codex 0.145.0 两个外部内核适配器。
+- Runtime 已按 `kernelId` 分流原生/外部执行；外部内核 delta、工具、usage、terminal 接入现有事件/消息持久化。终态改为读取最新 Run，子进程 EOF 未发 terminal 时按失败处理，避免流式可见但最终消息为空。
+- 每 Run loopback MCP broker、随机 token、临时 CC `--mcp-config`、Codex `mcp_servers.*` overrides 已实现；平台 MCP server 已纳入源码/dist/便携版路径解析和发布布局校验。broker socket 已按 Run 隔离。
+- 平台文件工具 `platform_context/file_read/file_list/file_search/file_write` 与 task/agent 清单读取已实现；动态 catalog 已能按 Run 能力和执行模式生成 Task、Agent、Skill、Team、MCP 管理、Browser、Desktop schema，并区分 `outside-full-access` 审批元数据。
+- Desktop 内核菜单可显示 Native / Claude Code / Codex / Pi 的检测版本与能力徽标；每 Conversation 持久化内核选择，排队插话保留入队时内核。Pi 未安装项提供固定 `npm i -g pi` 安装 IPC、状态展示和安装后重探。
+
+### 已验证
+
+- 真实 Codex 0.145.0 CLI：返回完成终态和 usage；真实 Claude Code 2.1.222：经 MCP broker 执行 `file_write` + `file_read` 并验证内容。
+- 2026-08-14 最新复验：Runtime `96 files / 621 tests` 全部通过；根 `pnpm typecheck` 为 `20/20`，根 `pnpm lint` 为 `11/11`、0 errors（Desktop 保留 15 条 hooks warnings）。
+- Desktop 并发全量共 `157 files / 1184 tests`，结果为 `155 files passed / 2 files failed`、`1182 tests passed / 2 tests failed`：Browser handoff 与 Desktop waiting 按钮在并发负载下未及时出现；对应 2 files 串行复跑 `18/18` 通过。因此本次不能把 Desktop 并发全量写成全绿。
+- 真实 Electron 已完成内核菜单探测：Native 已安装、Claude Code v2.1.222、Codex v0.145.0、Pi 未安装/安装入口；证据目录 `.data/local-restart-20260814-multikernel-7b/`。
+
+### 未完成 / 阻塞
+
+1. 动态 MCP catalog 目前只解决“暴露哪些 schema”；`handlePlatformMcpToolCall` 仍只执行纯 `executePlatformTool`。Browser/Desktop/Agent/Skill/Team/Task/MCP 管理调用尚未复用 Runtime 现有业务执行器，不能声称这些平台工具已可由外部内核真实调用。
+2. 平台 MCP 取消/超时尚未传播到 Runtime 审批等待；内核侧超时后可能留下孤儿审批。创建类工具还缺稳定幂等键/创建前查重。
+3. CC `stream_event/content_block_delta/partial_json` 与 tool-result 时间线尚未完整映射；Codex reasoning/compacted、真实 MCP tool name/arguments 和 cached usage 口径尚未收口。
+4. Pi 只完成安装引导与重探，没有内核适配器。
+5. 真实 Electron 尚未完成原生/CC/Codex 三内核对话、审批 approve/deny、usage、重启后历史一致性的隔离数据闭环与截图矩阵。
+
+### 分支与远端
+
+- 当前分支：`feature/multi-kernel`；本状态记录对应提交 `3998d67` 之后的文档补充。
+- 多内核实现提交链：`920af52`、`bfc8339`、`5a03c4f`、`1f77fb0`、`016b678`、`ce65d8f`、`3998d67`。
+- 本地 `.zcode/` 为会话计划，不纳入版本控制。

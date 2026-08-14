@@ -3005,3 +3005,34 @@ Desktop typecheck/build：passed
 - TDD 首轮准确失败于旧模型菜单、旧触发器和独立联网按钮；最终模型菜单、已有对话、新建对话、浮层定位与键盘焦点定向回归 `3 files / 56 tests` 全部通过。
 - Desktop 单 worker 全量 `155 files / 1172 tests` 通过；最后的焦点恢复补丁由上述 56 条定向用例再次覆盖。TypeScript typecheck、正式 build、Prettier、design token 和 `git diff --check` 通过；lint 为 0 errors、15 条既有 Hook warnings。
 - 本地源码实例为 Electron PID `3848`、Runtime PID `33956`、CDP `127.0.0.1:9355`。深浅主题、窄 Pane、二级菜单换侧、矮视口夹取以及 Tab/Escape/Shift+Tab 焦点闭环均通过，证据位于 `.data/local-restart-20260814-111719-composer-toolbar-final/`。
+
+## 2026-08-14 · 多内核阶段性实现与已知缺口记录
+
+### Added
+
+- 新增统一 `KernelAdapter`、Native/Claude Code/Codex 注册与本机版本探测、Windows Job Object 生命周期，以及按 `kernelId` 分流的外部内核运行循环。
+- 新增 Claude Code stream-json 权限桥接与 Codex exec JSONL/approval-policy 映射；凭据只通过环境变量进入 adapter scope，命令行和事件不携带 API Key。
+- 新增每 Run loopback MCP broker、自包含 stdio MCP server、随机 token、CC/Codex MCP 配置注入及平台文件工具；源码/dist/便携版均校验 MCP server entry，broker 关闭按 Run 隔离。
+- 新增模型菜单内核分组、版本/安装状态、每 Conversation 内核持久化、队列内核快照、暂停语义降级，以及 Pi 固定命令安装/重探 UI。
+- 新增按 Run 能力/Store/权限模式构建的平台 MCP 动态 catalog，Agent/Skill/Team/MCP 管理写操作标记为 `outside-full-access`。
+
+### Fixed
+
+- 外部内核终态不再使用启动时旧 Run 快照；流式 delta 会进入最终事件和助手消息。未收到 terminal 的 EOF 改为 `run.failed`，不再默认为成功。
+- 修复 Runtime 真实布局找不到 `apps/mcp-server/platform-mcp-server.mjs` 的问题，并将该资源加入 Windows portable 必需布局。
+- 修复模块级 MCP socket 集合导致一个 Run 关闭时误杀其他并行 Run 连接的问题。
+
+### Verification
+
+- 真实 Codex 0.145.0 CLI 完成对话并返回 usage；真实 Claude Code 2.1.222 经 broker 完成 `file_write`/`file_read` 往返验证。
+- 最新 Runtime 全量 `96 files / 621 tests` 通过；根 typecheck `20/20`、lint `11/11` 通过，0 errors。
+- Desktop 并发全量 `157 files` 中 `155 passed / 2 failed`，测试数 `1182 passed / 2 failed`；失败为 Browser handoff 与 Desktop waiting 的异步按钮时序。对应 2 files 串行复跑 `18/18` 通过。该结果按事实保留，未声明 Desktop 并发全绿。
+- Electron 菜单探测证据位于 `.data/local-restart-20260814-multikernel-7b/`；已显示 Native、Claude Code v2.1.222、Codex v0.145.0 和 Pi 未安装入口。
+
+### Remaining
+
+- 动态 catalog 已生成 Browser/Desktop/Agent/Skill/Team/Task/MCP schema，但 broker handler 尚未路由到现有 Runtime controller/Store 执行器；除平台文件和清单读取外，不能视为真实可调用。
+- MCP 超时/取消传播、审批孤儿清理、创建工具幂等仍待实现。
+- CC partial/tool-result、Codex reasoning/compacted/MCP 标识与 cached usage 口径仍待补齐。
+- Pi adapter 与真实运行未实现。
+- Electron 原生/CC/Codex 对话、审批 approve/deny、usage、重启历史一致性及截图矩阵尚未闭环。
