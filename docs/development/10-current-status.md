@@ -985,3 +985,32 @@
 - 当前分支：`feature/multi-kernel`；本状态记录对应提交 `3998d67` 之后的文档补充。
 - 多内核实现提交链：`920af52`、`bfc8339`、`5a03c4f`、`1f77fb0`、`016b678`、`ce65d8f`、`3998d67`。
 - 本地 `.zcode/` 为会话计划，不纳入版本控制。
+
+## 当前状态：2026-08-14 · 多内核平台工具分派与协议收口
+
+### 已完成
+
+- 平台 MCP 目录按 Run 冻结，业务工具调用改为路由到原生既有执行器（Task / Agent / Skill / Team / MCP 目录与远端注册），不再只对静态文件工具生效。
+- 审批统一走原生权威分类：库写操作在 `ask` 与 `workspace` 都需要审批卡，只有 `full-access` 免批；文件工具保留 ask 档位。
+- 取消链路打通：MCP server 超时或 `notifications/cancelled` → broker `tool-cancel` → 宿主 abort 审批并拒绝执行；同 Run 工具调用串行。
+- 同 Run 重放缓存避免内核重试重复创建；broker socket 按 Run 隔离。
+- Claude Code 启用真实增量流（`--include-partial-messages`），并映射 `tool_result`；Codex 保留真实 MCP `server/tool/arguments` 并修正 cached 重复计数。
+- Runtime 补齐 `reasoning` / `compacted` 投影、`partial` 与失败标记，用量 requestId 稳定化。
+
+### 已验证
+
+- Runtime `98 files / 635 tests`、Desktop `157 files / 1184 tests`、Storage `38 files / 410 tests` 全部通过。
+- 根 `pnpm typecheck` 20/20、`pnpm lint` 11/11（0 errors、15 条既有 Desktop hooks warnings）、`pnpm build` 11/11。
+- 真实 CLI 采样落成 fixture 并回放：claude 2.1.222 增量/工具结果、codex 0.145.0 MCP 身份与用量口径。
+- 实窗（`.data/local-restart-20260814-multikernel-final/`）：Codex 端到端成功，assistantText 与稳定用量 requestId 均已在真实数据库确认。
+
+### 未完成 / 阻塞
+
+1. 实窗 native 与 Claude Code 会话被中转站拒绝（400 / `503 分组 claude 未开通模型 gpt-5.6-luna`），需要用户在能力中心为对应分组开通模型后复测。
+2. 审批卡 approve/deny 与重启后历史一致性仍缺实窗点选证据。
+3. Browser/Desktop 工具尚未向外部内核开放；Pi 无内核适配器。
+4. 幂等只覆盖同 Run 重放，跨重启持久化 operation key 未实现。
+
+### 边界
+
+- 本轮实窗使用共享数据库与既有会话，仅新增消息，未删除或迁移数据；不生成安装包。

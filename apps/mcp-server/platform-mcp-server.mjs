@@ -100,6 +100,18 @@ function connectBroker() {
 }
 
 const pendingCalls = new Map();
+/** MCP request id → broker call id, so notifications/cancelled can abort. */
+const callIdByRequestId = new Map();
+
+function cancelBrokerCall(callId, reason) {
+  if (!callId) return;
+  const pending = pendingCalls.get(callId);
+  pendingCalls.delete(callId);
+  // Tell the host to abort before any side effect: a call we already gave up on
+  // must never be executed later by a late approval.
+  brokerSend({ type: 'tool-cancel', id: callId });
+  if (pending) pending({ ok: false, error: reason });
+}
 
 function respondRaw(id, result) {
   stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
@@ -119,6 +131,8 @@ async function handleToolsCall(id, params) {
   const name = params?.name;
   const input = params?.arguments ?? {};
   const callId = `mcpcall-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  callIdByRequestId.set(id, callId);
+  let timer;
   try {
     const result = await new Promise((resolve, reject) => {
       pendingCalls.set(callId, (frame) => {
@@ -127,10 +141,10 @@ async function handleToolsCall(id, params) {
       });
       brokerSend({ type: 'tool-call', id: callId, tool: name, input });
       // Broker round-trips are quick; a 90s cap guards against a hung host.
-      setTimeout(() => {
+      // On timeout we also cancel host-side so a late approval cannot apply.
+      timer = setTimeout(() => {
         if (pendingCalls.has(callId)) {
-          pendingCalls.delete(callId);
-          reject(new Error('platform tool timed out waiting for the host'));
+          cancelBrokerCall(callId, 'platform tool timed out waiting for the host');
         }
       }, 90_000);
     });
@@ -141,6 +155,9 @@ async function handleToolsCall(id, params) {
       `platform tool failed: ${error instanceof Error ? error.message : String(error)}`,
       true,
     );
+  } finally {
+    if (timer) clearTimeout(timer);
+    callIdByRequestId.delete(id);
   }
 }
 
@@ -163,7 +180,15 @@ rl.on('line', (line) => {
     // The kernel sends notifications/initialized right after; ignore it.
     return;
   }
-  if (msg.method === 'notifications/initialized' || msg.method === 'notifications/cancelled') {
+  if (msg.method === 'notifications/cancelled') {
+    // Abort host-side work for the cancelled request so a pending approval
+    // cannot execute after the kernel stopped waiting.
+    const requestId = msg.params?.requestId;
+    cancelBrokerCall(callIdByRequestId.get(requestId), 'platform tool cancelled by the kernel');
+    callIdByRequestId.delete(requestId);
+    return;
+  }
+  if (msg.method === 'notifications/initialized') {
     return;
   }
   if (msg.method === 'tools/list') {

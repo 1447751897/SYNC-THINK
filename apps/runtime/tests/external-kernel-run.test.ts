@@ -153,4 +153,71 @@ describe('Runtime external kernel finalization', () => {
       fixture.connection.raw.close();
     }
   });
+
+  it('projects kernel reasoning, compaction and usage without polluting chat text', async () => {
+    const fixture = await createFixture([
+      { type: 'reasoning', text: 'internal plan' },
+      { type: 'delta', text: 'visible answer' },
+      { type: 'compacted' },
+      {
+        type: 'usage',
+        usage: { real: 150, window: 200_000, input: 100, output: 50, cached: 40 },
+      },
+      {
+        type: 'usage',
+        usage: { real: 150, window: 200_000, input: 100, output: 50, cached: 40 },
+      },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+      const events = fixture.stateStore.listEventsByRun(fixture.runId);
+
+      // Reasoning is diagnostic-only: it must never become durable chat text.
+      const assistant = assistantMessage(
+        fixture.messageStore.listMessages(fixture.threadId as never).messages,
+      );
+      expect(assistant?.blocks).toEqual([{ type: 'text', text: 'visible answer' }]);
+
+      // The kernel compacted its own context; the host records a kernel-scoped
+      // boundary and never the native context.compacted truncation marker.
+      expect(events.some((event) => event.type === 'kernel.context_compacted')).toBe(true);
+      expect(events.some((event) => event.type === 'context.compacted')).toBe(false);
+
+      // Two identical usage reports stay two distinct requests (no value-derived
+      // ids collapsing progressive updates).
+      const usageRequestIds = events
+        .filter((event) => event.type === 'provider.usage')
+        .map((event) => event.payload.requestId);
+      expect(usageRequestIds).toHaveLength(2);
+      expect(new Set(usageRequestIds).size).toBe(2);
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('keeps partial tool calls and failed tool results distinguishable', async () => {
+    const fixture = await createFixture([
+      {
+        type: 'tool-call',
+        toolId: 'tool-1',
+        name: 'Read',
+        argsJson: '{"path":"a"}',
+        partial: true,
+      },
+      { type: 'tool-result', toolId: 'tool-1', output: 'boom', isError: true },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+      const events = fixture.stateStore.listEventsByRun(fixture.runId);
+
+      const requested = events.find((event) => event.type === 'tool.requested');
+      expect(requested?.payload).toMatchObject({ partial: true });
+      const completed = events.find((event) => event.type === 'tool.completed');
+      expect(completed?.payload).toMatchObject({ result: 'boom', failed: true });
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
 });

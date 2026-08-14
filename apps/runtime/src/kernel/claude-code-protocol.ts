@@ -39,6 +39,10 @@ export interface ClaudeContentBlock {
   name?: string;
   input?: unknown;
   thinking?: string;
+  /** tool_result blocks (echoed on top-level `user` events). */
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
 }
 
 export interface ClaudeAssistantEvent {
@@ -53,10 +57,72 @@ export interface ClaudeAssistantEvent {
   };
 }
 
+/**
+ * Echoed user message. Tool results arrive here as
+ * `message.content[] = {type:'tool_result', tool_use_id, content:[{type:'text',text}], is_error?}`
+ * (verified in a real claude 2.1.222 MCP session on 2026-08-14).
+ */
 export interface ClaudeUserEvent {
   type: 'user';
-  message: unknown;
+  message?: { role?: string; content?: ClaudeContentBlock[] | string };
   parent_tool_use_id?: string | null;
+}
+
+/** Normalized tool result extracted from a top-level `user` event. */
+export interface ClaudeToolResult {
+  toolId: string;
+  output: string;
+  isError: boolean;
+}
+
+/** Flatten `tool_result` blocks from an echoed user message. */
+export function extractClaudeToolResults(event: ClaudeUserEvent): ClaudeToolResult[] {
+  const content = event.message?.content;
+  if (!Array.isArray(content)) return [];
+  const results: ClaudeToolResult[] = [];
+  for (const block of content) {
+    if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
+    results.push({
+      toolId: block.tool_use_id,
+      output: flattenClaudeToolResultContent(block.content),
+      isError: block.is_error === true,
+    });
+  }
+  return results;
+}
+
+function flattenClaudeToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return content == null ? '' : JSON.stringify(content);
+  const parts: string[] = [];
+  for (const entry of content) {
+    if (typeof entry === 'string') {
+      parts.push(entry);
+      continue;
+    }
+    const block = entry as { type?: string; text?: string };
+    if (block?.type === 'text' && typeof block.text === 'string') parts.push(block.text);
+    else if (entry != null) parts.push(JSON.stringify(entry));
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Partial assistant stream (only present with `--include-partial-messages`,
+ * verified working in our stdin stream-json mode on claude 2.1.222):
+ *   content_block_start  {content_block:{type:'text'|'thinking'|'tool_use',...}, index}
+ *   content_block_delta  {delta:{type:'text_delta',text} | {type:'thinking_delta',thinking}
+ *                          | {type:'input_json_delta',partial_json} | {type:'signature_delta',...}}
+ *   content_block_stop / message_start / message_delta / message_stop
+ */
+export interface ClaudeStreamEventEnvelope {
+  type: 'stream_event';
+  event?: {
+    type?: string;
+    index?: number;
+    content_block?: ClaudeContentBlock;
+    delta?: { type?: string; text?: string; thinking?: string; partial_json?: string };
+  };
 }
 
 export interface ClaudeControlRequestEvent {
@@ -100,6 +166,7 @@ export interface ClaudeKeepAliveEvent {
 export type ClaudeStreamEvent =
   | ClaudeAssistantEvent
   | ClaudeUserEvent
+  | ClaudeStreamEventEnvelope
   | ClaudeControlRequestEvent
   | ClaudeControlResponseEvent
   | ClaudeResultEvent

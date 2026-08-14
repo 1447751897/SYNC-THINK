@@ -535,10 +535,12 @@ import {
   startKernelMcpBroker,
   type KernelMcpBroker,
   type PlatformMcpToolCall,
+  type PlatformMcpToolDefinition,
 } from './kernel/mcp-broker.js';
 import {
   executePlatformTool,
   buildPlatformMcpToolDefinitions,
+  isPlatformFileToolName,
   PLATFORM_MCP_TOOL_DEFINITIONS,
   type PlatformToolContext,
 } from './kernel/platform-tools.js';
@@ -1094,6 +1096,24 @@ export class Runtime {
   private readonly browserWorkflowRunner?: BrowserWorkflowRunner;
   private readonly desktopController?: RuntimeDesktopController;
   private readonly kernelAdapterResolver: (kernelId?: string) => KernelAdapter | undefined;
+  /**
+   * Platform MCP catalog frozen per external-kernel run. The kernel may only
+   * call tools that were exposed when its broker started; a later capability or
+   * permission-mode change must not widen an in-flight run.
+   */
+  private readonly platformMcpCatalogByRun = new Map<
+    string,
+    readonly PlatformMcpToolDefinition[]
+  >();
+  /**
+   * Per-run platform MCP results keyed by `<callId>:<argsHash>`. A kernel retry
+   * of the same call replays the first result instead of creating a second
+   * agent/task (design §6.4 idempotency).
+   */
+  private readonly platformMcpResultsByRun = new Map<
+    string,
+    Map<string, Promise<{ ok: boolean; content?: string; error?: string }>>
+  >();
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
   private readonly discoveryAdapter?: DemoProvider;
@@ -14987,11 +15007,17 @@ export class Runtime {
 
       let finalStatus: 'completed' | 'failed' | undefined;
       let finalError: string | undefined;
+      let kernelUsageSequence = 0;
       for await (const event of adapter.start(request)) {
         if (abort.signal.aborted) break;
         switch (event.type) {
           case 'delta':
             this.publishKernelTextDelta(runId, initialRun.threadId, event.text);
+            break;
+          case 'reasoning':
+            // Kernel reasoning stays diagnostic-only (same rule as native
+            // provider reasoning): stream it, never persist it as chat text.
+            this.publishKernelReasoningDelta(runId, initialRun.threadId, event.text);
             break;
           case 'tool-call':
             this.persistKernelToolEvent(runId, initialRun.threadId, 'tool.requested', event);
@@ -15000,7 +15026,13 @@ export class Runtime {
             this.persistKernelToolEvent(runId, initialRun.threadId, 'tool.completed', event);
             break;
           case 'usage':
-            this.persistKernelUsage(runId, initialRun, event.usage);
+            kernelUsageSequence += 1;
+            this.persistKernelUsage(runId, initialRun, event.usage, kernelUsageSequence);
+            break;
+          case 'compacted':
+            // The kernel compacted its own context; the host records the
+            // boundary and never re-compacts (design §2.3 ②).
+            this.persistKernelCompacted(runId, initialRun.threadId);
             break;
           case 'permission-request':
             // Handled through the approval bridge; no durable event here.
@@ -15030,6 +15062,8 @@ export class Runtime {
     } finally {
       if (adapter) await adapter.cancel().catch(() => undefined);
       if (broker) await broker.close().catch(() => undefined);
+      this.platformMcpCatalogByRun.delete(runId);
+      this.platformMcpResultsByRun.delete(runId);
       this.demoRunAborts.delete(runId);
       this.forgetInFlight(runId);
     }
@@ -15111,17 +15145,18 @@ export class Runtime {
       return undefined;
     }
     const workspaceRoot = request.workspaceDir;
+    // Frozen for this run: capability/permission changes must not widen an
+    // in-flight kernel. Browser/desktop tools stay host-only this round.
     const tools = buildPlatformMcpToolDefinitions({
       executionMode: this.resolveChatExecutionMode(run.threadId),
       networkEnabled: run.networkEnabled === true,
       includeAgentTools: Boolean(this.globalAgentStore),
-      includeBrowserTools: Boolean(this.browserController),
-      includeDesktopTools: Boolean(this.desktopController && this.isComputerUsePluginEnabled()),
       includeTaskTools: Boolean(this.taskPlanStore),
       includeMcpTools: Boolean(this.mcpStore),
       includeSkillTools: Boolean(this.skillStore),
       includeTeamTools: Boolean(this.teamStore && this.globalAgentStore),
     });
+    this.platformMcpCatalogByRun.set(runId, tools);
     const broker = await startKernelMcpBroker({
       workspaceDir: workspaceRoot,
       tools,
@@ -15146,10 +15181,11 @@ export class Runtime {
   }
 
   /**
-   * Platform MCP tool-call handler: three-tier approval (mirrors the native
-   * ask/workspace/full-access semantics) then in-process execution. Uses the
-   * same pendingToolApprovals card the native path and the CC permission
-   * bridge use, so conversation.decideToolApproval routes back here.
+   * Platform MCP tool-call handler. The call must exist in this run's frozen
+   * catalog; approval reuses the authoritative native classifier
+   * (`chatToolRequiresApproval`) so a workspace-mode kernel cannot bypass the
+   * card that the native tool loop would have raised. Execution reuses the
+   * existing Runtime business executors — no second implementation.
    */
   private async handlePlatformMcpToolCall(
     runId: RunId,
@@ -15157,37 +15193,143 @@ export class Runtime {
     workspaceRoot: string,
     call: PlatformMcpToolCall,
   ): Promise<{ ok: boolean; content?: string; error?: string }> {
-    const definition = PLATFORM_MCP_TOOL_DEFINITIONS.find((tool) => tool.name === call.tool);
+    // Idempotency: the same call id + arguments replays the first result so a
+    // kernel retry cannot create a second agent/task/team.
+    const argumentsJson = JSON.stringify(call.input ?? {});
+    const replayKey = `${call.id}:${createHash('sha256').update(`${call.tool}\n${argumentsJson}`).digest('hex')}`;
+    let replayCache = this.platformMcpResultsByRun.get(runId);
+    if (!replayCache) {
+      replayCache = new Map();
+      this.platformMcpResultsByRun.set(runId, replayCache);
+    }
+    const replayed = replayCache.get(replayKey);
+    if (replayed) return replayed;
+    const pending = this.executePlatformMcpToolCall(runId, run, workspaceRoot, call, argumentsJson);
+    replayCache.set(replayKey, pending);
+    const result = await pending;
+    // Only successful side effects stay cached; a failure may be retried.
+    if (!result.ok) replayCache.delete(replayKey);
+    return result;
+  }
+
+  private async executePlatformMcpToolCall(
+    runId: RunId,
+    run: DemoRunState,
+    workspaceRoot: string,
+    call: PlatformMcpToolCall,
+    argumentsJson: string,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const catalog = this.platformMcpCatalogByRun.get(runId) ?? PLATFORM_MCP_TOOL_DEFINITIONS;
+    const definition = catalog.find((tool) => tool.name === call.tool);
     if (!definition) return { ok: false, error: `unknown platform tool: ${call.tool}` };
+    if (call.signal.aborted) {
+      return { ok: false, error: 'platform tool call was cancelled by the kernel' };
+    }
     const executionMode = normalizeChatExecutionMode(this.resolveChatExecutionMode(run.threadId));
 
-    // Three-tier: full-access auto-executes; ask raises a card for mutating
-    // tools; workspace trusts workspace-scoped mutations (native semantics).
-    if (definition.approval === 'ask-mode' && executionMode === 'ask') {
+    // Host-only file tools keep the ask-mode tier; every chat tool defers to the
+    // native classifier (Agent/Skill/Team/MCP writes are gated outside full-access).
+    const needsApproval = isPlatformFileToolName(call.tool)
+      ? definition.approval === 'ask-mode' && executionMode === 'ask'
+      : chatToolRequiresApproval(executionMode, call.tool);
+    if (needsApproval) {
       const decision = await this.requestPlatformToolApproval(runId, run.threadId, call);
       if (decision !== 'approve') {
-        return { ok: false, error: '宿主已拒绝此操作' };
+        return {
+          ok: false,
+          error: isPlatformFileToolName(call.tool)
+            ? '宿主已拒绝此操作'
+            : chatToolDeniedMessage(executionMode, call.tool, 'denied'),
+        };
       }
     }
+    // A late approval must not apply a side effect the kernel already abandoned
+    // (MCP-side timeout / notifications/cancelled), nor outlive the run.
+    if (call.signal.aborted || !this.demoRuns.has(runId)) {
+      return { ok: false, error: 'platform tool call was cancelled before execution' };
+    }
 
-    const ctx: PlatformToolContext = {
-      workspaceDir: workspaceRoot,
-      runId,
-      threadId: run.threadId,
-      kernelId: run.kernelId,
-      taskPlanStore: this.taskPlanStore ?? undefined,
-      agentStore: this.agentStore ? this.toPlatformAgentStore(this.agentStore) : undefined,
-      resolveWorkspaceId: () => this.resolveEventWorkspaceId(run.threadId),
+    const toolCall: ProviderToolCall = {
+      id: call.id,
+      name: call.tool,
+      argumentsJson,
     };
     try {
-      const content = await executePlatformTool(call.tool, call.input, ctx);
+      const content = await this.executeHostPlatformTool(run, toolCall, workspaceRoot);
       return { ok: true, content };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
-  /** Raise a tool.approval_requested card and await the shell decision. */
+  /**
+   * Dispatch one platform tool for an external kernel. Mirrors the native tool
+   * loop's family order and reuses its executors, so validation, store
+   * invariants and domain events stay in exactly one place. Tool lifecycle
+   * events are NOT published here — the kernel adapter already projects
+   * tool.requested/tool.completed for its own stream.
+   */
+  private async executeHostPlatformTool(
+    run: DemoRunState,
+    toolCall: ProviderToolCall,
+    workspaceRoot: string,
+  ): Promise<string> {
+    const name = toolCall.name;
+    if (CHAT_TASK_PLAN_TOOL_NAMES.has(name) && this.taskPlanStore) {
+      const workspaceId = this.resolveEventWorkspaceId(run.threadId);
+      if (name === 'TaskCreate') {
+        return executeTaskCreateTool(toolCall.argumentsJson, workspaceId, this.taskPlanStore);
+      }
+      if (name === 'TaskUpdate') {
+        return executeTaskUpdateTool(toolCall.argumentsJson, this.taskPlanStore);
+      }
+      return executeTaskListTool(toolCall.argumentsJson, workspaceId, this.taskPlanStore);
+    }
+    if (CHAT_PLAN_TOOL_NAMES.has(name)) {
+      return executeChatPlanTool(toolCall.argumentsJson);
+    }
+    if (CHAT_AGENT_TOOL_NAMES.has(name)) {
+      return this.executeChatAgentTool({ run, toolCall });
+    }
+    if (CHAT_SKILL_TOOL_NAMES.has(name)) {
+      return this.executeChatSkillTool({ run, toolCall });
+    }
+    if (CHAT_TEAM_TOOL_NAMES.has(name)) {
+      return this.executeChatTeamTool({ run, toolCall });
+    }
+    if (CHAT_MCP_REGISTRY_TOOL_NAMES.has(name)) {
+      return this.executeChatRemoteMcpTool({ run, toolCall });
+    }
+    if (CHAT_MCP_CATALOG_TOOL_NAMES.has(name)) {
+      return this.executeChatMcpCatalogTool(run);
+    }
+    const ctx: PlatformToolContext = {
+      workspaceDir: workspaceRoot,
+      runId: run.runId,
+      threadId: run.threadId,
+      kernelId: run.kernelId,
+      taskPlanStore: this.taskPlanStore ?? undefined,
+      agentStore: this.agentStore ? this.toPlatformAgentStore(this.agentStore) : undefined,
+      resolveWorkspaceId: () => this.resolveEventWorkspaceId(run.threadId),
+    };
+    let input: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(toolCall.argumentsJson || '{}') as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        input = parsed as Record<string, unknown>;
+      }
+    } catch {
+      input = {};
+    }
+    return executePlatformTool(name, input, ctx);
+  }
+
+  /**
+   * Raise a tool.approval_requested card and await the shell decision. Mirrors
+   * the native `requestChatToolApproval` abort semantics: a kernel-side cancel,
+   * MCP timeout or run abort removes the pending card and emits a decided-deny
+   * so the shell card collapses instead of waiting forever.
+   */
   private requestPlatformToolApproval(
     runId: RunId,
     threadId: string,
@@ -15231,6 +15373,25 @@ export class Runtime {
       } catch {
         // A failed approval persistence must not fail the tool call outright.
       }
+      const onAbort = () => {
+        if (this.pendingToolApprovals.delete(approvalId)) {
+          this.emitToolApprovalDecided({
+            approvalId,
+            threadId,
+            runId,
+            decision: 'deny',
+            reason: 'kernel-call-cancelled',
+            toolCallId: call.id,
+            toolName: call.tool,
+          });
+        }
+        resolve('deny');
+      };
+      if (call.signal.aborted) {
+        onAbort();
+        return;
+      }
+      call.signal.addEventListener('abort', onAbort, { once: true });
       this.pendingToolApprovals.set(approvalId, {
         approvalId,
         runId,
@@ -15242,7 +15403,10 @@ export class Runtime {
         currentIndex: 0,
         completedResults: [],
         toolLoopRound: 0,
-        resolve: (decision) => resolve(decision === 'approve' ? 'approve' : 'deny'),
+        resolve: (decision) => {
+          call.signal.removeEventListener('abort', onAbort);
+          resolve(decision === 'approve' ? 'approve' : 'deny');
+        },
         createdAt: new Date().toISOString(),
       });
     });
@@ -15422,10 +15586,12 @@ export class Runtime {
                   name: (event as { name: string }).name,
                   argumentsJson: (event as { argsJson: string }).argsJson,
                 },
+                ...((event as { partial?: boolean }).partial ? { partial: true } : {}),
               }
             : {
                 toolCallId: (event as { toolId: string }).toolId,
                 result: (event as { output: string }).output,
+                ...((event as { isError?: boolean }).isError ? { failed: true } : {}),
               },
       };
       const committed = this.persistProjectedEvent(draft, new Map(this.demoRuns));
@@ -15436,7 +15602,61 @@ export class Runtime {
     }
   }
 
-  private persistKernelUsage(runId: RunId, run: DemoRunState, usage: KernelUsage): void {
+  /**
+   * Kernel reasoning: diagnostic-only, exactly like native provider reasoning.
+   * It streams for live visibility but never becomes durable chat text.
+   */
+  private publishKernelReasoningDelta(runId: RunId, threadId: string, text: string): void {
+    if (!text) return;
+    this.publishTransientDelta({
+      threadId: threadId as ThreadId,
+      runId,
+      kind: 'reasoning',
+      textDelta: text,
+      occurredAt: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * The kernel compacted its own context. The host only records the boundary —
+   * it must never run its own compaction on top of a self-managing kernel.
+   *
+   * Deliberately NOT `context.compacted`: that type truncates the native
+   * provider history at its sequence, and an autonomous kernel's internal
+   * compaction says nothing about what the host may still replay.
+   */
+  private persistKernelCompacted(runId: RunId, threadId: string): void {
+    try {
+      const occurredAt = new Date().toISOString();
+      const run = this.demoRuns.get(runId);
+      const committed = this.persistProjectedEvent(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: this.resolveEventWorkspaceId(threadId),
+          taskId: this.resolveEventTaskId(threadId),
+          runId,
+          category: 'context',
+          type: 'kernel.context_compacted',
+          occurredAt,
+          payload: {
+            threadId,
+            kernelId: run?.kernelId ?? 'kernel',
+          },
+        },
+        new Map(this.demoRuns),
+      );
+      this.publishEvent(committed);
+    } catch {
+      // Compaction notices are advisory; never crash the kernel stream.
+    }
+  }
+
+  private persistKernelUsage(
+    runId: RunId,
+    run: DemoRunState,
+    usage: KernelUsage,
+    sequence: number,
+  ): void {
     try {
       const occurredAt = new Date().toISOString();
       const draft: EventDraft = {
@@ -15449,7 +15669,9 @@ export class Runtime {
         occurredAt,
         payload: {
           threadId: run.threadId,
-          requestId: `kernel-${runId}-${usage.real}-${usage.window}`,
+          // Stable per usage report: value-derived ids made progressive updates
+          // look like separate provider requests in the usage aggregate.
+          requestId: `kernel-${runId}-${sequence}`,
           providerId: run.kernelId ?? 'kernel',
           providerModelId: usage.modelId ?? run.providerModelId,
           purpose: 'normal',

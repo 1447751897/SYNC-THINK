@@ -27,18 +27,18 @@ import {
   buildClaudePermissionResponse,
   buildClaudeUserMessage,
   createClaudeLineBuffer,
+  extractClaudeToolResults,
   parseClaudeStreamEvent,
   toKernelPermissionRequest,
   type ClaudeAssistantEvent,
   type ClaudeControlRequestEvent,
   type ClaudeStreamEvent,
+  type ClaudeStreamEventEnvelope,
+  type ClaudeUserEvent,
 } from './claude-code-protocol.js';
 import { probeKernel } from './detect.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
-import {
-  removePlatformMcpConfig,
-  writePlatformMcpConfig,
-} from './platform-mcp-config.js';
+import { removePlatformMcpConfig, writePlatformMcpConfig } from './platform-mcp-config.js';
 
 /** Host permission-mode → claude --permission-mode mapping (design doc §6.1). */
 function mapPermissionMode(mode: KernelRequest['permissionMode']): string {
@@ -54,11 +54,7 @@ function mapPermissionMode(mode: KernelRequest['permissionMode']): string {
 
 export interface ClaudeCodeAdapterDeps {
   /** Test seam: replace the real spawn (fixture claude processes). */
-  spawn?: (
-    args: string[],
-    env: Record<string, string>,
-    cwd: string,
-  ) => KernelProcessHandle;
+  spawn?: (args: string[], env: Record<string, string>, cwd: string) => KernelProcessHandle;
 }
 
 export class ClaudeCodeKernelAdapter implements KernelAdapter {
@@ -89,6 +85,8 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
   private stderrLogged = false;
   private activeContextWindow = 128_000;
   private cancelled = false;
+  /** True once stream_event text deltas arrived (suppresses the whole-message echo). */
+  private streamedText = false;
   /** Temp --mcp-config file to delete after the run (holds broker token). */
   private mcpConfigPath?: string;
 
@@ -123,6 +121,10 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
       '--verbose',
       '--input-format',
       'stream-json',
+      // Verified on 2.1.222: with this flag our stdin stream-json mode emits
+      // stream_event content_block deltas; without it only whole assistant
+      // messages arrive and the UI cannot stream text.
+      '--include-partial-messages',
       '--permission-prompt-tool',
       'stdio',
       '--permission-mode',
@@ -224,9 +226,7 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
       }) + '\n',
     );
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    child.stdin?.write(
-      buildClaudeUserMessage(request.userText, this.sessionId) + '\n',
-    );
+    child.stdin?.write(buildClaudeUserMessage(request.userText, this.sessionId) + '\n');
 
     try {
       while (true) {
@@ -261,10 +261,7 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
   }
 
   /** Translate a claude stream event into KernelEvents (unknown events ignored). */
-  private processEvent(
-    event: ClaudeStreamEvent,
-    push: (event: KernelEvent) => void,
-  ): void {
+  private processEvent(event: ClaudeStreamEvent, push: (event: KernelEvent) => void): void {
     switch (event.type) {
       case 'assistant':
         this.processAssistant(event as ClaudeAssistantEvent, push);
@@ -300,9 +297,23 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
         }
         return;
       }
+      case 'stream_event':
+        this.processStreamEvent(event as ClaudeStreamEventEnvelope, push);
+        return;
       case 'keep_alive':
       case 'system':
+        return;
       case 'user':
+        // Tool results are echoed here (real 2.1.222 shape verified): without
+        // this the timeline only ever shows tool.requested, never completed.
+        for (const result of extractClaudeToolResults(event as ClaudeUserEvent)) {
+          push({
+            type: 'tool-result',
+            toolId: result.toolId,
+            output: result.output,
+            isError: result.isError,
+          });
+        }
         return;
       default:
         // Unknown event types are ignored + logged (mapping principle §4.1).
@@ -313,13 +324,33 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
     }
   }
 
-  private processAssistant(
-    event: ClaudeAssistantEvent,
+  /**
+   * Incremental assistant stream. Text/thinking deltas are the streaming source
+   * of truth; tool_use and usage are taken from the following complete
+   * `assistant` message so tool arguments never come from partial JSON.
+   */
+  private processStreamEvent(
+    envelope: ClaudeStreamEventEnvelope,
     push: (event: KernelEvent) => void,
   ): void {
+    const inner = envelope.event;
+    if (inner?.type !== 'content_block_delta') return;
+    const delta = inner.delta;
+    if (delta?.type === 'text_delta' && delta.text) {
+      this.streamedText = true;
+      push({ type: 'delta', text: delta.text });
+      return;
+    }
+    if (delta?.type === 'thinking_delta' && delta.thinking) {
+      push({ type: 'reasoning', text: delta.thinking });
+    }
+  }
+
+  private processAssistant(event: ClaudeAssistantEvent, push: (event: KernelEvent) => void): void {
     for (const block of event.message.content ?? []) {
       if (block.type === 'text' && block.text) {
-        push({ type: 'delta', text: block.text });
+        // Already streamed as stream_event text deltas — do not double-emit.
+        if (!this.streamedText) push({ type: 'delta', text: block.text });
       } else if (block.type === 'tool_use') {
         push({
           type: 'tool-call',

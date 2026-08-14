@@ -20,6 +20,8 @@ import type {
   KernelUsage,
 } from '@sync-think/shared';
 import {
+  codexToolCallArgsJson,
+  codexToolCallName,
   createCodexLineBuffer,
   extractCodexErrorMessage,
   mapCodexApprovalPolicy,
@@ -35,11 +37,7 @@ import { buildCodexMcpConfigArgs } from './platform-mcp-config.js';
 
 export interface CodexAdapterDeps {
   /** Test seam: replace the real spawn (fixture codex processes). */
-  spawn?: (
-    args: string[],
-    env: Record<string, string>,
-    cwd: string,
-  ) => KernelProcessHandle;
+  spawn?: (args: string[], env: Record<string, string>, cwd: string) => KernelProcessHandle;
 }
 
 export class CodexKernelAdapter implements KernelAdapter {
@@ -226,9 +224,7 @@ export class CodexKernelAdapter implements KernelAdapter {
         push({
           type: 'terminal',
           status: 'failed',
-          error:
-            extractCodexErrorMessage(error) ??
-            'codex turn failed',
+          error: extractCodexErrorMessage(error) ?? 'codex turn failed',
         });
         return;
       }
@@ -262,8 +258,8 @@ export class CodexKernelAdapter implements KernelAdapter {
       push({
         type: 'tool-call',
         toolId: item.id ?? `codex-${randomUUID()}`,
-        name: item.type,
-        argsJson: JSON.stringify({}),
+        name: codexToolCallName(item),
+        argsJson: codexToolCallArgsJson(item),
         partial: false,
       });
     }
@@ -287,9 +283,7 @@ export class CodexKernelAdapter implements KernelAdapter {
         push({
           type: 'tool-result',
           toolId: item.id ?? `codex-${randomUUID()}`,
-          output:
-            item.aggregated_output ??
-            (typeof item.output === 'string' ? item.output : ''),
+          output: item.aggregated_output ?? (typeof item.output === 'string' ? item.output : ''),
           isError: item.exit_code !== null && item.exit_code !== undefined && item.exit_code !== 0,
         });
         return;
@@ -321,10 +315,10 @@ export class CodexKernelAdapter implements KernelAdapter {
   }
 
   private mapUsage(usage: CodexUsage): KernelUsage {
-    const input =
-      (usage.input_tokens ?? 0) +
-      (usage.cached_input_tokens ?? 0) +
-      (usage.cache_write_input_tokens ?? 0);
+    // Verified against a real codex 0.145.0 rollout: total_tokens equals
+    // input_tokens + output_tokens, so cached/cache-write are subsets of
+    // input_tokens and must never be added again.
+    const input = usage.input_tokens ?? 0;
     const output = usage.output_tokens ?? 0;
     return {
       real: input + output,

@@ -510,26 +510,27 @@ Codex stream unhandled event type: response.reasoning_text.delta  ← 事件翻�
 已验证项按当前分支事实勾选；未勾选项仍是收口门禁：
 
 - [x] CC 2.1.222：`--permission-prompt-tool stdio` 可产生权限请求并接受匹配 `request_id` 的 `control_response`
-- [ ] CC：`stream_event/content_block_delta/partial_json` 增量映射及真实 tool-result 完整时间线
+- [x] CC：`--include-partial-messages` 下的 `stream_event/content_block_delta` 增量与顶层 `user.tool_result` 已按真实抓取映射（fixture `claude-2.1.222-partial-capture.jsonl`）
 - [ ] CC：`--permission-mode acceptEdits` 对 ExitPlanMode 的长期稳定性矩阵
 - [x] CC：用户本地登录态可由 spawn 子进程复用；凭据注入仅走环境变量
 - [x] Codex 0.145.0：无动态权限桥时采用 approval-policy 静态映射，平台 MCP 工具仍走宿主审批
-- [ ] Codex：exec JSONL 事件全集、reasoning/compacted 投影及真实 MCP tool name/arguments 保真
+- [x] Codex：`mcp_tool_call` 的 `server/tool/arguments` 已按真实抓取保真（fixture `codex-0.145.0-mcp-capture.jsonl`）；`reasoning` 已投影
+- [ ] Codex exec 0.145.0 不输出上下文压缩通知：`compacted` 分支已实现但该内核暂无来源，需 app-server 通道才能覆盖
 - [ ] Pi：内核适配器与多供应商 baseUrl 配置；当前仅完成安装 UI/重探
 - [ ] 中转站 `/v1/messages` 端点兼容性矩阵（CC 内核路径 A 的前提）
 - [x] Job Object：Windows 嵌套 Job + taskkill/父进程兜底实现与 fixture 回归
 - [x] `claude --version` / `codex --version` 探测；Pi 仍待真实安装版本样本
-- [ ] Codex usage 的 cached/input 字段不变量与去重口径
-- [x] 真实 CLI 冷启动样本：Codex 0.145.0、Claude Code 2.1.222 已跑通；尚未形成 Electron 三内核矩阵
+- [x] Codex usage 口径：真实 `turn.completed` 证明 `total = input + output`，cached 为 input 子集，已停止二次相加
+- [x] 真实 CLI 冷启动样本：Codex 0.145.0、Claude Code 2.1.222 已跑通；Electron 侧 Codex 已端到端成功
 
-### 16.1 当前未完成门禁（2026-08-14）
+### 16.1 当前未完成门禁（2026-08-14 更新）
 
-1. `buildPlatformMcpToolDefinitions` 已按 Run/Store/权限模式生成 Browser、Desktop、Agent、Skill、Team、Task、MCP 管理 schema，但 `handlePlatformMcpToolCall` 仍只调用纯 `executePlatformTool`；业务工具必须复用 Runtime 现有 controller/Store 执行器后才算可用。
-2. MCP server 超时/取消尚未向 broker/Runtime 传播；待审批工具在内核超时后可能留下孤儿审批。必须增加取消帧、AbortSignal 清理与“晚批准不得执行副作用”回归。
-3. `create_agent`、`TaskCreate` 等创建类工具缺少稳定 idempotency key / 创建前查重，尚不满足设计中的崩溃重试幂等要求。
-4. CC partial/tool-result、Codex reasoning/compacted/MCP 标识和 cached usage 口径仍需用真实 JSONL fixture 补齐。
-5. 真实 Electron 仅完成内核菜单探测；原生、CC、Codex 对话、审批 approve/deny、usage、重启后历史一致性的隔离数据矩阵和截图仍未完成。
+1. Browser/Desktop 工具仍不向外部内核暴露。Task/Agent/Skill/Team/MCP 目录与远端注册已通过 `executeHostPlatformTool` 复用原生执行器，审批走 `chatToolRequiresApproval`；Browser/Desktop 需要 controller 的 origin grant 与风险分级，留作后续批次。
+2. 幂等只覆盖同 Run 的 `(callId + 工具 + 参数摘要)` 重放。跨进程重启的持久化 operation key、以及 Skill/MCP 自然键的数据库 UNIQUE 仍未实现。
+3. 实窗仍缺三项证据：原生与 Claude Code 的成功回复（当前被中转站 400 / `503 分组 claude 未开通模型` 阻断）、审批卡 approve/deny 点选、重启后历史一致性。
+4. Pi 只有安装引导与安装后重探，没有内核适配器。
+5. `Runtime.stop()` 尚未在正常关闭时统一 settle 待审批项；目前依赖 Run 取消与内核取消两条路径。
 
 ---
 
-_文档基线版本：2026-08-14；设计基线保持不变，状态与验证清单已按 `feature/multi-kernel` 当前实现事实更新。_
+_文档基线版本：2026-08-14（第二次更新）；设计基线不变，验证清单与门禁按 `feature/multi-kernel` 当前实现事实同步。_

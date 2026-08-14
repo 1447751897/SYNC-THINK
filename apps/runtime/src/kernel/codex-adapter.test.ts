@@ -91,9 +91,11 @@ describe('CodexKernelAdapter', () => {
     expect(usage).toMatchObject({
       type: 'usage',
       usage: {
-        real: 25, // 10 input + 5 cached + 3 cache-write + 7 output
+        // Real codex reports total = input + output, so cached/cache-write are
+        // subsets of input_tokens and must not be added again.
+        real: 17, // 10 input + 7 output
         window: 200_000,
-        input: 18,
+        input: 10,
         output: 7,
         cached: 5,
       },
@@ -105,9 +107,9 @@ describe('CodexKernelAdapter', () => {
     const terminal = events[events.length - 1];
     expect(terminal).toMatchObject({ type: 'terminal', status: 'completed' });
     // The unknown-event payload must never surface as a delta or a failure.
-    expect(
-      events.some((event) => event.type === 'terminal' && event.status === 'failed'),
-    ).toBe(false);
+    expect(events.some((event) => event.type === 'terminal' && event.status === 'failed')).toBe(
+      false,
+    );
   });
 
   it('maps turn.failed with a JSON-wrapped nested error to a failed terminal', async () => {
@@ -222,7 +224,7 @@ describe('CodexKernelAdapter', () => {
       if (event.type === 'terminal') break;
     }
     expect(usages.length).toBeGreaterThan(0);
-    expect(usages[0]).toMatchObject({ real: 25, cached: 5 });
+    expect(usages[0]).toMatchObject({ real: 17, cached: 5 });
   });
 
   it('detectVersion probes the local codex (installed state depends on machine)', async () => {

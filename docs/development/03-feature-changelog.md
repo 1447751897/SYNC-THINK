@@ -3036,3 +3036,38 @@ Desktop typecheck/build：passed
 - CC partial/tool-result、Codex reasoning/compacted/MCP 标识与 cached usage 口径仍待补齐。
 - Pi adapter 与真实运行未实现。
 - Electron 原生/CC/Codex 对话、审批 approve/deny、usage、重启历史一致性及截图矩阵尚未闭环。
+
+## 2026-08-14 · 多内核平台工具真实分派、取消/幂等与真实协议收口
+
+### Added
+
+- 平台 MCP 目录按 Run 冻结（`platformMcpCatalogByRun`）：内核只能调用 broker 启动时暴露的工具，运行期能力或权限变化不再扩大在途 Run。
+- 新增 Runtime 私有 `executeHostPlatformTool`，把外部内核的平台工具调用路由到原生工具循环既有执行器：Task 三工具、`update_task_plan`、Agent、Skill、Team、MCP 目录与远端注册，其余回落到工作区文件工具。
+- broker 协议新增 `tool-cancel` 帧，并为每个调用建立 `AbortController`；同一连接（即同一 Run）的工具调用串行执行，两个写操作不再竞态。
+- 平台 MCP server 在自身 90 秒超时和收到 `notifications/cancelled` 时向宿主发送取消，宿主据此清理审批并拒绝后续执行。
+- 新增按 Run 的 `(callId + 工具 + 参数摘要)` 结果重放缓存：内核重试同一调用返回首次结果，不会重复创建智能体或任务。
+- 新增真实 CLI 抓取回放 fixture：`claude-2.1.222-partial-capture.jsonl` 与 `codex-0.145.0-mcp-capture.jsonl`（2026-08-14 本机采样），配套 `kernel-capture-replay.test.ts`。
+
+### Fixed
+
+- 审批判定改用原生权威分类 `chatToolRequiresApproval`：Agent/Skill/Team/MCP 注册等库写操作在 `workspace` 模式不再绕过审批卡，只有 `full-access` 免批；工作区文件工具保留 ask 档位。
+- Claude Code 启用 `--include-partial-messages`（本机实测该模式下才有 `stream_event` 增量），文本按 `text_delta` 流式输出，`thinking_delta` 归为诊断 reasoning，完整消息不再重复发送文本。
+- Claude Code 顶层 `user` 事件中的 `tool_result` 现在映射为 `tool-result`，工具时间线不再只有 requested 没有 completed；`content` 支持字符串与块数组两种真实形态。
+- Codex `mcp_tool_call` 保留真实 `server`/`tool`/`arguments`，工具名呈现为 `mcp__<server>__<tool>`，不再是泛化 `mcp_tool_call` 与空参数。
+- Codex 用量修正：真实 0.145.0 的 `total = input + output`，`cached_input_tokens`/`cache_write_input_tokens` 是 `input_tokens` 子集，不再被二次相加。
+- Runtime 外部内核事件补齐 `reasoning` 与 `compacted` 分支（此前被静默丢弃）；`tool.requested` 保留 `partial`，`tool.completed` 保留失败标记。
+- `provider.usage` 的 requestId 改为按事件序号稳定生成，渐进用量不再被当成多个请求；内核自身压缩写入 `kernel.context_compacted`，不冒用会截断原生历史的 `context.compacted`。
+
+### Verification
+
+- Runtime 全量 `98 files / 635 tests` 通过；Desktop 全量 `157 files / 1184 tests` 通过；Storage 全量 `38 files / 410 tests` 通过。
+- 根 `pnpm typecheck` 20/20、`pnpm lint` 11/11（0 errors）、`pnpm build` 11/11 通过。
+- 新增测试：平台工具分派与三档审批 8 例、broker 取消/串行/多 Run 隔离 3 例、外部内核投影 4 例、真实抓取回放 2 例。
+- 真实实窗（`.data/local-restart-20260814-multikernel-final/`，CDP 9366）：内核菜单显示 Native、Claude Code v2.1.222、Codex v0.145.0、Pi 未安装；Codex 端到端成功，`run.completed.assistantText="codex-ok"`、`provider.usage.requestId="kernel-<runId>-1"`、tokensIn 18105 / tokensOut 35。
+
+### Remaining
+
+- 实窗中 native 与 Claude Code 会话未取得成功回复：中转站分别返回 400 与 `503 分组 claude 未开通模型 gpt-5.6-luna`。派发、进程拉起与错误落库均正确，属外部模型开通问题，不作为代码结论。
+- 审批卡 approve/deny 目前只有 Runtime 级测试覆盖，尚未在实窗完成点选证据；重启后历史一致性同样未在本轮实窗验证。
+- Browser/Desktop 工具本轮仍不向外部内核暴露；Pi 只有安装引导，没有内核适配器。
+- 幂等仅覆盖同 Run 内重放，跨进程重启的持久化 operation key 尚未实现。

@@ -93,6 +93,37 @@ export function createCodexLineBuffer(onLine: (line: string) => void): {
   };
 }
 
+/**
+ * Tool name for a codex `mcp_tool_call` / `web_search` item. Codex 0.145.0
+ * reports `server` + `tool`; keeping them preserves the real MCP identity in
+ * the host timeline instead of a generic "mcp_tool_call" row.
+ */
+export function codexToolCallName(item: CodexItem): string {
+  if (item.type !== 'mcp_tool_call') return item.type ?? 'tool';
+  const server = typeof item.server === 'string' ? item.server.trim() : '';
+  const tool = typeof item.tool === 'string' ? item.tool.trim() : '';
+  if (server && tool) return `mcp__${server}__${tool}`;
+  if (tool) return tool;
+  return 'mcp_tool_call';
+}
+
+/** Arguments JSON for a codex tool item (real `arguments` when reported). */
+export function codexToolCallArgsJson(item: CodexItem): string {
+  const raw = item.arguments ?? item.args ?? (item.type === 'web_search' ? item.query : undefined);
+  if (raw === undefined || raw === null) return '{}';
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return '{}';
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return trimmed;
+    return JSON.stringify(item.type === 'web_search' ? { query: trimmed } : { arguments: trimmed });
+  }
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return '{}';
+  }
+}
+
 /** Host permission tier → codex --ask-for-approval policy (design doc §6.1). */
 export function mapCodexApprovalPolicy(mode: 'full-access' | 'ask' | 'workspace'): string {
   switch (mode) {
@@ -135,11 +166,13 @@ export function extractCodexErrorMessage(message: unknown): string | undefined {
   const trimmed = message.trim();
   if (trimmed.startsWith('{')) {
     try {
-      const value = JSON.parse(trimmed) as { error?: { message?: unknown } | unknown; message?: unknown };
+      const value = JSON.parse(trimmed) as {
+        error?: { message?: unknown } | unknown;
+        message?: unknown;
+      };
       if (value && typeof value === 'object') {
         const nested = (value as { error?: { message?: unknown } }).error as
-          | { message?: unknown }
-          | undefined;
+          { message?: unknown } | undefined;
         if (nested && typeof nested.message === 'string') return nested.message;
         const direct = (value as { message?: unknown }).message;
         if (typeof direct === 'string') return direct;

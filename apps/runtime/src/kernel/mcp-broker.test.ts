@@ -18,6 +18,8 @@ const TOOLS = [
 interface BrokerClient {
   socket: Socket;
   call(id: string): Promise<PlatformMcpToolResult>;
+  send(frame: Record<string, unknown>): void;
+  nextFrame(): Promise<Record<string, unknown>>;
   close(): void;
 }
 
@@ -67,6 +69,8 @@ async function connectClient(broker: KernelMcpBroker): Promise<BrokerClient> {
         error: typeof frame.error === 'string' ? frame.error : undefined,
       };
     },
+    send: (frame) => socket.write(JSON.stringify(frame) + '\n'),
+    nextFrame,
     close: () => socket.destroy(),
   };
 }
@@ -89,6 +93,61 @@ describe('platform MCP broker lifecycle', () => {
       clientB.close();
       await brokerA.close().catch(() => undefined);
       await brokerB.close().catch(() => undefined);
+    }
+  });
+
+  it('aborts the host handler when the kernel cancels the call', async () => {
+    let observedAbort = false;
+    const broker = await startKernelMcpBroker({
+      workspaceDir: process.cwd(),
+      tools: TOOLS,
+      onToolCall: (call) =>
+        new Promise((resolve) => {
+          call.signal.addEventListener('abort', () => {
+            observedAbort = true;
+            resolve({ ok: false, error: 'cancelled' });
+          });
+        }),
+    });
+    const client = await connectClient(broker);
+    try {
+      client.send({ type: 'tool-call', id: 'cancel-me', tool: 'probe', input: {} });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      client.send({ type: 'tool-cancel', id: 'cancel-me' });
+      const frame = await client.nextFrame();
+      expect(observedAbort).toBe(true);
+      expect(frame).toMatchObject({ type: 'tool-result', id: 'cancel-me', ok: false });
+    } finally {
+      client.close();
+      await broker.close().catch(() => undefined);
+    }
+  });
+
+  it('serializes tool calls on one connection so two mutations cannot race', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const broker = await startKernelMcpBroker({
+      workspaceDir: process.cwd(),
+      tools: TOOLS,
+      onToolCall: async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        active -= 1;
+        return { ok: true, content: 'done' };
+      },
+    });
+    const client = await connectClient(broker);
+    try {
+      client.send({ type: 'tool-call', id: 's-1', tool: 'probe', input: {} });
+      client.send({ type: 'tool-call', id: 's-2', tool: 'probe', input: {} });
+      const first = await client.nextFrame();
+      const second = await client.nextFrame();
+      expect([first.id, second.id]).toEqual(['s-1', 's-2']);
+      expect(maxActive).toBe(1);
+    } finally {
+      client.close();
+      await broker.close().catch(() => undefined);
     }
   });
 });

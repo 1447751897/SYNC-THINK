@@ -48,7 +48,9 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
       type: 'object',
       additionalProperties: false,
       required: ['path'],
-      properties: { path: { type: 'string', description: 'File path relative to the workspace root' } },
+      properties: {
+        path: { type: 'string', description: 'File path relative to the workspace root' },
+      },
     },
   },
   {
@@ -59,7 +61,10 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
       type: 'object',
       additionalProperties: false,
       properties: {
-        path: { type: 'string', description: 'Directory relative to the workspace root (default: root)' },
+        path: {
+          type: 'string',
+          description: 'Directory relative to the workspace root (default: root)',
+        },
         maxEntries: { type: 'integer', minimum: 1, maximum: 500 },
       },
     },
@@ -75,8 +80,14 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
       required: ['pattern'],
       properties: {
         pattern: { type: 'string', description: 'JavaScript regular expression source (no flags)' },
-        path: { type: 'string', description: 'Subdirectory relative to the workspace root (default: whole workspace)' },
-        caseInsensitive: { type: 'boolean', description: 'Match case-insensitively (default: false)' },
+        path: {
+          type: 'string',
+          description: 'Subdirectory relative to the workspace root (default: whole workspace)',
+        },
+        caseInsensitive: {
+          type: 'boolean',
+          description: 'Match case-insensitively (default: false)',
+        },
       },
     },
   },
@@ -108,6 +119,22 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
 ];
+/** Host-only workspace tools implemented by `executePlatformTool` itself. */
+const PLATFORM_FILE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'platform_context',
+  'file_read',
+  'file_list',
+  'file_search',
+  'file_write',
+  'task_list',
+  'agent_list',
+]);
+
+/** True for the host-only file/inventory tools (not native chat tools). */
+export function isPlatformFileToolName(name: string): boolean {
+  return PLATFORM_FILE_TOOL_NAMES.has(name);
+}
+
 export interface PlatformToolCatalogOptions {
   executionMode?: string;
   networkEnabled?: boolean;
@@ -134,14 +161,26 @@ function toPlatformDefinition(
   };
 }
 
-/** Build the per-run host catalog from the authoritative chat tool schemas. */
+/**
+ * Build the per-run host catalog from the authoritative chat tool schemas.
+ *
+ * Browser/desktop tools are intentionally NOT exposed to external kernels this
+ * round: their host executors need the Browser/Desktop controller origin-grant
+ * and risk fences, which are wired for the native loop only.
+ */
 export function buildPlatformMcpToolDefinitions(
   options: PlatformToolCatalogOptions = {},
 ): readonly PlatformMcpToolDefinition[] {
   const executionMode = normalizeChatExecutionMode(options.executionMode);
   const definitions = [...PLATFORM_MCP_TOOL_DEFINITIONS];
   const seen = new Set(definitions.map((definition) => definition.name));
-  const add = (schemas: readonly { name: string; description?: string; inputSchema: Record<string, unknown> }[]) => {
+  const add = (
+    schemas: readonly {
+      name: string;
+      description?: string;
+      inputSchema: Record<string, unknown>;
+    }[],
+  ) => {
     for (const schema of schemas) {
       if (seen.has(schema.name)) continue;
       seen.add(schema.name);
@@ -237,7 +276,11 @@ export async function executePlatformTool(
         name: entry.name,
         type: entry.isDirectory() ? 'directory' : 'file',
       }));
-      return JSON.stringify({ ok: true, path: relative(ctx.workspaceDir, dirPath), entries: items });
+      return JSON.stringify({
+        ok: true,
+        path: relative(ctx.workspaceDir, dirPath),
+        entries: items,
+      });
     }
     case 'file_search': {
       const pattern = stringArg(toolInput.pattern);
@@ -272,7 +315,11 @@ export async function executePlatformTool(
         await writeFile(filePath, content, { encoding: 'utf8', flag: 'w' });
         void error;
       });
-      return JSON.stringify({ ok: true, path: relative(ctx.workspaceDir, filePath), bytes: content.length });
+      return JSON.stringify({
+        ok: true,
+        path: relative(ctx.workspaceDir, filePath),
+        bytes: content.length,
+      });
     }
     case 'task_list': {
       if (!ctx.taskPlanStore) throw new Error('task plan store unavailable');
@@ -339,7 +386,9 @@ async function walkSearch(
 }
 
 async function looksBinary(filePath: string): Promise<boolean> {
-  const handle = await import('node:fs/promises').then((m) => m.open(filePath, 'r')).catch(() => null);
+  const handle = await import('node:fs/promises')
+    .then((m) => m.open(filePath, 'r'))
+    .catch(() => null);
   if (!handle) return true;
   try {
     const buffer = Buffer.alloc(512);

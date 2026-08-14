@@ -12,6 +12,7 @@
  *   MCP server → runtime:  {type:'hello', token}
  *   runtime → MCP server:  {type:'hello-ok', tools: PlatformMcpToolDefinition[]}
  *   MCP server → runtime:  {type:'tool-call', id, tool, input}
+ *   MCP server → runtime:  {type:'tool-cancel', id}
  *   runtime → MCP server:  {type:'tool-result', id, ok, content|error}
  *
  * Security: binds 127.0.0.1 only; the token is a per-run CSPRNG value carried
@@ -37,6 +38,11 @@ export interface PlatformMcpToolCall {
   id: string;
   tool: string;
   input: Record<string, unknown>;
+  /**
+   * Aborted when the kernel-side MCP server cancels or times out this call, or
+   * when the broker closes. Host handlers must stop before any side effect.
+   */
+  signal: AbortSignal;
 }
 
 export interface PlatformMcpToolResult {
@@ -107,10 +113,19 @@ function handleConnection(
   sockets: Set<Socket>,
 ): void {
   sockets.add(socket);
-  socket.on('close', () => sockets.delete(socket));
+  // Every in-flight call for this connection; aborted on cancel or teardown so
+  // a host handler can never apply a side effect the kernel already gave up on.
+  const inFlight = new Map<string, AbortController>();
+  socket.on('close', () => {
+    sockets.delete(socket);
+    for (const controller of inFlight.values()) controller.abort();
+    inFlight.clear();
+  });
 
   let authenticated = false;
   let buffer = '';
+  // Per-connection serialization chain for tool calls.
+  let queue: Promise<void> = Promise.resolve();
   const timeout = setTimeout(() => socket.destroy(), HELLO_TIMEOUT_MS);
 
   socket.on('data', (chunk) => {
@@ -152,26 +167,43 @@ function handleConnection(
         nl = buffer.indexOf('\n');
         continue;
       }
+      if (frame.type === 'tool-cancel') {
+        const cancelId = typeof frame.id === 'string' ? frame.id : '';
+        inFlight.get(cancelId)?.abort();
+        nl = buffer.indexOf('\n');
+        continue;
+      }
       if (frame.type === 'tool-call') {
+        const callId = typeof frame.id === 'string' ? frame.id : randomUUID();
+        const controller = new AbortController();
+        inFlight.set(callId, controller);
         const call: PlatformMcpToolCall = {
-          id: typeof frame.id === 'string' ? frame.id : randomUUID(),
+          id: callId,
           tool: typeof frame.tool === 'string' ? frame.tool : '',
           input:
             frame.input && typeof frame.input === 'object' && !Array.isArray(frame.input)
               ? (frame.input as Record<string, unknown>)
               : {},
+          signal: controller.signal,
         };
-        void options
-          .onToolCall(call)
-          .then((result) => writeFrame(socket, { type: 'tool-result', id: call.id, ...result }))
-          .catch((error) =>
+        // Serialize per connection (= per run): the native loop runs one tool at
+        // a time, so two mutations/approvals must not race here either.
+        queue = queue
+          .then(() => (controller.signal.aborted ? undefined : options.onToolCall(call)))
+          .then((result) => {
+            inFlight.delete(callId);
+            if (!result) return;
+            writeFrame(socket, { type: 'tool-result', id: callId, ...result });
+          })
+          .catch((error) => {
+            inFlight.delete(callId);
             writeFrame(socket, {
               type: 'tool-result',
-              id: call.id,
+              id: callId,
               ok: false,
               error: error instanceof Error ? error.message : 'platform tool failed',
-            }),
-          );
+            });
+          });
       }
       nl = buffer.indexOf('\n');
     }
