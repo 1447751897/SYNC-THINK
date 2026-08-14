@@ -73,6 +73,11 @@ export interface DemoRunState {
   runId: RunId;
   threadId: string;
   userText: string;
+  /**
+   * Kernel that executes this run. Absent = native (in-process runtime loop);
+   * external kernels (claude-code / codex) run in spawned subprocesses.
+   */
+  kernelId?: string;
   /** Internal model id (catalog) or provider model id for fake. */
   modelId: string;
   /** Provider-facing model string sent to the API. */
@@ -175,6 +180,7 @@ export interface CreateDemoRunInput {
   runId: RunId;
   threadId: string;
   userText: string;
+  kernelId?: string;
   modelId?: string;
   providerModelId?: string;
   protocol?: ProtocolFamily;
@@ -222,6 +228,7 @@ export function createDemoRun(
     runId,
     threadId,
     userText,
+    kernelId: extras.kernelId,
     modelId,
     providerModelId: extras.providerModelId ?? modelId,
     protocol: extras.protocol ?? 'openai-chat',

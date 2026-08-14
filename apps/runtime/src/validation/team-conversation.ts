@@ -47,8 +47,17 @@ export function parseAppendMessagePayload(value: unknown): AppendMessagePayload 
     'runId',
     'stepId',
     'reasoningEffort',
+    'kernelId',
   ]) {
     if (value[field] !== undefined && typeof value[field] !== 'string') return undefined;
+  }
+  if (
+    value.kernelId !== undefined &&
+    (typeof value.kernelId !== 'string' ||
+      value.kernelId.length === 0 ||
+      value.kernelId.length > 64)
+  ) {
+    return undefined;
   }
   if (
     value.reasoningEffort !== undefined &&

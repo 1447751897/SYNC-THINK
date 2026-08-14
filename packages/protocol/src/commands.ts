@@ -8,6 +8,7 @@
   AgentVersionId,
   ModelId,
   CredentialRefId,
+  KernelId,
   ParticipationMode,
   ApprovalMode,
   PlanId,
@@ -434,6 +435,11 @@ export interface AppendMessagePayload {
   agentVersionId?: AgentVersionId;
   modelId?: ModelId;
   credentialRefId?: CredentialRefId;
+  /**
+   * Kernel selected for this turn (model-picker kernel grouping). Absent keeps
+   * the conversation's previous kernel; 'native' is the in-process runtime.
+   */
+  kernelId?: KernelId;
   /**
    * Compose 推理强度（auto/off/low/medium/high…）。
    * Runtime 透传到 ProviderCallRequest.reasoningEffort；auto 时 adapter 不带参。

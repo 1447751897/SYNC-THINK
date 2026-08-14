@@ -11,3 +11,5 @@ export * from './git/git-worker.js';
 export * from './mcp/mcp-worker.js';
 export * from './mcp/mcp-policy.js';
 export * from './desktop/desktop-user-input-monitor.js';
+export { buildSafeCmdShimCommand } from './process-runner.js';
+export * from './process/job-object.js';

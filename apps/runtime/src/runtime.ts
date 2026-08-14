@@ -525,6 +525,16 @@ import {
 import { createPipeServer, type PipeServerHandlers } from './pipe/server.js';
 import { healthcheck, type HealthcheckResult, type HealthcheckError } from './healthcheck.js';
 import { Scheduler } from './orchestration/scheduler.js';
+import { resolveKernelAdapter } from './kernel/registry.js';
+import { collectWorkspaceSharedFacts } from './kernel/shared-facts.js';
+import type {
+  KernelAdapter,
+  KernelCredential,
+  KernelEvent,
+  KernelPermissionRequest,
+  KernelRequest,
+  KernelUsage,
+} from '@sync-think/shared';
 import type { StepExecutor } from './orchestration/step-executor.js';
 import {
   FakeMcpWorker,
@@ -13067,6 +13077,7 @@ export class Runtime {
           runId: demoRunId,
           threadId: payload.threadId,
           userText: payload.text,
+          kernelId: typeof payload.kernelId === 'string' ? payload.kernelId : undefined,
           modelId: explicitModelId,
           credentialRefId:
             typeof payload.credentialRefId === 'string' ? payload.credentialRefId : undefined,
@@ -13108,6 +13119,7 @@ export class Runtime {
           proofHash: prepared.proofHash,
           modelId: demoRun.modelId,
           providerModelId: demoRun.providerModelId,
+          kernelId: demoRun.kernelId,
           resolutionSource: demoRun.resolutionSource,
           credentialRefId: demoRun.credentialRefId,
           credentialResolutionSource: demoRun.credentialResolutionSource,
@@ -13140,6 +13152,7 @@ export class Runtime {
           threadId: payload.threadId,
           modelId: demoRun.modelId,
           providerModelId: demoRun.providerModelId,
+          kernelId: demoRun.kernelId,
           resolutionSource: demoRun.resolutionSource,
           credentialRefId: demoRun.credentialRefId,
           credentialResolutionSource: demoRun.credentialResolutionSource,
@@ -13258,7 +13271,7 @@ export class Runtime {
       }),
     );
     for (const event of committedEvents) this.publishEvent(event);
-    if (demoRunId) void this.executeDemoRun(demoRunId);
+    if (demoRunId) void this.executeKernelRun(demoRunId);
   }
 
   // ===== Goal mode (NewMax-style /goal) =====
@@ -13556,7 +13569,7 @@ export class Runtime {
       this.recordCommittedEvents(events);
       this.demoRuns.set(runId, demoRun);
       for (const event of events) this.publishEvent(event);
-      void this.executeDemoRun(runId);
+      void this.executeKernelRun(runId);
     } catch {
       // Goal turns must never break the session; the goal stays active for retry.
     }
@@ -14908,6 +14921,366 @@ export class Runtime {
     }
   }
 
+  /**
+   * Run dispatch (multi-kernel). Native runs keep the existing in-process loop
+   * (zero behavior change); external kernels run in spawned subprocesses.
+   */
+  private executeKernelRun(runId: RunId): Promise<void> {
+    const run = this.demoRuns.get(runId);
+    const kernelId = run?.kernelId;
+    if (!kernelId || kernelId === 'native') {
+      return this.executeDemoRun(runId);
+    }
+    return this.executeExternalKernelRun(runId);
+  }
+
+  /**
+   * External kernel run loop (design doc §3.1). The kernel is autonomous — the
+   * host only translates events, persists them, bridges permissions and reports
+   * usage. Text flows over the transient channel; semantic events persist
+   * through the same write-through store the native loop uses.
+   */
+  private async executeExternalKernelRun(runId: RunId): Promise<void> {
+    const initialRun = this.demoRuns.get(runId);
+    if (!initialRun || this.inFlight.has(runId)) return;
+    this.recordInFlight(runId);
+    const abort = new AbortController();
+    this.demoRunAborts.set(runId, abort);
+    let adapter: KernelAdapter | undefined;
+    try {
+      const kernelId = initialRun.kernelId ?? 'native';
+      adapter = resolveKernelAdapter(kernelId);
+      if (!adapter) {
+        throw new Error(`Kernel adapter not wired: ${kernelId}`);
+      }
+      const request = await this.buildKernelRequestForRun(initialRun);
+      this.wireKernelPermissionBridge(runId, initialRun.threadId, adapter, abort.signal);
+
+      let finalStatus: 'completed' | 'failed' = 'completed';
+      let finalError: string | undefined;
+      for await (const event of adapter.start(request)) {
+        if (abort.signal.aborted) break;
+        switch (event.type) {
+          case 'delta':
+            this.publishKernelTextDelta(runId, initialRun.threadId, event.text);
+            break;
+          case 'tool-call':
+            this.persistKernelToolEvent(runId, initialRun.threadId, 'tool.requested', event);
+            break;
+          case 'tool-result':
+            this.persistKernelToolEvent(runId, initialRun.threadId, 'tool.completed', event);
+            break;
+          case 'usage':
+            this.persistKernelUsage(runId, initialRun, event.usage);
+            break;
+          case 'permission-request':
+            // Handled through the approval bridge; no durable event here.
+            break;
+          case 'terminal':
+            finalStatus = event.status;
+            finalError = event.error;
+            break;
+        }
+      }
+
+      if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+      this.finalizeKernelRun(runId, initialRun, finalStatus, finalError);
+    } catch (error) {
+      if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+      const message = error instanceof Error ? error.message : 'kernel run failed';
+      this.finalizeKernelRun(runId, initialRun, 'failed', message);
+    } finally {
+      if (adapter) await adapter.cancel().catch(() => undefined);
+      this.demoRunAborts.delete(runId);
+      this.forgetInFlight(runId);
+    }
+  }
+
+  private async buildKernelRequestForRun(run: DemoRunState): Promise<KernelRequest> {
+    const workspaceRoot = this.resolveChatWorkspaceRoot(run.threadId);
+    const executionMode = this.resolveChatExecutionMode(run.threadId);
+    const credential = await this.resolveKernelCredential(run);
+    return {
+      kernelId: run.kernelId ?? 'native',
+      model: run.modelId,
+      providerModelId: run.providerModelId,
+      userText: run.userText,
+      contextWindow: run.contextWindow ?? 128_000,
+      credential,
+      systemContext: this.buildKernelSystemContext(run, workspaceRoot),
+      // Platform tools ride the MCP channel (Slice 5); the registry slot stays.
+      platformTools: [],
+      permissionMode: normalizeChatExecutionMode(executionMode),
+      workspaceDir: workspaceRoot ?? process.cwd(),
+    };
+  }
+
+  /**
+   * Kernel credential: prefer the kernel's local login state (OAuth bonus,
+   * design §7); when the run carries a credential ref, inject its key + baseUrl.
+   */
+  private async resolveKernelCredential(run: DemoRunState): Promise<KernelCredential> {
+    if (!run.credentialRefId || !this.providerStore || !this.secureStore) {
+      return { reuseLocalLogin: true };
+    }
+    try {
+      const storeHandle = this.providerStore.getCredentialStoreHandle(run.credentialRefId);
+      if (!storeHandle) return { reuseLocalLogin: true };
+      const apiKey = await this.secureStore.retrieveSecret(storeHandle);
+      if (!apiKey) return { reuseLocalLogin: true };
+      const provider = run.providerId
+        ? this.providerStore.getProvider(run.providerId as ProviderId)
+        : undefined;
+      return {
+        apiKey,
+        ...(provider?.baseUrl ? { baseUrl: provider.baseUrl } : {}),
+      };
+    } catch {
+      return { reuseLocalLogin: true };
+    }
+  }
+
+  /** Shared facts + persona + team orchestration prompt for the kernel system prompt. */
+  private buildKernelSystemContext(run: DemoRunState, workspaceRoot?: string): string {
+    const parts: string[] = [];
+    if (workspaceRoot) {
+      const facts = collectWorkspaceSharedFacts(workspaceRoot);
+      if (facts.block) parts.push(facts.block);
+    }
+    if (run.persona?.trim()) parts.push(`## 智能体人设\n\n${run.persona.trim()}`);
+    if (run.teamPromptBlock?.trim()) parts.push(run.teamPromptBlock.trim());
+    return parts.join('\n\n');
+  }
+
+  /**
+   * Kernel permission bridge: the kernel's can_use_tool request surfaces as the
+   * same tool.approval_requested card the native path uses; the shell decision
+   * (conversation.decideToolApproval) routes back through respondPermission.
+   */
+  private wireKernelPermissionBridge(
+    runId: RunId,
+    threadId: string,
+    adapter: KernelAdapter,
+    signal: AbortSignal,
+  ): void {
+    adapter.onPermissionRequest((permission: KernelPermissionRequest) => {
+      const run = this.demoRuns.get(runId);
+      if (!run || signal.aborted) return;
+      const approvalId = `kappr-${ulid()}`;
+      const toolCall: ProviderToolCall = {
+        id: permission.requestId,
+        name: permission.toolName,
+        argumentsJson: JSON.stringify(permission.toolInput ?? {}),
+      };
+      const summary = summarizeToolCallForApproval(
+        permission.toolName,
+        toolCall.argumentsJson,
+      );
+      try {
+        const event = this.persistProjectedEvent(
+          {
+            id: ulid() as Event['id'],
+            workspaceId: this.resolveEventWorkspaceId(threadId),
+            taskId: this.resolveEventTaskId(threadId),
+            runId,
+            category: 'approval',
+            type: 'tool.approval_requested',
+            occurredAt: new Date().toISOString(),
+            payload: {
+              approvalId,
+              threadId,
+              runId,
+              toolCallId: permission.requestId,
+              toolName: permission.toolName,
+              arguments: permission.toolInput ?? {},
+              ...(permission.reason ? { reason: permission.reason } : {}),
+              title: summary.title,
+              detail: summary.detail,
+              path: summary.path,
+              command: summary.command,
+              executionMode: normalizeChatExecutionMode(this.resolveChatExecutionMode(threadId)),
+            },
+          },
+          new Map(this.demoRuns),
+        );
+        this.publishEvent(event);
+      } catch {
+        // A failed approval persistence must not kill the kernel stream.
+      }
+      this.pendingToolApprovals.set(approvalId, {
+        approvalId,
+        runId,
+        threadId,
+        workspaceRoot: '',
+        executionMode: '',
+        chatMessages: [],
+        pendingToolCalls: [toolCall],
+        currentIndex: 0,
+        completedResults: [],
+        toolLoopRound: 0,
+        resolve: (decision) => {
+          adapter.respondPermission(
+            permission.requestId,
+            decision === 'approve'
+              ? { allow: true }
+              : { allow: false, message: '宿主已拒绝此操作' },
+          );
+        },
+        createdAt: new Date().toISOString(),
+      });
+    });
+  }
+
+  private publishKernelTextDelta(runId: RunId, threadId: string, text: string): void {
+    const run = this.demoRuns.get(runId);
+    if (!run) return;
+    const occurredAt = new Date().toISOString();
+    this.publishTransientDelta({
+      threadId: threadId as ThreadId,
+      runId,
+      kind: 'text',
+      textDelta: text,
+      occurredAt,
+    });
+    const next = { ...run, assistantText: run.assistantText + text };
+    this.demoRuns.set(runId, next);
+    this.updateTransientTextSnapshot({
+      threadId: threadId as ThreadId,
+      runId,
+      streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
+      text: next.assistantText,
+      updatedAt: occurredAt,
+    });
+  }
+
+  private persistKernelToolEvent(
+    runId: RunId,
+    threadId: string,
+    type: 'tool.requested' | 'tool.completed',
+    event: Extract<KernelEvent, { type: 'tool-call' | 'tool-result' }>,
+  ): void {
+    try {
+      const run = this.demoRuns.get(runId);
+      const occurredAt = new Date().toISOString();
+      const draft: EventDraft = {
+        id: ulid() as Event['id'],
+        workspaceId: this.resolveEventWorkspaceId(threadId),
+        taskId: this.resolveEventTaskId(threadId),
+        runId,
+        category: 'tool',
+        type,
+        occurredAt,
+        payload:
+          type === 'tool.requested'
+            ? {
+                toolCall: {
+                  id: (event as { toolId: string }).toolId,
+                  name: (event as { name: string }).name,
+                  argumentsJson: (event as { argsJson: string }).argsJson,
+                },
+              }
+            : {
+                toolCallId: (event as { toolId: string }).toolId,
+                result: (event as { output: string }).output,
+              },
+      };
+      const committed = this.persistProjectedEvent(draft, new Map(this.demoRuns));
+      this.publishEvent(committed);
+      void run;
+    } catch {
+      // Tool event persistence must never crash the kernel stream.
+    }
+  }
+
+  private persistKernelUsage(runId: RunId, run: DemoRunState, usage: KernelUsage): void {
+    try {
+      const occurredAt = new Date().toISOString();
+      const draft: EventDraft = {
+        id: ulid() as Event['id'],
+        workspaceId: this.resolveEventWorkspaceId(run.threadId),
+        taskId: this.resolveEventTaskId(run.threadId),
+        runId,
+        category: 'provider',
+        type: 'provider.usage',
+        occurredAt,
+        payload: {
+          threadId: run.threadId,
+          requestId: `kernel-${runId}-${usage.real}-${usage.window}`,
+          providerId: run.kernelId ?? 'kernel',
+          providerModelId: usage.modelId ?? run.providerModelId,
+          purpose: 'normal',
+          tokensIn: usage.input ?? usage.real,
+          tokensOut: usage.output ?? 0,
+          ...(usage.cached !== undefined ? { cachedTokensHit: usage.cached } : {}),
+          totalTokens: usage.real,
+        },
+      };
+      const committed = this.persistProjectedEvent(draft, new Map(this.demoRuns));
+      this.publishEvent(committed);
+    } catch {
+      // Usage accounting must never crash the kernel stream.
+    }
+  }
+
+  private finalizeKernelRun(
+    runId: RunId,
+    run: DemoRunState,
+    status: 'completed' | 'failed',
+    error?: string,
+  ): void {
+    const occurredAt = new Date().toISOString();
+    const failed = status === 'failed';
+    const payload: Record<string, unknown> = {
+      threadId: run.threadId,
+      ...(failed
+        ? { failureClass: 'unknown', errorMessage: error ?? 'kernel failed' }
+        : { reason: 'stop' }),
+      assistantText: run.assistantText,
+      adapterEventIndex: run.nextAdapterEventIndex,
+      idempotencyKey: run.runId,
+      modelId: run.modelId,
+      providerModelId: run.providerModelId,
+      packetId: run.packetId,
+      kernelId: run.kernelId,
+    };
+    try {
+      const event = this.persistProjectedEvent(
+        {
+          id: ulid() as Event['id'],
+          workspaceId: this.resolveEventWorkspaceId(run.threadId),
+          taskId: this.resolveEventTaskId(run.threadId),
+          runId,
+          category: 'run',
+          type: failed ? 'run.failed' : 'run.completed',
+          occurredAt,
+          payload,
+        },
+        new Map(this.demoRuns),
+      );
+      if (failed) {
+        this.persistAssistantTerminalMessage(
+          runId,
+          closeCommentaryTimelineSegment(run, occurredAt),
+          'failed',
+          error,
+        );
+        this.recordRunDiagnostic(runId, run, payload);
+      } else {
+        this.persistAssistantFinalMessage(
+          runId,
+          closeCommentaryTimelineSegment(run, occurredAt),
+          payload,
+        );
+        this.maybeProposeRunMemory(runId, run, payload);
+      }
+      this.demoRuns.delete(runId);
+      this.transientSnapshotByThread.delete(run.threadId as ThreadId);
+      this.publishEvent(event);
+    } catch {
+      // Finalization must not throw into the run loop.
+    }
+  }
+
   private canLiveStream(): boolean {
     return Boolean(
       this.providerStore && this.secureStore && this.providerStore.listAllModels().length > 0,
@@ -15369,6 +15742,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     runId: RunId;
     threadId: string;
     userText: string;
+    kernelId?: string;
     modelId?: string;
     credentialRefId?: string;
     agentVersionId?: string;
@@ -15711,6 +16085,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       .map((source) => source.content!);
 
     const run = createDemoRun(input.runId, input.threadId, input.userText, {
+      kernelId: input.kernelId,
       modelId: resolvedModelId,
       providerModelId: modelRecord?.providerModelId ?? resolvedModelId,
       protocol: modelRecord?.protocol ?? 'openai-chat',
@@ -20714,7 +21089,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         });
         continue;
       }
-      void this.executeDemoRun(run.runId);
+      void this.executeKernelRun(run.runId);
     }
   }
 

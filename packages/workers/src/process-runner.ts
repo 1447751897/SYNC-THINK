@@ -411,7 +411,7 @@ function isSafeCmdShimValue(value: string): boolean {
 }
 
 
-function buildSafeCmdShimCommand(command: string, args: readonly string[]): string | undefined {
+export function buildSafeCmdShimCommand(command: string, args: readonly string[]): string | undefined {
   const values = [command, ...args];
   if (values.some((value) => !isSafeCmdShimValue(value))) return undefined;
   const commandLine = [

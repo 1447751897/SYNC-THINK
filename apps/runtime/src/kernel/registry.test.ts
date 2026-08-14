@@ -1,0 +1,102 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildKernelRegistry,
+  getKernelRegistry,
+  resolveKernelAdapter,
+  resolveKernelEntry,
+} from './registry.js';
+import { nativeKernelAdapter } from './native-kernel-adapter.js';
+
+describe('kernel registry contract', () => {
+  it('registers native, claude-code, codex and pi entries with full capability declarations', () => {
+    const registry = buildKernelRegistry();
+    expect(registry.map((entry) => entry.id)).toEqual([
+      'native',
+      'claude-code',
+      'codex',
+      'pi',
+    ]);
+
+    const native = registry.find((entry) => entry.id === 'native')!;
+    expect(native.kind).toBe('in-process');
+    expect(native.capabilities).toEqual(nativeKernelAdapter.capabilities);
+
+    const claudeCode = registry.find((entry) => entry.id === 'claude-code')!;
+    expect(claudeCode.kind).toBe('subprocess');
+    expect(claudeCode.capabilities).toMatchObject({
+      protocols: ['anthropic-messages'],
+      permission: 'own',
+      permissionBridge: true,
+      pause: 'turn',
+      compress: 'own',
+      usageReport: true,
+    });
+    expect(claudeCode.knownGoodVersions).toContain('2.1.222');
+
+    const codex = registry.find((entry) => entry.id === 'codex')!;
+    expect(codex.kind).toBe('subprocess');
+    expect(codex.capabilities).toMatchObject({
+      permissionBridge: false,
+      pause: 'session',
+    });
+    expect(codex.knownGoodVersions).toContain('0.145.0');
+    expect(resolveKernelAdapter('codex')!.id).toBe('codex');
+    // Pi is not wired yet — adapter must stay undefined so the UI renders 未安装.
+    expect(resolveKernelAdapter('pi')).toBeUndefined();
+
+    const pi = registry.find((entry) => entry.id === 'pi')!;
+    expect(pi.capabilities).toMatchObject({ permission: 'none', pause: 'kill' });
+    expect(pi.installCommand).toBe('npm i -g pi');
+  });
+
+  it('always resolves native and its in-process adapter', () => {
+    const entry = resolveKernelEntry('native');
+    expect(entry.id).toBe('native');
+    expect(resolveKernelAdapter('native')).toBe(nativeKernelAdapter);
+    expect(resolveKernelAdapter(undefined)).toBe(nativeKernelAdapter);
+  });
+
+  it('falls back to native for unknown kernel ids', () => {
+    expect(resolveKernelEntry('unknown-kernel').id).toBe('native');
+    expect(resolveKernelEntry(undefined).id).toBe('native');
+  });
+
+  it('external kernels are detected (installed state depends on the machine)', async () => {
+    const registry = getKernelRegistry();
+    for (const id of ['claude-code', 'codex', 'pi'] as const) {
+      const entry = registry.find((candidate) => candidate.id === id)!;
+      const detection = await entry.detect();
+      expect(detection.kernelId).toBe(id);
+      expect(typeof detection.installed).toBe('boolean');
+      expect(detection.executablePath === null || typeof detection.executablePath === 'string')
+        .toBe(true);
+      // knownGood must never be true for a version that is not declared good.
+      if (detection.version !== null) {
+        expect(detection.knownGood).toBe(entry.knownGoodVersions.includes(detection.version));
+      }
+      // A kernel can only be considered installed when we resolved an executable.
+      expect(detection.installed ? detection.executablePath !== null : true).toBe(true);
+    }
+  });
+
+  it('detection stays consistent with declared known-good versions anywhere', async () => {
+    // Machine-agnostic: whichever versions are present must be reported exactly,
+    // and a present version must match the declared knownGood flag.
+    const registry = getKernelRegistry();
+    for (const id of ['claude-code', 'codex', 'pi'] as const) {
+      const entry = registry.find((candidate) => candidate.id === id)!;
+      const detection = await entry.detect();
+      if (detection.installed) {
+        expect(detection.version).not.toBeNull();
+        expect(detection.knownGood).toBe(entry.knownGoodVersions.includes(detection.version!));
+      } else {
+        // A missing executable can never claim a version.
+        expect(detection.version).toBeNull();
+      }
+    }
+    // Native is the always-available baseline.
+    const native = await registry.find((entry) => entry.id === 'native')!.detect();
+    expect(native.installed).toBe(true);
+    expect(native.knownGood).toBe(true);
+  });
+});
