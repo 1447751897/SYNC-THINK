@@ -35,6 +35,10 @@ import {
 } from './claude-code-protocol.js';
 import { probeKernel } from './detect.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
+import {
+  removePlatformMcpConfig,
+  writePlatformMcpConfig,
+} from './platform-mcp-config.js';
 
 /** Host permission-mode → claude --permission-mode mapping (design doc §6.1). */
 function mapPermissionMode(mode: KernelRequest['permissionMode']): string {
@@ -85,6 +89,8 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
   private stderrLogged = false;
   private activeContextWindow = 128_000;
   private cancelled = false;
+  /** Temp --mcp-config file to delete after the run (holds broker token). */
+  private mcpConfigPath?: string;
 
   async detectVersion(): Promise<string | null> {
     return probeKernel('claude').version;
@@ -123,6 +129,13 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
       mapPermissionMode(request.permissionMode),
     ];
     if (request.providerModelId) args.push('--model', request.providerModelId);
+    if (request.platformBroker) {
+      // Slice 5: register the platform MCP server (broker address + token ride
+      // in the server env). --strict-mcp-config keeps only this server visible.
+      const configPath = await writePlatformMcpConfig(request.platformBroker);
+      args.push('--mcp-config', configPath, '--strict-mcp-config');
+      this.mcpConfigPath = configPath;
+    }
 
     const env: Record<string, string> = {};
     if (request.credential.reuseLocalLogin === true) {
@@ -356,6 +369,7 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
 
   async stop(): Promise<void> {
     await this.kill();
+    await removePlatformMcpConfig(this.mcpConfigPath);
   }
 
   async pause(): Promise<void> {

@@ -31,6 +31,7 @@ import {
 } from './codex-protocol.js';
 import { probeKernel } from './detect.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
+import { buildCodexMcpConfigArgs } from './platform-mcp-config.js';
 
 export interface CodexAdapterDeps {
   /** Test seam: replace the real spawn (fixture codex processes). */
@@ -98,6 +99,10 @@ export class CodexKernelAdapter implements KernelAdapter {
     ];
     if (request.providerModelId) args.push('--model', request.providerModelId);
     args.push('--skip-git-repo-check');
+    // Slice 5: codex exec has no --mcp-config; the -c mcp_servers.* overrides
+    // register the platform MCP server for this invocation only (verified on
+    // 0.145.0). Broker address + token ride in the server env.
+    if (request.platformBroker) args.push(...buildCodexMcpConfigArgs(request.platformBroker));
     // The prompt travels over stdin, never argv — user text must not cross a
     // cmd.exe shim command line (shell metacharacters + process-list exposure).
     // codex exec reads the prompt from stdin and starts without waiting for EOF.
@@ -296,6 +301,15 @@ export class CodexKernelAdapter implements KernelAdapter {
           isError: false,
         });
         return;
+      case 'mcp_tool_call':
+      case 'web_search':
+        push({
+          type: 'tool-result',
+          toolId: item.id ?? `codex-${randomUUID()}`,
+          output: extractMcpItemResult(item),
+          isError: item.error != null,
+        });
+        return;
       case 'error':
         // Metadata/diagnostic error item — the authoritative `error` event or
         // `turn.failed` follows for real failures, so surface as a warning only.
@@ -345,4 +359,34 @@ export class CodexKernelAdapter implements KernelAdapter {
       handle.job?.close();
     }
   }
+}
+
+/**
+ * Extract the text a codex MCP/web_search item completed with. Real shape
+ * (0.145.0): item.result.content = [{type:'text', text}] — flatten to plain
+ * text for the tool-result timeline.
+ */
+function extractMcpItemResult(item: CodexItem): string {
+  const result = item.result;
+  if (typeof result === 'string') return result;
+  if (result && typeof result === 'object') {
+    const content = (result as { content?: unknown }).content;
+    if (Array.isArray(content)) {
+      const parts = content
+        .map((entry) => {
+          if (entry && typeof entry === 'object' && 'text' in entry) {
+            return String((entry as { text: unknown }).text ?? '');
+          }
+          return '';
+        })
+        .filter(Boolean);
+      if (parts.length > 0) return parts.join('\n');
+    }
+    const error = (result as { error?: unknown }).error;
+    if (error) return String(error);
+    return JSON.stringify(result);
+  }
+  if (typeof item.output === 'string' && item.output) return item.output;
+  if (item.error != null) return String(item.error);
+  return '';
 }

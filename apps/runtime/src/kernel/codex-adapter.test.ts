@@ -168,6 +168,30 @@ describe('CodexKernelAdapter', () => {
     expect(args.some((arg) => arg.includes('hello fixture'))).toBe(false);
   });
 
+  it('registers the platform MCP server via single-quoted mcp_servers overrides', async () => {
+    const capture = captureSpawn();
+    await runFixture(
+      {
+        platformBroker: {
+          host: '127.0.0.1',
+          port: 49152,
+          token: 'tok-123',
+          workspaceDir: 'C:/ws',
+          command: 'C:/node/node.exe',
+          args: ['D:/mcp/platform-mcp-server.mjs'],
+        },
+      },
+      { spawn: capture.spawn },
+    );
+    const args = capture.calls[0].args;
+    const joined = args.join(' ');
+    expect(joined).toContain(`mcp_servers.sync-think-platform.command='C:/node/node.exe'`);
+    expect(joined).toContain(`env.ST_BROKER_TOKEN='tok-123'`);
+    expect(joined).toContain(`env.ST_BROKER_PORT='49152'`);
+    // No double quotes anywhere: they would be rejected by the cmd shim.
+    expect(joined).not.toContain('"');
+  });
+
   it('injects credentials via env only when local login is not reused', async () => {
     const capture = captureSpawn();
     await runFixture(

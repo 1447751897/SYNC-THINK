@@ -100,6 +100,27 @@ export interface PlatformToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+/**
+ * Platform MCP broker address (Slice 5). The runtime owns a loopback broker
+ * per kernel run; adapters translate this into the kernel's MCP server
+ * registration (`--mcp-config` for Claude Code, `mcp_servers.*` config
+ * overrides for codex) and embed the address + token in the server's env.
+ */
+export interface PlatformBrokerInfo {
+  /** Loopback host the MCP server connects to (always 127.0.0.1). */
+  host: string;
+  /** Ephemeral port the broker listens on for this run. */
+  port: number;
+  /** Per-run random token; the MCP server must present it in its hello frame. */
+  token: string;
+  /** Workspace root the platform file tools are rooted at. */
+  workspaceDir: string;
+  /** Absolute path to the platform MCP server entry point (spawned by kernel). */
+  command: string;
+  /** Extra args for the MCP server spawn (entry point args). */
+  args: string[];
+}
+
 /** Everything the host hands a kernel before it starts a run. */
 export interface KernelRequest {
   kernelId: KernelId;
@@ -116,6 +137,8 @@ export interface KernelRequest {
   systemContext: string;
   /** Platform tools to register with the kernel. */
   platformTools: PlatformToolDefinition[];
+  /** Loopback broker for host platform tools (MCP channel). */
+  platformBroker?: PlatformBrokerInfo;
   permissionMode: KernelPermissionMode;
   workspaceDir: string;
 }

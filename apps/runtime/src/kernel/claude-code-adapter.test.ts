@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type {
   KernelEvent,
@@ -119,6 +120,49 @@ describe('ClaudeCodeKernelAdapter', () => {
     const version = await adapter.detectVersion();
     expect(version === null || typeof version === 'string').toBe(true);
   });
+
+  it(
+    'registers the platform MCP server via --mcp-config + --strict-mcp-config',
+    async () => {
+      const calls: string[][] = [];
+      const adapter = new ClaudeCodeKernelAdapter({
+        spawn: (args, env, cwd) => {
+          calls.push(args);
+          return fixtureSpawn(args, env, cwd);
+        },
+      });
+      adapter.onPermissionRequest((request) => {
+        setTimeout(() => adapter.respondPermission(request.requestId, { allow: true }), 30);
+      });
+      const events: KernelEvent[] = [];
+      for await (const event of adapter.start(
+        makeRequest({
+          platformBroker: {
+            host: '127.0.0.1',
+            port: 49152,
+            token: 'tok-cc-1',
+            workspaceDir: 'C:/ws',
+            command: 'C:/node/node.exe',
+            args: ['D:/mcp/platform-mcp-server.mjs'],
+          },
+        }),
+      )) {
+        events.push(event);
+        if (event.type === 'terminal') break;
+      }
+      const args = calls[0];
+      expect(args).toContain('--mcp-config');
+      expect(args).toContain('--strict-mcp-config');
+      const configPath = args[args.indexOf('--mcp-config') + 1];
+      const config = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        mcpServers: Record<string, { env: Record<string, string> }>;
+      };
+      expect(config.mcpServers['sync-think-platform'].env.ST_BROKER_TOKEN).toBe('tok-cc-1');
+      await adapter.stop();
+      expect(existsSync(configPath)).toBe(false);
+    },
+    15_000,
+  );
 
   it('cancel() terminates the kernel process tree and ends the stream', async () => {
     const adapter = new ClaudeCodeKernelAdapter({ spawn: fixtureSpawn });
