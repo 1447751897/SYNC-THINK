@@ -911,3 +911,46 @@
 - 工作台可读取不超过 512KiB 且不含 NUL 的 UTF-8 文本；`.md`、`.markdown` 有专用文档预览，已映射的代码与配置格式有语法高亮，其他文本按纯文本显示。
 - 图片、PDF、Office、音视频等当前没有文件工作台专用预览；通常会因二进制内容被拒绝，不能以文本预览替代。
 - 本轮不生成安装包、不提交、不推送；当前源码实例继续保持运行，下一步由用户直接进行页面手测。
+
+## 当前状态：2026-08-14 · 执行过程活动阶段自动展开已收口
+
+### 已完成
+
+- 思考或工具运行期间，外层“执行过程”自动展开；最终回答开始或 Run 终结后自动折叠。历史完成消息继续默认折叠。
+- 活动工具批次自动展开，批次内每个工具的 Path、Command、Output 等详情也默认展开；只要同批仍有工具运行，已经完成的同批工具仍保持展开，整批全部结束后统一折叠。
+- 工具批次身份在流式追加期间保持稳定；外层、批次和单工具详情共用自动折叠控制，用户手动选择在当前 Run/批次内优先，新 Run/批次恢复自动规则。
+
+### 验证结果
+
+- 执行过程定向回归 `3 files / 35 tests`、相关 ChatView/流式回归 `12 files / 116 tests`、可视化组合回归 `3 files / 26 tests` 通过。
+- Desktop 单 worker 全量 `155 files / 1166 tests` 通过；Desktop typecheck、正式 build、design token、Prettier 和 `git diff --check` 通过。Desktop lint 为 0 errors，保留 15 条既有 Hook warnings。
+- 隔离 Electron 在 1424×861 下完成四阶段验证，四个阶段均无页面级横向溢出。证据位于 `.data/local-restart-20260814-execution-disclosure/`。
+
+### 当前源码实例与边界
+
+- 当前正常源码窗口已重新加载最新 Renderer：Electron PID `31916`、managed Runtime PID `41120`，窗口标题 `SYNC-THINK`、`Responding=True`；原数据库、工作区和登录态继续保留。
+- 隔离 QA Electron/Runtime 已在截图后关闭，不残留测试进程。本轮不生成安装包、不提交、不推送。
+
+## 当前状态：2026-08-14 · Composer 模型/思考与联网入口重构已收口
+
+### 已完成
+
+- 思考强度已并入模型菜单底部固定入口，模型按钮同步展示当前档位；供应商、模型和思考二级菜单使用同一 Radix 树并改为右向层级语义。
+- 已有对话与新建对话的独立联网按钮已移除；输入 `@` 后可在“设置”区切换联网搜索，已有对话同时保留工作区文件列表。
+- 思考强度与联网状态按 Conversation 持久化；新建对话第一条消息创建 Conversation 后同步保存，正式对话不会重置。
+- `@` 弹层支持从输入框按 Tab 进入联网分段控件，Escape 或首段 Shift+Tab 会关闭弹层并把焦点还给当前 Pane 输入框；多 Pane 使用各自 ref，不会串改其他对话。
+- 共享浮层定位会按上下空间自动翻转，并把宽度、高度和边缘夹在视口内；空态 Composer 已加入 Pane 容器查询，窄 Pane 工具栏可响应式换行。
+- 新建对话首轮的 `auto` 思考档位与后续消息一致原样传入 Runtime，不再出现同一显示状态下首轮与后续语义不同。
+
+### 验证结果
+
+- 定向回归：`compose-toolbar.test.tsx`、`ChatView.usage.test.tsx`、`ShellApp.test.tsx` 共 `56` 条通过。
+- Desktop 单 worker 全量 `155 files / 1172 tests` 通过；最后的焦点恢复补丁继续由上述 `56` 条定向回归覆盖。
+- Desktop typecheck、正式 build、Prettier、design token 与 `git diff --check` 通过；lint 为 0 errors，保留当前分支既有的 15 条 Hook warnings。
+
+### 实窗与边界
+
+- 最终源码实例复用原数据库、AppData user-data、登录态和 Install ID `dev-0001`：Electron PID `3848`、managed Runtime PID `33956`，CDP `127.0.0.1:9355`；`pipe ready`、`database ready`、`hello accepted` 均正常。
+- 浅色、深色、`1280×760` 窄 Pane 与 `1280×280` 矮视口均完成实窗检查。窄 Pane 无横向溢出，思考二级菜单自动换到左侧；矮视口中的 `@` 弹层顶部夹在 8px 且不越界。
+- Tab、Escape、Shift+Tab 焦点闭环已实测，测试后主题恢复浅色、思考恢复超高、联网偏好恢复原值。日志和截图位于 `.data/local-restart-20260814-111719-composer-toolbar-final/`。
+- 本轮不生成安装包、不提交、不推送；源码实例保持运行供用户手测。

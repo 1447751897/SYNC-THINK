@@ -2966,3 +2966,42 @@ Desktop typecheck/build：passed
 - `RightDock.test.tsx` 覆盖 Pointer 双向拖拽、键盘调宽、双击复位、全局光标清理、窄容器 Diff 最小宽度保护，以及 Pane 临时收窄后的期望宽度恢复。
 - Desktop TypeScript typecheck、Prettier、正式 build 与 `git diff --check` 通过。
 - 本地源码实例已重启并完成实窗验证：左右拖拽、Hover 高亮、释放清理、键盘调整和双击复位均通过，拖动前后没有页面横向溢出或 Diff/列表重叠。
+
+## 2026-08-14 · 执行过程按活动阶段自动展开与折叠
+
+### Changed
+
+- 助手处于思考说明或工具执行阶段时，外层“执行过程”默认展开；最终回答开始输出或 Run 终结后，外层自动折叠为耗时摘要。
+- 相邻工具调用继续按思考边界组成批次。批次中只要仍有任一工具运行，“调用了 N 个工具”及批次内每个单工具详情都默认展开；整批全部进入 `done/error` 后一起折叠。
+- 工具批次使用首个工具 ID 作为稳定身份，流式追加工具时不再重挂载分组；新增共享 `useAutoDisclosure`，让外层、批次和单工具详情统一遵守“自动默认、手动选择优先、新 Run/批次重置”的规则。
+- 新增 `execution-auto-disclosure` 可视化夹具，确定性覆盖“思考 → 工具运行 → 工具完成继续思考 → 最终回答”四个阶段。
+
+### Verification
+
+- 状态转换 TDD 初始准确失败 5 项；实现后执行过程定向回归 `3 files / 35 tests`、相关 ChatView/流式回归 `12 files / 116 tests`、可视化夹具组合回归 `3 files / 26 tests` 全部通过。
+- Desktop 单 worker 全量为 `155 files / 1166 tests`，全部通过；Desktop typecheck、正式 build、design token、相关文件 Prettier 与 `git diff --check` 通过。Desktop lint 为 0 errors，保留当前分支既有的 15 条 Hook warnings。
+- 隔离 Electron 实窗四阶段 DOM 断言全部通过：思考时外层展开；工具运行时批次和两个工具详情均展开；工具完成后批次折叠且后续思考可见；最终回答时外层折叠。四个阶段均为 `scrollWidth === clientWidth === 1424`。
+- 实窗证据位于 `.data/local-restart-20260814-execution-disclosure/`，截图为 `01-thinking-open.png`、`02-tools-and-details-open.png`、`03-tools-folded-thinking-open.png`、`04-final-process-folded.png`。隔离 QA 实例验收后已关闭。
+- 当前正常源码窗口已重新加载最新 Renderer：Electron PID `31916`、managed Runtime PID `41120`，两者保持响应，原数据库与登录态未重建。
+
+### Boundary
+
+- 本轮不生成安装包、不提交、不推送；正常源码实例保持运行供用户手测。
+
+## 2026-08-14 · 思考强度并入模型菜单与联网入口迁移
+
+### Changed
+
+- 模型选择器改为统一的 LTR Radix 级联菜单：供应商与模型子菜单使用右箭头，底部固定“思考强度”入口，二级菜单提供自动、关闭、低、中、高、超高、最高七档并显示当前勾选。
+- 输入框模型按钮同时显示模型名称与当前思考档位；窄 Pane 下模型名称可截断，档位、箭头和发送按钮保持稳定。
+- 移除已有对话和新建对话输入框中的独立联网、思考按钮；`@` 弹层新增“设置 / 联网搜索 / 开启与关闭”分段控制，工作区文件列表改为独立滚动区。
+- 联网选择与思考强度按 Conversation 写入本地偏好；新建对话首轮创建实体后同步落盘，后续切换对话或重启继续恢复。联网状态仍通过原有 `networkEnabled` 参数发送。
+- 能力裁剪只接受 Provider 明确提供的档位元数据；当前协议尚无该字段时保留完整七档，不再根据自定义中转模型名猜测。
+- `@` 设置支持 Tab 进入，Escape 和首段 Shift+Tab 返回当前 Pane 输入框；各 Pane 使用独立 ref，避免多 Pane 弹层之间串焦点或串改联网状态。
+- 浮层定位统一按上下空间翻转并夹取视口边缘；空态 Composer 纳入 `shell-chat-column` 容器查询，新建首轮 `auto` 与后续消息保持相同 Runtime 语义。
+
+### Verification
+
+- TDD 首轮准确失败于旧模型菜单、旧触发器和独立联网按钮；最终模型菜单、已有对话、新建对话、浮层定位与键盘焦点定向回归 `3 files / 56 tests` 全部通过。
+- Desktop 单 worker 全量 `155 files / 1172 tests` 通过；最后的焦点恢复补丁由上述 56 条定向用例再次覆盖。TypeScript typecheck、正式 build、Prettier、design token 和 `git diff --check` 通过；lint 为 0 errors、15 条既有 Hook warnings。
+- 本地源码实例为 Electron PID `3848`、Runtime PID `33956`、CDP `127.0.0.1:9355`。深浅主题、窄 Pane、二级菜单换侧、矮视口夹取以及 Tab/Escape/Shift+Tab 焦点闭环均通过，证据位于 `.data/local-restart-20260814-111719-composer-toolbar-final/`。
