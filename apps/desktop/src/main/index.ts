@@ -65,6 +65,7 @@ import {
   normalizeSelectedSkillVersionIds,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
+  type KernelDetectResponse,
 } from '@sync-think/protocol';
 import type {
   AppendMessagePayload,
@@ -1539,6 +1540,11 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request('agent.list', parseAgentListPayload(value));
+  });
+  ipcMain.handle('runtime:kernel-detect', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<KernelDetectResponse>('kernel.detect', {});
   });
   ipcMain.handle('runtime:agent-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

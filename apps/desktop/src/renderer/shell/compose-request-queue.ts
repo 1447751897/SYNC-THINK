@@ -20,6 +20,8 @@ export interface QueuedComposeRequest {
   reasoningEffort: ReasoningEffort;
   networkEnabled: boolean;
   skillVersionIds: string[];
+  /** Kernel the message was composed under; queued interjections must keep it. */
+  kernelOverride: string;
 }
 
 export type CreateQueuedComposeRequestInput = Omit<
@@ -95,11 +97,17 @@ function parseQueuedComposeRequest(
     !VALID_REASONING_EFFORTS.has(request.reasoningEffort as ReasoningEffort) ||
     typeof request.networkEnabled !== 'boolean' ||
     !Array.isArray(request.skillVersionIds) ||
-    !request.skillVersionIds.every((skillVersionId) => typeof skillVersionId === 'string')
+    !request.skillVersionIds.every((skillVersionId) => typeof skillVersionId === 'string') ||
+    (request.kernelOverride !== undefined && typeof request.kernelOverride !== 'string')
   ) {
     return undefined;
   }
-  return cloneQueuedComposeRequest(request as unknown as QueuedComposeRequest);
+  const parsed = request as unknown as QueuedComposeRequest;
+  // Legacy queued entries (pre multi-kernel) carry no kernel; default to native.
+  return cloneQueuedComposeRequest({
+    ...parsed,
+    kernelOverride: typeof request.kernelOverride === 'string' ? request.kernelOverride : 'native',
+  });
 }
 
 function resolveStorage(

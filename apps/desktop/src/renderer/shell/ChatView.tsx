@@ -14,7 +14,6 @@ import {
   AlertCircle,
   Archive,
   Bot,
-  Brain,
   Check,
   ChevronDown,
   ChevronUp,
@@ -22,7 +21,6 @@ import {
   FileCode2,
   FileWarning,
   FolderOpen,
-  Globe,
   Info,
   Lock,
   LoaderCircle,
@@ -44,6 +42,7 @@ import {
   type Conversation,
   type Event,
   type GlobalAgent,
+  type KernelDetectionResult,
   type Message,
   type MessageBlock,
   type RunId,
@@ -67,6 +66,7 @@ import type {
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
+import { useAutoDisclosure } from './auto-disclosure.js';
 import { BrowserHandoffCard, BrowserHandoffQueryError } from './BrowserHandoffCard.js';
 import { DesktopWaitingCard, DesktopWaitingQueryError } from './DesktopWaitingCard.js';
 import type { ModelOption } from './NewConversationDialog.js';
@@ -117,9 +117,10 @@ import {
   IdentityPickerMenu,
   ModelPickerMenu,
   ModelTrigger,
+  NetworkSearchSetting,
   PermissionMenu,
-  ReasoningMenu,
   REASONING_LABELS,
+  resolveFloatingMenuStyle,
   type IdentityOption,
   type PermissionMode,
   type ReasoningEffort,
@@ -170,9 +171,13 @@ import {
   updateRunProcessMap,
 } from './run-process-state.js';
 import {
+  readConversationKernelOverride,
   readConversationModelOverride,
+  readConversationNetworkEnabled,
   readConversationReasoningEffort,
+  writeConversationKernelOverride,
   writeConversationModelOverride,
+  writeConversationNetworkEnabled,
   writeConversationReasoningEffort,
 } from '../ui-preferences.js';
 import type { RunActivityAuthority } from '../run-activity-authority.js';
@@ -495,7 +500,15 @@ export function ChatView({
   const [modelOverride, setModelOverride] = useState<string>(
     () => readConversationModelOverride(String(conversation.id)) ?? '',
   );
-  const [netEnabled, setNetEnabled] = useState(true);
+  // Multi-kernel selector: per-conversation kernel id (default = native).
+  const [kernelOverride, setKernelOverride] = useState<string>(
+    () => readConversationKernelOverride(String(conversation.id)) ?? 'native',
+  );
+  // Kernel registry sweep for the selector (cached per conversation view).
+  const [kernelRegistry, setKernelRegistry] = useState<KernelDetectionResult[] | null>(null);
+  const [netEnabled, setNetEnabled] = useState(
+    () => readConversationNetworkEnabled(String(conversation.id)) ?? true,
+  );
   /** NewMax-style context compact progress capsule. */
   const [compactProgress, setCompactProgress] = useState<CompactProgressState | null>(null);
   /** In-flight compact lock — blocks concurrent compact / command swallow. */
@@ -532,9 +545,7 @@ export function ChatView({
   const setLocalErrors = useCallback((updater: SetStateAction<ChatMessage[]>) => {
     setLocalErrorsRaw((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      return next.length > MAX_LOCAL_ERRORS
-        ? next.slice(next.length - MAX_LOCAL_ERRORS)
-        : next;
+      return next.length > MAX_LOCAL_ERRORS ? next.slice(next.length - MAX_LOCAL_ERRORS) : next;
     });
   }, []);
   /** Paginated message store state. */
@@ -714,9 +725,7 @@ export function ChatView({
     ),
   );
   /** Which compose menu is open (exclusive). */
-  const [menu, setMenu] = useState<
-    'permission' | 'reasoning' | 'skill' | 'model' | 'identity' | null
-  >(null);
+  const [menu, setMenu] = useState<'permission' | 'skill' | 'model' | 'identity' | null>(null);
   /** Click-to-preview lightbox for message / chip images. */
   const [lightbox, setLightbox] = useState<MessageImage | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -738,12 +747,13 @@ export function ChatView({
   const bottomPinIntentRef = useRef<'toward-bottom' | 'away-from-bottom' | null>(null);
   const lastTouchClientYRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const suppressPickerRefreshRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const composeRef = useRef<HTMLDivElement>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
+  const mentionNetworkSettingRef = useRef<HTMLDivElement>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
   const permissionBtnRef = useRef<HTMLButtonElement>(null);
-  const reasoningBtnRef = useRef<HTMLButtonElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const identityBtnRef = useRef<HTMLButtonElement>(null);
   const [mentionPopStyle, setMentionPopStyle] = useState<React.CSSProperties | null>(null);
@@ -836,7 +846,9 @@ export function ChatView({
     setMenu(null);
     setPermissionMode((conversation.executionMode as PermissionMode) || 'full-access');
     setModelOverride(readConversationModelOverride(String(conversation.id)) ?? '');
+    setKernelOverride(readConversationKernelOverride(String(conversation.id)) ?? 'native');
     setReasoningEffort(readConversationReasoningEffort(String(conversation.id)) ?? 'auto');
+    setNetEnabled(readConversationNetworkEnabled(String(conversation.id)) ?? true);
     // Always land at the latest message when opening a chat — no animated scroll.
     stickToBottomRef.current = true;
     bottomPinIntentRef.current = null;
@@ -845,11 +857,29 @@ export function ChatView({
     // onConversationUpdated → refresh 更新该字段，导致此「切换对话」重置
     // effect 被误触发：消息被清空而 loadMessages 不重跑，聊天区永远停在
     // 「加载中…」。权限模式由 setPermission 自行同步，这里只需跟随 id。
-  }, [
-    clearCompactDismissTimer,
-    clearRunProcessRetryState,
-    conversation.id,
-  ]);
+  }, [clearCompactDismissTimer, clearRunProcessRetryState, conversation.id]);
+
+  // Kernel registry sweep for the selector. Probe once per conversation view;
+  // failures degrade to an empty list (the kernel group hides).
+  useEffect(() => {
+    let cancelled = false;
+    setKernelRegistry(null);
+    const api = bridge();
+    if (!api?.detectKernels) return;
+    api
+      .detectKernels()
+      .then((response) => {
+        if (!cancelled && Array.isArray(response?.kernels)) {
+          setKernelRegistry(response.kernels);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setKernelRegistry(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversation.id]);
 
   // Resolve threadId from the bound task so we can project history for this conversation.
   useEffect(() => {
@@ -1934,6 +1964,7 @@ export function ChatView({
       options?: {
         skillVersionIds?: readonly string[];
         modelOverride?: string;
+        kernelOverride?: string;
         reasoningEffort?: ReasoningEffort;
         networkEnabled?: boolean;
       },
@@ -2053,6 +2084,8 @@ export function ChatView({
             targetRef: conversation.targetRef,
             catalogModelIds: models.map((model) => model.modelId),
           }),
+          // Multi-kernel: this turn runs on the selected kernel (default native).
+          kernelId: options?.kernelOverride ?? kernelOverride,
           // 'auto' 原样透传：runtime 透传后由 adapters 映射为默认思考档（auto=开启思考）。
           reasoningEffort: selectedReasoningEffort,
           networkEnabled: selectedNetworkEnabled || undefined,
@@ -2124,6 +2157,7 @@ export function ChatView({
       conversation.targetRef,
       conversation.title,
       conversation.track,
+      kernelOverride,
       modelOverride,
       models,
       netEnabled,
@@ -2174,6 +2208,7 @@ export function ChatView({
           reasoningEffort: request.reasoningEffort,
           networkEnabled: request.networkEnabled,
           skillVersionIds: request.skillVersionIds,
+          kernelOverride: request.kernelOverride,
         });
         if (!sent) throw new Error('发送接口未返回成功结果');
 
@@ -2336,18 +2371,20 @@ export function ChatView({
       const el = composeRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      const width = Math.min(r.width, 520);
-      const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
-      const gap = 8;
-      const maxH = Math.min(260, Math.max(120, r.top - gap - 8));
-      setMentionPopStyle({
-        position: 'fixed',
-        left,
-        width,
-        bottom: window.innerHeight - r.top + gap,
-        maxHeight: maxH,
-        zIndex: 10000,
-      });
+      setMentionPopStyle(
+        resolveFloatingMenuStyle(
+          {
+            top: r.top,
+            bottom: r.bottom,
+            left: r.left,
+            right: r.right,
+            width: r.width,
+            height: r.height,
+          },
+          { width: window.innerWidth, height: window.innerHeight },
+          { width: Math.min(r.width, 520), maxHeight: 360 },
+        ),
+      );
     };
     update();
     window.addEventListener('resize', update);
@@ -2403,6 +2440,17 @@ export function ChatView({
     setMentionFiles([]);
     setMentionIndex(0);
   }, []);
+
+  const dismissMentionToInput = useCallback(() => {
+    suppressPickerRefreshRef.current = true;
+    closeMention();
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      window.requestAnimationFrame(() => {
+        suppressPickerRefreshRef.current = false;
+      });
+    });
+  }, [closeMention]);
 
   const closeSlash = useCallback(() => {
     setSlash(null);
@@ -2505,6 +2553,26 @@ export function ChatView({
   useLayoutEffect(() => {
     resizeComposeInput();
   }, [input, resizeComposeInput]);
+
+  const handleNetworkSettingChange = useCallback(
+    (enabled: boolean) => {
+      setNetEnabled(enabled);
+      writeConversationNetworkEnabled(String(conversation.id), enabled);
+      if (mention) {
+        const stripped = stripMentionToken(input, mention);
+        setInput(stripped.text);
+        closeComposePickers();
+        window.requestAnimationFrame(() => {
+          const el = inputRef.current;
+          if (!el) return;
+          resizeComposeInput();
+          el.focus();
+          el.setSelectionRange(stripped.caret, stripped.caret);
+        });
+      }
+    },
+    [closeComposePickers, conversation.id, input, mention, resizeComposeInput],
+  );
 
   /** NewMax: manual /compact — model summary path, no chat turn. */
   const runManualCompact = useCallback(async () => {
@@ -2825,6 +2893,7 @@ export function ChatView({
         reasoningEffort,
         networkEnabled: netEnabled,
         skillVersionIds: selectedSkillVersionIds,
+        kernelOverride,
       });
       commitQueuedComposeRequests((current) => enqueueQueuedComposeRequest(current, request));
       setInput('');
@@ -2852,6 +2921,7 @@ export function ChatView({
     conversation.id,
     goalState,
     input,
+    kernelOverride,
     modelOverride,
     netEnabled,
     reasoningEffort,
@@ -3000,6 +3070,7 @@ export function ChatView({
   );
 
   const updatePickersFromCaret = useCallback((text: string, caret: number) => {
+    if (suppressPickerRefreshRef.current) return;
     // @ takes priority when both could match; mutually exclusive menus.
     const nextMention = detectMentionQuery(text, caret);
     if (nextMention) {
@@ -3070,7 +3141,18 @@ export function ChatView({
           );
           return;
         }
-        if (e.key === 'Enter' || e.key === 'Tab') {
+        if (e.key === 'Tab') {
+          const segments = mentionNetworkSettingRef.current?.querySelectorAll<HTMLButtonElement>(
+            '.shell-mention-setting__segment',
+          );
+          const target = segments?.[e.shiftKey ? segments.length - 1 : 0];
+          if (target) {
+            e.preventDefault();
+            target.focus();
+            return;
+          }
+        }
+        if (e.key === 'Enter') {
           const selected = mentionFiles[mentionIndex];
           if (selected) {
             e.preventDefault();
@@ -3398,6 +3480,18 @@ export function ChatView({
   );
   const showTyping = sending || projected.streaming;
   const canStop = Boolean(projected.activeRunId) && (sending || projected.streaming);
+  // Active kernel display + pause degradation per capabilities.pause.
+  const activeKernel =
+    kernelRegistry?.find((kernel) => kernel.kernelId === kernelOverride) ?? null;
+  const stopTitle = activeKernel?.capabilities.pause
+    ? activeKernel.capabilities.pause === 'executor'
+      ? '暂停任务'
+      : activeKernel.capabilities.pause === 'turn'
+        ? '停止本轮（下条消息继续会话）'
+        : activeKernel.capabilities.pause === 'session'
+          ? '结束会话（下次消息新开会话）'
+          : '终止内核进程'
+    : '暂停任务';
 
   // 迁移期兼容桥：新 Runtime 已由 Browser Worker 执行真实命令，不再发此事件。
   // 保留旧 Runtime 的 browser.command_requested 回传，历史事件仍只登记、不重放。
@@ -3868,53 +3962,69 @@ export function ChatView({
                 createPortal(
                   <div
                     ref={mentionListRef}
-                    className="shell-mention-pop shell-mention-pop--portal"
+                    className="shell-mention-pop shell-mention-pop--context shell-mention-pop--portal"
                     style={mentionPopStyle}
                     data-testid="compose-mention-pop"
-                    role="listbox"
+                    role="dialog"
+                    aria-label="添加上下文和设置"
                   >
-                    {!hasProjectFolder ? (
-                      <div className="shell-mention-pop__empty">
-                        未绑定项目文件夹，无法 @ 引用本地文件
-                      </div>
-                    ) : mentionLoading ? (
-                      <div className="shell-mention-pop__empty">搜索文件…</div>
-                    ) : mentionFiles.length === 0 ? (
-                      <div className="shell-mention-pop__empty">
-                        {mention.query ? '无匹配文件' : '输入以过滤项目文件'}
-                      </div>
-                    ) : (
-                      mentionFiles.map((file, index) => (
-                        <button
-                          key={`${file.kind}:${file.path}`}
-                          type="button"
-                          role="option"
-                          aria-selected={index === mentionIndex}
-                          className={`shell-mention-pop__item ${
-                            index === mentionIndex ? 'is-active' : ''
-                          }`}
-                          onMouseEnter={() => setMentionIndex(index)}
-                          onMouseDown={(ev) => {
-                            ev.preventDefault();
-                            selectMentionFile(file);
-                          }}
-                        >
-                          <span className="shell-mention-pop__icon">
-                            {file.kind === 'dir' ? (
-                              <FolderOpen size={13} />
-                            ) : (
-                              <FileCode2 size={13} />
-                            )}
-                          </span>
-                          <span className="shell-mention-pop__path" title={file.path}>
-                            {file.path}
-                          </span>
-                          <span className="shell-mention-pop__kind">
-                            {file.kind === 'dir' ? '目录' : '文件'}
-                          </span>
-                        </button>
-                      ))
-                    )}
+                    <div className="shell-mention-pop__section-label">设置</div>
+                    <div className="shell-mention-pop__settings">
+                      <NetworkSearchSetting
+                        enabled={netEnabled}
+                        rootRef={mentionNetworkSettingRef}
+                        onDismiss={dismissMentionToInput}
+                        onChange={handleNetworkSettingChange}
+                      />
+                    </div>
+                    <div className="shell-mention-pop__divider" aria-hidden="true" />
+                    <div className="shell-mention-pop__section-label">工作区文件</div>
+                    <div
+                      className="shell-mention-pop__files"
+                      role="listbox"
+                      aria-label="工作区文件"
+                    >
+                      {!hasProjectFolder ? (
+                        <div className="shell-mention-pop__empty">未绑定项目文件夹</div>
+                      ) : mentionLoading ? (
+                        <div className="shell-mention-pop__empty">搜索文件…</div>
+                      ) : mentionFiles.length === 0 ? (
+                        <div className="shell-mention-pop__empty">
+                          {mention.query ? '无匹配文件' : '输入以过滤项目文件'}
+                        </div>
+                      ) : (
+                        mentionFiles.map((file, index) => (
+                          <button
+                            key={`${file.kind}:${file.path}`}
+                            type="button"
+                            role="option"
+                            aria-selected={index === mentionIndex}
+                            className={`shell-mention-pop__item ${
+                              index === mentionIndex ? 'is-active' : ''
+                            }`}
+                            onMouseEnter={() => setMentionIndex(index)}
+                            onMouseDown={(ev) => {
+                              ev.preventDefault();
+                              selectMentionFile(file);
+                            }}
+                          >
+                            <span className="shell-mention-pop__icon">
+                              {file.kind === 'dir' ? (
+                                <FolderOpen size={13} />
+                              ) : (
+                                <FileCode2 size={13} />
+                              )}
+                            </span>
+                            <span className="shell-mention-pop__path" title={file.path}>
+                              {file.path}
+                            </span>
+                            <span className="shell-mention-pop__kind">
+                              {file.kind === 'dir' ? '目录' : '文件'}
+                            </span>
+                          </button>
+                        ))
+                      )}
+                    </div>
                   </div>,
                   document.body,
                 )}
@@ -4040,47 +4150,6 @@ export function ChatView({
                     />
                   </div>
 
-                  {/* Network */}
-                  <button
-                    type="button"
-                    className="shell-compose__tool"
-                    data-active={netEnabled ? '1' : '0'}
-                    onClick={() => setNetEnabled((v) => !v)}
-                    title={netEnabled ? '联网已开（点击关闭）' : '联网已关（点击开启）'}
-                  >
-                    <Globe size={15} />
-                  </button>
-
-                  {/* Reasoning menu — fixed full ladder */}
-                  <div className="shell-compose__tool-wrap">
-                    <button
-                      ref={reasoningBtnRef}
-                      type="button"
-                      className="shell-compose__tool"
-                      data-active={reasoningEffort !== 'auto' ? '1' : '0'}
-                      data-open={menu === 'reasoning' ? '1' : '0'}
-                      aria-haspopup="menu"
-                      aria-expanded={menu === 'reasoning'}
-                      onClick={() => setMenu((m) => (m === 'reasoning' ? null : 'reasoning'))}
-                      title={`推理强度：${REASONING_LABELS[reasoningEffort]}`}
-                    >
-                      <Brain size={15} />
-                      <span className="shell-compose__tool-label">
-                        {REASONING_LABELS[reasoningEffort]}
-                      </span>
-                    </button>
-                    <ReasoningMenu
-                      open={menu === 'reasoning'}
-                      value={reasoningEffort}
-                      anchorEl={reasoningBtnRef.current}
-                      onClose={() => setMenu(null)}
-                      onChange={(value) => {
-                        setReasoningEffort(value);
-                        writeConversationReasoningEffort(String(conversation.id), value);
-                      }}
-                    />
-                  </div>
-
                   <TurnSkillControl
                     owner={skillOwner}
                     workspaceId={conversation.workspaceId}
@@ -4161,17 +4230,43 @@ export function ChatView({
                   <div className="shell-compose__tool-wrap">
                     <ModelTrigger
                       label={activeModel}
+                      reasoningLabel={REASONING_LABELS[reasoningEffort]}
                       open={menu === 'model'}
                       buttonRef={modelBtnRef}
                       onClick={() => setMenu((m) => (m === 'model' ? null : 'model'))}
                     />
+                    {kernelOverride !== 'native' ? (
+                      <span
+                        className="shell-kernel-chip"
+                        data-testid="compose-kernel-chip"
+                        title={activeKernel ? `内核：${activeKernel.name}` : `内核：${kernelOverride}`}
+                      >
+                        {activeKernel
+                          ? activeKernel.icon === 'claude-code'
+                            ? 'CC'
+                            : activeKernel.icon === 'codex'
+                              ? 'Codex'
+                              : activeKernel.icon === 'pi'
+                                ? 'Pi'
+                                : kernelOverride
+                          : kernelOverride}
+                      </span>
+                    ) : null}
                     <ModelPickerMenu
                       open={menu === 'model'}
                       models={models}
                       selectedModelId={activeModelId}
                       defaultLabel={activeModel}
+                      reasoningEffort={reasoningEffort}
+                      kernels={kernelRegistry ?? undefined}
+                      selectedKernelId={kernelOverride}
                       anchorEl={modelBtnRef.current}
                       onClose={() => setMenu(null)}
+                      onPickKernel={(kernelId) => {
+                        setKernelOverride(kernelId);
+                        writeConversationKernelOverride(String(conversation.id), kernelId);
+                        onConversationUpdated?.();
+                      }}
                       onPick={(modelId) => {
                         // Persist per-conversation so restart keeps the chosen model.
                         // Also notify the shell so the sidebar identity line
@@ -4183,6 +4278,10 @@ export function ChatView({
                           modelId || undefined,
                         );
                         onConversationUpdated?.();
+                      }}
+                      onReasoningChange={(value) => {
+                        setReasoningEffort(value);
+                        writeConversationReasoningEffort(String(conversation.id), value);
                       }}
                     />
                   </div>
@@ -4198,7 +4297,7 @@ export function ChatView({
                       className="shell-compose__send is-stop"
                       onClick={() => void handleStop()}
                       disabled={stopping}
-                      title="暂停任务"
+                      title={stopTitle}
                       data-testid="compose-stop"
                     >
                       <Square size={12} fill="currentColor" />
@@ -4564,6 +4663,7 @@ const MessageBubble = memo(function MessageBubble({
           commentarySegments={message.commentarySegments}
           processView={processView}
           streaming={Boolean(message.streaming)}
+          answerStarted={hasAnswerText}
         >
           <ExecutionTimeline
             commentarySegments={message.commentarySegments}
@@ -4888,6 +4988,7 @@ export function AssistantProcessGroup({
   commentarySegments,
   processView,
   streaming,
+  answerStarted = false,
   defaultOpen = false,
   children,
 }: {
@@ -4895,7 +4996,8 @@ export function AssistantProcessGroup({
   commentarySegments?: readonly CommentaryTimelineSegment[];
   processView?: RunProcessView;
   streaming?: boolean;
-  /** Deterministic visual/test fixture only; production keeps the default folded state. */
+  answerStarted?: boolean;
+  /** Deterministic visual/test fixture override; production follows the active phase. */
   defaultOpen?: boolean;
   children: ReactNode;
 }) {
@@ -4910,10 +5012,13 @@ export function AssistantProcessGroup({
   const hasLifecycle = Boolean(processView?.startedAt || completed);
   const hasDetails = hasCommentary || stepCount > 0 || changeCount > 0;
   // Keep the application-owned run summary even when a provider withholds its
-  // commentary. The outer row remains useful as a durable elapsed-time
-  // marker, while its contents stay folded until the user asks to inspect them.
+  // commentary. Active work opens automatically; historical and final-answer
+  // states retain the compact durable elapsed-time marker.
   const hasContent = hasDetails || active || hasLifecycle;
-  const [open, setOpen] = useState(defaultOpen);
+  const { open, toggle } = useAutoDisclosure({
+    autoOpen: defaultOpen || (active && !answerStarted),
+    resetKey: processView?.runId,
+  });
   const [clockNow, setClockNow] = useState(() => Date.now());
   const bodyRef = useRef<HTMLDivElement>(null);
   const followTailRef = useRef(true);
@@ -4979,16 +5084,13 @@ export function AssistantProcessGroup({
       <button
         type="button"
         className="shell-process-group__toggle"
-        onClick={() =>
-          setOpen((value) => {
-            const next = !value;
-            if (next && active) {
-              followTailRef.current = true;
-              previousScrollTopRef.current = null;
-            }
-            return next;
-          })
-        }
+        onClick={() => {
+          if (!open && active) {
+            followTailRef.current = true;
+            previousScrollTopRef.current = null;
+          }
+          toggle();
+        }}
         aria-expanded={open}
       >
         <span className="shell-process-group__title">

@@ -259,6 +259,7 @@ import type {
   DeleteConversationPayload,
   ConversationDecideToolApprovalPayload,
   ConversationDecideToolApprovalResponse,
+  KernelDetectResponse,
 } from '@sync-think/protocol';
 import type { ArtifactImagePreviewResponse } from '../artifact-image-preview-contract.js';
 import type {
@@ -299,6 +300,8 @@ const api = {
     },
     appendMessage: (payload: AppendMessagePayload) =>
       ipcRenderer.invoke('runtime:append-message', payload) as Promise<AppendMessageResponse>,
+    detectKernels: () =>
+      ipcRenderer.invoke('runtime:kernel-detect') as Promise<KernelDetectResponse>,
     cancelRun: (payload: CancelRunPayload) =>
       ipcRenderer.invoke('runtime:run-cancel', payload) as Promise<PauseResumeCancelResponse>,
     createWorkspace: (payload: CreateWorkspacePayload) =>

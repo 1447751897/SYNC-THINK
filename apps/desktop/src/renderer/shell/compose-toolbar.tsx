@@ -5,9 +5,11 @@ import { createPortal } from 'react-dom';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   Bot,
+  Brain,
   Check,
   ChevronDown,
-  ChevronLeft,
+  ChevronRight,
+  Globe,
   Lock,
   MessageSquare,
   Puzzle,
@@ -18,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import type { ContextStatusSection, ContextStatusSectionType } from '@sync-think/protocol';
+import type { KernelDetectionResult } from '@sync-think/shared';
 import { AgentAvatarView } from './AgentAvatarView.js';
 import type { ModelOption } from './NewConversationDialog.js';
 
@@ -62,7 +65,7 @@ export const REASONING_OPTIONS: Array<{
   { value: 'medium', title: '中' },
   { value: 'high', title: '高' },
   { value: 'xhigh', title: '超高' },
-  { value: 'max', title: '极限' },
+  { value: 'max', title: '最高' },
 ];
 
 export const REASONING_LABELS: Record<ReasoningEffort, string> = {
@@ -72,7 +75,7 @@ export const REASONING_LABELS: Record<ReasoningEffort, string> = {
   medium: '中',
   high: '高',
   xhigh: '超高',
-  max: '极限',
+  max: '最高',
 };
 
 /** Full fixed ladder — always show every rung (no per-model filtering). */
@@ -123,7 +126,7 @@ export function formatTokenCount(n: number): string {
   return String(n);
 }
 
-interface AnchorRect {
+export interface FloatingAnchorRect {
   top: number;
   bottom: number;
   left: number;
@@ -132,7 +135,7 @@ interface AnchorRect {
   height: number;
 }
 
-function rectFromEl(el: HTMLElement | null): AnchorRect | null {
+function rectFromEl(el: HTMLElement | null): FloatingAnchorRect | null {
   if (!el) return null;
   const r = el.getBoundingClientRect();
   return {
@@ -142,6 +145,41 @@ function rectFromEl(el: HTMLElement | null): AnchorRect | null {
     right: r.right,
     width: r.width,
     height: r.height,
+  };
+}
+
+export function resolveFloatingMenuStyle(
+  anchor: FloatingAnchorRect,
+  viewport: { width: number; height: number },
+  options: {
+    width: number;
+    maxHeight: number;
+    align?: 'left' | 'right';
+    gap?: number;
+    padding?: number;
+    minSpaceBeforeFlip?: number;
+  },
+): React.CSSProperties {
+  const gap = options.gap ?? 8;
+  const padding = options.padding ?? 8;
+  const minSpaceBeforeFlip = options.minSpaceBeforeFlip ?? 160;
+  const width = Math.max(0, Math.min(options.width, viewport.width - padding * 2));
+  const spaceAbove = Math.max(0, anchor.top - gap - padding);
+  const spaceBelow = Math.max(0, viewport.height - anchor.bottom - gap - padding);
+  const placeAbove = spaceAbove >= minSpaceBeforeFlip || spaceAbove >= spaceBelow;
+  const available = placeAbove ? spaceAbove : spaceBelow;
+  const maxHeight = Math.max(0, Math.min(options.maxHeight, available));
+  const preferredLeft = options.align === 'right' ? anchor.right - width : anchor.left;
+  const maxLeft = Math.max(padding, viewport.width - width - padding);
+  const left = Math.max(padding, Math.min(preferredLeft, maxLeft));
+
+  return {
+    position: 'fixed',
+    width,
+    maxHeight,
+    zIndex: 10000,
+    left,
+    ...(placeAbove ? { bottom: viewport.height - anchor.top + gap } : { top: anchor.bottom + gap }),
   };
 }
 
@@ -155,6 +193,8 @@ function MenuShell(props: {
   anchorEl: HTMLElement | null;
   align?: 'left' | 'right';
   width?: number;
+  role?: React.AriaRole;
+  ariaLabel?: string;
   /** Extra portal roots (e.g. model flyout) that should not count as outside clicks. */
   satelliteEls?: Array<HTMLElement | null>;
   children: React.ReactNode;
@@ -164,7 +204,7 @@ function MenuShell(props: {
   const anchorEl = props.anchorEl;
   const satelliteEls = props.satelliteEls;
   const menuRef = useRef<HTMLDivElement>(null);
-  const [anchor, setAnchor] = useState<AnchorRect | null>(null);
+  const [anchor, setAnchor] = useState<FloatingAnchorRect | null>(null);
   const width = props.width ?? 280;
 
   useLayoutEffect(() => {
@@ -209,30 +249,21 @@ function MenuShell(props: {
 
   if (!props.open || !anchor || typeof document === 'undefined') return null;
 
-  const gap = 8;
   const maxH = Math.min(420, Math.floor(window.innerHeight * 0.6));
-  const spaceAbove = anchor.top - gap;
-  const spaceBelow = window.innerHeight - anchor.bottom - gap;
-  const placeAbove = spaceAbove >= 160 || spaceAbove >= spaceBelow;
-  const available = placeAbove ? spaceAbove : spaceBelow;
-  const menuMaxH = Math.max(160, Math.min(maxH, available));
-
-  let left = props.align === 'right' ? anchor.right - width : anchor.left;
-  left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
-
-  const style: React.CSSProperties = {
-    position: 'fixed',
-    width,
-    maxHeight: menuMaxH,
-    zIndex: 10000,
-    left,
-    ...(placeAbove
-      ? { bottom: window.innerHeight - anchor.top + gap }
-      : { top: anchor.bottom + gap }),
-  };
+  const style = resolveFloatingMenuStyle(
+    anchor,
+    { width: window.innerWidth, height: window.innerHeight },
+    { width, maxHeight: maxH, align: props.align },
+  );
 
   return createPortal(
-    <div ref={menuRef} className="shell-menu shell-menu--portal" style={style} role="menu">
+    <div
+      ref={menuRef}
+      className="shell-menu shell-menu--portal"
+      style={style}
+      role={props.role ?? 'menu'}
+      aria-label={props.ariaLabel}
+    >
       {props.children}
     </div>,
     document.body,
@@ -402,7 +433,7 @@ export function ReasoningMenu(props: {
 }) {
   return (
     <MenuShell open={props.open} onClose={props.onClose} anchorEl={props.anchorEl} width={160}>
-      <div className="shell-menu__heading">推理强度</div>
+      <div className="shell-menu__heading">思考强度</div>
       <div className="shell-menu__scroll">
         {REASONING_OPTIONS.map((opt) => {
           const active = opt.value === props.value;
@@ -425,6 +456,96 @@ export function ReasoningMenu(props: {
             </button>
           );
         })}
+      </div>
+    </MenuShell>
+  );
+}
+
+export function NetworkSearchSetting(props: {
+  enabled: boolean;
+  rootRef?: React.Ref<HTMLDivElement>;
+  onDismiss?(): void;
+  onChange(enabled: boolean): void;
+}) {
+  return (
+    <div
+      ref={props.rootRef}
+      className="shell-mention-setting"
+      data-testid="compose-network-setting"
+      onKeyDown={(event) => {
+        if (!props.onDismiss) return;
+        const firstSegment = event.currentTarget.querySelector<HTMLButtonElement>(
+          '.shell-mention-setting__segment',
+        );
+        const returnToInput =
+          event.key === 'Escape' ||
+          (event.key === 'Tab' && event.shiftKey && event.target === firstSegment);
+        if (!returnToInput) return;
+        event.preventDefault();
+        event.stopPropagation();
+        props.onDismiss();
+      }}
+    >
+      <div className="shell-mention-setting__identity">
+        <span className="shell-mention-setting__icon" aria-hidden="true">
+          <Globe size={15} />
+        </span>
+        <span className="shell-mention-setting__label">联网搜索</span>
+      </div>
+      <div className="shell-mention-setting__segments" role="group" aria-label="联网搜索">
+        <button
+          type="button"
+          className="shell-mention-setting__segment"
+          data-active={props.enabled ? '1' : '0'}
+          aria-pressed={props.enabled}
+          aria-label="开启联网搜索"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => props.onChange(true)}
+        >
+          开启
+        </button>
+        <button
+          type="button"
+          className="shell-mention-setting__segment"
+          data-active={!props.enabled ? '1' : '0'}
+          aria-pressed={!props.enabled}
+          aria-label="关闭联网搜索"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => props.onChange(false)}
+        >
+          关闭
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function ComposeAtSettingsMenu(props: {
+  open: boolean;
+  enabled: boolean;
+  anchorEl: HTMLElement | null;
+  networkSettingRef?: React.Ref<HTMLDivElement>;
+  onClose(): void;
+  onDismiss(): void;
+  onChange(enabled: boolean): void;
+}) {
+  return (
+    <MenuShell
+      open={props.open}
+      onClose={props.onClose}
+      anchorEl={props.anchorEl}
+      width={320}
+      role="dialog"
+      ariaLabel="添加上下文和设置"
+    >
+      <div className="shell-mention-pop__section-label">设置</div>
+      <div className="shell-mention-pop__settings">
+        <NetworkSearchSetting
+          enabled={props.enabled}
+          rootRef={props.networkSettingRef}
+          onDismiss={props.onDismiss}
+          onChange={props.onChange}
+        />
       </div>
     </MenuShell>
   );
@@ -539,9 +660,15 @@ export function ModelPickerMenu(props: {
   models: readonly ModelOption[];
   selectedModelId: string;
   defaultLabel: string;
+  reasoningEffort?: ReasoningEffort;
   anchorEl: HTMLElement | null;
+  /** Kernel selector data (Slice 6); empty hides the kernel group. */
+  kernels?: readonly KernelDetectionResult[];
+  selectedKernelId?: string;
+  onPickKernel?(kernelId: string): void;
   onClose(): void;
   onPick(modelId: string): void;
+  onReasoningChange?(value: ReasoningEffort): void;
 }) {
   const providers = useMemo(() => {
     const map = new Map<string, ModelOption[]>();
@@ -553,7 +680,7 @@ export function ModelPickerMenu(props: {
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [props.models]);
 
-  const [triggerRect, setTriggerRect] = useState<AnchorRect | null>(null);
+  const [triggerRect, setTriggerRect] = useState<FloatingAnchorRect | null>(null);
   useLayoutEffect(() => {
     if (!props.open || !props.anchorEl) {
       setTriggerRect(null);
@@ -572,13 +699,25 @@ export function ModelPickerMenu(props: {
   const selectedProviderOfModel = props.models.find(
     (model) => model.modelId === props.selectedModelId,
   )?.providerName;
+  const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!props.open) setOpenSubmenu(null);
+  }, [props.open]);
+
+  const setSubmenuState = (key: string, open: boolean) => {
+    setOpenSubmenu((current) => (open ? key : current === key ? null : current));
+  };
 
   return (
     <DropdownMenu.Root
-      dir="rtl"
+      dir="ltr"
       open={props.open}
       onOpenChange={(open) => {
-        if (!open) props.onClose();
+        if (!open) {
+          setOpenSubmenu(null);
+          props.onClose();
+        }
       }}
       modal={false}
     >
@@ -607,24 +746,81 @@ export function ModelPickerMenu(props: {
           onEscapeKeyDown={props.onClose}
         >
           <div className="shell-menu__scroll">
+            {props.kernels && props.kernels.length > 0 ? (
+              <>
+                <div className="shell-menu__group-label">内核</div>
+                {props.kernels.map((kernel) => {
+                  const active = kernel.kernelId === props.selectedKernelId;
+                  const disabled = !kernel.installed;
+                  return (
+                    <DropdownMenu.Item
+                      key={kernel.kernelId}
+                      role="menuitemradio"
+                      aria-checked={active}
+                      disabled={disabled}
+                      data-testid={`kernel-option-${kernel.kernelId}`}
+                      className={`shell-menu__item shell-menu__item--kernel ${
+                        active ? 'is-active' : ''
+                      } ${disabled ? 'is-disabled' : ''}`}
+                      onSelect={() => {
+                        if (!disabled && props.onPickKernel) {
+                          props.onPickKernel(kernel.kernelId);
+                          props.onClose();
+                        }
+                      }}
+                    >
+                      <span className="shell-menu__selection-slot" aria-hidden="true">
+                        {active ? <Check size={14} /> : null}
+                      </span>
+                      <div className="shell-menu__item-text">
+                        <div className="shell-menu__item-title">
+                          <span className="shell-menu__kernel-name">{kernel.name}</span>
+                          <span className={`shell-kernel-badge shell-kernel-badge--${kernel.icon}`}>
+                            {kernel.icon === 'native' ? '原生' : kernel.icon === 'claude-code' ? 'Claude Code' : kernel.icon === 'codex' ? 'Codex' : 'Pi'}
+                          </span>
+                        </div>
+                        <div className="shell-menu__item-hint">
+                          {kernel.installed
+                            ? kernel.version
+                              ? `已安装 v${kernel.version}${kernel.knownGood ? '' : '（版本未验证）'}`
+                              : '已安装'
+                            : kernel.installCommand
+                              ? `未安装 · ${kernel.installCommand}`
+                              : '未安装'}
+                        </div>
+                      </div>
+                    </DropdownMenu.Item>
+                  );
+                })}
+                <div className="shell-menu__separator" />
+              </>
+            ) : null}
             {providers.length === 0 ? (
               <div className="shell-menu__empty">没有可用模型</div>
             ) : (
               providers.map(([providerName, models]) => {
                 const ownsSelected = selectedProviderOfModel === providerName;
+                const submenuKey = `provider:${providerName}`;
                 return (
-                  <DropdownMenu.Sub key={providerName}>
+                  <DropdownMenu.Sub
+                    key={providerName}
+                    open={openSubmenu === submenuKey}
+                    onOpenChange={(open) => setSubmenuState(submenuKey, open)}
+                  >
                     <DropdownMenu.SubTrigger
                       data-testid={`model-provider-${providerName}`}
                       className={`shell-menu__item shell-menu__item--provider ${
                         ownsSelected ? 'is-active' : ''
                       }`}
+                      onClick={() => setOpenSubmenu(submenuKey)}
                     >
-                      <div className="shell-menu__item-text" dir="ltr">
+                      <span className="shell-menu__selection-slot" aria-hidden="true">
+                        {ownsSelected ? <Check size={14} /> : null}
+                      </span>
+                      <div className="shell-menu__item-text">
                         <div className="shell-menu__item-title">{providerName}</div>
                       </div>
-                      {ownsSelected ? <Check size={14} className="shell-menu__check" /> : null}
-                      <ChevronLeft size={14} className="shell-menu__chevron" />
+                      <ChevronRight size={14} className="shell-menu__chevron" />
                     </DropdownMenu.SubTrigger>
                     <DropdownMenu.Portal>
                       <DropdownMenu.SubContent
@@ -655,7 +851,7 @@ export function ModelPickerMenu(props: {
                                   }}
                                 >
                                   <Sparkles size={13} className="shell-menu__item-icon" />
-                                  <div className="shell-menu__item-text" dir="ltr">
+                                  <div className="shell-menu__item-text">
                                     <div className="shell-menu__item-title">
                                       {model.displayName}
                                     </div>
@@ -675,6 +871,69 @@ export function ModelPickerMenu(props: {
               })
             )}
           </div>
+          {props.reasoningEffort && props.onReasoningChange ? (
+            <div className="shell-menu__model-footer">
+              <DropdownMenu.Sub
+                open={openSubmenu === 'reasoning'}
+                onOpenChange={(open) => setSubmenuState('reasoning', open)}
+              >
+                <DropdownMenu.SubTrigger
+                  data-testid="model-reasoning-trigger"
+                  className="shell-menu__item shell-menu__item--reasoning"
+                  onClick={() => setOpenSubmenu('reasoning')}
+                >
+                  <Brain size={14} className="shell-menu__item-icon" />
+                  <div className="shell-menu__item-text">
+                    <div className="shell-menu__item-title">思考强度</div>
+                  </div>
+                  <span className="shell-menu__reasoning-value">
+                    {REASONING_LABELS[props.reasoningEffort]}
+                  </span>
+                  <ChevronRight size={14} className="shell-menu__chevron" />
+                </DropdownMenu.SubTrigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.SubContent
+                    data-testid="model-reasoning-flyout"
+                    className="shell-menu shell-menu--portal shell-menu--reasoning-flyout"
+                    sideOffset={6}
+                    alignOffset={-6}
+                    collisionPadding={8}
+                    avoidCollisions
+                  >
+                    <div className="shell-menu__scroll">
+                      {REASONING_OPTIONS.filter((option) =>
+                        reasoningLevelsForModel(props.selectedModelId).includes(option.value),
+                      ).map((option) => {
+                        const active = option.value === props.reasoningEffort;
+                        return (
+                          <DropdownMenu.Item
+                            key={option.value}
+                            data-testid={`model-reasoning-option-${option.value}`}
+                            role="menuitemradio"
+                            aria-checked={active}
+                            className={`shell-menu__item shell-menu__item--compact ${
+                              active ? 'is-active' : ''
+                            }`}
+                            onSelect={() => {
+                              props.onReasoningChange?.(option.value);
+                              props.onClose();
+                            }}
+                          >
+                            <span className="shell-menu__selection-slot" aria-hidden="true">
+                              {active ? <Check size={14} /> : null}
+                            </span>
+                            <div className="shell-menu__item-text">
+                              <div className="shell-menu__item-title">{option.title}</div>
+                            </div>
+                          </DropdownMenu.Item>
+                        );
+                      })}
+                    </div>
+                  </DropdownMenu.SubContent>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Sub>
+            </div>
+          ) : null}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -729,7 +988,7 @@ export function ContextRing(props: {
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<AnchorRect | null>(null);
+  const [anchor, setAnchor] = useState<FloatingAnchorRect | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const closeTimer = useRef<number | null>(null);
 
@@ -1005,6 +1264,7 @@ export function ContextRing(props: {
 
 export function ModelTrigger(props: {
   label: string;
+  reasoningLabel?: string;
   open: boolean;
   buttonRef?: React.Ref<HTMLButtonElement>;
   onClick(): void;
@@ -1018,9 +1278,12 @@ export function ModelTrigger(props: {
       aria-haspopup="menu"
       aria-expanded={props.open}
       onClick={props.onClick}
-      title="切换模型"
+      title={props.reasoningLabel ? `切换模型，思考强度：${props.reasoningLabel}` : '切换模型'}
     >
       <span className="shell-compose__model-label">{props.label}</span>
+      {props.reasoningLabel ? (
+        <span className="shell-compose__model-reasoning">{props.reasoningLabel}</span>
+      ) : null}
       <ChevronDown size={12} />
     </button>
   );

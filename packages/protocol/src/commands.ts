@@ -189,7 +189,8 @@ export type CommandType =
   | 'approval.decide'
   | 'goal.set'
   | 'goal.get'
-  | 'goal.clear';
+  | 'goal.clear'
+  | 'kernel.detect';
 
 export interface CommandRequest<T = unknown> {
   /** Routed by type; runtime dispatches by union. */
@@ -472,6 +473,11 @@ export interface AppendMessageResponse {
   streamId?: string;
   /** Desktop-resolved durable image URLs returned after staging. */
   images?: Array<MessageImageReference & { url?: string }>;
+}
+
+/** kernel.detect response: registry sweep with install state + capabilities. */
+export interface KernelDetectResponse {
+  kernels: import('@sync-think/shared').KernelDetectionResult[];
 }
 
 export interface AttachMessageImagesPayload {

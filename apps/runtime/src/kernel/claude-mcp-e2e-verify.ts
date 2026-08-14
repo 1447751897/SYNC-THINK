@@ -79,7 +79,8 @@ async function main(): Promise<number> {
     })) {
       events.push(event);
       if (event.type === 'tool-call') console.log('[kernel-event] tool-call', event.name);
-      if (event.type === 'tool-result') console.log('[kernel-event] tool-result', event.name);
+      if (event.type === 'tool-result')
+        console.log('[kernel-event] tool-result', event.output.slice(0, 160));
       if (event.type === 'terminal') {
         console.log('[kernel-event] terminal', event.status, event.error ?? '');
         break;

@@ -158,6 +158,7 @@ import {
   type SubmitBrowserWorkflowDraftResponse,
   type ReviewBrowserWorkflowDraftResponse,
   type ExecuteBrowserWorkflowResponse,
+  type KernelDetectResponse,
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   isComputerUsePluginEnabled as isComputerUsePluginSettingEnabled,
 } from '@sync-think/protocol';
@@ -300,7 +301,9 @@ import {
 } from '@sync-think/core';
 import { createHash } from 'node:crypto';
 // cc-switch import helpers re-exported via core
+import { existsSync } from 'node:fs';
 import type { Socket } from 'node:net';
+import { fileURLToPath } from 'node:url';
 import {
   appendCommentaryTimelineDelta,
   applyDemoRunEvent,
@@ -525,11 +528,22 @@ import {
 import { createPipeServer, type PipeServerHandlers } from './pipe/server.js';
 import { healthcheck, type HealthcheckResult, type HealthcheckError } from './healthcheck.js';
 import { Scheduler } from './orchestration/scheduler.js';
-import { resolveKernelAdapter } from './kernel/registry.js';
+import { resolveKernelAdapter, getKernelRegistry } from './kernel/registry.js';
 import { collectWorkspaceSharedFacts } from './kernel/shared-facts.js';
+import {
+  startKernelMcpBroker,
+  type KernelMcpBroker,
+  type PlatformMcpToolCall,
+} from './kernel/mcp-broker.js';
+import {
+  executePlatformTool,
+  PLATFORM_MCP_TOOL_DEFINITIONS,
+  type PlatformToolContext,
+} from './kernel/platform-tools.js';
 import type {
   KernelAdapter,
   KernelCredential,
+  KernelDetectionResult,
   KernelEvent,
   KernelPermissionRequest,
   KernelRequest,
@@ -1547,6 +1561,10 @@ export class Runtime {
         }
         if (frame.type === 'usage.summary') {
           void this.handleUsageSummary(socket, frame);
+          return;
+        }
+        if (frame.type === 'kernel.detect') {
+          void this.handleKernelDetect(socket, frame);
           return;
         }
         if (frame.type === 'agent.get') {
@@ -14947,6 +14965,7 @@ export class Runtime {
     const abort = new AbortController();
     this.demoRunAborts.set(runId, abort);
     let adapter: KernelAdapter | undefined;
+    let broker: KernelMcpBroker | undefined;
     try {
       const kernelId = initialRun.kernelId ?? 'native';
       adapter = resolveKernelAdapter(kernelId);
@@ -14954,6 +14973,9 @@ export class Runtime {
         throw new Error(`Kernel adapter not wired: ${kernelId}`);
       }
       const request = await this.buildKernelRequestForRun(initialRun);
+      // Slice 5: host platform tools ride the MCP channel. The broker lives for
+      // exactly this run; the kernel's mcp config embeds its address + token.
+      broker = await this.startPlatformMcpBrokerForRun(runId, initialRun, request);
       this.wireKernelPermissionBridge(runId, initialRun.threadId, adapter, abort.signal);
 
       let finalStatus: 'completed' | 'failed' = 'completed';
@@ -14991,6 +15013,7 @@ export class Runtime {
       this.finalizeKernelRun(runId, initialRun, 'failed', message);
     } finally {
       if (adapter) await adapter.cancel().catch(() => undefined);
+      if (broker) await broker.close().catch(() => undefined);
       this.demoRunAborts.delete(runId);
       this.forgetInFlight(runId);
     }
@@ -15008,7 +15031,8 @@ export class Runtime {
       contextWindow: run.contextWindow ?? 128_000,
       credential,
       systemContext: this.buildKernelSystemContext(run, workspaceRoot),
-      // Platform tools ride the MCP channel (Slice 5); the registry slot stays.
+      // Platform tools ride the MCP channel; the broker address is attached by
+      // startPlatformMcpBrokerForRun right after this request is built.
       platformTools: [],
       permissionMode: normalizeChatExecutionMode(executionMode),
       workspaceDir: workspaceRoot ?? process.cwd(),
@@ -15050,6 +15074,211 @@ export class Runtime {
     if (run.persona?.trim()) parts.push(`## 智能体人设\n\n${run.persona.trim()}`);
     if (run.teamPromptBlock?.trim()) parts.push(run.teamPromptBlock.trim());
     return parts.join('\n\n');
+  }
+
+  /**
+   * Slice 5: start the platform MCP broker for this kernel run and hand its
+   * address to the adapters via KernelRequest.platformBroker. The broker's
+   * tool-call handler runs the host approval (three-tier) then executes the
+   * platform tool in-process.
+   */
+  private async startPlatformMcpBrokerForRun(
+    runId: RunId,
+    run: DemoRunState,
+    request: KernelRequest,
+  ): Promise<KernelMcpBroker | undefined> {
+    const entryPath = this.resolvePlatformMcpServerEntry();
+    if (!entryPath) {
+      console.warn(
+        '[kernel:mcp] platform mcp server entry not found — platform tools disabled for this run',
+      );
+      return undefined;
+    }
+    const workspaceRoot = request.workspaceDir;
+    const broker = await startKernelMcpBroker({
+      workspaceDir: workspaceRoot,
+      tools: PLATFORM_MCP_TOOL_DEFINITIONS,
+      onToolCall: (call) => this.handlePlatformMcpToolCall(runId, run, workspaceRoot, call),
+    });
+    request.platformBroker = {
+      host: broker.host,
+      port: broker.port,
+      token: broker.token,
+      workspaceDir: workspaceRoot,
+      // The kernel spawns `node <entry>` (verified: codex requires an
+      // executable command + the entry as the first arg).
+      command: process.execPath,
+      args: [entryPath],
+    };
+    return broker;
+  }
+
+  /** Resolve the platform MCP server entry (self-contained .mjs, no build). */
+  private resolvePlatformMcpServerEntry(): string | undefined {
+    const candidates = [
+      // Runtime src (tsx) → repo apps/mcp-server/platform-mcp-server.mjs.
+      new URL('../../../mcp-server/platform-mcp-server.mjs', import.meta.url),
+      // Runtime dist → two hops up + apps/mcp-server.
+      new URL('../../../../apps/mcp-server/platform-mcp-server.mjs', import.meta.url),
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(fileURLToPath(candidate))) return fileURLToPath(candidate);
+    }
+    return undefined;
+  }
+
+  /**
+   * Platform MCP tool-call handler: three-tier approval (mirrors the native
+   * ask/workspace/full-access semantics) then in-process execution. Uses the
+   * same pendingToolApprovals card the native path and the CC permission
+   * bridge use, so conversation.decideToolApproval routes back here.
+   */
+  private async handlePlatformMcpToolCall(
+    runId: RunId,
+    run: DemoRunState,
+    workspaceRoot: string,
+    call: PlatformMcpToolCall,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const definition = PLATFORM_MCP_TOOL_DEFINITIONS.find((tool) => tool.name === call.tool);
+    if (!definition) return { ok: false, error: `unknown platform tool: ${call.tool}` };
+    const executionMode = normalizeChatExecutionMode(this.resolveChatExecutionMode(run.threadId));
+
+    // Three-tier: full-access auto-executes; ask raises a card for mutating
+    // tools; workspace trusts workspace-scoped mutations (native semantics).
+    if (definition.approval === 'ask-mode' && executionMode === 'ask') {
+      const decision = await this.requestPlatformToolApproval(runId, run.threadId, call);
+      if (decision !== 'approve') {
+        return { ok: false, error: '宿主已拒绝此操作' };
+      }
+    }
+
+    const ctx: PlatformToolContext = {
+      workspaceDir: workspaceRoot,
+      runId,
+      threadId: run.threadId,
+      kernelId: run.kernelId,
+      taskPlanStore: this.taskPlanStore ?? undefined,
+      agentStore: this.agentStore ? this.toPlatformAgentStore(this.agentStore) : undefined,
+      resolveWorkspaceId: () => this.resolveEventWorkspaceId(run.threadId),
+    };
+    try {
+      const content = await executePlatformTool(call.tool, call.input, ctx);
+      return { ok: true, content };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /** Raise a tool.approval_requested card and await the shell decision. */
+  private requestPlatformToolApproval(
+    runId: RunId,
+    threadId: string,
+    call: PlatformMcpToolCall,
+  ): Promise<'approve' | 'deny'> {
+    return new Promise((resolve) => {
+      const approvalId = `kappr-${ulid()}`;
+      const toolCall: ProviderToolCall = {
+        id: call.id,
+        name: call.tool,
+        argumentsJson: JSON.stringify(call.input ?? {}),
+      };
+      const summary = summarizeToolCallForApproval(call.tool, toolCall.argumentsJson);
+      try {
+        const event = this.persistProjectedEvent(
+          {
+            id: ulid() as Event['id'],
+            workspaceId: this.resolveEventWorkspaceId(threadId),
+            taskId: this.resolveEventTaskId(threadId),
+            runId,
+            category: 'approval',
+            type: 'tool.approval_requested',
+            occurredAt: new Date().toISOString(),
+            payload: {
+              approvalId,
+              threadId,
+              runId,
+              toolCallId: call.id,
+              toolName: call.tool,
+              arguments: call.input ?? {},
+              title: summary.title,
+              detail: summary.detail,
+              path: summary.path,
+              command: summary.command,
+              executionMode: normalizeChatExecutionMode(this.resolveChatExecutionMode(threadId)),
+            },
+          },
+          new Map(this.demoRuns),
+        );
+        this.publishEvent(event);
+      } catch {
+        // A failed approval persistence must not fail the tool call outright.
+      }
+      this.pendingToolApprovals.set(approvalId, {
+        approvalId,
+        runId,
+        threadId,
+        workspaceRoot: '',
+        executionMode: '',
+        chatMessages: [],
+        pendingToolCalls: [toolCall],
+        currentIndex: 0,
+        completedResults: [],
+        toolLoopRound: 0,
+        resolve: (decision) => resolve(decision === 'approve' ? 'approve' : 'deny'),
+        createdAt: new Date().toISOString(),
+      });
+    });
+  }
+
+  private toPlatformAgentStore(agentStore: SqliteAgentStore): PlatformToolContext['agentStore'] {
+    return {
+      listLatestVersions: () =>
+        agentStore.listLatestVersions().map((record) => ({
+          agentId: record.agentId,
+          name: record.name,
+          version: String(record.version),
+        })),
+    };
+  }
+
+  /**
+   * kernel.detect — registry sweep for the kernel selector UI. Each entry
+   * probes the local executable (PATH + common install dirs) and reports
+   * install state, version, known-good status and declared capabilities.
+   */
+  private async handleKernelDetect(socket: Socket, frame: Frame): Promise<void> {
+    try {
+      const kernels = await Promise.all(
+        getKernelRegistry().map(async (entry) => {
+          try {
+            return await entry.detect();
+          } catch (error) {
+            // A broken probe must not fail the whole sweep — report uninstalled.
+            return {
+              kernelId: entry.id,
+              name: entry.name,
+              icon: entry.icon,
+              capabilities: entry.capabilities,
+              ...(entry.installCommand ? { installCommand: entry.installCommand } : {}),
+              installed: false,
+              version: null,
+              executablePath: null,
+              knownGood: false,
+            } as KernelDetectionResult;
+          }
+        }),
+      );
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'kernel.detect',
+          payload: { kernels } satisfies KernelDetectResponse,
+        }),
+      );
+    } catch (error) {
+      this.writeProviderCommandError(socket, frame, error);
+    }
   }
 
   /**

@@ -60,12 +60,20 @@ export const UI_PREF_KEYS = {
    */
   conversationModelOverrides: 'sync-think.conversationModelOverrides',
   /**
+   * Per-conversation kernel id chosen in compose (multi-kernel selector).
+   * Shape: Record<conversationId, KernelId>.
+   * Default (absent) = 'native' (the in-process runtime).
+   */
+  conversationKernelOverrides: 'sync-think.conversationKernelOverrides',
+  /**
    * Per-conversation reasoning effort chosen in compose.
    * Shape: Record<conversationId, ReasoningEffort>.
    * Survives conversation switches and restarts so each conversation keeps
    * its own thinking intensity until the user changes it again.
    */
   conversationReasoningEfforts: 'sync-think.conversationReasoningEfforts',
+  /** Per-conversation web-search choice used by the compose @ settings menu. */
+  conversationNetworkEnabled: 'sync-think.conversationNetworkEnabled',
 } as const;
 
 export type ConversationTrackPreference = 'model' | 'agent' | 'team';
@@ -746,6 +754,47 @@ export function writeConversationModelOverride(
   writeConversationModelOverrides(current, storage);
 }
 
+/** conversationId → kernelId override chosen in compose (multi-kernel selector). */
+export type ConversationKernelOverridesPreference = Record<string, string>;
+
+export function readConversationKernelOverrides(
+  storage?: Pick<Storage, 'getItem'>,
+): ConversationKernelOverridesPreference {
+  return parseIdMap(readJsonPreference(UI_PREF_KEYS.conversationKernelOverrides, storage));
+}
+
+export function writeConversationKernelOverrides(
+  overrides: ConversationKernelOverridesPreference,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(UI_PREF_KEYS.conversationKernelOverrides, overrides, storage);
+}
+
+/** Default kernel: native (the in-process runtime) — no override needed. */
+export function readConversationKernelOverride(
+  conversationId: string,
+  storage?: Pick<Storage, 'getItem'>,
+): string | undefined {
+  const id = conversationId.trim();
+  if (!id) return undefined;
+  const value = readConversationKernelOverrides(storage)[id];
+  return value && value.trim() ? value.trim() : undefined;
+}
+
+export function writeConversationKernelOverride(
+  conversationId: string,
+  kernelId: string | undefined,
+  storage?: Pick<Storage, 'getItem' | 'setItem'>,
+): void {
+  const id = conversationId.trim();
+  if (!id) return;
+  const current = { ...readConversationKernelOverrides(storage) };
+  const next = kernelId?.trim();
+  if (!next || next === 'native') delete current[id];
+  else current[id] = next;
+  writeConversationKernelOverrides(current, storage);
+}
+
 /**
  * Valid reasoning effort values persisted per conversation.
  * Kept in sync with the compose-toolbar ReasoningEffort union so stored
@@ -806,6 +855,40 @@ export function writeConversationReasoningEffort(
   const current = { ...readConversationReasoningEfforts(storage) };
   current[id] = effort;
   writeConversationReasoningEfforts(current, storage);
+}
+
+export function readConversationNetworkPreferences(
+  storage?: Pick<Storage, 'getItem'>,
+): Record<string, boolean> {
+  const raw = readJsonPreference(UI_PREF_KEYS.conversationNetworkEnabled, storage);
+  const result: Record<string, boolean> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+  for (const [conversationId, enabled] of Object.entries(raw as Record<string, unknown>)) {
+    if (conversationId.trim() && typeof enabled === 'boolean') {
+      result[conversationId] = enabled;
+    }
+  }
+  return result;
+}
+
+export function readConversationNetworkEnabled(
+  conversationId: string,
+  storage?: Pick<Storage, 'getItem'>,
+): boolean | undefined {
+  const id = conversationId.trim();
+  if (!id) return undefined;
+  return readConversationNetworkPreferences(storage)[id];
+}
+
+export function writeConversationNetworkEnabled(
+  conversationId: string,
+  enabled: boolean,
+  storage?: Pick<Storage, 'getItem' | 'setItem'>,
+): void {
+  const id = conversationId.trim();
+  if (!id) return;
+  const current = { ...readConversationNetworkPreferences(storage), [id]: enabled };
+  writeJsonPreference(UI_PREF_KEYS.conversationNetworkEnabled, current, storage);
 }
 
 /** Max length for the greeting display name; keeps the welcome headline on one line. */

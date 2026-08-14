@@ -34,23 +34,86 @@ export interface KernelRegistryEntry {
 }
 
 function toDetectionResult(
-  kernelId: KernelId,
-  knownGoodVersions: readonly string[],
-  installHint?: string,
+  entry: Pick<
+    KernelRegistryEntry,
+    'id' | 'name' | 'icon' | 'capabilities' | 'knownGoodVersions' | 'installCommand'
+  >,
 ): KernelDetectionResult {
-  const probe = probeKernel(KERNEL_COMMANDS[kernelId as Exclude<KernelId, 'native'>]);
+  const probe = probeKernel(KERNEL_COMMANDS[entry.id as Exclude<KernelId, 'native'>]);
   const version = probe.version;
   return {
-    kernelId,
+    kernelId: entry.id,
+    name: entry.name,
+    icon: entry.icon,
+    capabilities: entry.capabilities,
+    ...(entry.installCommand ? { installCommand: entry.installCommand } : {}),
     installed: probe.executablePath !== null && version !== null,
     version,
     executablePath: probe.executablePath,
-    knownGood: version !== null && knownGoodVersions.includes(version),
-    ...(installHint ? { installHint } : {}),
+    knownGood: version !== null && entry.knownGoodVersions.includes(version),
+    ...(entry.id === 'pi' && entry.installCommand
+      ? { installHint: entry.installCommand }
+      : {}),
   };
 }
 
 export function buildKernelRegistry(): KernelRegistryEntry[] {
+  const claudeCodeEntry: KernelRegistryEntry = {
+    id: 'claude-code',
+    name: 'Claude Code',
+    icon: 'claude-code',
+    kind: 'subprocess',
+    capabilities: {
+      protocols: ['anthropic-messages'],
+      permission: 'own',
+      permissionBridge: true,
+      pause: 'turn',
+      compress: 'own',
+      usageReport: true,
+    },
+    knownGoodVersions: ['2.1.222'],
+    installCommand: 'npm i -g @anthropic-ai/claude-code',
+    // Fresh instance per run — the adapter holds per-run process state.
+    createAdapter: () => new ClaudeCodeKernelAdapter(),
+    detect: async () => toDetectionResult(claudeCodeEntry),
+  };
+  const codexEntry: KernelRegistryEntry = {
+    id: 'codex',
+    name: 'Codex',
+    icon: 'codex',
+    kind: 'subprocess',
+    capabilities: {
+      protocols: ['openai-chat', 'openai-responses'],
+      permission: 'own',
+      permissionBridge: false,
+      pause: 'session',
+      compress: 'own',
+      usageReport: true,
+    },
+    knownGoodVersions: ['0.145.0'],
+    installCommand: 'npm i -g @openai/codex',
+    createAdapter: () => new CodexKernelAdapter(),
+    detect: async () => toDetectionResult(codexEntry),
+  };
+  const piEntry: KernelRegistryEntry = {
+    id: 'pi',
+    name: 'Pi',
+    icon: 'pi',
+    kind: 'subprocess',
+    capabilities: {
+      protocols: ['openai-chat', 'anthropic-messages'],
+      permission: 'none',
+      permissionBridge: false,
+      pause: 'kill',
+      compress: 'own',
+      usageReport: false,
+    },
+    knownGoodVersions: [],
+    installCommand: 'npm i -g pi',
+    createAdapter: undefined,
+    detect: async () => toDetectionResult(piEntry),
+  };
+
   return [
     {
       id: 'native',
@@ -62,67 +125,18 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
       createAdapter: () => nativeKernelAdapter,
       detect: async () => ({
         kernelId: 'native',
+        name: '原生内核',
+        icon: 'native',
+        capabilities: nativeKernelAdapter.capabilities,
         installed: true,
         version: null,
         executablePath: null,
         knownGood: true,
       }),
     },
-    {
-      id: 'claude-code',
-      name: 'Claude Code',
-      icon: 'claude-code',
-      kind: 'subprocess',
-      capabilities: {
-        protocols: ['anthropic-messages'],
-        permission: 'own',
-        permissionBridge: true,
-        pause: 'turn',
-        compress: 'own',
-        usageReport: true,
-      },
-      knownGoodVersions: ['2.1.222'],
-      installCommand: 'npm i -g @anthropic-ai/claude-code',
-      // Fresh instance per run — the adapter holds per-run process state.
-      createAdapter: () => new ClaudeCodeKernelAdapter(),
-      detect: async () => toDetectionResult('claude-code', ['2.1.222']),
-    },
-    {
-      id: 'codex',
-      name: 'Codex',
-      icon: 'codex',
-      kind: 'subprocess',
-      capabilities: {
-        protocols: ['openai-chat', 'openai-responses'],
-        permission: 'own',
-        permissionBridge: false,
-        pause: 'session',
-        compress: 'own',
-        usageReport: true,
-      },
-      knownGoodVersions: ['0.145.0'],
-      installCommand: 'npm i -g @openai/codex',
-      createAdapter: () => new CodexKernelAdapter(),
-      detect: async () => toDetectionResult('codex', ['0.145.0']),
-    },
-    {
-      id: 'pi',
-      name: 'Pi',
-      icon: 'pi',
-      kind: 'subprocess',
-      capabilities: {
-        protocols: ['openai-chat', 'anthropic-messages'],
-        permission: 'none',
-        permissionBridge: false,
-        pause: 'kill',
-        compress: 'own',
-        usageReport: false,
-      },
-      knownGoodVersions: [],
-      installCommand: 'npm i -g pi',
-      createAdapter: undefined,
-      detect: async () => toDetectionResult('pi', [], 'npm i -g pi'),
-    },
+    claudeCodeEntry,
+    codexEntry,
+    piEntry,
   ];
 }
 

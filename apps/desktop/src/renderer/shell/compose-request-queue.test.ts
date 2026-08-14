@@ -46,6 +46,7 @@ function queuedRequest(text = '继续完善页面') {
       reasoningEffort: 'high',
       networkEnabled: true,
       skillVersionIds: ['skill-a'],
+      kernelOverride: 'native',
     },
     {
       id: `queue-${text}`,
@@ -104,6 +105,20 @@ describe('compose request queue', () => {
       JSON.stringify({ version: 99, items: [request] }),
     );
     expect(readQueuedComposeRequests('conversation-a', storage)).toEqual([]);
+  });
+
+  it('defaults legacy queued entries (no kernelOverride) to the native kernel', () => {
+    const storage = new MemoryStorage();
+    const legacy = queuedRequest();
+    delete (legacy as { kernelOverride?: string }).kernelOverride;
+    storage.values.set(
+      composeRequestQueueStorageKey('conversation-a'),
+      JSON.stringify({ version: 1, items: [legacy] }),
+    );
+
+    const restored = readQueuedComposeRequests('conversation-a', storage);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({ ...legacy, kernelOverride: 'native' });
   });
 
   it('treats storage failures as best-effort instead of losing the in-memory queue', () => {

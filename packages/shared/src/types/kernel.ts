@@ -206,6 +206,14 @@ export interface KernelAdapter {
 /** Result of a local kernel detection sweep (PATH + common install paths). */
 export interface KernelDetectionResult {
   kernelId: KernelId;
+  /** Display name (kernel selector UI). */
+  name: string;
+  /** Kernel icon asset key (kernel selector UI). */
+  icon: string;
+  /** Declared capabilities (drive UI degradation). */
+  capabilities: KernelCapabilities;
+  /** Human-readable install command shown for missing kernels. */
+  installCommand?: string;
   installed: boolean;
   /** Parsed version string, or null when the probe failed. */
   version: string | null;
