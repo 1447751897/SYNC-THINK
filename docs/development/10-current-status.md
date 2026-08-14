@@ -1014,3 +1014,48 @@
 ### 边界
 
 - 本轮实窗使用共享数据库与既有会话，仅新增消息，未删除或迁移数据；不生成安装包。
+
+## 当前状态：2026-08-14 · 多内核收口快照与后续任务清单
+
+### 分支与提交
+
+- 分支 `feature/multi-kernel`，HEAD `777526f`，已推送且与 `origin/feature/multi-kernel` 一致。
+- 多内核提交链：`920af52` → `bfc8339` → `5a03c4f` → `1f77fb0` → `016b678` → `ce65d8f` → `3998d67` → `8db6978` → `777526f`。
+- 工作树仅剩未跟踪的本地 `.zcode/` 会话计划，不纳入版本控制。
+
+### 当前可用能力（已验证）
+
+- 内核选择：模型菜单显示 Native、Claude Code v2.1.222、Codex v0.145.0、Pi 未安装并带安装入口；选择按 Conversation 持久化，排队插话保留入队时内核。
+- 外部内核运行：按 `kernelId` 分流，delta / 工具 / usage / terminal 接入既有事件与消息持久化；终态读取最新 Run，EOF 未发 terminal 按失败处理。
+- 平台工具：每 Run 冻结目录；Task、Agent、Skill、Team、MCP 目录与远端注册复用原生执行器；审批走 `chatToolRequiresApproval`，库写操作仅 `full-access` 免批。
+- 取消与幂等：`tool-cancel` 帧 + 每调用 AbortController，同 Run 串行；晚批准不执行副作用；同 Run 按 `callId + 工具 + 参数摘要` 重放。
+- 协议保真：CC 增量文本、thinking 转诊断 reasoning、`tool_result` 闭环；Codex 真实 `server/tool/arguments` 与正确 cached 口径。
+
+### 当前门禁结果
+
+- Runtime `98 files / 635 tests`、Desktop `157 files / 1184 tests`、Storage `38 files / 410 tests` 全部通过。
+- 根 `pnpm typecheck` 20/20、`pnpm lint` 11/11（0 errors，保留 15 条既有 Desktop hooks warnings）、`pnpm build` 11/11。
+- 真实 CLI 抓取 fixture 已入库并脱敏：`apps/runtime/src/kernel/fixtures/claude-2.1.222-partial-capture.jsonl`、`codex-0.145.0-mcp-capture.jsonl`。
+
+### 本地实例与证据
+
+- 当前实例：Electron PID `49800`、managed Runtime PID `44004`，CDP `127.0.0.1:9366`，使用共享数据库 `.data/SYNC-THINK/sync-think.db`。
+- 实窗证据目录 `.data/local-restart-20260814-multikernel-final/`：12 张截图、`facts.jsonl` 41 行、`desktop.stdout.log`、`desktop.stderr.log`、`multikernel-probe.cjs`。
+- 数据库确认的 Codex 成功链：`run.started(kernelId=codex)` → `provider.usage(requestId=kernel-<runId>-1, tokensIn 18105, tokensOut 35)` → `run.completed(assistantText="codex-ok")`。
+
+### 后续任务清单（按优先级）
+
+1. **P0 实窗补齐 native 与 Claude Code 成功回复。** 当前被中转站拒绝：native 返回 400，CC 返回 `503 分组 claude 未开通模型 gpt-5.6-luna`。需要先在能力中心为对应分组开通可用模型，再用 `.data/local-restart-20260814-multikernel-final/multikernel-probe.cjs` 的 `kernel-chat` 步骤复测并留证。
+2. **P0 审批卡实窗点选证据。** approve 与 deny 目前只有 Runtime 级测试；需要在实窗触发一次平台工具审批，分别点批准与拒绝，断言 Store 写入与拒绝零副作用，并保存截图。
+3. **P0 重启后历史一致性实窗验证。** 冷重启 Desktop 与 managed Runtime，确认外部内核的最终文本、工具时间线、usage 与审批决定一致且不重放。
+4. **P1 跨重启幂等。** 现有重放缓存只在同 Run 内存中。需要持久化 `platform_tool_operation`（operation_key 主键 + request_digest + attempt_token + 结果），并对 Skill `content_fingerprint`、MCP `(name, endpoint)` 补数据库 UNIQUE（先做重复数据迁移）。
+5. **P1 Browser/Desktop 工具对外部内核开放。** 必须复用 `RuntimeBrowserController` 的 origin grant 与 `RuntimeDesktopController` 的风险分级（sensitive/human-only 全模式审批），并对 `browser_type` 输入与 `desktop_set_value` 明文做事件脱敏。
+6. **P1 `Runtime.stop()` 关闭期清理。** 正常关闭时统一 abort 在途 Run 并 settle `pendingToolApprovals`，避免关闭窗口留下孤儿审批。
+7. **P2 Pi 内核适配器。** 目前只有安装引导与安装后重探；需要 provider baseUrl 配置、宿主代理敏感工具与审批兜底。
+8. **P2 Codex 压缩通知来源。** `exec --json 0.145.0` 不输出上下文压缩事件，`compacted` 分支已实现但无来源；若需覆盖需改接 app-server 通道。
+9. **P2 CC `--permission-mode acceptEdits` 长期稳定性矩阵**与中转站 `/v1/messages` 兼容性矩阵。
+
+### 边界
+
+- 本轮实窗复用共享数据库与既有会话，只新增消息，未删除或迁移数据；未生成安装包。
+- 采样脚本与原始抓取保留在 `.data/kernel-capture/`，仓库内 fixture 已脱敏（签名、本机路径、用户目录均已替换）。
