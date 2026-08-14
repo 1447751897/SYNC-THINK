@@ -301,9 +301,7 @@ import {
 } from '@sync-think/core';
 import { createHash } from 'node:crypto';
 // cc-switch import helpers re-exported via core
-import { existsSync } from 'node:fs';
 import type { Socket } from 'node:net';
-import { fileURLToPath } from 'node:url';
 import {
   appendCommentaryTimelineDelta,
   applyDemoRunEvent,
@@ -528,7 +526,10 @@ import {
 import { createPipeServer, type PipeServerHandlers } from './pipe/server.js';
 import { healthcheck, type HealthcheckResult, type HealthcheckError } from './healthcheck.js';
 import { Scheduler } from './orchestration/scheduler.js';
-import { resolveKernelAdapter, getKernelRegistry } from './kernel/registry.js';
+import {
+  resolveKernelAdapter as resolveRegisteredKernelAdapter,
+  getKernelRegistry,
+} from './kernel/registry.js';
 import { collectWorkspaceSharedFacts } from './kernel/shared-facts.js';
 import {
   startKernelMcpBroker,
@@ -540,6 +541,7 @@ import {
   PLATFORM_MCP_TOOL_DEFINITIONS,
   type PlatformToolContext,
 } from './kernel/platform-tools.js';
+import { resolvePlatformMcpServerEntry } from './kernel/platform-mcp-entry.js';
 import type {
   KernelAdapter,
   KernelCredential,
@@ -666,6 +668,8 @@ export interface RuntimeOptions {
   browserFallbackWorkingDir?: string;
   /** Server-owned plan readiness lookup; clients cannot assert plan approval. */
   hasApprovedPlan?: (taskId: TaskId) => boolean;
+  /** Test/embedding seam; production defaults to the registered adapters. */
+  kernelAdapterResolver?: (kernelId?: string) => KernelAdapter | undefined;
   /**
    * Protocol-family discovery adapters (OpenAI-compatible live adapters, etc.).
    * Preferred over the single discoveryAdapter when a protocol key matches.
@@ -1088,6 +1092,7 @@ export class Runtime {
   private readonly browserWorkflowService?: RuntimeBrowserWorkflowService;
   private readonly browserWorkflowRunner?: BrowserWorkflowRunner;
   private readonly desktopController?: RuntimeDesktopController;
+  private readonly kernelAdapterResolver: (kernelId?: string) => KernelAdapter | undefined;
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
   private readonly discoveryAdapter?: DemoProvider;
@@ -1140,6 +1145,7 @@ export class Runtime {
 
   constructor(opts: RuntimeOptions) {
     this.installId = opts.installId;
+    this.kernelAdapterResolver = opts.kernelAdapterResolver ?? resolveRegisteredKernelAdapter;
     this.stateStore = opts.stateStore;
     this.workspaceStore = opts.workspaceStore;
     this.workspaceId = opts.workspaceId ?? ('workspace-dev' as WorkspaceId);
@@ -14968,7 +14974,7 @@ export class Runtime {
     let broker: KernelMcpBroker | undefined;
     try {
       const kernelId = initialRun.kernelId ?? 'native';
-      adapter = resolveKernelAdapter(kernelId);
+      adapter = this.kernelAdapterResolver(kernelId);
       if (!adapter) {
         throw new Error(`Kernel adapter not wired: ${kernelId}`);
       }
@@ -14978,7 +14984,7 @@ export class Runtime {
       broker = await this.startPlatformMcpBrokerForRun(runId, initialRun, request);
       this.wireKernelPermissionBridge(runId, initialRun.threadId, adapter, abort.signal);
 
-      let finalStatus: 'completed' | 'failed' = 'completed';
+      let finalStatus: 'completed' | 'failed' | undefined;
       let finalError: string | undefined;
       for await (const event of adapter.start(request)) {
         if (abort.signal.aborted) break;
@@ -15005,12 +15011,21 @@ export class Runtime {
         }
       }
 
-      if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
-      this.finalizeKernelRun(runId, initialRun, finalStatus, finalError);
+      if (abort.signal.aborted) return;
+      const finalRun = this.demoRuns.get(runId);
+      if (!finalRun) return;
+      this.finalizeKernelRun(
+        runId,
+        finalRun,
+        finalStatus ?? 'failed',
+        finalStatus ? finalError : 'kernel process ended before a terminal event',
+      );
     } catch (error) {
-      if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+      if (abort.signal.aborted) return;
+      const finalRun = this.demoRuns.get(runId);
+      if (!finalRun) return;
       const message = error instanceof Error ? error.message : 'kernel run failed';
-      this.finalizeKernelRun(runId, initialRun, 'failed', message);
+      this.finalizeKernelRun(runId, finalRun, 'failed', message);
     } finally {
       if (adapter) await adapter.cancel().catch(() => undefined);
       if (broker) await broker.close().catch(() => undefined);
@@ -15115,16 +15130,7 @@ export class Runtime {
 
   /** Resolve the platform MCP server entry (self-contained .mjs, no build). */
   private resolvePlatformMcpServerEntry(): string | undefined {
-    const candidates = [
-      // Runtime src (tsx) → repo apps/mcp-server/platform-mcp-server.mjs.
-      new URL('../../../mcp-server/platform-mcp-server.mjs', import.meta.url),
-      // Runtime dist → two hops up + apps/mcp-server.
-      new URL('../../../../apps/mcp-server/platform-mcp-server.mjs', import.meta.url),
-    ];
-    for (const candidate of candidates) {
-      if (existsSync(fileURLToPath(candidate))) return fileURLToPath(candidate);
-    }
-    return undefined;
+    return resolvePlatformMcpServerEntry(import.meta.url);
   }
 
   /**
@@ -15252,7 +15258,7 @@ export class Runtime {
         getKernelRegistry().map(async (entry) => {
           try {
             return await entry.detect();
-          } catch (error) {
+          } catch {
             // A broken probe must not fail the whole sweep — report uninstalled.
             return {
               kernelId: entry.id,
@@ -15301,10 +15307,7 @@ export class Runtime {
         name: permission.toolName,
         argumentsJson: JSON.stringify(permission.toolInput ?? {}),
       };
-      const summary = summarizeToolCallForApproval(
-        permission.toolName,
-        toolCall.argumentsJson,
-      );
+      const summary = summarizeToolCallForApproval(permission.toolName, toolCall.argumentsJson);
       try {
         const event = this.persistProjectedEvent(
           {

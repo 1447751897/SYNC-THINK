@@ -110,6 +110,7 @@ const REQUIRED_LAYOUT_FILES = [
   ['resources/app/dist/renderer-shell/index.html', 'release.desktop_shell_missing'],
   ['resources/runtime/main.js', 'release.runtime_entry_missing'],
   ['resources/runtime/dist/main.js', 'release.runtime_main_missing'],
+  ['resources/runtime/mcp-server/platform-mcp-server.mjs', 'release.platform_mcp_server_missing'],
   ['resources/node/node.exe', 'release.node_binary_missing'],
 ];
 
@@ -608,6 +609,12 @@ export async function stageWindowsPortableRelease(options = {}) {
     'utf8',
   );
   await writeFile(join(runtimeDir, 'main.js'), "import './dist/main.js';\n", 'utf8');
+  const platformMcpDir = join(runtimeDir, 'mcp-server');
+  await mkdir(platformMcpDir, { recursive: true });
+  await cp(
+    join(workspaceRoot, 'apps', 'mcp-server', 'platform-mcp-server.mjs'),
+    join(platformMcpDir, 'platform-mcp-server.mjs'),
+  );
   const nodeDir = join(outputDir, 'resources', 'node');
   await mkdir(nodeDir, { recursive: true });
   await cp(managedNode.path, join(nodeDir, 'node.exe'));

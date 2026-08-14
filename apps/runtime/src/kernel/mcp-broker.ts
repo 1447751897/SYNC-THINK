@@ -69,8 +69,9 @@ const FRAME_BYTE_CAP = 1 << 20; // 1 MiB per frame guard.
  */
 export function startKernelMcpBroker(options: KernelMcpBrokerOptions): Promise<KernelMcpBroker> {
   const token = randomBytes(24).toString('base64url');
+  const sockets = new Set<Socket>();
   const server = createServer((socket) => {
-    void handleConnection(socket, token, options);
+    void handleConnection(socket, token, options, sockets);
   });
 
   return new Promise((resolve, reject) => {
@@ -99,12 +100,11 @@ export function startKernelMcpBroker(options: KernelMcpBrokerOptions): Promise<K
   });
 }
 
-const sockets = new Set<Socket>();
-
 function handleConnection(
   socket: Socket,
   token: string,
   options: KernelMcpBrokerOptions,
+  sockets: Set<Socket>,
 ): void {
   sockets.add(socket);
   socket.on('close', () => sockets.delete(socket));

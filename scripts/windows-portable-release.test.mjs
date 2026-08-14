@@ -214,8 +214,7 @@ test('portable deploy ignores only a Windows pnpm PowerShell shim EPERM inside i
       "EPERM: operation not permitted, open '" +
       join(target, 'node_modules', '.bin', 'semver.cmd') +
       "'",
-    prefix +
-      "EPERM: operation not permitted, open '" + join(target, 'package.json') + "'",
+    prefix + "EPERM: operation not permitted, open '" + join(target, 'package.json') + "'",
     "EPERM: operation not permitted, open '" +
       join(target, 'node_modules', '.bin', 'semver.ps1') +
       "'",
@@ -277,7 +276,10 @@ test('forbidden release scan rejects secrets, databases, source trees, tests and
   await mkdir(join(root, 'resources', 'runtime', 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(root, 'resources', 'app', '.env.production'), 'TOKEN=secret');
   await writeFile(join(root, 'resources', 'runtime', 'sync-think.db'), 'sqlite');
-  await writeFile(join(root, 'resources', 'app', 'node_modules', '.bin', 'tailwindcss.ps1'), 'shim');
+  await writeFile(
+    join(root, 'resources', 'app', 'node_modules', '.bin', 'tailwindcss.ps1'),
+    'shim',
+  );
   await writeFile(join(root, 'resources', 'runtime', 'node_modules', '.bin', 'semver.ps1'), 'shim');
 
   const forbidden = await collectForbiddenReleaseFiles(root);
@@ -325,6 +327,7 @@ test('portable layout verifier reports missing critical resources without throwi
   assert.ok(result.errors.includes('release.desktop_executable_missing'));
   assert.ok(result.errors.includes('release.updater_config_missing'));
   assert.ok(result.errors.includes('release.runtime_entry_missing'));
+  assert.ok(result.errors.includes('release.platform_mcp_server_missing'));
   assert.ok(result.errors.includes('release.node_binary_missing'));
   assert.deepEqual(result.forbiddenFiles, []);
 });
