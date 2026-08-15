@@ -260,6 +260,7 @@ import type {
   ConversationDecideToolApprovalPayload,
   ConversationDecideToolApprovalResponse,
   KernelDetectResponse,
+  OpenGatewayStatusResponse,
 } from '@sync-think/protocol';
 import type { ArtifactImagePreviewResponse } from '../artifact-image-preview-contract.js';
 import type {
@@ -302,6 +303,8 @@ const api = {
       ipcRenderer.invoke('runtime:append-message', payload) as Promise<AppendMessageResponse>,
     detectKernels: () =>
       ipcRenderer.invoke('runtime:kernel-detect') as Promise<KernelDetectResponse>,
+    getGatewayStatus: () =>
+      ipcRenderer.invoke('runtime:gateway-status') as Promise<OpenGatewayStatusResponse>,
     installKernel: (kernelId: string) =>
       ipcRenderer.invoke('desktop:kernel-install', kernelId) as Promise<
         { ok: true } | { ok: false; error: string }

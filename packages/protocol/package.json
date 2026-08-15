@@ -17,6 +17,10 @@
     "./plugins": {
       "types": "./dist/plugins.d.ts",
       "default": "./dist/plugins.js"
+    },
+    "./gateway": {
+      "types": "./dist/gateway.d.ts",
+      "default": "./dist/gateway.js"
     }
   },
   "scripts": {

@@ -11,4 +11,5 @@ export * from './anthropic/anthropic-messages-adapter.js';
 export * from './anthropic/stream-messages.js';
 export * from './anthropic/discover-models.js';
 export * from './proxy-fetch.js';
+export * from './gateway/index.js';
 

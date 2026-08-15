@@ -66,6 +66,7 @@ import {
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
   type KernelDetectResponse,
+  type OpenGatewayStatusResponse,
 } from '@sync-think/protocol';
 import type {
   AppendMessagePayload,
@@ -1598,6 +1599,11 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request<KernelDetectResponse>('kernel.detect', {});
+  });
+  ipcMain.handle('runtime:gateway-status', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<OpenGatewayStatusResponse>('gateway.status', {});
   });
   ipcMain.handle('desktop:kernel-install', (event, value: unknown) => {
     assertRuntimeIpcSource(event);

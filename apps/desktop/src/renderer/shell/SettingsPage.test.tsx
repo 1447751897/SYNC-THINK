@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { COMPUTER_USE_PLUGIN_SETTING_KEY } from '@sync-think/protocol/plugins';
+import { OPEN_GATEWAY_SETTING_KEY } from '@sync-think/protocol/gateway';
 import { SettingsPage } from './SettingsPage.js';
 
 vi.mock('./ModelSettings.js', () => ({
@@ -15,6 +16,8 @@ const runtime = {
   setSetting: vi.fn(),
   setTheme: vi.fn(),
   exportDiagnostics: vi.fn(),
+  getGatewayStatus: vi.fn(),
+  listProviders: vi.fn(),
 };
 
 beforeEach(() => {
@@ -31,6 +34,13 @@ beforeEach(() => {
     value: { enabled: true },
     updatedAt: '2026-07-31T00:00:00.000Z',
   });
+  runtime.getGatewayStatus.mockResolvedValue({
+    enabled: false,
+    running: false,
+    port: 8788,
+    host: '127.0.0.1',
+  });
+  runtime.listProviders.mockResolvedValue({ providers: [] });
   Object.defineProperty(window, 'syncThink', {
     configurable: true,
     value: { runtime },
@@ -151,5 +161,159 @@ describe('SettingsPage diagnostics export', () => {
 
     expect((await screen.findByRole('alert')).textContent).toContain('disk full');
     expect((exportButton as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+async function openGateway() {
+  render(<SettingsPage />);
+  fireEvent.click(screen.getByRole('button', { name: '连接' }));
+  const toggle = await screen.findByRole('switch', { name: '启用网关' });
+  await waitFor(() => expect((toggle as HTMLButtonElement).disabled).toBe(false));
+  return toggle;
+}
+
+describe('SettingsPage open gateway', () => {
+  it('defaults to disabled with an auto-assigned port and reads the persisted setting', async () => {
+    const toggle = await openGateway();
+
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(screen.queryByText(/能力尚未接入/)).toBeNull();
+    expect(runtime.getSettings).toHaveBeenCalledWith({ keys: [OPEN_GATEWAY_SETTING_KEY] });
+    // Empty port input = OS auto-assign (port 0).
+    expect((screen.getByTestId('settings-gateway-port') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('settings-gateway-status').textContent).toContain('已停用');
+  });
+
+  it('enables the gateway and re-polls status for the bound port', async () => {
+    const toggle = await openGateway();
+    runtime.getGatewayStatus.mockResolvedValue({
+      enabled: true,
+      running: true,
+      port: 55349,
+      host: '127.0.0.1',
+      anthropicBaseUrl: 'http://127.0.0.1:55349/anthropic',
+      openaiBaseUrl: 'http://127.0.0.1:55349/openai/v1',
+      modelsBaseUrl: 'http://127.0.0.1:55349/v1/models',
+      lastUpstream: {
+        providerId: 'prov-a',
+        providerName: 'Relay A',
+        protocol: 'openai-chat',
+        model: 'gpt-5.6-sol',
+      },
+    });
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(runtime.setSetting).toHaveBeenCalledWith({
+        key: OPEN_GATEWAY_SETTING_KEY,
+        value: { enabled: true, port: 0 },
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-gateway-status').textContent).toContain(
+        '监听 127.0.0.1:55349',
+      ),
+    );
+    expect(screen.getByTestId('settings-gateway-running-port').textContent).toContain('55349');
+    // Interface table rows (figure 三): OpenAI / Anthropic / model list.
+    expect(screen.getByTestId('settings-gateway-route-openai').textContent).toContain(
+      'POST /v1/chat/completions',
+    );
+    expect(screen.getByTestId('settings-gateway-route-anthropic').textContent).toContain(
+      'POST /v1/messages',
+    );
+    expect(screen.getByTestId('settings-gateway-route-models').textContent).toContain(
+      'GET /v1/models',
+    );
+    // Base URLs are only offered once a listener is actually bound. The long-lived
+    // external token is no longer rendered — in-app runs use per-run tickets.
+    expect(screen.getByText('http://127.0.0.1:55349/anthropic')).toBeTruthy();
+    expect(screen.getByText('http://127.0.0.1:55349/openai/v1')).toBeTruthy();
+    expect(screen.queryByText(/stgx_/)).toBeNull();
+    expect(screen.queryByRole('button', { name: '显示' })).toBeNull();
+    // Read-only upstream line mirrors the provider the run actually routed.
+    expect(screen.getByTestId('settings-gateway-upstream').textContent).toContain('Relay A');
+    expect(screen.getByTestId('settings-gateway-upstream').textContent).toContain('OpenAI 格式');
+  });
+
+  it('persists a valid port on Enter and rejects an out-of-range one', async () => {
+    await openGateway();
+    const port = screen.getByTestId('settings-gateway-port');
+
+    fireEvent.change(port, { target: { value: '9001' } });
+    fireEvent.keyDown(port, { key: 'Enter' });
+    await waitFor(() =>
+      expect(runtime.setSetting).toHaveBeenCalledWith({
+        key: OPEN_GATEWAY_SETTING_KEY,
+        value: { enabled: false, port: 9001 },
+      }),
+    );
+
+    runtime.setSetting.mockClear();
+    fireEvent.change(port, { target: { value: '80' } });
+    fireEvent.blur(port);
+    expect((await screen.findByRole('alert')).textContent).toContain('1024-65535');
+    expect(runtime.setSetting).not.toHaveBeenCalled();
+    // The rejected value snaps back rather than lying about what is persisted.
+    expect((port as HTMLInputElement).value).toBe('9001');
+  });
+
+  it('clears a persisted port back to auto-assign (port 0) on empty input', async () => {
+    runtime.getSettings.mockResolvedValue({
+      settings: { [OPEN_GATEWAY_SETTING_KEY]: { enabled: true, port: 8788 } },
+    });
+    await openGateway();
+    const port = screen.getByTestId('settings-gateway-port') as HTMLInputElement;
+    expect(port.value).toBe('8788');
+
+    fireEvent.change(port, { target: { value: '' } });
+    fireEvent.blur(port);
+    await waitFor(() =>
+      expect(runtime.setSetting).toHaveBeenCalledWith({
+        key: OPEN_GATEWAY_SETTING_KEY,
+        value: { enabled: true, port: 0 },
+      }),
+    );
+  });
+
+  it('never renders an external default-provider select (ticket-based routing)', async () => {
+    runtime.listProviders.mockResolvedValue({
+      providers: [{ providerId: 'prov-a', name: 'Relay A', enabled: true }],
+    });
+    await openGateway();
+
+    expect(screen.queryByTestId('settings-gateway-default-provider')).toBeNull();
+    // The connection card must not need the provider catalog at all.
+    expect(runtime.listProviders).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a port conflict reported by the runtime', async () => {
+    runtime.getSettings.mockResolvedValue({
+      settings: { [OPEN_GATEWAY_SETTING_KEY]: { enabled: true, port: 8788 } },
+    });
+    runtime.getGatewayStatus.mockResolvedValue({
+      enabled: true,
+      running: false,
+      port: 8788,
+      host: '127.0.0.1',
+      failure: 'port-in-use',
+      failureDetail: '端口 8788 已被占用，请在设置中改用其他端口。',
+    });
+    await openGateway();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-gateway-status').textContent).toContain('已被占用'),
+    );
+    // No base URL is advertised when nothing is listening.
+    expect(screen.queryByText(/127\.0\.0\.1:8788\/anthropic/)).toBeNull();
+  });
+
+  it('rolls the toggle back when persistence fails', async () => {
+    runtime.setSetting.mockRejectedValue(new Error('gateway save failed'));
+    const toggle = await openGateway();
+    fireEvent.click(toggle);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('gateway save failed');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
   });
 });

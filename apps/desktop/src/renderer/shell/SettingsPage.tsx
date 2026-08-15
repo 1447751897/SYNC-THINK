@@ -8,6 +8,7 @@ import {
   Bot,
   Check,
   CircleUserRound,
+  Copy,
   Database,
   Download,
   Info,
@@ -15,6 +16,7 @@ import {
   Mic2,
   Monitor,
   Moon,
+  Network,
   Palette,
   Plug,
   Search,
@@ -31,6 +33,15 @@ import {
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   normalizeComputerUsePluginSetting,
 } from '@sync-think/protocol/plugins';
+// Subpath import on purpose: the protocol barrel reaches node:os / node:crypto
+// through the pipe + handshake modules, which cannot be bundled for the renderer.
+import {
+  OPEN_GATEWAY_SETTING_KEY,
+  normalizeOpenGatewaySetting,
+  type OpenGatewaySetting,
+  type OpenGatewayStatusResponse,
+  type OpenGatewayUpstreamProtocol,
+} from '@sync-think/protocol/gateway';
 import { ModelSettings, type ModelSettingsHandle } from './ModelSettings.js';
 import { DesktopUpdatePanel } from './DesktopUpdatePanel.js';
 import { decideSettingsPageAction } from './settings-unsaved.js';
@@ -101,7 +112,13 @@ const SECTIONS: Array<{
   },
   { id: 'voice', label: '语音模型', icon: Mic2, ready: false },
   { id: 'insights', label: '每日回顾', icon: BarChart3, ready: false },
-  { id: 'connection', label: '连接', icon: Plug, ready: false },
+  {
+    id: 'connection',
+    label: '连接',
+    icon: Plug,
+    ready: true,
+    keywords: 'AI 模型网关 协议转换 Claude Code Codex 反向代理 baseUrl 端口 /v1/models',
+  },
   { id: 'security', label: '安全查杀', icon: ShieldCheck, ready: false },
   {
     id: 'plugins',
@@ -232,6 +249,7 @@ export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: Settin
             />
           )}
           {section === 'plugins' && <ComputerUsePluginSection />}
+          {section === 'connection' && <ConnectionSection />}
           {section === 'data' && <DataDiagnosticsSection />}
           {section === 'about' && <AboutSection />}
           {!current.ready && <ComingSoonSection label={current.label} />}
@@ -546,6 +564,305 @@ function ComputerUsePluginSection() {
       </p>
       <p className="settings-note">
         插件开关决定是否具有桌面能力；权限模式决定启用后的动作是否需要批准。「完全访问」不会自动启用插件。
+      </p>
+      {error ? (
+        <p className="settings-note" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Copy-to-clipboard row used for the gateway base URLs and external token. */
+function CopyableValue({
+  label,
+  value,
+  masked,
+}: {
+  label: string;
+  value: string;
+  masked?: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+  const shown = masked && !revealed ? `${value.slice(0, 9)}••••••••••` : value;
+
+  return (
+    <div className="settings-row">
+      <div>
+        <p>{label}</p>
+        <span className="settings-gateway-value">{shown}</span>
+      </div>
+      <div className="settings-row__control settings-gateway-actions">
+        {masked ? (
+          <button
+            type="button"
+            className="settings-gateway-button"
+            onClick={() => setRevealed((prev) => !prev)}
+          >
+            {revealed ? '隐藏' : '显示'}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="settings-gateway-button"
+          aria-label={`复制${label}`}
+          onClick={() => {
+            void navigator.clipboard
+              ?.writeText(value)
+              .then(() => setCopied(true))
+              .catch(() => setCopied(false));
+          }}
+        >
+          <Copy size={13} aria-hidden="true" />
+          <span>{copied ? '已复制' : '复制'}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * AI 模型网关 — a pure protocol-format converter on the connection page.
+ *
+ * Per-run traffic is routed by ticket (issued by the runtime when a run starts),
+ * so this card never has to pick a provider: whatever the user selected in the
+ * conversation input wins. The read-only upstream line mirrors the most recent
+ * run the gateway actually routed. External terminal clients (no run context)
+ * resolve model names through the catalog; no default-provider setting exists.
+ */
+function ConnectionSection() {
+  const [setting, setSetting] = useState<OpenGatewaySetting>({ enabled: false, port: 0 });
+  const [portDraft, setPortDraft] = useState('');
+  const [status, setStatus] = useState<OpenGatewayStatusResponse>();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  const disposedRef = useRef(false);
+
+  // The runtime rebinds the listener *after* answering settings.set, so the
+  // bound state can only be learned by re-reading gateway.status.
+  const refreshStatus = useCallback(async () => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.getGatewayStatus) return;
+    try {
+      const next = await runtime.getGatewayStatus();
+      if (!disposedRef.current) setStatus(next);
+    } catch {
+      // Status is advisory; a failed poll must not clobber the form.
+    }
+  }, []);
+
+  useEffect(() => {
+    disposedRef.current = false;
+    const runtime = window.syncThink?.runtime;
+    if (!runtime) {
+      setError('Runtime 连接不可用，无法读取网关配置。');
+      setLoading(false);
+      return () => {
+        disposedRef.current = true;
+      };
+    }
+    void (async () => {
+      try {
+        const response = await runtime.getSettings({ keys: [OPEN_GATEWAY_SETTING_KEY] });
+        if (disposedRef.current) return;
+        const next = normalizeOpenGatewaySetting(response.settings[OPEN_GATEWAY_SETTING_KEY]);
+        setSetting(next);
+        setPortDraft(next.port === 0 ? '' : String(next.port));
+        setError(undefined);
+      } catch (reason) {
+        if (!disposedRef.current) {
+          setError(reason instanceof Error ? reason.message : '无法读取网关配置。');
+        }
+      } finally {
+        if (!disposedRef.current) setLoading(false);
+      }
+      await refreshStatus();
+    })();
+    return () => {
+      disposedRef.current = true;
+    };
+  }, [refreshStatus]);
+
+  const persist = async (next: OpenGatewaySetting) => {
+    const previous = setting;
+    setSetting(next);
+    setSaving(true);
+    setError(undefined);
+    try {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime) throw new Error('Runtime 连接不可用。');
+      await runtime.setSetting({ key: OPEN_GATEWAY_SETTING_KEY, value: next });
+      await refreshStatus();
+    } catch (reason) {
+      setSetting(previous);
+      setPortDraft(previous.port === 0 ? '' : String(previous.port));
+      setError(reason instanceof Error ? reason.message : '保存网关配置失败。');
+    } finally {
+      if (!disposedRef.current) setSaving(false);
+    }
+  };
+
+  const commitPort = (raw: string) => {
+    const trimmed = raw.trim();
+    // Empty input = OS auto-assign (port 0). The normalizer snaps out-of-range
+    // values to 0, so validate here rather than relying on the round-trip.
+    if (trimmed === '') {
+      setError(undefined);
+      if (setting.port === 0) return;
+      void persist({ ...setting, port: 0 });
+      return;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isInteger(parsed) || parsed < 1024 || parsed > 65535) {
+      setPortDraft(setting.port === 0 ? '' : String(setting.port));
+      setError('端口需为 1024-65535 之间的整数，或留空自动分配。');
+      return;
+    }
+    setError(undefined);
+    if (parsed === setting.port) return;
+    void persist({ ...setting, port: parsed });
+  };
+
+  const statusText = (() => {
+    if (loading) return '正在读取网关状态…';
+    if (!setting.enabled) return '已停用：内核直连所选供应商，不经过本机转换。';
+    if (status?.running) return `运行中：监听 127.0.0.1:${status.port}。`;
+    if (status?.failureDetail) return status.failureDetail;
+    if (status?.failure === 'bind-failed') return '网关启动失败，请查看 Runtime 日志。';
+    return '正在启动网关…';
+  })();
+
+  const protocolLabel = (protocol: OpenGatewayUpstreamProtocol | undefined) =>
+    protocol === 'anthropic-messages' ? 'Anthropic 格式' : 'OpenAI 格式';
+
+  return (
+    <div className="settings-scroll settings-standard-pane">
+      <div className="settings-gateway-card">
+        <div className="settings-gateway-card__head">
+          <div className="settings-gateway-card__identity">
+            <span className="settings-gateway-card__icon" aria-hidden="true">
+              <Network size={18} />
+            </span>
+            <div>
+              <h2 className="settings-gateway-card__title">AI 模型网关</h2>
+              <p className="settings-gateway-card__subtitle">支持 OpenAI / Anthropic 双格式调用</p>
+            </div>
+          </div>
+          <div className="settings-gateway-card__meta">
+            {status?.running ? (
+              <span
+                className="settings-gateway-card__port"
+                data-testid="settings-gateway-running-port"
+              >
+                {status.port}
+              </span>
+            ) : null}
+            <Toggle
+              checked={setting.enabled}
+              disabled={loading || saving}
+              label="启用网关"
+              onChange={(next) => void persist({ ...setting, enabled: next })}
+            />
+          </div>
+        </div>
+
+        <div className="settings-gateway-card__body">
+          <div className="settings-row">
+            <div>
+              <p>监听端口</p>
+              <span>仅绑定 127.0.0.1，留空自动分配端口。</span>
+            </div>
+            <div className="settings-row__control">
+              <input
+                data-testid="settings-gateway-port"
+                className="st-field-input"
+                style={{ width: 120 }}
+                inputMode="numeric"
+                placeholder="自动分配"
+                aria-label="网关监听端口"
+                value={portDraft}
+                disabled={loading || saving}
+                onChange={(event) => setPortDraft(event.target.value)}
+                onBlur={(event) => commitPort(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') commitPort(event.currentTarget.value);
+                }}
+              />
+            </div>
+          </div>
+
+          {status?.running ? (
+            <div className="settings-gateway-card__routes">
+              <p className="settings-gateway-card__routes-title">可用接口</p>
+              <div
+                className="settings-gateway-card__route"
+                data-testid="settings-gateway-route-openai"
+              >
+                <code>POST /v1/chat/completions</code>
+                <span>OpenAI 格式</span>
+              </div>
+              <div
+                className="settings-gateway-card__route"
+                data-testid="settings-gateway-route-anthropic"
+              >
+                <code>POST /v1/messages</code>
+                <span>Anthropic 格式</span>
+              </div>
+              <div
+                className="settings-gateway-card__route"
+                data-testid="settings-gateway-route-models"
+              >
+                <code>GET /v1/models</code>
+                <span>模型列表</span>
+              </div>
+              <div className="settings-gateway-card__copy">
+                {status.anthropicBaseUrl ? (
+                  <CopyableValue
+                    label="Anthropic 入口 (ANTHROPIC_BASE_URL)"
+                    value={status.anthropicBaseUrl}
+                  />
+                ) : null}
+                {status.openaiBaseUrl ? (
+                  <CopyableValue
+                    label="OpenAI 入口 (OPENAI_BASE_URL)"
+                    value={status.openaiBaseUrl}
+                  />
+                ) : null}
+                {status.modelsBaseUrl ? (
+                  <CopyableValue label="模型列表 (GET /v1/models)" value={status.modelsBaseUrl} />
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          <p
+            className="settings-gateway-card__upstream"
+            data-testid="settings-gateway-upstream"
+          >
+            {status?.lastUpstream
+              ? `上游：${status.lastUpstream.providerName}（${protocolLabel(
+                  status.lastUpstream.protocol,
+                )}），网关自动转换协议`
+              : '上游：跟随对话所选供应商与模型，网关自动转换协议'}
+          </p>
+        </div>
+      </div>
+
+      <p
+        className={clsx(
+          'settings-note',
+          status?.failure && setting.enabled && 'settings-gateway-note--alert',
+        )}
+        data-testid="settings-gateway-status"
+        aria-live="polite"
+      >
+        {statusText}
+      </p>
+      <p className="settings-note">
+        内部对话按「运行票据」路由：启动时锁定对话输入框里选择的供应商与模型，多个供应商存在同名模型也不会串。
       </p>
       {error ? (
         <p className="settings-note" role="alert">

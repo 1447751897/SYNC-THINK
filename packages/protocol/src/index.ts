@@ -6,4 +6,5 @@ export * from './skill-selection.js';
 export * from './conversation-context-status.js';
 export * from './events.js';
 export * from './plugins.js';
+export * from './gateway.js';
 export * from './pipe.js';
