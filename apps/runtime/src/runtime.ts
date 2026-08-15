@@ -161,6 +161,9 @@ import {
   type KernelDetectResponse,
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   isComputerUsePluginEnabled as isComputerUsePluginSettingEnabled,
+  OPEN_GATEWAY_SETTING_KEY,
+  normalizeOpenGatewaySetting,
+  type OpenGatewayStatusResponse,
 } from '@sync-think/protocol';
 import {
   ErrorCode,
@@ -299,7 +302,7 @@ import {
   compareTextSnapshots,
   mergeTextSnapshots,
 } from '@sync-think/core';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 // cc-switch import helpers re-exported via core
 import type { Socket } from 'node:net';
 import {
@@ -531,6 +534,14 @@ import {
   getKernelRegistry,
 } from './kernel/registry.js';
 import { collectWorkspaceSharedFacts } from './kernel/shared-facts.js';
+import { formatKernelExitDiagnostic } from './kernel/kernel-diagnostics.js';
+import {
+  OpenGatewayManager,
+  kernelNeedsGateway,
+  toGatewayUpstreamProtocol,
+  type GatewayCatalogEntry,
+  type GatewayRunUsage,
+} from './gateway/index.js';
 import {
   startKernelMcpBroker,
   type KernelMcpBroker,
@@ -750,6 +761,139 @@ function runtimeRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+interface PersistedKernelConversationSession {
+  version: 1;
+  sessionId: string;
+  fingerprint: string;
+  updatedAt: string;
+  responseContinuationScopeId?: string;
+}
+
+const KERNEL_SESSION_SETTING_PREFIX = 'kernel.session';
+const GATEWAY_RESPONSE_CONTINUATION_SETTING_PREFIX = 'gateway.response-continuation';
+const TERMINAL_RUN_EVENT_TYPES = new Set([
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'run.paused',
+]);
+
+function parsePersistedKernelConversationSession(
+  value: unknown,
+): PersistedKernelConversationSession | undefined {
+  const record = runtimeRecord(value);
+  if (
+    record?.version !== 1 ||
+    typeof record.sessionId !== 'string' ||
+    !record.sessionId.trim() ||
+    typeof record.fingerprint !== 'string' ||
+    !record.fingerprint.trim() ||
+    typeof record.updatedAt !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    sessionId: record.sessionId,
+    fingerprint: record.fingerprint,
+    updatedAt: record.updatedAt,
+    ...(typeof record.responseContinuationScopeId === 'string' &&
+    record.responseContinuationScopeId.trim()
+      ? { responseContinuationScopeId: record.responseContinuationScopeId.trim() }
+      : {}),
+  };
+}
+
+function parsePersistedGatewayResponseContinuations(
+  value: unknown,
+): readonly (readonly [callId: string, responseId: string])[] | undefined {
+  const record = runtimeRecord(value);
+  if (record?.version === 1) {
+    // Version 1 stored Responses function item ids. They are recognized as
+    // legacy state but deliberately not reused as previous_response_id.
+    return [];
+  }
+  if (record?.version !== 2 || !Array.isArray(record.items)) return undefined;
+  const items: Array<readonly [string, string]> = [];
+  for (const candidate of record.items) {
+    if (!Array.isArray(candidate) || candidate.length !== 2) continue;
+    const callId = typeof candidate[0] === 'string' ? candidate[0].trim() : '';
+    const responseId = typeof candidate[1] === 'string' ? candidate[1].trim() : '';
+    if (!callId || !responseId) continue;
+    items.push([callId, responseId]);
+  }
+  return items;
+}
+
+function isInvalidKernelSessionError(error: string | undefined): boolean {
+  const message = error?.trim();
+  if (!message) return false;
+  return [
+    /\bsession\b.{0,120}\bnot found\b/i,
+    /\bthread\b.{0,120}\bdoes not exist\b/i,
+    /\binvalid session\b/i,
+    /\bunknown thread\b/i,
+    /\bfailed to resume session\b/i,
+    /\bcould not load session\b/i,
+    /\bno conversation found\b/i,
+  ].some((pattern) => pattern.test(message));
+}
+
+function providerContentToKernelTranscript(content: ProviderMessage['content']): string {
+  if (typeof content === 'string') return content;
+  return content
+    .map((part) => {
+      if (part.type === 'text') return part.text ?? '';
+      if (part.type === 'image') return '[Image attached in this conversation]';
+      if (part.type === 'tool-call') {
+        const tool = part.toolCall;
+        return tool
+          ? `[Tool call: ${tool.name}${tool.argumentsJson ? ` ${tool.argumentsJson}` : ''}]`
+          : '[Tool call]';
+      }
+      if (part.type === 'tool-result') return `[Tool result: ${part.toolResult ?? ''}]`;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function formatKernelBootstrapTranscript(messages: readonly ProviderMessage[]): string {
+  const turns = messages
+    .map((message) => {
+      const content = providerContentToKernelTranscript(message.content).trim();
+      if (!content) return undefined;
+      const label =
+        message.role === 'assistant'
+          ? message.phase === 'commentary'
+            ? 'Assistant commentary'
+            : 'Assistant'
+          : message.role === 'user'
+            ? 'User'
+            : message.role === 'tool'
+              ? 'Tool'
+              : 'System';
+      return `### ${label}\n${content}`;
+    })
+    .filter((turn): turn is string => Boolean(turn));
+  if (turns.length === 0) return '';
+  return [
+    '## Restored conversation context',
+    'The following transcript is prior conversation state. Continue from it without repeating it.',
+    ...turns,
+  ].join('\n\n');
+}
+
+function isCurrentKernelUserMessage(
+  message: ProviderMessage | undefined,
+  userText: string,
+): boolean {
+  if (!message || message.role !== 'user') return false;
+  const normalizedUserText = userText.trim();
+  if (!normalizedUserText) return false;
+  return providerContentToKernelTranscript(message.content).trim() === normalizedUserText;
 }
 
 function cursorForEvent(event: Event): EventReplayCursor {
@@ -1057,6 +1201,11 @@ export class Runtime {
   private readonly modelRetryBaseDelayMs: number;
   private readonly providerStore?: SqliteProviderStore;
   private readonly appSettingStore?: SqliteAppSettingStore;
+  /**
+   * Open gateway (开放网关): loopback protocol bridge that lets a kernel speak
+   * its native dialect against an upstream that speaks the other one.
+   */
+  private readonly openGateway: OpenGatewayManager;
   private readonly queryUsageSummary?: RuntimeOptions['queryUsageSummary'];
   private readonly agentStore?: SqliteAgentStore;
   private readonly globalAgentStore?: SqliteGlobalAgentStore;
@@ -1114,6 +1263,17 @@ export class Runtime {
     string,
     Map<string, Promise<{ ok: boolean; content?: string; error?: string }>>
   >();
+  /** Hot cache for external-kernel sessions; app_setting remains durable authority. */
+  private readonly kernelConversationSessions = new Map<
+    string,
+    PersistedKernelConversationSession
+  >();
+  /**
+   * Promise tails serialize one external kernel session without blocking
+   * unrelated conversations. The durable app_setting entry remains the
+   * authority for the actual session id.
+   */
+  private readonly externalKernelSessionTails = new Map<string, Promise<void>>();
   private readonly hasApprovedPlan?: (taskId: TaskId) => boolean;
   private readonly discoveryByProtocol: Partial<Record<ProtocolFamily, DemoProvider>>;
   private readonly discoveryAdapter?: DemoProvider;
@@ -1175,6 +1335,18 @@ export class Runtime {
     this.modelRetryBaseDelayMs = Math.max(0, opts.modelRetryBaseDelayMs ?? 500);
     this.providerStore = opts.providerStore;
     this.appSettingStore = opts.appSettingStore;
+    this.openGateway = new OpenGatewayManager({
+      listCatalog: () => this.collectGatewayCatalog(),
+      resolveProviderSecret: (providerId) => this.resolveProviderSecret(providerId),
+      loadResponseContinuations: (scopeId) => this.loadGatewayResponseContinuations(scopeId),
+      saveResponseContinuations: (scopeId, items) =>
+        this.saveGatewayResponseContinuations(scopeId, items),
+      removeResponseContinuations: (scopeId) => this.removeGatewayResponseContinuations(scopeId),
+      onLog: (message) => {
+        // Diagnostics only; the manager never passes secrets through here.
+        console.error(`[runtime] ${message}`);
+      },
+    });
     this.queryUsageSummary = opts.queryUsageSummary;
     this.agentStore = opts.agentStore;
     this.globalAgentStore = opts.globalAgentStore;
@@ -1592,6 +1764,10 @@ export class Runtime {
         }
         if (frame.type === 'kernel.detect') {
           void this.handleKernelDetect(socket, frame);
+          return;
+        }
+        if (frame.type === 'gateway.status') {
+          this.handleGatewayStatus(socket, frame);
           return;
         }
         if (frame.type === 'agent.get') {
@@ -5823,6 +5999,15 @@ export class Runtime {
       socket.write(
         encodeFrame({ id: frame.id, kind: 'response', type: 'settings.set', payload: response }),
       );
+      if (record.key === OPEN_GATEWAY_SETTING_KEY) {
+        // Converge the listener in the background: the shell polls gateway.status
+        // for the result, so the set response must not wait on a port bind.
+        this.trackBackgroundTask(
+          this.syncOpenGatewayFromSettings().catch((error) => {
+            console.warn('[runtime] open gateway reconfigure failed', error);
+          }),
+        );
+      }
     } catch (error) {
       this.writeProviderCommandError(socket, frame, error);
     }
@@ -7110,6 +7295,9 @@ export class Runtime {
       const response: ConversationGetContextStatusResponse = {
         modelId: snapshot.status.modelId,
         contextWindow: snapshot.status.contextWindow,
+        ...(snapshot.status.contextWindowEstimated === true
+          ? { contextWindowEstimated: true }
+          : {}),
         estimatedUsedTokens: snapshot.status.estimatedUsedTokens,
         usageRatio: snapshot.status.usageRatio,
         compactThreshold: snapshot.status.compactThreshold,
@@ -7413,6 +7601,13 @@ export class Runtime {
       return;
     }
     try {
+      const conversation = this.conversationStore.get(payload.conversationId);
+      const sessionScopeIds = [String(payload.conversationId)];
+      if (conversation?.taskId) {
+        const threadId = this.workspaceStore?.getTask(conversation.taskId)?.threadId;
+        if (threadId) sessionScopeIds.push(String(threadId));
+      }
+      this.clearKernelConversationSessionsForScopeIds(sessionScopeIds);
       this.conversationStore.delete(payload.conversationId);
       const event = this.appendEvent('system', 'conversation.deleted', {
         conversationId: payload.conversationId,
@@ -14991,23 +15186,82 @@ export class Runtime {
     this.recordInFlight(runId);
     const abort = new AbortController();
     this.demoRunAborts.set(runId, abort);
+    const kernelId = initialRun.kernelId ?? 'native';
+    const sessionLease = this.enqueueExternalKernelSession(
+      this.kernelConversationSessionKey(kernelId, initialRun),
+    );
     let adapter: KernelAdapter | undefined;
     let broker: KernelMcpBroker | undefined;
+    let request: KernelRequest | undefined;
+    let reportedSessionId: string | undefined;
+    let cancelAdapterPromise: Promise<void> | undefined;
+    let abortAdapterListener: (() => void) | undefined;
+    const kernelUsageReports: KernelUsage[] = [];
+    let usagePersisted = false;
+    const persistAuthoritativeUsage = (run: DemoRunState): void => {
+      if (usagePersisted) return;
+      const gatewayUsage = this.openGateway.consumeRunUsage(runId);
+      usagePersisted = true;
+      if (gatewayUsage.length > 0) {
+        gatewayUsage.forEach((usage, index) => {
+          this.persistGatewayUsage(runId, run, usage, index + 1);
+        });
+      } else {
+        kernelUsageReports.forEach((usage, index) => {
+          this.persistKernelUsage(runId, run, usage, index + 1);
+        });
+      }
+      kernelUsageReports.length = 0;
+    };
+    const cancelAdapterOnce = (): Promise<void> => {
+      if (!adapter) return Promise.resolve();
+      if (!cancelAdapterPromise) {
+        const activeAdapter = adapter;
+        cancelAdapterPromise = Promise.resolve()
+          .then(() => activeAdapter.cancel())
+          .catch(() => undefined);
+      }
+      return cancelAdapterPromise;
+    };
     try {
-      const kernelId = initialRun.kernelId ?? 'native';
+      const hasSessionTurn = await this.waitForExternalKernelSessionTurn(
+        sessionLease.waitForTurn,
+        abort.signal,
+      );
+      if (!hasSessionTurn) return;
+
       adapter = this.kernelAdapterResolver(kernelId);
       if (!adapter) {
         throw new Error(`Kernel adapter not wired: ${kernelId}`);
       }
-      const request = await this.buildKernelRequestForRun(initialRun);
+      abortAdapterListener = () => {
+        void cancelAdapterOnce();
+      };
+      abort.signal.addEventListener('abort', abortAdapterListener, { once: true });
+      if (abort.signal.aborted) {
+        await cancelAdapterOnce();
+        return;
+      }
+
+      request = await this.buildKernelRequestForRun(initialRun, runId);
+      if (abort.signal.aborted) return;
       // Slice 5: host platform tools ride the MCP channel. The broker lives for
       // exactly this run; the kernel's mcp config embeds its address + token.
       broker = await this.startPlatformMcpBrokerForRun(runId, initialRun, request);
+      if (abort.signal.aborted) return;
       this.wireKernelPermissionBridge(runId, initialRun.threadId, adapter, abort.signal);
 
       let finalStatus: 'completed' | 'failed' | undefined;
       let finalError: string | undefined;
-      let kernelUsageSequence = 0;
+      let exitDiagnostic:
+        | {
+            code: number | null;
+            stderrTail: string;
+          }
+        | undefined;
+      adapter.onExit((code, stderrTail) => {
+        exitDiagnostic = { code, stderrTail };
+      });
       for await (const event of adapter.start(request)) {
         if (abort.signal.aborted) break;
         switch (event.type) {
@@ -15019,6 +15273,13 @@ export class Runtime {
             // provider reasoning): stream it, never persist it as chat text.
             this.publishKernelReasoningDelta(runId, initialRun.threadId, event.text);
             break;
+          case 'session-started':
+            reportedSessionId ??= this.saveReportedKernelConversationSession(
+              initialRun,
+              event.sessionId,
+              request.session?.id,
+            );
+            break;
           case 'tool-call':
             this.persistKernelToolEvent(runId, initialRun.threadId, 'tool.requested', event);
             break;
@@ -15026,8 +15287,7 @@ export class Runtime {
             this.persistKernelToolEvent(runId, initialRun.threadId, 'tool.completed', event);
             break;
           case 'usage':
-            kernelUsageSequence += 1;
-            this.persistKernelUsage(runId, initialRun, event.usage, kernelUsageSequence);
+            kernelUsageReports.push({ ...event.usage });
             break;
           case 'compacted':
             // The kernel compacted its own context; the host records the
@@ -15047,53 +15307,403 @@ export class Runtime {
       if (abort.signal.aborted) return;
       const finalRun = this.demoRuns.get(runId);
       if (!finalRun) return;
+      if ((finalStatus ?? 'failed') === 'failed') {
+        this.clearFailedKernelConversationSession(finalRun, request, finalError, reportedSessionId);
+      } else if (
+        finalRun.kernelId === 'claude-code' &&
+        request.session?.mode === 'create' &&
+        request.session.id &&
+        !reportedSessionId
+      ) {
+        // Older/compatible Claude CLIs may complete without system/init carrying
+        // a session_id. A successful terminal proves the requested id is usable.
+        this.saveReportedKernelConversationSession(
+          finalRun,
+          request.session.id,
+          request.session.id,
+        );
+      }
+      persistAuthoritativeUsage(finalRun);
       this.finalizeKernelRun(
         runId,
         finalRun,
         finalStatus ?? 'failed',
-        finalStatus ? finalError : 'kernel process ended before a terminal event',
+        finalStatus
+          ? finalError
+          : exitDiagnostic
+            ? formatKernelExitDiagnostic(
+                adapter.name,
+                exitDiagnostic.code,
+                exitDiagnostic.stderrTail,
+              )
+            : 'kernel process ended before a terminal event',
       );
     } catch (error) {
       if (abort.signal.aborted) return;
       const finalRun = this.demoRuns.get(runId);
       if (!finalRun) return;
       const message = error instanceof Error ? error.message : 'kernel run failed';
+      if (request) {
+        this.clearFailedKernelConversationSession(finalRun, request, message, reportedSessionId);
+      }
+      persistAuthoritativeUsage(finalRun);
       this.finalizeKernelRun(runId, finalRun, 'failed', message);
     } finally {
-      if (adapter) await adapter.cancel().catch(() => undefined);
+      if (abortAdapterListener) {
+        abort.signal.removeEventListener('abort', abortAdapterListener);
+      }
+      await cancelAdapterOnce();
       if (broker) await broker.close().catch(() => undefined);
+      if (!usagePersisted) {
+        const finalRun = this.demoRuns.get(runId);
+        if (finalRun) {
+          persistAuthoritativeUsage(finalRun);
+        } else {
+          this.openGateway.consumeRunUsage(runId);
+          usagePersisted = true;
+        }
+      }
+      // Revoke the gateway ticket with the run: a leaked ticket id stops working
+      // the moment the run it was issued for ends.
+      this.openGateway.revokeRun(runId);
       this.platformMcpCatalogByRun.delete(runId);
       this.platformMcpResultsByRun.delete(runId);
+      sessionLease.release();
       this.demoRunAborts.delete(runId);
       this.forgetInFlight(runId);
     }
   }
 
-  private async buildKernelRequestForRun(run: DemoRunState): Promise<KernelRequest> {
+  private async buildKernelRequestForRun(run: DemoRunState, runId?: RunId): Promise<KernelRequest> {
     const workspaceRoot = this.resolveChatWorkspaceRoot(run.threadId);
     const executionMode = this.resolveChatExecutionMode(run.threadId);
-    const credential = await this.resolveKernelCredential(run);
+    const kernelId = run.kernelId ?? 'native';
+    const baseSystemContext = this.buildKernelSystemContext(run, workspaceRoot);
+    const session = this.resolveKernelConversationSession(
+      run,
+      kernelId,
+      workspaceRoot,
+      baseSystemContext,
+    );
+    const responseContinuationScopeId = this.resolveKernelResponseContinuationScopeId(
+      run,
+      kernelId,
+      session,
+    );
+    const credential = await this.resolveKernelCredential(
+      run,
+      runId ?? run.runId,
+      responseContinuationScopeId,
+    );
     return {
-      kernelId: run.kernelId ?? 'native',
+      kernelId,
       model: run.modelId,
       providerModelId: run.providerModelId,
       userText: run.userText,
       contextWindow: run.contextWindow ?? 128_000,
       credential,
-      systemContext: this.buildKernelSystemContext(run, workspaceRoot),
+      systemContext:
+        session?.mode === 'create'
+          ? this.buildKernelBootstrapSystemContext(run, baseSystemContext)
+          : baseSystemContext,
       // Platform tools ride the MCP channel; the broker address is attached by
       // startPlatformMcpBrokerForRun right after this request is built.
       platformTools: [],
       permissionMode: normalizeChatExecutionMode(executionMode),
       workspaceDir: workspaceRoot ?? process.cwd(),
+      ...(session ? { session } : {}),
     };
+  }
+
+  private kernelConversationSessionKey(kernelId: string, run: DemoRunState): string {
+    const scopeId = this.resolveConversationIdForThread(run.threadId) ?? run.threadId;
+    return `${KERNEL_SESSION_SETTING_PREFIX}.${kernelId}.${scopeId}`;
+  }
+
+  private enqueueExternalKernelSession(key: string): {
+    waitForTurn: Promise<void>;
+    release: () => void;
+  } {
+    const previousTail = this.externalKernelSessionTails.get(key) ?? Promise.resolve();
+    const waitForTurn = previousTail.catch(() => undefined);
+    let resolveTurn!: () => void;
+    const turnCompleted = new Promise<void>((resolve) => {
+      resolveTurn = resolve;
+    });
+    const nextTail = waitForTurn.then(() => turnCompleted);
+    this.externalKernelSessionTails.set(key, nextTail);
+    let released = false;
+    return {
+      waitForTurn,
+      release: () => {
+        if (released) return;
+        released = true;
+        resolveTurn();
+        void nextTail.finally(() => {
+          if (this.externalKernelSessionTails.get(key) === nextTail) {
+            this.externalKernelSessionTails.delete(key);
+          }
+        });
+      },
+    };
+  }
+
+  private async waitForExternalKernelSessionTurn(
+    waitForTurn: Promise<void>,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (signal.aborted) return false;
+    let abortListener: (() => void) | undefined;
+    const aborted = new Promise<boolean>((resolve) => {
+      abortListener = () => resolve(false);
+      signal.addEventListener('abort', abortListener, { once: true });
+    });
+    try {
+      return await Promise.race([waitForTurn.then(() => !signal.aborted), aborted]);
+    } finally {
+      if (abortListener) signal.removeEventListener('abort', abortListener);
+    }
+  }
+
+  private loadKernelConversationSession(
+    key: string,
+  ): PersistedKernelConversationSession | undefined {
+    const cached = this.kernelConversationSessions.get(key);
+    if (cached) return cached;
+    const persisted = parsePersistedKernelConversationSession(
+      this.appSettingStore?.get(key)?.value,
+    );
+    if (persisted) this.kernelConversationSessions.set(key, persisted);
+    return persisted;
+  }
+
+  private saveKernelConversationSession(
+    key: string,
+    session: PersistedKernelConversationSession,
+  ): void {
+    const existing = this.loadKernelConversationSession(key);
+    if (
+      existing?.responseContinuationScopeId &&
+      existing.responseContinuationScopeId !== session.responseContinuationScopeId
+    ) {
+      this.openGateway.clearResponseContinuationScope(existing.responseContinuationScopeId);
+    }
+    this.kernelConversationSessions.set(key, session);
+    this.appSettingStore?.set(key, session);
+  }
+
+  private clearKernelConversationSession(run: DemoRunState, expectedSessionId?: string): void {
+    if (!expectedSessionId || (run.kernelId !== 'claude-code' && run.kernelId !== 'codex')) {
+      return;
+    }
+    const key = this.kernelConversationSessionKey(run.kernelId, run);
+    this.clearKernelConversationSessionByKey(run.kernelId, key, expectedSessionId);
+  }
+
+  private clearKernelConversationSessionByKey(
+    kernelId: 'claude-code' | 'codex',
+    key: string,
+    expectedSessionId?: string,
+  ): void {
+    const existing = this.loadKernelConversationSession(key);
+    if (!existing || (expectedSessionId && existing.sessionId !== expectedSessionId)) {
+      return;
+    }
+    this.openGateway.clearResponseContinuationScope(
+      existing.responseContinuationScopeId ??
+        this.kernelResponseContinuationScopeId(kernelId, existing.sessionId),
+    );
+    this.kernelConversationSessions.delete(key);
+    this.appSettingStore?.set(key, null);
+  }
+
+  private clearKernelConversationSessionsForScopeIds(scopeIds: readonly string[]): void {
+    for (const scopeId of new Set(scopeIds.filter(Boolean))) {
+      this.clearKernelConversationSessionByKey(
+        'claude-code',
+        `${KERNEL_SESSION_SETTING_PREFIX}.claude-code.${scopeId}`,
+      );
+      this.clearKernelConversationSessionByKey(
+        'codex',
+        `${KERNEL_SESSION_SETTING_PREFIX}.codex.${scopeId}`,
+      );
+    }
+  }
+
+  private clearFailedKernelConversationSession(
+    run: DemoRunState,
+    request: KernelRequest,
+    error: string | undefined,
+    reportedSessionId?: string,
+  ): void {
+    if (!isInvalidKernelSessionError(error)) return;
+    this.clearKernelConversationSession(run, reportedSessionId ?? request.session?.id);
+  }
+
+  private kernelConversationSessionFingerprint(
+    run: DemoRunState,
+    kernelId: string,
+    workspaceRoot: string | undefined,
+    baseSystemContext: string,
+  ): string {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          version: 1,
+          kernelId,
+          modelId: run.modelId,
+          providerId: run.providerId ?? null,
+          providerModelId: run.providerModelId,
+          protocol: run.protocol,
+          credentialRefId: run.credentialRefId ?? null,
+          workspaceRoot: workspaceRoot ?? null,
+          systemContext: baseSystemContext,
+        }),
+      )
+      .digest('hex');
+  }
+
+  private saveReportedKernelConversationSession(
+    run: DemoRunState,
+    sessionId: string,
+    requestedSessionId?: string,
+  ): string | undefined {
+    const kernelId = run.kernelId;
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId || (kernelId !== 'claude-code' && kernelId !== 'codex')) {
+      return undefined;
+    }
+    const workspaceRoot = this.resolveChatWorkspaceRoot(run.threadId);
+    const baseSystemContext = this.buildKernelSystemContext(run, workspaceRoot);
+    const key = this.kernelConversationSessionKey(kernelId, run);
+    const fingerprint = this.kernelConversationSessionFingerprint(
+      run,
+      kernelId,
+      workspaceRoot,
+      baseSystemContext,
+    );
+    const existing = this.loadKernelConversationSession(key);
+    const responseContinuationScopeId =
+      existing?.sessionId === normalizedSessionId &&
+      existing.fingerprint === fingerprint &&
+      existing.responseContinuationScopeId
+        ? existing.responseContinuationScopeId
+        : this.kernelResponseContinuationScopeId(
+            kernelId,
+            requestedSessionId?.trim() || normalizedSessionId,
+          );
+    this.saveKernelConversationSession(key, {
+      version: 1,
+      sessionId: normalizedSessionId,
+      fingerprint,
+      updatedAt: new Date().toISOString(),
+      responseContinuationScopeId,
+    });
+    return normalizedSessionId;
+  }
+
+  private resolveKernelConversationSession(
+    run: DemoRunState,
+    kernelId: string,
+    workspaceRoot: string | undefined,
+    baseSystemContext: string,
+  ): KernelRequest['session'] | undefined {
+    if (kernelId !== 'claude-code' && kernelId !== 'codex') return undefined;
+    const key = this.kernelConversationSessionKey(kernelId, run);
+    const fingerprint = this.kernelConversationSessionFingerprint(
+      run,
+      kernelId,
+      workspaceRoot,
+      baseSystemContext,
+    );
+    const existing = this.loadKernelConversationSession(key);
+    if (existing?.fingerprint === fingerprint) {
+      return { id: existing.sessionId, mode: 'resume' };
+    }
+    if (existing) this.clearKernelConversationSession(run, existing.sessionId);
+    if (kernelId === 'codex') return { mode: 'create' };
+    return { id: randomUUID(), mode: 'create' };
+  }
+
+  private resolveKernelResponseContinuationScopeId(
+    run: DemoRunState,
+    kernelId: string,
+    session: KernelRequest['session'] | undefined,
+  ): string | undefined {
+    if (kernelId !== 'claude-code' || !session?.id) return undefined;
+    const existing = this.loadKernelConversationSession(
+      this.kernelConversationSessionKey(kernelId, run),
+    );
+    if (
+      session.mode === 'resume' &&
+      existing?.sessionId === session.id &&
+      existing.responseContinuationScopeId
+    ) {
+      return existing.responseContinuationScopeId;
+    }
+    return this.kernelResponseContinuationScopeId(kernelId, session.id);
+  }
+
+  private kernelResponseContinuationScopeId(kernelId: string, sessionId: string): string {
+    const digest = createHash('sha256')
+      .update(JSON.stringify({ version: 1, kernelId, sessionId }))
+      .digest('base64url');
+    return `kernel_${digest}`;
+  }
+
+  private gatewayResponseContinuationSettingKey(scopeId: string): string {
+    return `${GATEWAY_RESPONSE_CONTINUATION_SETTING_PREFIX}.${scopeId}`;
+  }
+
+  private loadGatewayResponseContinuations(
+    scopeId: string,
+  ): readonly (readonly [callId: string, responseId: string])[] | undefined {
+    if (!scopeId.startsWith('kernel_')) return undefined;
+    return parsePersistedGatewayResponseContinuations(
+      this.appSettingStore?.get(this.gatewayResponseContinuationSettingKey(scopeId))?.value,
+    );
+  }
+
+  private saveGatewayResponseContinuations(
+    scopeId: string,
+    items: readonly (readonly [callId: string, responseId: string])[],
+  ): void {
+    if (!scopeId.startsWith('kernel_')) return;
+    this.appSettingStore?.set(this.gatewayResponseContinuationSettingKey(scopeId), {
+      version: 2,
+      items: items.map(([callId, responseId]) => [callId, responseId]),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  private removeGatewayResponseContinuations(scopeId: string): void {
+    if (!scopeId.startsWith('kernel_')) return;
+    this.appSettingStore?.set(this.gatewayResponseContinuationSettingKey(scopeId), null);
+  }
+
+  private buildKernelBootstrapSystemContext(run: DemoRunState, baseSystemContext: string): string {
+    const messages = this.buildChatProviderMessages(run);
+    if (isCurrentKernelUserMessage(messages.at(-1), run.userText)) messages.pop();
+    const transcript = formatKernelBootstrapTranscript(messages);
+    return [baseSystemContext, transcript].filter(Boolean).join('\n\n');
   }
 
   /**
    * Kernel credential: prefer the kernel's local login state (OAuth bonus,
    * design §7); when the run carries a credential ref, inject its key + baseUrl.
+   *
+   * When the selected provider speaks a dialect the kernel does not (e.g. a
+   * gpt-5.x relay behind Claude Code), the credential is redirected to the open
+   * gateway instead: the kernel gets the loopback base URL plus a **per-run
+   * ticket** as its key, and the gateway holds the real provider/model/secret.
+   * Routing is therefore exact — two providers exposing the same model name can
+   * never be confused, because the ticket, not the model string, decides.
    */
-  private async resolveKernelCredential(run: DemoRunState): Promise<KernelCredential> {
+  private async resolveKernelCredential(
+    run: DemoRunState,
+    runId?: RunId,
+    responseContinuationScopeId?: string,
+  ): Promise<KernelCredential> {
     if (!run.credentialRefId || !this.providerStore || !this.secureStore) {
       return { reuseLocalLogin: true };
     }
@@ -15105,24 +15715,117 @@ export class Runtime {
       const provider = run.providerId
         ? this.providerStore.getProvider(run.providerId as ProviderId)
         : undefined;
-      return {
+      const direct: KernelCredential = {
         apiKey,
         ...(provider?.baseUrl ? { baseUrl: provider.baseUrl } : {}),
       };
+      const gateway = this.resolveGatewayCredential(
+        run,
+        runId,
+        apiKey,
+        provider?.baseUrl,
+        responseContinuationScopeId,
+      );
+      return gateway ?? direct;
     } catch {
       return { reuseLocalLogin: true };
     }
   }
 
-  /** Shared facts + persona + team orchestration prompt for the kernel system prompt. */
+  /**
+   * Decide whether this run must go through the open gateway and, if so, issue
+   * its ticket. Returns undefined whenever the direct path is correct (gateway
+   * off, dialects already match, or the provider protocol is untranslatable).
+   */
+  private resolveGatewayCredential(
+    run: DemoRunState,
+    runId: RunId | undefined,
+    apiKey: string,
+    baseUrl: string | undefined,
+    responseContinuationScopeId?: string,
+  ): KernelCredential | undefined {
+    if (!runId || !this.openGateway.running || !baseUrl) return undefined;
+    const upstream = toGatewayUpstreamProtocol(run.protocol);
+    if (!upstream) return undefined;
+    const kernelEntry = getKernelRegistry().find((entry) => entry.id === run.kernelId);
+    const kernelProtocols = kernelEntry?.capabilities.protocols ?? [];
+    if (!kernelNeedsGateway(kernelProtocols, upstream)) return undefined;
+    // The kernel keeps speaking its own dialect; the gateway serves that inbound
+    // path and translates on the way out.
+    const kernelDialect = kernelProtocols.includes('anthropic-messages')
+      ? 'anthropic-messages'
+      : 'openai-chat';
+    const inboundBaseUrl = this.openGateway.inboundBaseUrl(kernelDialect);
+    if (!inboundBaseUrl) return undefined;
+    const ticketId = this.openGateway.issueTicket(runId, {
+      baseUrl,
+      protocol: upstream,
+      providerModelId: run.providerModelId,
+      apiKey,
+      ...(run.providerId ? { providerId: run.providerId } : {}),
+      ...(upstream === 'openai-responses' && responseContinuationScopeId
+        ? { responseContinuationScopeId }
+        : {}),
+    });
+    if (!ticketId) return undefined;
+    return { baseUrl: inboundBaseUrl, apiKey: ticketId };
+  }
+
+  /** Flattened provider+model catalog for gateway name resolution (no secrets). */
+  private collectGatewayCatalog(): GatewayCatalogEntry[] {
+    if (!this.providerStore) return [];
+    try {
+      const entries: GatewayCatalogEntry[] = [];
+      for (const catalogEntry of this.providerStore.listProviders()) {
+        const provider = catalogEntry.provider;
+        for (const model of catalogEntry.models) {
+          entries.push({
+            providerId: provider.id,
+            providerName: provider.name,
+            sortOrder: provider.sortOrder,
+            baseUrl: provider.baseUrl,
+            protocol: provider.protocol,
+            providerModelId: model.providerModelId,
+            modelId: model.id,
+            enabled: provider.enabled,
+          });
+        }
+      }
+      return entries;
+    } catch {
+      return [];
+    }
+  }
+
+  /** Primary secret for a provider (external gateway clients only). */
+  private async resolveProviderSecret(providerId: string): Promise<string | undefined> {
+    if (!this.providerStore || !this.secureStore) return undefined;
+    try {
+      const ref = this.providerStore.getPrimaryCredentialRef(providerId);
+      if (!ref) return undefined;
+      return (await this.secureStore.retrieveSecret(ref.storeHandle)) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Stable Agent, Skill, workspace and project context owned by an external kernel session. */
   private buildKernelSystemContext(run: DemoRunState, workspaceRoot?: string): string {
     const parts: string[] = [];
     if (workspaceRoot) {
       const facts = collectWorkspaceSharedFacts(workspaceRoot);
       if (facts.block) parts.push(facts.block);
     }
-    if (run.persona?.trim()) parts.push(`## 智能体人设\n\n${run.persona.trim()}`);
-    if (run.teamPromptBlock?.trim()) parts.push(run.teamPromptBlock.trim());
+    parts.push(...this.buildRunAgentInstructions(run, workspaceRoot));
+    parts.push(
+      [
+        '## Workspace context',
+        workspaceRoot
+          ? `Project folder: ${workspaceRoot}`
+          : 'No project folder is bound for this conversation.',
+        ...(run.projectContextPromptBlocks ?? []),
+      ].join('\n\n'),
+    );
     return parts.join('\n\n');
   }
 
@@ -15656,6 +16359,7 @@ export class Runtime {
     run: DemoRunState,
     usage: KernelUsage,
     sequence: number,
+    preferUsageIdentity = false,
   ): void {
     try {
       const occurredAt = new Date().toISOString();
@@ -15671,13 +16375,22 @@ export class Runtime {
           threadId: run.threadId,
           // Stable per usage report: value-derived ids made progressive updates
           // look like separate provider requests in the usage aggregate.
-          requestId: `kernel-${runId}-${sequence}`,
-          providerId: run.kernelId ?? 'kernel',
+          requestId: usage.requestId ?? `kernel-${runId}-${sequence}`,
+          ...(usage.providerResponseId ? { providerResponseId: usage.providerResponseId } : {}),
+          providerId: preferUsageIdentity
+            ? usage.providerId ?? run.providerId ?? run.kernelId ?? 'kernel'
+            : run.providerId ?? usage.providerId ?? run.kernelId ?? 'kernel',
           providerModelId: usage.modelId ?? run.providerModelId,
           purpose: 'normal',
           tokensIn: usage.input ?? usage.real,
           tokensOut: usage.output ?? 0,
           ...(usage.cached !== undefined ? { cachedTokensHit: usage.cached } : {}),
+          ...(usage.cachedTokensCreated !== undefined
+            ? { cachedTokensCreated: usage.cachedTokensCreated }
+            : {}),
+          ...(usage.reasoningTokens !== undefined
+            ? { reasoningTokens: usage.reasoningTokens }
+            : {}),
           totalTokens: usage.real,
         },
       };
@@ -15686,6 +16399,39 @@ export class Runtime {
     } catch {
       // Usage accounting must never crash the kernel stream.
     }
+  }
+
+  private persistGatewayUsage(
+    runId: RunId,
+    run: DemoRunState,
+    usage: GatewayRunUsage,
+    sequence: number,
+  ): void {
+    this.persistKernelUsage(
+      runId,
+      run,
+      {
+        real: usage.totalTokens,
+        window: 0,
+        input: usage.tokensIn,
+        output: usage.tokensOut,
+        ...(usage.cachedTokensHit !== undefined ? { cached: usage.cachedTokensHit } : {}),
+        ...(usage.cachedTokensCreated !== undefined
+          ? { cachedTokensCreated: usage.cachedTokensCreated }
+          : {}),
+        ...(usage.reasoningTokens !== undefined
+          ? { reasoningTokens: usage.reasoningTokens }
+          : {}),
+        requestId: usage.requestId,
+        ...(usage.providerResponseId
+          ? { providerResponseId: usage.providerResponseId }
+          : {}),
+        ...(usage.providerId ? { providerId: usage.providerId } : {}),
+        modelId: usage.providerModelId,
+      },
+      sequence,
+      true,
+    );
   }
 
   private finalizeKernelRun(
@@ -16487,6 +17233,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     );
 
     let contextWindow = 128_000;
+    let contextWindowEstimated = true;
     if (modelRecord?.limitsJson) {
       try {
         const limits = JSON.parse(modelRecord.limitsJson) as { contextWindow?: unknown };
@@ -16496,6 +17243,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           limits.contextWindow > 0
         ) {
           contextWindow = Math.round(limits.contextWindow);
+          contextWindowEstimated = false;
         }
       } catch {
         // Keep the stable Runtime fallback when provider metadata is malformed.
@@ -16577,6 +17325,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       })),
       mcpServerIds: effectiveMcpIds,
       contextWindow,
+      contextWindowEstimated,
       projectContextPromptBlocks,
       contextSources,
       reasoningEffort,
@@ -17709,6 +18458,26 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return isComputerUsePluginSettingEnabled(
       this.appSettingStore?.get(COMPUTER_USE_PLUGIN_SETTING_KEY)?.value,
     );
+  }
+
+  /**
+   * Converge the open gateway to the persisted setting. Called on boot and after
+   * every `settings.set` touching the gateway key, so the listener follows the
+   * switch and port without a restart.
+   */
+  private async syncOpenGatewayFromSettings(): Promise<void> {
+    const setting = normalizeOpenGatewaySetting(
+      this.appSettingStore?.get(OPEN_GATEWAY_SETTING_KEY)?.value,
+    );
+    await this.openGateway.applySetting(setting);
+    // External CLI clients route by model name, which needs keys resolved ahead
+    // of time because routing itself is synchronous.
+    if (setting.enabled) await this.openGateway.warmExternalSecrets();
+  }
+
+  private handleGatewayStatus(socket: Socket, frame: Frame): void {
+    const payload: OpenGatewayStatusResponse = this.openGateway.status();
+    socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'gateway.status', payload }));
   }
 
   private resolveEventWorkspaceId(threadId: string): WorkspaceId {
@@ -20947,6 +21716,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     return new ContextSnapshotBuilder().build({
       modelId: run.modelId,
       contextWindow: run.contextWindow ?? 128_000,
+      contextWindowEstimated: run.contextWindowEstimated,
       systemInstructions: [
         productBoundaryPrompt,
         networkPrompt,
@@ -21544,6 +22314,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       const events = this.stateStore?.listEventsByRun
         ? this.stateStore.listEventsByRun(run.runId)
         : this.events.filter((event) => event.runId === run.runId);
+      if (events.some((event) => TERMINAL_RUN_EVENT_TYPES.has(event.type))) {
+        this.demoRuns.delete(run.runId);
+        continue;
+      }
       const lastActivityAt = events.at(-1)?.occurredAt;
       if (isDemoRunRecoveryExpired({ lastActivityAt, now })) {
         this.browserController?.expireRunCommands(run.runId, now);
@@ -22003,6 +22777,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       this.server.listen(path, () => {
         this.handlers.onReady(path);
         this.resumeDemoRuns();
+        // Open gateway: bind on boot when the persisted setting has it enabled,
+        // so external CLIs pointed at the fixed port work without opening the UI.
+        this.trackBackgroundTask(
+          this.syncOpenGatewayFromSettings().catch((error) =>
+            console.warn('[runtime] open gateway start failed', error),
+          ),
+        );
         if (this.scheduler) {
           const recovery = this.scheduler
             .recoverAll()
@@ -22030,6 +22811,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       server.close(() => resolve());
     });
     await this.scheduler?.shutdown();
+    await this.openGateway.dispose();
     await Promise.allSettled([...this.backgroundTasks]);
     const preserveBrowserSessions = (this.browserController?.listWaitingHandoffs().length ?? 0) > 0;
     await this.browserHost?.shutdown({ preserveSessions: preserveBrowserSessions });

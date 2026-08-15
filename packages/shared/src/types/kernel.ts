@@ -58,6 +58,14 @@ export interface KernelUsage {
   input?: number;
   output?: number;
   cached?: number;
+  /** Provider-reported input tokens written into a prompt cache. */
+  cachedTokensCreated?: number;
+  /** Provider-reported reasoning tokens, when exposed separately. */
+  reasoningTokens?: number;
+  /** Stable identity for progressive usage reports from the same provider request. */
+  requestId?: string;
+  /** Provider-native response/message identity, when available. */
+  providerResponseId?: string;
   /** Optional provider/model identity used by the host usage accounting. */
   providerId?: string;
   modelId?: string;
@@ -141,6 +149,12 @@ export interface KernelRequest {
   platformBroker?: PlatformBrokerInfo;
   permissionMode: KernelPermissionMode;
   workspaceDir: string;
+  /** Optional kernel-owned conversation session carried across short-lived runs. */
+  session?: {
+    /** Create may omit the id when the kernel assigns it (Codex thread.started). */
+    id?: string;
+    mode: 'create' | 'resume';
+  };
 }
 
 /**
@@ -149,6 +163,7 @@ export interface KernelRequest {
  * degrade the UI (mapping principle from the design doc §4.1).
  */
 export type KernelEvent =
+  | { type: 'session-started'; sessionId: string }
   | { type: 'delta'; text: string }
   | { type: 'reasoning'; text: string }
   | {

@@ -139,4 +139,72 @@ describe('demo Run cold-start recovery expiry', () => {
       connection.raw.close();
     }
   });
+
+  it('does not pause or restart a restored Run that already has a terminal event', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-run-terminal-recovery-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    const workspaceId = 'workspace-run-terminal-recovery' as WorkspaceId;
+    const checkpointRunId = 'runtime-run-terminal-recovery' as RunId;
+    const runId = 'restored-completed-run' as RunId;
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+    const store = new SqliteEventCheckpointStore(connection.raw);
+    const run = createDemoRun(runId, 'thread-completed', 'completed request');
+    const oldTime = '2026-07-31T06:40:49.686Z';
+
+    store.commitTransition({
+      events: [
+        {
+          id: 'event-completed-run-started' as never,
+          workspaceId,
+          runId,
+          category: 'run',
+          type: 'run.started',
+          occurredAt: oldTime,
+          payload: { threadId: run.threadId, run: serializeDemoRuns(new Map([[runId, run]]))[0] },
+        },
+        {
+          id: 'event-completed-run-terminal' as never,
+          workspaceId,
+          runId,
+          category: 'run',
+          type: 'run.completed',
+          occurredAt: '2026-07-31T06:41:00.000Z',
+          payload: { threadId: run.threadId, assistantText: 'done' },
+        },
+      ],
+      checkpoint: {
+        id: 'checkpoint-completed-run' as never,
+        runId: checkpointRunId,
+        state: {
+          threadVersions: [],
+          demoRuns: serializeDemoRuns(new Map([[runId, run]])),
+        },
+        createdAt: oldTime,
+      },
+    });
+
+    const provider = new CountingProvider();
+    const runtime = new Runtime({
+      installId: `run-terminal-recovery-${Date.now()}`,
+      allowNoToken: true,
+      workspaceId,
+      checkpointRunId,
+      stateStore: store,
+      demoProvider: provider,
+    });
+
+    try {
+      await runtime.start();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const events = store.listEventsByRun(runId);
+      expect(provider.calls).toBe(0);
+      expect(events.filter((event) => event.type === 'run.completed')).toHaveLength(1);
+      expect(events.some((event) => event.type === 'run.paused')).toBe(false);
+    } finally {
+      await runtime.stop();
+      connection.raw.close();
+    }
+  });
 });

@@ -16,9 +16,10 @@
  * scripted sequence (codex exec stdin is 'ignore'). Set FIXTURE_FAIL=1 to emit
  * the real failure sequence (error item → error event → turn.failed) instead.
  */
-import { env, stdout } from 'node:process';
+import { env, stderr, stdout } from 'node:process';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const fixtureMode = env.FIXTURE_MODE ?? '';
 
 function emit(value) {
   stdout.write(JSON.stringify(value) + '\n');
@@ -26,6 +27,55 @@ function emit(value) {
 
 async function main() {
   emit({ type: 'thread.started', thread_id: 'thread_fixture_1' });
+
+  if (fixtureMode === 'exit-without-terminal') {
+    stderr.write('Codex fixture exploded: OPENAI_API_KEY=sk-fixture-secret-123456789\n');
+    process.exitCode = 9;
+    stdout.end();
+    return;
+  }
+
+  if (fixtureMode === 'terminal-without-newline') {
+    stdout.write(
+      JSON.stringify({
+        type: 'turn.completed',
+        usage: {
+          input_tokens: 3,
+          output_tokens: 2,
+        },
+      }),
+    );
+    stdout.end();
+    return;
+  }
+
+  if (fixtureMode === 'transient-reconnect-then-success') {
+    emit({ type: 'turn.started' });
+    emit({
+      type: 'error',
+      message:
+        'Reconnecting... 1/5 (stream disconnected before completion: Our servers are currently overloaded. Please try again later.)',
+    });
+    await sleep(20);
+    emit({
+      type: 'item.completed',
+      item: {
+        id: 'msg_after_reconnect',
+        type: 'agent_message',
+        text: 'recovered after reconnect',
+        status: 'completed',
+      },
+    });
+    emit({
+      type: 'turn.completed',
+      usage: {
+        input_tokens: 8,
+        output_tokens: 4,
+      },
+    });
+    stdout.end();
+    return;
+  }
 
   if (env.FIXTURE_FAIL === '1') {
     // Real failure sequence captured from codex 0.145.0: metadata error item,
@@ -85,7 +135,12 @@ async function main() {
 
   emit({
     type: 'item.completed',
-    item: { id: 'msg_fixture_1', type: 'agent_message', text: 'fixture answer text', status: 'completed' },
+    item: {
+      id: 'msg_fixture_1',
+      type: 'agent_message',
+      text: 'fixture answer text',
+      status: 'completed',
+    },
   });
   await sleep(10);
 

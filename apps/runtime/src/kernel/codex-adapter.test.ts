@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import type { KernelEvent, KernelRequest } from '@sync-think/shared';
 import { CodexKernelAdapter } from './codex-adapter.js';
@@ -17,6 +17,17 @@ function fixtureSpawn(args: string[], env: Record<string, string>, cwd: string) 
     env,
     stdin: 'ignore',
   });
+}
+
+function fixtureModeSpawn(mode: string) {
+  return (args: string[], env: Record<string, string>, cwd: string) =>
+    startKernelProcess({
+      command: process.execPath,
+      args: [fixturePath, ...args],
+      cwd,
+      env: { ...env, FIXTURE_MODE: mode },
+      stdin: 'ignore',
+    });
 }
 
 /** Capture spawn args + env through the seam while still running the fixture. */
@@ -98,7 +109,18 @@ describe('CodexKernelAdapter', () => {
         input: 10,
         output: 7,
         cached: 5,
+        cachedTokensCreated: 3,
+        reasoningTokens: 2,
+        requestId: expect.stringMatching(/^codex-turn-/),
       },
+    });
+  });
+
+  it('reports the real Codex thread id as the kernel session identity', async () => {
+    const { events } = await runFixture();
+    expect(events.find((event) => event.type === 'session-started')).toEqual({
+      type: 'session-started',
+      sessionId: 'thread_fixture_1',
     });
   });
 
@@ -132,6 +154,75 @@ describe('CodexKernelAdapter', () => {
       status: 'failed',
       error: 'Unsupported value: max',
     });
+  });
+
+  it('keeps transient reconnect diagnostics non-terminal so Codex can recover', async () => {
+    const { events } = await runFixture(
+      {},
+      {
+        spawn: fixtureModeSpawn('transient-reconnect-then-success'),
+      },
+    );
+
+    expect(events.find((event) => event.type === 'delta')).toEqual({
+      type: 'delta',
+      text: 'recovered after reconnect',
+    });
+    expect(events.filter((event) => event.type === 'terminal')).toEqual([
+      { type: 'terminal', status: 'completed' },
+    ]);
+    expect(events.find((event) => event.type === 'usage')).toMatchObject({
+      type: 'usage',
+      usage: { input: 8, output: 4, real: 12 },
+    });
+  });
+
+  it('flushes a terminal JSON object that is not followed by a newline', async () => {
+    const { events } = await runFixture(
+      {},
+      {
+        spawn: fixtureModeSpawn('terminal-without-newline'),
+      },
+    );
+
+    expect(events.filter((event) => event.type === 'terminal')).toEqual([
+      { type: 'terminal', status: 'completed' },
+    ]);
+    expect(events.find((event) => event.type === 'usage')).toMatchObject({
+      type: 'usage',
+      usage: { input: 3, output: 2, real: 5 },
+    });
+  });
+
+  it('turns a non-zero process exit without a protocol terminal into one redacted failure', async () => {
+    const adapter = new CodexKernelAdapter({
+      spawn: fixtureModeSpawn('exit-without-terminal'),
+    });
+    const events: KernelEvent[] = [];
+    const exits: Array<{ code: number | null; stderrTail: string }> = [];
+    adapter.onExit((code, stderrTail) => exits.push({ code, stderrTail }));
+
+    for await (const event of adapter.start(
+      makeRequest({
+        credential: {
+          apiKey: 'sk-fixture-secret-123456789',
+          baseUrl: 'http://127.0.0.1:43123/v1',
+        },
+      }),
+    )) {
+      events.push(event);
+    }
+
+    const terminals = events.filter((event) => event.type === 'terminal');
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]).toMatchObject({
+      type: 'terminal',
+      status: 'failed',
+      error: expect.stringContaining('Codex exited with code 9'),
+    });
+    expect(JSON.stringify({ terminals, exits })).toContain('[REDACTED]');
+    expect(JSON.stringify({ terminals, exits })).not.toContain('sk-fixture-secret-123456789');
+    expect(exits).toMatchObject([{ code: 9 }]);
   });
 
   it('maps host permission tiers to static approval policy + sandbox', async () => {
@@ -168,6 +259,103 @@ describe('CodexKernelAdapter', () => {
     expect(args).toContain('--skip-git-repo-check');
     // User text must not cross the command line (cmd.exe shim + process list).
     expect(args.some((arg) => arg.includes('hello fixture'))).toBe(false);
+  });
+
+  it('places controlled global CLI args before exec without replacing run-scoped MCP config', async () => {
+    const capture = captureSpawn();
+    await runFixture(
+      {
+        platformBroker: {
+          host: '127.0.0.1',
+          port: 49152,
+          token: 'tok-123',
+          workspaceDir: 'C:/ws',
+          command: 'C:/node/node.exe',
+          args: ['D:/mcp/platform-mcp-server.mjs'],
+        },
+      },
+      {
+        spawn: capture.spawn,
+        globalArgs: [
+          '--disable',
+          'plugins',
+          '--disable',
+          'apps',
+          '-c',
+          'mcp_servers.node_repl.enabled=false',
+        ],
+        execArgs: ['--ignore-rules'],
+      },
+    );
+
+    const args = capture.calls[0].args;
+    const execIndex = args.indexOf('exec');
+    expect(args.slice(0, execIndex)).toEqual([
+      '--ask-for-approval',
+      'on-request',
+      '--disable',
+      'plugins',
+      '--disable',
+      'apps',
+      '-c',
+      'mcp_servers.node_repl.enabled=false',
+    ]);
+    expect(args[execIndex + 1]).toBe('--ignore-rules');
+    expect(args.slice(execIndex)).toContain(
+      `mcp_servers.sync-think-platform.command='C:/node/node.exe'`,
+    );
+  });
+
+  it('resumes the requested Codex thread and still sends the prompt over stdin', async () => {
+    const capture = captureSpawn();
+    await runFixture(
+      {
+        session: { id: '019fe531-53e9-7e23-8f74-fe3fd400d21e', mode: 'resume' },
+      },
+      { spawn: capture.spawn },
+    );
+    const args = capture.calls[0].args;
+    const resumeIndex = args.indexOf('resume');
+    expect(resumeIndex).toBeGreaterThan(args.indexOf('exec'));
+    expect(args[resumeIndex + 1]).toBe('019fe531-53e9-7e23-8f74-fe3fd400d21e');
+    expect(args[resumeIndex + 2]).toBe('-');
+    expect(args.some((arg) => arg.includes('hello fixture'))).toBe(false);
+  });
+
+  it('injects bootstrap context into the first Codex prompt but not resumed prompts', async () => {
+    const stdinWrites: string[] = [];
+    const spawn = (args: string[], env: Record<string, string>, cwd: string) => {
+      const handle = startKernelProcess({
+        command: process.execPath,
+        args: [fixturePath, ...args],
+        cwd,
+        env,
+      });
+      if (handle.child.stdin) {
+        const originalWrite = handle.child.stdin.write.bind(handle.child.stdin);
+        vi.spyOn(handle.child.stdin, 'write').mockImplementation(((
+          chunk: unknown,
+          ...rest: unknown[]
+        ) => {
+          stdinWrites.push(String(chunk));
+          return Reflect.apply(originalWrite, handle.child.stdin, [chunk, ...rest]);
+        }) as typeof handle.child.stdin.write);
+      }
+      return handle;
+    };
+
+    await runFixture({}, { spawn });
+    expect(stdinWrites.join('')).toContain('## AGENTS.md');
+    expect(stdinWrites.join('')).toContain('hello fixture');
+
+    stdinWrites.length = 0;
+    await runFixture(
+      {
+        session: { id: '019fe531-53e9-7e23-8f74-fe3fd400d21e', mode: 'resume' },
+      },
+      { spawn },
+    );
+    expect(stdinWrites.join('')).toBe('hello fixture\n');
   });
 
   it('registers the platform MCP server via single-quoted mcp_servers overrides', async () => {
@@ -224,7 +412,13 @@ describe('CodexKernelAdapter', () => {
       if (event.type === 'terminal') break;
     }
     expect(usages.length).toBeGreaterThan(0);
-    expect(usages[0]).toMatchObject({ real: 17, cached: 5 });
+    expect(usages[0]).toMatchObject({
+      real: 17,
+      cached: 5,
+      cachedTokensCreated: 3,
+      reasoningTokens: 2,
+      requestId: expect.stringMatching(/^codex-turn-/),
+    });
   });
 
   it('detectVersion probes the local codex (installed state depends on machine)', async () => {

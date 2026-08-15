@@ -1,3 +1,52 @@
+## 2026-08-15：OpenAI Responses 工具续接映射修复
+
+### Fixed
+
+- Gateway 现在分别保存 OpenAI Responses `function_call.call_id` 与该 item 的 `id`，不再把两个标识混用；转换到 Anthropic Messages 时，`tool_use.id` 继续使用 `call_id`，保证 Claude Code 回传的 `tool_result.tool_use_id` 能正确关联原工具调用。
+- Anthropic 工具结果续接到 Responses 时，会先写入 `{ type: "item_reference", id: <function_call item id> }`，再写入 `{ type: "function_call_output", call_id: <call_id>, output: ... }`，满足 Responses HTTP 请求对原 function call item 引用的校验。
+- Responses continuation 映射改为绑定稳定的 Claude Code 逻辑 Session scope，而不是单轮 Run ticket。映射以 `gateway.response-continuation.<kernel_scope>` 持久化到 `app_setting`，后续轮和 Runtime 重启后都能恢复。
+- Session 上下文指纹变化、明确失效或对话删除时会同步清理 continuation。清理函数显式接收 `claude-code` 或 `codex` 内核 ID，不再通过 Session key 字符串猜测内核，兼容不含内核名称的历史或自定义 key。
+
+### Verification
+
+- Gateway Responses 定向回归：2 个测试文件 / 34 项测试通过。
+- 外部内核 Session 与 continuation 回归：1 个测试文件 / 15 项测试通过；新增用例覆盖 Runtime 重启恢复和不含内核名称的旧 Session key 清理。
+- Adapters 全量：12 个测试文件 / 171 项测试通过；Runtime 全量：102 个测试文件 / 706 项测试通过。
+- Adapters 与 Runtime 的 typecheck、build 均通过；相关文件 Prettier 与 `git diff --check` 通过。
+
+## 2026-08-14：Claude Code 对话会话复用与运行终态修复
+
+### Fixed
+
+- Claude Code 外部内核仍按每轮任务启动短生命周期进程，但同一个 SYNC-THINK 对话会持久复用同一个 Claude session：首轮生成 UUID 并通过 `--session-id` 请求创建，后续轮使用 `--resume`，不再每轮重复创建空白会话。
+- 首轮请求构建阶段不再提前落库 session。Claude Code 的 `system/init + session_id` 会映射为 `session-started`，Runtime 收到后才持久化；若 CLI 返回的 ID 与请求 UUID 不同，以 CLI 返回值为准。兼容旧 CLI 时，只有本轮成功完成且没有 session 事件，才使用请求 UUID 兜底。
+- 首次创建 session 时注入持久化对话历史、Agent 指令、Agent 配备的 Skill、工作区事实和项目上下文；恢复 session 时只发送当前用户消息。模型、Provider、工作区或上述上下文发生变化时自动创建新 session。
+- Claude Code stream-json 进程统一携带 `--print`；SYNC-THINK 提供显式运行凭据时同时覆盖 `ANTHROPIC_API_KEY` 与 `ANTHROPIC_AUTH_TOKEN`，并通过空 `--setting-sources=` 隔离用户 `~/.claude/settings.json`，避免旧网关或 Token 抢占当前请求。复用本机 Claude 登录时仍保留用户设置源。
+- Claude Code 的 `system/api_retry` 若报告 HTTP 401/403 或 `authentication_failed`，立即映射为失败终态并停止本轮，不再由 CLI 持续重试而让界面长期停留在“执行中”。
+- 普通工具失败、任务失败和取消会保留已经建立的 session；只有错误明确表示 session 不存在、失效或无法恢复时才清除映射，下一轮再从持久化历史重建。映射保存在 `app_setting` 的 `kernel.session.<kernelId>.<conversationId>` 项中，可跨 Runtime 重启恢复。
+- 同一个 Conversation + Kernel 的运行按序执行，下一轮只会在上一轮确认并保存 session 后构建请求；不同 Conversation 仍可并行。活动运行和排队运行的取消都不会阻塞后续会话轮次。
+- Runtime 冷启动恢复 Run 时先检查持久事件；已有 `run.completed`、`run.failed`、`run.cancelled` 或 `run.paused` 的 Run 不再重新执行或错误追加 `run.paused`。
+
+### Verification
+
+- Claude Code adapter 定向回归 12/12 通过，覆盖 `--print`、session 事件、创建/恢复参数、显式凭据设置隔离、双认证变量覆盖和认证失败终态。
+- Runtime 外部内核 session 与冷启动终态恢复定向回归 13/13 通过；两组定向测试合计 25/25。
+- Runtime 全量回归 102 个测试文件 / 699 项测试全部通过。
+- 根级 `pnpm typecheck` 为 20/20 tasks，`pnpm build` 为 11/11 tasks。
+
+## 2026-08-14：最终回复后的思考状态对账
+
+### Fixed
+
+- Desktop 聊天运行状态现在会把同一 Run 的持久化助手最终消息视为终止证据，修复事件历史仅保留 `run.started` 时，最终回复已经显示但底部三点思考动画仍持续跳动的问题。
+- Composer 记录本轮 `streamId`，最终回复到达后立即清除发送、停止和活动 Run 派生状态，避免停止按钮残留或后续消息继续被错误排队。
+- 思考指示器补充可访问状态语义和稳定测试标识，仍在运行且尚无最终回复时继续正常显示。
+
+### Verification
+
+- Desktop 定向回归覆盖 Run 投影、最终回复状态对账、活动 Run 指示器、排队消息与 Agent 头像，共 4 个测试文件 / 28 项测试通过。
+- Desktop TypeScript 类型检查通过。
+
 ## 2026-08-09：Skill / MCP 治理与分屏工作台收口
 
 ### Changed

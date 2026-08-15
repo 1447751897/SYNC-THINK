@@ -1059,3 +1059,53 @@
 
 - 本轮实窗复用共享数据库与既有会话，只新增消息，未删除或迁移数据；未生成安装包。
 - 采样脚本与原始抓取保留在 `.data/kernel-capture/`，仓库内 fixture 已脱敏（签名、本机路径、用户目录均已替换）。
+
+## 当前状态：2026-08-15 · Claude Code 短进程与持久逻辑 Session 收口
+
+### 已完成
+
+- Claude Code 继续按每轮 Run 启动短生命周期进程，同一个 Conversation + Kernel 通过持久逻辑 Session 延续上下文。首轮使用 `--session-id`，后续轮使用 `--resume`。
+- 首轮请求构建只生成 UUID，不提前写入 `app_setting`。Adapter 收到 `system/init + session_id` 后发出 `session-started`，Runtime 此时才持久化；CLI 返回不同 ID 时以 CLI 为准，成功但无事件的旧 CLI 才使用请求 ID 兜底。
+- 首轮注入对话历史、Agent、Skill、Workspace 和项目上下文，恢复轮只发送当前用户消息。模型、Provider、协议、凭据、Workspace 或稳定 system context 变化会使指纹失配并创建新 Session。
+- 普通工具/任务失败与取消保留已确认 Session；仅明确的 Session/Thread 不存在、无效、无法加载或恢复失败会清理映射。
+- 同 Conversation + Kernel 串行构建和执行，保证下一轮看到上一轮刚确认的 Session；跨 Conversation 保持并行，活动与排队取消都能释放队列。
+- Claude Code 进程固定携带 `--print`。显式凭据同时覆盖 `ANTHROPIC_API_KEY` 与 `ANTHROPIC_AUTH_TOKEN`，并隔离用户 settings；本机登录复用仍保留用户设置源。401/403 与 `authentication_failed` 会快速进入失败终态。
+- Runtime 冷启动恢复会跳过已有 `run.completed`、`run.failed`、`run.cancelled` 或 `run.paused` 的 Run，避免终态任务被重复执行或追加错误暂停事件。
+
+### 验证结果
+
+- `claude-code-adapter.test.ts`：12/12 通过。
+- `external-kernel-run.test.ts`：13/13 通过。
+- 两组定向回归合计 25/25，覆盖创建确认、旧 CLI 兜底、CLI ID 覆盖、跨重启恢复、上下文指纹重建、普通失败保留、失效清理、同会话串行、跨会话并行以及活动/排队取消。
+- Runtime 全量回归：102 个测试文件 / 699 项测试全部通过。
+- 根级 `pnpm typecheck`：20/20 tasks；根级 `pnpm build`：11/11 tasks。
+
+### 当前边界与下一步
+
+- 本轮采用“短进程 + 持久逻辑 Session”，没有引入每个对话常驻的 Claude Code daemon。进程内临时状态每轮释放；上下文连续性由 CLI Session、Runtime 持久映射和稳定上下文指纹提供。
+- Session 复用有利于保持 Provider Prompt Cache 的稳定前缀，但缓存是否命中仍以 Provider 返回的 cache read/write usage 为准，Runtime 不推测或伪造命中。
+- 仍需在可用 Claude Provider/模型下完成真实 Electron 连续多轮回复、重启恢复和缓存 usage 的实窗证据；这不阻塞当前 Runtime 合同与自动化门禁。
+- 本轮不生成安装包、不提交、不推送；工作树中的既有 Desktop、Gateway、Protocol 和其他未跟踪改动继续保留。
+
+## 当前状态：2026-08-15 · Responses 工具续接与跨重启恢复收口
+
+### 已完成
+
+- 已定位 Claude Code 经 Gateway 调用 OpenAI Responses 时的续接错误：Responses 的 `function_call.call_id` 是工具调用关联标识，item `id` 是后续 HTTP 请求必须引用的条目标识，两者此前被当成同一个值处理。
+- Gateway 现在同时保存 `call_id -> item id` 映射。Anthropic 侧 `tool_use.id` 使用 `call_id`；工具结果转回 Responses 时先发送对应的 `item_reference`，再发送 `function_call_output`。
+- continuation 生命周期绑定 Claude Code 的持久逻辑 Session scope，不绑定短生命周期 Run ticket。映射保存于 `app_setting` 的 `gateway.response-continuation.<kernel_scope>`，Runtime 重启后可恢复并继续下一轮工具结果。
+- Session 上下文指纹变化、Session 明确失效和对话删除都会清理对应 continuation。清理入口显式接收内核 ID，不再依赖 Session key 中是否包含 `claude-code` 或 `codex` 字样。
+
+### 验证结果
+
+- Gateway Responses 定向测试：2 files / 34 tests passed。
+- 外部内核测试：1 file / 15 tests passed。
+- Adapters 全量：12 files / 171 tests passed。
+- Runtime 全量：102 files / 706 tests passed。
+- Adapters build/typecheck、Runtime build/typecheck 与 `git diff --check` 均通过。
+
+### 当前边界
+
+- 本轮修复 Runtime、Gateway 与协议转换链路，不涉及 Renderer 页面变化，因此没有新增页面手测步骤。
+- 真实 Provider 是否返回缓存 read/write usage 仍由 Provider 决定；本修复只保证工具调用标识与 continuation 在多轮和 Runtime 重启后保持正确。
+- 本轮不生成安装包、不提交、不推送；工作树中其他既有改动和未跟踪文件继续保留。

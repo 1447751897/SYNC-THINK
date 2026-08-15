@@ -15,7 +15,8 @@
  *
  * The MCP wire surface is hand-rolled JSON-RPC 2.0 over newline-delimited
  * stdio, verified against claude 2.1.222 and codex 0.145.0 (2026-08-14):
- * initialize / initialized notification / tools/list / tools/call / ping.
+ * initialize / initialized notification / tools/list / tools/call /
+ * resources/list / prompts/list / ping.
  */
 import { createInterface } from 'node:readline';
 import { stdin, stdout } from 'node:process';
@@ -43,6 +44,9 @@ function log(message) {
 let tools = [];
 let broker;
 let brokerQueue = [];
+const pendingCalls = new Map();
+/** MCP request id → broker call id, so notifications/cancelled can abort. */
+const callIdByRequestId = new Map();
 
 function brokerSend(message) {
   if (broker && !broker.destroyed) {
@@ -54,9 +58,21 @@ function brokerSend(message) {
 
 function connectBroker() {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
     const socket = connect({ host: HOST, port: PORT }, () => {
       log(`connected to broker ${HOST}:${PORT}`);
     });
+    const timer = setTimeout(() => {
+      finish(new Error('platform broker catalog handshake timed out'));
+      socket.destroy();
+    }, 10_000);
     let buffer = '';
     socket.on('data', (chunk) => {
       buffer += chunk.toString();
@@ -79,7 +95,7 @@ function connectBroker() {
           tools = frame.tools ?? [];
           for (const queued of brokerQueue) brokerSend(queued);
           brokerQueue = [];
-          resolve();
+          finish();
         } else if (frame.type === 'tool-result') {
           const pending = pendingCalls.get(frame.id);
           if (pending) {
@@ -92,16 +108,30 @@ function connectBroker() {
     });
     socket.on('error', (error) => {
       log(`broker error: ${error.message}`);
-      reject(error);
+      finish(error);
+      failPendingCalls(`platform broker disconnected: ${error.message}`);
+    });
+    socket.on('close', () => {
+      finish(new Error('platform broker closed before sending the tool catalog'));
+      failPendingCalls('platform broker disconnected');
     });
     broker = socket;
     brokerSend({ type: 'hello', token: TOKEN });
   });
 }
 
-const pendingCalls = new Map();
-/** MCP request id → broker call id, so notifications/cancelled can abort. */
-const callIdByRequestId = new Map();
+const brokerReady = connectBroker();
+void brokerReady.catch((error) => {
+  // The MCP process remains available long enough to return deterministic
+  // JSON-RPC errors instead of making the kernel wait on a missing response.
+  log(`broker unavailable: ${error.message}`);
+});
+
+function failPendingCalls(reason) {
+  const pending = [...pendingCalls.values()];
+  pendingCalls.clear();
+  for (const resolve of pending) resolve({ ok: false, error: reason });
+}
 
 function cancelBrokerCall(callId, reason) {
   if (!callId) return;
@@ -117,6 +147,10 @@ function respondRaw(id, result) {
   stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
 }
 
+function respondError(id, code, message) {
+  stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n');
+}
+
 function respondContent(id, text, isError = false) {
   stdout.write(
     JSON.stringify({
@@ -128,12 +162,13 @@ function respondContent(id, text, isError = false) {
 }
 
 async function handleToolsCall(id, params) {
-  const name = params?.name;
-  const input = params?.arguments ?? {};
-  const callId = `mcpcall-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  callIdByRequestId.set(id, callId);
   let timer;
   try {
+    await brokerReady;
+    const name = params?.name;
+    const input = params?.arguments ?? {};
+    const callId = `mcpcall-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    callIdByRequestId.set(id, callId);
     const result = await new Promise((resolve, reject) => {
       pendingCalls.set(callId, (frame) => {
         if (frame.ok) resolve(frame.content);
@@ -161,6 +196,25 @@ async function handleToolsCall(id, params) {
   }
 }
 
+async function handleToolsList(id) {
+  try {
+    await brokerReady;
+    respondRaw(id, {
+      tools: tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      })),
+    });
+  } catch (error) {
+    respondError(
+      id,
+      -32000,
+      `platform tool catalog unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 const rl = createInterface({ input: stdin, terminal: false });
 rl.on('line', (line) => {
   if (!line.trim()) return;
@@ -169,6 +223,7 @@ rl.on('line', (line) => {
     msg = JSON.parse(line);
   } catch {
     log(`unparseable line: ${line.slice(0, 200)}`);
+    respondError(null, -32700, 'Parse error');
     return;
   }
   if (msg.method === 'initialize') {
@@ -192,13 +247,7 @@ rl.on('line', (line) => {
     return;
   }
   if (msg.method === 'tools/list') {
-    respondRaw(msg.id, {
-      tools: tools.map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-      })),
-    });
+    void handleToolsList(msg.id);
     return;
   }
   if (msg.method === 'tools/call') {
@@ -209,16 +258,21 @@ rl.on('line', (line) => {
     respondRaw(msg.id, {});
     return;
   }
+  if (msg.method === 'resources/list') {
+    respondRaw(msg.id, { resources: [] });
+    return;
+  }
+  if (msg.method === 'prompts/list') {
+    respondRaw(msg.id, { prompts: [] });
+    return;
+  }
   log(`unhandled method: ${msg.method}`);
+  if (Object.prototype.hasOwnProperty.call(msg, 'id')) {
+    respondError(msg.id, -32601, `Method not found: ${String(msg.method ?? '')}`);
+  }
 });
 
 rl.on('close', () => {
   if (broker && !broker.destroyed) broker.destroy();
   process.exit(0);
-});
-
-connectBroker().catch((error) => {
-  // A missing broker must not crash the kernel — log and keep serving an
-  // empty catalog so the kernel still starts (tools will error on call).
-  log(`broker unavailable: ${error.message}`);
 });

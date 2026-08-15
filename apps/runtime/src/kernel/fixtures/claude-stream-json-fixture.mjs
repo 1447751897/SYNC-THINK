@@ -13,9 +13,10 @@
  * with the real protocol args in argv (ignored) and drives it over stdin.
  */
 import { createInterface } from 'node:readline';
-import { stdin, stdout } from 'node:process';
+import { env, stderr, stdin, stdout } from 'node:process';
 
 const rl = createInterface({ input: stdin, terminal: false });
+const fixtureMode = env.FIXTURE_MODE ?? '';
 
 function emit(value) {
   stdout.write(JSON.stringify(value) + '\n');
@@ -23,6 +24,16 @@ function emit(value) {
 
 let awaitingDecision = false;
 let userTurnSeen = false;
+let finishing = false;
+
+function finish(exitCode = 0) {
+  if (finishing) return;
+  finishing = true;
+  process.exitCode = exitCode;
+  rl.close();
+  stdin.destroy();
+  stdout.end();
+}
 
 rl.on('line', (line) => {
   const trimmed = line.trim();
@@ -44,8 +55,7 @@ rl.on('line', (line) => {
         echoed_decision: decision?.response?.response ?? null,
       },
     });
-    stdout.end();
-    rl.close();
+    finish();
     return;
   }
 
@@ -69,15 +79,54 @@ rl.on('line', (line) => {
         },
       },
     });
-    emit({ type: 'system', subtype: 'init' });
+    emit({ type: 'system', subtype: 'init', session_id: 'fixture-session-1' });
     return;
   }
 
   if (message.type === 'user' && !userTurnSeen) {
     userTurnSeen = true;
+    const text = message.message?.content?.find?.((block) => block?.type === 'text')?.text;
+    if (fixtureMode === 'exit-without-terminal') {
+      stderr.write('Claude fixture exploded: ANTHROPIC_API_KEY=sk-ant-fixture-secret-123456789\n');
+      finish(7);
+      return;
+    }
+    if (fixtureMode === 'terminal-without-newline') {
+      stdout.write(JSON.stringify({ type: 'result', subtype: 'success' }));
+      finish();
+      return;
+    }
+    if (fixtureMode === 'nested-result-error') {
+      emit({
+        type: 'result',
+        subtype: 'error',
+        is_error: true,
+        result: {
+          error: {
+            message: 'Nested Claude gateway failure',
+          },
+        },
+        errors: [{ message: 'Secondary Claude detail' }],
+      });
+      finish();
+      return;
+    }
+    if (text === 'fixture authentication failure') {
+      emit({
+        type: 'system',
+        subtype: 'api_retry',
+        attempt: 1,
+        max_retries: 10,
+        retry_delay_ms: 500,
+        error_status: 401,
+        error: 'authentication_failed',
+      });
+      finish();
+      return;
+    }
     // Unknown event types must be ignored + logged, never fatal (§4.1).
     emit({ type: 'future_unknown_event_type', payload: { version: 999 } });
-    emit({
+    const assistantEvent = {
       type: 'assistant',
       message: {
         id: 'msg_fixture_1',
@@ -100,7 +149,9 @@ rl.on('line', (line) => {
           cache_read_input_tokens: 50,
         },
       },
-    });
+    };
+    emit(assistantEvent);
+    if (fixtureMode === 'duplicate-assistant-tool-use') emit(assistantEvent);
     emit({
       type: 'control_request',
       request_id: 'perm-1',
@@ -117,5 +168,5 @@ rl.on('line', (line) => {
 });
 
 rl.on('close', () => {
-  stdout.end();
+  if (!finishing) stdout.end();
 });

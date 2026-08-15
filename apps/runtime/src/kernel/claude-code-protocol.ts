@@ -1,9 +1,10 @@
 /**
  * Claude Code stream-json wire protocol (empirically verified against
- * claude 2.1.222 on 2026-08-14, cross-checked with @anthropic-ai/claude-agent-sdk 0.3.232).
+ * claude 2.1.178 and 2.1.222 on 2026-08-14, cross-checked with
+ * @anthropic-ai/claude-agent-sdk 0.3.232).
  *
- * Spawn (no `-p` — the SDK does not pass it):
- *   claude --output-format stream-json --verbose --input-format stream-json
+ * Spawn:
+ *   claude --print --output-format stream-json --verbose --input-format stream-json
  *          --permission-prompt-tool stdio [--model <model>] [--permission-mode <mode>]
  *
  * Host → kernel (stdin, one JSON object per line):
@@ -151,12 +152,18 @@ export interface ClaudeResultEvent {
   type: 'result';
   subtype: string;
   is_error?: boolean;
-  error?: string;
+  error?: unknown;
+  errors?: unknown;
+  message?: unknown;
+  result?: unknown;
 }
 
 export interface ClaudeSystemEvent {
   type: 'system';
   subtype: string;
+  session_id?: string;
+  error_status?: number;
+  error?: string;
 }
 
 export interface ClaudeKeepAliveEvent {
@@ -185,6 +192,60 @@ export function parseClaudeStreamEvent(line: string): ClaudeStreamEvent | null {
   } catch {
     return null;
   }
+}
+
+const CLAUDE_ERROR_KEYS = [
+  'error',
+  'message',
+  'result',
+  'errors',
+  'detail',
+  'details',
+  'cause',
+] as const;
+
+/** Extract a readable error from Claude's nested or JSON-wrapped result payloads. */
+export function extractClaudeErrorMessage(value: unknown): string | undefined {
+  return extractClaudeErrorMessageInner(value, 0, new Set<object>());
+}
+
+function extractClaudeErrorMessageInner(
+  value: unknown,
+  depth: number,
+  seen: Set<object>,
+): string | undefined {
+  if (depth > 8 || value == null) return undefined;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      try {
+        return extractClaudeErrorMessageInner(JSON.parse(trimmed), depth + 1, seen) ?? trimmed;
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const nested = extractClaudeErrorMessageInner(entry, depth + 1, seen);
+      if (nested) return nested;
+    }
+    return undefined;
+  }
+  if (typeof value !== 'object' || seen.has(value)) return undefined;
+  seen.add(value);
+  const record = value as Record<string, unknown>;
+  for (const key of CLAUDE_ERROR_KEYS) {
+    if (!(key in record)) continue;
+    const nested = extractClaudeErrorMessageInner(record[key], depth + 1, seen);
+    if (nested) return nested;
+  }
+  return undefined;
 }
 
 /** Buffer JSON-lines from a readable stream into complete lines. */

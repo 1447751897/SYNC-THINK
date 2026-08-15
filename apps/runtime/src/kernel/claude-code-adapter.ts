@@ -2,8 +2,8 @@
  * Claude Code kernel adapter (design doc §5.2).
  *
  * Spawns `claude` with the stream-json bidirectional protocol (verified against
- * 2.1.222 on 2026-08-14), sends the initialize control request, then streams
- * the user message. The kernel is fully autonomous — its own tool loop,
+ * 2.1.178 and 2.1.222 on 2026-08-14), sends the initialize control request,
+ * then streams the user message. The kernel is fully autonomous — its own tool loop,
  * compression and session handling run inside claude; the host only translates
  * events, bridges permissions and reports usage.
  *
@@ -27,6 +27,7 @@ import {
   buildClaudePermissionResponse,
   buildClaudeUserMessage,
   createClaudeLineBuffer,
+  extractClaudeErrorMessage,
   extractClaudeToolResults,
   parseClaudeStreamEvent,
   toKernelPermissionRequest,
@@ -34,9 +35,11 @@ import {
   type ClaudeControlRequestEvent,
   type ClaudeStreamEvent,
   type ClaudeStreamEventEnvelope,
+  type ClaudeSystemEvent,
   type ClaudeUserEvent,
 } from './claude-code-protocol.js';
 import { probeKernel } from './detect.js';
+import { formatKernelExitDiagnostic, sanitizeKernelDiagnostic } from './kernel-diagnostics.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
 import { removePlatformMcpConfig, writePlatformMcpConfig } from './platform-mcp-config.js';
 
@@ -69,7 +72,7 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
     compress: 'own' as const,
     usageReport: true,
   };
-  readonly knownGoodVersions: readonly string[] = ['2.1.222'];
+  readonly knownGoodVersions: readonly string[] = ['2.1.178', '2.1.222'];
 
   constructor(private readonly deps: ClaudeCodeAdapterDeps = {}) {}
 
@@ -81,12 +84,13 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
     string,
     (decision: KernelPermissionDecision) => void
   >();
-  private sessionId?: string;
   private stderrLogged = false;
   private activeContextWindow = 128_000;
   private cancelled = false;
   /** True once stream_event text deltas arrived (suppresses the whole-message echo). */
   private streamedText = false;
+  /** Claude may replay a complete assistant message while resuming a tool loop. */
+  private readonly seenAssistantToolUses = new Set<string>();
   /** Temp --mcp-config file to delete after the run (holds broker token). */
   private mcpConfigPath?: string;
 
@@ -115,7 +119,13 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
   }
 
   async *start(request: KernelRequest): AsyncIterable<KernelEvent> {
+    this.cancelled = false;
+    this.streamedText = false;
+    this.seenAssistantToolUses.clear();
+    this.stderrLogged = false;
+    this.pendingPermissionDecisions.clear();
     const args = [
+      '--print',
       '--output-format',
       'stream-json',
       '--verbose',
@@ -130,6 +140,11 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
       '--permission-mode',
       mapPermissionMode(request.permissionMode),
     ];
+    if (request.session?.mode === 'create' && request.session.id) {
+      args.push('--session-id', request.session.id);
+    } else if (request.session?.mode === 'resume' && request.session.id) {
+      args.push('--resume', request.session.id);
+    }
     if (request.providerModelId) args.push('--model', request.providerModelId);
     if (request.platformBroker) {
       // Slice 5: register the platform MCP server (broker address + token ride
@@ -143,8 +158,12 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
     if (request.credential.reuseLocalLogin === true) {
       // Prefer the user's local OAuth login — do not inject a key.
     } else if (request.credential.apiKey) {
+      args.push('--setting-sources=');
       if (request.credential.baseUrl) env.ANTHROPIC_BASE_URL = request.credential.baseUrl;
       env.ANTHROPIC_API_KEY = request.credential.apiKey;
+      // Override a stale token from the user's Claude settings as well as the
+      // standard API key when SYNC-THINK supplies a per-run credential.
+      env.ANTHROPIC_AUTH_TOKEN = request.credential.apiKey;
     }
 
     const handle = this.deps.spawn
@@ -164,6 +183,8 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
     const queue: KernelEvent[] = [];
     let waiter: ((event: KernelEvent | null) => void) | undefined;
     let closed = false;
+    let terminalSeen = false;
+    let finalized = false;
     const push = (event: KernelEvent | null): void => {
       if (event === null) {
         closed = true;
@@ -180,6 +201,22 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
         queue.push(event);
       }
     };
+    const pushEvent = (event: KernelEvent): void => {
+      if (event.type === 'terminal') {
+        if (terminalSeen) return;
+        terminalSeen = true;
+        push({
+          ...event,
+          ...(event.error
+            ? {
+                error: sanitizeKernelDiagnostic(event.error, [request.credential.apiKey]),
+              }
+            : {}),
+        });
+        return;
+      }
+      push(event);
+    };
     const next = (): Promise<KernelEvent | null> => {
       if (queue.length > 0) return Promise.resolve(queue.shift()!);
       if (closed) return Promise.resolve(null);
@@ -190,43 +227,59 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
 
     const buffer = createClaudeLineBuffer((line) => {
       const event = parseClaudeStreamEvent(line);
-      if (event) this.processEvent(event, push);
+      if (event) this.processEvent(event, pushEvent);
     });
+    let stdoutEnded = child.stdout == null;
+    const flushStdout = (): void => {
+      if (stdoutEnded) return;
+      stdoutEnded = true;
+      buffer.end();
+    };
     child.stdout?.on('data', (chunk: Buffer) => buffer.push(chunk.toString()));
+    child.stdout?.once('end', flushStdout);
+    child.stdout?.once('close', flushStdout);
     if (!this.stderrLogged) {
       this.stderrLogged = true;
       child.stderr?.on('data', () => {
         // stderr tail is retained by startKernelProcess for exit diagnostics.
       });
     }
-    child.on('exit', (code) => {
-      closed = true;
-      if (waiter) {
-        const resolve = waiter;
-        waiter = undefined;
-        resolve(null);
+    const finalize = (code: number | null, processError?: unknown): void => {
+      if (finalized) return;
+      finalized = true;
+      flushStdout();
+      const stderrTail = sanitizeKernelDiagnostic(handle.stderrTail(), [request.credential.apiKey]);
+      if (!terminalSeen && !this.cancelled) {
+        pushEvent({
+          type: 'terminal',
+          status: 'failed',
+          error: formatKernelExitDiagnostic(
+            this.name,
+            code,
+            stderrTail,
+            [request.credential.apiKey],
+            processError,
+          ),
+        });
       }
-      this.exitCallbacks.forEach((callback) => callback(code, handle.stderrTail()));
-    });
-    child.on('error', () => {
-      closed = true;
-      if (waiter) {
-        const resolve = waiter;
-        waiter = undefined;
-        resolve(null);
-      }
-      this.exitCallbacks.forEach((callback) => callback(null, handle.stderrTail()));
-    });
+      this.exitCallbacks.forEach((callback) => callback(code, stderrTail));
+      push(null);
+    };
+    child.once('close', (code) => finalize(code));
+    child.once('error', (error) => finalize(null, error));
 
     // initialize the session, then stream the user message.
     const initId = `init-${randomUUID()}`;
     child.stdin?.write(
       buildClaudeInitializeRequest(initId, {
-        appendSystemPrompt: request.systemContext || undefined,
+        appendSystemPrompt:
+          !request.session || request.session.mode === 'create'
+            ? request.systemContext || undefined
+            : undefined,
       }) + '\n',
     );
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    child.stdin?.write(buildClaudeUserMessage(request.userText, this.sessionId) + '\n');
+    child.stdin?.write(buildClaudeUserMessage(request.userText, request.session?.id) + '\n');
 
     try {
       while (true) {
@@ -273,14 +326,21 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
         const result = event as {
           subtype?: string;
           is_error?: boolean;
-          error?: string;
+          error?: unknown;
+          errors?: unknown;
+          message?: unknown;
+          result?: unknown;
         };
+        const error = extractClaudeErrorMessage(result);
         const failed =
-          result.subtype !== 'success' || result.is_error === true || Boolean(result.error);
+          result.subtype !== 'success' ||
+          result.is_error === true ||
+          result.error !== undefined ||
+          result.errors !== undefined;
         push({
           type: 'terminal',
           status: failed ? 'failed' : 'completed',
-          ...(result.error ? { error: String(result.error) } : {}),
+          ...(failed ? { error: error ?? 'Claude Code reported a failed result.' } : {}),
         });
         return;
       }
@@ -300,8 +360,29 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
       case 'stream_event':
         this.processStreamEvent(event as ClaudeStreamEventEnvelope, push);
         return;
+      case 'system': {
+        const systemEvent = event as ClaudeSystemEvent;
+        const sessionId = systemEvent.session_id?.trim();
+        if (systemEvent.subtype === 'init' && sessionId) {
+          push({ type: 'session-started', sessionId });
+        }
+        const status = systemEvent.error_status;
+        const authenticationFailed =
+          systemEvent.subtype === 'api_retry' &&
+          (status === 401 || status === 403 || systemEvent.error === 'authentication_failed');
+        if (authenticationFailed) {
+          push({
+            type: 'terminal',
+            status: 'failed',
+            error:
+              status === undefined
+                ? 'Claude Code authentication failed.'
+                : `Claude Code authentication failed (HTTP ${status}).`,
+          });
+        }
+        return;
+      }
       case 'keep_alive':
-      case 'system':
         return;
       case 'user':
         // Tool results are echoed here (real 2.1.222 shape verified): without
@@ -352,9 +433,13 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
         // Already streamed as stream_event text deltas — do not double-emit.
         if (!this.streamedText) push({ type: 'delta', text: block.text });
       } else if (block.type === 'tool_use') {
+        const toolId = block.id ?? `tool-${randomUUID()}`;
+        const replayKey = `${event.message.id ?? 'unknown-message'}\u0000${toolId}`;
+        if (this.seenAssistantToolUses.has(replayKey)) continue;
+        this.seenAssistantToolUses.add(replayKey);
         push({
           type: 'tool-call',
-          toolId: block.id ?? `tool-${randomUUID()}`,
+          toolId,
           name: block.name ?? 'unknown',
           argsJson: JSON.stringify(block.input ?? {}),
           partial: false,
@@ -375,6 +460,9 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
         input,
         output,
         cached: usage.cache_read_input_tokens,
+        cachedTokensCreated: usage.cache_creation_input_tokens,
+        requestId: event.message.id,
+        providerResponseId: event.message.id,
         modelId: event.message.model,
       };
       push({ type: 'usage', usage: kernelUsage });

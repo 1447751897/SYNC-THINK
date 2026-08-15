@@ -24,6 +24,7 @@ import {
   codexToolCallName,
   createCodexLineBuffer,
   extractCodexErrorMessage,
+  isCodexTransientErrorMessage,
   mapCodexApprovalPolicy,
   mapCodexSandbox,
   parseCodexEvent,
@@ -32,12 +33,17 @@ import {
   type CodexUsage,
 } from './codex-protocol.js';
 import { probeKernel } from './detect.js';
+import { formatKernelExitDiagnostic, sanitizeKernelDiagnostic } from './kernel-diagnostics.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
 import { buildCodexMcpConfigArgs } from './platform-mcp-config.js';
 
 export interface CodexAdapterDeps {
   /** Test seam: replace the real spawn (fixture codex processes). */
   spawn?: (args: string[], env: Record<string, string>, cwd: string) => KernelProcessHandle;
+  /** Controlled invocation-only global flags, used by isolated real-CLI verification. */
+  globalArgs?: readonly string[];
+  /** Controlled `codex exec` flags, used by isolated real-CLI verification. */
+  execArgs?: readonly string[];
 }
 
 export class CodexKernelAdapter implements KernelAdapter {
@@ -60,6 +66,7 @@ export class CodexKernelAdapter implements KernelAdapter {
   private exitCallbacks: Array<(code: number | null, stderrTail: string) => void> = [];
   private usageCallbacks: Array<(usage: KernelUsage) => void> = [];
   private activeContextWindow = 128_000;
+  private activeRequestId = '';
 
   async detectVersion(): Promise<string | null> {
     return probeKernel('codex').version;
@@ -83,12 +90,15 @@ export class CodexKernelAdapter implements KernelAdapter {
   }
 
   async *start(request: KernelRequest): AsyncIterable<KernelEvent> {
+    this.activeRequestId = `codex-turn-${randomUUID()}`;
     const approval = mapCodexApprovalPolicy(request.permissionMode);
     const sandbox = mapCodexSandbox(request.permissionMode);
     const args = [
       '--ask-for-approval',
       approval,
+      ...(this.deps.globalArgs ?? []),
       'exec',
+      ...(this.deps.execArgs ?? []),
       '--json',
       '-s',
       sandbox,
@@ -104,6 +114,11 @@ export class CodexKernelAdapter implements KernelAdapter {
     // The prompt travels over stdin, never argv — user text must not cross a
     // cmd.exe shim command line (shell metacharacters + process-list exposure).
     // codex exec reads the prompt from stdin and starts without waiting for EOF.
+    if (request.session?.mode === 'resume' && request.session.id) {
+      args.push('resume', request.session.id, '-');
+    } else {
+      args.push('-');
+    }
 
     const env: Record<string, string> = {};
     if (request.credential.reuseLocalLogin !== true && request.credential.apiKey) {
@@ -126,6 +141,8 @@ export class CodexKernelAdapter implements KernelAdapter {
     const queue: KernelEvent[] = [];
     let waiter: ((event: KernelEvent | null) => void) | undefined;
     let closed = false;
+    let terminalSeen = false;
+    let finalized = false;
     const push = (event: KernelEvent | null): void => {
       if (event === null) {
         closed = true;
@@ -142,6 +159,22 @@ export class CodexKernelAdapter implements KernelAdapter {
         queue.push(event);
       }
     };
+    const pushEvent = (event: KernelEvent): void => {
+      if (event.type === 'terminal') {
+        if (terminalSeen) return;
+        terminalSeen = true;
+        push({
+          ...event,
+          ...(event.error
+            ? {
+                error: sanitizeKernelDiagnostic(event.error, [request.credential.apiKey]),
+              }
+            : {}),
+        });
+        return;
+      }
+      push(event);
+    };
     const next = (): Promise<KernelEvent | null> => {
       if (queue.length > 0) return Promise.resolve(queue.shift()!);
       if (closed) return Promise.resolve(null);
@@ -152,27 +185,40 @@ export class CodexKernelAdapter implements KernelAdapter {
 
     const buffer = createCodexLineBuffer((line) => {
       const event = parseCodexEvent(line);
-      if (event) this.processEvent(event, push);
+      if (event) this.processEvent(event, pushEvent);
     });
+    let stdoutEnded = child.stdout == null;
+    const flushStdout = (): void => {
+      if (stdoutEnded) return;
+      stdoutEnded = true;
+      buffer.end();
+    };
     child.stdout?.on('data', (chunk: Buffer) => buffer.push(chunk.toString()));
-    child.on('exit', (code) => {
-      closed = true;
-      if (waiter) {
-        const resolve = waiter;
-        waiter = undefined;
-        resolve(null);
+    child.stdout?.once('end', flushStdout);
+    child.stdout?.once('close', flushStdout);
+    const finalize = (code: number | null, processError?: unknown): void => {
+      if (finalized) return;
+      finalized = true;
+      flushStdout();
+      const stderrTail = sanitizeKernelDiagnostic(handle.stderrTail(), [request.credential.apiKey]);
+      if (!terminalSeen) {
+        pushEvent({
+          type: 'terminal',
+          status: 'failed',
+          error: formatKernelExitDiagnostic(
+            this.name,
+            code,
+            stderrTail,
+            [request.credential.apiKey],
+            processError,
+          ),
+        });
       }
-      this.exitCallbacks.forEach((callback) => callback(code, handle.stderrTail()));
-    });
-    child.on('error', () => {
-      closed = true;
-      if (waiter) {
-        const resolve = waiter;
-        waiter = undefined;
-        resolve(null);
-      }
-      this.exitCallbacks.forEach((callback) => callback(null, handle.stderrTail()));
-    });
+      this.exitCallbacks.forEach((callback) => callback(code, stderrTail));
+      push(null);
+    };
+    child.once('close', (code) => finalize(code));
+    child.once('error', (error) => finalize(null, error));
 
     // Deliver the prompt over stdin (see start()), then EOF. Verified on
     // codex 0.145.0: spawned via the cmd.exe shim path it waits for EOF after
@@ -181,7 +227,11 @@ export class CodexKernelAdapter implements KernelAdapter {
     // stdin.
     const stdin = child.stdin;
     if (stdin) {
-      stdin.write(request.userText + '\n');
+      const prompt =
+        request.session?.mode === 'resume'
+          ? request.userText
+          : [request.systemContext, request.userText].filter(Boolean).join('\n\n');
+      stdin.write(prompt + '\n');
       stdin.end();
     }
 
@@ -200,7 +250,11 @@ export class CodexKernelAdapter implements KernelAdapter {
   /** Translate a codex JSONL event into KernelEvents (unknown types ignored). */
   private processEvent(event: CodexJsonEvent, push: (event: KernelEvent) => void): void {
     switch (event.type) {
-      case 'thread.started':
+      case 'thread.started': {
+        const threadId = (event as { thread_id?: string }).thread_id?.trim();
+        if (threadId) push({ type: 'session-started', sessionId: threadId });
+        return;
+      }
       case 'turn.started':
         return;
       case 'item.started':
@@ -232,6 +286,10 @@ export class CodexKernelAdapter implements KernelAdapter {
         const message = extractCodexErrorMessage(
           (event as { message?: unknown }).message ?? (event as { error?: unknown }).error,
         );
+        if (message && isCodexTransientErrorMessage(message)) {
+          console.warn('[kernel:codex] transient retry', message);
+          return;
+        }
         push({
           type: 'terminal',
           status: 'failed',
@@ -326,6 +384,9 @@ export class CodexKernelAdapter implements KernelAdapter {
       input,
       output,
       cached: usage.cached_input_tokens,
+      cachedTokensCreated: usage.cache_write_input_tokens,
+      reasoningTokens: usage.reasoning_output_tokens,
+      requestId: this.activeRequestId,
     };
   }
 

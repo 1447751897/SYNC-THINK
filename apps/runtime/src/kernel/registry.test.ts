@@ -5,7 +5,28 @@ import {
   resolveKernelAdapter,
   resolveKernelEntry,
 } from './registry.js';
+import { isVersionSupported } from './version-compat.js';
 import { nativeKernelAdapter } from './native-kernel-adapter.js';
+
+/** Mirror of the registry's compat policy, so tests stay machine-agnostic. */
+function expectedKnownGood(
+  entry: {
+    knownGoodVersions: readonly string[];
+    minimumSupportedVersion?: string;
+    upperExclusiveVersion?: string;
+  },
+  version: string | null,
+): boolean {
+  return isVersionSupported(version, {
+    verifiedVersions: entry.knownGoodVersions,
+    ...(entry.minimumSupportedVersion
+      ? { minimumSupportedVersion: entry.minimumSupportedVersion }
+      : {}),
+    ...(entry.upperExclusiveVersion
+      ? { upperExclusiveVersion: entry.upperExclusiveVersion }
+      : {}),
+  });
+}
 
 describe('kernel registry contract', () => {
   it('registers native, claude-code, codex and pi entries with full capability declarations', () => {
@@ -32,6 +53,9 @@ describe('kernel registry contract', () => {
       usageReport: true,
     });
     expect(claudeCode.knownGoodVersions).toContain('2.1.222');
+    // Range policy: newer 2.x builds must not regress to「版本未验证」.
+    expect(claudeCode.minimumSupportedVersion).toBe('2.0.0');
+    expect(claudeCode.upperExclusiveVersion).toBe('3.0.0');
 
     const codex = registry.find((entry) => entry.id === 'codex')!;
     expect(codex.kind).toBe('subprocess');
@@ -40,6 +64,8 @@ describe('kernel registry contract', () => {
       pause: 'session',
     });
     expect(codex.knownGoodVersions).toContain('0.145.0');
+    expect(codex.minimumSupportedVersion).toBe('0.140.0');
+    expect(codex.upperExclusiveVersion).toBe('1.0.0');
     expect(resolveKernelAdapter('codex')!.id).toBe('codex');
     // Pi is not wired yet — adapter must stay undefined so the UI renders 未安装.
     expect(resolveKernelAdapter('pi')).toBeUndefined();
@@ -70,9 +96,9 @@ describe('kernel registry contract', () => {
       expect(typeof detection.installed).toBe('boolean');
       expect(detection.executablePath === null || typeof detection.executablePath === 'string')
         .toBe(true);
-      // knownGood must never be true for a version that is not declared good.
+      // knownGood must follow the declared compat range, never an exact pin.
       if (detection.version !== null) {
-        expect(detection.knownGood).toBe(entry.knownGoodVersions.includes(detection.version));
+        expect(detection.knownGood).toBe(expectedKnownGood(entry, detection.version));
       }
       // A kernel can only be considered installed when we resolved an executable.
       expect(detection.installed ? detection.executablePath !== null : true).toBe(true);
@@ -88,7 +114,7 @@ describe('kernel registry contract', () => {
       const detection = await entry.detect();
       if (detection.installed) {
         expect(detection.version).not.toBeNull();
-        expect(detection.knownGood).toBe(entry.knownGoodVersions.includes(detection.version!));
+        expect(detection.knownGood).toBe(expectedKnownGood(entry, detection.version));
       } else {
         // A missing executable can never claim a version.
         expect(detection.version).toBeNull();

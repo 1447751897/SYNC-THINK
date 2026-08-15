@@ -183,3 +183,12 @@ export function extractCodexErrorMessage(message: unknown): string | undefined {
   }
   return trimmed;
 }
+
+/**
+ * Codex emits retry progress through the generic `error` event before the
+ * authoritative terminal event. Treat only explicit bounded retry counters as
+ * transient so real API/configuration errors still fail immediately.
+ */
+export function isCodexTransientErrorMessage(message: string): boolean {
+  return /^(?:reconnecting|retrying)\.{3}\s+\d+\/\d+\b/i.test(message.trim());
+}

@@ -1244,3 +1244,30 @@ Computer Use built-in plugin
 5. AI 的 `register_remote_mcp` 工具 schema 只暴露名称、Endpoint、发现开关和可信标记，不暴露 `key/apiKey/authScheme`。AI 先登记公开元数据，再引导用户到能力中心“配置 Key”；模型不得询问、读取或转发 Key。
 6. 能力中心配置已有远端服务时锁定名称、Transport 和 Endpoint，Key 使用非受控密码输入，仅在提交时进入 IPC。注册成功后重新发现工具，列表和详情只展示鉴权是否配置及方式。
 7. 回滚时可移除新增命令、AI schema 与远端 UI，不删除既有 SkillVersion/McpServer。SecureStore 中的远端 MCP handle 需要由后续显式删除/密钥轮换流程清理，不得通过日志或诊断导出暴露。
+
+### TD-042：外部内核短进程与持久逻辑 Session（2026-08-15）
+
+状态：已采用。
+
+背景：Claude Code 与 Codex CLI 当前按每轮 Run 启动独立子进程。若每轮都作为全新会话执行，Runtime 必须反复注入完整历史、Agent、Skill、Workspace 与项目上下文，不仅增加输入 Token，也会降低 Provider Prompt Cache 的稳定性；若改成长驻 CLI 进程，又会把进程存活、崩溃恢复、升级、审批和资源回收绑到对话生命周期。
+
+方案对比：
+
+| 方案                                | 优点                               | 缺点                                                   | 结论   |
+| ----------------------------------- | ---------------------------------- | ------------------------------------------------------ | ------ |
+| 每轮无状态短进程并重放完整上下文    | 进程隔离和回收简单                 | 重复注入历史，Token 成本高，缓存前缀不稳定             | 不采用 |
+| 每个对话保持长驻 CLI 进程           | 可保留进程内状态，单轮启动成本最低 | 崩溃恢复、版本切换、审批和资源治理复杂，泄漏半径更大   | 不采用 |
+| 每轮短进程 + 每对话持久逻辑 Session | 保留隔离与回收能力，同时延续上下文 | 依赖 CLI 的 session 恢复合同，需要失效检测和串行化门禁 | 采用   |
+
+采用合同：
+
+1. 外部内核进程生命周期继续绑定单个 Run；逻辑 Session 生命周期绑定 `Conversation + Kernel`，并通过 `app_setting` 的 `kernel.session.<kernelId>.<conversationId>` 跨 Runtime 重启保存。
+2. Session 持久值包含版本、CLI session ID、上下文指纹和更新时间。指纹至少覆盖 Kernel、模型、Provider、Provider 模型、协议、凭据引用、Workspace 根目录与稳定 system context；指纹变化时创建新 Session，不恢复旧上下文。
+3. Claude Code 首轮由 Runtime 生成 UUID，并通过 `--session-id` 传入。请求构建阶段不得持久化该 UUID；只有 Adapter 报告 `session-started` 后才落库。
+4. Claude Code 的 `system/init + session_id` 是 Session 确认事件。CLI 报告的 ID 与请求 UUID 不同时，以 CLI ID 为权威值；兼容不报告该事件的旧 CLI 时，只允许在成功终态后使用请求 UUID 兜底。
+5. Codex 创建线程时可不预生成 ID，以 Adapter 返回的 thread/session ID 持久化。后续 Claude Code 与 Codex 都通过 `resume` 语义恢复。
+6. 首轮创建 Session 时注入持久化对话历史、Agent 指令、Agent 配备的 Skill、Workspace 事实和项目上下文；恢复轮只向 Claude Code 发送当前用户消息，避免 Runtime 再次重放完整历史。
+7. 普通工具失败、任务失败、认证失败和用户取消不清理已经确认的 Session。只有稳定错误明确表示 Session 或 Thread 不存在、无效、无法加载或恢复失败时才清理映射。
+8. 同一个 `Conversation + Kernel` 的 Run 必须串行，且下一轮在上一轮完成 Session 确认/持久化后才构建请求；不同 Conversation 继续并行。排队取消不得启动 Adapter，活动取消必须终止进程树并释放队列。
+9. Provider reasoning 继续只进入诊断流，用户可见执行说明与最终回答遵循 TD-039；Token usage 按 Provider request ID 投影输入、输出、缓存读取和缓存创建值，不因进程重启伪造缓存命中。
+10. 该方案保留 CLI 的磁盘 Session 与 Provider 管理的 Prompt Cache，但不承诺每轮必然命中缓存。进程内临时状态会随单轮结束释放，连续性来源必须是持久 Session、稳定上下文指纹和 Provider 返回的真实 usage。

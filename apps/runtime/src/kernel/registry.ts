@@ -12,6 +12,7 @@ import type {
   KernelId,
 } from '@sync-think/shared';
 import { KERNEL_COMMANDS, probeKernel } from './detect.js';
+import { isVersionSupported } from './version-compat.js';
 import { nativeKernelAdapter } from './native-kernel-adapter.js';
 import { ClaudeCodeKernelAdapter } from './claude-code-adapter.js';
 import { CodexKernelAdapter } from './codex-adapter.js';
@@ -25,7 +26,19 @@ export interface KernelRegistryEntry {
   /** in-process = existing runtime loop; subprocess = spawned harness. */
   kind: 'in-process' | 'subprocess';
   capabilities: KernelCapabilities;
+  /** Exact versions we smoke-tested; always accepted. */
   knownGoodVersions: readonly string[];
+  /**
+   * Lowest version considered compatible. Detected versions at or above this
+   * count as known-good, so routine kernel updates no longer surface as
+   * 「版本未验证」without a code change.
+   */
+  minimumSupportedVersion?: string;
+  /**
+   * Exclusive upper bound (usually the next major). Keeps a breaking kernel
+   * release from being silently accepted before it is validated.
+   */
+  upperExclusiveVersion?: string;
   /** Human-readable guided-install command shown for missing kernels. */
   installCommand?: string;
   /** Lazily created adapter; undefined until the kernel is wired. */
@@ -36,7 +49,14 @@ export interface KernelRegistryEntry {
 function toDetectionResult(
   entry: Pick<
     KernelRegistryEntry,
-    'id' | 'name' | 'icon' | 'capabilities' | 'knownGoodVersions' | 'installCommand'
+    | 'id'
+    | 'name'
+    | 'icon'
+    | 'capabilities'
+    | 'knownGoodVersions'
+    | 'minimumSupportedVersion'
+    | 'upperExclusiveVersion'
+    | 'installCommand'
   >,
 ): KernelDetectionResult {
   const probe = probeKernel(KERNEL_COMMANDS[entry.id as Exclude<KernelId, 'native'>]);
@@ -50,7 +70,15 @@ function toDetectionResult(
     installed: probe.executablePath !== null && version !== null,
     version,
     executablePath: probe.executablePath,
-    knownGood: version !== null && entry.knownGoodVersions.includes(version),
+    knownGood: isVersionSupported(version, {
+      verifiedVersions: entry.knownGoodVersions,
+      ...(entry.minimumSupportedVersion
+        ? { minimumSupportedVersion: entry.minimumSupportedVersion }
+        : {}),
+      ...(entry.upperExclusiveVersion
+        ? { upperExclusiveVersion: entry.upperExclusiveVersion }
+        : {}),
+    }),
     ...(entry.id === 'pi' && entry.installCommand
       ? { installHint: entry.installCommand }
       : {}),
@@ -72,6 +100,9 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
       usageReport: true,
     },
     knownGoodVersions: ['2.1.222'],
+    // Accept the whole 2.x line; 3.0 must be re-validated before it is trusted.
+    minimumSupportedVersion: '2.0.0',
+    upperExclusiveVersion: '3.0.0',
     installCommand: 'npm i -g @anthropic-ai/claude-code',
     // Fresh instance per run — the adapter holds per-run process state.
     createAdapter: () => new ClaudeCodeKernelAdapter(),
@@ -91,6 +122,9 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
       usageReport: true,
     },
     knownGoodVersions: ['0.145.0'],
+    // Codex is pre-1.0; the CLI protocol has been stable since 0.140.
+    minimumSupportedVersion: '0.140.0',
+    upperExclusiveVersion: '1.0.0',
     installCommand: 'npm i -g @openai/codex',
     createAdapter: () => new CodexKernelAdapter(),
     detect: async () => toDetectionResult(codexEntry),
