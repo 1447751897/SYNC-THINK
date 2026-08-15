@@ -118,9 +118,10 @@ export function projectConversationRunActivity(input: {
   threadId: string;
   taskId?: string;
   authority?: RunActivityAuthority;
+  durableAssistantRunIds?: ReadonlySet<string>;
 }): ConversationRunActivity {
   const startedRuns = new Map<string, number>();
-  const endedRuns = new Set<string>();
+  const endedRuns = new Set(input.durableAssistantRunIds);
   for (const event of input.events) {
     if (!belongsToConversation(event, input.threadId, input.taskId) || !event.runId) continue;
     if (event.type === 'run.started') {

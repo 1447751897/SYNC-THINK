@@ -190,7 +190,8 @@ export type CommandType =
   | 'goal.set'
   | 'goal.get'
   | 'goal.clear'
-  | 'kernel.detect';
+  | 'kernel.detect'
+  | 'gateway.status';
 
 export interface CommandRequest<T = unknown> {
   /** Routed by type; runtime dispatches by union. */
@@ -3040,6 +3041,11 @@ export interface ConversationGetContextStatusPayload {
 export interface ConversationGetContextStatusResponse {
   modelId: string;
   contextWindow: number;
+  /**
+   * True when the model record has no configured contextWindow and the runtime
+   * fell back to its 128k default. The UI renders this capacity as an estimate.
+   */
+  contextWindowEstimated?: boolean;
   estimatedUsedTokens: number;
   usageRatio: number;
   compactThreshold: 0.7;

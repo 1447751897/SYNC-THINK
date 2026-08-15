@@ -503,6 +503,26 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.queryByDisplayValue('https://')).toBeNull();
   });
 
+  it('renders vendored brand logos for catalog providers that have one', async () => {
+    await renderSettings();
+    await openProviderCatalog();
+
+    // NewMax Gateway has no upstream brand mark and keeps the letter glyph.
+    const gateway = screen.getByTestId('provider-icon-newmax-gateway');
+    expect(gateway.getAttribute('data-brand-logo')).toBeNull();
+    expect(gateway.textContent?.trim()).not.toBe('');
+
+    fireEvent.click(screen.getByRole('tab', { name: '国内服务' }));
+    const deepseek = await screen.findByTestId('provider-icon-deepseek');
+    expect(deepseek.getAttribute('data-brand-logo')).toBe('true');
+    expect(deepseek.querySelector('img,[role="img"]')).toBeTruthy();
+    expect(deepseek.textContent?.trim()).toBe('');
+
+    fireEvent.click(screen.getByRole('tab', { name: '本地模型' }));
+    const ollama = await screen.findByTestId('provider-icon-ollama');
+    expect(ollama.getAttribute('data-brand-logo')).toBe('true');
+  });
+
   it('opens custom provider configuration and returns to the catalog', async () => {
     await renderSettings();
     await openProviderCatalog();

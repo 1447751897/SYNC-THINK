@@ -74,6 +74,8 @@ import type {
 } from '@sync-think/protocol';
 import { splitProviderUsageTokens } from '@sync-think/shared';
 import type { RendererUpdateProviderPayload } from '../../provider-payloads.js';
+import { BrandLogoMark } from './BrandLogoMark.js';
+import { resolveProviderBrandLogo } from './brand-icons.js';
 import { useDialog } from './Dialog.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -2214,6 +2216,13 @@ const PROVIDER_BRAND_GLYPHS: Record<string, string> = {
   'lm-studio': 'LM',
 };
 
+/**
+ * Provider avatar in the catalog / provider list.
+ *
+ * Order of preference: an action glyph for the two non-brand entries → the real
+ * upstream brand logo (brand-icons.ts) → the letter fallback. Providers without
+ * an official logo keep the letter rather than a made-up mark.
+ */
 function ProviderBrandIcon({
   providerId,
   providerName,
@@ -2229,14 +2238,24 @@ function ProviderBrandIcon({
     ) : providerId === 'cc-switch' ? (
       <Download size={15} />
     ) : null;
+  const brandLogo = specialIcon ? undefined : resolveProviderBrandLogo(providerId);
   return (
     <span
-      className="model-provider-card__icon model-provider-brand-icon"
+      className={clsx(
+        'model-provider-card__icon model-provider-brand-icon',
+        brandLogo && 'model-provider-brand-icon--logo',
+      )}
       data-brand={providerId}
+      data-brand-logo={brandLogo ? 'true' : undefined}
       data-testid={`${testIdPrefix}-${providerId}`}
       aria-hidden="true"
     >
-      {specialIcon ?? PROVIDER_BRAND_GLYPHS[providerId] ?? providerName.slice(0, 1).toUpperCase()}
+      {specialIcon ??
+        (brandLogo ? (
+          <BrandLogoMark logo={brandLogo} size={18} />
+        ) : (
+          (PROVIDER_BRAND_GLYPHS[providerId] ?? providerName.slice(0, 1).toUpperCase())
+        ))}
     </span>
   );
 }

@@ -130,6 +130,8 @@ export interface DemoRunState {
   mcpServerIds?: string[];
   /** Provider model context window used by snapshot estimation and auto compact. */
   contextWindow?: number;
+  /** True when contextWindow fell back to the 128k default (no model metadata). */
+  contextWindowEstimated?: boolean;
   /** Included project/task/memory blocks selected for the real provider request. */
   projectContextPromptBlocks?: string[];
   /** Context Packet sources with their provider disposition. */
@@ -206,6 +208,8 @@ export interface CreateDemoRunInput {
   skillSnapshots?: Array<{ skillVersionId: string; contentFingerprint: string }>;
   mcpServerIds?: string[];
   contextWindow?: number;
+  /** True when contextWindow fell back to the 128k default (no model metadata). */
+  contextWindowEstimated?: boolean;
   projectContextPromptBlocks?: string[];
   contextSources?: ContextSnapshotSource[];
   reasoningEffort?: string;
@@ -268,6 +272,7 @@ export function createDemoRun(
     mcpServerIds:
       extras.mcpServerIds && extras.mcpServerIds.length > 0 ? [...extras.mcpServerIds] : undefined,
     contextWindow: extras.contextWindow,
+    contextWindowEstimated: extras.contextWindowEstimated === true,
     projectContextPromptBlocks:
       extras.projectContextPromptBlocks && extras.projectContextPromptBlocks.length > 0
         ? [...extras.projectContextPromptBlocks]

@@ -14,6 +14,8 @@ export interface ContextSnapshotSection {
 export interface ContextSnapshotStatus {
   modelId: string;
   contextWindow: number;
+  /** True when the model record has no configured window and 128k was assumed. */
+  contextWindowEstimated?: boolean;
   estimatedUsedTokens: number;
   usageRatio: number;
   compactThreshold: typeof CONTEXT_COMPACT_THRESHOLD;
@@ -45,6 +47,7 @@ export interface ContextSnapshot {
 export interface BuildContextSnapshotInput {
   modelId: string;
   contextWindow: number;
+  contextWindowEstimated?: boolean;
   systemInstructions: readonly string[];
   agentInstructions: readonly string[];
   projectContext: readonly string[];
@@ -207,6 +210,7 @@ export class ContextSnapshotBuilder {
       status: {
         modelId: input.modelId,
         contextWindow,
+        ...(input.contextWindowEstimated === true ? { contextWindowEstimated: true } : {}),
         estimatedUsedTokens,
         usageRatio: estimatedUsedTokens / contextWindow,
         compactThreshold: CONTEXT_COMPACT_THRESHOLD,

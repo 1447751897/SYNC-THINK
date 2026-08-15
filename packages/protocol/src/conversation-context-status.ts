@@ -41,6 +41,7 @@ const conversationGetContextStatusResponseSchema = z
   .object({
     modelId: z.string().trim().min(1).max(MAX_CONTEXT_STATUS_MODEL_ID_LENGTH),
     contextWindow: z.number().int().min(1).max(MAX_CONTEXT_STATUS_TOKENS),
+    contextWindowEstimated: z.boolean().optional(),
     estimatedUsedTokens: z.number().int().min(0).max(MAX_CONTEXT_STATUS_TOKENS),
     usageRatio: z.number().finite().min(0).max(MAX_CONTEXT_STATUS_USAGE_RATIO),
     compactThreshold: z.literal(0.7),

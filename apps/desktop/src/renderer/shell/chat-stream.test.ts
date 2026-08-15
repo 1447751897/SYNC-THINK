@@ -132,6 +132,19 @@ describe('conversation stream event consumption', () => {
     ).toEqual({ streaming: false, activeRunId: undefined });
   });
 
+  it('treats a durable assistant reply as terminal evidence for its run', () => {
+    expect(
+      projectConversationRunActivity({
+        events: [
+          event({ sequence: 1, type: 'run.started', runId: 'run-a', threadId: 'thread-a' }),
+        ],
+        threadId: 'thread-a',
+        taskId: 'task-a',
+        durableAssistantRunIds: new Set(['run-a']),
+      }),
+    ).toEqual({ streaming: false, activeRunId: undefined });
+  });
+
   it('ignores an orphan run from replay when Runtime reports no matching in-flight id', () => {
     expect(
       projectConversationRunActivity({

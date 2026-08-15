@@ -238,6 +238,15 @@ describe('ModelPickerMenu', () => {
     expect(ccOption.textContent).toContain('Claude Code');
     expect(ccOption.textContent).toContain('已安装 v2.1.222');
 
+    // Kernel badges render brand logos instead of text labels; `native` has no
+    // upstream brand and keeps a glyph, so it exposes the name via aria-label.
+    const nativeBadge = await screen.findByTestId('kernel-badge-native');
+    expect(nativeBadge.textContent).toBe('');
+    expect(nativeBadge.getAttribute('aria-label')).toBe('原生内核');
+    const ccBadge = await screen.findByTestId('kernel-badge-claude-code');
+    expect(ccBadge.querySelector('img,[role="img"]')).toBeTruthy();
+    expect(ccBadge.textContent).toBe('');
+
     // Installable kernels remain actionable and route to the bounded install callback.
     const piOption = await screen.findByTestId('kernel-option-pi');
     expect(piOption.hasAttribute('aria-disabled')).toBe(false);

@@ -23,6 +23,8 @@ import {
 import type { ContextStatusSection, ContextStatusSectionType } from '@sync-think/protocol';
 import type { KernelDetectionResult } from '@sync-think/shared';
 import { AgentAvatarView } from './AgentAvatarView.js';
+import { BrandLogoMark } from './BrandLogoMark.js';
+import { resolveKernelBrandLogo } from './brand-icons.js';
 import type { ModelOption } from './NewConversationDialog.js';
 
 export type PermissionMode = 'ask' | 'workspace' | 'full-access';
@@ -662,6 +664,27 @@ export type KernelInstallState =
   | { status: 'success' }
   | { status: 'error'; error: string };
 
+/**
+ * Kernel badge in the model picker: real brand logo when the kernel maps to a
+ * third-party product, and a lucide glyph for the built-in `native` kernel
+ * (which has no upstream brand mark). The visible label is dropped, so the
+ * accessible name comes from aria-label / the logo's own label.
+ */
+function KernelBadge({ iconKey, name }: { iconKey: string; name: string }) {
+  const brandLogo = resolveKernelBrandLogo(iconKey);
+  return (
+    <span
+      className={`shell-kernel-badge shell-kernel-badge--${iconKey}`}
+      data-testid={`kernel-badge-${iconKey}`}
+      title={name}
+      aria-label={brandLogo ? undefined : name}
+      role={brandLogo ? undefined : 'img'}
+    >
+      {brandLogo ? <BrandLogoMark logo={brandLogo} size={14} /> : <Sparkles size={13} />}
+    </span>
+  );
+}
+
 export function ModelPickerMenu(props: {
   open: boolean;
   models: readonly ModelOption[];
@@ -814,15 +837,7 @@ export function ModelPickerMenu(props: {
                       <div className="shell-menu__item-text">
                         <div className="shell-menu__item-title">
                           <span className="shell-menu__kernel-name">{kernel.name}</span>
-                          <span className={`shell-kernel-badge shell-kernel-badge--${kernel.icon}`}>
-                            {kernel.icon === 'native'
-                              ? '原生'
-                              : kernel.icon === 'claude-code'
-                                ? 'Claude Code'
-                                : kernel.icon === 'codex'
-                                  ? 'Codex'
-                                  : 'Pi'}
-                          </span>
+                          <KernelBadge iconKey={kernel.icon} name={kernel.name} />
                         </div>
                         <div
                           className={`shell-menu__item-hint ${
@@ -1016,6 +1031,8 @@ export function ContextRing(props: {
   used: number;
   /** Context window limit for the ring. */
   limit: number;
+  /** True when the runtime fell back to 128k because the model has no window metadata. */
+  contextWindowEstimated?: boolean;
   /** Runtime-computed ratio; may exceed 1 when the request is over the window. */
   usageRatio?: number;
   /** Runtime-owned auto-compact threshold (currently 70%). */
@@ -1218,7 +1235,15 @@ export function ContextRing(props: {
               </div>
               <div className="shell-ctx-tooltip__row">
                 <span>容量上限</span>
-                <strong title={exactTokenTitle(props.limit)}>{limitLabel}</strong>
+                <strong title={exactTokenTitle(props.limit)}>
+                  {limitLabel}
+                  {props.contextWindowEstimated ? (
+                    <span className="shell-ctx-tooltip__pct" data-testid="context-limit-estimated">
+                      {' '}
+                      · 估算
+                    </span>
+                  ) : null}
+                </strong>
               </div>
               <div className="shell-ctx-tooltip__row">
                 <span>窗口剩余</span>
@@ -1269,6 +1294,16 @@ export function ContextRing(props: {
                       </strong>
                     </div>
                   ))}
+                  <div
+                    className="shell-ctx-tooltip__row shell-ctx-tooltip__row--muted"
+                    data-testid="context-section-total"
+                  >
+                    <span>构成合计</span>
+                    <strong title={exactTokenTitle(props.used)}>{usedLabel}</strong>
+                  </div>
+                  <p className="shell-ctx-tooltip__hint">
+                    各构成按字节估算，四舍五入后合计与「当前占用」一致；工具定义与消息同样为估算值。
+                  </p>
                 </>
               ) : null}
               <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
@@ -1295,7 +1330,7 @@ export function ContextRing(props: {
                 </div>
               ) : null}
               <div className="shell-ctx-tooltip__hint">
-                累计消耗是全部轮次的输入与输出之和，与当前窗口占用分开统计。
+                会话累计 = 全部轮次输入与输出的总和，可大于窗口上限；与「当前窗口占用」是两个独立口径，不参与自动压缩判定。
               </div>
             </div>,
             document.body,

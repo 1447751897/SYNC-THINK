@@ -66,6 +66,8 @@ import type {
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
+import { BrandLogoMark } from './BrandLogoMark.js';
+import { resolveKernelBrandLogo } from './brand-icons.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { BrowserHandoffCard, BrowserHandoffQueryError } from './BrowserHandoffCard.js';
 import { DesktopWaitingCard, DesktopWaitingQueryError } from './DesktopWaitingCard.js';
@@ -471,6 +473,7 @@ export function ChatView({
   const skillSelectionScopeKeyRef = useRef(skillSelectionScopeKey);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [sendingRunId, setSendingRunId] = useState<string | undefined>();
   const [stopping, setStopping] = useState(false);
   const [goalState, setGoalState] = useState<
     import('@sync-think/protocol').GoalGetResponse | undefined
@@ -802,6 +805,7 @@ export function ChatView({
     programmaticScrollTargetRef.current = null;
     setInput('');
     setSending(false);
+    setSendingRunId(undefined);
     setPendingUserMessages([]);
     setLocalErrors([]);
     browserHandoffLoadGenerationRef.current += 1;
@@ -1168,6 +1172,15 @@ export function ChatView({
   const [busyDesktopCommandId, setBusyDesktopCommandId] = useState<string | undefined>();
   const desktopWaitingLoadGenerationRef = useRef(0);
 
+  const durableAssistantRunIds = useMemo(
+    () =>
+      new Set(
+        loadedMessages
+          .filter((message) => message.role === 'assistant' && Boolean(message.runId))
+          .map((message) => message.runId as string),
+      ),
+    [loadedMessages],
+  );
   const projected = useMemo(
     () =>
       threadId
@@ -1176,11 +1189,18 @@ export function ChatView({
             threadId,
             taskId: conversation.taskId ? String(conversation.taskId) : undefined,
             authority: runActivityAuthority,
+            durableAssistantRunIds,
           })
         : { streaming: false, activeRunId: undefined },
-    [conversation.taskId, eventHistory, runActivityAuthority, threadId],
+    [conversation.taskId, durableAssistantRunIds, eventHistory, runActivityAuthority, threadId],
+  );
+  const sendingRunHasDurableReply = Boolean(
+    sendingRunId && durableAssistantRunIds.has(sendingRunId),
   );
   const runTerminalById = useMemo(() => projectRunTerminalEvents(eventHistory), [eventHistory]);
+  const sendingRunHasTerminal = Boolean(sendingRunId && runTerminalById.has(sendingRunId));
+  const sendingRunIsSettled = sendingRunHasDurableReply || sendingRunHasTerminal;
+  const reconciledSending = sending && !sendingRunIsSettled;
   const displayRunProcessById = useMemo(() => {
     const display = new Map<string, RunProcessView>();
     for (const [runId, process] of runProcessById) {
@@ -1236,7 +1256,7 @@ export function ChatView({
         (!identity.id && identity.name && agent.name === identity.name),
     );
   }, [agents, conversationAgent, projected.activeRunId, runAgentIdentityById]);
-  const runIsActive = sending || projected.streaming || Boolean(projected.activeRunId);
+  const runIsActive = reconciledSending || projected.streaming || Boolean(projected.activeRunId);
 
   const pausedRunNotice = useMemo(
     () =>
@@ -1767,6 +1787,13 @@ export function ChatView({
     [loadedMessages, pendingUserMessages],
   );
 
+  useEffect(() => {
+    if (!sendingRunIsSettled) return;
+    setSending(false);
+    setStopping(false);
+    setSendingRunId(undefined);
+  }, [sendingRunIsSettled]);
+
   // Clear "sending" once the run leaves the streaming state (or fails via local error).
   useEffect(() => {
     if (!sending && !stopping) return;
@@ -1775,6 +1802,7 @@ export function ChatView({
       const timer = window.setTimeout(() => {
         setSending(false);
         setStopping(false);
+        setSendingRunId(undefined);
       }, 120);
       return () => window.clearTimeout(timer);
     }
@@ -2118,6 +2146,7 @@ export function ChatView({
       const tempId = `temp-${Date.now()}`;
       if (isActiveConversation()) {
         setSending(true);
+        setSendingRunId(undefined);
         setPendingUserMessages((prev) => [
           ...prev,
           {
@@ -2192,6 +2221,11 @@ export function ChatView({
               }))
           : images;
         if (isActiveConversation()) {
+          setSendingRunId(
+            typeof response.streamId === 'string' && response.streamId.length > 0
+              ? response.streamId
+              : undefined,
+          );
           setPendingUserMessages((prev) =>
             prev.map((message) =>
               message.id === tempId
@@ -2209,6 +2243,7 @@ export function ChatView({
       } catch (err) {
         if (isActiveConversation()) {
           setSending(false);
+          setSendingRunId(undefined);
           setPendingUserMessages((prev) => prev.filter((message) => message.id !== tempId));
           setLocalErrors((prev) => [
             ...prev,
@@ -3179,6 +3214,7 @@ export function ChatView({
     try {
       await api.cancelRun({ runId: runId as RunId });
       setSending(false);
+      setSendingRunId(undefined);
     } catch (error) {
       setLocalErrors((prev) => [
         ...prev,
@@ -3553,11 +3589,10 @@ export function ChatView({
       teams,
     ],
   );
-  const showTyping = sending || projected.streaming;
-  const canStop = Boolean(projected.activeRunId) && (sending || projected.streaming);
+  const showTyping = reconciledSending || projected.streaming;
+  const canStop = Boolean(projected.activeRunId) && (reconciledSending || projected.streaming);
   // Active kernel display + pause degradation per capabilities.pause.
-  const activeKernel =
-    kernelRegistry?.find((kernel) => kernel.kernelId === kernelOverride) ?? null;
+  const activeKernel = kernelRegistry?.find((kernel) => kernel.kernelId === kernelOverride) ?? null;
   const stopTitle = activeKernel?.capabilities.pause
     ? activeKernel.capabilities.pause === 'executor'
       ? '暂停任务'
@@ -4287,6 +4322,7 @@ export function ChatView({
                   <ContextRing
                     used={contextUsed}
                     limit={contextLimit}
+                    contextWindowEstimated={contextStatus?.contextWindowEstimated}
                     usageRatio={contextStatus?.usageRatio}
                     compactThreshold={contextStatus?.compactThreshold}
                     compactedAt={contextStatus?.compactedAt}
@@ -4310,23 +4346,25 @@ export function ChatView({
                       buttonRef={modelBtnRef}
                       onClick={() => setMenu((m) => (m === 'model' ? null : 'model'))}
                     />
-                    {kernelOverride !== 'native' ? (
-                      <span
-                        className="shell-kernel-chip"
-                        data-testid="compose-kernel-chip"
-                        title={activeKernel ? `内核：${activeKernel.name}` : `内核：${kernelOverride}`}
-                      >
-                        {activeKernel
-                          ? activeKernel.icon === 'claude-code'
-                            ? 'CC'
-                            : activeKernel.icon === 'codex'
-                              ? 'Codex'
-                              : activeKernel.icon === 'pi'
-                                ? 'Pi'
-                                : kernelOverride
-                          : kernelOverride}
-                      </span>
-                    ) : null}
+                    {kernelOverride !== 'native'
+                      ? (() => {
+                          const chipLabel = activeKernel ? activeKernel.name : kernelOverride;
+                          const chipLogo = resolveKernelBrandLogo(
+                            activeKernel ? activeKernel.icon : kernelOverride,
+                          );
+                          return (
+                            <span
+                              className={`shell-kernel-chip${chipLogo ? ' shell-kernel-chip--logo' : ''}`}
+                              data-testid="compose-kernel-chip"
+                              title={`内核：${chipLabel}`}
+                              aria-label={chipLogo ? `内核：${chipLabel}` : undefined}
+                              role={chipLogo ? 'img' : undefined}
+                            >
+                              {chipLogo ? <BrandLogoMark logo={chipLogo} size={14} /> : chipLabel}
+                            </span>
+                          );
+                        })()
+                      : null}
                     <ModelPickerMenu
                       open={menu === 'model'}
                       models={models}
@@ -5510,7 +5548,12 @@ function TypingDots({ inline = false }: { inline?: boolean }) {
 
 function TypingIndicator({ agent }: { agent?: GlobalAgent }) {
   return (
-    <div className="flex items-start gap-3">
+    <div
+      className="flex items-start gap-3"
+      data-testid="assistant-typing-indicator"
+      role="status"
+      aria-label="助手正在思考"
+    >
       {agent?.avatar?.trim() ? (
         <div className="mt-0.5" data-agent-id={String(agent.id)}>
           <AgentAvatarView name={agent.name} avatar={agent.avatar} size={26} />
