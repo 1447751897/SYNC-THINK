@@ -1027,6 +1027,51 @@ export function buildFinalAssistantBlocks(input: {
   ];
 }
 
+/**
+ * Build the durable blocks for ONE provider round (DSH parity: one assistant
+ * message per round — thinking + commentary + that round's text + tool calls
+ * with their results — then the final answer as the last message).
+ */
+export function buildRoundMessageBlocks(input: {
+  reasoningDelta: string;
+  transcriptMessages: readonly { phase?: string; content: unknown }[];
+  toolCalls: readonly { name: string; argumentsJson?: string }[];
+  toolResults: readonly string[];
+}): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  if (input.reasoningDelta.trim()) {
+    blocks.push({ type: 'reasoning', reasoningText: input.reasoningDelta });
+  }
+  const commentary = input.transcriptMessages
+    .filter(
+      (message) =>
+        message.phase === 'commentary' &&
+        typeof message.content === 'string' &&
+        message.content.trim(),
+    )
+    .map((message) => message.content as string)
+    .join('\n');
+  if (commentary.trim()) blocks.push({ type: 'commentary', text: commentary });
+  const text = input.transcriptMessages
+    .filter(
+      (message) =>
+        message.phase === 'final_answer' &&
+        typeof message.content === 'string' &&
+        message.content.trim(),
+    )
+    .map((message) => message.content as string)
+    .join('\n');
+  if (text.trim()) blocks.push({ type: 'text', text });
+  input.toolCalls.forEach((toolCall, index) => {
+    blocks.push({
+      type: 'tool-call',
+      payload: { name: toolCall.name, argumentsJson: toolCall.argumentsJson ?? '' },
+    });
+    blocks.push({ type: 'tool-result', text: input.toolResults[index] ?? '' });
+  });
+  return blocks;
+}
+
 export function durableMessagesToGapProviderMessages(  messages: readonly Message[],
 ): ProviderMessage[] {
   const result: ProviderMessage[] = [];
@@ -14793,6 +14838,7 @@ export class Runtime {
         const providerRequestId = `chat-${ulid()}`;
         let activeRoundTranscript: ProviderRoundTranscript | undefined;
         let activeRoundTranscriptCommitted = false;
+        let lastRoundReasoningStart = 0;
         const appendActiveRoundTranscript = (mode: 'complete' | 'visible'): void => {
           if (!activeRoundTranscript || activeRoundTranscriptCommitted) return;
           const messages =
@@ -14903,6 +14949,11 @@ export class Runtime {
           pendingToolCalls.length = 0;
           const roundTranscript = createProviderRoundTranscript();
           activeRoundTranscript = roundTranscript;
+          // Reasoning start of this provider round: reasoning text is
+          // accumulated across rounds on the run, so the per-round delta is
+          // the slice from this offset (DSH parity per-message thinking).
+          const roundReasoningStart = this.demoRuns.get(runId)?.reasoningText?.length ?? 0;
+          lastRoundReasoningStart = roundReasoningStart;
 
           for await (const adapterEvent of stream) {
             if (abort.signal.aborted || !this.demoRuns.has(runId)) break;
@@ -15223,6 +15274,11 @@ export class Runtime {
                   runId,
                   closeCommentaryTimelineSegment(currentRun, projectionOccurredAt),
                   projection.payload,
+                  {
+                    reasoningDelta: currentRun.reasoningText.slice(lastRoundReasoningStart),
+                    transcriptMessages: activeRoundTranscript?.messages ?? [],
+                    hasToolRounds: toolLoopRound > 0,
+                  },
                 );
                 // NewMax-style goal mode: after each finished turn, a separate
                 // evaluator checks the completion condition and either continues
@@ -15652,6 +15708,20 @@ export class Runtime {
             const live = this.demoRuns.get(runId);
             if (live) {
               this.demoRuns.set(runId, { ...live, nextAdapterEventIndex: 0 });
+            }
+            // DSH parity: persist one assistant message per tool round
+            // (thinking + commentary + the round's tool calls/results).
+            const roundRun = this.demoRuns.get(runId);
+            if (roundRun) {
+              this.persistAssistantRoundMessage({
+                runId,
+                run: roundRun,
+                roundIndex: toolLoopRound,
+                reasoningDelta: roundRun.reasoningText.slice(roundReasoningStart),
+                transcriptMessages: roundTranscript.messages,
+                toolCalls: pendingToolCalls,
+                toolResults: completedResults.map((result) => result.content),
+              });
             }
             continue;
           }
@@ -22945,11 +23015,82 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
   }
 
+  /**
+   * Persist one assistant message for a completed tool round (DSH parity:
+   * 思考 → 摘要 → 工具 → … per round, final answer as the last message).
+   */
+  private persistAssistantRoundMessage(options: {
+    runId: RunId;
+    run: DemoRunState;
+    roundIndex: number;
+    reasoningDelta: string;
+    transcriptMessages: readonly { phase?: string; content: unknown }[];
+    toolCalls: readonly { name: string; argumentsJson?: string }[];
+    toolResults: readonly string[];
+  }): void {
+    const blocks = buildRoundMessageBlocks({
+      reasoningDelta: options.reasoningDelta,
+      transcriptMessages: options.transcriptMessages,
+      toolCalls: options.toolCalls,
+      toolResults: options.toolResults,
+    });
+    if (blocks.length === 0) return;
+    this.persistFinalChatMessage({
+      // Deterministic id so resume/redelivery of the round stays idempotent.
+      id: `asst-${options.runId}-r${options.roundIndex}` as MessageId,
+      threadId: options.run.threadId as ThreadId,
+      role: 'assistant',
+      text: '',
+      blocks,
+      runId: options.runId,
+      modelId: options.run.modelId ? (options.run.modelId as ModelId) : undefined,
+      credentialRefId: options.run.credentialRefId
+        ? (options.run.credentialRefId as CredentialRefId)
+        : undefined,
+      agentVersionId: options.run.agentVersionId
+        ? (options.run.agentVersionId as AgentVersionId)
+        : undefined,
+    });
+  }
+
   private persistAssistantFinalMessage(
     runId: RunId,
     run: DemoRunState,
     payload: Record<string, unknown>,
+    round?: {
+      reasoningDelta: string;
+      transcriptMessages: readonly { phase?: string; content: unknown }[];
+      hasToolRounds: boolean;
+    },
   ): void {
+    // Native kernel with tool rounds, DSH parity: the final message is built
+    // from the LAST provider round only (its thinking + commentary + final
+    // answer text), while earlier tool rounds were persisted as their own
+    // messages. Runs without tool rounds (single turn, fallback walk) keep
+    // the aggregated legacy build below, which carries the whole commentary
+    // timeline with segments.
+    if (round?.hasToolRounds) {
+      const blocks = buildRoundMessageBlocks({
+        reasoningDelta: round.reasoningDelta,
+        transcriptMessages: round.transcriptMessages,
+        toolCalls: [],
+        toolResults: [],
+      });
+      if (blocks.length === 0) return;
+      this.persistFinalChatMessage({
+        // Deterministic id so resume/redelivery of run.completed stays idempotent.
+        id: `asst-${runId}` as MessageId,
+        threadId: run.threadId as ThreadId,
+        role: 'assistant',
+        text: '',
+        blocks,
+        runId,
+        modelId: run.modelId ? (run.modelId as ModelId) : undefined,
+        credentialRefId: run.credentialRefId ? (run.credentialRefId as CredentialRefId) : undefined,
+        agentVersionId: run.agentVersionId ? (run.agentVersionId as AgentVersionId) : undefined,
+      });
+      return;
+    }
     const assistantText =
       typeof payload.assistantText === 'string'
         ? payload.assistantText
