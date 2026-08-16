@@ -1,3 +1,16 @@
+## 2026-08-16：native 内核按轮次持久化 assistant 消息（DSH parity）
+
+### Changed
+
+- native 内核消息持久化改为**每个工具轮次一条 assistant 消息**（DSH 一致）：每轮消息包含该轮思考增量、摘要（roundTranscript）、该轮工具调用与结果；最终消息只含最后一轮（思考 + 摘要 + 最终回答），中间轮次不再拼接进最终消息。
+- 无工具轮场景（单轮 / fallback walk）保留聚合构建（含 commentarySegments），`fallback-walk` 测试锁定。
+- 新增 `buildRoundMessageBlocks` 纯函数与 `persistAssistantRoundMessage`；消息 id `asst-<runId>-r<roundIndex>` 幂等。
+
+### Verification
+
+- `round-message-blocks.test.ts` 3 项；Runtime 全量 **108 files / 762 tests** 通过；typecheck 通过。
+- 实测（attach 用户窗口 + deepseek-v4-flash 多轮任务）：单 run 持久化 3 条消息——轮1 [思考+摘要+read_file×2+结果]、轮2 [思考+摘要+search_files+结果]、轮3 [思考+最终回答]，与 DSH 的「思考→工具→…→最终结论」一致；历史聚合消息仍可正常渲染。
+
 ## 2026-08-16：执行过程改为 DSH 式平铺布局（移除折叠面板）
 
 ### Changed
