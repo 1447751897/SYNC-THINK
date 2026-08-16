@@ -1,12 +1,10 @@
 /**
  * @vitest-environment jsdom
  *
- * InlineProcessFlow renders the DSH-style execution process inside the
- * assistant message: an outer collapsible process panel that holds the
- * ordered sequence (thinking rows / commentary / text / tool batches), with
- * adjacent tool calls merged into one expandable batch whose individual
- * cards show arguments and results. The final answer is rendered separately
- * by the message bubble.
+ * InlineProcessFlow renders the DSH-style execution process flat inside the
+ * message flow: thinking rows (collapsed to their first line), intermediate
+ * commentary/text, and tool batches in time order. The final answer is
+ * rendered separately by the message bubble.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -47,21 +45,10 @@ describe('InlineProcessFlow', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('collapses the outer panel by default and expands on demand', () => {
-    render(<InlineProcessFlow items={[reasoningItem, toolItem]} />);
-    expect(screen.getByTestId('process-panel-toggle')).toBeTruthy();
-    expect(screen.queryByTestId('process-panel-body')).toBeNull();
-    fireEvent.click(screen.getByTestId('process-panel-toggle'));
-    expect(screen.getByTestId('process-panel-body')).toBeTruthy();
-  });
-
-  it('auto-opens the outer panel while streaming (live process visible)', () => {
-    render(<InlineProcessFlow items={[toolItem]} streaming autoOpen />);
-    expect(screen.getByTestId('process-panel-body')).toBeTruthy();
-  });
-
-  it('renders the sequence in durable order inside the panel', () => {
-    render(<InlineProcessFlow items={[reasoningItem, textItem, commentaryItem, toolItem]} autoOpen />);
+  it('renders the sequence flat and in durable order', () => {
+    render(
+      <InlineProcessFlow items={[reasoningItem, textItem, commentaryItem, toolItem]} />,
+    );
     const rows = screen.getAllByTestId(/^inline-process-(reasoning|text|commentary)$/);
     expect(rows.map((node) => node.dataset.testid)).toEqual([
       'inline-process-reasoning',
@@ -75,7 +62,6 @@ describe('InlineProcessFlow', () => {
     render(
       <InlineProcessFlow
         items={[toolItem, toolItem, writeTool, commentaryItem, toolItem]}
-        autoOpen
       />,
     );
     const batches = screen.getAllByTestId('tool-batch');
@@ -86,27 +72,25 @@ describe('InlineProcessFlow', () => {
 
   it('does not merge tools separated by a thinking row', () => {
     render(
-      <InlineProcessFlow items={[toolItem, reasoningItem, writeTool]} autoOpen />,
+      <InlineProcessFlow items={[toolItem, reasoningItem, writeTool]} />,
     );
     expect(screen.getAllByTestId('tool-batch')).toHaveLength(2);
   });
 
   it('expands a batch to individual tool cards, then each card to its result', () => {
-    render(<InlineProcessFlow items={[toolItem, writeTool]} autoOpen />);
+    render(<InlineProcessFlow items={[toolItem, writeTool]} />);
     const batch = screen.getByTestId('tool-batch');
-    // collapsed: individual cards hidden
     expect(batch.querySelectorAll('[data-testid="inline-process-tool"]')).toHaveLength(0);
     fireEvent.click(screen.getByTestId('tool-batch-toggle'));
     const cards = batch.querySelectorAll('[data-testid="inline-process-tool"]');
     expect(cards).toHaveLength(2);
     expect(cards[0].textContent).toContain('read_file');
-    // expand the first card to see its result
     fireEvent.click(cards[0].querySelector('button')!);
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('a.txt: 1 line');
   });
 
   it('collapses a reasoning row to its first line and expands to the full text', () => {
-    render(<InlineProcessFlow items={[reasoningItem]} autoOpen />);
+    render(<InlineProcessFlow items={[reasoningItem]} />);
     const summary = screen.getByTestId('think-row-summary');
     expect(summary.textContent).toContain('第一行摘要');
     expect(summary.textContent).not.toContain('第二行细节');
@@ -115,16 +99,11 @@ describe('InlineProcessFlow', () => {
   });
 
   it('marks a failed tool card inside the batch', () => {
-    render(<InlineProcessFlow items={[failedToolItem]} autoOpen />);
+    render(<InlineProcessFlow items={[failedToolItem]} />);
     fireEvent.click(screen.getByTestId('tool-batch-toggle'));
     expect(
       screen.getByTestId('inline-process-tool').getAttribute('data-failed'),
     ).toBe('true');
-  });
-
-  it('shows the overall elapsed time in the outer panel title', () => {
-    render(<InlineProcessFlow items={[toolItem]} durationMs={12_000} autoOpen />);
-    expect(screen.getByTestId('process-panel-toggle').textContent).toContain('12');
   });
 
   it('shows a batch elapsed time from step timestamps', () => {
@@ -155,7 +134,6 @@ describe('InlineProcessFlow', () => {
             completedAt: '2026-08-16T10:00:03.000Z',
           } as never,
         ]}
-        autoOpen
       />,
     );
     const batch = screen.getByTestId('tool-batch');
@@ -179,12 +157,48 @@ describe('InlineProcessFlow', () => {
             sequence: 10,
           } as never,
         ]}
-        autoOpen
       />,
     );
     fireEvent.click(screen.getByTestId('tool-batch-toggle'));
     const card = screen.getByTestId('inline-process-tool');
     expect(card.textContent).toContain('list_files');
     expect(card.getAttribute('data-failed')).toBe('false');
+  });
+
+  it('interleaves reasoning, commentary segments and steps in boundary order', () => {
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem]}
+        steps={[
+          {
+            id: 'step-1',
+            label: 'read_file',
+            verb: 'Read',
+            zh: '读取文件',
+            toolName: 'read_file',
+            kind: 'file',
+            status: 'done',
+            sequence: 12,
+          } as never,
+        ]}
+        commentarySegments={[
+          {
+            id: 'seg-1',
+            text: '我先读取文件。',
+            startedAt: '2026-08-16T10:00:00.000Z',
+            afterSequence: 10,
+          },
+        ]}
+      />,
+    );
+    const rows = screen.getAllByTestId(/^inline-process-(reasoning|commentary)$/);
+    expect(rows.map((node) => node.dataset.testid)).toEqual([
+      'inline-process-reasoning',
+      'inline-process-commentary',
+    ]);
+    // the tool batch follows the commentary (afterSequence 10 < step sequence 12)
+    const commentary = screen.getByTestId('inline-process-commentary');
+    const batch = screen.getByTestId('tool-batch');
+    expect(commentary.compareDocumentPosition(batch) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

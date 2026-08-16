@@ -1,3 +1,29 @@
+## 2026-08-16：执行过程改为 DSH 式平铺布局（移除折叠面板）
+
+### Changed
+
+- 助手消息执行过程**完全按 DSH 平铺**：思考行/摘要/工具批次直接内联在消息流中，移除外层“执行过程”折叠面板及其 autoOpen 逻辑；执行过程中内容按时间顺序流式可见，最终回答紧随流程之后流式、完成后独立收尾。
+- 流式快照的 reasoning 文本（transient snapshot 字段）在流式中按时间前置渲染为思考行；完成态由 blocks 派生且不重复（`InlineProcessFlow` 接收补充 reasoning item）。
+- 原生内核完成态 blocks 顺序修正：`buildFinalAssistantBlocks` 将 reasoning 块前置（思考 → 摘要 → 回答，时间顺序）；外部内核（claude-code / codex / fixture）保持既有 `[text … reasoning]` 顺序（gap-transcript 恢复依赖，external-kernel-run 测试锁定）。
+- `InlineProcessFlow` 移除 `autoOpen`/`durationMs`/外层面板 API；工具批次标题保留计数与耗时。
+
+### Verification
+
+- `InlineProcessFlow.test.tsx` 10 项（平铺顺序、批次合并/拆分、思考行折叠、native steps 合并、commentary/step 边界交错）；`final-assistant-blocks.test.ts` 4 项（native reasoning 前置、external 保持、边界）；Desktop 全量 **162 files / 1232 tests**、Runtime 全量 **107 files / 759 tests** 通过；typecheck 通过。
+- 真实 Electron 端到端流式采样（attach 用户窗口 + deepseek-v4-flash）：思考行先流式出现 → 工具批次随后 → 回答最后流式（`think → batch → answer` 平铺顺序），6/6 检查通过。
+
+## 2026-08-16：执行过程面板流式时序修复
+
+### Fixed
+
+- 执行过程面板在总结开始输出后折叠，导致"总结先出、过程后见"的时序错乱：面板展开条件由 `streaming && !hasAnswerText` 改为 `streaming`（中间摘要/总结开始输出不再触发折叠，过程与总结同时可见，总结在面板外按时间顺序最后流式输出）。
+- 面板自动状态改为双向跟随：流式开始自动展开、运行完成自动收起；用户手动切换后本消息内不再自动干预（`manualToggleRef` 保护）。
+
+### Verification
+
+- `InlineProcessFlow.test.tsx` 14 项通过（新增 autoOpen 跟随展开/完成收起、手动干预保护两用例）；Desktop typecheck 通过。
+- 真实 Electron 端到端（attach 用户窗口 + deepseek-v4-flash）：13 秒 run 全程采样显示面板 `expanded=true` 持续（总结流式期间过程可见），总结独立流式于面板外；完成折叠逻辑由单测覆盖（实窗未折叠系用户手动打开过面板，用户控制优先为预期行为）。
+
 ## 2026-08-16：claude-code 内核适配 DeepSeek Anthropic 端点
 
 ### Fixed

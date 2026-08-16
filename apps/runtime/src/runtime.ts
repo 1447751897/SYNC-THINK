@@ -973,8 +973,61 @@ export function externalKernelToolEventsToMessageBlocks(
   );
 }
 
-export function durableMessagesToGapProviderMessages(
-  messages: readonly Message[],
+/**
+ * Assemble the durable assistant message blocks for a finalized run.
+ *
+ * Reasoning rows lead for the native kernel (the model thinks before it
+ * speaks, so the inline execution-process view shows 思考 → 摘要 → 工具 in
+ * time order). External kernels (claude-code / codex) keep the legacy
+ * `[text … reasoning]` order — locked by their finalization tests and the
+ * cross-kernel gap-transcript recovery that rebuilds from block order.
+ */
+export function buildFinalAssistantBlocks(input: {
+  commentaryText?: string;
+  commentarySegments: readonly { text: string }[];
+  assistantText: string;
+  reasoningText?: string;
+  reasoningSegments: readonly { text: string }[];
+  toolBlocks: readonly MessageBlock[];
+  reasoningFirst: boolean;
+}): MessageBlock[] {
+  const reasoningBlocks: MessageBlock[] =
+    input.reasoningText || input.reasoningSegments.length > 0
+      ? [
+          {
+            type: 'reasoning',
+            ...(input.reasoningText ? { reasoningText: input.reasoningText } : {}),
+            ...(input.reasoningSegments.length > 0
+              ? { payload: { reasoningSegments: input.reasoningSegments } }
+              : {}),
+          },
+        ]
+      : [];
+  const commentaryBlocks: MessageBlock[] =
+    input.commentaryText || input.commentarySegments.length > 0
+      ? [
+          {
+            type: 'commentary',
+            ...(input.commentaryText ? { text: input.commentaryText } : {}),
+            ...(input.commentarySegments.length > 0
+              ? { payload: { commentarySegments: input.commentarySegments } }
+              : {}),
+          },
+        ]
+      : [];
+  const textBlocks: MessageBlock[] = input.assistantText.trim()
+    ? [{ type: 'text', text: input.assistantText }]
+    : [];
+  return [
+    ...(input.reasoningFirst ? reasoningBlocks : []),
+    ...commentaryBlocks,
+    ...textBlocks,
+    ...input.toolBlocks,
+    ...(input.reasoningFirst ? [] : reasoningBlocks),
+  ];
+}
+
+export function durableMessagesToGapProviderMessages(  messages: readonly Message[],
 ): ProviderMessage[] {
   const result: ProviderMessage[] = [];
   for (const message of messages) {
@@ -22935,31 +22988,20 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       threadId: run.threadId as ThreadId,
       role: 'assistant',
       text: assistantText,
-      blocks: [
-        ...(commentaryText || commentarySegments.length > 0
-          ? [
-              {
-                type: 'commentary' as const,
-                ...(commentaryText ? { text: commentaryText } : {}),
-                ...(commentarySegments.length > 0 ? { payload: { commentarySegments } } : {}),
-              },
-            ]
-          : []),
-        ...(assistantText.trim() ? [{ type: 'text' as const, text: assistantText }] : []),
-        ...toolBlocks,
-        // Provider reasoning summaries remain durable for diagnostics and
-        // backward-compatible export, but Desktop does not present them as the
-        // user-visible execution process.
-        ...(reasoningText || reasoningSegments.length > 0
-          ? [
-              {
-                type: 'reasoning' as const,
-                ...(reasoningText ? { reasoningText } : {}),
-                ...(reasoningSegments.length > 0 ? { payload: { reasoningSegments } } : {}),
-              },
-            ]
-          : []),
-      ],
+      blocks: buildFinalAssistantBlocks({
+        commentaryText,
+        commentarySegments,
+        assistantText,
+        reasoningText,
+        reasoningSegments,
+        toolBlocks,
+        // Reasoning rows lead only for the native kernel (the model thinks
+        // before it speaks, so the inline process view shows 思考 → 摘要 →
+        // 工具 in time order). External kernels — claude-code / codex /
+        // fixtures — keep the legacy `[text … reasoning]` order locked by
+        // their finalization tests and gap-transcript recovery.
+        reasoningFirst: run.kernelId === 'native' || !run.kernelId,
+      }),
       runId,
       modelId: run.modelId ? (run.modelId as ModelId) : undefined,
       credentialRefId: run.credentialRefId ? (run.credentialRefId as CredentialRefId) : undefined,

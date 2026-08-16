@@ -1,16 +1,16 @@
 /**
  * DSH-style inline execution process for an assistant message.
  *
- * Renders the ordered process items inside ONE collapsible outer panel so a
- * reader who only wants the final conclusion can skip the process entirely:
+ * Renders the ordered process items flat inside the message flow, exactly like
+ * the DeepSeek Harness chat: thinking rows (collapsed to the first line),
+ * commentary / intermediate text, and tool batches appear in time order while
+ * the run streams, and the final answer follows as the last text block.
  *
- *   [执行过程 · N 个工具 · 12s]   ← outer panel (collapsed by default,
- *                                    auto-opens while streaming)
- *     ├─ 思考行（折叠显示首行，展开看全文）
- *     ├─ 摘要 / 中间文本（内联）
- *     └─ [read_file ×2 · write_file ×1 · 2s]   ← tool batch (adjacent tools
- *           ├─ read_file …                    grouped; expand to individual
- *           └─ write_file …                   cards, each expandable)
+ *   ├─ 思考行（折叠显示首行，展开看全文）
+ *   ├─ 摘要 / 中间文本（内联）
+ *   └─ [read_file ×2 · write_file ×1 · 2s]   ← tool batch (adjacent tools
+ *         ├─ read_file …                    grouped; expand to individual
+ *         └─ write_file …                   cards, each expandable)
  *
  * Tool cards have two sources: durable message blocks (external kernels such
  * as claude-code / codex write tool-call/tool-result blocks) and the run
@@ -19,7 +19,7 @@
  * boundary ordering as ExecutionTimeline (commentary segments interleaved by
  * their afterSequence).
  */
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { Brain, ChevronDown, CircleAlert, Layers, Wrench } from 'lucide-react';
 import type { CommentaryTimelineSegment, ExecutionProcessStep } from '@sync-think/protocol';
 import type { InlineProcessItem } from './ChatView.js';
@@ -245,8 +245,6 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   steps,
   commentarySegments,
   streaming,
-  durationMs,
-  autoOpen = false,
 }: {
   items: readonly InlineProcessItem[];
   /** Run process-view steps (native kernel tools live here, not in blocks). */
@@ -254,10 +252,6 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   /** Commentary timeline segments interleaved with the steps' sequence. */
   commentarySegments?: readonly CommentaryTimelineSegment[];
   streaming?: boolean;
-  /** Overall run elapsed time shown in the outer panel title. */
-  durationMs?: number;
-  /** Auto-expand the outer panel (e.g. while the run is streaming). */
-  autoOpen?: boolean;
 }) {
   const orderedItems = useMemo<readonly InlineProcessItem[]>(() => {
     // External kernels write tool-call/tool-result blocks; keep their order.
@@ -290,54 +284,18 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   }, [items, steps, commentarySegments]);
 
   const rendered = useMemo(() => groupToolBatches(orderedItems), [orderedItems]);
-  const [open, setOpen] = useState(autoOpen);
-  useEffect(() => {
-    if (autoOpen) setOpen(true);
-  }, [autoOpen]);
 
   if (rendered.length === 0) return null;
 
-  const toolCount = rendered.reduce(
-    (sum, item) => (item.kind === 'tool-batch' ? sum + item.tools.length : sum),
-    0,
-  );
-  const elapsed =
-    formatElapsed(durationMs) ??
-    (toolCount > 0
-      ? batchElapsed(rendered.flatMap((item) => (item.kind === 'tool-batch' ? item.tools : [])))
-      : undefined);
-
   return (
-    <section className="shell-process-panel" data-testid="process-panel">
-      <button
-        type="button"
-        className="shell-process-panel__toggle"
-        data-testid="process-panel-toggle"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="shell-process-panel__title">执行过程</span>
-        {toolCount > 0 ? (
-          <span className="shell-process-panel__meta">{toolCount} 个工具</span>
-        ) : null}
-        {elapsed ? <span className="shell-process-panel__meta">· {elapsed}</span> : null}
-        <ChevronDown
-          size={14}
-          className={`shell-process-panel__chevron${open ? ' is-open' : ''}`}
-          aria-hidden="true"
+    <div className="shell-inline-process" data-testid="inline-process-flow">
+      {rendered.map((item, index) => (
+        <ProcessItemView
+          key={item.kind === 'tool-batch' ? `batch-${index}` : `${item.kind}-${index}`}
+          item={item}
+          streaming={streaming}
         />
-      </button>
-      {open ? (
-        <div className="shell-process-panel__body" data-testid="process-panel-body">
-          {rendered.map((item, index) => (
-            <ProcessItemView
-              key={item.kind === 'tool-batch' ? `batch-${index}` : `${item.kind}-${index}`}
-              item={item}
-              streaming={streaming}
-            />
-          ))}
-        </div>
-      ) : null}
-    </section>
+      ))}
+    </div>
   );
 });

@@ -395,10 +395,8 @@ describe('ChatView reply usage details', () => {
       />,
     );
 
-    // 内联执行过程面板优先呈现 commentary；usage 落在消息 footer。
-    const processToggle = await screen.findByTestId('process-panel-toggle');
-    fireEvent.click(processToggle);
-    expect(screen.getAllByText('已完成检查，没有额外正文。').length).toBeGreaterThan(0);
+    // 内联执行过程视图平铺呈现 commentary；usage 落在消息 footer。
+    expect((await screen.findAllByText('已完成检查，没有额外正文。')).length).toBeGreaterThan(0);
     expect(screen.getByTestId('inline-process-commentary')).toBeTruthy();
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
     expect(await screen.findByText(/1s · 5k/)).toBeTruthy();

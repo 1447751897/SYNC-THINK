@@ -5350,12 +5350,19 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         ) : null}
         <InlineProcessFlow
-          items={message.processItems ?? []}
+          items={[
+            // Streaming snapshots carry reasoning in the message field (not in
+            // blocks yet); prepend it so the thinking row streams in time
+            // order. Completed messages already derive it from blocks.
+            ...(!(message.processItems ?? []).some((item) => item.kind === 'reasoning') &&
+            message.reasoningText
+              ? [{ kind: 'reasoning' as const, text: message.reasoningText }]
+              : []),
+            ...(message.processItems ?? []),
+          ]}
           steps={processView?.steps}
           commentarySegments={message.commentarySegments}
           streaming={Boolean(message.streaming)}
-          durationMs={processView?.durationMs}
-          autoOpen={Boolean(message.streaming && !hasAnswerText)}
         />
         {message.answerText || (!message.processItems?.length && message.text) ? (
           <MarkdownContent
