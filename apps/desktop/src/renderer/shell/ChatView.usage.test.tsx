@@ -395,9 +395,9 @@ describe('ChatView reply usage details', () => {
       />,
     );
 
-    const processToggle = await screen.findByRole('button', { name: /过程/ });
+    // 内联执行过程面板优先呈现 commentary；usage 落在消息 footer。
+    const processToggle = await screen.findByTestId('process-panel-toggle');
     fireEvent.click(processToggle);
-    // 新内联执行过程视图优先呈现 commentary；展开的面板仍保留耗时/用量细节。
     expect(screen.getAllByText('已完成检查，没有额外正文。').length).toBeGreaterThan(0);
     expect(screen.getByTestId('inline-process-commentary')).toBeTruthy();
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());

@@ -133,7 +133,6 @@ import {
 } from './compose-toolbar.js';
 import { TurnSkillControl } from './TurnSkillControl.js';
 import { FileChangesCard } from './ExecutionProcessBlock.js';
-import { ExecutionTimeline } from './ExecutionTimeline.js';
 import {
   formatCompactCount,
   formatCompactDuration,
@@ -201,7 +200,17 @@ export type InlineProcessItem =
   | { kind: 'reasoning'; text: string }
   | { kind: 'text'; text: string }
   | { kind: 'commentary'; text: string }
-  | { kind: 'tool'; name: string; argumentsJson: string; result?: string; failed?: boolean };
+  | {
+      kind: 'tool';
+      name: string;
+      argumentsJson: string;
+      result?: string;
+      failed?: boolean;
+      /** First observed tool boundary (native steps carry these). */
+      startedAt?: string;
+      /** Terminal tool boundary, when reported. */
+      completedAt?: string;
+    };
 
 export interface ChatMessage {
   id: string;
@@ -5345,6 +5354,8 @@ const MessageBubble = memo(function MessageBubble({
           steps={processView?.steps}
           commentarySegments={message.commentarySegments}
           streaming={Boolean(message.streaming)}
+          durationMs={processView?.durationMs}
+          autoOpen={Boolean(message.streaming && !hasAnswerText)}
         />
         {message.answerText || (!message.processItems?.length && message.text) ? (
           <MarkdownContent
@@ -5358,25 +5369,9 @@ const MessageBubble = memo(function MessageBubble({
           !message.processItems?.length ? (
           <TypingDots inline />
         ) : null}
-        {/* DSH-style inline process is the primary view; the durable panel stays
-            as a collapsed supplementary view (usage / elapsed / file summary). */}
-        <AssistantProcessGroup
-          commentaryText={message.commentaryText}
-          commentarySegments={message.commentarySegments}
-          processView={processView}
-          streaming={Boolean(message.streaming)}
-          answerStarted={hasAnswerText}
-          reasoningText={message.reasoningText}
-          autoOpenActive={false}
-        >
-          <ExecutionTimeline
-            commentarySegments={message.commentarySegments}
-            commentaryText={message.commentaryText}
-            processView={processView}
-            streaming={Boolean(message.streaming && !message.text.trim())}
-            onOpenChange={onOpenChange}
-          />
-        </AssistantProcessGroup>
+        {/* The durable run panel was removed: the inline process panel above is
+            the single execution-process view (usage/elapsed ride its title and
+            the message footer). */}
         {message.terminalState ? (
           <div
             className="mt-2 flex items-start gap-1.5 text-[11.5px] text-text-faint"

@@ -130,6 +130,8 @@ import {
   type ConversationGetContextStatusResponse,
   parseConversationGetContextStatusPayload,
   type ConversationResponse,
+  type ConversationPlanResponse,
+  type ConversationPlanApproveResponse,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
   type SubscribeConversationTransientStreamResponse,
@@ -201,6 +203,7 @@ import {
   type MessageBlock,
 } from '@sync-think/shared';
 import type {
+  ProviderContentPart,
   ProviderMessage,
   ProviderToolCall,
   VisibleAssistantMessagePhase,
@@ -320,6 +323,7 @@ import {
   shouldRetrySameModel,
   type DemoProvider,
   type DemoRunState,
+  type KernelToolEventRecord,
 } from './demo-run.js';
 import {
   buildCompactSummaryUserPrompt,
@@ -372,6 +376,7 @@ import {
 } from './remote-capability.js';
 import {
   ContextSnapshotBuilder,
+  LANGUAGE_FOLLOW_PROMPT,
   selectRecentMessagesWithinBudget,
   type ContextSnapshot,
   type ContextSnapshotSource,
@@ -491,6 +496,12 @@ import {
   parseSetConversationPinnedPayload,
   parseSetConversationArchivedPayload,
   parseSetConversationExecutionModePayload,
+  parseSetConversationInteractionModePayload,
+  parseConversationPlanSubmitPayload,
+  parseConversationPlanGetPayload,
+  parseConversationPlanApprovePayload,
+  parseConversationPlanRevisePayload,
+  parseConversationPlanCancelPayload,
   parseUpgradeConversationTrackPayload,
   parseDeleteConversationPayload,
   parseConversationCompactPayload,
@@ -552,6 +563,7 @@ import {
   executePlatformTool,
   buildPlatformMcpToolDefinitions,
   isPlatformFileToolName,
+  isPlanningDeniedTool,
   PLATFORM_MCP_TOOL_DEFINITIONS,
   type PlatformToolContext,
 } from './kernel/platform-tools.js';
@@ -769,7 +781,18 @@ interface PersistedKernelConversationSession {
   fingerprint: string;
   updatedAt: string;
   responseContinuationScopeId?: string;
+  /**
+   * Host-message watermark (last `message.sequence` this kernel session saw).
+   * Used to detect cross-kernel gaps when another kernel handled turns after
+   * this session's last run. Absent on legacy records → treated as in sync.
+   */
+  lastMessageSequence?: number;
+  lastMessageAt?: string;
 }
+
+/** Cross-kernel gap handling: a gap larger than this is cheaper to rebuild. */
+const KERNEL_SESSION_GAP_MESSAGE_LIMIT = 60;
+const KERNEL_SESSION_GAP_TOKEN_RATIO = 0.35;
 
 const KERNEL_SESSION_SETTING_PREFIX = 'kernel.session';
 const GATEWAY_RESPONSE_CONTINUATION_SETTING_PREFIX = 'gateway.response-continuation';
@@ -841,7 +864,15 @@ function isInvalidKernelSessionError(error: string | undefined): boolean {
   ].some((pattern) => pattern.test(message));
 }
 
-function providerContentToKernelTranscript(content: ProviderMessage['content']): string {
+const TOOL_ARGUMENTS_TRANSCRIPT_LIMIT = 300;
+const TOOL_RESULT_TRANSCRIPT_LIMIT = 800;
+
+function truncateTranscriptText(text: string, limit: number): { text: string; truncated: boolean } {
+  if (text.length <= limit) return { text, truncated: false };
+  return { text: `${text.slice(0, limit)}…`, truncated: true };
+}
+
+export function providerContentToKernelTranscript(content: ProviderMessage['content']): string {
   if (typeof content === 'string') return content;
   return content
     .map((part) => {
@@ -849,41 +880,167 @@ function providerContentToKernelTranscript(content: ProviderMessage['content']):
       if (part.type === 'image') return '[Image attached in this conversation]';
       if (part.type === 'tool-call') {
         const tool = part.toolCall;
-        return tool
-          ? `[Tool call: ${tool.name}${tool.argumentsJson ? ` ${tool.argumentsJson}` : ''}]`
-          : '[Tool call]';
+        if (!tool) return '[Tool call]';
+        if (!tool.argumentsJson) return `[Tool call: ${tool.name}]`;
+        const { text, truncated } = truncateTranscriptText(
+          tool.argumentsJson,
+          TOOL_ARGUMENTS_TRANSCRIPT_LIMIT,
+        );
+        return `[Tool call: ${tool.name} 参数: ${text}${truncated ? ' (参数截断)' : ''}]`;
       }
-      if (part.type === 'tool-result') return `[Tool result: ${part.toolResult ?? ''}]`;
+      if (part.type === 'tool-result') {
+        const { text, truncated } = truncateTranscriptText(
+          part.toolResult ?? '',
+          TOOL_RESULT_TRANSCRIPT_LIMIT,
+        );
+        return `[Tool result: ${text}${truncated ? ' (结果截断)' : ''}]`;
+      }
       return '';
     })
     .filter(Boolean)
     .join('\n');
 }
 
-function formatKernelBootstrapTranscript(messages: readonly ProviderMessage[]): string {
-  const turns = messages
+function kernelTranscriptTurnLabel(message: ProviderMessage): string {
+  return message.role === 'assistant'
+    ? message.phase === 'commentary'
+      ? 'Assistant commentary'
+      : 'Assistant'
+    : message.role === 'user'
+      ? 'User'
+      : message.role === 'tool'
+        ? 'Tool'
+        : 'System';
+}
+
+function formatKernelTranscriptTurns(messages: readonly ProviderMessage[]): string[] {
+  return messages
     .map((message) => {
       const content = providerContentToKernelTranscript(message.content).trim();
       if (!content) return undefined;
-      const label =
-        message.role === 'assistant'
-          ? message.phase === 'commentary'
-            ? 'Assistant commentary'
-            : 'Assistant'
-          : message.role === 'user'
-            ? 'User'
-            : message.role === 'tool'
-              ? 'Tool'
-              : 'System';
-      return `### ${label}\n${content}`;
+      return `### ${kernelTranscriptTurnLabel(message)}\n${content}`;
     })
     .filter((turn): turn is string => Boolean(turn));
+}
+
+export function formatKernelBootstrapTranscript(messages: readonly ProviderMessage[]): string {
+  const turns = formatKernelTranscriptTurns(messages);
   if (turns.length === 0) return '';
   return [
     '## Restored conversation context',
-    'The following transcript is prior conversation state. Continue from it without repeating it.',
+    'The following transcript is prior conversation state restored from history. It is NOT the current user input — treat every turn below as already-happened context. Continue from it without repeating it.',
     ...turns,
   ].join('\n\n');
+}
+
+export function formatKernelGapTranscript(messages: readonly ProviderMessage[]): string {
+  const turns = formatKernelTranscriptTurns(messages);
+  if (turns.length === 0) return '';
+  return [
+    '## Cross-kernel session gap',
+    'The turns below were handled by another kernel/session while this one was idle. They are prior context, NOT the current user input — treat them as already-happened conversation state.',
+    ...turns,
+  ].join('\n\n');
+}
+
+/**
+ * Gap-specific durable→provider conversion that keeps tool calls/results, so
+ * the catch-up transcript carries the tool names + arguments + outputs that the
+ * generic message-history builder intentionally drops. This is gap-only and
+ * never feeds the live provider request path.
+ */
+/**
+ * Convert a run's external-kernel tool history into durable MessageBlocks.
+ * Kept as durable blocks on the assistant message so cross-kernel gap
+ * transcripts (durableMessagesToGapProviderMessages) restore tool names,
+ * arguments and results for the resumed kernel.
+ */
+export function externalKernelToolEventsToMessageBlocks(
+  toolEvents: readonly KernelToolEventRecord[] | undefined,
+): MessageBlock[] {
+  if (!toolEvents || toolEvents.length === 0) return [];
+  return toolEvents.map((entry) =>
+    entry.kind === 'tool-call'
+      ? {
+          type: 'tool-call',
+          payload: { name: entry.name ?? 'unknown', argumentsJson: entry.argsJson ?? '' },
+        }
+      : {
+          type: 'tool-result',
+          text: entry.output ?? '',
+          ...(entry.failed ? { payload: { failed: true } } : {}),
+        },
+  );
+}
+
+export function durableMessagesToGapProviderMessages(
+  messages: readonly Message[],
+): ProviderMessage[] {
+  const result: ProviderMessage[] = [];
+  for (const message of messages) {
+    const parts: ProviderContentPart[] = [];
+    for (const block of message.blocks) {
+      switch (block.type) {
+        case 'text':
+        case 'code':
+          if (block.text) parts.push({ type: 'text', text: block.text });
+          break;
+        case 'commentary':
+          if (block.text) parts.push({ type: 'text', text: block.text });
+          break;
+        case 'tool-call': {
+          const payload = (block.payload ?? {}) as {
+            name?: string;
+            argumentsJson?: string;
+          };
+          parts.push({
+            type: 'tool-call',
+            toolCall: {
+              id: '',
+              name: payload.name ?? 'unknown',
+              argumentsJson: payload.argumentsJson ?? '',
+            },
+          });
+          break;
+        }
+        case 'tool-result':
+          parts.push({ type: 'tool-result', toolResult: block.text ?? '' });
+          break;
+        case 'reasoning':
+          if (block.reasoningText) parts.push({ type: 'text', text: block.reasoningText });
+          break;
+        default:
+          break;
+      }
+    }
+    if (parts.length === 0) continue;
+    result.push({ role: message.role, content: parts });
+  }
+  return result;
+}
+
+/**
+ * Decide whether a set of gap messages should be patched into a resumed kernel
+ * session (via a catch-up transcript) or treated as oversized (caller rebuilds).
+ * Pure — the caller supplies the durable gap messages and the effective window.
+ */
+export function computeKernelGapFromMessages(
+  messages: readonly Message[],
+  effectiveWindow: number,
+): { count: number; catchUp?: string; oversized: boolean } {
+  if (messages.length === 0) return { count: 0, oversized: false };
+  const roughTokens = messages.reduce(
+    (sum, message) => sum + Math.ceil(JSON.stringify(message.blocks).length / 4),
+    0,
+  );
+  const oversized =
+    messages.length > KERNEL_SESSION_GAP_MESSAGE_LIMIT ||
+    roughTokens > effectiveWindow * KERNEL_SESSION_GAP_TOKEN_RATIO;
+  if (oversized) return { count: messages.length, oversized: true };
+  const catchUp = formatKernelGapTranscript(
+    durableMessagesToGapProviderMessages(messages),
+  );
+  return { count: messages.length, oversized: false, ...(catchUp ? { catchUp } : {}) };
 }
 
 function isCurrentKernelUserMessage(
@@ -1201,6 +1358,9 @@ export class Runtime {
   private readonly modelRetryBaseDelayMs: number;
   private readonly providerStore?: SqliteProviderStore;
   private readonly appSettingStore?: SqliteAppSettingStore;
+  /** Persisted runId → kernelId, so message-stream kernel badges survive restarts. */
+  private readonly runKernelIds: Map<string, string> = new Map();
+  private runKernelIdsLoaded = false;
   /**
    * Open gateway (开放网关): loopback protocol bridge that lets a kernel speak
    * its native dialect against an upstream that speaks the other one.
@@ -1868,6 +2028,30 @@ export class Runtime {
         }
         if (frame.type === 'conversation.setExecutionMode') {
           this.handleSetConversationExecutionMode(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.setInteractionMode') {
+          this.handleSetConversationInteractionMode(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.plan.submit') {
+          this.handleConversationPlanSubmit(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.plan.get') {
+          this.handleConversationPlanGet(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.plan.approve') {
+          this.handleConversationPlanApprove(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.plan.revise') {
+          this.handleConversationPlanRevise(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.plan.cancel') {
+          this.handleConversationPlanCancel(socket, frame);
           return;
         }
         if (frame.type === 'conversation.upgradeTrack') {
@@ -7026,6 +7210,39 @@ export class Runtime {
     }
   }
 
+  /** Lazily hydrate the persisted runId → kernelId map. */
+  private ensureRunKernelIdsLoaded(): void {
+    if (this.runKernelIdsLoaded) return;
+    this.runKernelIdsLoaded = true;
+    const record = this.appSettingStore?.get('kernel.runKernelIds');
+    if (!record || typeof record.value !== 'object' || record.value === null) return;
+    try {
+      const parsed = record.value as Record<string, unknown>;
+      for (const [runId, kernelId] of Object.entries(parsed)) {
+        if (runId && typeof kernelId === 'string' && kernelId) {
+          this.runKernelIds.set(runId, kernelId);
+        }
+      }
+    } catch {
+      // Corrupt map — ignore and rebuild from future runs.
+    }
+  }
+
+  /** Persist runId → kernelId so message badges survive process restarts. */
+  private recordRunKernel(runId: string, kernelId: string | undefined): void {
+    if (!runId || !kernelId) return;
+    this.ensureRunKernelIdsLoaded();
+    if (this.runKernelIds.get(runId) === kernelId) return;
+    this.runKernelIds.set(runId, kernelId);
+    try {
+      const snapshot: Record<string, string> = {};
+      for (const [key, value] of this.runKernelIds) snapshot[key] = value;
+      this.appSettingStore?.set('kernel.runKernelIds', snapshot);
+    } catch {
+      // Best-effort persistence; the in-memory map still serves this session.
+    }
+  }
+
   private handleListConversationMessages(socket: Socket, frame: Frame): void {
     const payload = parseConversationListMessagesPayload(frame.payload);
     if (!payload) {
@@ -7081,6 +7298,27 @@ export class Runtime {
           limit: payload.limit,
         },
       );
+      if (response.messages.length > 0) {
+        this.ensureRunKernelIdsLoaded();
+        // Backfill any runId missing from the persisted map from the event log
+        // (run.started carries kernelId) so badges survive restarts even for
+        // runs recorded before kernel tracking existed.
+        const missingRunIds = response.messages
+          .filter((message) => message.runId && !message.kernelId)
+          .map((message) => String(message.runId));
+        if (missingRunIds.length > 0) {
+          const fromEvent = this.messageStore.resolveRunKernelIds(missingRunIds);
+          for (const [runId, kernelId] of fromEvent) {
+            this.runKernelIds.set(runId, kernelId);
+          }
+        }
+        for (const message of response.messages) {
+          if (message.runId && !message.kernelId) {
+            const kernelId = this.runKernelIds.get(String(message.runId));
+            if (kernelId) message.kernelId = kernelId;
+          }
+        }
+      }
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -7503,6 +7741,232 @@ export class Runtime {
           id: frame.id,
           kind: 'response',
           type: 'conversation.setExecutionMode',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleSetConversationInteractionMode(socket: Socket, frame: Frame): void {
+    const payload = parseSetConversationInteractionModePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const updated = this.conversationStore.setInteractionMode(
+        payload.conversationId,
+        payload.interactionMode,
+      );
+      const conversation = this.toConversationSummary(updated);
+      const event = this.appendEvent('system', 'conversation.interaction_mode_changed', {
+        conversationId: conversation.id,
+        interactionMode: conversation.interactionMode,
+      });
+      this.publishEvent(event);
+      const response: ConversationResponse = { conversation };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.setInteractionMode',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  // ── Conversation plan (chat planning mode) ────────────────────────────────
+
+  private handleConversationPlanSubmit(socket: Socket, frame: Frame): void {
+    const payload = parseConversationPlanSubmitPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const plan = this.conversationStore.submitConversationPlan(
+        payload.conversationId,
+        payload.plan,
+      );
+      const conversation = this.conversationStore.get(payload.conversationId);
+      if (!conversation) throw new Error('conversation not found');
+      const response: ConversationPlanResponse = {
+        conversation: this.toConversationSummary(conversation),
+        plan,
+      };
+      const event = this.appendEvent('system', 'conversation.plan_submitted', {
+        conversationId: payload.conversationId,
+        revision: plan.currentRevision,
+      });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.plan.submit',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleConversationPlanGet(socket: Socket, frame: Frame): void {
+    const payload = parseConversationPlanGetPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const plan = this.conversationStore.getConversationPlan(payload.conversationId);
+      const conversation = this.conversationStore.get(payload.conversationId);
+      if (!conversation) throw new Error('conversation not found');
+      const response: ConversationPlanResponse = {
+        conversation: this.toConversationSummary(conversation),
+        plan,
+      };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.plan.get',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleConversationPlanApprove(socket: Socket, frame: Frame): void {
+    const payload = parseConversationPlanApprovePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const plan = this.conversationStore.approveConversationPlan(
+        payload.conversationId,
+        payload.revision,
+      );
+      // Approving the plan exits planning mode: the follow-up execution run
+      // must run with full tools. The desktop immediately starts it through the
+      // normal message flow (appendMessage) after this command returns.
+      this.conversationStore.setInteractionMode(payload.conversationId, 'execute');
+      const conversation = this.conversationStore.get(payload.conversationId);
+      if (!conversation) throw new Error('conversation not found');
+      const response: ConversationPlanApproveResponse = {
+        conversation: this.toConversationSummary(conversation),
+        plan,
+        createdRun: false,
+      };
+      const event = this.appendEvent('system', 'conversation.plan_approved', {
+        conversationId: payload.conversationId,
+        revision: plan.currentRevision,
+      });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.plan.approve',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleConversationPlanRevise(socket: Socket, frame: Frame): void {
+    const payload = parseConversationPlanRevisePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const plan = this.conversationStore.reviseConversationPlan(
+        payload.conversationId,
+        payload.expectedRevision,
+        payload.plan,
+      );
+      const conversation = this.conversationStore.get(payload.conversationId);
+      if (!conversation) throw new Error('conversation not found');
+      const response: ConversationPlanResponse = {
+        conversation: this.toConversationSummary(conversation),
+        plan,
+      };
+      const event = this.appendEvent('system', 'conversation.plan_revised', {
+        conversationId: payload.conversationId,
+        revision: plan.currentRevision,
+      });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.plan.revise',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleConversationPlanCancel(socket: Socket, frame: Frame): void {
+    const payload = parseConversationPlanCancelPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.conversationStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const plan = this.conversationStore.cancelConversationPlan(payload.conversationId);
+      const conversation = this.conversationStore.get(payload.conversationId);
+      if (!conversation) throw new Error('conversation not found');
+      const response: ConversationPlanResponse = {
+        conversation: this.toConversationSummary(conversation),
+        plan,
+      };
+      const event = this.appendEvent('system', 'conversation.plan_cancelled', {
+        conversationId: payload.conversationId,
+      });
+      this.publishEvent(event);
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.plan.cancel',
           payload: response,
         }),
       );
@@ -8220,6 +8684,7 @@ export class Runtime {
       pinnedAt: record.pinnedAt,
       archivedAt: record.archivedAt,
       executionMode: record.executionMode,
+      interactionMode: record.interactionMode,
       lastMessageAt: record.lastMessageAt,
       taskId: record.taskId,
       createdAt: record.createdAt,
@@ -13380,6 +13845,7 @@ export class Runtime {
           tokenEstimate: prepared.tokenEstimate,
         },
       });
+      this.recordRunKernel(demoRunId, demoRun.kernelId);
       eventDrafts.push({
         id: ulid() as Event['id'],
         workspaceId: persistedTask?.workspaceId ?? this.workspaceId,
@@ -13403,6 +13869,18 @@ export class Runtime {
           protocol: demoRun.protocol,
           useFakeProvider: demoRun.useFakeProvider,
           idempotencyKey: demoRunId,
+          ...(demoRun.kernelSessionPlan
+            ? {
+                sessionMode: demoRun.kernelSessionPlan.mode,
+                gapCount: demoRun.kernelSessionPlan.gapCount,
+              }
+            : {}),
+          ...(demoRun.effectiveContextWindow !== undefined
+            ? { effectiveContextWindow: demoRun.effectiveContextWindow }
+            : {}),
+          ...(demoRun.contextWindowSource
+            ? { contextWindowSource: demoRun.contextWindowSource }
+            : {}),
           run: serializeDemoRun(demoRun),
         },
       });
@@ -13632,6 +14110,13 @@ export class Runtime {
     const conversation =
       task && this.conversationStore ? this.conversationStore.getByTaskId(task.id) : undefined;
     return conversation ? String(conversation.id) : undefined;
+  }
+
+  /** True when the conversation backing this thread is in「规划模式」(plan). */
+  private isPlanningModeForThread(threadId: string): boolean {
+    const conversationId = this.resolveConversationIdForThread(threadId);
+    if (!conversationId || !this.conversationStore) return false;
+    return this.conversationStore.get(conversationId)?.interactionMode === 'plan';
   }
 
   private buildGoalTranscript(threadId: string): string {
@@ -15269,9 +15754,20 @@ export class Runtime {
             this.publishKernelTextDelta(runId, initialRun.threadId, event.text);
             break;
           case 'reasoning':
-            // Kernel reasoning stays diagnostic-only (same rule as native
-            // provider reasoning): stream it, never persist it as chat text.
+            // Kernel reasoning: stream it live AND accumulate it on the run so
+            // the final assistant message persists a reasoning block (matching
+            // native provider reasoning). The UI renders it as a collapsible
+            // thinking region.
             this.publishKernelReasoningDelta(runId, initialRun.threadId, event.text);
+            {
+              const live = this.demoRuns.get(runId);
+              if (live) {
+                this.demoRuns.set(runId, {
+                  ...live,
+                  reasoningText: `${live.reasoningText ?? ''}${event.text}`,
+                });
+              }
+            }
             break;
           case 'session-started':
             reportedSessionId ??= this.saveReportedKernelConversationSession(
@@ -15338,6 +15834,12 @@ export class Runtime {
               )
             : 'kernel process ended before a terminal event',
       );
+      // Advance the session watermark AFTER finalize persists the assistant
+      // reply, so the next same-kernel run resumes without a phantom gap (see
+      // refreshKernelConversationSessionWatermark).
+      if (finalStatus === 'completed') {
+        this.refreshKernelConversationSessionWatermark(finalRun);
+      }
     } catch (error) {
       if (abort.signal.aborted) return;
       const finalRun = this.demoRuns.get(runId);
@@ -15374,17 +15876,51 @@ export class Runtime {
     }
   }
 
+  /**
+   * Effective context window the kernel should honor. For kernels whose native
+   * window is not overridable (Claude Code) the effective window is capped at
+   * the kernel's native limit; the configured value wins otherwise. Used for
+   * context trimming, kernel injection and the observable run snapshot.
+   */
+  private effectiveContextWindowForRun(
+    run: DemoRunState,
+  ): { window: number; source: 'configured' | 'kernel-capped' | 'estimated' } {
+    const configured = run.contextWindow ?? 128_000;
+    const estimated = run.contextWindowEstimated === true && run.contextWindow === undefined;
+    let window = configured;
+    let source: 'configured' | 'kernel-capped' | 'estimated' = estimated
+      ? 'estimated'
+      : 'configured';
+    const kernelId = run.kernelId;
+    if (kernelId && kernelId !== 'native') {
+      const cap = getKernelRegistry().find((entry) => entry.id === kernelId)?.capabilities
+        .contextWindow;
+      if (
+        cap &&
+        !cap.overridable &&
+        Number.isFinite(cap.nativeLimit) &&
+        configured > cap.nativeLimit
+      ) {
+        window = cap.nativeLimit;
+        source = 'kernel-capped';
+      }
+    }
+    return { window, source };
+  }
+
   private async buildKernelRequestForRun(run: DemoRunState, runId?: RunId): Promise<KernelRequest> {
     const workspaceRoot = this.resolveChatWorkspaceRoot(run.threadId);
     const executionMode = this.resolveChatExecutionMode(run.threadId);
+    const planningMode = run.planningMode === true || this.isPlanningModeForThread(run.threadId);
     const kernelId = run.kernelId ?? 'native';
     const baseSystemContext = this.buildKernelSystemContext(run, workspaceRoot);
-    const session = this.resolveKernelConversationSession(
+    const sessionResolution = this.resolveKernelConversationSession(
       run,
       kernelId,
       workspaceRoot,
       baseSystemContext,
     );
+    const session = sessionResolution.session;
     const responseContinuationScopeId = this.resolveKernelResponseContinuationScopeId(
       run,
       kernelId,
@@ -15395,12 +15931,15 @@ export class Runtime {
       runId ?? run.runId,
       responseContinuationScopeId,
     );
+    const effective = this.effectiveContextWindowForRun(run);
     return {
       kernelId,
       model: run.modelId,
       providerModelId: run.providerModelId,
       userText: run.userText,
       contextWindow: run.contextWindow ?? 128_000,
+      effectiveContextWindow: effective.window,
+      contextWindowSource: effective.source,
       credential,
       systemContext:
         session?.mode === 'create'
@@ -15410,7 +15949,9 @@ export class Runtime {
       // startPlatformMcpBrokerForRun right after this request is built.
       platformTools: [],
       permissionMode: normalizeChatExecutionMode(executionMode),
+      planningMode,
       workspaceDir: workspaceRoot ?? process.cwd(),
+      ...(run.reasoningEffort ? { reasoningEffort: run.reasoningEffort } : {}),
       ...(session ? { session } : {}),
     };
   }
@@ -15530,6 +16071,28 @@ export class Runtime {
     }
   }
 
+  /**
+   * Advance the persisted session watermark to the newest durable message after
+   * a successful run. `saveReportedKernelConversationSession` records the
+   * watermark at session-start (the user message), but the kernel session also
+   * absorbs this run's assistant reply before it ends — without this refresh the
+   * next same-kernel run would treat that reply as a phantom cross-kernel gap.
+   */
+  private refreshKernelConversationSessionWatermark(run: DemoRunState): void {
+    if (run.kernelId !== 'claude-code' && run.kernelId !== 'codex') return;
+    const key = this.kernelConversationSessionKey(run.kernelId, run);
+    const existing = this.loadKernelConversationSession(key);
+    if (!existing) return;
+    const watermark = this.latestDurableMessageWatermark(run.threadId);
+    if (!watermark) return;
+    this.saveKernelConversationSession(key, {
+      ...existing,
+      updatedAt: new Date().toISOString(),
+      lastMessageSequence: watermark.sequence,
+      lastMessageAt: watermark.createdAt,
+    });
+  }
+
   private clearFailedKernelConversationSession(
     run: DemoRunState,
     request: KernelRequest,
@@ -15563,6 +16126,75 @@ export class Runtime {
       .digest('hex');
   }
 
+  /** Latest durable host message watermark for a thread (sequence + timestamp). */
+  private latestDurableMessageWatermark(
+    threadId: string,
+  ): { sequence: number; createdAt: string } | undefined {
+    if (!this.messageStore) return undefined;
+    const page = this.messageStore.listMessages(threadId as ThreadId, { limit: 1 });
+    const latest = page.messages[0];
+    return latest ? { sequence: latest.sequence, createdAt: latest.createdAt } : undefined;
+  }
+
+  /** Durable messages strictly newer than `afterSequence`, oldest first. */
+  private listMessagesAfterSequence(threadId: string, afterSequence: number): Message[] {
+    if (!this.messageStore) return [];
+    const collected: Message[] = [];
+    let beforeSequence: number | undefined;
+    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+      const page = this.messageStore.listMessages(threadId as ThreadId, {
+        ...(beforeSequence !== undefined ? { beforeSequence } : {}),
+        limit: 100,
+      });
+      if (page.messages.length === 0) break;
+      if (page.messages[0].sequence <= afterSequence) {
+        collected.unshift(
+          ...page.messages.filter((message) => message.sequence > afterSequence),
+        );
+        break;
+      }
+      collected.unshift(...page.messages);
+      if (!page.hasMore) break;
+      beforeSequence = page.nextCursor;
+      if (beforeSequence === undefined) break;
+    }
+    return collected;
+  }
+
+  /**
+   * Compute the cross-kernel gap for a resumed kernel session: durable host
+   * messages after the session's watermark. A gap that is too large (many
+   * turns or a big token share of the effective window) is marked oversized so
+   * the caller can rebuild the session instead of patching it.
+   */
+  private computeKernelSessionGap(
+    run: DemoRunState,
+    session: PersistedKernelConversationSession,
+  ): { count: number; catchUp?: string; oversized: boolean } {
+    // Legacy record without a watermark: treat as in sync — no replay, no rebuild.
+    if (session.lastMessageSequence === undefined) return { count: 0, oversized: false };
+    let gapMessages = this.listMessagesAfterSequence(run.threadId, session.lastMessageSequence);
+    // The current user turn is this run's input, not a gap turn — the message
+    // store persists it before buildKernelRequestForRun runs, so exclude the
+    // newest gap message when it is the current user text.
+    const currentUserText = run.userText.trim();
+    if (currentUserText) {
+      const last = gapMessages[gapMessages.length - 1];
+      if (last && last.role === 'user') {
+        const text = last.blocks
+          .filter((block) => block.type === 'text' || block.type === 'code')
+          .map((block) => block.text ?? '')
+          .join('\n')
+          .trim();
+        if (text === currentUserText) gapMessages = gapMessages.slice(0, -1);
+      }
+    }
+    return computeKernelGapFromMessages(
+      gapMessages,
+      run.effectiveContextWindow ?? run.contextWindow ?? 128_000,
+    );
+  }
+
   private saveReportedKernelConversationSession(
     run: DemoRunState,
     sessionId: string,
@@ -15592,12 +16224,16 @@ export class Runtime {
             kernelId,
             requestedSessionId?.trim() || normalizedSessionId,
           );
+    const watermark = this.latestDurableMessageWatermark(run.threadId);
     this.saveKernelConversationSession(key, {
       version: 1,
       sessionId: normalizedSessionId,
       fingerprint,
       updatedAt: new Date().toISOString(),
       responseContinuationScopeId,
+      ...(watermark
+        ? { lastMessageSequence: watermark.sequence, lastMessageAt: watermark.createdAt }
+        : {}),
     });
     return normalizedSessionId;
   }
@@ -15607,8 +16243,10 @@ export class Runtime {
     kernelId: string,
     workspaceRoot: string | undefined,
     baseSystemContext: string,
-  ): KernelRequest['session'] | undefined {
-    if (kernelId !== 'claude-code' && kernelId !== 'codex') return undefined;
+  ): { session?: KernelRequest['session']; gapCount: number } {
+    if (kernelId !== 'claude-code' && kernelId !== 'codex') {
+      return { session: undefined, gapCount: 0 };
+    }
     const key = this.kernelConversationSessionKey(kernelId, run);
     const fingerprint = this.kernelConversationSessionFingerprint(
       run,
@@ -15618,11 +16256,24 @@ export class Runtime {
     );
     const existing = this.loadKernelConversationSession(key);
     if (existing?.fingerprint === fingerprint) {
-      return { id: existing.sessionId, mode: 'resume' };
+      const gap = this.computeKernelSessionGap(run, existing);
+      if (gap.oversized) {
+        // Gap too large to patch cheaply → invalidate the native session and
+        // rebuild with the full bootstrap transcript.
+        this.clearKernelConversationSession(run, existing.sessionId);
+        const freshId = kernelId === 'codex' ? undefined : randomUUID();
+        return {
+          session: { ...(freshId ? { id: freshId } : {}), mode: 'create' },
+          gapCount: 0,
+        };
+      }
+      const session: KernelRequest['session'] = { id: existing.sessionId, mode: 'resume' };
+      if (gap.catchUp) session.catchUp = gap.catchUp;
+      return { session, gapCount: gap.count };
     }
     if (existing) this.clearKernelConversationSession(run, existing.sessionId);
-    if (kernelId === 'codex') return { mode: 'create' };
-    return { id: randomUUID(), mode: 'create' };
+    if (kernelId === 'codex') return { session: { mode: 'create' }, gapCount: 0 };
+    return { session: { id: randomUUID(), mode: 'create' }, gapCount: 0 };
   }
 
   private resolveKernelResponseContinuationScopeId(
@@ -15826,6 +16477,24 @@ export class Runtime {
         ...(run.projectContextPromptBlocks ?? []),
       ].join('\n\n'),
     );
+    parts.push(
+      [
+        '## Persistent memory',
+        'Project memory is injected into the conversation as memory entries, newest first.',
+        'When several entries conflict about the same fact, the most recent entry wins — trust it over older ones.',
+        'If the user states a new value for a remembered fact, treat the newest statement as the updated truth.',
+      ].join('\n'),
+    );
+    if (run.planningMode === true || this.isPlanningModeForThread(run.threadId)) {
+      parts.push(
+        [
+          '## 规划模式（Planning mode）',
+          '你正处于规划模式：只做只读调研，禁止任何写入、编辑、命令执行、浏览器交互或资源变更（宿主会在执行层强制拦截）。',
+          '完成调研后，调用 `plan_submit` 提交一份结构化执行计划，然后简要总结要点并停止，等待用户审批——不要继续执行。',
+          '宿主已禁用 EnterPlanMode / ExitPlanMode / AskUserQuestion，不要调用它们，也不要尝试进入 Claude 原生规划流程。',
+        ].join('\n'),
+      );
+    }
     return parts.join('\n\n');
   }
 
@@ -15849,7 +16518,9 @@ export class Runtime {
     }
     const workspaceRoot = request.workspaceDir;
     // Frozen for this run: capability/permission changes must not widen an
-    // in-flight kernel. Browser/desktop tools stay host-only this round.
+    // in-flight kernel. Desktop tools stay host-only this round; Browser tools
+    // follow the 联网 switch and are injected for every kernel (the Browser
+    // Worker still enforces origin grants / inspection per command).
     const tools = buildPlatformMcpToolDefinitions({
       executionMode: this.resolveChatExecutionMode(run.threadId),
       networkEnabled: run.networkEnabled === true,
@@ -15858,6 +16529,8 @@ export class Runtime {
       includeMcpTools: Boolean(this.mcpStore),
       includeSkillTools: Boolean(this.skillStore),
       includeTeamTools: Boolean(this.teamStore && this.globalAgentStore),
+      includeBrowserTools: run.networkEnabled === true,
+      planningMode: request.planningMode === true || run.planningMode === true,
     });
     this.platformMcpCatalogByRun.set(runId, tools);
     const broker = await startKernelMcpBroker({
@@ -15928,7 +16601,28 @@ export class Runtime {
     if (call.signal.aborted) {
       return { ok: false, error: 'platform tool call was cancelled by the kernel' };
     }
+    // Planning mode fence: never allow a side-effecting tool even if it slipped
+    // into the catalog (second layer behind the catalog filter).
+    if (run.planningMode === true && isPlanningDeniedTool(call.tool)) {
+      return { ok: false, error: '规划模式只读：此操作需在执行模式中进行' };
+    }
     const executionMode = normalizeChatExecutionMode(this.resolveChatExecutionMode(run.threadId));
+
+    // Browser tools ride the network switch and use the Browser Worker's own
+    // origin-grant / approval path (visible live page + origin grants), not the
+    // generic chat classifier. Injecting them for external kernels makes
+    // browser_open/click/type/read/screenshot work identically on every kernel.
+    if (CHAT_BROWSER_TOOL_NAMES.has(call.tool)) {
+      return this.executeExternalKernelBrowserTool(runId, run, workspaceRoot, call, argumentsJson, executionMode);
+    }
+
+    // plan_submit (规划模式) delivers the approved-to-be plan: persist the plan
+    // on the conversation and surface it to the UI as an approval card. The
+    // planning run then ends naturally (the tool description tells the model to
+    // stop and wait for approval).
+    if (call.tool === 'plan_submit') {
+      return this.handlePlanSubmitToolCall(runId, run, call, argumentsJson);
+    }
 
     // Host-only file tools keep the ask-mode tier; every chat tool defers to the
     // native classifier (Agent/Skill/Team/MCP writes are gated outside full-access).
@@ -15959,6 +16653,127 @@ export class Runtime {
     };
     try {
       const content = await this.executeHostPlatformTool(run, toolCall, workspaceRoot);
+      return { ok: true, content };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Execute a Browser Worker tool for an external kernel (codex / claude-code).
+   * Mirrors the native loop's browser branch: evaluate the origin grant, ask for
+   * approval in non-full-access mode, then run the visible Browser Worker action.
+   */
+  /**
+   * plan_submit executor (规划模式). Persists the model-submitted plan on the
+   * conversation and emits `conversation.plan_submitted` so the UI can render
+   * the approval card. The planning run then finishes naturally.
+   */
+  private async handlePlanSubmitToolCall(
+    runId: RunId,
+    run: DemoRunState,
+    call: PlatformMcpToolCall,
+    argumentsJson: string,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    void runId;
+    const conversationId = this.resolveConversationIdForThread(run.threadId);
+    if (!conversationId || !this.conversationStore) {
+      return { ok: false, error: 'conversation store unavailable' };
+    }
+    const parsed = parseConversationPlanSubmitPayload({
+      conversationId,
+      plan: call.input,
+    });
+    if (!parsed) {
+      return { ok: false, error: 'plan_submit: invalid plan structure' };
+    }
+    try {
+      const plan = this.conversationStore.submitConversationPlan(
+        parsed.conversationId,
+        parsed.plan,
+      );
+      const event = this.appendEvent('system', 'conversation.plan_submitted', {
+        conversationId: parsed.conversationId,
+        revision: plan.currentRevision,
+        runId,
+      });
+      this.publishEvent(event);
+      void argumentsJson;
+      return {
+        ok: true,
+        content: JSON.stringify({
+          ok: true,
+          planSubmitted: true,
+          revision: plan.currentRevision,
+          message: '计划已提交，等待用户审批。请简要总结计划要点并停止执行，不要继续做任何改动。',
+        }),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `plan_submit failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  private async executeExternalKernelBrowserTool(
+    runId: RunId,
+    run: DemoRunState,
+    workspaceRoot: string,
+    call: PlatformMcpToolCall,
+    argumentsJson: string,
+    executionMode: 'ask' | 'workspace' | 'full-access',
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    if (!this.browserController) {
+      return {
+        ok: false,
+        error: 'browser.worker-unavailable: Browser Worker is not configured on this Runtime.',
+      };
+    }
+    const browserPermissionInput = {
+      toolName: call.tool,
+      argumentsJson,
+      workspaceId: this.resolveEventWorkspaceId(run.threadId),
+      runId,
+      ownerId: run.threadId,
+      idempotencyKey: `browser:${runId}:${call.id}`,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+    };
+    const permission = this.browserController.evaluatePermission(browserPermissionInput);
+    let browserApproval: { approvalId: string } | undefined;
+    if (permission.decision === 'approval-required') {
+      if (executionMode === 'full-access') {
+        const approvalId = `auto-full-access:${runId}:${call.id}`;
+        this.browserController.recordPermissionDecision(browserPermissionInput, 'allow', approvalId);
+        browserApproval = { approvalId };
+      } else {
+        const decision = await this.requestPlatformToolApproval(runId, run.threadId, call);
+        if (call.signal.aborted || !this.demoRuns.has(runId) || decision !== 'approve') {
+          this.browserController.recordPermissionDecision(
+            browserPermissionInput,
+            'deny',
+            `deny:${runId}:${call.id}`,
+          );
+          return { ok: false, error: '宿主已拒绝此浏览器操作' };
+        }
+        const approvalId = `kappr:${runId}:${call.id}`;
+        this.browserController.recordPermissionDecision(browserPermissionInput, 'allow', approvalId);
+        browserApproval = { approvalId };
+      }
+    }
+    if (call.signal.aborted || !this.demoRuns.has(runId)) {
+      return { ok: false, error: 'platform tool call was cancelled before execution' };
+    }
+    const toolCall: ProviderToolCall = { id: call.id, name: call.tool, argumentsJson };
+    try {
+      const content = await this.executeChatBrowserWorkerTool({
+        runId,
+        threadId: run.threadId,
+        toolCall,
+        workspaceRoot,
+        signal: call.signal,
+        approval: browserApproval,
+      });
       return { ok: true, content };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -16273,6 +17088,29 @@ export class Runtime {
     try {
       const run = this.demoRuns.get(runId);
       const occurredAt = new Date().toISOString();
+      // Keep the run's tool history in event order so the durable assistant
+      // message can carry tool-call / tool-result blocks (cross-kernel gap
+      // transcripts restore the tool names, arguments and results).
+      if (run) {
+        run.kernelToolEvents ??= [];
+        if (type === 'tool.requested') {
+          run.kernelToolEvents.push({
+            kind: 'tool-call',
+            sequence: run.kernelToolEvents.length,
+            toolId: (event as { toolId: string }).toolId,
+            name: (event as { name: string }).name,
+            argsJson: (event as { argsJson: string }).argsJson,
+          });
+        } else {
+          run.kernelToolEvents.push({
+            kind: 'tool-result',
+            sequence: run.kernelToolEvents.length,
+            toolId: (event as { toolId: string }).toolId,
+            output: (event as { output: string }).output,
+            ...((event as { isError?: boolean }).isError ? { failed: true } : {}),
+          });
+        }
+      }
       const draft: EventDraft = {
         id: ulid() as Event['id'],
         workspaceId: this.resolveEventWorkspaceId(threadId),
@@ -16476,6 +17314,11 @@ export class Runtime {
           'failed',
           error,
         );
+        // Publish the terminal BEFORE the diagnostic: recordRunDiagnostic emits
+        // a later-sequence event, and publishEvent drops anything older than
+        // the subscriber's live cursor — reordering here would silently lose
+        // run.failed from every live stream (UI stuck on "executing").
+        this.publishEvent(event);
         this.recordRunDiagnostic(runId, run, payload);
       } else {
         this.persistAssistantFinalMessage(
@@ -16484,10 +17327,10 @@ export class Runtime {
           payload,
         );
         this.maybeProposeRunMemory(runId, run, payload);
+        this.publishEvent(event);
       }
       this.demoRuns.delete(runId);
       this.transientSnapshotByThread.delete(run.threadId as ThreadId);
-      this.publishEvent(event);
     } catch {
       // Finalization must not throw into the run loop.
     }
@@ -16772,6 +17615,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             value: e.value,
             scope: e.scope,
             taskId: e.taskId,
+            updatedAt: e.updatedAt,
           })),
           maxEntries: 8,
         });
@@ -16779,9 +17623,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           candidates.push(source);
           const entry = entries.find((candidate) => `memory:${candidate.id}` === source.id);
           if (entry) {
+            const stamp = entry.updatedAt ? ` · ${entry.updatedAt.slice(0, 10)}` : '';
             contentBySourceId.set(
               source.id,
-              `Project memory [${entry.scope}] ${entry.key}: ${entry.value}`,
+              `Project memory [${entry.scope}]${stamp} ${entry.key}: ${entry.value}`,
             );
           }
         }
@@ -17330,11 +18175,32 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       contextSources,
       reasoningEffort,
       networkEnabled: input.networkEnabled === true ? true : undefined,
+      planningMode: this.isPlanningModeForThread(input.threadId),
       images: input.images,
       packetId: built.packet.id,
       proofHash: built.packet.proofHash,
       useFakeProvider: useFake,
     });
+
+    const effective = this.effectiveContextWindowForRun(run);
+    run.effectiveContextWindow = effective.window;
+    run.contextWindowSource = effective.source;
+    // Pre-resolve the kernel session plan so run.started can report the
+    // create/resume decision and the cross-kernel gap before the run executes.
+    if (run.kernelId && run.kernelId !== 'native') {
+      const planWorkspaceRoot = this.resolveChatWorkspaceRoot(run.threadId);
+      const planBaseContext = this.buildKernelSystemContext(run, planWorkspaceRoot);
+      const planResolution = this.resolveKernelConversationSession(
+        run,
+        run.kernelId,
+        planWorkspaceRoot,
+        planBaseContext,
+      );
+      run.kernelSessionPlan = {
+        mode: planResolution.session?.mode ?? 'create',
+        gapCount: planResolution.gapCount,
+      };
+    }
 
     return {
       run,
@@ -18016,11 +18882,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       .filter((image): image is { name: string; mimeType: string; dataUrl: string } =>
         Boolean(image),
       );
-    const durableMessages = this.listDurableContextMessages(
-      run.threadId,
-      run.contextWindow ?? 128_000,
-      compact,
-    );
+    const effectiveWindow = run.effectiveContextWindow ?? run.contextWindow ?? 128_000;
+    const durableMessages = this.listDurableContextMessages(run.threadId, effectiveWindow, compact);
     const built = buildProviderMessagesFromDurableMessages({
       messages: durableMessages,
       compact,
@@ -18063,7 +18926,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     run.compactedAt = built.compactedAt;
     return selectRecentMessagesWithinBudget(
       built.messages,
-      Math.max(1, Math.floor((run.contextWindow ?? 128_000) * 0.82)),
+      Math.max(1, Math.floor((run.effectiveContextWindow ?? run.contextWindow ?? 128_000) * 0.82)),
     );
   }
 
@@ -21665,6 +22528,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       '- Prefer built-in tools list_files / search_files / read_file / git_status / git_diff. search_files finds file contents by regex — do not call rg/ripgrep/fd/ag — they are often missing on Windows and will fail with ENOENT.',
       '- If a tool fails as unavailable, do not retry the same command; change approach or answer with what you already know.',
       '- Avoid long pure-exploration loops. After a few targeted looks, give the user a useful answer.',
+      LANGUAGE_FOLLOW_PROMPT,
     ].join('\n');
     const agentInstructions = this.buildRunAgentInstructions(run, options.workspaceRoot);
     const projectContext = options.workspaceRoot
@@ -22051,12 +22915,17 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ? run.reasoningText
         : undefined;
     const reasoningSegments = run.reasoningSegments.filter((segment) => segment.text.trim());
+    // External-kernel tool calls are persisted as durable blocks so a resumed
+    // kernel after a cross-kernel switch can see which tools ran and their
+    // results (gap transcripts rebuild them via durableMessagesToGapProviderMessages).
+    const toolBlocks = externalKernelToolEventsToMessageBlocks(run.kernelToolEvents);
     if (
       !assistantText.trim() &&
       !commentaryText &&
       commentarySegments.length === 0 &&
       !reasoningText &&
-      reasoningSegments.length === 0
+      reasoningSegments.length === 0 &&
+      toolBlocks.length === 0
     ) {
       return;
     }
@@ -22077,6 +22946,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             ]
           : []),
         ...(assistantText.trim() ? [{ type: 'text' as const, text: assistantText }] : []),
+        ...toolBlocks,
         // Provider reasoning summaries remain durable for diagnostics and
         // backward-compatible export, but Desktop does not present them as the
         // user-visible execution process.

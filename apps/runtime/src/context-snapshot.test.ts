@@ -1,6 +1,20 @@
-﻿import type { ProviderMessage, ProviderToolSchema } from '@sync-think/adapters';
+import type { ProviderMessage, ProviderToolSchema } from '@sync-think/adapters';
 import { describe, expect, it } from 'vitest';
-import { ContextSnapshotBuilder, selectRecentMessagesWithinBudget } from './context-snapshot.js';
+import {
+  ContextSnapshotBuilder,
+  LANGUAGE_FOLLOW_PROMPT,
+  selectRecentMessagesWithinBudget,
+} from './context-snapshot.js';
+
+describe('LANGUAGE_FOLLOW_PROMPT', () => {
+  it('asks the model to follow the user message language for thinking and replies', () => {
+    expect(LANGUAGE_FOLLOW_PROMPT).toContain('same language as the user');
+    expect(LANGUAGE_FOLLOW_PROMPT).toContain('Chinese');
+    expect(LANGUAGE_FOLLOW_PROMPT).toContain('English');
+    expect(LANGUAGE_FOLLOW_PROMPT).toContain('用户用中文就用中文');
+    expect(LANGUAGE_FOLLOW_PROMPT).toContain('用英文就用英文');
+  });
+});
 
 describe('ContextSnapshotBuilder', () => {
   it('builds one provider snapshot and a matching status projection', () => {
@@ -63,8 +77,7 @@ describe('ContextSnapshotBuilder', () => {
     expect(snapshot.providerRequest.systemPrompt).toContain('Acceptance: request matches UI');
     expect(snapshot.providerRequest.systemPrompt).toContain('SKILL BODY');
     expect(snapshot.providerRequest.messages).toEqual(messages);
-    expect(snapshot.providerRequest.tools).toEqual(tools);
-    expect(snapshot.status.sections.map((section) => section.type)).toEqual([
+    expect(snapshot.providerRequest.tools).toEqual(tools);    expect(snapshot.status.sections.map((section) => section.type)).toEqual([
       'system',
       'agent',
       'project',

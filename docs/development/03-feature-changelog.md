@@ -1,3 +1,18 @@
+## 2026-08-16：执行过程面板化重构与语言跟随
+
+### Changed
+
+- 执行过程收纳为**外层可折叠面板**（标题「执行过程 · N 个工具 · 耗时」）：默认折叠（只关心结论的用户直接跳过），运行中自动展开、回答开始后折叠。
+- **工具批次面板**：相邻（无思考/摘要分隔）工具调用合并为一个批次（标题聚合同名计数 + 批次耗时，如「read_file ×2 · write_file · 2s」），批次内每个工具是独立可展开卡片。
+- 移除旧“过程”面板与 ExecutionTimeline 展示：内联执行过程面板成为唯一执行过程视图（耗时/工具数在面板标题，token 用量在消息 footer）；`AssistantProcessGroup`/`ExecutionTimeline` 保留导出但不再用于消息渲染。
+- **语言跟随**：新增 `LANGUAGE_FOLLOW_PROMPT` 系统指令（native 内核对话全部注入），要求思考/说明/回复使用用户最新消息的语言。
+
+### Verification
+
+- `InlineProcessFlow.test.tsx` 扩至 12 项（外层折叠/自动展开、批次合并与跨思考不合并、批次展开→单卡片→详情、耗时标题、native steps 批次化）；`context-snapshot.test.ts` 新增语言指令断言。
+- Desktop 全量 **162 files / 1234 tests**、Runtime 全量 **106 files / 753 tests** 全部通过；typecheck、build 通过。
+- 真实 Electron 端到端（playwright + deepseek-v4-flash）：捕获完整多轮序列 思考 → 摘要 → [read_file ×2 批次] → 摘要 → [search_files] → 摘要 → [search_files] → 最终回答；4 个工具合并 3 个批次面板；摘要文本跟随中文输入，模型内部推理仍为英文（模型行为，见 §12.16.9）。
+
 ## 2026-08-16：DSH 风格内联执行过程与最终回答（方案 B）
 
 ### Added

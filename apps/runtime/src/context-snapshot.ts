@@ -1,4 +1,4 @@
-﻿import type { ProviderMessage, ProviderToolSchema } from '@sync-think/adapters';
+import type { ProviderMessage, ProviderToolSchema } from '@sync-think/adapters';
 import type { ContextSourceRef } from '@sync-think/shared';
 
 export const CONTEXT_COMPACT_THRESHOLD = 0.7 as const;
@@ -120,6 +120,16 @@ function sectionText(title: string, values: readonly string[]): string | undefin
   if (content.length === 0) return undefined;
   return [`## ${title}`, ...content].join('\n\n');
 }
+
+/**
+ * System-instruction telling the model to think, comment, and answer in the
+ * same language as the user's latest message (中文 ↔ English follow-through).
+ * Injected by the chat context snapshot (native kernel) into every request.
+ */
+export const LANGUAGE_FOLLOW_PROMPT =
+  "Always think, comment, and answer in the same language as the user's latest message: " +
+  'if the user writes in Chinese, think and reply in Chinese; if in English, think and reply in English. ' +
+  '始终使用用户最新消息的语言进行思考、说明和回复：用户用中文就用中文，用英文就用英文。';
 
 function sourceIncludedInRequest(
   source: ContextSnapshotSource,

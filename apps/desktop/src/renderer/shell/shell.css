@@ -4210,6 +4210,124 @@ body {
 }
 
 /* ── DSH-style inline execution process (思考行 / 摘要 / 工具卡片) ────────── */
+.shell-process-panel {
+  border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-elevated) 40%, var(--color-surface));
+  margin: 2px 0 8px;
+  overflow: hidden;
+}
+
+.shell-process-panel__toggle {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  font: inherit;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.shell-process-panel__toggle:hover {
+  background: color-mix(in srgb, var(--color-accent-soft) 30%, transparent);
+}
+.shell-process-panel__toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.shell-process-panel__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.shell-process-panel__meta {
+  font-size: 11.5px;
+  color: var(--color-text-faint);
+}
+
+.shell-process-panel__chevron {
+  margin-left: auto;
+  flex: none;
+  color: var(--color-text-faint);
+  transition: transform 0.16s ease;
+}
+.shell-process-panel__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.shell-process-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 9px 9px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  margin: 0 9px;
+}
+
+.shell-tool-batch {
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-elevated) 60%, var(--color-surface));
+  overflow: hidden;
+}
+.shell-tool-batch.has-failed {
+  border-color: color-mix(in srgb, var(--color-error) 45%, var(--color-border));
+}
+
+.shell-tool-batch__toggle {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  font: inherit;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.shell-tool-batch__toggle:hover {
+  background: color-mix(in srgb, var(--color-accent-soft) 25%, transparent);
+}
+.shell-tool-batch__toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.shell-tool-batch__title {
+  min-width: 0;
+  flex: 1;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-tool-batch__count {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+
+.shell-tool-batch__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 7px 7px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  margin: 0 7px;
+}
+
 .shell-inline-process {
   display: flex;
   flex-direction: column;
