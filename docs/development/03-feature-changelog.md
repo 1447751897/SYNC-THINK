@@ -12,12 +12,14 @@
 
 - 助手消息渲染顺序：内联执行过程 → 最终回答 → （折叠）过程面板 → 文件变更卡片。
 - `hasAnswerText` 改为基于最终回答（`answerText`，回退 `text`）。
+- 工具卡片双数据源：外部内核（claude-code/codex）从消息块取 tool-call/tool-result；native 内核从 run processView.steps 经 `buildExecutionTimeline` 与 commentarySegments 按 sequence 交错合并（blocks 无 tool 项时启用），blocks 的 commentary 行由时间线接管避免重复。
 
 ### Verification
 
-- 新增 `ChatView.messageToChat.test.tsx`（8 项）与 `InlineProcessFlow.test.tsx`（6 项），14/14 通过。
+- 新增 `ChatView.messageToChat.test.tsx`（8 项）与 `InlineProcessFlow.test.tsx`（8 项，含 native steps 合并场景），16/16 通过。
 - ChatView 全族 11 个测试文件 / 82 项通过；Desktop 全量 **162 files / 1228 tests 全部通过**。
 - Desktop typecheck、lint（0 errors，仅既有 hooks warnings）与 `pnpm build`（tsc + preload + renderer + shell）通过。
+- 真实 Electron 端到端（playwright-core 驱动 + DeepSeek 模型）：10/10 检查通过——思考行首行摘要、展开全文、工具卡片（list_files 完成 + 展开结果）、最终回答独立呈现、旧面板默认折叠；截图 `.data/inline-process-e2e.png`。
 
 ## 2026-08-15：OpenAI Responses 工具续接映射修复
 
