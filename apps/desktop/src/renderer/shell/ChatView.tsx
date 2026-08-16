@@ -14,6 +14,7 @@ import {
   AlertCircle,
   Archive,
   Bot,
+  Brain,
   Check,
   ChevronDown,
   ChevronUp,
@@ -39,7 +40,9 @@ import {
 } from 'lucide-react';
 import {
   splitProviderUsageTokens,
+  type ChatPlanRevision,
   type Conversation,
+  type ConversationPlanSummary,
   type Event,
   type GlobalAgent,
   type KernelDetectionResult,
@@ -140,6 +143,7 @@ import {
   formatRunModelLabel,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { InlineProcessFlow } from './InlineProcessFlow.js';
 import {
   buildAssistantTurnNavigationItems,
   ConversationMinimapRail,
@@ -188,6 +192,17 @@ import type { RunActivityAuthority } from '../run-activity-authority.js';
 /** Local error bubble FIFO cap: diagnostics are transient, keep them bounded. */
 const MAX_LOCAL_ERRORS = 50;
 
+/**
+ * One ordered item of the assistant's execution process (DSH-style inline
+ * view): reasoning rows, intermediate commentary/text, and paired tool
+ * cards, in durable block order. The final answer is NOT part of this list.
+ */
+export type InlineProcessItem =
+  | { kind: 'reasoning'; text: string }
+  | { kind: 'text'; text: string }
+  | { kind: 'commentary'; text: string }
+  | { kind: 'tool'; name: string; argumentsJson: string; result?: string; failed?: boolean };
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -196,6 +211,12 @@ export interface ChatMessage {
   commentaryText?: string;
   /** Ordered commentary fragments interleaved with durable tool boundaries. */
   commentarySegments?: CommentaryTimelineSegment[];
+  /** Provider reasoning summary — shown as a collapsible thinking region. */
+  reasoningText?: string;
+  /** Final formal answer: the last non-empty text block of the message. */
+  answerText?: string;
+  /** Ordered execution-process items before the final answer (DSH-style inline view). */
+  processItems?: InlineProcessItem[];
   /** Transient reconnect or fallback transition shown with the live assistant turn. */
   processStatus?: string;
   processStatusState?: NonNullable<RuntimeConnectionNotice>['state'];
@@ -208,6 +229,8 @@ export interface ChatMessage {
   sequence?: number;
   streaming?: boolean;
   runId?: string;
+  /** Kernel that produced this run (persisted on the message; survives restarts). */
+  kernelId?: string;
   terminalState?: 'failed' | 'cancelled';
   terminalError?: string;
   /** Bound global agent identity for this assistant turn. */
@@ -247,6 +270,30 @@ export function projectRunAgentIdentities(events: readonly Event[]): Map<string,
   return identities;
 }
 
+/**
+ * runId → kernelId for every run this conversation has started. Message bubbles
+ * use it to badge each turn with the kernel logo that actually produced it
+ * (visible across kernel switches: CC → Codex → CC shows the logo per turn).
+ */
+export function projectRunKernels(events: readonly Event[]): Map<string, string> {
+  const kernels = new Map<string, string>();
+  for (const event of events) {
+    if (event.type !== 'run.started') continue;
+    const payloadRun =
+      event.payload.run && typeof event.payload.run === 'object'
+        ? (event.payload.run as Record<string, unknown>)
+        : undefined;
+    const runId =
+      (event.runId ? String(event.runId) : undefined) ??
+      nonEmptyString(event.payload.runId) ??
+      nonEmptyString(payloadRun?.id);
+    if (!runId) continue;
+    const kernelId = nonEmptyString(event.payload.kernelId) ?? nonEmptyString(payloadRun?.kernelId);
+    if (kernelId) kernels.set(runId, kernelId);
+  }
+  return kernels;
+}
+
 export type RuntimeConnectionNotice =
   { state: 'retrying'; text: string } | { state: 'failed'; text: string } | null;
 
@@ -254,6 +301,55 @@ export type RuntimeConnectionNotice =
 export function messageToChat(msg: Message): ChatMessage {
   const textBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'text');
   const text = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
+  // Final formal answer: the LAST non-empty text block. Everything before it
+  // is execution process (reasoning / commentary / intermediate text / tools).
+  const answerBlock =
+    [...textBlocks].reverse().find((b: MessageBlock) => (b.text ?? '').trim() !== '') ?? undefined;
+  const processItems: InlineProcessItem[] = [];
+  for (const block of msg.blocks) {
+    if (block === answerBlock) continue;
+    switch (block.type) {
+      case 'reasoning': {
+        const blockReasoning =
+          typeof block.reasoningText === 'string'
+            ? block.reasoningText
+            : block.payload && typeof block.payload === 'object'
+              ? (block.payload as Record<string, unknown>).reasoningText
+              : undefined;
+        const reasoning =
+          typeof blockReasoning === 'string' ? blockReasoning : (block.text ?? '');
+        if (reasoning.trim()) processItems.push({ kind: 'reasoning', text: reasoning });
+        break;
+      }
+      case 'text':
+        if ((block.text ?? '').trim()) processItems.push({ kind: 'text', text: block.text ?? '' });
+        break;
+      case 'commentary':
+        if ((block.text ?? '').trim())
+          processItems.push({ kind: 'commentary', text: block.text ?? '' });
+        break;
+      case 'tool-call': {
+        const payload = (block.payload ?? {}) as { name?: string; argumentsJson?: string };
+        processItems.push({
+          kind: 'tool',
+          name: payload.name ?? '工具',
+          argumentsJson: payload.argumentsJson ?? '',
+        });
+        break;
+      }
+      case 'tool-result': {
+        const last = processItems[processItems.length - 1];
+        if (last?.kind === 'tool') {
+          last.result = block.text ?? '';
+          const payload = (block.payload ?? {}) as { failed?: boolean };
+          if (payload.failed === true) last.failed = true;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
   const commentaryBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'commentary');
   const persistedCommentaryText = commentaryBlocks
     .map((b: MessageBlock) => b.text ?? '')
@@ -290,6 +386,19 @@ export function messageToChat(msg: Message): ChatMessage {
     (commentarySegments.length > 0
       ? commentarySegments.map((segment) => segment.text).join('\n\n')
       : '');
+  const reasoningBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'reasoning');
+  const reasoningText = reasoningBlocks
+    .map((b: MessageBlock) => {
+      const blockReasoning =
+        typeof b.reasoningText === 'string'
+          ? b.reasoningText
+          : (b.payload && typeof b.payload === 'object'
+              ? (b.payload as Record<string, unknown>).reasoningText
+              : undefined);
+      return typeof blockReasoning === 'string' ? blockReasoning : (b.text ?? '');
+    })
+    .filter(Boolean)
+    .join('\n\n');
   const imageBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'image');
   const terminalPayload = (msg.blocks.find((block: MessageBlock) => block.type === 'error')
     ?.payload ?? {}) as Record<string, unknown>;
@@ -319,10 +428,14 @@ export function messageToChat(msg: Message): ChatMessage {
     text,
     commentaryText: commentaryText || undefined,
     commentarySegments: commentarySegments.length > 0 ? commentarySegments : undefined,
+    reasoningText: reasoningText || undefined,
+    answerText: answerBlock?.text || undefined,
+    processItems,
     images,
     timestamp: msg.createdAt ?? '',
     sequence: msg.sequence,
     runId: msg.runId ? String(msg.runId) : undefined,
+    kernelId: msg.kernelId,
     terminalState,
     terminalError:
       typeof terminalPayload.errorMessage === 'string' ? terminalPayload.errorMessage : undefined,
@@ -475,6 +588,44 @@ export function ChatView({
   const [sending, setSending] = useState(false);
   const [sendingRunId, setSendingRunId] = useState<string | undefined>();
   const [stopping, setStopping] = useState(false);
+  // 交互工作模式：'plan'（规划模式，只读分析并提交可审批计划）| 'execute'（执行模式）。
+  const [interactionMode, setInteractionMode] = useState<'plan' | 'execute'>(
+    conversation.interactionMode === 'plan' ? 'plan' : 'execute',
+  );
+  useEffect(() => {
+    setInteractionMode(conversation.interactionMode === 'plan' ? 'plan' : 'execute');
+  }, [conversation.id, conversation.interactionMode]);
+  // 对话计划（规划模式审批卡）。
+  const [conversationPlan, setConversationPlan] = useState<ConversationPlanSummary | undefined>();
+  const [planBusy, setPlanBusy] = useState(false);
+  const lastPlanEventSeqRef = useRef(0);
+  const refreshConversationPlan = useCallback(() => {
+    const api = bridge();
+    if (!conversation || !api?.conversationPlanGet) return;
+    void api
+      .conversationPlanGet({ conversationId: conversation.id })
+      .then((res) => setConversationPlan(res.plan ?? undefined))
+      .catch(() => setConversationPlan(undefined));
+  }, [conversation]);
+  useEffect(() => {
+    // 会话切换 / 刷新恢复：始终拉取一次当前计划。
+    refreshConversationPlan();
+    // 计划生命周期事件（submit/approve/revise/cancel）后重新拉取。
+    const planEvents = eventHistory
+      .filter(
+        (e) =>
+          e.type === 'conversation.plan_submitted' ||
+          e.type === 'conversation.plan_approved' ||
+          e.type === 'conversation.plan_revised' ||
+          e.type === 'conversation.plan_cancelled',
+      )
+      .map((e) => e.sequence);
+    const latest = planEvents.length > 0 ? Math.max(...planEvents) : 0;
+    if (latest > lastPlanEventSeqRef.current) {
+      lastPlanEventSeqRef.current = latest;
+      refreshConversationPlan();
+    }
+  }, [eventHistory, refreshConversationPlan]);
   const [goalState, setGoalState] = useState<
     import('@sync-think/protocol').GoalGetResponse | undefined
   >();
@@ -636,9 +787,14 @@ export function ChatView({
               text: draft.text,
               commentaryText: draft.commentaryText,
               commentarySegments: draft.commentarySegments,
+              reasoningText: draft.reasoningText,
               timestamp: draft.timestamp,
               streaming: !draft.terminal,
               runId: draft.runId,
+              ...(draft.terminalState && draft.terminalState !== 'completed'
+                ? { terminalState: draft.terminalState }
+                : {}),
+              ...(draft.terminalError ? { terminalError: draft.terminalError } : {}),
             }
           : null,
       );
@@ -1231,6 +1387,24 @@ export function ChatView({
     () => projectRunAgentIdentities(eventHistory),
     [eventHistory],
   );
+  const runKernelById = useMemo(() => projectRunKernels(eventHistory), [eventHistory]);
+  /**
+   * External-kernel self-compaction notices (kernel.context_compacted). Claude
+   * Code / Codex give no live "compacting" signal, but once a run reports its
+   * boundary the host surfaces it as a message-stream note so a compacted turn
+   * is not mistaken for history loss.
+   */
+  const kernelCompactionEvents = useMemo(() => {
+    const events: Event[] = [];
+    for (const event of eventHistory) {
+      if (event.type !== 'kernel.context_compacted') continue;
+      const payloadThreadId = nonEmptyString(event.payload.threadId);
+      if (threadId && payloadThreadId && payloadThreadId !== threadId) continue;
+      events.push(event);
+    }
+    events.sort((a, b) => a.sequence - b.sequence);
+    return events;
+  }, [eventHistory, threadId]);
   const conversationAgent = useMemo(
     () =>
       conversation.track === 'agent'
@@ -2428,6 +2602,28 @@ export function ChatView({
       dispatchState?.blocked?.requestId === next.id ||
       (conversation.taskId && !threadId)
     ) {
+      // Safety net for a "ghost" active run: right after switching the kernel
+      // the projected activeRunId can briefly outlive the run's terminal event,
+      // which would park the first queued message behind `runIsActive` forever
+      // (compose clears, the message never lands). When there is genuinely no
+      // in-flight send (`reconciledSending`), force-dispatch after a short
+      // grace period so the user's message is not silently dropped.
+      if (
+        next &&
+        next.conversationId === String(conversation.id) &&
+        !reconciledSending &&
+        !dispatchState?.dispatching &&
+        dispatchState?.blocked?.requestId !== next.id
+      ) {
+        const safetyTimer = window.setTimeout(() => {
+          const current = queuedDispatchByConversationRef.current.get(String(conversation.id));
+          if (current?.dispatching || current?.blocked?.requestId === next.id) return;
+          if (queuedComposeRequests[0]?.id === next.id) {
+            void dispatchQueuedComposeRequest(next, 'auto');
+          }
+        }, 6_000);
+        return () => window.clearTimeout(safetyTimer);
+      }
       return;
     }
     const timer = window.setTimeout(() => {
@@ -2439,6 +2635,7 @@ export function ChatView({
     conversation.taskId,
     dispatchQueuedComposeRequest,
     queuedComposeRequests,
+    reconciledSending,
     runIsActive,
     threadId,
   ]);
@@ -2993,6 +3190,95 @@ export function ChatView({
       return;
     }
 
+    // NewMax `/plan` / `/execute`: switch the conversation interaction work mode.
+    if (
+      slashCmd.kind === 'plan' ||
+      slashCmd.kind === 'plan-with-request' ||
+      slashCmd.kind === 'execute'
+    ) {
+      if (attachments.length > 0) {
+        setLocalErrors((errs) => [
+          ...errs,
+          {
+            id: `plan-attach-${Date.now()}`,
+            role: 'system',
+            tone: 'warning',
+            text: '执行 /plan 或 /execute 前请先移除附件',
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+      const api = bridge();
+      try {
+        if (slashCmd.kind === 'execute') {
+          await api?.setConversationInteractionMode?.({
+            conversationId: conversation.id,
+            interactionMode: 'execute',
+          });
+          setInteractionMode('execute');
+          setLocalErrors((errs) => [
+            ...errs,
+            {
+              id: `execute-mode-${Date.now()}`,
+              role: 'system',
+              tone: 'success',
+              text: '已切换到执行模式：可直接完成任务；若存在待审批计划，请到计划卡批准或取消',
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+        } else {
+          await api?.setConversationInteractionMode?.({
+            conversationId: conversation.id,
+            interactionMode: 'plan',
+          });
+          setInteractionMode('plan');
+          if (slashCmd.kind === 'plan-with-request') {
+            setLocalErrors((errs) => [
+              ...errs,
+              {
+                id: `plan-mode-${Date.now()}`,
+                role: 'system',
+                tone: 'info',
+                text: '已进入规划模式（只读）：正在分析并准备可审批计划',
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+            // 发送需求文本触发规划 run（只读工具注入由 runtime 处理）。
+            await sendUserText(slashCmd.request, []);
+          } else {
+            setLocalErrors((errs) => [
+              ...errs,
+              {
+                id: `plan-help-${Date.now()}`,
+                role: 'system',
+                tone: 'info',
+                text: '已进入规划模式（只读）。请输入要分析的需求，或使用 /plan <需求> 一步进入',
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+          }
+        }
+      } catch (error) {
+        const raw = error instanceof Error ? error.message : String(error);
+        setLocalErrors((errs) => [
+          ...errs,
+          {
+            id: `plan-err-${Date.now()}`,
+            role: 'system',
+            tone: 'error',
+            text: `规划/执行模式切换失败: ${raw}`,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      } finally {
+        setInput('');
+        closeComposePickers();
+        window.requestAnimationFrame(() => resizeComposeInput());
+      }
+      return;
+    }
+
     const snapshot = attachments;
     if (runIsActive) {
       const request = createQueuedComposeRequest({
@@ -3526,8 +3812,30 @@ export function ChatView({
   // the complete context that would be sent on the next model request
   // (instructions + agent/team + project + saved summary + messages + tools),
   // not the latest turn's provider usage and not the cross-turn cumulative cost.
-  const contextUsed = contextStatus?.estimatedUsedTokens ?? 0;
-  const contextLimit = contextStatus?.contextWindow ?? 0;
+  //
+  // External kernels (claude-code / codex) keep their history inside the spawned
+  // process, so the host estimate has no relation to what they actually hold.
+  // When the latest external-kernel run reports its final request occupancy
+  // (context watermark — last request totalInput+output, never the tool-loop
+  // sum), use that for the ring and mark the breakdown as kernel-managed.
+  const kernelContextWatermark = useMemo(() => {
+    let latestTokens: number | undefined;
+    let latestStamp = '';
+    for (const [runId, process] of displayRunProcessById) {
+      if (typeof process.contextWatermarkTokens !== 'number') continue;
+      const kernelId = runKernelById.get(runId);
+      if (!kernelId || kernelId === 'native') continue;
+      const stamp = process.completedAt ?? process.startedAt ?? '';
+      if (!latestStamp || stamp >= latestStamp) {
+        latestStamp = stamp;
+        latestTokens = process.contextWatermarkTokens;
+      }
+    }
+    return latestTokens;
+  }, [displayRunProcessById, runKernelById]);
+  const kernelSelfManaged = kernelContextWatermark !== undefined;
+  const contextUsed = kernelContextWatermark ?? contextStatus?.estimatedUsedTokens ?? 0;
+  const contextLimitRaw = contextStatus?.contextWindow ?? 0;
 
   // Session metrics for the NewMax ring hover card (会话 耗时 / 用量).
   const sessionMetrics = useMemo(() => {
@@ -3593,6 +3901,21 @@ export function ChatView({
   const canStop = Boolean(projected.activeRunId) && (reconciledSending || projected.streaming);
   // Active kernel display + pause degradation per capabilities.pause.
   const activeKernel = kernelRegistry?.find((kernel) => kernel.kernelId === kernelOverride) ?? null;
+  // Effective ring window + source label: the model's configured window is
+  // capped by a non-overridable kernel native limit (Claude Code = 200k), so
+  // the ring never shows a budget the kernel itself cannot honor.
+  const contextWindowCap = activeKernel?.capabilities?.contextWindow;
+  const contextWindowCapped =
+    contextWindowCap !== undefined &&
+    contextWindowCap.overridable === false &&
+    contextLimitRaw > contextWindowCap.nativeLimit;
+  const contextLimit = contextWindowCapped ? contextWindowCap!.nativeLimit : contextLimitRaw;
+  const contextWindowSource: 'configured' | 'kernel-capped' | 'estimated' =
+    contextStatus?.contextWindowEstimated === true
+      ? 'estimated'
+      : contextWindowCapped
+        ? 'kernel-capped'
+        : 'configured';
   const stopTitle = activeKernel?.capabilities.pause
     ? activeKernel.capabilities.pause === 'executor'
       ? '暂停任务'
@@ -3809,6 +4132,21 @@ export function ChatView({
                   <span className="ml-2 text-[12px] text-text-faint">加载更早消息…</span>
                 </div>
               )}
+              {kernelCompactionEvents.length > 0 ? (
+                <div
+                  className="shell-kernel-compact-note"
+                  data-testid="kernel-compact-note"
+                >
+                  <Info size={13} />
+                  <span>
+                    内核已自动压缩上下文
+                    {kernelCompactionEvents.at(-1)?.occurredAt
+                      ? `（${formatMessageClock(kernelCompactionEvents.at(-1)!.occurredAt)}）`
+                      : ''}
+                    —— 更早的对话细节已由内核摘要保留，可继续提问。
+                  </span>
+                </div>
+              ) : null}
               {visibleDurableMessages.map((msg) => (
                 <div
                   key={msg.id}
@@ -3830,6 +4168,7 @@ export function ChatView({
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
                     onOpenImage={setLightbox}
+                    kernelId={msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)}
                   />
                 </div>
               ))}
@@ -3871,6 +4210,7 @@ export function ChatView({
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
                     onOpenImage={setLightbox}
+                    kernelId={msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)}
                   />
                 </div>
               ))}
@@ -3951,6 +4291,23 @@ export function ChatView({
                   void api.clearGoal({ conversationId: String(conversation.id) }).then(refreshGoal);
                 }}
               />
+            ) : null}
+            {!compactProgress &&
+            kernelSelfManaged &&
+            contextStatus &&
+            typeof contextStatus.usageRatio === 'number' &&
+            contextStatus.usageRatio >= 0.85 ? (
+              <div
+                className="shell-compact-capsule"
+                data-mode="kernel-near-limit"
+                data-status="idle"
+                data-testid="context-near-limit"
+              >
+                <Info size={13} />
+                <span>
+                  上下文接近窗口上限（{formatCompactCount(contextLimit)}），内核可能自动压缩
+                </span>
+              </div>
             ) : null}
             {compactProgress ? (
               <div
@@ -4230,6 +4587,167 @@ export function ChatView({
                 tabIndex={-1}
               />
 
+              {/* 计划审批卡（规划模式提交后显示） */}
+              {conversationPlan && conversationPlan.state === 'draft' && (
+                <div className="shell-plan-card" data-testid="plan-approval-card">
+                  <div className="shell-plan-card__head">
+                    <span className="shell-plan-card__title">
+                      📋 {conversationPlan.latest.plan.title || '执行计划'}
+                    </span>
+                    <span className="shell-plan-card__rev">v{conversationPlan.currentRevision}</span>
+                  </div>
+                  <div className="shell-plan-card__goal">{conversationPlan.latest.plan.goal}</div>
+                  <div className="shell-plan-card__meta">
+                    {conversationPlan.latest.plan.steps.length} 个步骤 ·{' '}
+                    {conversationPlan.latest.plan.finalAcceptanceChecks.length} 条验收标准
+                  </div>
+                  <div className="shell-plan-card__steps">
+                    {conversationPlan.latest.plan.steps.map((step, index) => (
+                      <div className="shell-plan-card__step" key={step.id}>
+                        <span className="shell-plan-card__step-no">{index + 1}</span>
+                        <span>{step.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="shell-plan-card__actions">
+                    <button
+                      type="button"
+                      className="shell-plan-card__approve"
+                      disabled={planBusy}
+                      onClick={() => {
+                        void (async () => {
+                          if (!conversationPlan || planBusy) return;
+                          setPlanBusy(true);
+                          try {
+                            const api = bridge();
+                            const rev = conversationPlan.currentRevision;
+                            await api?.conversationPlanApprove?.({
+                              conversationId: conversation.id,
+                              revision: rev,
+                            });
+                            await api?.setConversationInteractionMode?.({
+                              conversationId: conversation.id,
+                              interactionMode: 'execute',
+                            });
+                            setInteractionMode('execute');
+                            setConversationPlan(undefined);
+                            await sendUserText(
+                              buildPlanExecutionInstruction(conversationPlan.latest, rev),
+                              [],
+                            );
+                          } catch (error) {
+                            const raw = error instanceof Error ? error.message : String(error);
+                            setLocalErrors((errs) => [
+                              ...errs,
+                              {
+                                id: `plan-approve-err-${Date.now()}`,
+                                role: 'system',
+                                tone: 'error',
+                                text: `批准计划失败: ${raw}`,
+                                timestamp: new Date().toISOString(),
+                              },
+                            ]);
+                          } finally {
+                            setPlanBusy(false);
+                          }
+                        })();
+                      }}
+                    >
+                      {planBusy ? '处理中…' : '批准并执行'}
+                    </button>
+                    <button
+                      type="button"
+                      className="shell-plan-card__revise"
+                      disabled={planBusy}
+                      onClick={() => {
+                        void (async () => {
+                          setPlanBusy(true);
+                          try {
+                            const api = bridge();
+                            await api?.setConversationInteractionMode?.({
+                              conversationId: conversation.id,
+                              interactionMode: 'plan',
+                            });
+                            setInteractionMode('plan');
+                            setLocalErrors((errs) => [
+                              ...errs,
+                              {
+                                id: `plan-revise-${Date.now()}`,
+                                role: 'system',
+                                tone: 'info',
+                                text: '已切回规划模式。请描述需要修改的地方，模型将修订计划并生成新版本',
+                                timestamp: new Date().toISOString(),
+                              },
+                            ]);
+                          } finally {
+                            setPlanBusy(false);
+                          }
+                        })();
+                      }}
+                    >
+                      要求修改
+                    </button>
+                    <button
+                      type="button"
+                      className="shell-plan-card__cancel"
+                      disabled={planBusy}
+                      onClick={() => {
+                        void (async () => {
+                          setPlanBusy(true);
+                          try {
+                            const api = bridge();
+                            await api?.conversationPlanCancel?.({
+                              conversationId: conversation.id,
+                            });
+                            setConversationPlan(undefined);
+                          } catch (error) {
+                            const raw = error instanceof Error ? error.message : String(error);
+                            setLocalErrors((errs) => [
+                              ...errs,
+                              {
+                                id: `plan-cancel-err-${Date.now()}`,
+                                role: 'system',
+                                tone: 'error',
+                                text: `取消计划失败: ${raw}`,
+                                timestamp: new Date().toISOString(),
+                              },
+                            ]);
+                          } finally {
+                            setPlanBusy(false);
+                          }
+                        })();
+                      }}
+                    >
+                      取消计划
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Interaction work mode strip (规划/执行) */}
+              {interactionMode === 'plan' && (
+                <div className="shell-compose__mode-strip" data-mode="plan">
+                  <span className="shell-compose__mode-label">🧭 规划模式</span>
+                  <span className="shell-compose__mode-hint">
+                    只读分析，提交可审批计划后等待批准
+                  </span>
+                  <button
+                    type="button"
+                    className="shell-compose__mode-switch"
+                    onClick={() => {
+                      const api = bridge();
+                      void api?.setConversationInteractionMode?.({
+                        conversationId: conversation.id,
+                        interactionMode: 'execute',
+                      });
+                      setInteractionMode('execute');
+                    }}
+                  >
+                    切到执行模式
+                  </button>
+                </div>
+              )}
+
               {/* Bottom toolbar */}
               <div className="shell-compose__bar">
                 <div className="shell-compose__bar-left">
@@ -4323,10 +4841,12 @@ export function ChatView({
                     used={contextUsed}
                     limit={contextLimit}
                     contextWindowEstimated={contextStatus?.contextWindowEstimated}
+                    contextWindowSource={contextWindowSource}
                     usageRatio={contextStatus?.usageRatio}
                     compactThreshold={contextStatus?.compactThreshold}
                     compactedAt={contextStatus?.compactedAt}
                     sections={contextStatus?.sections}
+                    kernelSelfManaged={kernelSelfManaged}
                     sessionDurationMs={sessionMetrics.durationMs}
                     sessionTokens={
                       durableUsageSummary
@@ -4530,6 +5050,25 @@ const CollapsibleUserText = memo(function CollapsibleUserText({ text }: { text: 
   );
 });
 
+/** Provider reasoning summary, merged into the shared process panel. */
+const ReasoningContent = memo(function ReasoningContent({
+  text,
+  streaming,
+}: {
+  text: string;
+  streaming?: boolean;
+}) {
+  return (
+    <div className="shell-process-group__reasoning-inner" data-testid="assistant-reasoning">
+      <div className="shell-process-group__reasoning-label">
+        <Brain size={12} aria-hidden="true" />
+        <span>{streaming ? '正在思考…' : '思考过程'}</span>
+      </div>
+      <MarkdownContent text={text} streaming={Boolean(streaming)} />
+    </div>
+  );
+});
+
 const MessageBubble = memo(function MessageBubble({
   message,
   processView,
@@ -4543,6 +5082,7 @@ const MessageBubble = memo(function MessageBubble({
   onOpenReview,
   projectFolder,
   onOpenImage,
+  kernelId,
 }: {
   message: ChatMessage;
   processView?: RunProcessView;
@@ -4556,6 +5096,8 @@ const MessageBubble = memo(function MessageBubble({
   onOpenReview?: (view: RunProcessView) => void;
   projectFolder?: string;
   onOpenImage?: (image: MessageImage) => void;
+  /** Kernel that produced this turn (native/empty → no badge). */
+  kernelId?: string;
 }) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
@@ -4565,6 +5107,12 @@ const MessageBubble = memo(function MessageBubble({
 
   const metricsLabel = useMemo(() => {
     if (!processView) return undefined;
+    // 主标签显示「上下文占用」（最后一次请求的真实大小），而不是工具循环的
+    // 累计求和——后者（tokensIn+tokensOut 累加）会让人误以为上下文占用了那么大。
+    const watermark = processView.contextWatermarkTokens;
+    if (typeof watermark === 'number') {
+      return formatCompactRunMetrics({ durationMs: processView.durationMs, tokensIn: watermark, tokensOut: 0 });
+    }
     return formatCompactRunMetrics({
       durationMs: processView.durationMs,
       tokensIn: processView.tokensIn,
@@ -4589,6 +5137,12 @@ const MessageBubble = memo(function MessageBubble({
 
   const clockLabel = formatMessageClock(message.timestamp);
   const absoluteTime = formatMessageAbsoluteTime(message.timestamp);
+  // Kernel badge for this turn: show the brand logo next to the model label so
+  // it is obvious which kernel produced each reply (native/unknown → none).
+  const kernelLogo = useMemo(() => {
+    if (!kernelId || kernelId === 'native') return undefined;
+    return resolveKernelBrandLogo(kernelId);
+  }, [kernelId]);
 
   const metricsDetail = useMemo(() => {
     if (!processView) return undefined;
@@ -4606,12 +5160,25 @@ const MessageBubble = memo(function MessageBubble({
             cachedTokensCreated: processView.cachedTokensCreated,
           })
         : undefined;
+    // 单次请求口径（最后一次请求）：普通输入/缓存读取/输出 用这个值，避免
+    // 工具循环重发导致的累计虚高。
+    const last = processView.lastRequestUsage;
+    const lastTokens =
+      last && (last.tokensIn !== undefined || last.tokensOut !== undefined)
+        ? splitProviderUsageTokens({
+            tokensIn: last.tokensIn ?? 0,
+            tokensOut: last.tokensOut ?? 0,
+            cachedTokensHit: last.cachedTokensHit,
+            cachedTokensCreated: last.cachedTokensCreated,
+          })
+        : undefined;
     return {
       duration,
       durationExact,
       tokens,
-      cacheReadReported: typeof processView.cachedTokensHit === 'number',
-      cacheWriteReported: typeof processView.cachedTokensCreated === 'number',
+      lastTokens,
+      lastCacheReadReported: typeof processView.lastRequestUsage?.cachedTokensHit === 'number',
+      contextWatermarkTokens: processView.contextWatermarkTokens,
       model: modelLabel,
       absoluteTime,
     };
@@ -4732,7 +5299,7 @@ const MessageBubble = memo(function MessageBubble({
     (a) =>
       (agentId && String(a.id) === agentId) || (!agentId && agentLabel && a.name === agentLabel),
   );
-  const hasAnswerText = Boolean(message.text.trim());
+  const hasAnswerText = Boolean((message.answerText ?? message.text).trim());
   const showFooter = !message.streaming && (hasAnswerText || Boolean(processView));
   return (
     <div className="shell-msg shell-msg--assistant group relative flex items-start gap-3">
@@ -4773,12 +5340,32 @@ const MessageBubble = memo(function MessageBubble({
             <span>{message.processStatus}</span>
           </div>
         ) : null}
+        <InlineProcessFlow
+          items={message.processItems ?? []}
+          streaming={Boolean(message.streaming)}
+        />
+        {message.answerText || (!message.processItems?.length && message.text) ? (
+          <MarkdownContent
+            text={message.answerText ?? message.text}
+            streaming={Boolean(message.streaming)}
+          />
+        ) : message.streaming &&
+          !message.commentaryText?.trim() &&
+          !message.commentarySegments?.some((segment) => segment.text.trim()) &&
+          !message.processStatus &&
+          !message.processItems?.length ? (
+          <TypingDots inline />
+        ) : null}
+        {/* DSH-style inline process is the primary view; the durable panel stays
+            as a collapsed supplementary view (usage / elapsed / file summary). */}
         <AssistantProcessGroup
           commentaryText={message.commentaryText}
           commentarySegments={message.commentarySegments}
           processView={processView}
           streaming={Boolean(message.streaming)}
           answerStarted={hasAnswerText}
+          reasoningText={message.reasoningText}
+          autoOpenActive={false}
         >
           <ExecutionTimeline
             commentarySegments={message.commentarySegments}
@@ -4788,14 +5375,6 @@ const MessageBubble = memo(function MessageBubble({
             onOpenChange={onOpenChange}
           />
         </AssistantProcessGroup>
-        {message.text ? (
-          <MarkdownContent text={message.text} streaming={Boolean(message.streaming)} />
-        ) : message.streaming &&
-          !message.commentaryText?.trim() &&
-          !message.commentarySegments?.some((segment) => segment.text.trim()) &&
-          !message.processStatus ? (
-          <TypingDots inline />
-        ) : null}
         {message.terminalState ? (
           <div
             className="mt-2 flex items-start gap-1.5 text-[11.5px] text-text-faint"
@@ -4895,40 +5474,36 @@ const MessageBubble = memo(function MessageBubble({
                       ) : null}
                       {metricsDetail.tokens ? (
                         <div className="shell-meta-tip__row">
-                          <span>总 Token</span>
+                          <span>计费累计</span>
                           <strong>{formatCompactCount(metricsDetail.tokens.totalTokens)}</strong>
                         </div>
                       ) : null}
-                      {metricsDetail.tokens ? (
+                      {typeof metricsDetail.contextWatermarkTokens === 'number' ? (
                         <div className="shell-meta-tip__row">
-                          <span>普通输入</span>
-                          <strong>{formatCompactCount(metricsDetail.tokens.inputTokens)}</strong>
+                          <span>上下文占用</span>
+                          <strong>{formatCompactCount(metricsDetail.contextWatermarkTokens)}</strong>
                         </div>
                       ) : null}
-                      {metricsDetail.tokens ? (
+                      {metricsDetail.lastTokens ? (
+                        <div className="shell-meta-tip__row">
+                          <span>普通输入</span>
+                          <strong>{formatCompactCount(metricsDetail.lastTokens.inputTokens)}</strong>
+                        </div>
+                      ) : null}
+                      {metricsDetail.lastTokens ? (
                         <div className="shell-meta-tip__row">
                           <span>缓存读取</span>
                           <strong>
-                            {metricsDetail.cacheReadReported
-                              ? formatCompactCount(metricsDetail.tokens.cacheReadTokens)
+                            {metricsDetail.lastCacheReadReported
+                              ? formatCompactCount(metricsDetail.lastTokens.cacheReadTokens)
                               : '未上报'}
                           </strong>
                         </div>
                       ) : null}
-                      {metricsDetail.tokens ? (
-                        <div className="shell-meta-tip__row">
-                          <span>缓存创建</span>
-                          <strong>
-                            {metricsDetail.cacheWriteReported
-                              ? formatCompactCount(metricsDetail.tokens.cacheWriteTokens)
-                              : '未上报'}
-                          </strong>
-                        </div>
-                      ) : null}
-                      {metricsDetail.tokens ? (
+                      {metricsDetail.lastTokens ? (
                         <div className="shell-meta-tip__row">
                           <span>输出</span>
-                          <strong>{formatCompactCount(metricsDetail.tokens.outputTokens)}</strong>
+                          <strong>{formatCompactCount(metricsDetail.lastTokens.outputTokens)}</strong>
                         </div>
                       ) : null}
                       {metricsDetail.model ? (
@@ -4961,6 +5536,16 @@ const MessageBubble = memo(function MessageBubble({
                     </div>
                   }
                 />
+              ) : null}
+              {kernelLogo ? (
+                <span
+                  className="shell-msg-meta__kernel"
+                  data-testid={`msg-kernel-${kernelId}`}
+                  title={`内核：${kernelId}`}
+                  aria-label={`内核：${kernelId}`}
+                >
+                  <BrandLogoMark logo={kernelLogo} size={13} />
+                </span>
               ) : null}
               {modelLabel ? (
                 <MetaHover
@@ -5105,6 +5690,8 @@ export function AssistantProcessGroup({
   streaming,
   answerStarted = false,
   defaultOpen = false,
+  autoOpenActive = true,
+  reasoningText,
   children,
 }: {
   commentaryText?: string;
@@ -5114,24 +5701,29 @@ export function AssistantProcessGroup({
   answerStarted?: boolean;
   /** Deterministic visual/test fixture override; production follows the active phase. */
   defaultOpen?: boolean;
+  /** Whether an active run without an answer yet auto-opens the panel. */
+  autoOpenActive?: boolean;
+  /** Provider reasoning summary — merged into the same collapsible process panel. */
+  reasoningText?: string;
   children: ReactNode;
 }) {
   const hasCommentary = Boolean(
     commentaryText?.trim() || commentarySegments?.some((segment) => segment.text.trim()),
   );
+  const hasReasoning = Boolean(reasoningText?.trim());
   const stepCount = processView?.steps.length ?? 0;
   const changeCount = processView?.fileChanges.length ?? 0;
   const completed = Boolean(processView?.completedAt);
   const lifecycleActive = Boolean(processView?.startedAt && !processView?.completedAt);
   const active = !completed && Boolean(streaming || processView?.running || lifecycleActive);
   const hasLifecycle = Boolean(processView?.startedAt || completed);
-  const hasDetails = hasCommentary || stepCount > 0 || changeCount > 0;
+  const hasDetails = hasCommentary || hasReasoning || stepCount > 0 || changeCount > 0;
   // Keep the application-owned run summary even when a provider withholds its
   // commentary. Active work opens automatically; historical and final-answer
   // states retain the compact durable elapsed-time marker.
   const hasContent = hasDetails || active || hasLifecycle;
   const { open, toggle } = useAutoDisclosure({
-    autoOpen: defaultOpen || (active && !answerStarted),
+    autoOpen: defaultOpen || (autoOpenActive && active && !answerStarted),
     resetKey: processView?.runId,
   });
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -5209,7 +5801,7 @@ export function AssistantProcessGroup({
         aria-expanded={open}
       >
         <span className="shell-process-group__title">
-          执行过程
+          过程
           {elapsed ? ` · ${elapsed}` : ''}
         </span>
         <ChevronDown size={15} className="shell-process-group__chevron" />
@@ -5235,6 +5827,11 @@ export function AssistantProcessGroup({
             previousScrollTopRef.current = currentScrollTop;
           }}
         >
+          {hasReasoning ? (
+            <div className="shell-process-group__reasoning">
+              <ReasoningContent text={reasoningText!} streaming={Boolean(streaming)} />
+            </div>
+          ) : null}
           {children}
         </div>
       ) : null}
@@ -5566,4 +6163,27 @@ function TypingIndicator({ agent }: { agent?: GlobalAgent }) {
       <TypingDots />
     </div>
   );
+}
+
+/**
+ * Build the user-turn instruction that starts the execution run for an
+ * approved conversation plan. The full plan is embedded so the executing
+ * kernel never needs to re-read it, and the revision id is pinned.
+ */
+function buildPlanExecutionInstruction(plan: ChatPlanRevision, revision: number): string {
+  const summary = plan.plan.steps
+    .map((step, index) => `${index + 1}. ${step.title}（验收：${step.acceptanceChecks.length} 项）`)
+    .join('\n');
+  return [
+    `【执行已批准计划 v${revision}】`,
+    `计划：${plan.plan.title}`,
+    `目标：${plan.plan.goal}`,
+    '',
+    `步骤概览：\n${summary}`,
+    '',
+    '请严格按以下已批准计划执行，每步完成后按该步验收标准自检，最终按总验收标准逐项核对；如发现计划不再适用，暂停并说明偏差，不要擅自扩大范围。',
+    '',
+    `【已批准计划 v${revision} 全文】`,
+    JSON.stringify(plan.plan, null, 2),
+  ].join('\n');
 }

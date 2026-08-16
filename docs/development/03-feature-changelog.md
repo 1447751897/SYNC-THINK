@@ -1,3 +1,24 @@
+## 2026-08-16：DSH 风格内联执行过程与最终回答（方案 B）
+
+### Added
+
+- 助手消息改为内联执行过程视图：思考行（可折叠，折叠态显示推理首行，流式中取最新行）、中间摘要文本（text/commentary 按块顺序内联）、工具卡片（工具名 + 状态 执行中/完成/失败，展开显示参数与结果）按消息块**原始顺序**呈现。
+- 最终总结回答 = 消息中最后一个非空 text 块，独立于执行过程呈现；无 text 块时只显示执行过程。
+- `ChatMessage` 新增 `answerText` 与 `processItems`（`InlineProcessItem` 联合类型：reasoning/text/commentary/tool），`messageToChat` 负责派生；tool-result 与前置 tool-call 配对（含失败标记）。
+- 新增 `InlineProcessFlow` 组件（`apps/desktop/src/renderer/shell/InlineProcessFlow.tsx`）与 `shell-inline-process` 样式（复用既有主题变量，8px 圆角细边框）。
+- 原“过程”面板保留为默认折叠的补充视图；`AssistantProcessGroup` 新增 `autoOpenActive` 开关，内联视图下不再自动展开。
+
+### Changed
+
+- 助手消息渲染顺序：内联执行过程 → 最终回答 → （折叠）过程面板 → 文件变更卡片。
+- `hasAnswerText` 改为基于最终回答（`answerText`，回退 `text`）。
+
+### Verification
+
+- 新增 `ChatView.messageToChat.test.tsx`（8 项）与 `InlineProcessFlow.test.tsx`（6 项），14/14 通过。
+- ChatView 全族 11 个测试文件 / 82 项通过；Desktop 全量 **162 files / 1228 tests 全部通过**。
+- Desktop typecheck、lint（0 errors，仅既有 hooks warnings）与 `pnpm build`（tsc + preload + renderer + shell）通过。
+
 ## 2026-08-15：OpenAI Responses 工具续接映射修复
 
 ### Fixed

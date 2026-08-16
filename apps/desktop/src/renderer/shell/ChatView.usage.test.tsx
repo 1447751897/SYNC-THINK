@@ -48,6 +48,13 @@ const processView = {
   tokensOut: 488,
   cachedTokensHit: 12_800,
   cachedTokensCreated: 0,
+  contextWatermarkTokens: 5_000,
+  lastRequestUsage: {
+    tokensIn: 4_000,
+    tokensOut: 488,
+    cachedTokensHit: 3_200,
+    cachedTokensCreated: 0,
+  },
   durationMs: 1_000,
   providerModelId: 'gpt-5',
   modelId: 'model-usage',
@@ -301,7 +308,7 @@ describe('ChatView reply usage details', () => {
     expect(within(tooltip).getByTestId('context-compact-distance').textContent).toBe('97k');
   });
 
-  it('separates ordinary input, cache reads, cache writes, and output in the hover panel', async () => {
+  it('shows context occupancy, billing total, and single-request input/cache/output in the hover panel', async () => {
     render(
       <ChatView
         conversation={conversation}
@@ -314,17 +321,21 @@ describe('ChatView reply usage details', () => {
 
     expect(await screen.findByText('cached reply')).toBeTruthy();
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
-    fireEvent.focus(await screen.findByText('1s · 14.5k'));
+    // 主标签现在是上下文占用（watermark=5000），不是累计求和（14.5k）。
+    fireEvent.focus(await screen.findByText('1s · 5k'));
 
     const tooltip = await screen.findByRole('tooltip');
     expect(within(tooltip).getByText('本次回复累计')).toBeTruthy();
-    expect(within(tooltip).getByText('总 Token')).toBeTruthy();
+    expect(within(tooltip).getByText('计费累计')).toBeTruthy();
     expect(within(tooltip).getByText('14.5k')).toBeTruthy();
+    expect(within(tooltip).getByText('上下文占用')).toBeTruthy();
+    expect(within(tooltip).getByText('5k')).toBeTruthy();
+    // 普通输入/缓存读取/输出用「最后一次请求」的单次口径（lastRequestUsage）：
+    // in=4000、cachedHit=3200、out=488 → 普通输入=800、缓存读取=3.2k、输出=488。
     expect(within(tooltip).getByText('普通输入')).toBeTruthy();
-    expect(within(tooltip).getByText('1.2k')).toBeTruthy();
+    expect(within(tooltip).getByText('800')).toBeTruthy();
     expect(within(tooltip).getByText('缓存读取')).toBeTruthy();
-    expect(within(tooltip).getByText('12.8k')).toBeTruthy();
-    expect(within(tooltip).getByText('缓存创建')).toBeTruthy();
+    expect(within(tooltip).getByText('3.2k')).toBeTruthy();
     expect(within(tooltip).getByText('输出')).toBeTruthy();
     expect(within(tooltip).getByText('488')).toBeTruthy();
   });
@@ -335,6 +346,12 @@ describe('ChatView reply usage details', () => {
         ...processView,
         cachedTokensHit: undefined,
         cachedTokensCreated: undefined,
+        lastRequestUsage: {
+          tokensIn: 4_000,
+          tokensOut: 488,
+          cachedTokensHit: undefined,
+          cachedTokensCreated: undefined,
+        },
       },
     });
     render(
@@ -349,10 +366,12 @@ describe('ChatView reply usage details', () => {
 
     expect(await screen.findByText('cached reply')).toBeTruthy();
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
-    fireEvent.focus(await screen.findByText('1s · 14.5k'));
+    fireEvent.focus(await screen.findByText('1s · 5k'));
 
     const tooltip = await screen.findByRole('tooltip');
-    expect(within(tooltip).getAllByText('未上报')).toHaveLength(2);
+    // 缓存读取未上报时显示「未上报」，不伪造 0。
+    expect(within(tooltip).getAllByText('未上报')).toHaveLength(1);
+    expect(within(tooltip).getByText('上下文占用')).toBeTruthy();
   });
 
   it('keeps per-reply usage visible for a completed commentary-only assistant turn', async () => {
@@ -376,11 +395,13 @@ describe('ChatView reply usage details', () => {
       />,
     );
 
-    const processToggle = await screen.findByRole('button', { name: /执行过程/ });
+    const processToggle = await screen.findByRole('button', { name: /过程/ });
     fireEvent.click(processToggle);
-    expect(await screen.findByText('已完成检查，没有额外正文。')).toBeTruthy();
+    // 新内联执行过程视图优先呈现 commentary；展开的面板仍保留耗时/用量细节。
+    expect(screen.getAllByText('已完成检查，没有额外正文。').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('inline-process-commentary')).toBeTruthy();
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());
-    expect(await screen.findByText(/14\.5k/)).toBeTruthy();
+    expect(await screen.findByText(/1s · 5k/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: '复制' })).toBeNull();
     expect(screen.queryByRole('button', { name: '分享' })).toBeNull();
   });

@@ -1,4 +1,4 @@
-﻿@import 'tailwindcss';
+@import 'tailwindcss';
 
 /*
  * NewMax-style design tokens (2026-07-22 renderer rewrite).
@@ -4167,6 +4167,217 @@ body {
   font-size: 11.5px;
 }
 
+/* Message-stream note for external-kernel self-compaction (kernel.context_compacted). */
+.shell-kernel-compact-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 auto 16px;
+  padding: 10px 14px;
+  max-width: 720px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 90%, var(--color-text-faint));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-elevated) 92%, var(--color-surface));
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.shell-kernel-compact-note svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* Provider reasoning summary merged into the shared process panel. */
+.shell-process-group__reasoning {
+  padding: 4px 4px 8px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+}
+.shell-process-group__reasoning-inner {
+  color: var(--color-text-faint);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.shell-process-group__reasoning-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 2px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+/* ── DSH-style inline execution process (思考行 / 摘要 / 工具卡片) ────────── */
+.shell-inline-process {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 2px 0 8px;
+}
+
+.shell-inline-process__think {
+  border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-elevated) 55%, var(--color-surface));
+  overflow: hidden;
+}
+
+.shell-inline-process__think-toggle {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  font: inherit;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.shell-inline-process__think-toggle:hover {
+  background: color-mix(in srgb, var(--color-accent-soft) 30%, transparent);
+}
+.shell-inline-process__think-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.shell-inline-process__think-label {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.shell-inline-process__think-summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-faint);
+}
+
+.shell-inline-process__chevron {
+  flex: none;
+  color: var(--color-text-faint);
+  transition: transform 0.16s ease;
+}
+.shell-inline-process__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.shell-inline-process__think-body {
+  padding: 2px 10px 8px;
+  color: var(--color-text-faint);
+  font-size: 12.5px;
+  line-height: 1.6;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  margin: 0 9px;
+}
+
+.shell-inline-process__text {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--color-text-secondary);
+  padding: 0 2px;
+}
+
+.shell-inline-process__commentary {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--color-text-faint);
+  padding: 0 2px;
+}
+
+.shell-inline-process__tool {
+  border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-elevated) 55%, var(--color-surface));
+  overflow: hidden;
+}
+.shell-inline-process__tool.is-failed {
+  border-color: color-mix(in srgb, var(--color-error) 45%, var(--color-border));
+}
+
+.shell-inline-process__tool-toggle {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  font: inherit;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.shell-inline-process__tool-toggle:hover {
+  background: color-mix(in srgb, var(--color-accent-soft) 30%, transparent);
+}
+.shell-inline-process__tool-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.shell-inline-process__tool-name {
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-inline-process__tool-status {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+.shell-inline-process__tool.is-failed .shell-inline-process__tool-status {
+  color: var(--color-error);
+}
+.shell-inline-process__tool-failed-icon {
+  flex: none;
+  color: var(--color-error);
+}
+
+.shell-inline-process__tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 9px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  margin: 0 9px;
+}
+
+.shell-inline-process__tool-code {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-elevated) 70%, var(--color-surface));
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+}
+.shell-inline-process__tool-code.is-failed {
+  color: var(--color-error);
+}
+
 .shell-system-bubble {
   border-color: color-mix(in srgb, var(--color-border) 88%, var(--color-text-faint));
   background: color-mix(in srgb, var(--color-elevated) 92%, var(--color-surface));
@@ -4853,6 +5064,161 @@ body {
   padding: 6px 8px 8px;
 }
 
+/* 规划/执行 交互工作模式条 */
+.shell-compose__mode-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 8px 0;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent-soft) 12%, transparent);
+}
+
+.shell-compose__mode-strip[data-mode='plan'] {
+  border: 1px dashed color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+
+.shell-compose__mode-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.shell-compose__mode-hint {
+  flex: 1;
+  min-width: 0;
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-compose__mode-switch {
+  flex: none;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.shell-compose__mode-switch:hover {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
+/* 计划审批卡（规划模式） */
+.shell-plan-card {
+  margin: 8px 8px 0;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-accent-soft) 8%, transparent);
+  font-size: 13px;
+}
+
+.shell-plan-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.shell-plan-card__title {
+  font-weight: 700;
+}
+
+.shell-plan-card__rev {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.shell-plan-card__goal {
+  margin-top: 6px;
+  opacity: 0.85;
+  line-height: 1.5;
+  max-height: 72px;
+  overflow: hidden;
+}
+
+.shell-plan-card__meta {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.shell-plan-card__steps {
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.shell-plan-card__step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shell-plan-card__step-no {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.shell-plan-card__actions {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.shell-plan-card__approve,
+.shell-plan-card__revise,
+.shell-plan-card__cancel {
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.shell-plan-card__approve {
+  color: #fff;
+  background: var(--color-accent);
+}
+
+.shell-plan-card__approve:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.shell-plan-card__revise {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: transparent;
+  color: inherit;
+}
+
+.shell-plan-card__cancel {
+  border-color: color-mix(in srgb, var(--color-error) 40%, transparent);
+  background: transparent;
+  color: var(--color-error);
+}
+
 .shell-compose__bar-left,
 .shell-compose__bar-right {
   display: flex;
@@ -5306,7 +5672,7 @@ body {
   flex: 0 0 auto;
   width: 20px;
   height: 20px;
-  margin-left: 8px;
+  margin-right: 8px;
   border-radius: 6px;
   vertical-align: -5px;
   border: 1px solid color-mix(in srgb, var(--color-text) 18%, transparent);
@@ -7810,6 +8176,18 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Per-turn kernel logo next to the model label in message meta. */
+.shell-msg-meta__kernel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  cursor: default;
+  border-radius: 4px;
+}
+
 /* Custom hover card for message meta (replaces native title tooltips). */
 .shell-meta-tip-portal {
   pointer-events: auto;
@@ -9367,6 +9745,13 @@ body {
   color: var(--color-text);
   font-size: 11px;
   font-weight: 650;
+}
+
+/* Real brand logo in the provider rows: keep the circular plate, drop the
+   letter-glyph type sizing, and let the logo sit centered at its own size. */
+.model-enabled-row__avatar--logo {
+  font-size: 0;
+  line-height: 0;
 }
 
 .model-enabled-row__copy {
