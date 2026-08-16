@@ -5,11 +5,20 @@
  * text / paired tool cards) directly in the message flow, so the user sees
  * 思考 → 摘要 → 工具 → … exactly as the model produced them. The final
  * answer is rendered separately by the message bubble.
+ *
+ * Tool cards have two sources: durable message blocks (external kernels such
+ * as claude-code / codex write tool-call/tool-result blocks) and the run
+ * process view steps (native kernel keeps tools in run events, not blocks).
+ * When the blocks carry no tool items, the steps are merged through the same
+ * boundary ordering as ExecutionTimeline (commentary segments interleaved by
+ * their afterSequence).
  */
-import { memo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { Brain, ChevronDown, CircleAlert, Wrench } from 'lucide-react';
+import type { CommentaryTimelineSegment, ExecutionProcessStep } from '@sync-think/protocol';
 import type { InlineProcessItem } from './ChatView.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { buildExecutionTimeline } from './ExecutionTimeline.js';
 
 /** First non-empty line of a multi-line text (the collapsed Think-row summary). */
 function firstLine(text: string): string {
@@ -133,15 +142,49 @@ function ProcessItemView({
 
 export const InlineProcessFlow = memo(function InlineProcessFlow({
   items,
+  steps,
+  commentarySegments,
   streaming,
 }: {
   items: readonly InlineProcessItem[];
+  /** Run process-view steps (native kernel tools live here, not in blocks). */
+  steps?: readonly ExecutionProcessStep[];
+  /** Commentary timeline segments interleaved with the steps' sequence. */
+  commentarySegments?: readonly CommentaryTimelineSegment[];
   streaming?: boolean;
 }) {
-  if (items.length === 0) return null;
+  const orderedItems = useMemo<readonly InlineProcessItem[]>(() => {
+    // External kernels write tool-call/tool-result blocks; keep their order.
+    if (items.some((item) => item.kind === 'tool')) return items;
+    // Native kernel: tools live in the run process view. Merge steps with the
+    // commentary segments using the same boundary ordering as the timeline,
+    // and let the timeline own the commentary rows (blocks repeat them).
+    if (!steps?.length && !commentarySegments?.length) return items;
+    const merged: InlineProcessItem[] = [];
+    for (const item of buildExecutionTimeline({ steps, commentarySegments })) {
+      if (item.type === 'commentary') {
+        if (item.text.trim()) merged.push({ kind: 'commentary', text: item.text });
+        continue;
+      }
+      for (const step of item.steps) {
+        merged.push({
+          kind: 'tool',
+          name: step.toolName ?? step.label ?? '工具',
+          argumentsJson: step.command ?? step.url ?? step.path ?? '',
+          result: step.preview ?? step.error ?? '',
+          ...(step.status === 'error' ? { failed: true } : {}),
+        });
+      }
+    }
+    // Reasoning and intermediate text keep their block order before the
+    // interleaved commentary/tool segment (native blocks rarely carry text).
+    return [...items.filter((item) => item.kind !== 'commentary'), ...merged];
+  }, [items, steps, commentarySegments]);
+
+  if (orderedItems.length === 0) return null;
   return (
     <div className="shell-inline-process" data-testid="inline-process-flow">
-      {items.map((item, index) => (
+      {orderedItems.map((item, index) => (
         <ProcessItemView key={`${item.kind}-${index}`} item={item} streaming={streaming} />
       ))}
     </div>

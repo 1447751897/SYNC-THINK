@@ -83,4 +83,52 @@ describe('InlineProcessFlow', () => {
     );
     expect(screen.getByTestId('inline-process-tool').textContent).toContain('list_files');
   });
+
+  it('merges native-kernel run steps into tool cards when blocks carry no tools', () => {
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem]}
+        steps={[
+          {
+            id: 'step-1',
+            label: 'list_files',
+            verb: 'List',
+            zh: '列出文件',
+            toolName: 'list_files',
+            kind: 'file',
+            status: 'done',
+            preview: '[dirs]',
+            sequence: 10,
+          } as never,
+        ]}
+      />,
+    );
+    const card = screen.getByTestId('inline-process-tool');
+    expect(card.textContent).toContain('list_files');
+    expect(card.getAttribute('data-failed')).toBe('false');
+  });
+
+  it('marks a native-kernel failed step and does not duplicate block commentary', () => {
+    render(
+      <InlineProcessFlow
+        items={[reasoningItem, { kind: 'commentary', text: '我先看看。' }]}
+        steps={[
+          {
+            id: 'step-2',
+            label: 'run_command',
+            verb: 'Bash',
+            zh: '执行命令',
+            toolName: 'run_command',
+            kind: 'bash',
+            status: 'error',
+            error: 'boom',
+            sequence: 10,
+          } as never,
+        ]}
+      />,
+    );
+    expect(screen.getByTestId('inline-process-tool').getAttribute('data-failed')).toBe('true');
+    // commentary owned by the steps path renders once (from segments when given)
+    expect(screen.queryAllByTestId('inline-process-commentary').length).toBe(0);
+  });
 });

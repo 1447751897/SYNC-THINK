@@ -5342,6 +5342,8 @@ const MessageBubble = memo(function MessageBubble({
         ) : null}
         <InlineProcessFlow
           items={message.processItems ?? []}
+          steps={processView?.steps}
+          commentarySegments={message.commentarySegments}
           streaming={Boolean(message.streaming)}
         />
         {message.answerText || (!message.processItems?.length && message.text) ? (
