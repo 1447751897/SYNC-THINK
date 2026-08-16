@@ -1,3 +1,16 @@
+## 2026-08-16：claude-code 内核适配 DeepSeek Anthropic 端点
+
+### Fixed
+
+- claude-code 内核 + DeepSeek（deepseek-v4-flash）不可用：`claude-code-adapter` 把 provider base_url 直接作为 `ANTHROPIC_BASE_URL`，而 Claude CLI 会自动拼接 `/v1/messages`，导致 OpenAI 风格根地址（`https://api.deepseek.com/v1`）产生 `/v1/v1/messages` 404，CLI 误报 "issue with the selected model"。
+- 修复：`stripCliAnthropicV1Suffix` 先剥尾部 `/v1`，并对 DeepSeek 官方主机特例替换为官方 Anthropic 兼容前缀 `/anthropic`（真实 key 验证：`api.deepseek.com/anthropic/v1/messages` 成功，`api.deepseek.com/v1/messages` 404）；非 DeepSeek 的 anthropic 原生根地址保持不变。
+
+### Verification
+
+- `claude-code-adapter.test.ts` 21/21 通过（新增 DeepSeek `/v1` → `/anthropic` 与保持非 DeepSeek 根地址两个用例）；Runtime typecheck 通过。
+- 真实 key + CLI 四组对照探测：`deepseek-v4-flash` 在 `/anthropic` 端点成功返回 thinking 流；`/v1` 端点 404。
+- 真实 Electron 端到端（attach 用户窗口）：claude-code 内核 + deepseek-v4-flash 发送对比任务，CLI 执行 Read×6/Glob 工具循环并完成；内联执行过程面板正常渲染工具批次与思考行，7/7 检查通过。
+
 ## 2026-08-16：执行过程面板化重构与语言跟随
 
 ### Changed

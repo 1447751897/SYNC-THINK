@@ -38,22 +38,67 @@ import {
   type ClaudeSystemEvent,
   type ClaudeUserEvent,
 } from './claude-code-protocol.js';
+
+/**
+ * Resolve the base URL handed to the Claude CLI as `ANTHROPIC_BASE_URL`.
+ *
+ * The CLI composes `{ANTHROPIC_BASE_URL}/v1/messages` itself, so a provider
+ * base URL that already ends in `/v1` (OpenAI-style roots, e.g.
+ * `https://api.deepseek.com/v1`) must be stripped first, or the request
+ * doubles the path and the endpoint answers 404/410, which the CLI then
+ * reports as a broken model selection.
+ *
+ * DeepSeek additionally serves its Anthropic-compatible API under the
+ * `/anthropic` prefix (verified with a real key: `…/anthropic/v1/messages`
+ * answers, `…/v1/messages` does not), so its stripped root gets that suffix.
+ */
+export function stripCliAnthropicV1Suffix(baseUrl: string): string {
+  const stripped = baseUrl.replace(/\/+$/, '').replace(/\/v1$/i, '');
+  if (/^https?:\/\/api\.deepseek\.com$/i.test(stripped)) return `${stripped}/anthropic`;
+  return stripped;
+}
 import { probeKernel } from './detect.js';
 import { formatKernelExitDiagnostic, sanitizeKernelDiagnostic } from './kernel-diagnostics.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
 import { removePlatformMcpConfig, writePlatformMcpConfig } from './platform-mcp-config.js';
 
-/** Host permission-mode → claude --permission-mode mapping (design doc §6.1). */
+/**
+ * Host permission-mode → claude --permission-mode mapping (design doc §6.1).
+ *
+ * Verified against claude 2.1.178: the CLI accepts only
+ * acceptEdits | auto | bypassPermissions | default | dontAsk | plan. There is
+ * no `manual` — the host's "ask each time" maps to `default` (Claude's standard
+ * permission-prompt behavior, which surfaces every tool through the stdio
+ * bridge).
+ */
 function mapPermissionMode(mode: KernelRequest['permissionMode']): string {
   switch (mode) {
     case 'full-access':
       return 'bypassPermissions';
     case 'ask':
-      return 'manual';
+      return 'default';
     case 'workspace':
       return 'dontAsk';
   }
 }
+
+/**
+ * Claude Code built-in tools the host does not support. AskUserQuestion cannot
+ * be approved over the stdio bridge (an allow response requires an
+ * `updatedInput` answer the host does not hold, which makes Claude loop on a
+ * ZodError); EnterPlanMode/ExitPlanMode belong to Claude's native planning
+ * flow, which the host does not use (planning runs submit via `plan_submit`).
+ * These are denied in the adapter so the model never hangs on an approval that
+ * cannot succeed.
+ */
+const CLAUDE_HOST_DENIED_TOOLS: ReadonlySet<string> = new Set([
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'AskUserQuestion',
+]);
+
+const CLAUDE_HOST_DENIED_TOOLS_MESSAGE =
+  '宿主不支持该工具。完成只读调研后请直接调用 plan_submit 提交结构化计划（规划模式），或在执行模式直接完成任务；不要进入 Claude 原生规划流程。';
 
 export interface ClaudeCodeAdapterDeps {
   /** Test seam: replace the real spawn (fixture claude processes). */
@@ -138,8 +183,28 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
       '--permission-prompt-tool',
       'stdio',
       '--permission-mode',
-      mapPermissionMode(request.permissionMode),
+      request.planningMode
+        ? // Planning runs must never bypass permissions: with bypassPermissions
+          // Claude executes its built-in tools (EnterPlanMode / AskUserQuestion)
+          // without a can_use_tool request, so the host could not deny them and
+          // the run would hang in Claude's native planning flow. Forcing
+          // `default` keeps built-ins flowing through the host bridge
+          // (allowedTools below still auto-allow the read-only tools).
+          'default'
+        : mapPermissionMode(request.permissionMode),
     ];
+    if (request.planningMode) {
+      // Planning mode: read-only analysis only. The host MCP catalog is already
+      // filtered to read-only tools; this fence restricts Claude's native tools.
+      // EnterPlanMode/AskUserQuestion are host-denied regardless (bridge), but
+      // also listed here defensively.
+      args.push(
+        '--allowedTools',
+        'Read,Glob,Grep,WebFetch,WebSearch',
+        '--disallowedTools',
+        'Bash,Write,Edit,MultiEdit,NotebookEdit,Task,Agent,EnterPlanMode,ExitPlanMode,AskUserQuestion',
+      );
+    }
     if (request.session?.mode === 'create' && request.session.id) {
       args.push('--session-id', request.session.id);
     } else if (request.session?.mode === 'resume' && request.session.id) {
@@ -159,7 +224,14 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
       // Prefer the user's local OAuth login — do not inject a key.
     } else if (request.credential.apiKey) {
       args.push('--setting-sources=');
-      if (request.credential.baseUrl) env.ANTHROPIC_BASE_URL = request.credential.baseUrl;
+      if (request.credential.baseUrl) {
+        // The Claude CLI composes `{ANTHROPIC_BASE_URL}/v1/messages` itself.
+        // Provider base URLs that already end in `/v1` (OpenAI-style roots,
+        // e.g. https://api.deepseek.com/v1) must be stripped first, or the
+        // request doubles the path and the endpoint answers 404/410, which
+        // the CLI then reports as a broken model selection.
+        env.ANTHROPIC_BASE_URL = stripCliAnthropicV1Suffix(request.credential.baseUrl);
+      }
       env.ANTHROPIC_API_KEY = request.credential.apiKey;
       // Override a stale token from the user's Claude settings as well as the
       // standard API key when SYNC-THINK supplies a per-run credential.
@@ -175,7 +247,8 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
           env,
         });
     this.handle = handle;
-    this.activeContextWindow = request.contextWindow || 128_000;
+    this.activeContextWindow =
+      request.effectiveContextWindow ?? request.contextWindow ?? 128_000;
     const child = handle.child;
 
     // Event queue + pull generator (ordered processing; permission requests
@@ -272,10 +345,12 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
     const initId = `init-${randomUUID()}`;
     child.stdin?.write(
       buildClaudeInitializeRequest(initId, {
+        // create → full system context; resume → only the cross-kernel gap
+        // catch-up block (the native session already holds the shared history).
         appendSystemPrompt:
           !request.session || request.session.mode === 'create'
             ? request.systemContext || undefined
-            : undefined,
+            : request.session.catchUp || undefined,
       }) + '\n',
     );
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
@@ -446,7 +521,12 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
         });
       }
     }
-    // Usage rides on assistant messages (input/output/cache split).
+    // Usage rides on assistant messages (input/output/cache split). Claude sends
+    // one assistant message per tool round; each reports the full growing prefix
+    // (mostly cache reads). We keep per-message reports with distinct requestIds:
+    // the host sums them for the billing total (every request is billed) and the
+    // projector's context watermark takes the LAST request's occupancy — a tool
+    // loop must not inflate "context used" with repeated prefixes.
     const usage = event.message.usage;
     if (usage) {
       const input =
@@ -476,6 +556,19 @@ export class ClaudeCodeKernelAdapter implements KernelAdapter {
   ): void {
     const permission = toKernelPermissionRequest(event);
     if (permission) {
+      // Host-unsupported built-ins are denied immediately (never surface an
+      // approval card): AskUserQuestion would loop on a ZodError without an
+      // updatedInput answer, and EnterPlanMode/ExitPlanMode would trap the run
+      // in Claude's native planning flow the host does not use.
+      if (CLAUDE_HOST_DENIED_TOOLS.has(permission.toolName)) {
+        this.handle?.child.stdin?.write(
+          buildClaudePermissionResponse(permission.requestId, {
+            allow: false,
+            message: CLAUDE_HOST_DENIED_TOOLS_MESSAGE,
+          }) + '\n',
+        );
+        return;
+      }
       push({ type: 'permission-request', ...permission });
       this.permissionCallbacks.forEach((callback) => callback(permission));
     } else {

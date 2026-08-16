@@ -36,6 +36,8 @@ function makeRequest(overrides: Partial<KernelRequest> = {}): KernelRequest {
     providerModelId: 'claude-sonnet-4-5',
     userText: 'hello fixture',
     contextWindow: 200_000,
+    effectiveContextWindow: 200_000,
+    contextWindowSource: 'configured',
     credential: { reuseLocalLogin: true },
     systemContext: '## CLAUDE.md\n\nfixture facts',
     platformTools: [],
@@ -119,6 +121,84 @@ describe('ClaudeCodeKernelAdapter', () => {
       toolName: 'Bash',
       reason: 'can_use_tool',
     });
+  });
+
+  it('denies host-unsupported built-in tools without surfacing an approval card', async () => {
+    const stdinLines: string[] = [];
+    const permissions: KernelPermissionRequest[] = [];
+    const baseSpawn = fixtureModeSpawn('builtin-deny-probe');
+    const adapter = new ClaudeCodeKernelAdapter({
+      spawn: (args, env, cwd) => {
+        const handle = baseSpawn(args, env, cwd);
+        const stdin = handle.child.stdin;
+        if (stdin) {
+          const originalWrite = stdin.write.bind(stdin);
+          vi.spyOn(stdin, 'write').mockImplementation(((
+            chunk: unknown,
+            ...rest: unknown[]
+          ) => {
+            stdinLines.push(String(chunk));
+            return Reflect.apply(originalWrite, stdin, [chunk, ...rest]);
+          }) as typeof stdin.write);
+        }
+        return handle;
+      },
+    });
+    adapter.onPermissionRequest((request) => permissions.push(request));
+
+    for await (const event of adapter.start(makeRequest())) {
+      if (event.type === 'terminal') break;
+    }
+
+    // The host-unsupported built-in never surfaces a permission card.
+    expect(permissions).toHaveLength(0);
+    const denyLine = stdinLines
+      .map((line) => {
+        try {
+          return JSON.parse(line) as {
+            type?: string;
+            response?: { request_id?: string; response?: { behavior?: string } };
+          };
+        } catch {
+          return undefined;
+        }
+      })
+      .find((obj) => obj?.type === 'control_response');
+    expect(denyLine).toMatchObject({
+      type: 'control_response',
+      response: {
+        request_id: 'perm-builtin-1',
+        response: { behavior: 'deny' },
+      },
+    });
+  });
+
+  it('forces a non-bypass permission mode and disallows native plan tools during planning mode', async () => {
+    let spawnedArgs: string[] = [];
+    const adapter = new ClaudeCodeKernelAdapter({
+      spawn: (args, env, cwd) => {
+        spawnedArgs = [...args];
+        return fixtureSpawn(args, env, cwd);
+      },
+    });
+    adapter.onPermissionRequest((request) => {
+      setTimeout(() => adapter.respondPermission(request.requestId, { allow: true }), 30);
+    });
+
+    for await (const event of adapter.start(
+      makeRequest({ planningMode: true, permissionMode: 'full-access' }),
+    )) {
+      if (event.type === 'terminal') break;
+    }
+
+    // full-access must never bypass permissions on a planning run, else Claude
+    // would execute EnterPlanMode/AskUserQuestion without the host bridge.
+    // `default` is Claude's standard ask-each-time mode (there is no `manual`).
+    expect(spawnedArgs[spawnedArgs.indexOf('--permission-mode') + 1]).toBe('default');
+    const disallowed = spawnedArgs[spawnedArgs.indexOf('--disallowedTools') + 1];
+    expect(disallowed).toContain('EnterPlanMode');
+    expect(disallowed).toContain('ExitPlanMode');
+    expect(disallowed).toContain('AskUserQuestion');
   });
 
   it('reports usage through the onUsage callback', async () => {
@@ -213,6 +293,62 @@ describe('ClaudeCodeKernelAdapter', () => {
     expect(userEvent?.session_id).toBe('4c793e96-7a25-4c15-94dd-19e4f9b2c7ef');
   });
 
+  it('strips a trailing /v1 from the base URL for the CLI (CLI appends /v1/messages itself)', async () => {
+    let spawnedEnv: Record<string, string> = {};
+    const adapter = new ClaudeCodeKernelAdapter({
+      spawn: (args, env, cwd) => {
+        spawnedEnv = { ...env };
+        return fixtureSpawn(args, env, cwd);
+      },
+    });
+    adapter.onPermissionRequest((request) => {
+      setTimeout(() => adapter.respondPermission(request.requestId, { allow: true }), 30);
+    });
+
+    for await (const event of adapter.start(
+      makeRequest({
+        credential: {
+          apiKey: 'deepseek-key',
+          baseUrl: 'https://api.deepseek.com/v1',
+        },
+      }),
+    )) {
+      if (event.type === 'terminal') break;
+    }
+
+    // DeepSeek serves the Anthropic-compatible API under /anthropic; the CLI
+    // composes {ANTHROPIC_BASE_URL}/v1/messages, so the provider's OpenAI-style
+    // /v1 root must become https://api.deepseek.com/anthropic.
+    expect(spawnedEnv.ANTHROPIC_BASE_URL).toBe('https://api.deepseek.com/anthropic');
+    expect(spawnedEnv.ANTHROPIC_API_KEY).toBe('deepseek-key');
+  });
+
+  it('keeps a non-DeepSeek anthropic root untouched for the CLI', async () => {
+    let spawnedEnv: Record<string, string> = {};
+    const adapter = new ClaudeCodeKernelAdapter({
+      spawn: (args, env, cwd) => {
+        spawnedEnv = { ...env };
+        return fixtureSpawn(args, env, cwd);
+      },
+    });
+    adapter.onPermissionRequest((request) => {
+      setTimeout(() => adapter.respondPermission(request.requestId, { allow: true }), 30);
+    });
+
+    for await (const event of adapter.start(
+      makeRequest({
+        credential: {
+          apiKey: 'unity-key',
+          baseUrl: 'https://api.unity2.ai',
+        },
+      }),
+    )) {
+      if (event.type === 'terminal') break;
+    }
+
+    expect(spawnedEnv.ANTHROPIC_BASE_URL).toBe('https://api.unity2.ai');
+  });
+
   it('resumes an existing Claude session without creating a replacement session id', async () => {
     let spawnedArgs: string[] = [];
     const adapter = new ClaudeCodeKernelAdapter({
@@ -238,6 +374,57 @@ describe('ClaudeCodeKernelAdapter', () => {
     expect(spawnedArgs[spawnedArgs.indexOf('--resume') + 1]).toBe(
       '1c84d60d-4280-45f5-b8ae-d03a1c827018',
     );
+  });
+
+  it('injects the cross-kernel catch-up on resume instead of the full system context', async () => {
+    const stdinLines: string[] = [];
+    const adapter = new ClaudeCodeKernelAdapter({
+      spawn: (args, env, cwd) => {
+        const handle = fixtureSpawn(args, env, cwd);
+        const stdin = handle.child.stdin;
+        if (stdin) {
+          const originalWrite = stdin.write.bind(stdin);
+          const write = vi.spyOn(stdin, 'write');
+          write.mockImplementation(((chunk: unknown, ...rest: unknown[]) => {
+            stdinLines.push(String(chunk));
+            return Reflect.apply(originalWrite, stdin, [chunk, ...rest]);
+          }) as typeof stdin.write);
+        }
+        return handle;
+      },
+    });
+    adapter.onPermissionRequest((request) => {
+      setTimeout(() => adapter.respondPermission(request.requestId, { allow: true }), 30);
+    });
+
+    for await (const event of adapter.start(
+      makeRequest({
+        systemContext: '## FULL SYSTEM CONTEXT',
+        session: {
+          id: '1c84d60d-4280-45f5-b8ae-d03a1c827018',
+          mode: 'resume',
+          catchUp: '## Cross-kernel session gap\n### User\ngap fact from codex era',
+        },
+      }),
+    )) {
+      if (event.type === 'terminal') break;
+    }
+
+    const init = stdinLines
+      .map((line) => {
+        try {
+          return JSON.parse(line) as {
+            type?: string;
+            request?: { subtype?: string; appendSystemPrompt?: string };
+          };
+        } catch {
+          return undefined;
+        }
+      })
+      .find((line) => line?.type === 'control_request' && line.request?.subtype === 'initialize');
+    expect(init?.request?.appendSystemPrompt).toContain('## Cross-kernel session gap');
+    expect(init?.request?.appendSystemPrompt).toContain('gap fact from codex era');
+    expect(init?.request?.appendSystemPrompt).not.toContain('FULL SYSTEM CONTEXT');
   });
 
   it('keeps local Claude settings available only when reusing the local login', async () => {
