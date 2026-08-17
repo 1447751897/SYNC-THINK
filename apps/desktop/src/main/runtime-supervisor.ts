@@ -16,6 +16,20 @@ import type { DesktopRuntimeIdentity } from './packaged-install-identity.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Console writes from the main process can hit a closed stdout/stderr pipe
+ * (the console that launched Desktop is gone, e.g. a background shell or a
+ * job pipe that was torn down). Without protection the EPIPE surfaces as an
+ * uncaught exception in the main process; logging is best-effort, so swallow.
+ */
+function safeConsoleWrite(write: () => void): void {
+  try {
+    write();
+  } catch {
+    /* console/pipe may be gone — logging is best-effort */
+  }
+}
+
 let child: ChildProcess | null = null;
 let childInstallId: string | null = null;
 let starting: Promise<void> | null = null;
@@ -267,14 +281,14 @@ function spawnRuntime(
 
   childProcess.stdout?.on('data', (chunk: Buffer) => {
     const text = chunk.toString('utf8').trim();
-    if (text) console.log('[runtime-child]', text);
+    if (text) safeConsoleWrite(() => console.log('[runtime-child]', text));
   });
   childProcess.stderr?.on('data', (chunk: Buffer) => {
     const text = chunk.toString('utf8').trim();
-    if (text) console.warn('[runtime-child]', text);
+    if (text) safeConsoleWrite(() => console.warn('[runtime-child]', text));
   });
   childProcess.on('exit', (code, signal) => {
-    console.warn('[desktop] runtime process exited', { code, signal });
+    safeConsoleWrite(() => console.warn('[desktop] runtime process exited', { code, signal }));
     if (child === childProcess) {
       child = null;
       childInstallId = null;
@@ -282,7 +296,7 @@ function spawnRuntime(
     clearPidFile(identity.installId);
   });
   childProcess.on('error', (error) => {
-    console.error('[desktop] runtime process failed to start', error);
+    safeConsoleWrite(() => console.error('[desktop] runtime process failed to start', error));
     if (child === childProcess) {
       child = null;
       childInstallId = null;

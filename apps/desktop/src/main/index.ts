@@ -354,6 +354,19 @@ import type {
   StartProjectTerminalResult,
 } from '../workspace-tools-contract.js';
 
+// The main process may outlive the console it was launched from (a dev shell
+// that closed, a background job whose pipes were torn down). A console write to
+// the closed pipe then raises EPIPE; without an 'error' listener Node turns it
+// into an uncaught exception in the main process and Electron shows a
+// "JavaScript error occurred in the main process" dialog on every log line
+// (e.g. runtime stderr forwarded by the supervisor during message traffic).
+// Logging is best-effort — never let a broken console crash the app.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', () => {
+    /* swallow: console/pipe may be gone; logging is best-effort */
+  });
+}
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'sync-think-image',
