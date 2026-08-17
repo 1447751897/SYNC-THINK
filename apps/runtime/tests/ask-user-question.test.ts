@@ -112,14 +112,15 @@ async function createFixture() {
 }
 
 describe('ask_user_question platform tool', () => {
-  it('is in the catalog and plan_submit is gone (replaced by ask flow)', () => {
+  it('is in the catalog and plan_submit is back for planning-mode submissions (§12.18)', () => {
     const definitions = buildPlatformMcpToolDefinitions({});
     const names = definitions.map((definition) => definition.name);
     expect(names).toContain('ask_user_question');
-    expect(names).not.toContain('plan_submit');
-    // 规划模式目录保留 ask（只读提交方案的工具）。
+    expect(names).toContain('plan_submit');
+    // 规划模式目录同时保留 ask（中途问询）与 plan_submit（最终方案提交）。
     const planning = buildPlatformMcpToolDefinitions({ planningMode: true });
     expect(planning.map((definition) => definition.name)).toContain('ask_user_question');
+    expect(planning.map((definition) => definition.name)).toContain('plan_submit');
   });
 
   it('pends the tool call and resolves with the user answer', async () => {

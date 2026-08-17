@@ -177,11 +177,17 @@ async function handleToolsCall(id, params) {
       brokerSend({ type: 'tool-call', id: callId, tool: name, input });
       // Broker round-trips are quick; a 90s cap guards against a hung host.
       // On timeout we also cancel host-side so a late approval cannot apply.
-      timer = setTimeout(() => {
-        if (pendingCalls.has(callId)) {
-          cancelBrokerCall(callId, 'platform tool timed out waiting for the host');
-        }
-      }, 90_000);
+      // ask_user_question intentionally waits for the user to answer — a fixed
+      // cap would kill the call mid-thought, so it is exempt (the host aborts
+      // it on run cancel / ask.cancel instead).
+      const hangingTools = new Set(['ask_user_question']);
+      if (!hangingTools.has(name)) {
+        timer = setTimeout(() => {
+          if (pendingCalls.has(callId)) {
+            cancelBrokerCall(callId, 'platform tool timed out waiting for the host');
+          }
+        }, 90_000);
+      }
     });
     respondContent(id, result);
   } catch (error) {

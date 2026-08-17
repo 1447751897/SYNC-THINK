@@ -528,7 +528,7 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 18. 对没有原生 phase metadata 的 Provider，Runtime 在 tool/terminal 边界前不能确定当前 text 是 commentary 还是 final answer。Renderer 必须把尚未被 timeline 分类的 `draft.text` 后缀临时显示在当前顺序位置；边界分类后该后缀无损迁入对应 timeline segment，禁止因已有 thinking/process 而把已到达文本隐藏到终态。
 19. “执行过程”面板在 Run 执行且最终回答尚未开始时自动展开；最终回答开始或 Run 进入终态时自动折叠。用户手动展开/折叠后，本 Run 内自动规则不再覆盖该选择；切换到新 Run 时清除手动覆盖并重新应用阶段默认值。历史完成消息默认折叠。
 20. Provider 即使把工具前的短正文标为 `final_answer`，后续工具边界仍具有更高语义优先级：该工具之前的所有 text 必须归一化为 commentary，并按原 sequence 显示在“执行过程”面板内；只有最后一个工具之后的 final text 位于面板外。读取既有 timeline 时应用同一非破坏性归一化规则。
-21. “执行过程”标题行同时显示过程项数和本 Run 总耗时，格式为“执行过程 N 项 · X秒/分/小时”。运行中依据 `startedAt` 每秒更新；终态优先使用 `RunProcessView.startedAt → completedAt`，Run process 尚未取回时从持久 timeline 的首尾时间推导，最后才使用 `durationMs`，折叠与展开状态下都保持可见。
+21. “执行过程”标题行同时显示当前活动摘要、过程项数和本 Run 总耗时，格式为“执行过程 · {当前活动} · N 项 · X秒/分/小时”。总耗时运行中依据 `startedAt` 每秒更新；终态优先使用 `RunProcessView.startedAt → completedAt`，Run process 尚未取回时从持久 timeline 的首尾时间推导，最后才使用 `durationMs`，折叠与展开状态下都保持可见。当前活动摘要与停滞分级见 §12.22。
 
 ### 12.18 plan/exec 规划与执行规则（2026-08-16 用户确认）
 
@@ -589,3 +589,15 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 8. **watch**：runtime 启动时监听约定目录（recursive，变更 debounce 300ms）→ 自动重扫并发 `skill.local_changed` 事件；UI 30s 轮询 + 手动刷新兜底。
 9. **命令**：`skill.local.scan`（返回候选列表 + 已导入标记 + 目录/watch 状态）、`skill.local.import {path}`（路径须在约定目录内；读文件 → 复用 parseSkillMd + finishSkillImport，originType=local、originRef=文件路径）。
 10. **UI（能力中心 skills 第三 tab「本地」）**：目录横幅（路径 + 自动监听/目录不存在提示）、候选卡片（名称、描述、指令摘要、路径 + 大小、已导入徽标）、搜索过滤（名称/描述/指令/路径全字段）、导入按钮（导入后自动刷新候选与「我的 Skill」）。
+
+### 12.22 执行活动可见性与停滞分级（2026-08-17 用户确认）
+
+本节补充 §12.17 规则 21：面板折叠后必须仍能回答「现在在做什么」和「这是卡住了还是还在跑」。
+
+1. **活动摘要**：由有序过程项派生（`process-activity.ts`，纯函数），优先级为 运行中的工具（`{友好名} {关键参数}`，摘要截至 40 字）→ 思考中 → 正在回复 → 最新运行状态行 → 兜底“等待模型响应”。运行中的工具优先级最高，即使其后已有说明文字到达——工具执行期间“在做什么”的答案仍是那个工具。Run 进入终态后摘要消失，只留“执行过程 N 项 · 总耗时”。
+2. **活着的证据**：摘要文字使用 gradient sweep（`background-clip: text` 扫光）表示进程存活——静态文字无法区分渲染卡死与正常等待。必须提供 `prefers-reduced-motion: reduce` 降级（去掉扫光，保留纯色可读文字）。
+3. **运行中耗时**：running 工具行主行显示自增耗时；终态耗时回到展开详情内，主行不再显示。所有计时共用面板层唯一的秒级时钟，禁止每行各自 `setInterval`——否则违反 §12.17 规则 17（running→completed 原位翻转不得重挂载）。
+4. **停滞分级**：以“最后一次可见进展”为基准，措辞保持中性（长 build/test 跑几分钟是正常的，不得称为“卡住”）。有工具在跑时宽容（>120s 提示、>300s 标记“长时间无输出”）；无工具在跑却无输出才严格（>15s 提示、>60s 标记），后者才是真正可疑的情况。
+5. **工具实时输出（`tool_progress`）**：running 工具行下方显示最新一行输出。该帧为**纯广播瞬态**——不写事件流、不进 `transientReplay`（256 帧预算不得被长命令冲爆）、不进 snapshot；重连客户端靠 `startedAt` 计时并等下一帧。它是**注解而非边界**，不得取消 §12.17 规则 12 的 RAF 文本合批。
+6. **覆盖范围**：`tool_progress` 仅 native 内核可得（工具在 Runtime 进程内执行）。claude-code / codex 的工具在其子进程内部执行，中间输出不经过 Runtime，只能降级为规则 3 的自增耗时。
+7. **状态标记**：工具状态只用图标表达——running 转圈 / 完成 ✓ / 失败 ✗（成对的勾与叉），不再渲染“运行中 / 完成 / 失败”文字；文案移入 `title` 与 `aria-label`，保留悬停提示与读屏可读性。

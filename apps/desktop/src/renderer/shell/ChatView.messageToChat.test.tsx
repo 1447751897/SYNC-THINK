@@ -59,7 +59,7 @@ describe('messageToChat inline process split', () => {
     });
   });
 
-  it('shows the unclassified provider suffix while a Native answer is still streaming', () => {
+  it('shows the unclassified provider suffix in the process flow while a Native answer is still streaming', () => {
     const timeline: AssistantTurnSegment[] = [
       {
         id: 'think-1',
@@ -78,10 +78,16 @@ describe('messageToChat inline process split', () => {
       },
     ];
 
-    expect(projectTransientAnswerText('我先检查资料。正在生成最终回答', timeline)).toBe(
-      '正在生成最终回答',
-    );
-    expect(projectTransientAnswerText('我先检查资料。', timeline)).toBeUndefined();
+    // §12.17.18: unclassified text stays out of the summary panel until a
+    // tool/terminal boundary classifies it into a timeline segment.
+    expect(projectTransientAnswerText('我先检查资料。正在生成最终回答', timeline)).toEqual({
+      answerText: undefined,
+      pendingText: '正在生成最终回答',
+    });
+    expect(projectTransientAnswerText('我先检查资料。', timeline)).toEqual({
+      answerText: undefined,
+      pendingText: '',
+    });
   });
 
   it('keeps a phase-aware final answer without duplicating classified timeline text', () => {
@@ -104,7 +110,10 @@ describe('messageToChat inline process split', () => {
       },
     ];
 
-    expect(projectTransientAnswerText('答案。', timeline)).toBe('答案。');
+    expect(projectTransientAnswerText('答案。', timeline)).toEqual({
+      answerText: '答案。',
+      pendingText: '',
+    });
   });
 
   it('splits the last text block as the final answer and keeps earlier blocks as process items', () => {

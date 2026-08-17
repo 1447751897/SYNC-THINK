@@ -114,7 +114,10 @@ const EMPTY_ACTIVITY_CURSOR_STORE: RuntimeActivityCursorStore = {
   save: () => undefined,
 };
 
-const ACTIVITY_EVENT_CATEGORIES = ['message', 'run', 'approval'] as const satisfies readonly EventCategory[];
+// system 类事件承载对话级生命周期（conversation.ask_pending/answered/cancelled、
+// conversation.interaction_mode_changed、plan.* 等），桌面端需订阅才能弹出
+// 问询卡片并刷新 plan-review 链路。
+const ACTIVITY_EVENT_CATEGORIES = ['message', 'run', 'approval', 'system'] as const satisfies readonly EventCategory[];
 const MAX_ACTIVITY_EVENT_HISTORY = 2_048;
 
 export class RuntimeSession {

@@ -129,3 +129,68 @@ export function openGatewayBaseUrls(
     openaiBaseUrl: `${root}${OPEN_GATEWAY_OPENAI_PATH}/v1`,
   };
 }
+
+/**
+ * One gateway request in the audit log (查询审计用). Every proxied/translated
+ * request is recorded: the inbound dialect the client spoke (原始格式), the
+ * translated upstream body (转换后格式), and the kernel that drove the run —
+ * external terminal clients (no run context) report `kernelId: 'external'`.
+ *
+ * Bodies are truncated to a fixed cap at the runtime side (`rawRequest` /
+ * `convertedRequest` are always present but may be elided with `truncated`).
+ * Secrets never appear: API keys ride in request headers, not bodies.
+ */
+export interface GatewayRequestLogEntry {
+  /** Monotonic id; also the list cursor for paging. */
+  id: string;
+  occurredAt: string;
+  /** Kernel id that drove the request, or 'external' for outside CLIs. */
+  kernelId?: string;
+  runId?: string;
+  /** Dialect the inbound client spoke (原始格式). */
+  inboundDialect: OpenGatewayUpstreamProtocol;
+  /** Dialect the upstream provider speaks (转换后格式). */
+  upstreamProtocol: OpenGatewayUpstreamProtocol;
+  /** true when a translation happened; false = same-dialect proxy. */
+  converted: boolean;
+  /** Provider-facing model id sent to the upstream. */
+  model: string;
+  providerName?: string;
+  /** Raw inbound request body (truncated JSON text). */
+  rawRequest: string;
+  /** Translated upstream body (truncated JSON text; same as rawRequest on proxy). */
+  convertedRequest: string;
+  /** true when either body was truncated to the audit cap. */
+  truncated: boolean;
+  status: 'success' | 'error';
+  /** Upstream HTTP status when the upstream answered non-2xx. */
+  statusCode?: number;
+  errorMessage?: string;
+  latencyMs?: number;
+}
+
+/** `gateway.logs` filter: any combination narrows the page. */
+export interface GatewayLogsFilter {
+  /** Exact kernel id ('codex' | 'claude-code' | 'native' | 'external' …). */
+  kernelId?: string;
+  status?: 'success' | 'error';
+  /** true = translation happened; false = same-dialect proxy. */
+  converted?: boolean;
+}
+
+/** `gateway.logs` query: paging window over the newest-first ring buffer. */
+export interface GatewayLogsQuery {
+  /** Skip the newest N entries (0 = newest page). */
+  offset?: number;
+  /** Page size (clamped by the runtime). */
+  limit?: number;
+  filter?: GatewayLogsFilter;
+}
+
+/** `gateway.logs` response: a page plus the current total for paging UI. */
+export interface GatewayLogsResponse {
+  entries: GatewayRequestLogEntry[];
+  /** Total entries currently retained in the ring buffer. */
+  total: number;
+  hasMore: boolean;
+}

@@ -13,6 +13,36 @@ import type { PlatformBrokerInfo } from '@sync-think/shared';
 
 export const PLATFORM_MCP_SERVER_NAME = 'sync-think-platform';
 
+/**
+ * Serialize one value as a TOML **literal** string for a codex `-c key=value`
+ * override.
+ *
+ * Single quotes, not `JSON.stringify`: on Windows the kernel executable is a
+ * `.cmd` shim, so the whole argv goes through `buildSafeCmdShimCommand`, whose
+ * whitelist rejects `"` outright (process-runner.ts SAFE_CMD_SHIM_METACHARS).
+ * A double-quoted value therefore fails the spawn with "kernel args contain
+ * unsafe shell metacharacters" before codex is ever reached — every `-c` value
+ * on the codex command line must use this helper.
+ *
+ * TOML literal strings have no escape mechanism, so a value containing `'`
+ * cannot be represented. That is unrepresentable rather than merely awkward:
+ * emitting it raw would produce invalid TOML and codex would fail to parse its
+ * own config. Callers must reject such values instead of shipping bad config.
+ */
+export function tomlLiteral(value: string): string {
+  if (value.includes("'")) {
+    throw new Error(
+      `codex -c value cannot contain a single quote (TOML literal strings have no escapes): ${value}`,
+    );
+  }
+  return `'${value}'`;
+}
+
+/** TOML literal string array (`['a','b']`) for a codex `-c key=value` override. */
+export function tomlLiteralArray(values: readonly string[]): string {
+  return `[${values.map((value) => tomlLiteral(value)).join(',')}]`;
+}
+
 function serverEnv(broker: PlatformBrokerInfo): Record<string, string> {
   return {
     ST_BROKER_HOST: broker.host,
@@ -54,16 +84,13 @@ export function buildClaudeMcpConfigJson(broker: PlatformBrokerInfo): string {
  */
 export function buildCodexMcpConfigArgs(broker: PlatformBrokerInfo): string[] {
   const server = PLATFORM_MCP_SERVER_NAME;
-  const literal = (value: string): string => `'${value}'`;
-  const literalArray = (values: readonly string[]): string =>
-    `[${values.map((value) => literal(value)).join(',')}]`;
   return [
-    `-c`, `mcp_servers.${server}.command=${literal(broker.command)}`,
-    `-c`, `mcp_servers.${server}.args=${literalArray(broker.args)}`,
-    `-c`, `mcp_servers.${server}.env.ST_BROKER_HOST=${literal(broker.host)}`,
-    `-c`, `mcp_servers.${server}.env.ST_BROKER_PORT=${literal(String(broker.port))}`,
-    `-c`, `mcp_servers.${server}.env.ST_BROKER_TOKEN=${literal(broker.token)}`,
-    `-c`, `mcp_servers.${server}.env.ST_WORKSPACE_DIR=${literal(broker.workspaceDir)}`,
+    `-c`, `mcp_servers.${server}.command=${tomlLiteral(broker.command)}`,
+    `-c`, `mcp_servers.${server}.args=${tomlLiteralArray(broker.args)}`,
+    `-c`, `mcp_servers.${server}.env.ST_BROKER_HOST=${tomlLiteral(broker.host)}`,
+    `-c`, `mcp_servers.${server}.env.ST_BROKER_PORT=${tomlLiteral(String(broker.port))}`,
+    `-c`, `mcp_servers.${server}.env.ST_BROKER_TOKEN=${tomlLiteral(broker.token)}`,
+    `-c`, `mcp_servers.${server}.env.ST_WORKSPACE_DIR=${tomlLiteral(broker.workspaceDir)}`,
   ];
 }
 

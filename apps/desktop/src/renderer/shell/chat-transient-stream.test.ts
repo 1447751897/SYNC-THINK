@@ -139,7 +139,7 @@ describe('chat transient stream reducer', () => {
     expect(terminal.terminal).toBe(true);
   });
 
-  it('clears a process-only draft as soon as the matching run becomes terminal', () => {
+  it('clears a process-only draft as soon as the matching run completes', () => {
     const process = applyTransientConversationFrame({
       current: null,
       frame: frame(1, 'process'),
@@ -148,7 +148,7 @@ describe('chat transient stream reducer', () => {
     });
     const terminal = applyTransientConversationFrame({
       current: process.draft,
-      frame: frame(2, 'terminal', { terminalState: 'failed' }),
+      frame: frame(2, 'terminal', { terminalState: 'completed' }),
       threadId: 'thread-a',
       afterStreamSequence: process.lastStreamSequence,
     });
@@ -158,6 +158,45 @@ describe('chat transient stream reducer', () => {
       lastStreamSequence: 2,
       terminal: true,
     });
+  });
+
+  it('retains an output-free draft when the run failed, so the cause stays visible', () => {
+    // A kernel that dies during spawn (bad argv, missing binary, auth refused)
+    // emits zero output. Dropping the draft here is what made such runs render
+    // as a sent message with no reply and no explanation.
+    const process = applyTransientConversationFrame({
+      current: null,
+      frame: frame(1, 'process'),
+      threadId: 'thread-a',
+      afterStreamSequence: 0,
+    });
+    const terminal = applyTransientConversationFrame({
+      current: process.draft,
+      frame: frame(2, 'terminal', {
+        terminalState: 'failed',
+        errorMessage: 'kernel args contain unsafe shell metacharacters',
+      }),
+      threadId: 'thread-a',
+      afterStreamSequence: process.lastStreamSequence,
+    });
+
+    expect(terminal.draft).toMatchObject({
+      terminal: true,
+      terminalState: 'failed',
+      terminalError: 'kernel args contain unsafe shell metacharacters',
+    });
+    expect(terminal.terminal).toBe(true);
+  });
+
+  it('retains an output-free cancelled draft as well', () => {
+    const terminal = applyTransientConversationFrame({
+      current: null,
+      frame: frame(1, 'terminal', { terminalState: 'cancelled' }),
+      threadId: 'thread-a',
+      afterStreamSequence: 0,
+    });
+    // No prior draft at all: nothing to retain, and nothing to explain either.
+    expect(terminal.draft).toBeNull();
   });
 
   it('reduces a render-frame batch with one cursor advance and a retained terminal draft', () => {

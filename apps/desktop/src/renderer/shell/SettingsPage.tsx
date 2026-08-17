@@ -4,6 +4,8 @@
 // page-local tabs, and a fixed completion action.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertCircle,
+  ArrowRight,
   BarChart3,
   Bot,
   Check,
@@ -19,11 +21,14 @@ import {
   Network,
   Palette,
   Plug,
+  RefreshCw,
   Search,
   Settings,
   ShieldCheck,
   Sparkles,
   Sun,
+  TerminalSquare,
+  Trash2,
   UsersRound,
   WalletCards,
 } from 'lucide-react';
@@ -38,12 +43,16 @@ import {
 import {
   OPEN_GATEWAY_SETTING_KEY,
   normalizeOpenGatewaySetting,
+  type GatewayLogsFilter,
+  type GatewayRequestLogEntry,
   type OpenGatewaySetting,
   type OpenGatewayStatusResponse,
   type OpenGatewayUpstreamProtocol,
 } from '@sync-think/protocol/gateway';
 import { ModelSettings, type ModelSettingsHandle } from './ModelSettings.js';
 import { DesktopUpdatePanel } from './DesktopUpdatePanel.js';
+import { BrandLogoMark } from './BrandLogoMark.js';
+import { resolveKernelBrandLogo } from './brand-icons.js';
 import { decideSettingsPageAction } from './settings-unsaved.js';
 import {
   readDefaultPermission,
@@ -869,6 +878,351 @@ function ConnectionSection() {
           {error}
         </p>
       ) : null}
+
+      <GatewayAuditLogs />
+    </div>
+  );
+}
+
+const GATEWAY_PAGE_SIZE = 50;
+
+const GATEWAY_DIALECT_LABEL: Record<OpenGatewayUpstreamProtocol, string> = {
+  'anthropic-messages': 'Anthropic',
+  'openai-chat': 'OpenAI Chat',
+  'openai-responses': 'OpenAI Responses',
+};
+
+const GATEWAY_KERNEL_LABEL: Record<string, string> = {
+  codex: 'Codex',
+  'claude-code': 'Claude Code',
+  native: 'Sync-Think',
+  external: '外部 CLI',
+};
+
+/** Try to pretty-print JSON; fall back to the raw text (truncated bodies). */
+function prettyJsonText(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text) as unknown, null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function formatLogTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+/**
+ * 网关转换审计日志（AI 模型网关卡片下方）。
+ *
+ * 每次代理/转换请求都会记录：原始格式（inbound body）、转换后格式（upstream
+ * body）与驱动该请求的内核（外部 CLI 记为 external）。内存环形缓冲，分页查看，
+ * 可筛选（类型 / 状态 / 内核）、清空与导出 JSON。
+ */
+function GatewayAuditLogs() {
+  const [entries, setEntries] = useState<GatewayRequestLogEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [page, setPage] = useState(0);
+  const [filter, setFilter] = useState<GatewayLogsFilter>({});
+  const [expandedId, setExpandedId] = useState<string | undefined>();
+  const [clearing, setClearing] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.getGatewayLogs) return;
+    try {
+      const next = await runtime.getGatewayLogs({
+        offset: page * GATEWAY_PAGE_SIZE,
+        limit: GATEWAY_PAGE_SIZE,
+        filter,
+      });
+      setEntries(next.entries);
+      setTotal(next.total);
+      setHasMore(next.hasMore);
+    } catch {
+      // Advisory panel; a failed poll keeps the last rendered page.
+    }
+  }, [page, filter]);
+
+  useEffect(() => {
+    void refresh();
+    const timer = setInterval(() => void refresh(), 3000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
+  const patchFilter = (patch: GatewayLogsFilter) => {
+    setFilter((previous) => ({ ...previous, ...patch }));
+    setPage(0);
+    setExpandedId(undefined);
+  };
+
+  const clearAll = async () => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.clearGatewayLogs || clearing) return;
+    setClearing(true);
+    try {
+      await runtime.clearGatewayLogs();
+      setPage(0);
+      setExpandedId(undefined);
+      await refresh();
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const exportJson = () => {
+    if (entries.length === 0) return;
+    const blob = new Blob([JSON.stringify(entries, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `gateway-logs-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const kernelOptions = [
+    { value: undefined, label: '全部内核' },
+    { value: 'codex', label: 'Codex' },
+    { value: 'claude-code', label: 'Claude Code' },
+    { value: 'native', label: 'Sync-Think' },
+    { value: 'external', label: '外部 CLI' },
+  ] as const;
+
+  return (
+    <div className="settings-gateway-logs" data-testid="settings-gateway-logs">
+      <div className="settings-gateway-logs__head">
+        <div className="settings-gateway-logs__title">
+          <h3>转换日志</h3>
+          <span className="settings-gateway-logs__count">
+            {total > 0 ? `${total} 条` : '暂无请求'}
+          </span>
+        </div>
+        <div className="settings-gateway-logs__actions">
+          <button
+            type="button"
+            className="settings-gateway-logs__action"
+            onClick={() => void refresh()}
+            title="刷新"
+          >
+            <RefreshCw size={13} />
+            刷新
+          </button>
+          <button
+            type="button"
+            className="settings-gateway-logs__action"
+            onClick={exportJson}
+            disabled={entries.length === 0}
+            title="导出当前页为 JSON 文件"
+          >
+            <Download size={13} />
+            导出 JSON
+          </button>
+          <button
+            type="button"
+            className="settings-gateway-logs__action settings-gateway-logs__action--danger"
+            onClick={() => void clearAll()}
+            disabled={clearing || total === 0}
+            title="清空全部日志"
+          >
+            <Trash2 size={13} />
+            清空
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-gateway-logs__filters">
+        <div className="settings-gateway-logs__filter-group">
+          <span className="settings-gateway-logs__filter-label">类型</span>
+          <button
+            type="button"
+            className={clsx('settings-gateway-logs__chip', filter.converted === undefined && 'is-active')}
+            onClick={() => patchFilter({ converted: undefined })}
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            className={clsx('settings-gateway-logs__chip', filter.converted === true && 'is-active')}
+            onClick={() => patchFilter({ converted: true })}
+          >
+            转换
+          </button>
+          <button
+            type="button"
+            className={clsx('settings-gateway-logs__chip', filter.converted === false && 'is-active')}
+            onClick={() => patchFilter({ converted: false })}
+          >
+            直通
+          </button>
+        </div>
+        <div className="settings-gateway-logs__filter-group">
+          <span className="settings-gateway-logs__filter-label">状态</span>
+          <button
+            type="button"
+            className={clsx('settings-gateway-logs__chip', filter.status === undefined && 'is-active')}
+            onClick={() => patchFilter({ status: undefined })}
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            className={clsx('settings-gateway-logs__chip', filter.status === 'success' && 'is-active')}
+            onClick={() => patchFilter({ status: 'success' })}
+          >
+            成功
+          </button>
+          <button
+            type="button"
+            className={clsx('settings-gateway-logs__chip', filter.status === 'error' && 'is-active')}
+            onClick={() => patchFilter({ status: 'error' })}
+          >
+            失败
+          </button>
+        </div>
+        <div className="settings-gateway-logs__filter-group">
+          <span className="settings-gateway-logs__filter-label">内核</span>
+          {kernelOptions.map((option) => (
+            <button
+              key={option.value ?? 'all'}
+              type="button"
+              className={clsx(
+                'settings-gateway-logs__chip',
+                filter.kernelId === option.value && 'is-active',
+              )}
+              onClick={() => patchFilter({ kernelId: option.value })}
+              title={option.label}
+            >
+              {option.value && option.value !== 'external' ? (
+                <BrandLogoMark logo={resolveKernelBrandLogo(option.value)!} size={12} />
+              ) : option.value === 'external' ? (
+                <TerminalSquare size={11} />
+              ) : null}
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {entries.length === 0 ? (
+        <div className="settings-gateway-logs__empty">
+          {total === 0 ? '还没有网关请求记录。' : '当前筛选条件下没有匹配的请求。'}
+        </div>
+      ) : (
+        <div className="settings-gateway-logs__list">
+          {entries.map((entry) => {
+            const kernelLogo =
+              entry.kernelId && entry.kernelId !== 'external'
+                ? resolveKernelBrandLogo(entry.kernelId)
+                : undefined;
+            const expanded = expandedId === entry.id;
+            return (
+              <div key={entry.id}>
+                <button
+                  type="button"
+                  className={clsx(
+                    'settings-gateway-logs__row',
+                    entry.status === 'error' && 'is-error',
+                  )}
+                  onClick={() => setExpandedId(expanded ? undefined : entry.id)}
+                  data-testid="gateway-log-row"
+                >
+                  <span className="settings-gateway-logs__time">{formatLogTime(entry.occurredAt)}</span>
+                  <span
+                    className="settings-gateway-logs__kernel"
+                    title={GATEWAY_KERNEL_LABEL[entry.kernelId ?? 'external'] ?? entry.kernelId}
+                  >
+                    {kernelLogo ? (
+                      <BrandLogoMark logo={kernelLogo} size={14} />
+                    ) : (
+                      <TerminalSquare size={13} />
+                    )}
+                  </span>
+                  <span className="settings-gateway-logs__dialect">
+                    {GATEWAY_DIALECT_LABEL[entry.inboundDialect]}
+                    <ArrowRight size={10} />
+                    {GATEWAY_DIALECT_LABEL[entry.upstreamProtocol]}
+                  </span>
+                  <code className="settings-gateway-logs__model">{entry.model}</code>
+                  {entry.status === 'success' ? (
+                    <span className="settings-gateway-logs__status is-ok" title="成功">
+                      <Check size={13} />
+                    </span>
+                  ) : (
+                    <span
+                      className="settings-gateway-logs__status is-err"
+                      title={entry.errorMessage ?? '失败'}
+                    >
+                      <AlertCircle size={13} />
+                    </span>
+                  )}
+                  <span className="settings-gateway-logs__latency">
+                    {entry.latencyMs !== undefined ? `${entry.latencyMs}ms` : '—'}
+                  </span>
+                </button>
+                {expanded ? (
+                  <div className="settings-gateway-logs__detail">
+                    <div className="settings-gateway-logs__detail-meta">
+                      <span>
+                        内核：{GATEWAY_KERNEL_LABEL[entry.kernelId ?? 'external'] ?? entry.kernelId ?? '外部'}
+                      </span>
+                      {entry.runId ? <span>运行：{entry.runId}</span> : null}
+                      <span>耗时：{entry.latencyMs !== undefined ? `${entry.latencyMs}ms` : '—'}</span>
+                      {entry.truncated ? <span>正文已截断</span> : null}
+                    </div>
+                    {entry.errorMessage ? (
+                      <p className="settings-gateway-logs__detail-error">{entry.errorMessage}</p>
+                    ) : null}
+                    <div className="settings-gateway-logs__detail-bodies">
+                      <div className="settings-gateway-logs__detail-body">
+                        <p>
+                          原始格式（{GATEWAY_DIALECT_LABEL[entry.inboundDialect]}）
+                        </p>
+                        <pre>{prettyJsonText(entry.rawRequest)}</pre>
+                      </div>
+                      <div className="settings-gateway-logs__detail-body">
+                        <p>
+                          转换后格式（{GATEWAY_DIALECT_LABEL[entry.upstreamProtocol]}）
+                        </p>
+                        <pre>{prettyJsonText(entry.convertedRequest)}</pre>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="settings-gateway-logs__pager">
+        <button
+          type="button"
+          disabled={page === 0}
+          onClick={() => {
+            setPage((current) => Math.max(current - 1, 0));
+            setExpandedId(undefined);
+          }}
+        >
+          上一页
+        </button>
+        <span>
+          第 {page + 1} 页 · 共 {total} 条
+        </span>
+        <button
+          type="button"
+          disabled={!hasMore}
+          onClick={() => {
+            setPage((current) => current + 1);
+            setExpandedId(undefined);
+          }}
+        >
+          下一页
+        </button>
+      </div>
     </div>
   );
 }

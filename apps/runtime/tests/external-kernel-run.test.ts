@@ -646,6 +646,84 @@ describe('Runtime external kernel finalization', () => {
     }
   });
 
+  it('reveals a batch-announced tool sequence one-by-one and converges the full timeline', async () => {
+    // claude-code announces the whole batch in one assistant message while it
+    // executes tools sequentially. The reveal logic must put the first row into
+    // the timeline immediately, add each next row when the previous tool's
+    // result arrives, and converge to the complete ordered timeline.
+    const fixture = await createFixture([
+      { type: 'tool-call', toolId: 'tool-1', name: 'Read', argsJson: '{"path":"a"}' },
+      { type: 'tool-call', toolId: 'tool-2', name: 'Edit', argsJson: '{"path":"b"}' },
+      { type: 'tool-call', toolId: 'tool-3', name: 'Write', argsJson: '{"path":"c"}' },
+      { type: 'tool-result', toolId: 'tool-1', output: 'ok-1' },
+      { type: 'tool-result', toolId: 'tool-2', output: 'ok-2' },
+      { type: 'tool-result', toolId: 'tool-3', output: 'ok-3' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+
+      const assistant = assistantMessage(
+        fixture.messageStore.listMessages(fixture.threadId as never).messages,
+      );
+      const commentary = assistant?.blocks.find(
+        (block) => block.type === 'commentary',
+      ) as { payload?: { assistantTimeline?: unknown[] } } | undefined;
+      const timeline = commentary?.payload?.assistantTimeline ?? [];
+      const toolRows = timeline.filter(
+        (segment) => (segment as { kind?: string }).kind === 'tool',
+      );
+      expect(toolRows.map((row) => (row as { toolCallId?: string }).toolCallId)).toEqual([
+        'tool-1',
+        'tool-2',
+        'tool-3',
+      ]);
+      for (const row of toolRows) {
+        expect(row).toMatchObject({ status: 'completed', isError: false });
+      }
+      // 未执行工具不占位：全部宣布的工具都执行完成时，pending 队列耗尽。
+      expect(toolRows).toHaveLength(3);
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('defends out-of-order results from a parallel kernel without losing rows', async () => {
+    // A parallel kernel may complete a later-announced tool first. The reveal
+    // logic must then surface the whole in-flight prefix at once instead of
+    // waiting for the earlier result, while converging to the full timeline.
+    const fixture = await createFixture([
+      { type: 'tool-call', toolId: 'tool-1', name: 'Read', argsJson: '{"path":"a"}' },
+      { type: 'tool-call', toolId: 'tool-2', name: 'Edit', argsJson: '{"path":"b"}' },
+      { type: 'tool-result', toolId: 'tool-2', output: 'ok-2' },
+      { type: 'tool-result', toolId: 'tool-1', output: 'ok-1' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    try {
+      await fixture.harness.executeExternalKernelRun(fixture.runId);
+
+      const assistant = assistantMessage(
+        fixture.messageStore.listMessages(fixture.threadId as never).messages,
+      );
+      const commentary = assistant?.blocks.find(
+        (block) => block.type === 'commentary',
+      ) as { payload?: { assistantTimeline?: unknown[] } } | undefined;
+      const timeline = commentary?.payload?.assistantTimeline ?? [];
+      const toolRows = timeline.filter(
+        (segment) => (segment as { kind?: string }).kind === 'tool',
+      );
+      expect(toolRows.map((row) => (row as { toolCallId?: string }).toolCallId)).toEqual([
+        'tool-1',
+        'tool-2',
+      ]);
+      for (const row of toolRows) {
+        expect(row).toMatchObject({ status: 'completed' });
+      }
+    } finally {
+      fixture.connection.raw.close();
+    }
+  });
+
   it('persists a Claude session only after the adapter reports it and rebuilds on context changes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-claude-session-'));
     tempDirs.push(dir);

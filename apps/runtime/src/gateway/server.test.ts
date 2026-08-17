@@ -883,4 +883,121 @@ describe('open gateway server', () => {
       ],
     });
   });
+
+  it('audits a translated request with the kernel id and both bodies', async () => {
+    const tickets = new GatewayTicketRegistry();
+    const ticket = tickets.issue('run-audit-1', openAiRoute, 'claude-code');
+    const entries: Array<import('@sync-think/protocol').GatewayRequestLogEntry> = [];
+    const upstream = sseFetch([
+      'data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}\n\n',
+      'data: {"id":"chatcmpl-audit-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const { server } = await startServer({
+      resolveTicket: (key) => tickets.resolveWithRun(key),
+      fetchImpl: upstream.impl,
+      onRequest: (entry) => entries.push(entry),
+    });
+
+    const response = await fetch(urlFor(server, '/anthropic/v1/messages'), {
+      method: 'POST',
+      headers: { 'x-api-key': ticket.id, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4',
+        max_tokens: 1024,
+        system: 'be brief',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      }),
+    });
+    await readAll(response);
+    expect(response.status).toBe(200);
+
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry.kernelId).toBe('claude-code');
+    expect(entry.runId).toBe('run-audit-1');
+    expect(entry.inboundDialect).toBe('anthropic-messages');
+    expect(entry.upstreamProtocol).toBe('openai-chat');
+    expect(entry.converted).toBe(true);
+    expect(entry.model).toBe('gpt-5.6-sol');
+    expect(entry.status).toBe('success');
+    expect(entry.truncated).toBe(false);
+    expect(typeof entry.latencyMs).toBe('number');
+    // 原始格式：inbound body 原样记录
+    expect(JSON.parse(entry.rawRequest)).toMatchObject({ model: 'claude-sonnet-4' });
+    // 转换后格式：目标模型已被票据覆盖
+    const converted = JSON.parse(entry.convertedRequest) as {
+      model: string;
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(converted).toMatchObject({ model: 'gpt-5.6-sol' });
+    expect(converted.messages[0]).toEqual({ role: 'system', content: 'be brief' });
+  });
+
+  it('audits an upstream failure with status code and truncates oversized bodies', async () => {
+    const tickets = new GatewayTicketRegistry();
+    const ticket = tickets.issue('run-audit-fail', openAiRoute, 'codex');
+    const entries: Array<import('@sync-think/protocol').GatewayRequestLogEntry> = [];
+    const upstream = sseFetch([], { status: 401, body: '{"error":{"message":"bad key"}}' });
+    const { server } = await startServer({
+      resolveTicket: (key) => tickets.resolveWithRun(key),
+      fetchImpl: upstream.impl,
+      onRequest: (entry) => entries.push(entry),
+    });
+
+    // 超过 AUDIT_BODY_CAP 的大 body 应被截断标记。
+    const bigText = 'x'.repeat(40_000);
+    const response = await fetch(urlFor(server, '/anthropic/v1/messages'), {
+      method: 'POST',
+      headers: { 'x-api-key': ticket.id, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4',
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: bigText }],
+        stream: true,
+      }),
+    });
+    await readAll(response);
+
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry.status).toBe('error');
+    expect(entry.statusCode).toBe(401);
+    expect(entry.kernelId).toBe('codex');
+    expect(entry.truncated).toBe(true);
+    expect(entry.rawRequest.length).toBeLessThan(40_000);
+    expect(entry.convertedRequest.length).toBeLessThan(40_000);
+  });
+
+  it('records a same-dialect proxy as converted=false', async () => {
+    const tickets = new GatewayTicketRegistry();
+    const ticket = tickets.issue('run-audit-proxy', openAiRoute, 'codex');
+    const entries: Array<import('@sync-think/protocol').GatewayRequestLogEntry> = [];
+    const upstream = sseFetch([
+      'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n',
+      'data: {"id":"chatcmpl-proxy-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const { server } = await startServer({
+      resolveTicket: (key) => tickets.resolveWithRun(key),
+      fetchImpl: upstream.impl,
+      onRequest: (entry) => entries.push(entry),
+    });
+
+    const response = await fetch(urlFor(server, '/openai/v1/chat/completions'), {
+      method: 'POST',
+      headers: { 'x-api-key': ticket.id, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'anything', messages: [{ role: 'user', content: 'hi' }], stream: true }),
+    });
+    await readAll(response);
+
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry.converted).toBe(false);
+    expect(entry.inboundDialect).toBe('openai-chat');
+    expect(entry.upstreamProtocol).toBe('openai-chat');
+    expect(entry.status).toBe('success');
+    expect(JSON.parse(entry.convertedRequest)).toMatchObject({ model: 'gpt-5.6-sol' });
+  });
 });

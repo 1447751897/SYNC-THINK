@@ -3,7 +3,7 @@
  * Every provider event stays on its own lightweight row; tool calls are never
  * grouped, and details expand in place without replacing the timeline.
  */
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Brain,
   Check,
@@ -12,12 +12,22 @@ import {
   LoaderCircle,
   RotateCw,
   Wrench,
+  X,
 } from 'lucide-react';
 import type { CommentaryTimelineSegment, ExecutionProcessStep } from '@sync-think/protocol';
 import type { InlineProcessItem } from './ChatView.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { MarkdownContent } from './MarkdownContent.js';
 import { buildExecutionTimeline } from './ExecutionTimeline.js';
+import {
+  activityFingerprint,
+  deriveCurrentActivity,
+  deriveStallState,
+  formatElapsedZh,
+  friendlyToolName,
+  toolInputSummary,
+  toolStatusOf,
+} from './process-activity.js';
 
 function firstLine(text: string): string {
   return (
@@ -46,6 +56,21 @@ function elapsedLabel(startedAt?: string, completedAt?: string): string | undefi
   return `${(elapsed / 1000).toFixed(elapsed < 10_000 ? 1 : 0)}s`;
 }
 
+/**
+ * 运行中工具的自增耗时。`elapsedLabel` 要求终态边界，运行中拿不到，
+ * 于是「在跑还是卡住」这个最需要时间的阶段反而完全没有时间显示。
+ * `now` 来自面板层唯一的那个秒级时钟（不是每行各自的 interval），
+ * 这样 running → completed 原位翻转时不会重挂载行（§12.17.17）。
+ */
+function runningElapsedLabel(startedAt: string | undefined, now: number): string | undefined {
+  if (!startedAt) return undefined;
+  const started = Date.parse(startedAt);
+  if (!Number.isFinite(started) || now < started) return undefined;
+  const elapsed = now - started;
+  if (elapsed < 1000) return undefined;
+  return elapsed < 60_000 ? `${Math.floor(elapsed / 1000)}s` : formatElapsedZh(elapsed);
+}
+
 function totalElapsedLabel(input: {
   startedAt?: string;
   completedAt?: string;
@@ -66,92 +91,7 @@ function totalElapsedLabel(input: {
           ? input.durationMs
           : undefined;
   if (elapsedMs === undefined) return undefined;
-  const totalSeconds = Math.floor(elapsedMs / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}小时${minutes}分${seconds}秒`;
-  if (minutes > 0) return `${minutes}分${seconds}秒`;
-  return `${seconds}秒`;
-}
-
-const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
-  read: '读取文件',
-  read_file: '读取文件',
-  write: '写入文件',
-  write_file: '写入文件',
-  edit: '编辑文件',
-  edit_file: '编辑文件',
-  apply_patch: '编辑文件',
-  bash: '运行命令',
-  execute_command: '运行命令',
-  exec_command: '运行命令',
-  run_command: '运行命令',
-  list_files: '查看目录',
-  glob: '查找文件',
-  grep: '搜索内容',
-  search_query: '搜索网页',
-  web_search: '搜索网页',
-  web_fetch: '获取网页',
-  open: '打开网页',
-  view_image: '查看图片',
-};
-
-function friendlyToolName(name: string): string {
-  const normalized = name.trim().toLowerCase();
-  const exact = TOOL_DISPLAY_NAMES[normalized];
-  if (exact) return exact;
-  const suffix = normalized.split(/[.:/]/).at(-1) ?? normalized;
-  const mapped = TOOL_DISPLAY_NAMES[suffix];
-  if (mapped) return mapped;
-  return (
-    suffix
-      .split(/[_-]+/)
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' ') || '工具'
-  );
-}
-
-function compactValue(value: unknown): string | undefined {
-  if (typeof value === 'string') return value.trim() || undefined;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return value.slice(0, 3).map(compactValue).filter(Boolean).join(', ');
-  return undefined;
-}
-
-function toolInputSummary(item: Extract<InlineProcessItem, { kind: 'tool' }>): string {
-  if (item.inputSummary?.trim()) return item.inputSummary.trim();
-  const raw = item.argumentsJson.trim();
-  if (!raw) return '';
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const record = parsed as Record<string, unknown>;
-      for (const key of [
-        'path',
-        'file_path',
-        'cmd',
-        'command',
-        'query',
-        'url',
-        'pattern',
-        'target',
-      ]) {
-        const value = compactValue(record[key]);
-        if (value) return value.length > 120 ? `${value.slice(0, 117)}…` : value;
-      }
-      const first = Object.entries(record).find(([, value]) => compactValue(value));
-      if (first) {
-        const value = compactValue(first[1]) ?? '';
-        const summary = `${first[0]}: ${value}`;
-        return summary.length > 120 ? `${summary.slice(0, 117)}…` : summary;
-      }
-    }
-  } catch {
-    // Raw non-JSON arguments are already the most useful compact summary.
-  }
-  return raw.length > 120 ? `${raw.slice(0, 117)}…` : raw;
+  return formatElapsedZh(elapsedMs);
 }
 
 function ThinkRow({
@@ -201,20 +141,36 @@ function ThinkRow({
 }
 
 function ToolStatusIcon({ status }: { status: 'running' | 'completed' | 'failed' }) {
-  if (status === 'failed') return <CircleAlert size={13} aria-hidden="true" />;
+  // 打勾 / 打叉成对：状态只靠图标表达，不再重复「完成 / 失败」文字。
+  if (status === 'failed') return <X size={13} aria-hidden="true" />;
   if (status === 'running') {
     return <LoaderCircle size={13} className="shell-inline-process__spin" aria-hidden="true" />;
   }
   return <Check size={13} aria-hidden="true" />;
 }
 
-function ToolRow({ item }: { item: Extract<InlineProcessItem, { kind: 'tool' }> }) {
+const TOOL_STATUS_TEXT: Readonly<Record<'running' | 'completed' | 'failed', string>> = {
+  running: '运行中',
+  completed: '完成',
+  failed: '失败',
+};
+
+function ToolRow({
+  item,
+  now,
+}: {
+  item: Extract<InlineProcessItem, { kind: 'tool' }>;
+  /** 面板层的秒级时钟；仅运行中的行会用到。 */
+  now: number;
+}) {
   const [open, setOpen] = useState(false);
-  const status =
-    item.status ?? (item.failed ? 'failed' : item.result !== undefined ? 'completed' : 'running');
+  const status = toolStatusOf(item);
   const summary = toolInputSummary(item);
   const elapsed = elapsedLabel(item.startedAt, item.completedAt);
+  const liveElapsed = status === 'running' ? runningElapsedLabel(item.startedAt, now) : undefined;
   const displayName = item.displayName?.trim() || friendlyToolName(item.name);
+  const statusText = TOOL_STATUS_TEXT[status];
+  const progressLine = status === 'running' ? item.progressLine?.trim() : undefined;
   return (
     <div
       className={`shell-inline-process__tool is-${status}`}
@@ -232,9 +188,22 @@ function ToolRow({ item }: { item: Extract<InlineProcessItem, { kind: 'tool' }> 
         </span>
         <span className="shell-inline-process__tool-name">{displayName}</span>
         {summary ? <span className="shell-inline-process__tool-summary">{summary}</span> : null}
-        <span className="shell-inline-process__tool-status" data-status={status}>
+        {liveElapsed ? (
+          <span
+            className="shell-inline-process__tool-elapsed"
+            data-testid="inline-process-tool-elapsed"
+          >
+            {liveElapsed}
+          </span>
+        ) : null}
+        <span
+          className="shell-inline-process__tool-status"
+          data-testid="inline-process-tool-status"
+          data-status={status}
+          title={statusText}
+          aria-label={statusText}
+        >
           <ToolStatusIcon status={status} />
-          <span>{status === 'running' ? '运行中' : status === 'failed' ? '失败' : '完成'}</span>
         </span>
         <ChevronDown
           size={13}
@@ -242,16 +211,24 @@ function ToolRow({ item }: { item: Extract<InlineProcessItem, { kind: 'tool' }> 
           aria-hidden="true"
         />
       </button>
+      {progressLine ? (
+        <div
+          className="shell-inline-process__tool-progress"
+          data-testid="inline-process-tool-progress"
+        >
+          {progressLine}
+        </div>
+      ) : null}
       {open ? (
         <div className="shell-inline-process__tool-body">
           <div className="shell-inline-process__detail-row">
             <span>原始工具</span>
             <code>{item.name}</code>
           </div>
-          {elapsed ? (
+          {elapsed ?? liveElapsed ? (
             <div className="shell-inline-process__detail-row">
               <span>耗时</span>
-              <code>{elapsed}</code>
+              <code>{elapsed ?? liveElapsed}</code>
             </div>
           ) : null}
           {item.argumentsJson ? (
@@ -302,9 +279,19 @@ function StatusRow({ item }: { item: Extract<InlineProcessItem, { kind: 'status'
   );
 }
 
-function ProcessItemView({ item, streaming }: { item: InlineProcessItem; streaming?: boolean }) {
+function ProcessItemView({
+  item,
+  streaming,
+  now,
+}: {
+  item: InlineProcessItem;
+  streaming?: boolean;
+  now: number;
+}) {
   if (item.kind === 'reasoning') return <ThinkRow item={item} streaming={streaming} />;
-  if (item.kind === 'tool') return <ToolRow item={item} />;
+  if (item.kind === 'tool') {
+    return <ToolRow item={item} now={now} />;
+  }
   if (item.kind === 'status') return <StatusRow item={item} />;
   return (
     <div
@@ -372,12 +359,15 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     resetKey: runId,
   });
   const [clockNow, setClockNow] = useState(() => Date.now());
+  // 面板层唯一的秒级时钟，驱动总耗时、每行运行耗时和停滞分级。运行中就必须
+  // 走（不能再要求 startedAt）——工具行的耗时只依赖各自的 startedAt。
+  const ticking = Boolean(streaming) && !completedAt;
   useEffect(() => {
-    if (!streaming || completedAt || !startedAt) return;
+    if (!ticking) return;
     setClockNow(Date.now());
     const timer = window.setInterval(() => setClockNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [completedAt, startedAt, streaming]);
+  }, [ticking]);
   const totalElapsed = totalElapsedLabel({
     startedAt,
     completedAt,
@@ -385,6 +375,29 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     streaming,
     now: clockNow,
   });
+
+  const activity = useMemo(
+    () => deriveCurrentActivity(orderedItems, { streaming }),
+    [orderedItems, streaming],
+  );
+
+  // 最后一次可见进展。指纹变化即刷新，用来把「工具在跑」和「什么都没来」
+  // 区分开——前者慢是正常的，后者才可疑。
+  const fingerprint = useMemo(() => activityFingerprint(orderedItems), [orderedItems]);
+  const lastProgressRef = useRef({ fingerprint, at: Date.now() });
+  if (lastProgressRef.current.fingerprint !== fingerprint) {
+    lastProgressRef.current = { fingerprint, at: Date.now() };
+  }
+  useEffect(() => {
+    // 新 Run 重新起算，避免上一轮的停滞判定顺延过来。
+    lastProgressRef.current = { fingerprint: '', at: Date.now() };
+  }, [runId]);
+  const stall = deriveStallState({
+    ...(activity ? { activity } : {}),
+    lastProgressAt: lastProgressRef.current.at,
+    now: clockNow,
+  });
+  const activityIdle = activity ? formatElapsedZh(stall.idleMs) : undefined;
 
   if (orderedItems.length === 0 && !supplementalContent) return null;
   return (
@@ -406,6 +419,22 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
           <Brain size={13} aria-hidden="true" />
         )}
         <span className="shell-process-panel__title">执行过程</span>
+        {/* 折叠态也必须能回答「现在在做什么」——这是本行存在的唯一理由。 */}
+        {activity ? (
+          <span
+            className="shell-process-panel__activity"
+            data-testid="process-panel-activity"
+            data-kind={activity.kind}
+            data-stall={stall.level}
+          >
+            <span className="shell-process-panel__activity-label">{activity.label}</span>
+            {stall.level !== 'active' ? (
+              <span className="shell-process-panel__activity-idle">
+                {stall.hint ? `${stall.hint} · ${activityIdle}` : activityIdle}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
         {orderedItems.length > 0 ? (
           <span className="shell-process-panel__meta">{orderedItems.length} 项</span>
         ) : null}
@@ -422,13 +451,33 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
         <div className="shell-process-panel__body" data-testid="process-panel-body">
           {orderedItems.length > 0 ? (
             <div className="shell-inline-process" data-testid="inline-process-flow">
-              {orderedItems.map((item, index) => (
-                <ProcessItemView
-                  key={item.id ?? `${item.kind}-${item.sequence ?? index}-${index}`}
-                  item={item}
-                  streaming={streaming}
-                />
-              ))}
+              {orderedItems.map((item, index) => {
+                // Stable key first (toolCallId / id / sequence) so status
+                // updates reuse the row instead of remounting it.
+                const itemKey =
+                  item.kind === 'tool' && item.toolCallId
+                    ? `tool-${item.toolCallId}`
+                    : item.id
+                      ? item.id
+                      : item.sequence !== undefined
+                        ? `${item.kind}-${item.sequence}`
+                        : `${item.kind}-${index}`;
+                return (
+                  <ProcessItemView key={itemKey} item={item} streaming={streaming} now={clockNow} />
+                );
+              })}
+            </div>
+          ) : null}
+          {/* §活动指示器：执行过程最下方常驻 sync-thinking 脉冲——思考/工具执行
+              期间持续闪烁，明确「还在执行中」；开始输出最终回答后隐藏。 */}
+          {streaming && !answerStarted ? (
+            <div
+              className="shell-process-panel__thinking"
+              data-testid="process-thinking"
+              role="status"
+            >
+              <span className="shell-process-panel__thinking-dot" aria-hidden="true" />
+              sync-thinking
             </div>
           ) : null}
           {supplementalContent ? (

@@ -1310,3 +1310,23 @@ Computer Use built-in plugin
 20. 过程面板总耗时优先来自 `RunProcessView.startedAt/completedAt/durationMs`；历史首屏尚未取回 Run process 时，Renderer 从 durable timeline 的最早 `startedAt/occurredAt` 与最晚 `completedAt/occurredAt` 推导同一墙钟区间。禁止把工具耗时求和，避免并行工具重复计时；运行态仅设置一个每秒更新的轻量时钟，终态停止计时并显示持久值。
 
 回滚：Renderer 可切回 legacy blocks/process view，Runtime 仍可保留 metadata timeline；若需要停止新格式写入，只移除新 Run timeline 投影并继续读取 compatibility blocks，不删除已持久化消息。
+
+### TD-044：codex `-c` 覆盖必须用 TOML 字面量字符串，终态失败必须可见（2026-08-17）
+
+背景：Windows 上 codex 内核**全线不可用**——发出消息后 run 在 0.66 秒内 `run.failed`，界面无任何提示，表现为"发了没回复"。两个独立缺陷叠加。
+
+**缺陷一（内核无法启动）**：`codex-adapter` 用 `JSON.stringify` 序列化 per-run provider 覆盖（`model_provider="st_xxx"` 等 6 个 `-c` 参数），产出**双引号**。而 npm 全局安装的 codex 是 `.cmd` shim，`startKernelProcess` 会把整条 argv 过 `buildSafeCmdShimCommand`，其白名单（`process-runner.ts` `SAFE_CMD_SHIM_METACHARS`）明确拒绝 `"`。spawn 在任何网络请求之前失败，因此与所选模型、API 格式、网关开关**全部无关**。同文件的 `buildCodexMcpConfigArgs` 早已正确使用单引号并有配套断言，但两段参数在不同函数中分别拼装，转义方式分叉。
+
+**为什么 CI 没拦住**：`platform-tools.test.ts` 只断言 MCP 构造器的输出不含双引号，而出问题的 6 行在 `codex-adapter.ts` 内联拼装；`codex-adapter.test.ts` 则用 `/-c model_provider="(st_[a-f0-9]+)"/` **正向断言了这个错误行为**。没有任何测试把**组装完成的 argv** 喂给真实白名单。非 Windows 平台或 codex 为原生 exe 时不过 shim，双引号无害——故障是平台条件性的。
+
+**缺陷二（失败不可见）**：`chat-stream.ts` 的 `hasConversationStreamDraftContent` 在草稿无可见内容时返回 false，调用点据此把整个草稿丢成 `null`，`terminalState` 与 `terminalError` 一并消失。启动期失败零输出，必然命中该分支；`chat-transient-stream.ts` 另有两处同样过滤，且 `mergeTransientConversationDraft` 的返回对象未携带这两个字段。
+
+决策：
+
+1. **单一转义来源**：`platform-mcp-config.ts` 导出 `tomlLiteral` / `tomlLiteralArray`，codex 命令行上**每个** `-c` 值都必须经由它。禁止在 adapter 内联自造引号逻辑，禁止用 `JSON.stringify` 序列化 TOML。
+2. **不放宽白名单**：白名单拦截是正确的——它拦住的确实是一条拼错的命令行。修正产出方，而非削弱校验。
+3. **不可表示即失败**：TOML 字面量字符串无转义机制，值含 `'` 时 `tomlLiteral` 抛错，而不是产出非法 TOML 让 codex 解析失败。
+4. **argv 契约测试**：`codex-adapter.spawn-args.test.ts` 把 `buildCodexSpawnCommand` 的完整输出交给真实 `buildSafeCmdShimCommand` 断言不被拒绝，并覆盖无 broker、复用本地登录、resume 三条分支。为此将 argv+env 构造从 `start()` 抽为导出纯函数 `buildCodexSpawnCommand`（行为不变，仅提升可测性）。**新增内核启动参数时必须扩展该测试**。
+5. **终态失败必须保留**：新增 `shouldRetainTerminalDraft`——`failed`/`cancelled` 或带 `terminalError` 时，即使零输出也保留草稿；空的**成功** run 仍然丢弃（无话可说）。瞬态流两处过滤与 merge 的字段透传一并对齐。内核启动失败必须在对话中呈现可读原因，不得静默无响应。
+
+验证：runtime 487、desktop renderer 676 全通过；`codex-adapter.spawn-args.test.ts` 8 例、终态保留 3 例为新增回归围栏。真实 codex CLI 端到端仍需人工验证（单测无法证明 codex 的 TOML 解析器接受经 shim 包裹后的单引号值）。

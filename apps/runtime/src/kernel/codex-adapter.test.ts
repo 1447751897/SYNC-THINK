@@ -400,13 +400,16 @@ describe('CodexKernelAdapter', () => {
     const joined = args.join(' ');
     // The global ~/.codex/config.toml `model_provider = "custom"` (KMKAPI) must
     // be overridden with a per-run provider pointing at the selected upstream.
-    const providerMatch = /-c model_provider="(st_[a-f0-9]+)"/.exec(joined);
+    // Values are single-quoted TOML literals: on Windows codex is a `.cmd` shim
+    // and the cmd.exe shim whitelist rejects `"`, so double-quoted overrides
+    // failed the spawn before codex ever ran. See codex-adapter.spawn-args.test.ts.
+    const providerMatch = /-c model_provider='(st_[a-f0-9]+)'/.exec(joined);
     expect(providerMatch).not.toBeNull();
     const providerId = providerMatch![1];
-    expect(joined).toContain(`model_providers.${providerId}.base_url="https://api.deepseek.com/v1"`);
-    expect(joined).toContain(`model_providers.${providerId}.wire_api="responses"`);
+    expect(joined).toContain(`model_providers.${providerId}.base_url='https://api.deepseek.com/v1'`);
+    expect(joined).toContain(`model_providers.${providerId}.wire_api='responses'`);
     expect(joined).toContain(`model_providers.${providerId}.requires_openai_auth=false`);
-    const envKeyMatch = new RegExp(`model_providers\\.${providerId}\\.env_key="(ST_KERNEL_KEY_[A-Za-z0-9]+)"`).exec(joined);
+    const envKeyMatch = new RegExp(`model_providers\\.${providerId}\\.env_key='(ST_KERNEL_KEY_[A-Za-z0-9]+)'`).exec(joined);
     expect(envKeyMatch).not.toBeNull();
     // The secret rides only in the per-run env var, never on the command line.
     expect(joined).not.toContain('sk-test-secret-1234567890');

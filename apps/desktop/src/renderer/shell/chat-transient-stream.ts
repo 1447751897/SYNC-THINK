@@ -7,7 +7,7 @@ import type {
 import type { ConversationStreamDraft, ConversationStreamOperation } from './chat-stream.js';
 import {
   applyConversationStreamOperations,
-  hasConversationStreamDraftContent,
+  shouldRetainTerminalDraft,
 } from './chat-stream.js';
 
 export interface TransientDraftState {
@@ -269,7 +269,9 @@ export function mergeTransientConversationDraft(
 ): ConversationStreamDraft | null {
   if (!current) return incoming;
   if (!incoming) {
-    return hasConversationStreamDraftContent(current) ? { ...current, terminal: true } : null;
+    return shouldRetainTerminalDraft(current, current.terminalState, current.terminalError)
+      ? { ...current, terminal: true }
+      : null;
   }
   if (current.runId && incoming.runId && current.runId !== incoming.runId) return incoming;
 
@@ -284,6 +286,10 @@ export function mergeTransientConversationDraft(
     incoming.assistantTimeline,
   );
   const terminal = Boolean(current.terminal || incoming.terminal);
+  // Terminal cause must survive the merge: a spawn-time kernel failure carries
+  // its explanation only here, and dropping it renders as "no reply, no reason".
+  const terminalState = incoming.terminalState ?? current.terminalState;
+  const terminalError = incoming.terminalError ?? current.terminalError;
   return {
     runId: incoming.runId ?? current.runId,
     text: selectMonotonicText(current.text, incoming.text),
@@ -293,6 +299,8 @@ export function mergeTransientConversationDraft(
     ...(assistantTimeline?.length ? { assistantTimeline } : {}),
     timestamp: current.timestamp > incoming.timestamp ? current.timestamp : incoming.timestamp,
     ...(terminal ? { terminal: true } : {}),
+    ...(terminalState ? { terminalState } : {}),
+    ...(terminalError ? { terminalError } : {}),
   };
 }
 
@@ -305,7 +313,7 @@ export function reconcileTransientConversationDraft(
   durableAssistantRunIds: Iterable<string>,
 ): ConversationStreamDraft | null {
   if (!current?.terminal) return current;
-  if (!hasConversationStreamDraftContent(current)) return null;
+  if (!shouldRetainTerminalDraft(current, current.terminalState, current.terminalError)) return null;
   if (!current.runId) return current;
   for (const runId of durableAssistantRunIds) {
     if (runId === current.runId) return null;

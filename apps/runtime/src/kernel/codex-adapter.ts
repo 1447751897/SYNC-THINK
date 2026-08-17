@@ -36,7 +36,7 @@ import {
 import { probeKernel } from './detect.js';
 import { formatKernelExitDiagnostic, sanitizeKernelDiagnostic } from './kernel-diagnostics.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
-import { buildCodexMcpConfigArgs } from './platform-mcp-config.js';
+import { buildCodexMcpConfigArgs, tomlLiteral } from './platform-mcp-config.js';
 import {
   createCodexRolloutCompactionWatcher,
   type RolloutCompactionWatcher,
@@ -56,6 +56,107 @@ export interface CodexAdapterDeps {
     sessionId: string,
     onCompacted: () => void,
   ) => RolloutCompactionWatcher;
+}
+
+/**
+ * Build the exact argv + injected env for one `codex exec` invocation.
+ *
+ * Extracted from `start()` so the full command line is testable: on Windows the
+ * `codex` executable is a `.cmd` shim, so this argv must survive
+ * `buildSafeCmdShimCommand`'s metacharacter whitelist. A single `"` anywhere in
+ * it fails the spawn before codex runs, which is exactly how the
+ * `JSON.stringify`-quoted provider overrides shipped broken — no test fed the
+ * assembled argv through that whitelist. `codex-adapter.spawn-args.test.ts`
+ * now does.
+ */
+export function buildCodexSpawnCommand(
+  request: KernelRequest,
+  deps: { globalArgs?: readonly string[]; execArgs?: readonly string[] } = {},
+): { args: string[]; env: Record<string, string> } {
+  const approval = mapCodexApprovalPolicy(request.permissionMode);
+  const sandbox = mapCodexSandbox(request.permissionMode);
+  const args = [
+    '--ask-for-approval',
+    approval,
+    ...(deps.globalArgs ?? []),
+    'exec',
+    ...(deps.execArgs ?? []),
+    '--json',
+    '-s',
+    sandbox,
+    '-C',
+    request.workspaceDir,
+  ];
+  if (request.providerModelId) args.push('--model', request.providerModelId);
+  // Override the model context window so codex honors the host-configured
+  // budget (verified 0.145.0 accepts `-c model_context_window=<n>`).
+  const effectiveWindow = request.effectiveContextWindow ?? request.contextWindow ?? 128_000;
+  args.push('-c', `model_context_window=${effectiveWindow}`);
+  // Surface host reasoning effort so codex requests provider thinking and
+  // emits reasoning items (mapped to KernelEvent reasoning → the UI thinking
+  // region). Off → explicit no-thinking; otherwise pass the effort level.
+  if (request.reasoningEffort) {
+    const codexEffort = request.reasoningEffort === 'off' ? 'minimal' : request.reasoningEffort;
+    args.push('-c', `model_reasoning_effort=${codexEffort}`);
+  }
+  // Reasoning effort controls token allocation, not whether `exec --json`
+  // publishes readable reasoning items. Request a summary explicitly so the
+  // adapter receives displayable text instead of usage-only reasoning tokens.
+  args.push('-c', 'model_reasoning_summary=detailed');
+  // Enable codex's own auto-compaction so it frees context before hitting the
+  // window, instead of overrunning the host budget. We hand codex the same
+  // window limit and let its native mechanism pick the compaction point (its
+  // internal clamp keeps it below the window); the host only observes the
+  // `compacted` event and shows a "compacting" notice — it never re-compacts
+  // an autonomous kernel (design §2.3 ②). Verified 0.145.0 accepts the key.
+  args.push('-c', `model_auto_compact_token_limit=${effectiveWindow}`);
+  // Codex reads ~/.codex/config.toml, where users commonly pin a global
+  // `model_provider` (e.g. a CC-Switch relay such as `custom` → KMKAPI). That
+  // would hijack every run to the user's relay instead of the provider this
+  // run actually selected. The `-c` dotted overrides below pin a per-run
+  // provider to the resolved upstream (the gateway inbound URL when the run
+  // goes through the gateway, otherwise the provider's own base URL) so the
+  // selected provider always wins. Codex's `wire_api` only supports
+  // "responses" (Chat was removed upstream in 2026-02), so chat-only upstreams
+  // must go through the gateway — that decision lives in
+  // resolveKernelCredential / kernelNeedsGateway.
+  const env: Record<string, string> = {};
+  if (request.credential.reuseLocalLogin !== true && request.credential.apiKey) {
+    if (request.credential.baseUrl) {
+      const providerId = `st_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+      const envKey = `ST_KERNEL_KEY_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+      // TOML literal strings (single-quoted) — NOT JSON.stringify. On Windows
+      // codex is a `.cmd` shim, so this argv passes through the cmd.exe shim
+      // whitelist, which rejects `"` and would fail the spawn outright.
+      args.push('-c', `model_provider=${tomlLiteral(providerId)}`);
+      args.push('-c', `model_providers.${providerId}.name=${tomlLiteral('SYNC-THINK')}`);
+      args.push(
+        '-c',
+        `model_providers.${providerId}.base_url=${tomlLiteral(request.credential.baseUrl)}`,
+      );
+      args.push('-c', `model_providers.${providerId}.wire_api=${tomlLiteral('responses')}`);
+      args.push('-c', `model_providers.${providerId}.requires_openai_auth=false`);
+      args.push('-c', `model_providers.${providerId}.env_key=${tomlLiteral(envKey)}`);
+      env[envKey] = request.credential.apiKey;
+      env.OPENAI_API_KEY = request.credential.apiKey;
+    } else {
+      env.OPENAI_API_KEY = request.credential.apiKey;
+    }
+  }
+  args.push('--skip-git-repo-check');
+  // Slice 5: codex exec has no --mcp-config; the -c mcp_servers.* overrides
+  // register the platform MCP server for this invocation only (verified on
+  // 0.145.0). Broker address + token ride in the server env.
+  if (request.platformBroker) args.push(...buildCodexMcpConfigArgs(request.platformBroker));
+  // The prompt travels over stdin, never argv — user text must not cross a
+  // cmd.exe shim command line (shell metacharacters + process-list exposure).
+  // codex exec reads the prompt from stdin and starts without waiting for EOF.
+  if (request.session?.mode === 'resume' && request.session.id) {
+    args.push('resume', request.session.id, '-');
+  } else {
+    args.push('-');
+  }
+  return { args, env };
 }
 
 export class CodexKernelAdapter implements KernelAdapter {
@@ -106,85 +207,10 @@ export class CodexKernelAdapter implements KernelAdapter {
 
   async *start(request: KernelRequest): AsyncIterable<KernelEvent> {
     this.activeRequestId = `codex-turn-${randomUUID()}`;
-    const approval = mapCodexApprovalPolicy(request.permissionMode);
-    const sandbox = mapCodexSandbox(request.permissionMode);
-    const args = [
-      '--ask-for-approval',
-      approval,
-      ...(this.deps.globalArgs ?? []),
-      'exec',
-      ...(this.deps.execArgs ?? []),
-      '--json',
-      '-s',
-      sandbox,
-      '-C',
-      request.workspaceDir,
-    ];
-    if (request.providerModelId) args.push('--model', request.providerModelId);
-    // Override the model context window so codex honors the host-configured
-    // budget (verified 0.145.0 accepts `-c model_context_window=<n>`).
-    const effectiveWindow =
-      request.effectiveContextWindow ?? request.contextWindow ?? 128_000;
-    args.push('-c', `model_context_window=${effectiveWindow}`);
-    // Surface host reasoning effort so codex requests provider thinking and
-    // emits reasoning items (mapped to KernelEvent reasoning → the UI thinking
-    // region). Off → explicit no-thinking; otherwise pass the effort level.
-    if (request.reasoningEffort) {
-      const codexEffort = request.reasoningEffort === 'off' ? 'minimal' : request.reasoningEffort;
-      args.push('-c', `model_reasoning_effort=${codexEffort}`);
-    }
-    // Reasoning effort controls token allocation, not whether `exec --json`
-    // publishes readable reasoning items. Request a summary explicitly so the
-    // adapter receives displayable text instead of usage-only reasoning tokens.
-    args.push('-c', 'model_reasoning_summary=detailed');
-    // Enable codex's own auto-compaction so it frees context before hitting the
-    // window, instead of overrunning the host budget. We hand codex the same
-    // window limit and let its native mechanism pick the compaction point (its
-    // internal clamp keeps it below the window); the host only observes the
-    // `compacted` event and shows a "compacting" notice — it never re-compacts
-    // an autonomous kernel (design §2.3 ②). Verified 0.145.0 accepts the key.
-    args.push('-c', `model_auto_compact_token_limit=${effectiveWindow}`);
-    // Codex reads ~/.codex/config.toml, where users commonly pin a global
-    // `model_provider` (e.g. a CC-Switch relay such as `custom` → KMKAPI). That
-    // would hijack every run to the user's relay instead of the provider this
-    // run actually selected. The `-c` dotted overrides below pin a per-run
-    // provider to the resolved upstream (the gateway inbound URL when the run
-    // goes through the gateway, otherwise the provider's own base URL) so the
-    // selected provider always wins. Codex's `wire_api` only supports
-    // "responses" (Chat was removed upstream in 2026-02), so chat-only upstreams
-    // must go through the gateway — that decision lives in
-    // resolveKernelCredential / kernelNeedsGateway.
-    const env: Record<string, string> = {};
-    if (request.credential.reuseLocalLogin !== true && request.credential.apiKey) {
-      if (request.credential.baseUrl) {
-        const providerId = `st_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
-        const envKey = `ST_KERNEL_KEY_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
-        const toml = (value: string): string => JSON.stringify(value);
-        args.push('-c', `model_provider=${toml(providerId)}`);
-        args.push('-c', `model_providers.${providerId}.name=${toml('SYNC-THINK')}`);
-        args.push('-c', `model_providers.${providerId}.base_url=${toml(request.credential.baseUrl)}`);
-        args.push('-c', `model_providers.${providerId}.wire_api=${toml('responses')}`);
-        args.push('-c', `model_providers.${providerId}.requires_openai_auth=false`);
-        args.push('-c', `model_providers.${providerId}.env_key=${toml(envKey)}`);
-        env[envKey] = request.credential.apiKey;
-        env.OPENAI_API_KEY = request.credential.apiKey;
-      } else {
-        env.OPENAI_API_KEY = request.credential.apiKey;
-      }
-    }
-    args.push('--skip-git-repo-check');
-    // Slice 5: codex exec has no --mcp-config; the -c mcp_servers.* overrides
-    // register the platform MCP server for this invocation only (verified on
-    // 0.145.0). Broker address + token ride in the server env.
-    if (request.platformBroker) args.push(...buildCodexMcpConfigArgs(request.platformBroker));
-    // The prompt travels over stdin, never argv — user text must not cross a
-    // cmd.exe shim command line (shell metacharacters + process-list exposure).
-    // codex exec reads the prompt from stdin and starts without waiting for EOF.
-    if (request.session?.mode === 'resume' && request.session.id) {
-      args.push('resume', request.session.id, '-');
-    } else {
-      args.push('-');
-    }
+    const { args, env } = buildCodexSpawnCommand(request, {
+      ...(this.deps.globalArgs ? { globalArgs: this.deps.globalArgs } : {}),
+      ...(this.deps.execArgs ? { execArgs: this.deps.execArgs } : {}),
+    });
 
     const handle = this.deps.spawn
       ? this.deps.spawn(args, env, request.workspaceDir)

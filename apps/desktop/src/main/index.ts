@@ -65,6 +65,7 @@ import {
   normalizeSelectedSkillVersionIds,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
+  type GatewayLogsResponse,
   type KernelDetectResponse,
   type OpenGatewayStatusResponse,
 } from '@sync-think/protocol';
@@ -1630,6 +1631,17 @@ function setupRuntimeBridge(): void {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
     return getRuntimeClient().request<OpenGatewayStatusResponse>('gateway.status', {});
+  });
+  ipcMain.handle('runtime:gateway-logs', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    const query = (value ?? {}) as { offset?: number; limit?: number };
+    return getRuntimeClient().request<GatewayLogsResponse>('gateway.logs', query);
+  });
+  ipcMain.handle('runtime:gateway-logs-clear', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('gateway.logs.clear', {});
   });
   ipcMain.handle('desktop:kernel-install', (event, value: unknown) => {
     assertRuntimeIpcSource(event);

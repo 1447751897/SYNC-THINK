@@ -209,7 +209,9 @@ export type CommandType =
   | 'scheduledTask.delete'
   | 'scheduledTask.trigger'
   | 'kernel.detect'
-  | 'gateway.status';
+  | 'gateway.status'
+  | 'gateway.logs'
+  | 'gateway.logs.clear';
 
 export interface CommandRequest<T = unknown> {
   /** Routed by type; runtime dispatches by union. */

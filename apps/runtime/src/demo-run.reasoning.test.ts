@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { AssistantTurnSegment } from '@sync-think/protocol';
 import type { RunId } from '@sync-think/shared';
 import {
   appendAssistantTextDelta,
@@ -9,6 +10,7 @@ import {
   projectAdapterEvent,
   serializeDemoRun,
   startAssistantTool,
+  type DemoRunState,
 } from './demo-run.js';
 
 function run() {
@@ -182,5 +184,49 @@ describe('DemoRun commentary timeline', () => {
         totalTokens: 150,
       },
     });
+  });
+
+  it('inserts a flushed text segment at its original buffered position after later segments', () => {
+    // 场景（§12.17.18）：kernel 文本缓冲时 compaction status 段已先加入 timeline，
+    // flush（final_answer）必须插回缓冲开始位置，而不是追加到 compaction 之后。
+    const buffered = run();
+    const withStatus: DemoRunState = {
+      ...buffered,
+      assistantTimeline: [
+        {
+          id: 'thinking-1',
+          sequence: 0,
+          kind: 'thinking',
+          text: 'internal plan',
+          status: 'completed',
+        },
+        {
+          id: 'status-compaction',
+          sequence: 1,
+          kind: 'status',
+          statusType: 'compaction',
+          label: '上下文已压缩',
+          status: 'completed',
+          startedAt: '2026-08-16T10:00:02.000Z',
+        },
+      ] as AssistantTurnSegment[],
+    };
+    // 缓冲文本首次到达时 timeline 的下一个 sequence = 1（compaction 之前）。
+    const flushed = appendAssistantTextDelta(
+      withStatus,
+      'final_answer',
+      'visible answer',
+      '2026-08-16T10:00:03.000Z',
+      1,
+    );
+
+    expect(flushed.assistantTimeline).toEqual([
+      expect.objectContaining({ kind: 'thinking', sequence: 0 }),
+      expect.objectContaining({ kind: 'text', phase: 'final_answer', text: 'visible answer' }),
+      expect.objectContaining({ kind: 'status', statusType: 'compaction' }),
+    ]);
+    // sequence 重排后保持单调递增。
+    const sequences = (flushed.assistantTimeline ?? []).map((segment) => segment.sequence);
+    expect(sequences).toEqual([0, 1, 2]);
   });
 });

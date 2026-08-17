@@ -74,7 +74,10 @@ export interface GatewayResponseContinuationPersistence {
 export class GatewayTicketRegistry {
   private static readonly MAX_CONTINUATION_SCOPES = 128;
   private static readonly MAX_FUNCTION_ITEMS_PER_SCOPE = 256;
-  private readonly tickets = new Map<string, { runId: string; route: GatewayRoute }>();
+  private readonly tickets = new Map<
+    string,
+    { runId: string; route: GatewayRoute; kernelId?: string }
+  >();
   /** run id → ticket id, so a run's ticket can be revoked without bookkeeping. */
   private readonly byRun = new Map<string, string>();
   /** run id → request id → progressively merged provider usage. */
@@ -90,10 +93,10 @@ export class GatewayTicketRegistry {
    * Issue a ticket for a run. Re-issuing for the same run revokes the old one,
    * so a retried run never leaves a stale credential reachable.
    */
-  issue(runId: string, route: GatewayRoute): GatewayTicket {
+  issue(runId: string, route: GatewayRoute, kernelId?: string): GatewayTicket {
     this.revokeRun(runId);
     const id = `stgw_${randomBytes(24).toString('base64url')}`;
-    this.tickets.set(id, { runId, route });
+    this.tickets.set(id, { runId, route, kernelId });
     this.byRun.set(runId, id);
     return { id, ...route };
   }
@@ -107,7 +110,7 @@ export class GatewayTicketRegistry {
   /** Resolve both the run owner and route for provider usage attribution. */
   resolveWithRun(
     ticketId: string | undefined,
-  ): { runId: string; route: GatewayRoute } | undefined {
+  ): { runId: string; route: GatewayRoute; kernelId?: string } | undefined {
     if (!ticketId) return undefined;
     return this.tickets.get(ticketId);
   }

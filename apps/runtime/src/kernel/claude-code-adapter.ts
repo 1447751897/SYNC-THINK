@@ -99,7 +99,7 @@ const CLAUDE_HOST_DENIED_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 const CLAUDE_HOST_DENIED_TOOLS_MESSAGE =
-  '宿主不支持该工具。问询请使用宿主提供的 ask_user_question 工具（规划模式用它提交方案等待审批），或在执行模式直接完成任务；不要进入 Claude 原生规划流程。';
+  '宿主不支持该工具。规划模式请用宿主提供的 plan_submit 提交方案，中途需要决策时用 ask_user_question；执行模式直接完成任务；不要进入 Claude 原生规划流程。';
 
 export interface ClaudeCodeAdapterDeps {
   /** Test seam: replace the real spawn (fixture claude processes). */

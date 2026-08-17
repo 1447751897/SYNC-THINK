@@ -41,6 +41,7 @@ import {
 import {
   splitProviderUsageTokens,
   type Conversation,
+  type ConversationPlanSummary,
   type Event,
   type GlobalAgent,
   type KernelDetectionResult,
@@ -147,9 +148,11 @@ import { MarkdownContent } from './MarkdownContent.js';
 import {
   AskQuestionCard,
   formatAskToolResult,
+  parsePlanReviewDetail,
   planReviewOf,
   type PendingAsk,
 } from './AskQuestionCard.js';
+import { PlanApprovalCard } from './PlanApprovalCard.js';
 import { TodoPanel } from './TodoPanel.js';
 import { projectTodoFromEvents } from './todo-projection.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
@@ -238,6 +241,14 @@ export type InlineProcessItem =
       startedAt?: string;
       /** Terminal tool boundary, when reported. */
       completedAt?: string;
+      /**
+       * Live progress of a still-running tool, from ephemeral `tool_progress`
+       * transient frames. Never persisted and never replayed — a reconnecting
+       * client falls back to the elapsed clock until the next frame arrives.
+       */
+      progressLine?: string;
+      progressBytes?: number;
+      progressAt?: string;
     }
   | {
       kind: 'status';
@@ -534,10 +545,17 @@ export function assistantTimelineProcessTiming(
   };
 }
 
+export interface ProjectedTransientAnswer {
+  /** 明确的 final_answer 段（总结面板只显示这个，§12.17.7/18）。 */
+  answerText: string | undefined;
+  /** 尚未被 timeline 分类的流式文本尾部（显示在过程面板当前顺序位置，§12.17.18）。 */
+  pendingText: string;
+}
+
 export function projectTransientAnswerText(
   draftText: string,
   timeline: readonly AssistantTurnSegment[] | undefined,
-): string | undefined {
+): ProjectedTransientAnswer {
   const ordered = [...(timeline ?? [])].sort((left, right) => left.sequence - right.sequence);
   const classifiedText = ordered
     .filter(
@@ -558,8 +576,7 @@ export function projectTransientAnswerText(
       ? draftText.slice(classifiedText.length)
       : ''
     : draftText;
-  const visibleText = classifiedAnswer + pendingText;
-  return visibleText || undefined;
+  return { answerText: classifiedAnswer || undefined, pendingText };
 }
 
 export function messageToChat(msg: Message): ChatMessage {
@@ -568,10 +585,26 @@ export function messageToChat(msg: Message): ChatMessage {
   const textBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'text');
   const legacyText = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
   const text = timelineFields.answerText ?? legacyText;
-  // Final formal answer: the LAST non-empty text block. Everything before it
-  // is execution process (reasoning / commentary / intermediate text / tools).
+  // Final formal answer: the LAST non-empty text block with no tool boundary
+  // after it. Everything before it is execution process (reasoning /
+  // commentary / intermediate text / tools). This keeps §12.17.7: the final
+  // answer is not a "last non-empty text" guess — intermediate text followed
+  // by tools is process, not answer.
+  const textBlockIndexByIdentity = new Map<MessageBlock, number>();
+  msg.blocks.forEach((block: MessageBlock, blockIndex: number) => {
+    if (block.type === 'text') textBlockIndexByIdentity.set(block, blockIndex);
+  });
   const answerBlock =
-    [...textBlocks].reverse().find((b: MessageBlock) => (b.text ?? '').trim() !== '') ?? undefined;
+    [...textBlocks].reverse().find((b: MessageBlock) => {
+      if (!(b.text ?? '').trim()) return false;
+      const blockIndex = textBlockIndexByIdentity.get(b);
+      if (blockIndex === undefined) return true;
+      return !msg.blocks.some(
+        (candidate: MessageBlock, candidateIndex: number) =>
+          candidateIndex > blockIndex &&
+          (candidate.type === 'tool-call' || candidate.type === 'tool-result'),
+      );
+    }) ?? undefined;
   const processItems: InlineProcessItem[] = [];
   if (!assistantTimeline)
     for (const block of msg.blocks) {
@@ -878,26 +911,33 @@ export function ChatView({
   }, [conversation.id, conversation.interactionMode]);
   // 挂起的模型问询（ask_user_question → 接管 composer 的问询卡片）。
   const [pendingAsk, setPendingAsk] = useState<PendingAsk | undefined>();
+  /** Resolved thread for this conversation (from bound task). */
+  const [threadId, setThreadId] = useState<string | undefined>(undefined);
   const lastAskEventSeqRef = useRef(0);
   const refreshPendingAsk = useCallback(() => {
     const api = bridge();
-    if (!conversation || !api?.conversationAskPending) return;
+    if (!threadId || !api?.conversationAskPending) return;
     void api
-      .conversationAskPending({ threadId: String(conversation.id) })
+      .conversationAskPending({ threadId })
       .then((res) => setPendingAsk(res.ask))
       .catch(() => setPendingAsk(undefined));
-  }, [conversation]);
+  }, [threadId]);
   useEffect(() => {
     // 会话切换 / 刷新恢复：始终查询一次当前挂起问询。
     refreshPendingAsk();
-    // 问询生命周期事件（pending/answered/cancelled）后刷新。
+    // 问询生命周期事件（pending/answered/cancelled）后刷新；eventHistory 是
+    // 全局的，必须按 threadId 过滤，避免其他会话的问询事件触发本会话刷新。
     const askEvents = eventHistory
-      .filter(
-        (e) =>
-          e.type === 'conversation.ask_pending' ||
-          e.type === 'conversation.ask_answered' ||
-          e.type === 'conversation.ask_cancelled',
-      )
+      .filter((e) => {
+        if (
+          e.type !== 'conversation.ask_pending' &&
+          e.type !== 'conversation.ask_answered' &&
+          e.type !== 'conversation.ask_cancelled'
+        ) {
+          return false;
+        }
+        return Boolean(threadId) && e.payload?.threadId === threadId;
+      })
       .map((e) => e.sequence);
     const latest = askEvents.length > 0 ? Math.max(...askEvents) : 0;
     if (latest > lastAskEventSeqRef.current) {
@@ -905,6 +945,71 @@ export function ChatView({
       refreshPendingAsk();
     }
   }, [eventHistory, refreshPendingAsk]);
+  // §12.18 统一方案卡：conversation.plan.*（submit/get/approve/revise/cancel）驱动。
+  // 模型仍以 ask plan-review 提交方案 → 前端把 detail 宽松解析为结构化草稿并
+  // submit，渲染可编辑/可审批的 PlanApprovalCard；中途普通问询保持 ask 卡。
+  const [conversationPlan, setConversationPlan] = useState<ConversationPlanSummary | undefined>();
+  const lastPlanEventSeqRef = useRef(0);
+  const planReviewAskIdRef = useRef<string | null>(null);
+  const refreshConversationPlan = useCallback(() => {
+    const api = bridge();
+    if (!api?.conversationPlanGet) return;
+    void api
+      .conversationPlanGet({ conversationId: conversation.id })
+      .then((res) => setConversationPlan(res.plan))
+      .catch(() => setConversationPlan(undefined));
+  }, [conversation.id]);
+  useEffect(() => {
+    refreshConversationPlan();
+    // plan 生命周期事件（submitted/approved/cancelled/revised）后刷新。
+    const planEvents = eventHistory.filter(
+      (e) =>
+        e.type === 'conversation.plan_submitted' ||
+        e.type === 'conversation.plan_approved' ||
+        e.type === 'conversation.plan_cancelled' ||
+        e.type === 'conversation.plan_revised',
+    );
+    const latest = planEvents.length > 0 ? Math.max(...planEvents.map((e) => e.sequence)) : 0;
+    if (latest > lastPlanEventSeqRef.current) {
+      lastPlanEventSeqRef.current = latest;
+      refreshConversationPlan();
+    }
+  }, [eventHistory, refreshConversationPlan]);
+  // 方案卡进入 draft 时滚到底部——方案直接输出在消息流尾部，让用户看到整卡。
+  useEffect(() => {
+    if (conversationPlan?.state !== 'draft') return;
+    const frame = requestAnimationFrame(() => {
+      const scroller = messagesScrollRef.current;
+      if (scroller) {
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [conversationPlan?.state]);
+  // plan-review 问询到达 → 解析 detail 并提交为 plan 草稿（按 askId 幂等）；
+  // 提交失败（detail 无法满足校验）回退到只读方案卡。
+  useEffect(() => {
+    if (!pendingAsk) return;
+    const review = planReviewOf(pendingAsk.questions);
+    if (!review) return;
+    if (planReviewAskIdRef.current === pendingAsk.askId) return;
+    const api = bridge();
+    if (!api?.conversationPlanSubmit) return;
+    void api
+      .conversationPlanSubmit({
+        conversationId: conversation.id,
+        plan: parsePlanReviewDetail(review.question, review.plan),
+      })
+      .then((res) => {
+        // 提交成功才标记「已由方案卡接管」——失败回退到只读方案卡时，
+        // ask_answered 事件路径仍须生效（executeApprovedPlanReview 不被跳过）。
+        planReviewAskIdRef.current = pendingAsk.askId;
+        setConversationPlan(res.plan);
+      })
+      .catch(() => {
+        // 提交失败 → 保持 ask 卡（PlanReviewCard 只读形态）由用户走原确认流程。
+      });
+  }, [conversation.id, pendingAsk]);
   // plan-review 确认执行：结束规划轮，切执行模式并发起执行轮（actModelId + 全工具）。
   // 定义在 sendUserText 之后（见 sendUserText 定义处下方的 executeApprovedPlanReview）。
   // plan-act（规划/执行双模型）设置：用于提示本轮生效模型。
@@ -1036,8 +1141,6 @@ export function ChatView({
     [clearCompactDismissTimer],
   );
   useEffect(() => () => clearCompactDismissTimer(), [clearCompactDismissTimer]);
-  /** Resolved thread for this conversation (from bound task). */
-  const [threadId, setThreadId] = useState<string | undefined>(undefined);
   /** Optimistic user bubbles not yet present in durable event history. */
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessage[]>([]);
   const [localErrors, setLocalErrorsRaw] = useState<ChatMessage[]>([]);
@@ -1114,21 +1217,29 @@ export function ChatView({
     (draft: ConversationStreamDraft | null, fallbackSequence: number) => {
       transientDraftRef.current = draft;
       const timelineFields = assistantTimelineToChatFields(draft?.assistantTimeline);
-      const answerText = draft
+      const projected = draft
         ? projectTransientAnswerText(draft.text, draft.assistantTimeline)
-        : undefined;
+        : { answerText: undefined as string | undefined, pendingText: '' };
+      // 未分类流式文本尾部显示在过程面板当前顺序位置（§12.17.18），
+      // 不进入总结面板；工具/终态边界分类后由 timeline 段取代。
+      const processItems = projected.pendingText
+        ? [
+            ...(timelineFields.processItems ?? []),
+            { kind: 'text' as const, text: projected.pendingText },
+          ]
+        : timelineFields.processItems;
       setStreamingMessage(
         draft
           ? {
               id: `streaming-${draft.runId ?? fallbackSequence}`,
               role: 'assistant',
-              text: answerText ?? '',
+              text: projected.answerText ?? '',
               commentaryText: timelineFields.commentaryText ?? draft.commentaryText,
               commentarySegments: draft.assistantTimeline ? undefined : draft.commentarySegments,
               reasoningText: timelineFields.reasoningText ?? draft.reasoningText,
               assistantTimeline: draft.assistantTimeline,
-              answerText,
-              processItems: timelineFields.processItems,
+              answerText: projected.answerText,
+              processItems,
               timestamp: draft.timestamp,
               streaming: !draft.terminal,
               runId: draft.runId,
@@ -2863,6 +2974,65 @@ export function ChatView({
     },
     [conversation.id, sendUserText],
   );
+  // §12.18 方案卡回调：批准执行 / 切换模式 / 通知 / 卡片清除。
+  const handlePlanExecute = useCallback(
+    async (instruction: string) => {
+      // 结束挂起的 plan-review 轮（回答「确认执行」→ 规划 run 恢复并收尾）。
+      if (pendingAsk) {
+        const review = planReviewOf(pendingAsk.questions);
+        if (review) {
+          try {
+            await bridge()?.conversationAskAnswer?.({
+              askId: pendingAsk.askId,
+              answers: [{ id: review.id, selected: [review.approveLabel] }],
+            });
+          } catch {
+            // 回答失败不阻塞执行轮；规划轮仍会随自身超时/取消结束。
+          }
+          setPendingAsk(undefined);
+        }
+      }
+      await sendUserText(instruction, [], { planExecuting: true });
+    },
+    [pendingAsk, sendUserText],
+  );
+  const handlePlanSwitchMode = useCallback(
+    async (mode: 'plan' | 'execute') => {
+      await bridge()?.setConversationInteractionMode?.({
+        conversationId: conversation.id,
+        interactionMode: mode,
+      });
+      setInteractionMode(mode);
+    },
+    [conversation.id],
+  );
+  const handlePlanNotify = useCallback((tone: 'info' | 'error', text: string) => {
+    setLocalErrors((prev) => [
+      ...prev,
+      {
+        id: `plan-notify-${Date.now()}`,
+        role: 'system',
+        tone,
+        text,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  }, []);
+  const handlePlanUpdated = useCallback(
+    (plan: ConversationPlanSummary | undefined) => {
+      setConversationPlan(plan);
+      // 方案取消/批准收尾：plan 消失且仍有挂起的 plan-review ask 时取消该
+      // 问询，让规划 run 恢复（不再强制要求用户在只读卡上二次确认）。
+      if (!plan && pendingAsk && planReviewOf(pendingAsk.questions)) {
+        const api = bridge();
+        if (api?.conversationAskCancel) {
+          void api.conversationAskCancel({ askId: pendingAsk.askId }).catch(() => undefined);
+        }
+        setPendingAsk(undefined);
+      }
+    },
+    [pendingAsk],
+  );
   const lastAskAnsweredSeqRef = useRef(0);
   useEffect(() => {
     const answeredEvents = eventHistory.filter((e) => e.type === 'conversation.ask_answered');
@@ -2874,6 +3044,13 @@ export function ChatView({
     const questions = Array.isArray(latest.payload?.questions) ? latest.payload.questions : [];
     const answers = Array.isArray(latest.payload?.answers) ? latest.payload.answers : [];
     if (questions.length === 0 || answers.length === 0) return;
+    // 已由 §12.18 方案卡接管（submit 过 plan）的 plan-review ask，其「确认执行」
+    // 由方案卡批准流程回答 → 跳过事件路径，避免双重发起执行轮。
+    const answeredAskId =
+      latest.payload && typeof latest.payload === 'object'
+        ? (latest.payload as Record<string, unknown>).askId
+        : undefined;
+    if (typeof answeredAskId === 'string' && planReviewAskIdRef.current === answeredAskId) return;
     executeApprovedPlanReview(questions as AskQuestion[], answers as AskQuestionAnswer[]);
   }, [eventHistory, executeApprovedPlanReview]);
 
@@ -4631,6 +4808,20 @@ export function ChatView({
                   />
                 </div>
               ))}
+              {/* §方案卡：方案直接输出在聊天区（消息流尾部，draft 态），
+                  大方案靠聊天区整体滚动查看；批准/取消后收起。 */}
+              {conversationPlan?.state === 'draft' ? (
+                <div className="shell-message-window-item pb-6" data-testid="plan-approval-message">
+                  <PlanApprovalCard
+                    conversationId={conversation.id}
+                    plan={conversationPlan}
+                    onPlanUpdated={handlePlanUpdated}
+                    onExecute={(instruction) => void handlePlanExecute(instruction)}
+                    onSwitchMode={(mode) => void handlePlanSwitchMode(mode)}
+                    onNotify={handlePlanNotify}
+                  />
+                </div>
+              ) : null}
               {pendingApprovals.map((approval) => (
                 <ToolApprovalCard
                   key={approval.approvalId}
@@ -4983,7 +5174,7 @@ export function ChatView({
                 </div>
               )}
 
-              {/* 问询卡片（ask_user_question 接管 composer；含方案待审特例） */}
+              {/* 问询卡片（ask_user_question 接管 composer；方案卡已移至消息流 §方案卡） */}
               {pendingAsk ? (
                 <AskQuestionCard ask={pendingAsk} onSettled={() => setPendingAsk(undefined)} />
               ) : (

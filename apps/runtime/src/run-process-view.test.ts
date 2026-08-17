@@ -532,6 +532,25 @@ describe('projectRunProcess', () => {
     }
   });
 
+  it('reconstructs the full command line from command + args', () => {
+    // {command,args[]} 只读 command 会把「pnpm -s test」显示成「pnpm」。
+    const runId = 'run-command-line' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-cmd' as EventId,
+        sequence: 1,
+        runId,
+        type: 'tool.requested',
+        payload: {
+          toolCallId: 'call-cmd',
+          toolName: 'run_command',
+          arguments: { command: 'pnpm', args: ['-s', 'test'] },
+        },
+      }),
+    ]);
+    expect(view.steps[0]?.command).toBe('pnpm -s test');
+  });
+
   it('settles unfinished tool steps when the run reaches a terminal state', () => {
     const completedRunId = 'run-terminal-completed' as RunId;
     const failedRunId = 'run-terminal-failed' as RunId;

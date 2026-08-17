@@ -8,6 +8,9 @@
  */
 import {
   openGatewayBaseUrls,
+  type GatewayLogsQuery,
+  type GatewayLogsResponse,
+  type GatewayRequestLogEntry,
   type OpenGatewaySetting,
   type OpenGatewayStatusResponse,
   type OpenGatewayUpstreamInfo,
@@ -47,6 +50,8 @@ export interface OpenGatewayManagerDeps {
 }
 
 export class OpenGatewayManager {
+  /** 审计日志环形缓冲上限（内存驻留，不落 DB）。 */
+  static readonly MAX_AUDIT_LOGS = 500;
   readonly tickets: GatewayTicketRegistry;
   private server: OpenGatewayServer | undefined;
   private setting: OpenGatewaySetting = { enabled: false, port: 0 };
@@ -55,6 +60,8 @@ export class OpenGatewayManager {
   private failureDetail: string | undefined;
   /** Most recent ticket-based upstream (for the read-only settings line). */
   private lastUpstream: OpenGatewayUpstreamInfo | undefined;
+  /** 审计日志：oldest-first 数组，listLogs 按最新在前返回。 */
+  private readonly auditLogs: GatewayRequestLogEntry[] = [];
   /**
    * Secrets for external clients are cached per provider for the process
    * lifetime; the keyring lookup is async but routing is synchronous.
@@ -99,6 +106,7 @@ export class OpenGatewayManager {
           this.tickets.recordContinuationItem(scopeId, callId, itemId),
         resolveModelName: (model) => this.resolveExternalModel(model),
         listModels: () => this.listCatalogModels(),
+        onRequest: (entry) => this.recordAuditLog(entry),
         ...(this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {}),
         ...(this.deps.onLog ? { onLog: this.deps.onLog } : {}),
       });
@@ -124,7 +132,7 @@ export class OpenGatewayManager {
   }
 
   /** Issue a per-run ticket; returns undefined when the gateway is not serving. */
-  issueTicket(runId: string, route: GatewayRoute): string | undefined {
+  issueTicket(runId: string, route: GatewayRoute, kernelId?: string): string | undefined {
     if (!this.server) return undefined;
     const providerId = route.providerId ?? 'unknown';
     const providerName =
@@ -136,7 +144,7 @@ export class OpenGatewayManager {
       protocol: route.protocol,
       model: route.providerModelId,
     };
-    return this.tickets.issue(runId, route).id;
+    return this.tickets.issue(runId, route, kernelId).id;
   }
 
   /**
@@ -183,6 +191,42 @@ export class OpenGatewayManager {
       if (this.failureDetail) base.failureDetail = this.failureDetail;
     }
     return base;
+  }
+
+  /** Record one audited gateway request (newest kept at the tail, capped). */
+  private recordAuditLog(entry: GatewayRequestLogEntry): void {
+    this.auditLogs.push(entry);
+    if (this.auditLogs.length > OpenGatewayManager.MAX_AUDIT_LOGS) {
+      this.auditLogs.splice(0, this.auditLogs.length - OpenGatewayManager.MAX_AUDIT_LOGS);
+    }
+  }
+
+  /** Page of audited requests, newest first (filtered when a filter is given). */
+  listLogs(query: GatewayLogsQuery = {}): GatewayLogsResponse {
+    const limit = Math.min(
+      Math.max(Number.isInteger(query.limit) ? (query.limit as number) : 50, 1),
+      200,
+    );
+    const offset = Math.max(Number.isInteger(query.offset) ? (query.offset as number) : 0, 0);
+    const filter = query.filter;
+    const filtered =
+      filter && (filter.kernelId !== undefined || filter.status !== undefined || filter.converted !== undefined)
+        ? this.auditLogs.filter((entry) => {
+            if (filter.kernelId !== undefined && entry.kernelId !== filter.kernelId) return false;
+            if (filter.status !== undefined && entry.status !== filter.status) return false;
+            if (filter.converted !== undefined && entry.converted !== filter.converted) return false;
+            return true;
+          })
+        : this.auditLogs;
+    const total = filtered.length;
+    const start = Math.max(total - offset - limit, 0);
+    const entries = filtered.slice(start, start + limit).reverse();
+    return { entries, total, hasMore: offset + limit < total };
+  }
+
+  /** Drop all audited requests. */
+  clearLogs(): void {
+    this.auditLogs.length = 0;
   }
 
   async stop(): Promise<void> {

@@ -169,6 +169,27 @@ describe('projectExecutionProcess', () => {
     expect(view.errorCount).toBe(1);
   });
 
+  it('reconstructs the full command line from command + args', () => {
+    // {command,args[]} 只读 command 会把「pnpm -s test」显示成「pnpm」。
+    const events = [
+      event({
+        id: 'e1' as Event['id'],
+        sequence: 1,
+        type: 'tool.requested',
+        runId: 'run_1' as Event['runId'],
+        payload: {
+          threadId: 'th_1',
+          toolCallId: 'call_cmd',
+          toolName: 'run_command',
+          arguments: { command: 'pnpm', args: ['-s', 'test'] },
+        },
+      }),
+    ];
+    const view = projectExecutionProcess(events, { runId: 'run_1' });
+    expect(view.steps[0]?.command).toBe('pnpm -s test');
+    expect(view.steps[0]?.label).toContain('pnpm -s test');
+  });
+
   it('includes read/write file paths directly in visible step titles', () => {
     expect(
       formatExecutionStepTitle({

@@ -43,6 +43,29 @@ const failedMessage = {
   ],
 } as unknown as Message;
 
+const KERNEL_SPAWN_ERROR =
+  'kernel args contain unsafe shell metacharacters: --ask-for-approval never exec --json';
+
+/**
+ * A kernel that dies during spawn emits no text at all — only an error block.
+ * This is the shape that used to render as a sent message with no reply and no
+ * explanation, because the empty draft was discarded along with its cause.
+ */
+const outputlessFailure = {
+  id: 'assistant-spawn-failed',
+  threadId: 'thread-terminal',
+  role: 'assistant',
+  runId: 'run-spawn-failed',
+  sequence: 1,
+  createdAt: '2026-08-17T08:07:30.901Z',
+  blocks: [
+    {
+      type: 'error',
+      payload: { terminalState: 'failed', errorMessage: KERNEL_SPAWN_ERROR },
+    },
+  ],
+} as unknown as Message;
+
 beforeEach(() => {
   runtime.openTask.mockReset().mockResolvedValue({ task: { threadId: 'thread-terminal' } });
   runtime.listConversationMessages.mockReset().mockResolvedValue({
@@ -82,5 +105,30 @@ describe('ChatView terminal failure reason', () => {
     expect(reason.textContent).toContain('请求被网关拒绝（400）');
     expect(reason.textContent).toContain('enable_thinking');
     expect(reason.textContent).toContain('prompt_cache_key');
+  });
+
+  it('surfaces a spawn-time kernel failure that produced no output at all', async () => {
+    runtime.listConversationMessages.mockResolvedValue({
+      messages: [outputlessFailure],
+      hasMore: false,
+    });
+    render(
+      <ChatView
+        conversation={conversation}
+        modelName="gpt-5.6-luna"
+        models={[{ modelId: 'model-terminal', displayName: 'gpt-5.6-luna', providerName: 'Relay' }]}
+        eventHistory={[]}
+        onTitleUpdated={vi.fn()}
+      />,
+    );
+
+    // The panel must exist even with zero process items — otherwise the run is
+    // silently invisible and the user just sees no reply.
+    const processToggle = await screen.findByTestId('process-panel-toggle');
+    fireEvent.click(processToggle);
+    expect(await screen.findByTestId('assistant-terminal-failed')).toBeTruthy();
+    expect(screen.getByTestId('assistant-terminal-error').textContent).toContain(
+      'unsafe shell metacharacters',
+    );
   });
 });

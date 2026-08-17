@@ -251,6 +251,16 @@ declare global {
         getGatewayStatus?(): Promise<
           import('@sync-think/protocol').OpenGatewayStatusResponse
         >;
+        getGatewayLogs?(query?: {
+          offset?: number;
+          limit?: number;
+          filter?: {
+            kernelId?: string;
+            status?: 'success' | 'error';
+            converted?: boolean;
+          };
+        }): Promise<import('@sync-think/protocol').GatewayLogsResponse>;
+        clearGatewayLogs?(): Promise<unknown>;
         installKernel(kernelId: string): Promise<{ ok: true } | { ok: false; error: string }>;
         cancelRun(payload: CancelRunPayload): Promise<PauseResumeCancelResponse>;
         createWorkspace(payload: CreateWorkspacePayload): Promise<CreateWorkspaceResponse>;

@@ -183,6 +183,8 @@ import {
   isComputerUsePluginEnabled as isComputerUsePluginSettingEnabled,
   OPEN_GATEWAY_SETTING_KEY,
   normalizeOpenGatewaySetting,
+  type GatewayLogsQuery,
+  type GatewayLogsResponse,
   type OpenGatewayStatusResponse,
 } from '@sync-think/protocol';
 import {
@@ -345,6 +347,7 @@ import {
   createDemoRun,
   isDemoRunRecoveryExpired,
   MODEL_RETRY_MAX,
+  nextAssistantTimelineSequence,
   parseDemoRuns,
   projectAdapterEvent,
   serializeDemoRun,
@@ -1307,6 +1310,11 @@ function buildAssistantTimelineBlocks(
 
 function messageBlocksJsonBytes(blocks: readonly MessageBlock[]): number {
   return Buffer.byteLength(JSON.stringify(blocks), 'utf8');
+}
+
+/** 分页响应 JSON 字节数（listMessages 降级重试的判断依据）。 */
+function messagePageJsonBytes(page: { messages: readonly unknown[] }): number {
+  return Buffer.byteLength(JSON.stringify(page), 'utf8');
 }
 
 export function assistantTextFallbackMessageBlocks(text: string): MessageBlock[] {
@@ -2394,6 +2402,14 @@ export class Runtime {
         }
         if (frame.type === 'gateway.status') {
           this.handleGatewayStatus(socket, frame);
+          return;
+        }
+        if (frame.type === 'gateway.logs') {
+          this.handleGatewayLogs(socket, frame);
+          return;
+        }
+        if (frame.type === 'gateway.logs.clear') {
+          this.handleGatewayLogsClear(socket, frame);
           return;
         }
         if (frame.type === 'agent.get') {
@@ -7777,13 +7793,27 @@ export class Runtime {
         );
         return;
       }
-      const response: ConversationListMessagesResponse = this.messageStore.listMessages(
+      // 部分对话的消息（大 timeline 工具输出）累计可能超过 1 MiB 帧上限，
+      // 直接 encodeFrame 会抛 "frame exceeds max" 导致前端加载失败。
+      // 超限时按页降级（减半 limit 重试），保证响应始终可编码、可继续翻页。
+      let pageLimit = payload.limit ?? 50;
+      let response: ConversationListMessagesResponse = this.messageStore.listMessages(
         task.threadId,
         {
           beforeSequence: payload.beforeSequence,
-          limit: payload.limit,
+          limit: pageLimit,
         },
       );
+      while (
+        pageLimit > 1 &&
+        messagePageJsonBytes(response) > MAX_FRAME_BYTES - 8 * 1024
+      ) {
+        pageLimit = Math.max(1, Math.floor(pageLimit / 2));
+        response = this.messageStore.listMessages(task.threadId, {
+          beforeSequence: payload.beforeSequence,
+          limit: pageLimit,
+        });
+      }
       if (response.messages.length > 0) {
         this.ensureRunKernelIdsLoaded();
         // Backfill any runId missing from the persisted map from the event log
@@ -16148,10 +16178,18 @@ export class Runtime {
             // (commentary) or is the terminal answer (final_answer).
             if (adapterEvent.type === 'text-delta') {
               roundTranscript.legacyText += adapterEvent.text;
+              const alreadyBuffered = Boolean(currentRun.legacyPendingText);
               this.demoRuns.set(runId, {
                 ...currentRun,
                 nextAdapterEventIndex: currentRun.nextAdapterEventIndex + 1,
                 legacyPendingText: currentRun.legacyPendingText + adapterEvent.text,
+                ...(!alreadyBuffered
+                  ? {
+                      legacyPendingTextSeq: nextAssistantTimelineSequence(
+                        currentRun.assistantTimeline ?? [],
+                      ),
+                    }
+                  : {}),
               });
               // Stream every delta immediately so the UI renders
               // character-by-character instead of buffering the whole
@@ -16342,12 +16380,9 @@ export class Runtime {
                   projectionOccurredAt,
                 );
               } else if (adapterEvent.type === 'tool-call') {
-                projection.nextRun = startAssistantTool(projection.nextRun, {
-                  toolCallId: adapterEvent.toolCall.id,
-                  name: adapterEvent.toolCall.name,
-                  argumentsJson: adapterEvent.toolCall.argumentsJson,
-                  occurredAt: projectionOccurredAt,
-                });
+                // §工具实时显示：宣布不入 timeline（模型可能一次宣布多个工具）。
+                // 工具行在下方本地工具循环里「实际开始执行时」才入段并推快照，
+                // 做到调用哪个显示哪个（§12.17.4 每个工具一行）。
               } else if (adapterEvent.type === 'tool-result') {
                 projection.nextRun = completeAssistantTool(projection.nextRun, {
                   toolCallId: adapterEvent.toolCallId,
@@ -16543,6 +16578,24 @@ export class Runtime {
             for (let toolIndex = 0; toolIndex < pendingToolCalls.length; toolIndex++) {
               const toolCall = pendingToolCalls[toolIndex]!;
               if (abort.signal.aborted || !this.demoRuns.has(runId)) return;
+
+              // §工具实时显示：工具「实际开始执行」时入 timeline 并立即推快照，
+              // 前端逐行显示（调用哪个显示哪个）。startAssistantTool 对重复
+              // toolCallId 幂等更新，不会重复入段。
+              const toolStartOccurredAt = new Date().toISOString();
+              const runBeforeTool = this.demoRuns.get(runId);
+              if (runBeforeTool) {
+                this.demoRuns.set(
+                  runId,
+                  startAssistantTool(runBeforeTool, {
+                    toolCallId: toolCall.id,
+                    name: toolCall.name,
+                    argumentsJson: toolCall.argumentsJson,
+                    occurredAt: toolStartOccurredAt,
+                  }),
+                );
+                this.pushKernelTimelineSnapshot(runId, runBeforeTool.threadId, toolStartOccurredAt);
+              }
 
               const desktopCapabilityEnabled = this.isComputerUsePluginEnabled();
               if (CHAT_DESKTOP_TOOL_NAMES.has(toolCall.name) && !desktopCapabilityEnabled) {
@@ -17715,16 +17768,20 @@ export class Runtime {
       : 'openai-chat';
     const inboundBaseUrl = this.openGateway.inboundBaseUrl(kernelDialect);
     if (!inboundBaseUrl) return undefined;
-    const ticketId = this.openGateway.issueTicket(runId, {
-      baseUrl,
-      protocol: upstream,
-      providerModelId: run.providerModelId,
-      apiKey,
-      ...(run.providerId ? { providerId: run.providerId } : {}),
-      ...(upstream === 'openai-responses' && responseContinuationScopeId
-        ? { responseContinuationScopeId }
-        : {}),
-    });
+    const ticketId = this.openGateway.issueTicket(
+      runId,
+      {
+        baseUrl,
+        protocol: upstream,
+        providerModelId: run.providerModelId,
+        apiKey,
+        ...(run.providerId ? { providerId: run.providerId } : {}),
+        ...(upstream === 'openai-responses' && responseContinuationScopeId
+          ? { responseContinuationScopeId }
+          : {}),
+      },
+      run.kernelId,
+    );
     if (!ticketId) return undefined;
     return { baseUrl: inboundBaseUrl, apiKey: ticketId };
   }
@@ -17797,8 +17854,8 @@ export class Runtime {
         [
           '## 规划模式（Planning mode）',
           '你正处于规划模式：只做只读调研，禁止任何写入、编辑、命令执行、浏览器交互或资源变更（宿主会在执行层强制拦截）。',
-          '完成调研后，调用 `ask_user_question` 提交最终执行方案并等待审批：发送单个问题，`header` 设为「方案待审」或类似标题，`intent` 设为 {"kind":"plan-review","approve":"确认执行"}，`detail` 填入完整方案（Markdown：目标、步骤与各自验收标准、风险），`options` 为 [{"label":"确认执行"},{"label":"拒绝"}]。收到「确认执行」的回答后，简要总结要点并停止——宿主会启动执行轮；收到「拒绝」则根据用户的反馈调整方案。',
-          '宿主已禁用 EnterPlanMode / ExitPlanMode / AskUserQuestion（claude-code 内置），不要调用它们，也不要尝试进入 Claude 原生规划流程；问询请使用宿主提供的 `ask_user_question` 工具。',
+          '完成调研后，调用 `plan_submit` 提交一份结构化执行方案（title 标题 / goal 目标 / scope 范围 / steps 步骤，每步含验收标准 acceptanceChecks / risks 风险 / finalAcceptanceChecks 总验收），然后简要总结要点并停止，等待用户审批——不要继续执行任何改动。',
+          '宿主已禁用 EnterPlanMode / ExitPlanMode / AskUserQuestion（claude-code 内置），不要调用它们，也不要尝试进入 Claude 原生规划流程；方案提交使用宿主提供的 `plan_submit` 工具，中途需要用户决策时使用 `ask_user_question`。',
         ].join('\n'),
       );
     }
@@ -17934,6 +17991,12 @@ export class Runtime {
     // 工具结果；plan-review intent 渲染「方案待审」卡，确认后由桌面端发起执行轮。
     if (call.tool === 'ask_user_question') {
       return this.handleAskUserQuestionToolCall(runId, run, call);
+    }
+
+    // plan_submit (规划模式, §12.18): 持久化模型提交的结构化方案并发
+    // conversation.plan_submitted 事件，前端渲染可编辑方案卡；规划轮随后自然结束。
+    if (call.tool === 'plan_submit') {
+      return this.handlePlanSubmitToolCall(runId, run, call, argumentsJson);
     }
 
     // task_schedule (定时任务管理): create/cancel 在 ask-mode 下需审批。
@@ -18095,6 +18158,57 @@ export class Runtime {
         ),
       );
     });
+  }
+
+  /**
+   * plan_submit executor（规划模式，§12.18）。把模型提交的结构化方案持久化到
+   * conversation 并发 conversation.plan_submitted 事件（前端渲染可编辑方案卡）；
+   * 工具结果告知模型停止等待审批，规划轮随后自然结束。
+   */
+  private async handlePlanSubmitToolCall(
+    runId: RunId,
+    run: DemoRunState,
+    call: PlatformMcpToolCall,
+    _argumentsJson: string,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    const conversationId = this.resolveConversationIdForThread(run.threadId);
+    if (!conversationId || !this.conversationStore) {
+      return { ok: false, error: 'conversation store unavailable' };
+    }
+    const parsed = parseConversationPlanSubmitPayload({
+      conversationId,
+      plan: call.input,
+    });
+    if (!parsed) {
+      return { ok: false, error: 'plan_submit: invalid plan structure' };
+    }
+    try {
+      const plan = this.conversationStore.submitConversationPlan(
+        parsed.conversationId,
+        parsed.plan,
+      );
+      const event = this.appendEvent('system', 'conversation.plan_submitted', {
+        conversationId: parsed.conversationId,
+        revision: plan.currentRevision,
+        runId,
+      });
+      this.publishEvent(event);
+      return {
+        ok: true,
+        content: JSON.stringify({
+          ok: true,
+          planSubmitted: true,
+          revision: plan.currentRevision,
+          message:
+            '计划已提交，等待用户审批。请简要总结计划要点并停止执行，不要继续做任何改动。',
+        }),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `plan_submit failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   /**
@@ -18609,27 +18723,29 @@ export class Runtime {
     const run = this.demoRuns.get(runId);
     if (!run || !text) return;
     const occurredAt = new Date().toISOString();
-    const next = appendAssistantTextDelta(
-      { ...run, assistantText: run.assistantText + text },
-      'final_answer',
-      text,
-      occurredAt,
-    );
-    this.demoRuns.set(runId, next);
+    // §12.17.18: kernel delta carries no phase metadata — buffer it and let
+    // the next tool boundary (commentary) or the terminal (final_answer)
+    // classify it, so process prose never masquerades as the final answer
+    // while streaming. The transient text frame still flows immediately so
+    // the renderer shows the unclassified tail in the process panel.
+    // Record the timeline position where the buffer started so the flush can
+    // insert the classified segment in real emission order.
+    const alreadyBuffered = Boolean(run.legacyPendingText);
+    this.demoRuns.set(runId, {
+      ...run,
+      legacyPendingText: `${run.legacyPendingText ?? ''}${text}`,
+      ...(!alreadyBuffered
+        ? {
+            legacyPendingTextSeq: nextAssistantTimelineSequence(run.assistantTimeline ?? []),
+          }
+        : {}),
+    });
     this.publishTransientDelta({
       threadId: threadId as ThreadId,
       runId,
       kind: 'text',
       textDelta: text,
       occurredAt,
-    });
-    this.updateTransientTextSnapshot({
-      threadId: threadId as ThreadId,
-      runId,
-      streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
-      text: next.assistantText,
-      assistantTimeline: next.assistantTimeline,
-      updatedAt: occurredAt,
     });
   }
 
@@ -18640,23 +18756,78 @@ export class Runtime {
     event: Extract<KernelEvent, { type: 'tool-call' | 'tool-result' }>,
   ): void {
     try {
-      const run = this.demoRuns.get(runId);
       const occurredAt = new Date().toISOString();
+      if (type === 'tool.requested') {
+        // §12.17.20: a tool boundary reclassifies every preceding text as
+        // commentary — flush the buffered kernel prose before the tool row so
+        // it lands in the process panel, never in the summary panel.
+        this.flushLegacyAssistantText({ runId, phase: 'commentary', occurredAt });
+      }
+      const run = this.demoRuns.get(runId);
       if (run) {
-        let nextRun =
-          type === 'tool.requested'
-            ? startAssistantTool(run, {
-                toolCallId: (event as { toolId: string }).toolId,
-                name: (event as { name: string }).name,
-                argumentsJson: (event as { argsJson: string }).argsJson,
-                occurredAt,
-              })
-            : completeAssistantTool(run, {
-                toolCallId: (event as { toolId: string }).toolId,
-                output: (event as { output: string }).output,
-                failed: (event as { isError?: boolean }).isError === true,
-                occurredAt,
+        let nextRun = run;
+        // 实时映射：工具行揭示/完成即把最新 timeline 推给前端（调用哪个显示哪个）。
+        // claude-code / codex 内核在一条 assistant 消息里批量宣布多个 tool_use，
+        // 却顺序执行工具——所以宣布先入待揭示队列，第 1 个立即揭示（kernel 随即
+        // 开始执行），之后每个 tool-result 到达时完成当前行并揭示下一个。
+        let timelineChanged = false;
+        if (type === 'tool.requested') {
+          const toolCallId = (event as { toolId: string }).toolId;
+          const name = (event as { name: string }).name;
+          const argsJson = (event as { argsJson: string }).argsJson;
+          const pending = [...(run.pendingKernelToolCalls ?? [])];
+          pending.push({ toolCallId, name, argumentsJson: argsJson, announcedAt: occurredAt });
+          // 当前没有正在执行的工具行时立即揭示（首个宣布的工具 kernel 随即开始执行）。
+          if (!this.hasRunningTimelineTool(run.assistantTimeline)) {
+            const announced = pending.shift()!;
+            nextRun = startAssistantTool(run, {
+              toolCallId: announced.toolCallId,
+              name: announced.name,
+              argumentsJson: announced.argumentsJson,
+              occurredAt: announced.announcedAt,
+            });
+            timelineChanged = true;
+          }
+          nextRun = { ...nextRun, pendingKernelToolCalls: pending };
+        } else {
+          const toolCallId = (event as { toolId: string }).toolId;
+          const pending = run.pendingKernelToolCalls ?? [];
+          const pendingIndex = pending.findIndex((entry) => entry.toolCallId === toolCallId);
+          let pendingAfter = pending;
+          if (pendingIndex >= 0) {
+            // 乱序防御：该工具尚未揭示但已完成 —— 并行执行的 kernel 中排在它
+            // 之前的 pending 工具同样已在执行，一并揭示后再完成当前。
+            for (const entry of pending.slice(0, pendingIndex + 1)) {
+              nextRun = startAssistantTool(nextRun, {
+                toolCallId: entry.toolCallId,
+                name: entry.name,
+                argumentsJson: entry.argumentsJson,
+                occurredAt: entry.announcedAt,
               });
+            }
+            pendingAfter = pending.slice(pendingIndex + 1);
+            timelineChanged = true;
+          }
+          nextRun = completeAssistantTool(nextRun, {
+            toolCallId,
+            output: (event as { output: string }).output,
+            failed: (event as { isError?: boolean }).isError === true,
+            occurredAt,
+          });
+          // 完成后若没有正在执行的工具行，揭示下一个待执行工具（顺序执行的下一个）。
+          if (!this.hasRunningTimelineTool(nextRun.assistantTimeline) && pendingAfter.length > 0) {
+            const announced = pendingAfter[0]!;
+            nextRun = startAssistantTool(nextRun, {
+              toolCallId: announced.toolCallId,
+              name: announced.name,
+              argumentsJson: announced.argumentsJson,
+              occurredAt: announced.announcedAt,
+            });
+            pendingAfter = pendingAfter.slice(1);
+            timelineChanged = true;
+          }
+          nextRun = { ...nextRun, pendingKernelToolCalls: pendingAfter };
+        }
         const history = [...(nextRun.kernelToolEvents ?? [])];
         history.push(
           type === 'tool.requested'
@@ -18677,6 +18848,9 @@ export class Runtime {
         );
         nextRun = { ...nextRun, kernelToolEvents: history };
         this.demoRuns.set(runId, nextRun);
+        if (timelineChanged) {
+          this.pushKernelTimelineSnapshot(runId, threadId, occurredAt);
+        }
       }
       const draft: EventDraft = {
         id: ulid() as Event['id'],
@@ -18704,10 +18878,38 @@ export class Runtime {
       };
       const committed = this.persistProjectedEvent(draft, new Map(this.demoRuns));
       this.publishEvent(committed);
-      void run;
     } catch {
       // Tool event persistence must never crash the kernel stream.
     }
+  }
+
+  /** True when the assistant timeline holds a kernel tool row still running. */
+  private hasRunningTimelineTool(timeline: readonly unknown[] | undefined): boolean {
+    return (timeline ?? []).some(
+      (segment) =>
+        typeof segment === 'object' &&
+        segment !== null &&
+        (segment as { kind?: string }).kind === 'tool' &&
+        (segment as { status?: string }).status === 'running',
+    );
+  }
+
+  /** Push the latest assistant timeline snapshot so tool rows appear live. */
+  private pushKernelTimelineSnapshot(runId: RunId, threadId: string, occurredAt: string): void {
+    const run = this.demoRuns.get(runId);
+    if (!run) return;
+    this.updateTransientTextSnapshot({
+      threadId: threadId as ThreadId,
+      runId,
+      streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
+      text: run.assistantText,
+      commentaryText: run.commentaryText,
+      commentarySegments: run.commentarySegments,
+      reasoningText: run.reasoningText,
+      reasoningSegments: run.reasoningSegments,
+      assistantTimeline: run.assistantTimeline,
+      updatedAt: occurredAt,
+    });
   }
 
   /**
@@ -18869,8 +19071,14 @@ export class Runtime {
     error?: string,
   ): void {
     const occurredAt = new Date().toISOString();
+    // §12.17.18: at the terminal boundary the remaining buffered kernel text
+    // is the final answer — flush it into a final_answer timeline segment so
+    // it renders in the summary panel (and survives message persistence).
+    const flushedRun = run.legacyPendingText
+      ? (this.flushLegacyAssistantText({ runId, phase: 'final_answer', occurredAt }) ?? run)
+      : run;
     const terminalRun = closeAssistantTimeline(
-      closeCommentaryTimelineSegment(run, occurredAt),
+      closeCommentaryTimelineSegment(flushedRun, occurredAt),
       occurredAt,
     );
     this.demoRuns.set(runId, terminalRun);
@@ -18919,6 +19127,10 @@ export class Runtime {
       this.transientSnapshotByThread.delete(terminalRun.threadId as ThreadId);
     } catch {
       // Finalization must not throw into the run loop.
+      // 终态发布失败（如 transient 帧超限）也不能让 run 残留在活动表——
+      // 否则 healthcheck inFlightRunIds 会把对话永远标记为「执行中」。
+      this.demoRuns.delete(runId);
+      this.transientSnapshotByThread.delete(terminalRun.threadId as ThreadId);
     }
   }
 
@@ -20977,6 +21189,42 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'gateway.status', payload }));
   }
 
+  private handleGatewayLogs(socket: Socket, frame: Frame): void {
+    const raw = frame.payload as
+      | {
+          offset?: unknown;
+          limit?: unknown;
+          filter?: { kernelId?: unknown; status?: unknown; converted?: unknown };
+        }
+      | undefined;
+    const query: GatewayLogsQuery = {
+      ...(raw && Number.isSafeInteger(raw.offset) ? { offset: raw.offset as number } : {}),
+      ...(raw && Number.isSafeInteger(raw.limit) ? { limit: raw.limit as number } : {}),
+      ...(raw?.filter
+        ? {
+            filter: {
+              ...(typeof raw.filter.kernelId === 'string' && raw.filter.kernelId.length > 0
+                ? { kernelId: raw.filter.kernelId }
+                : {}),
+              ...(raw.filter.status === 'success' || raw.filter.status === 'error'
+                ? { status: raw.filter.status }
+                : {}),
+              ...(typeof raw.filter.converted === 'boolean'
+                ? { converted: raw.filter.converted }
+                : {}),
+            },
+          }
+        : {}),
+    };
+    const payload: GatewayLogsResponse = this.openGateway.listLogs(query);
+    socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'gateway.logs', payload }));
+  }
+
+  private handleGatewayLogsClear(socket: Socket, frame: Frame): void {
+    this.openGateway.clearLogs();
+    socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'gateway.logs.clear', payload: {} }));
+  }
+
   private resolveEventWorkspaceId(threadId: string): WorkspaceId {
     const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
     return task?.workspaceId ?? this.workspaceId;
@@ -21031,6 +21279,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           occurredAt: new Date().toISOString(),
         }),
       );
+      // §工具实时显示：工具完成立即推最新 timeline（完成态实时映射）。
+      this.pushKernelTimelineSnapshot(runId, threadId, new Date().toISOString());
     }
     const completedEvent = this.persistProjectedEvent(
       {
@@ -25046,11 +25296,20 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     let nextRun: DemoRunState = {
       ...current,
       legacyPendingText: '',
+      legacyPendingTextSeq: undefined,
       ...(input.phase === 'commentary'
         ? { commentaryText: current.commentaryText + textDelta }
         : { assistantText: current.assistantText + textDelta }),
     };
-    nextRun = appendAssistantTextDelta(nextRun, input.phase, textDelta, input.occurredAt);
+    // 段插入到缓冲文本首次到达的 timeline 位置（真实发射顺序），
+    // 而不是 flush 时刻的尾部——中间可能已有 compaction 等后续段。
+    nextRun = appendAssistantTextDelta(
+      nextRun,
+      input.phase,
+      textDelta,
+      input.occurredAt,
+      current.legacyPendingTextSeq,
+    );
     if (input.phase === 'commentary') {
       nextRun = appendCommentaryTimelineDelta(nextRun, {
         textDelta,
@@ -25311,14 +25570,37 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         continue;
       }
       subscription.liveCursor = transientFrame.streamSequence;
-      subscription.socket.write(
-        encodeFrame({
-          id: streamId,
-          kind: 'event',
-          type: 'conversation.transientFrame',
-          payload: { streamId, frame: transientFrame },
-        }),
-      );
+      const writeFrame = (candidate: ConversationTransientFrame): boolean => {
+        try {
+          subscription.socket.write(
+            encodeFrame({
+              id: streamId,
+              kind: 'event',
+              type: 'conversation.transientFrame',
+              payload: { streamId, frame: candidate },
+            }),
+          );
+          return true;
+        } catch {
+          // 帧超限（大 timeline/process）会抛 "frame exceeds max"。
+          return false;
+        }
+      };
+      if (writeFrame(transientFrame)) continue;
+      // 超限降级：compact timeline 后重试一次；仍失败则跳过该订阅者
+      // （live 终态事件 run.completed/failed 独立发送，不会因此丢失）。
+      const degraded: ConversationTransientFrame = {
+        ...transientFrame,
+        ...(transientFrame.assistantTimeline?.length
+          ? {
+              assistantTimeline: compactAssistantTimeline(
+                transientFrame.assistantTimeline.map((segment) => ({ ...segment })),
+                { maxSegments: 32, detailCharacters: 512, finalAnswerCharacters: 8_192 },
+              ),
+            }
+          : {}),
+      };
+      writeFrame(degraded);
     }
     return transientFrame;
   }
@@ -25328,14 +25610,19 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   }
 
   private writeLiveEvent(socket: Socket, streamId: string, event: Event): void {
-    socket.write(
-      encodeFrame({
-        id: streamId,
-        kind: 'event',
-        type: 'runtime.event',
-        payload: { streamId, event },
-      }),
-    );
+    try {
+      socket.write(
+        encodeFrame({
+          id: streamId,
+          kind: 'event',
+          type: 'runtime.event',
+          payload: { streamId, event },
+        }),
+      );
+    } catch {
+      // 单帧超限（超大 payload）：跳过该订阅者，不中断 publishEvent 循环，
+      // 也不让 run 循环因帧编码异常而崩（liveCursor 已前移，不重发）。
+    }
   }
 
   start(): Promise<void> {

@@ -44,6 +44,7 @@ import {
 import {
   OPEN_GATEWAY_ANTHROPIC_PATH,
   OPEN_GATEWAY_OPENAI_PATH,
+  type GatewayRequestLogEntry,
 } from '@sync-think/protocol';
 import type {
   GatewayRoute,
@@ -55,11 +56,13 @@ import type {
 const REQUEST_BODY_CAP = 32 * 1024 * 1024;
 const UPSTREAM_HEADER_TIMEOUT_MS = 120_000;
 const GATEWAY_TRACE_ENABLED = process.env.E2E_TRACE_GATEWAY === '1';
+/** 审计日志单段 body 截断上限（原始/转换后各 30KB）。 */
+const AUDIT_BODY_CAP = 30_000;
 
 export interface OpenGatewayServerOptions {
   port: number;
   /** Resolve a per-run ticket by the key the client presented. */
-  resolveTicket(key: string): { runId: string; route: GatewayRoute } | undefined;
+  resolveTicket(key: string): { runId: string; route: GatewayRoute; kernelId?: string } | undefined;
   /**
    * Resolve a model name for external clients (no run context). Returns
    * undefined when the name is unknown or ambiguous beyond repair.
@@ -79,6 +82,12 @@ export interface OpenGatewayServerOptions {
   fetchImpl?: typeof fetch;
   /** Diagnostics sink (never receives secrets). */
   onLog?(message: string): void;
+  /**
+   * Audit sink: called once per proxied/translated request with the inbound
+   * body (原始格式), the translated upstream body (转换后格式), and the kernel
+   * that drove the run. Never receives secrets (keys ride in headers).
+   */
+  onRequest?(entry: GatewayRequestLogEntry): void;
 }
 
 export interface OpenGatewayServer {
@@ -449,43 +458,31 @@ async function handleRequest(
       ? key
       : `external:${route.providerId ?? route.baseUrl}:${route.protocol}:${targetModel}`);
 
+  const requestStartedAt = Date.now();
+  const context: TranslateContext = {
+    route,
+    targetModel,
+    options,
+    streamRequested,
+    responseContinuationScope,
+    runId,
+    requestId,
+  };
   try {
     if (matched === route.protocol) {
-      await proxyDirect(response, body, {
-        route,
-        targetModel,
-        options,
-        streamRequested,
-        runId,
-        requestId,
-      });
+      await proxyDirect(response, body, context);
       return;
     }
     if (matched === 'anthropic-messages') {
       if (route.protocol === 'openai-chat') {
-        await translateAnthropicToOpenAI(response, body as unknown as AnthropicMessagesRequest, {
-          route,
-          targetModel,
-          options,
-          streamRequested,
-          runId,
-          requestId,
-        });
+        await translateAnthropicToOpenAI(response, body as unknown as AnthropicMessagesRequest, context);
         return;
       }
       if (route.protocol === 'openai-responses') {
         await translateAnthropicToOpenAIResponses(
           response,
           body as unknown as AnthropicMessagesRequest,
-          {
-            route,
-            targetModel,
-            options,
-            streamRequested,
-            responseContinuationScope,
-            runId,
-            requestId,
-          },
+          context,
         );
         return;
       }
@@ -495,18 +492,7 @@ async function handleRequest(
       // translate responses→chat. The same-dialect case (Responses upstream)
       // was already handled by `matched === route.protocol` above.
       if (route.protocol === 'openai-chat') {
-        await translateOpenAIResponsesToChat(
-          response,
-          body as unknown as OpenAIResponsesRequest,
-          {
-            route,
-            targetModel,
-            options,
-            streamRequested,
-            runId,
-            requestId,
-          },
-        );
+        await translateOpenAIResponsesToChat(response, body as unknown as OpenAIResponsesRequest, context);
         return;
       }
       throw new Error(
@@ -520,22 +506,39 @@ async function handleRequest(
         'openai-chat inbound → openai-responses upstream translation is not supported yet',
       );
     }
-    await translateOpenAIToAnthropic(response, body as unknown as OpenAIChatRequest, {
-      route,
-      targetModel,
-      options,
-      streamRequested,
-      runId,
-      requestId,
-    });
+    await translateOpenAIToAnthropic(response, body as unknown as OpenAIChatRequest, context);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'gateway upstream failure';
     options.onLog?.(`gateway upstream failure: ${message}`);
+    context.audit = { upstreamBody: body, error: message };
     if (!response.headersSent) {
       writeJson(response, 502, { error: { type: 'api_error', message } });
       return;
     }
     response.end();
+  } finally {
+    // 审计：每次转换/直通请求记录（原始格式 + 转换后格式 + 内核）。
+    const raw = truncateAuditBody(JSON.stringify(body));
+    const converted = truncateAuditBody(JSON.stringify(context.audit?.upstreamBody ?? body));
+    options.onRequest?.({
+      id: requestId,
+      occurredAt: new Date().toISOString(),
+      kernelId: ticket?.kernelId ?? 'external',
+      ...(ticket?.runId ? { runId: ticket.runId } : {}),
+      inboundDialect: matched as InboundDialect,
+      upstreamProtocol: route.protocol,
+      converted: matched !== route.protocol,
+      model: targetModel,
+      rawRequest: raw.text,
+      convertedRequest: converted.text,
+      truncated: raw.truncated || converted.truncated,
+      status: context.audit?.error ? 'error' : 'success',
+      ...(context.audit?.statusCode !== undefined
+        ? { statusCode: context.audit.statusCode }
+        : {}),
+      ...(context.audit?.error ? { errorMessage: context.audit.error } : {}),
+      latencyMs: Date.now() - requestStartedAt,
+    });
   }
 }
 
@@ -592,9 +595,11 @@ async function proxyDirect(
 ): Promise<void> {
   const abort = upstreamAbort(response);
   try {
+    const upstreamBody = { ...body, model: context.targetModel };
+    context.audit = { upstreamBody };
     const upstream = await callUpstream(
       context.route,
-      { ...body, model: context.targetModel },
+      upstreamBody,
       context.options,
       abort.signal,
     );
@@ -640,6 +645,17 @@ interface TranslateContext {
   requestId: string;
   providerResponseId?: string;
   providerModelId?: string;
+  /**
+   * 审计收集：翻译函数设置转换后的 upstream body；直通时设置改写后的 body。
+   * handleRequest 在请求收尾（finally）统一组装日志条目。
+   */
+  audit?: { upstreamBody: unknown; statusCode?: number; error?: string };
+}
+
+/** 截断审计 body：JSON 文本超限时保留头部并标记截断。 */
+function truncateAuditBody(jsonText: string): { text: string; truncated: boolean } {
+  if (jsonText.length <= AUDIT_BODY_CAP) return { text: jsonText, truncated: false };
+  return { text: `${jsonText.slice(0, AUDIT_BODY_CAP)}\n… (truncated)`, truncated: true };
 }
 
 /** Anthropic inbound → OpenAI upstream (Claude Code driving a gpt model). */
@@ -652,6 +668,7 @@ async function translateAnthropicToOpenAI(
     targetModel: context.targetModel,
   });
   if (!context.streamRequested) upstreamBody.stream = false;
+  context.audit = { upstreamBody };
   const abort = upstreamAbort(response);
   const emitter = new AnthropicStreamEmitter(
     `msg_${randomBytes(12).toString('hex')}`,
@@ -769,6 +786,7 @@ async function translateAnthropicToOpenAIResponses(
     ),
   });
   if (!context.streamRequested) upstreamBody.stream = false;
+  context.audit = { upstreamBody };
   const abort = upstreamAbort(response);
   const functionCallItems = new Map<string, string>();
   let providerResponseId: string | undefined;
@@ -903,6 +921,7 @@ async function translateOpenAIResponsesToChat(
     targetModel: context.targetModel,
   });
   if (!context.streamRequested) upstreamBody.stream = false;
+  context.audit = { upstreamBody };
   const abort = upstreamAbort(response);
   const emitter = new ChatStreamToResponsesEmitter(
     `resp_${randomBytes(12).toString('hex')}`,
@@ -994,6 +1013,7 @@ async function translateOpenAIToAnthropic(
     targetModel: context.targetModel,
   });
   if (!context.streamRequested) upstreamBody.stream = false;
+  context.audit = { upstreamBody };
   const abort = upstreamAbort(response);
   const emitter = new OpenAIStreamEmitter(
     `chatcmpl-${randomBytes(12).toString('hex')}`,
@@ -1319,6 +1339,10 @@ async function failTranslated(
   upstream: Response,
   context: TranslateContext,
 ): Promise<void> {
+  if (context.audit) {
+    context.audit.statusCode = upstream.status;
+    context.audit.error = `upstream ${upstream.status} rejected`;
+  }
   const text = await upstream.text().catch(() => '');
   const snippet = text.slice(0, 2_000);
   let diagnosticMessage = '';

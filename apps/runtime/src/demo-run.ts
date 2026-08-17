@@ -177,6 +177,13 @@ export interface DemoRunState {
   commentarySegments: CommentaryTimelineSegment[];
   /** Unclassified text from legacy providers that do not expose assistant phases. */
   legacyPendingText: string;
+  /**
+   * Timeline sequence where the buffered legacy text first arrived. On flush
+   * the classified segment is inserted at this position so it keeps its real
+   * emission order even when later segments (e.g. compaction status) were
+   * appended to the timeline while the text was still buffered.
+   */
+  legacyPendingTextSeq?: number;
   /** Provider reasoning summary for diagnostics only. */
   reasoningText: string;
   /** Legacy provider reasoning fragments retained only for checkpoint compatibility. */
@@ -190,6 +197,19 @@ export interface DemoRunState {
    * results the resumed kernel otherwise never sees.
    */
   kernelToolEvents: KernelToolEventRecord[];
+  /**
+   * Kernel tools announced (tool.requested) but not yet revealed into the
+   * assistant timeline. A claude-code / codex kernel announces the whole batch
+   * in one assistant message while it actually executes tools sequentially, so
+   * rows are revealed one-by-one on real execution start (the first on
+   * announcement, each next one when the previous tool's result arrives).
+   */
+  pendingKernelToolCalls?: Array<{
+    toolCallId: string;
+    name: string;
+    argumentsJson?: string;
+    announcedAt: string;
+  }>;
   /** When true, use demoProvider Fake path (no live secret). */
   useFakeProvider: boolean;
 }
@@ -242,7 +262,7 @@ function closeAssistantTimelineTail(
   return next;
 }
 
-function nextAssistantTimelineSequence(timeline: readonly AssistantTurnSegment[]): number {
+export function nextAssistantTimelineSequence(timeline: readonly AssistantTurnSegment[]): number {
   return (timeline.at(-1)?.sequence ?? -1) + 1;
 }
 
@@ -289,32 +309,50 @@ export function appendAssistantTextDelta(
   phase: 'commentary' | 'final_answer',
   text: string,
   occurredAt: string,
+  afterSequence?: number,
 ): DemoRunState {
   if (!text) return run;
   const timeline = run.assistantTimeline ?? [];
   const tail = timeline.at(-1);
-  if (tail?.kind === 'text' && tail.phase === phase && tail.status === 'streaming') {
+  if (
+    tail?.kind === 'text' &&
+    tail.phase === phase &&
+    tail.status === 'streaming' &&
+    (afterSequence === undefined || tail.sequence === afterSequence)
+  ) {
     return {
       ...run,
       assistantTimeline: [...timeline.slice(0, -1), { ...tail, text: tail.text + text }],
     };
   }
   const closed = closeAssistantTimelineTail(timeline, occurredAt);
-  const sequence = nextAssistantTimelineSequence(closed);
+  const sequence =
+    afterSequence !== undefined ? afterSequence : nextAssistantTimelineSequence(closed);
+  // afterSequence 提供时把段插入到该位置（缓冲文本真实到达顺序），
+  // 而不是追加到尾部——后续到达的段（如 compaction status）保持在其后。
+  const insertIndex =
+    afterSequence !== undefined
+      ? closed.findIndex((segment) => segment.sequence >= afterSequence)
+      : -1;
+  const at = insertIndex < 0 ? closed.length : insertIndex;
+  const segment: AssistantTurnSegment = {
+    id: `text-${run.runId}-${sequence}`,
+    sequence,
+    kind: 'text',
+    phase,
+    text,
+    status: 'streaming',
+    startedAt: occurredAt,
+  };
+  const inserted = [...closed.slice(0, at), segment, ...closed.slice(at)];
+  const next = afterSequence !== undefined
+    ? inserted.map((item, index) =>
+        item === segment ? item : { ...item, sequence: index },
+      )
+    : inserted;
   return {
     ...run,
-    assistantTimeline: boundAssistantTimeline([
-      ...closed,
-      {
-        id: `text-${run.runId}-${sequence}`,
-        sequence,
-        kind: 'text',
-        phase,
-        text,
-        status: 'streaming',
-        startedAt: occurredAt,
-      },
-    ]),
+    assistantTimeline: boundAssistantTimeline(next),
   };
 }
 

@@ -5,8 +5,8 @@
  * a compact expandable row, every tool call owns one row, and commentary or
  * status events keep their original positions.
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { InlineProcessItem } from './ChatView.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
 
@@ -35,7 +35,7 @@ const runningTool: InlineProcessItem = {
   kind: 'tool',
   toolCallId: 'tool-running',
   name: 'run_command',
-  argumentsJson: '{"command":"pnpm test"}',
+  argumentsJson: '{"command":"pnpm","args":["-s","test"]}',
   status: 'running',
 };
 const failedToolItem: InlineProcessItem = {
@@ -162,7 +162,9 @@ describe('InlineProcessFlow', () => {
 
     expect(tool.textContent).toContain('读取文件');
     expect(tool.textContent).toContain('a.txt');
-    expect(tool.textContent).toContain('完成');
+    expect(within(tool).getByTestId('inline-process-tool-status').getAttribute('data-status')).toBe(
+      'completed',
+    );
     expect(tool.textContent).not.toContain('read_file');
 
     fireEvent.click(within(tool).getByRole('button'));
@@ -213,13 +215,28 @@ describe('InlineProcessFlow', () => {
     render(<InlineProcessFlow items={[runningTool, toolItem, failedToolItem]} defaultOpen />);
     const tools = screen.getAllByTestId('inline-process-tool');
 
-    expect(within(tools[0]).getByText('运行中')).toBeTruthy();
-    expect(within(tools[1]).getByText('完成')).toBeTruthy();
-    expect(within(tools[2]).getByText('失败')).toBeTruthy();
+    expect(within(tools[0]).getByTestId('inline-process-tool-status').getAttribute('data-status')).toBe('running');
+    expect(within(tools[1]).getByTestId('inline-process-tool-status').getAttribute('data-status')).toBe('completed');
+    expect(within(tools[2]).getByTestId('inline-process-tool-status').getAttribute('data-status')).toBe('failed');
     expect(tools[2].getAttribute('data-failed')).toBe('true');
 
     fireEvent.click(within(tools[2]).getByRole('button'));
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('boom');
+  });
+
+  it('shows the sync-thinking pulse while streaming before the final answer, hides it after', () => {
+    const { rerender } = render(
+      <InlineProcessFlow items={[runningTool]} streaming defaultOpen />,
+    );
+    expect(screen.getByTestId('process-thinking').textContent).toContain('sync-thinking');
+
+    rerender(
+      <InlineProcessFlow items={[runningTool]} streaming answerStarted defaultOpen />,
+    );
+    expect(screen.queryByTestId('process-thinking')).toBeNull();
+
+    rerender(<InlineProcessFlow items={[runningTool]} defaultOpen />);
+    expect(screen.queryByTestId('process-thinking')).toBeNull();
   });
 
   it('shows elapsed time in the expanded details for one tool call', () => {
@@ -237,6 +254,145 @@ describe('InlineProcessFlow', () => {
     );
     fireEvent.click(within(screen.getByTestId('inline-process-tool')).getByRole('button'));
     expect(screen.getByText('2.0s')).toBeTruthy();
+  });
+
+  it('names the running tool in the header so a collapsed panel still says what is happening', () => {
+    render(
+      <InlineProcessFlow items={[toolItem, runningTool]} runId="run-a" streaming answerStarted />,
+    );
+
+    const toggle = screen.getByTestId('process-panel-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    const activity = screen.getByTestId('process-panel-activity');
+    expect(activity.getAttribute('data-kind')).toBe('tool');
+    expect(activity.textContent).toContain('运行命令 pnpm -s test');
+  });
+
+  it('shows the full command line — not just the executable — on the tool row', () => {
+    // {command,args[]} 只读 command 会把「pnpm -s test」显示成「pnpm」，
+    // 等于看不出在跑什么。
+    render(<InlineProcessFlow items={[runningTool]} defaultOpen />);
+    expect(screen.getByTestId('inline-process-tool').textContent).toContain('pnpm -s test');
+  });
+
+  it('falls back to a waiting label before the first provider output arrives', () => {
+    render(<InlineProcessFlow items={[toolItem]} runId="run-a" streaming />);
+    const activity = screen.getByTestId('process-panel-activity');
+
+    expect(activity.getAttribute('data-kind')).toBe('waiting');
+    expect(activity.textContent).toContain('等待模型响应');
+  });
+
+  it('drops the activity summary once the run reaches a terminal state', () => {
+    const { rerender } = render(
+      <InlineProcessFlow items={[runningTool]} runId="run-a" streaming />,
+    );
+    expect(screen.queryByTestId('process-panel-activity')).toBeTruthy();
+
+    rerender(<InlineProcessFlow items={[runningTool]} runId="run-a" streaming={false} />);
+    expect(screen.queryByTestId('process-panel-activity')).toBeNull();
+  });
+
+  it('counts up elapsed time on a running tool row and drops it once completed', () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = new Date(Date.now() - 8_000).toISOString();
+      const { rerender } = render(
+        <InlineProcessFlow
+          items={[{ ...runningTool, startedAt }]}
+          runId="run-a"
+          streaming
+          defaultOpen
+        />,
+      );
+      expect(screen.getByTestId('inline-process-tool-elapsed').textContent).toBe('8s');
+
+      act(() => {
+        vi.advanceTimersByTime(3_000);
+      });
+      expect(screen.getByTestId('inline-process-tool-elapsed').textContent).toBe('11s');
+
+      // 终态耗时回到展开详情里，主行不再自增。
+      rerender(
+        <InlineProcessFlow
+          items={[
+            {
+              ...runningTool,
+              startedAt,
+              completedAt: new Date().toISOString(),
+              status: 'completed',
+              result: 'ok',
+            },
+          ]}
+          runId="run-a"
+          streaming={false}
+          defaultOpen
+        />,
+      );
+      expect(screen.queryByTestId('inline-process-tool-elapsed')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a tool row mounted and its details open while it flips to completed', () => {
+    // §12.17.17：running → completed 原位翻转不得重挂载，也不得丢掉展开选择。
+    const { rerender } = render(
+      <InlineProcessFlow items={[runningTool]} runId="run-a" streaming defaultOpen />,
+    );
+    fireEvent.click(within(screen.getByTestId('inline-process-tool')).getByRole('button'));
+    const before = screen.getByTestId('inline-process-tool');
+    expect(before.querySelector('.shell-inline-process__tool-body')).toBeTruthy();
+
+    rerender(
+      <InlineProcessFlow
+        items={[{ ...runningTool, status: 'completed', result: 'done' }]}
+        runId="run-a"
+        streaming
+        defaultOpen
+      />,
+    );
+    const after = screen.getByTestId('inline-process-tool');
+    expect(after).toBe(before);
+    expect(after.querySelector('.shell-inline-process__tool-body')).toBeTruthy();
+  });
+
+  it('shows the latest output line of a running tool and hides it when finished', () => {
+    const { rerender } = render(
+      <InlineProcessFlow
+        items={[{ ...runningTool, progressLine: 'compiling @sync-think/ui-kit' }]}
+        defaultOpen
+      />,
+    );
+    expect(screen.getByTestId('inline-process-tool-progress').textContent).toBe(
+      'compiling @sync-think/ui-kit',
+    );
+
+    rerender(
+      <InlineProcessFlow
+        items={[
+          {
+            ...runningTool,
+            progressLine: 'compiling @sync-think/ui-kit',
+            status: 'completed',
+            result: 'ok',
+          },
+        ]}
+        defaultOpen
+      />,
+    );
+    expect(screen.queryByTestId('inline-process-tool-progress')).toBeNull();
+  });
+
+  it('marks a failed tool with a cross rather than a status word', () => {
+    render(<InlineProcessFlow items={[failedToolItem]} defaultOpen />);
+    const status = screen.getByTestId('inline-process-tool-status');
+
+    expect(status.getAttribute('data-status')).toBe('failed');
+    expect(status.getAttribute('title')).toBe('失败');
+    expect(status.getAttribute('aria-label')).toBe('失败');
+    expect(status.textContent).toBe('');
+    expect(screen.getByTestId('inline-process-tool').textContent).not.toContain('失败');
   });
 
   it('renders status events as their own lightweight row', () => {

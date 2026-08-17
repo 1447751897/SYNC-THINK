@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { PendingAsk } from './AskQuestionCard.js';
-import { AskQuestionCard, formatAskToolResult } from './AskQuestionCard.js';
+import { AskQuestionCard, formatAskToolResult, parsePlanReviewDetail } from './AskQuestionCard.js';
 
 const ask: PendingAsk = {
   askId: 'ask-1',
@@ -226,5 +226,43 @@ describe('formatAskToolResult', () => {
   it('returns undefined for non-answer payloads', () => {
     expect(formatAskToolResult('plain text')).toBeUndefined();
     expect(formatAskToolResult(JSON.stringify({ ok: true }))).toBeUndefined();
+  });
+});
+
+describe('parsePlanReviewDetail', () => {
+  it('extracts title from the question and numbered steps from the detail', () => {
+    const plan = parsePlanReviewDetail('是否执行该方案？', [
+      '# 改造计划',
+      '目标：提升可维护性',
+      '1. 梳理模块边界',
+      '   - 列出当前耦合点',
+      '2. 重构数据层',
+      '   - [ ] 统一仓储接口',
+      '风险：迁移期可能出现回归',
+    ].join('\n'));
+    expect(plan.title).toBe('是否执行该方案？');
+    expect(plan.goal).toContain('提升可维护性');
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]!.title).toBe('梳理模块边界');
+    expect(plan.steps[0]!.description).toContain('列出当前耦合点');
+    expect(plan.steps[1]!.title).toBe('重构数据层');
+    expect(plan.steps[1]!.acceptanceChecks).toEqual(['统一仓储接口']);
+    expect(plan.steps.every((step) => step.id && step.title)).toBe(true);
+    expect(plan.finalAcceptanceChecks).toEqual([]);
+  });
+
+  it('falls back to a single default step when the detail has no list items', () => {
+    const plan = parsePlanReviewDetail('是否执行该方案？', '就是一个简单改造。');
+    expect(plan.title).toBe('是否执行该方案？');
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]!.title).toBe('执行计划');
+    expect(plan.steps[0]!.description).toBe('就是一个简单改造。');
+  });
+
+  it('passes the runtime submit validation (title + at least one step)', () => {
+    const plan = parsePlanReviewDetail('', '');
+    expect(plan.title.length).toBeGreaterThan(0);
+    expect(plan.steps.length).toBeGreaterThan(0);
+    expect(plan.steps[0]!.id.length).toBeGreaterThan(0);
   });
 });

@@ -98,6 +98,20 @@ function shortText(value: string, max = 48): string {
   return `…${text.slice(-(max - 1))}`;
 }
 
+/**
+ * `run_command` 的参数是 `{command, args[], cwd}`——只读 `command` 会把
+ * 「pnpm -s test」显示成「pnpm」，看不出在跑什么。命令行必须连参数一起还原。
+ */
+function formatCommandLine(command: string, args?: unknown): string {
+  const head = command.trim();
+  if (!Array.isArray(args)) return head;
+  const tail = args
+    .filter((arg): arg is string => typeof arg === 'string')
+    .map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg))
+    .filter(Boolean);
+  return [head, ...tail].filter(Boolean).join(' ');
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -214,7 +228,8 @@ function buildLabel(
       : typeof args?.file === 'string'
         ? args.file
         : undefined;
-  const command = typeof args?.command === 'string' ? args.command : undefined;
+  const command =
+    typeof args?.command === 'string' ? formatCommandLine(args.command, args?.args) : undefined;
   const url = typeof args?.url === 'string' ? args.url : undefined;
   const query = typeof args?.query === 'string' ? args.query : undefined;
   const focus = path ?? command ?? url ?? query;

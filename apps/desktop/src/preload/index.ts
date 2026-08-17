@@ -288,6 +288,7 @@ import type {
   ConversationDecideToolApprovalResponse,
   KernelDetectResponse,
   OpenGatewayStatusResponse,
+  GatewayLogsResponse,
 } from '@sync-think/protocol';
 import type { ArtifactImagePreviewResponse } from '../artifact-image-preview-contract.js';
 import type {
@@ -332,6 +333,10 @@ const api = {
       ipcRenderer.invoke('runtime:kernel-detect') as Promise<KernelDetectResponse>,
     getGatewayStatus: () =>
       ipcRenderer.invoke('runtime:gateway-status') as Promise<OpenGatewayStatusResponse>,
+    getGatewayLogs: (query?: { offset?: number; limit?: number }) =>
+      ipcRenderer.invoke('runtime:gateway-logs', query ?? {}) as Promise<GatewayLogsResponse>,
+    clearGatewayLogs: () =>
+      ipcRenderer.invoke('runtime:gateway-logs-clear') as Promise<unknown>,
     installKernel: (kernelId: string) =>
       ipcRenderer.invoke('desktop:kernel-install', kernelId) as Promise<
         { ok: true } | { ok: false; error: string }

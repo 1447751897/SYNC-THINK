@@ -4272,6 +4272,79 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* §活动摘要：折叠态也回答「现在在做什么」。gradient sweep 本身就是「进程
+   还活着」的视觉证据——静态文字分不清渲染卡死和正常等待。 */
+.shell-process-panel__activity {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+
+.shell-process-panel__activity::before {
+  content: '·';
+  color: var(--color-text-faint);
+}
+
+.shell-process-panel__activity-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--color-accent) 78%, var(--color-text-secondary));
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in srgb, var(--color-accent) 55%, var(--color-text)) 45%,
+    transparent 70%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: shell-activity-shimmer 2.1s linear infinite;
+}
+
+/* 等待模型响应时更需要被注意到，工具在跑时保持克制。 */
+.shell-process-panel__activity[data-kind='waiting'] .shell-process-panel__activity-label {
+  color: var(--color-text-secondary);
+}
+
+.shell-process-panel__activity-idle {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-faint);
+}
+
+.shell-process-panel__activity[data-stall='slow'] .shell-process-panel__activity-idle {
+  color: var(--color-warning);
+}
+
+.shell-process-panel__activity[data-stall='stalled'] .shell-process-panel__activity-idle {
+  color: var(--color-warning);
+  font-weight: 600;
+}
+
+@keyframes shell-activity-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+/* 动效是「活着」的证据，但降级后仍须可读：去掉 sweep，保留纯色文字。 */
+@media (prefers-reduced-motion: reduce) {
+  .shell-process-panel__activity-label {
+    background-image: none;
+    animation: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+  }
+}
+
 .shell-process-panel__chevron {
   margin-left: auto;
   flex: none;
@@ -4301,6 +4374,38 @@ body {
 
 .shell-process-panel__supplemental > .shell-run-connection-status {
   margin: 2px 4px;
+}
+
+/* §活动指示器：执行过程最下方常驻 sync-thinking 脉冲（思考/工具执行期间）。 */
+.shell-process-panel__thinking {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--color-accent) 82%, var(--color-text-secondary));
+  animation: shell-thinking-pulse 1.8s ease-in-out infinite;
+}
+
+.shell-process-panel__thinking-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  animation: shell-thinking-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes shell-thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .shell-inline-process {
@@ -4374,6 +4479,28 @@ body {
   color: var(--color-text-faint);
   font-size: 12.5px;
   line-height: 1.6;
+}
+
+/* 运行中工具的自增耗时。终态耗时仍留在展开详情里，这里只解决
+   「它到底还在跑吗」——所以只有 running 行会出现。 */
+.shell-inline-process__tool-elapsed {
+  flex: none;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-faint);
+}
+
+/* 运行中工具的最新输出行（ephemeral tool_progress，不持久化）。 */
+.shell-inline-process__tool-progress {
+  margin: 0 4px 3px 38px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-text-faint);
+  opacity: 0.85;
 }
 
 .shell-inline-process__chevron {
@@ -5245,7 +5372,9 @@ body {
 
 /* 计划审批卡（规划模式） */
 .shell-plan-card {
-  margin: 8px 8px 0;
+  /* 方案卡直接输出在消息流里（§方案卡）：自然高度，大方案靠聊天区整体
+     滚动查看；不需要卡片内部滚动，也不再有 compose 裁切问题。 */
+  margin: 0;
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
   border-radius: 10px;
@@ -10639,6 +10768,274 @@ body {
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-secondary);
+}
+
+/* 网关转换审计日志（AI 模型网关卡片下方） */
+.settings-gateway-logs {
+  margin-top: 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  padding: 12px 14px 14px;
+}
+.settings-gateway-logs__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.settings-gateway-logs__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.settings-gateway-logs__title h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.settings-gateway-logs__count {
+  font-size: 11.5px;
+  color: var(--color-text-faint);
+}
+.settings-gateway-logs__actions {
+  display: flex;
+  gap: 6px;
+}
+.settings-gateway-logs__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.settings-gateway-logs__action:hover:not(:disabled) {
+  background: var(--color-active);
+  color: var(--color-text);
+}
+.settings-gateway-logs__action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.settings-gateway-logs__action--danger:hover:not(:disabled) {
+  color: var(--color-error);
+}
+.settings-gateway-logs__filters {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+.settings-gateway-logs__filter-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.settings-gateway-logs__filter-label {
+  font-size: 11px;
+  color: var(--color-text-faint);
+  margin-right: 2px;
+}
+.settings-gateway-logs__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--color-active);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.settings-gateway-logs__chip:hover {
+  color: var(--color-text);
+}
+.settings-gateway-logs__chip.is-active {
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  color: var(--color-accent);
+}
+.settings-gateway-logs__empty {
+  padding: 18px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-faint);
+}
+.settings-gateway-logs__list {
+  margin-top: 6px;
+  max-height: 380px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.settings-gateway-logs__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.settings-gateway-logs__row:hover {
+  background: var(--color-active);
+}
+.settings-gateway-logs__row.is-error .settings-gateway-logs__dialect,
+.settings-gateway-logs__row.is-error .settings-gateway-logs__model {
+  color: color-mix(in srgb, var(--color-error) 80%, var(--color-text));
+}
+.settings-gateway-logs__time {
+  flex: none;
+  width: 64px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+.settings-gateway-logs__kernel {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  color: var(--color-text-secondary);
+}
+.settings-gateway-logs__dialect {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.settings-gateway-logs__model {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--color-text);
+}
+.settings-gateway-logs__status {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+}
+.settings-gateway-logs__status.is-ok {
+  color: var(--color-success, #2fbd6f);
+}
+.settings-gateway-logs__status.is-err {
+  color: var(--color-error);
+}
+.settings-gateway-logs__latency {
+  flex: none;
+  width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+.settings-gateway-logs__detail {
+  margin: 0 8px 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-2, var(--color-active));
+}
+.settings-gateway-logs__detail-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+.settings-gateway-logs__detail-error {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--color-error);
+  word-break: break-all;
+}
+.settings-gateway-logs__detail-bodies {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+.settings-gateway-logs__detail-body {
+  min-width: 0;
+}
+.settings-gateway-logs__detail-body p {
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+.settings-gateway-logs__detail-body pre {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--color-bg-code, var(--color-active));
+  border: 1px solid var(--color-border);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.settings-gateway-logs__pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 10px;
+}
+.settings-gateway-logs__pager button {
+  padding: 2px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.settings-gateway-logs__pager button:hover:not(:disabled) {
+  background: var(--color-active);
+  color: var(--color-text);
+}
+.settings-gateway-logs__pager button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.settings-gateway-logs__pager span {
+  font-size: 11.5px;
+  color: var(--color-text-faint);
+}
+@media (max-width: 720px) {
+  .settings-gateway-logs__detail-bodies {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-toggle {

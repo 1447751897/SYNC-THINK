@@ -41,6 +41,26 @@ export function hasConversationStreamDraftContent(
   );
 }
 
+/**
+ * Whether a terminal draft must survive even with no provider output.
+ *
+ * A run that fails before emitting anything still has to be visible: a kernel
+ * that dies during spawn (bad argv, missing binary, auth refused) produces zero
+ * text, so the content predicate above discards the draft — and with it the
+ * `terminalError` — leaving the user staring at a sent message with no reply and
+ * no explanation. An empty *successful* run stays discarded: there is nothing to
+ * say about it.
+ */
+export function shouldRetainTerminalDraft(
+  draft: ConversationStreamDraft | null | undefined,
+  terminalState: 'completed' | 'failed' | 'cancelled' | undefined,
+  terminalError: string | undefined,
+): boolean {
+  if (!draft) return false;
+  if (hasConversationStreamDraftContent(draft)) return true;
+  return terminalState === 'failed' || terminalState === 'cancelled' || Boolean(terminalError);
+}
+
 export type ConversationStreamOperation = (
   | {
       type: 'text.delta';
@@ -406,7 +426,11 @@ export function applyConversationStreamOperations(
           draft,
           operation.occurredAt ?? draft.timestamp,
         );
-        draft = hasConversationStreamDraftContent(finalized)
+        draft = shouldRetainTerminalDraft(
+          finalized,
+          operation.terminalState,
+          operation.terminalError,
+        )
           ? {
               ...finalized,
               terminal: true,
