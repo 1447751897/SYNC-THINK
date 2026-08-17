@@ -6,8 +6,14 @@
  * text / tool-call + tool-result) becomes an ordered process item.
  */
 import { describe, expect, it } from 'vitest';
+import type { AssistantTurnSegment } from '@sync-think/protocol';
 import type { Message, MessageBlock } from '@sync-think/shared';
-import { messageToChat, type InlineProcessItem } from './ChatView.js';
+import {
+  assistantTimelineProcessTiming,
+  messageToChat,
+  projectTransientAnswerText,
+  type InlineProcessItem,
+} from './ChatView.js';
 
 function message(blocks: MessageBlock[]): Message {
   return {
@@ -21,6 +27,86 @@ function message(blocks: MessageBlock[]): Message {
 }
 
 describe('messageToChat inline process split', () => {
+  it('derives settled process timing from durable timeline boundaries', () => {
+    const timeline: AssistantTurnSegment[] = [
+      {
+        id: 'think-1',
+        sequence: 0,
+        kind: 'thinking',
+        text: '检查中',
+        status: 'completed',
+        startedAt: '2026-08-16T10:00:00.000Z',
+        completedAt: '2026-08-16T10:00:01.000Z',
+      },
+      {
+        id: 'answer-1',
+        sequence: 1,
+        kind: 'text',
+        phase: 'final_answer',
+        text: '完成。',
+        status: 'completed',
+        startedAt: '2026-08-16T10:01:07.000Z',
+        completedAt: '2026-08-16T10:01:08.000Z',
+      },
+    ];
+
+    expect(assistantTimelineProcessTiming(timeline, true)).toEqual({
+      startedAt: '2026-08-16T10:00:00.000Z',
+      completedAt: '2026-08-16T10:01:08.000Z',
+    });
+    expect(assistantTimelineProcessTiming(timeline, false)).toEqual({
+      startedAt: '2026-08-16T10:00:00.000Z',
+    });
+  });
+
+  it('shows the unclassified provider suffix while a Native answer is still streaming', () => {
+    const timeline: AssistantTurnSegment[] = [
+      {
+        id: 'think-1',
+        sequence: 0,
+        kind: 'thinking',
+        text: '先分析。',
+        status: 'streaming',
+      },
+      {
+        id: 'commentary-1',
+        sequence: 1,
+        kind: 'text',
+        phase: 'commentary',
+        text: '我先检查资料。',
+        status: 'completed',
+      },
+    ];
+
+    expect(projectTransientAnswerText('我先检查资料。正在生成最终回答', timeline)).toBe(
+      '正在生成最终回答',
+    );
+    expect(projectTransientAnswerText('我先检查资料。', timeline)).toBeUndefined();
+  });
+
+  it('keeps a phase-aware final answer without duplicating classified timeline text', () => {
+    const timeline: AssistantTurnSegment[] = [
+      {
+        id: 'commentary-1',
+        sequence: 0,
+        kind: 'text',
+        phase: 'commentary',
+        text: '说明。',
+        status: 'completed',
+      },
+      {
+        id: 'answer-1',
+        sequence: 1,
+        kind: 'text',
+        phase: 'final_answer',
+        text: '答案。',
+        status: 'streaming',
+      },
+    ];
+
+    expect(projectTransientAnswerText('答案。', timeline)).toBe('答案。');
+  });
+
   it('splits the last text block as the final answer and keeps earlier blocks as process items', () => {
     const chat = messageToChat(
       message([
@@ -96,7 +182,10 @@ describe('messageToChat inline process split', () => {
 
   it('keeps backward-compatible joined text for copy and legacy surfaces', () => {
     const chat = messageToChat(
-      message([{ type: 'text', text: '过程说明。' }, { type: 'text', text: '最终回答。' }]),
+      message([
+        { type: 'text', text: '过程说明。' },
+        { type: 'text', text: '最终回答。' },
+      ]),
     );
     expect(chat.text).toBe('过程说明。\n最终回答。');
   });
@@ -112,5 +201,179 @@ describe('messageToChat inline process split', () => {
     expect(chat.reasoningText).toBe('思考');
     expect(chat.commentaryText).toBe('注释');
     expect(chat.answerText).toBe('回答');
+  });
+  it('uses the ordered assistant timeline as the source of truth without duplicating compatibility blocks', () => {
+    const timeline: AssistantTurnSegment[] = [
+      {
+        id: 'thinking-a',
+        sequence: 0,
+        kind: 'thinking',
+        text: '先检查项目',
+        status: 'completed',
+      },
+      {
+        id: 'commentary-a',
+        sequence: 1,
+        kind: 'text',
+        phase: 'commentary',
+        text: '我先读取配置。',
+        status: 'completed',
+      },
+      {
+        id: 'tool-a',
+        sequence: 2,
+        kind: 'tool',
+        toolCallId: 'call-a',
+        name: 'read_file',
+        argumentsJson: '{"path":"config.json"}',
+        output: 'ok',
+        status: 'completed',
+      },
+      {
+        id: 'status-a',
+        sequence: 3,
+        kind: 'status',
+        statusType: 'retry',
+        label: '正在重试当前模型（1/2）',
+        detail: 'timeout',
+      },
+      {
+        id: 'thinking-b',
+        sequence: 4,
+        kind: 'thinking',
+        text: '重试后继续',
+        status: 'completed',
+      },
+      {
+        id: 'answer-a',
+        sequence: 5,
+        kind: 'text',
+        phase: 'final_answer',
+        text: '最终回答。',
+        status: 'completed',
+      },
+    ];
+    const chat = messageToChat(
+      message([
+        { type: 'commentary', payload: { assistantTimeline: timeline } },
+        { type: 'reasoning', reasoningText: '先检查项目' },
+        { type: 'commentary', text: '我先读取配置。' },
+        {
+          type: 'tool-call',
+          payload: {
+            toolCallId: 'call-a',
+            name: 'read_file',
+            argumentsJson: '{"path":"config.json"}',
+          },
+        },
+        { type: 'tool-result', text: 'ok', payload: { toolCallId: 'call-a' } },
+        { type: 'reasoning', reasoningText: '重试后继续' },
+        { type: 'text', text: '最终回答。' },
+      ]),
+    );
+
+    expect(chat.answerText).toBe('最终回答。');
+    expect(chat.text).toBe('最终回答。');
+    expect(chat.processItems).toEqual([
+      expect.objectContaining({
+        kind: 'reasoning',
+        id: 'thinking-a',
+        sequence: 0,
+        text: '先检查项目',
+      }),
+      expect.objectContaining({
+        kind: 'commentary',
+        id: 'commentary-a',
+        sequence: 1,
+        text: '我先读取配置。',
+      }),
+      expect.objectContaining({
+        kind: 'tool',
+        id: 'tool-a',
+        sequence: 2,
+        toolCallId: 'call-a',
+        result: 'ok',
+        status: 'completed',
+      }),
+      expect.objectContaining({ kind: 'status', id: 'status-a', sequence: 3, statusType: 'retry' }),
+      expect.objectContaining({
+        kind: 'reasoning',
+        id: 'thinking-b',
+        sequence: 4,
+        text: '重试后继续',
+      }),
+    ]);
+    expect(chat.processItems).toHaveLength(5);
+  });
+
+  it('repairs historical final text that is followed by a tool boundary', () => {
+    const timeline: AssistantTurnSegment[] = [
+      {
+        id: 'premature-final',
+        sequence: 0,
+        kind: 'text',
+        phase: 'final_answer',
+        text: '我先查看项目结构。',
+        status: 'completed',
+      },
+      {
+        id: 'tool-a',
+        sequence: 1,
+        kind: 'tool',
+        toolCallId: 'call-a',
+        name: 'read_file',
+        status: 'completed',
+      },
+      {
+        id: 'actual-final',
+        sequence: 2,
+        kind: 'text',
+        phase: 'final_answer',
+        text: '项目检查完成。',
+        status: 'completed',
+      },
+    ];
+
+    const chat = messageToChat(
+      message([{ type: 'commentary', payload: { assistantTimeline: timeline } }]),
+    );
+
+    expect(chat.answerText).toBe('项目检查完成。');
+    expect(chat.processItems).toEqual([
+      expect.objectContaining({ kind: 'commentary', text: '我先查看项目结构。' }),
+      expect.objectContaining({ kind: 'tool', toolCallId: 'call-a' }),
+    ]);
+  });
+
+  it('does not synthesize Think when the ordered timeline has no thinking segment', () => {
+    const timeline: AssistantTurnSegment[] = [
+      {
+        id: 'commentary-a',
+        sequence: 0,
+        kind: 'text',
+        phase: 'commentary',
+        text: '正在处理。',
+        status: 'completed',
+      },
+      {
+        id: 'answer-a',
+        sequence: 1,
+        kind: 'text',
+        phase: 'final_answer',
+        text: '完成。',
+        status: 'completed',
+      },
+    ];
+    const chat = messageToChat(
+      message([
+        { type: 'commentary', payload: { assistantTimeline: timeline } },
+        { type: 'text', text: '完成。' },
+      ]),
+    );
+
+    expect(chat.reasoningText).toBeUndefined();
+    expect(chat.processItems).toEqual([
+      expect.objectContaining({ kind: 'commentary', text: '正在处理。' }),
+    ]);
   });
 });

@@ -43,6 +43,19 @@ export interface KernelCapabilities {
   compress: 'own' | 'none';
   /** Whether the kernel reports usage events to the host. */
   usageReport: boolean;
+  /**
+   * Native context-window semantics. Omitted when the host fully controls the
+   * window (native in-process kernel). For subprocess kernels:
+   * - `nativeLimit` is the kernel's own window cap (tokens) when left untouched;
+   * - `overridable` is true when the host can override the window via CLI/config
+   *   (`-c model_context_window=<n>` for Codex) — then the effective window
+   *   equals the configured value; when false (Claude Code) the effective window
+   *   is capped at `nativeLimit` and the host must trim to that.
+   */
+  contextWindow?: {
+    nativeLimit: number;
+    overridable: boolean;
+  };
 }
 
 /**
@@ -55,6 +68,8 @@ export interface KernelUsage {
   real: number;
   /** Echoed context window the host configured for this run. */
   window: number;
+  /** Window the kernel itself reported, when the kernel exposes it (absent otherwise). */
+  kernelWindow?: number;
   input?: number;
   output?: number;
   cached?: number;
@@ -140,6 +155,14 @@ export interface KernelRequest {
   userText: string;
   /** Host-configured context window capacity (§2.3 ①). */
   contextWindow: number;
+  /**
+   * Effective window the kernel should honor: `min(configured, nativeLimit)`
+   * when the kernel window is not overridable, else the configured value.
+   * Adapters use this for injection and for the usage `window` echo.
+   */
+  effectiveContextWindow: number;
+  /** Why the effective window differs from the configured value (observability). */
+  contextWindowSource: 'configured' | 'kernel-capped' | 'estimated';
   credential: KernelCredential;
   /** Shared facts + team context injected into the system prompt. */
   systemContext: string;
@@ -148,12 +171,27 @@ export interface KernelRequest {
   /** Loopback broker for host platform tools (MCP channel). */
   platformBroker?: PlatformBrokerInfo;
   permissionMode: KernelPermissionMode;
+  /**
+   * Planning mode: the kernel runs read-only to produce an approvable plan.
+   * Adapters restrict their native tools to a read-only allowlist and the host
+   * platform MCP catalog is filtered to read-only tools. Hard-blocked in the
+   * host tool executor as a second fence (never rely on the prompt alone).
+   */
+  planningMode?: boolean;
   workspaceDir: string;
+  /** Host reasoning effort ('off' | 'low' | 'medium' | 'high' | 'xhigh') for kernels that expose it. */
+  reasoningEffort?: string;
   /** Optional kernel-owned conversation session carried across short-lived runs. */
   session?: {
     /** Create may omit the id when the kernel assigns it (Codex thread.started). */
     id?: string;
     mode: 'create' | 'resume';
+    /**
+     * Optional catch-up transcript injected on resume when other kernels handled
+     * turns this kernel's native session never saw (cross-kernel gap). The
+     * adapter appends it to the resume prompt/system context.
+     */
+    catchUp?: string;
   };
 }
 

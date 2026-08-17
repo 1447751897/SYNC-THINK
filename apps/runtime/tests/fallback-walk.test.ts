@@ -480,25 +480,35 @@ describe('runtime fallback walk on model failure (design §5.3)', () => {
         const assistant = new SqliteMessageStore(audit.raw)
           .listMessages(taskPayload.threadId as never)
           .messages.find((message) => message.role === 'assistant');
-        expect(assistant?.blocks).toEqual([
-          {
-            type: 'commentary',
-            text: '我先检查当前状态。',
-            payload: {
-              commentarySegments: [
-                expect.objectContaining({
-                  text: '我先检查当前状态。',
-                  completedAt: expect.any(String),
-                }),
-              ],
-            },
-          },
-          {
-            type: 'text',
-            text: '已从备用模型继续完成。',
-          },
+        expect(assistant?.blocks.map((block) => block.type)).toEqual([
+          'commentary',
+          'commentary',
+          'text',
         ]);
-        expect(assistant?.blocks.filter((block) => block.type === 'commentary')).toHaveLength(1);
+        expect(assistant?.blocks[0]?.payload).toMatchObject({
+          assistantTimeline: [
+            expect.objectContaining({
+              kind: 'text',
+              phase: 'commentary',
+              text: '我先检查当前状态。',
+              completedAt: expect.any(String),
+            }),
+            expect.objectContaining({ kind: 'status', statusType: 'model_switch' }),
+            expect.objectContaining({
+              kind: 'text',
+              phase: 'final_answer',
+              text: '已从备用模型继续完成。',
+            }),
+          ],
+        });
+        expect(assistant?.blocks[1]).toEqual({
+          type: 'commentary',
+          text: '我先检查当前状态。',
+        });
+        expect(assistant?.blocks[2]).toEqual({
+          type: 'text',
+          text: '已从备用模型继续完成。',
+        });
       } finally {
         audit.raw.close();
       }

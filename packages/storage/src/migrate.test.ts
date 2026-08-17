@@ -85,6 +85,8 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -299,6 +301,8 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -561,6 +565,8 @@ describe('migration planner (pure)', () => {
           '0039_capability_enablement',
           '0040_capability_governance',
           '0041_task_plan',
+          '0042_conversation_interaction_mode',
+          '0043_conversation_plan',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -670,6 +676,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
   });
 
@@ -706,6 +714,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
   });
 
@@ -750,6 +760,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
   });
 
@@ -787,6 +799,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
   });
 
@@ -823,6 +837,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
   });
 
@@ -876,6 +892,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -922,6 +940,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -971,6 +991,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1024,6 +1046,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1078,6 +1102,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1133,6 +1159,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1189,6 +1217,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1247,6 +1277,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1297,6 +1329,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1344,6 +1378,8 @@ describe('migration planner (pure)', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1596,6 +1632,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1701,6 +1739,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1763,6 +1803,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1775,7 +1817,13 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         upgraded.raw.close();
       }
     } finally {
-      if (MIGRATIONS[MIGRATIONS.length - 1]?.name !== '0041_task_plan') {
+      // Idempotent restore: the inner try/finally already pushed the tail when
+      // runMigrations ran. This outer guard only restores when the splice left
+      // MIGRATIONS truncated (e.g. the tail assertion failed before the inner
+      // finally). Checking for the tail's first migration is stable across
+      // appends — a hard-coded "last name" check breaks when new migrations are
+      // added after this one.
+      if (!MIGRATIONS.some((migration) => migration.name === '0009_participation_policy')) {
         MIGRATIONS.push(...trailingMigrations);
       }
       rmSync(dir, { recursive: true, force: true });
@@ -2146,6 +2194,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2221,6 +2271,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2271,6 +2323,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2320,6 +2374,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2376,6 +2432,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2500,6 +2558,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2575,6 +2635,8 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0039_capability_enablement',
         '0040_capability_governance',
         '0041_task_plan',
+        '0042_conversation_interaction_mode',
+        '0043_conversation_plan',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {

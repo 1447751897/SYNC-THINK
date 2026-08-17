@@ -1,4 +1,4 @@
-﻿// UI 鈫?Runtime protocol version. Bump on breaking changes to framing,
+// UI 鈫?Runtime protocol version. Bump on breaking changes to framing,
 // handshake, commands, or events. Negotiated at handshake; if incompatible,
 // UI opens read-only diagnostics and prompts upgrade / runtime restart.
 
@@ -74,6 +74,9 @@ export type Feature =
   | 'conversation.setPinned'
   | 'conversation.setArchived'
   | 'conversation.setExecutionMode'
+  | 'conversation.setInteractionMode'
+  | 'conversation.plan'
+  | 'conversation.ask'
   | 'conversation.upgradeTrack'
   | 'conversation.delete'
   | 'conversation.decideToolApproval'
@@ -87,6 +90,7 @@ export type Feature =
   | 'skill.get'
   | 'skill.delete'
   | 'skill.setEnabled'
+  | 'skill.local'
   | 'mcp.register'
   | 'mcp.list'
   | 'mcp.setEnabled'
@@ -114,7 +118,10 @@ export type Feature =
   | 'memory.rollback'
   | 'goal.set'
   | 'goal.get'
-  | 'goal.clear';
+  | 'goal.clear'
+  | 'goal.pause'
+  | 'goal.resume'
+  | 'scheduledTask';
 
 export const DEFAULT_FEATURES: Feature[] = [
   'workspace.bindFolder',
@@ -139,6 +146,9 @@ export const DEFAULT_FEATURES: Feature[] = [
   'goal.set',
   'goal.get',
   'goal.clear',
+  'goal.pause',
+  'goal.resume',
+  'scheduledTask',
   'run.getGraph',
   'run.pause',
   'run.resume',
@@ -186,6 +196,9 @@ export const DEFAULT_FEATURES: Feature[] = [
   'conversation.setPinned',
   'conversation.setArchived',
   'conversation.setExecutionMode',
+  'conversation.setInteractionMode',
+  'conversation.plan',
+  'conversation.ask',
   'conversation.upgradeTrack',
   'conversation.delete',
   'browser.handoff',
@@ -198,6 +211,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'skill.get',
   'skill.delete',
   'skill.setEnabled',
+  'skill.local',
   'mcp.register',
   'mcp.list',
   'mcp.setEnabled',

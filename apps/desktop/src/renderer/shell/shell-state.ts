@@ -14,6 +14,7 @@ export type ShellStage =
   | 'teams' // 小队库
   | 'browser' // 浏览器（Profile 管理 + 独立登录态）
   | 'abilities' // 能力
+  | 'tasks' // 定时任务
   | 'settings';
 
 export interface ShellNavState {
@@ -50,6 +51,7 @@ export const STAGE_LABELS: Record<ShellStage, string> = {
   teams: '小队',
   browser: '浏览器',
   abilities: '能力',
+  tasks: '定时任务',
   settings: '设置',
 };
 

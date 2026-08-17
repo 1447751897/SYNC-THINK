@@ -21,6 +21,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   AnthropicStreamEmitter,
+  ChatStreamToResponsesEmitter,
   OpenAIResponsesStreamEmitter,
   OpenAIStreamEmitter,
   SseLineReader,
@@ -29,9 +30,11 @@ import {
   encodeSseFrame,
   normalizeOpenAICompatibleBaseUrl,
   openAIChatRequestToAnthropic,
+  openaiResponsesToChat,
   parseSseJson,
   type AnthropicMessagesRequest,
   type OpenAIChatRequest,
+  type OpenAIResponsesRequest,
   type OpenAIResponseSseEvent,
   type OpenAIResponsesUsage,
   type OpenAIStreamChunk,
@@ -66,10 +69,10 @@ export interface OpenGatewayServerOptions {
   listModels?(): Array<{ id: string; providerId?: string; providerName?: string }>;
   /** Long-lived token accepted from external clients. */
   externalToken: string;
-  /** Resolve the provider response that produced a function call. */
-  resolveResponseForFunctionCall?(scopeId: string, callId: string): string | undefined;
-  /** Record the provider response that produced a function call. */
-  recordResponseForFunctionCall?(scopeId: string, callId: string, responseId: string): void;
+  /** Resolve the provider function_call item id that produced a call. */
+  resolveContinuationItem?(scopeId: string, callId: string): string | undefined;
+  /** Record the provider function_call item id that produced a call. */
+  recordContinuationItem?(scopeId: string, callId: string, itemId: string): void;
   /** Capture provider-authoritative usage for the run that owns a ticket. */
   recordRunUsage?(runId: string, usage: GatewayRunUsage): void;
   /** Injected for tests; defaults to global fetch. */
@@ -284,7 +287,7 @@ function readBody(request: IncomingMessage): Promise<Buffer> {
   });
 }
 
-type InboundDialect = 'anthropic-messages' | 'openai-chat';
+type InboundDialect = 'anthropic-messages' | 'openai-chat' | 'openai-responses';
 
 /** Match a request path onto an inbound dialect (version segment optional). */
 export function matchGatewayRoute(
@@ -305,6 +308,14 @@ export function matchGatewayRoute(
     path === `${OPEN_GATEWAY_OPENAI_PATH}/chat/completions`
   ) {
     return 'openai-chat';
+  }
+  // Codex speaks the Responses dialect exclusively; it hits
+  // `{base}/v1/responses` against the gateway's OpenAI inbound.
+  if (
+    path === `${OPEN_GATEWAY_OPENAI_PATH}/v1/responses` ||
+    path === `${OPEN_GATEWAY_OPENAI_PATH}/responses`
+  ) {
+    return 'openai-responses';
   }
   return undefined;
 }
@@ -478,6 +489,29 @@ async function handleRequest(
         );
         return;
       }
+    }
+    if (matched === 'openai-responses') {
+      // Codex inbound speaking Responses against a Chat-Completions upstream:
+      // translate responses→chat. The same-dialect case (Responses upstream)
+      // was already handled by `matched === route.protocol` above.
+      if (route.protocol === 'openai-chat') {
+        await translateOpenAIResponsesToChat(
+          response,
+          body as unknown as OpenAIResponsesRequest,
+          {
+            route,
+            targetModel,
+            options,
+            streamRequested,
+            runId,
+            requestId,
+          },
+        );
+        return;
+      }
+      throw new Error(
+        'openai-responses inbound → anthropic-messages upstream translation is not supported yet',
+      );
     }
     if (route.protocol === 'openai-responses') {
       // Codex (OpenAI-inbound) against a Responses-only upstream is not wired
@@ -713,9 +747,9 @@ async function translateAnthropicToOpenAIResponses(
   });
   const upstreamBody = anthropicRequestToOpenAIResponses(inbound, {
     targetModel: context.targetModel,
-    resolveFunctionResponseId: (callId) => {
-      const responseId = context.responseContinuationScope
-        ? context.options.resolveResponseForFunctionCall?.(
+    resolveFunctionItemId: (callId) => {
+      const itemId = context.responseContinuationScope
+        ? context.options.resolveContinuationItem?.(
             context.responseContinuationScope,
             callId,
           )
@@ -723,34 +757,33 @@ async function translateAnthropicToOpenAIResponses(
       traceGateway(context.options, 'responses.continuation.resolve', {
         requestId: context.requestId,
         callId,
-        responseId: responseId ?? null,
+        itemId: itemId ?? null,
       });
-      return responseId;
+      return itemId;
     },
   });
   traceGateway(context.options, 'responses.upstream-input', {
     requestId: context.requestId,
-    previousResponseId: upstreamBody.previous_response_id ?? null,
     input: summarizeResponsesInput(
       upstreamBody.input as unknown as readonly Record<string, unknown>[],
     ),
   });
   if (!context.streamRequested) upstreamBody.stream = false;
   const abort = upstreamAbort(response);
-  const functionCallIds = new Set<string>();
+  const functionCallItems = new Map<string, string>();
   let providerResponseId: string | undefined;
-  const persistFunctionCallResponses = (): void => {
-    if (!context.responseContinuationScope || !providerResponseId) return;
-    for (const callId of functionCallIds) {
-      context.options.recordResponseForFunctionCall?.(
+  const persistFunctionCallItems = (): void => {
+    if (!context.responseContinuationScope) return;
+    for (const [callId, itemId] of functionCallItems) {
+      context.options.recordContinuationItem?.(
         context.responseContinuationScope,
         callId,
-        providerResponseId,
+        itemId,
       );
       traceGateway(context.options, 'responses.continuation.record', {
         requestId: context.requestId,
         callId,
-        responseId: providerResponseId,
+        itemId,
       });
     }
   };
@@ -759,14 +792,14 @@ async function translateAnthropicToOpenAIResponses(
     if (!responseId || responseId === providerResponseId) return;
     providerResponseId = responseId;
     context.providerResponseId = responseId;
-    persistFunctionCallResponses();
   };
   const emitter = new OpenAIResponsesStreamEmitter(
     `msg_${randomBytes(12).toString('hex')}`,
     context.targetModel,
-    (callId) => {
-      functionCallIds.add(callId);
-      persistFunctionCallResponses();
+    (callId, itemId) => {
+      if (!callId || !itemId) return;
+      functionCallItems.set(callId, itemId);
+      persistFunctionCallItems();
     },
   );
   try {
@@ -846,6 +879,102 @@ async function translateAnthropicToOpenAIResponses(
         );
         captureOpenAIResponsesEventUsage(context, event);
         writeFrames(response, emitter.push(event));
+      }
+    }
+    writeFrames(response, emitter.finish());
+    response.end();
+  } finally {
+    abort.dispose();
+  }
+}
+
+/**
+ * OpenAI Responses inbound → Chat-Completions upstream (Codex driving a model
+ * that only a Chat relay serves, e.g. DeepSeek official with no /responses
+ * endpoint). Rewrites the Responses request body, forwards to /chat/completions
+ * and translates the Chat SSE stream back into Responses events.
+ */
+async function translateOpenAIResponsesToChat(
+  response: ServerResponse,
+  inbound: OpenAIResponsesRequest,
+  context: TranslateContext,
+): Promise<void> {
+  const { body: upstreamBody, toolNamespaceMap } = openaiResponsesToChat(inbound, {
+    targetModel: context.targetModel,
+  });
+  if (!context.streamRequested) upstreamBody.stream = false;
+  const abort = upstreamAbort(response);
+  const emitter = new ChatStreamToResponsesEmitter(
+    `resp_${randomBytes(12).toString('hex')}`,
+    context.targetModel,
+    toolNamespaceMap,
+  );
+  try {
+    const upstream = await callUpstream(context.route, upstreamBody, context.options, abort.signal);
+    if (!upstream.ok) {
+      await failTranslated(response, upstream, context);
+      return;
+    }
+    if (!upstream.body || upstreamBody.stream === false) {
+      // Non-streaming upstream: convert the single completion into one stream.
+      const payload = (await upstream.json()) as {
+        id?: string;
+        model?: string;
+        choices?: Array<{
+          message?: { content?: string; tool_calls?: OpenAIStreamChunk['choices'] };
+          finish_reason?: string;
+        }>;
+        usage?: OpenAIUsage;
+      };
+      captureOpenAIUsage(context, payload.usage, payload.id, payload.model);
+      beginSse(response);
+      const choice = payload.choices?.[0];
+      const chunk: OpenAIStreamChunk = {
+        choices: [
+          {
+            index: 0,
+            delta: {
+              ...(typeof choice?.message?.content === 'string'
+                ? { content: choice.message.content }
+                : {}),
+              ...(Array.isArray(choice?.message?.tool_calls)
+                ? { tool_calls: choice.message.tool_calls as never }
+                : {}),
+            },
+            finish_reason: (choice?.finish_reason as never) ?? 'stop',
+          },
+        ],
+      };
+      writeFrames(response, emitter.push(chunk));
+      writeFrames(response, emitter.finish());
+      response.end();
+      return;
+    }
+    beginSse(response);
+    const reader = new SseLineReader();
+    const streamReader = upstream.body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await streamReader.read();
+      if (done) break;
+      for (const message of reader.push(decoder.decode(value, { stream: true }))) {
+        const chunk = parseSseJson<OpenAIStreamChunk>(message.data);
+        if (!chunk) continue;
+        const upstreamError = (chunk as { error?: { message?: string } }).error;
+        if (upstreamError) {
+          writeFrames(response, emitter.error(upstreamError.message ?? 'upstream error'));
+          response.end();
+          return;
+        }
+        captureOpenAIUsage(context, chunk.usage ?? undefined, chunk.id, chunk.model);
+        writeFrames(response, emitter.push(chunk));
+      }
+    }
+    for (const message of reader.flush()) {
+      const chunk = parseSseJson<OpenAIStreamChunk>(message.data);
+      if (chunk) {
+        captureOpenAIUsage(context, chunk.usage ?? undefined, chunk.id, chunk.model);
+        writeFrames(response, emitter.push(chunk));
       }
     }
     writeFrames(response, emitter.finish());
@@ -1105,12 +1234,18 @@ function captureOpenAIUsage(
   if (!usage) return;
   const tokensIn = numberValue(usage.prompt_tokens);
   const tokensOut = numberValue(usage.completion_tokens);
+  // DeepSeek relays report cache via `prompt_cache_hit_tokens` instead of the
+  // standard `prompt_tokens_details.cached_tokens`; honor both so cache shows up
+  // instead of reading as "not reported".
+  const cachedTokensHit =
+    optionalNumberValue(usage.prompt_tokens_details?.cached_tokens) ??
+    optionalNumberValue(usage.prompt_cache_hit_tokens);
   recordProviderUsage(context, {
     providerResponseId,
     providerModelId,
     tokensIn,
     tokensOut,
-    cachedTokensHit: optionalNumberValue(usage.prompt_tokens_details?.cached_tokens),
+    cachedTokensHit,
     cachedTokensCreated: optionalNumberValue(
       usage.prompt_tokens_details?.cache_write_tokens,
     ),

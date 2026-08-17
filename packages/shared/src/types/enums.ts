@@ -46,7 +46,9 @@ export type ModelResolutionSource =
   | 'agentDefault'
   | 'agentFallback'
   /** Same-provider priority chain: walk forward only from the failed model. */
-  | 'providerFallback';
+  | 'providerFallback'
+  /** plan/exec 双模型路由（plan-act 设置）按对话模式强制指定。 */
+  | 'planAct';
 
 export type ProtocolFamily =
   | 'openai-responses'

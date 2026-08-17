@@ -94,18 +94,20 @@ class CodexTimelineBrowserProvider implements ProviderAdapter {
     if (round <= 2) {
       yield {
         type: 'assistant-message-start',
-        phase: 'commentary',
+        // Claude Code can label tool-prefacing text as final_answer. Runtime
+        // must repair it once the following tool boundary arrives.
+        phase: 'final_answer',
         itemId: `timeline-commentary-${round}`,
       };
       yield {
         type: 'assistant-message-delta',
-        phase: 'commentary',
+        phase: 'final_answer',
         itemId: `timeline-commentary-${round}`,
         text: round === 1 ? '我先检查首页。' : '首页已确认，我继续检查详情页。',
       };
       yield {
         type: 'assistant-message-end',
-        phase: 'commentary',
+        phase: 'final_answer',
         itemId: `timeline-commentary-${round}`,
       };
       yield {

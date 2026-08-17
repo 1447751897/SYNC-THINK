@@ -395,7 +395,11 @@ describe('ChatView reply usage details', () => {
       />,
     );
 
-    // 内联执行过程视图平铺呈现 commentary；usage 落在消息 footer。
+    // Completed process-only turns stay compact until the user opens the panel;
+    // per-reply usage remains visible in the message footer.
+    const processToggle = await screen.findByTestId('process-panel-toggle');
+    expect(processToggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(processToggle);
     expect((await screen.findAllByText('已完成检查，没有额外正文。')).length).toBeGreaterThan(0);
     expect(screen.getByTestId('inline-process-commentary')).toBeTruthy();
     await waitFor(() => expect(runtime.getConversationRunProcess).toHaveBeenCalled());

@@ -146,47 +146,103 @@ describe('anthropicRequestToOpenAIResponses', () => {
       }),
       {
         targetModel: 'gpt-5.6-luna',
-        resolveFunctionResponseId: (callId) =>
-          callId === 'call_1' ? 'resp_tool_1' : undefined,
+        resolveFunctionItemId: (callId) =>
+          callId === 'call_1' ? 'item_tool_1' : undefined,
       },
     );
 
-    expect(body.previous_response_id).toBe('resp_tool_1');
+    expect(body.previous_response_id).toBeUndefined();
     expect(body.input).toEqual([
-      { type: 'function_call_output', call_id: 'call_1', output: 'ok' },
+      {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: 'ok',
+        item_reference: 'item_tool_1',
+      },
       { role: 'user', content: 'summarize the result' },
     ]);
   });
 
-  it('requires every tool result in one continuation batch to belong to the same response', () => {
-    expect(() =>
-      anthropicRequestToOpenAIResponses(
-        base({
-          messages: [
-            { role: 'user', content: 'run both' },
-            {
-              role: 'assistant',
-              content: [
-                { type: 'tool_use', id: 'call_1', name: 'one', input: {} },
-                { type: 'tool_use', id: 'call_2', name: 'two', input: {} },
-              ],
-            },
-            {
-              role: 'user',
-              content: [
-                { type: 'tool_result', tool_use_id: 'call_1', content: 'one' },
-                { type: 'tool_result', tool_use_id: 'call_2', content: 'two' },
-              ],
-            },
-          ],
-        }),
-        {
-          targetModel: 'gpt-5.6-luna',
-          resolveFunctionResponseId: (callId) =>
-            callId === 'call_1' ? 'resp_1' : 'resp_2',
-        },
-      ),
-    ).toThrow(/same Responses response/i);
+  it('continues parallel tool calls via per-call item_reference (no same-response constraint)', () => {
+    const body = anthropicRequestToOpenAIResponses(
+      base({
+        messages: [
+          { role: 'user', content: 'run both' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 'call_1', name: 'one', input: {} },
+              { type: 'tool_use', id: 'call_2', name: 'two', input: {} },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'call_1', content: 'one' },
+              { type: 'tool_result', tool_use_id: 'call_2', content: 'two' },
+            ],
+          },
+        ],
+      }),
+      {
+        targetModel: 'gpt-5.6-luna',
+        resolveFunctionItemId: (callId) =>
+          callId === 'call_1' ? 'item_1' : callId === 'call_2' ? 'item_2' : undefined,
+      },
+    );
+
+    expect(body.previous_response_id).toBeUndefined();
+    expect(body.input).toEqual([
+      {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: 'one',
+        item_reference: 'item_1',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call_2',
+        output: 'two',
+        item_reference: 'item_2',
+      },
+    ]);
+  });
+
+  it('falls back to a full in-context replay when a tool result has no resolvable item id', () => {
+    const body = anthropicRequestToOpenAIResponses(
+      base({
+        messages: [
+          { role: 'user', content: 'run both' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 'call_1', name: 'one', input: {} },
+              { type: 'tool_use', id: 'call_2', name: 'two', input: {} },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'call_1', content: 'one' },
+              { type: 'tool_result', tool_use_id: 'call_2', content: 'two' },
+            ],
+          },
+        ],
+      }),
+      {
+        targetModel: 'gpt-5.6-luna',
+        resolveFunctionItemId: (callId) => (callId === 'call_1' ? 'item_1' : undefined),
+      },
+    );
+
+    expect(body.previous_response_id).toBeUndefined();
+    expect(body.input).toEqual([
+      { role: 'user', content: 'run both' },
+      { type: 'function_call', call_id: 'call_1', name: 'one', arguments: '{}' },
+      { type: 'function_call', call_id: 'call_2', name: 'two', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'one' },
+      { type: 'function_call_output', call_id: 'call_2', output: 'two' },
+    ]);
   });
 
   it('converts image blocks into input_image data URLs', () => {

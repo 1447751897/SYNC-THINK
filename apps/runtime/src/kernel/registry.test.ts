@@ -51,6 +51,8 @@ describe('kernel registry contract', () => {
       pause: 'turn',
       compress: 'own',
       usageReport: true,
+      // CC has no window override entry → host must cap to its 200k native budget.
+      contextWindow: { nativeLimit: 200_000, overridable: false },
     });
     expect(claudeCode.knownGoodVersions).toContain('2.1.222');
     // Range policy: newer 2.x builds must not regress to「版本未验证」.
@@ -62,6 +64,8 @@ describe('kernel registry contract', () => {
     expect(codex.capabilities).toMatchObject({
       permissionBridge: false,
       pause: 'session',
+      // codex exec accepts `-c model_context_window=<n>` → host overrides the window.
+      contextWindow: { nativeLimit: 128_000, overridable: true },
     });
     expect(codex.knownGoodVersions).toContain('0.145.0');
     expect(codex.minimumSupportedVersion).toBe('0.140.0');

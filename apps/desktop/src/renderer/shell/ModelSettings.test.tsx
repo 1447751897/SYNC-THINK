@@ -415,7 +415,13 @@ describe('ModelSettings NewMax provider detail', () => {
     await waitFor(() => {
       expect(runtime.setSetting).toHaveBeenCalledWith({
         key: 'plan-act',
-        value: { enabled: true, planModelId: null, actModelId: null },
+        value: {
+          enabled: true,
+          planModelId: null,
+          actModelId: null,
+          planReasoningEffort: null,
+          actReasoningEffort: null,
+        },
       });
     });
   });

@@ -1,3 +1,29 @@
+﻿## 当前状态：2026-08-16 · 新能力批量落地（plan/exec、问询卡片、任务清单、定时任务、目标模式、本地 Skill）
+
+### 当前结论
+
+- **plan/exec 双模型路由**：`plan-act` 设置（规划/执行模型 + 各自思考强度）由 runtime 在 run 创建前强制路由——规划模式用规划模型、执行已批准方案轮（`planExecuting` 标志）用执行模型；普通 execute 消息不路由，手动选择生效。
+- **问询卡片（ask_user_question）**：平台工具全内核注入，挂起机制 + `conversation.ask.*` 命令族；composer 接管卡片（推荐徽章/分页/自定义/跳过）；plan-review 特例卡「方案待审」取代 plan_submit 流程（`plan_submit` 工具移除，conversation.plan.* 保留为兼容层）。
+- **任务清单**：TodoPanel 常驻折叠面板（composer 上方）+ 持久化事件投影（run 终态保留、新 run 清空）。
+- **定时任务**：scheduledTask（at/every≥5min/random 每日窗口随机 N 次/cron）、30s 心跳引擎、nextRunAt 持久化、任务专属会话（「任务 · {名}」+ 徽标）、`task_schedule` 工具（create/list/cancel，ask-mode 审批）、侧栏 TaskPanel（执行者两组下拉：智能体/直接模型）。
+- **目标模式增强**：active/paused/blocked/achieved/cleared 状态机、`maxGoalRounds`（默认 5，耗尽自动 blocked）、结构化 `<goal_round>` 轮次提示、`goal_manage` 工具（complete/block/progress）、目标卡 UI（暂停/恢复/编辑/清除）。
+- **本地 Skill 发现**：约定目录 `<home>/.sync-think/skills` 扫描 + watch 自动发现；`skill.local.scan/import`；能力中心「本地」tab（搜索/预览/导入/已导入徽标）。
+- 文档：`15-frontend-design.md` §12.18-12.21 + `03-feature-changelog.md` 多条更新。
+
+### 当前验证
+
+- Runtime 全量 **113 files / 801 tests 通过**；Desktop 全量 **167 files / 1282 tests 通过**；typecheck（shared/storage/protocol/runtime/desktop）、tsc emit、build、lint（0 errors，15 条既有 warnings）全过。
+- 真实模型 E2E（隔离 runtime 实例 `e2e-0001` + 用户 db 副本 + deepseek-v4-flash，脚本 `scripts/tmp-goal-e2e.mjs`）：
+  - 通过：新命令全部响应；对话链路（run 启动、providerModelId=deepseek-v4-flash、助手回答）；native 内置工具（read_file）可调用；平台工具 schema 确认进入 provider 请求（`nativePlatformToolSchemas` 输出 ask_user_question/task_schedule/goal_manage）。
+  - **发现并修复**：`openPersistentRuntime` 未接入 `SqliteScheduledTaskStore`（0044）；native 内核未注入平台工具（新增 `nativePlatformToolSchemas` 并入 native tools）。
+  - **未解决**：native + deepseek-v4-flash 下模型不调用 ask_user_question / task_schedule（工具已确认传入请求，模型选择不调用；read_file 可调用证明工具链路正常）——待进一步优化工具描述/模型提示或验证其他模型。
+- 用户窗口（Electron PID 142620）运行的是**旧代码 runtime**（dev-0001 管道，无新命令）——需重启应用加载新代码；用户已手动在另一实例上触发过新目标模式（goal_round 提示为新代码格式）。
+
+### 工作树与后续动作
+
+- 142 个未提交文件（本会话全部功能 + 分支既有改动），本次提交并推送 `origin/feature/inline-process-ui`。
+- `scripts/tmp-*.mjs`（E2E/诊断脚本）按惯例不提交。
+- 后续：① 排查 native + deepseek-v4-flash 平台工具调用问题（模型提示/工具描述优化，或换模型验证）；② 重启用户应用验证全部新功能 UI；③ 必要时跑通 plan-review/ask/定时任务完整真实链路。
 ## 当前状态：2026-08-11 · Markdown 表格数字断行修复
 
 ### 当前结论
@@ -1109,3 +1135,4 @@
 - 本轮修复 Runtime、Gateway 与协议转换链路，不涉及 Renderer 页面变化，因此没有新增页面手测步骤。
 - 真实 Provider 是否返回缓存 read/write usage 仍由 Provider 决定；本修复只保证工具调用标识与 continuation 在多轮和 Runtime 重启后保持正确。
 - 本轮不生成安装包、不提交、不推送；工作树中其他既有改动和未跟踪文件继续保留。
+

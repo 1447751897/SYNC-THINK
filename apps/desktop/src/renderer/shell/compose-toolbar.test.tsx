@@ -125,6 +125,41 @@ describe('ContextRing', () => {
     expect(screen.getByText('累计 Token 消耗')).toBeTruthy();
     expect(screen.getByTestId('context-session-tokens').textContent).toBe('尚未上报');
   });
+
+  it('labels a kernel-capped limit (non-overridable native cap) on the capacity row', () => {
+    render(
+      <ContextRing
+        used={100_000}
+        limit={200_000}
+        contextWindowSource="kernel-capped"
+        compactThreshold={0.7}
+        sections={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('context-ring'));
+
+    expect(screen.getByTestId('context-limit-kernel-capped').textContent).toContain('受内核限制');
+    expect(screen.queryByTestId('context-limit-estimated')).toBeNull();
+  });
+
+  it('prefers the estimated label when metadata is missing even under a cap', () => {
+    render(
+      <ContextRing
+        used={20_000}
+        limit={128_000}
+        contextWindowEstimated
+        contextWindowSource="kernel-capped"
+        compactThreshold={0.7}
+        sections={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('context-ring'));
+
+    expect(screen.getByTestId('context-limit-estimated').textContent).toContain('估算');
+    expect(screen.queryByTestId('context-limit-kernel-capped')).toBeNull();
+  });
 });
 
 describe('ModelPickerMenu', () => {
@@ -195,7 +230,7 @@ describe('ModelPickerMenu', () => {
         kernels={[
           {
             kernelId: 'native',
-            name: '原生内核',
+            name: 'Sync-Think',
             icon: 'native',
             capabilities: { permission: 'own', permissionBridge: false, pause: 'executor', compress: 'own', usageReport: true, protocols: [] },
             installed: true,
@@ -233,16 +268,15 @@ describe('ModelPickerMenu', () => {
 
     expect(screen.getByText('内核')).toBeTruthy();
     const nativeOption = await screen.findByTestId('kernel-option-native');
-    expect(nativeOption.textContent).toContain('原生');
+    expect(nativeOption.textContent).toContain('Sync-Think');
     const ccOption = await screen.findByTestId('kernel-option-claude-code');
     expect(ccOption.textContent).toContain('Claude Code');
     expect(ccOption.textContent).toContain('已安装 v2.1.222');
 
-    // Kernel badges render brand logos instead of text labels; `native` has no
-    // upstream brand and keeps a glyph, so it exposes the name via aria-label.
+    // Kernel badges render brand logos; native now carries the Sync-Think mark.
     const nativeBadge = await screen.findByTestId('kernel-badge-native');
     expect(nativeBadge.textContent).toBe('');
-    expect(nativeBadge.getAttribute('aria-label')).toBe('原生内核');
+    expect(nativeBadge.querySelector('img[alt="Sync-Think"]')).toBeTruthy();
     const ccBadge = await screen.findByTestId('kernel-badge-claude-code');
     expect(ccBadge.querySelector('img,[role="img"]')).toBeTruthy();
     expect(ccBadge.textContent).toBe('');

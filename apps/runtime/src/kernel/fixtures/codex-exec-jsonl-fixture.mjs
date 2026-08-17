@@ -104,6 +104,33 @@ async function main() {
     return;
   }
 
+  if (fixtureMode === 'auto-compacted') {
+    // Codex auto-compaction sequence observed in rollout JSONL history: the
+    // agent compacts its own context, emits a `compacted` notice (+ a
+    // context_compacted event_msg marker on some builds), then continues and
+    // finishes the turn normally.
+    emit({ type: 'turn.started' });
+    await sleep(10);
+    emit({
+      type: 'compacted',
+      payload: { message: 'Handoff summary produced by auto-compaction.' },
+    });
+    await sleep(10);
+    emit({ type: 'event_msg', payload: { type: 'context_compacted' } });
+    await sleep(10);
+    emit({
+      type: 'item.completed',
+      item: { id: 'msg_after_compact', type: 'agent_message', text: 'resumed after compaction', status: 'completed' },
+    });
+    await sleep(10);
+    emit({
+      type: 'turn.completed',
+      usage: { input_tokens: 12, output_tokens: 4 },
+    });
+    stdout.end();
+    return;
+  }
+
   emit({ type: 'turn.started' });
   await sleep(10);
 

@@ -181,6 +181,8 @@ describe('projectRunProcess', () => {
     expect(view.tokensIn).toBe(14_000);
     expect(view.cachedTokensHit).toBe(12_800);
     expect(view.cachedTokensCreated).toBe(0);
+    // Single request → the context watermark equals that request's occupancy.
+    expect(view.contextWatermarkTokens).toBe(14_488);
   });
 
   it('accumulates distinct provider turns while de-duplicating updates for one request', () => {
@@ -231,6 +233,9 @@ describe('projectRunProcess', () => {
     expect(view.tokensOut).toBe(32);
     expect(view.cachedTokensHit).toBe(208);
     expect(view.cachedTokensCreated).toBe(0);
+    // Billing cumulative sums every request; the context watermark is the LAST
+    // request's occupancy (200 in + 20 out), not the tool-loop inflated total.
+    expect(view.contextWatermarkTokens).toBe(220);
   });
 
   it('labels a verified desktop application launch with its executable', () => {
@@ -319,6 +324,50 @@ describe('projectRunProcess', () => {
         sequence: 1,
         startedAt: '2026-07-27T00:00:00.000Z',
         completedAt: '2026-07-27T00:00:00.000Z',
+      }),
+    );
+  });
+
+  it('keeps the external-kernel MCP tool identity when the completed event omits the name', () => {
+    // External kernels (codex/claude) persist tool.requested with a nested
+    // `toolCall.name` and tool.completed with ONLY `{toolCallId, result}` — no
+    // name. The completion must not overwrite the identity with the generic
+    // fallback ("tool"); the step keeps the MCP verb + tool name.
+    const runId = 'run-mcp' as RunId;
+    const events: Event[] = [
+      event({
+        id: 'req-1' as EventId,
+        sequence: 1,
+        runId,
+        type: 'tool.requested',
+        payload: {
+          toolCall: {
+            id: 'item_1',
+            name: 'mcp__node_repl__js',
+            argumentsJson: '{"code":"console.log(1+1)"}',
+          },
+        },
+      }),
+      event({
+        id: 'cmp-1' as EventId,
+        sequence: 2,
+        runId,
+        type: 'tool.completed',
+        payload: { toolCallId: 'item_1', result: '2' },
+      }),
+    ];
+
+    const view = projectRunProcess(runId, events);
+    expect(view.steps).toHaveLength(1);
+    expect(view.steps[0]).toEqual(
+      expect.objectContaining({
+        id: 'item_1',
+        verb: 'MCP',
+        zh: 'mcp__node_repl__js',
+        toolName: 'mcp__node_repl__js',
+        kind: 'mcp',
+        status: 'done',
+        preview: '2',
       }),
     );
   });

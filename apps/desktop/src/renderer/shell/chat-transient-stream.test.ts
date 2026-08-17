@@ -4,6 +4,7 @@ import {
   applyTransientConversationFrame,
   applyTransientConversationFrames,
   buildConversationSnapshotDisplayQueue,
+  getConversationDisplayQueueBatchOptions,
   mergeTransientConversationDraft,
   reconcileTransientConversationDraft,
   takeConversationDisplayQueueBatch,
@@ -74,6 +75,27 @@ describe('chat transient stream reducer', () => {
     expect(result.lastStreamSequence).toBe(1);
   });
 
+  it('accumulates provider reasoning frames into the draft as thinking text', () => {
+    const first = applyTransientConversationFrame({
+      current: null,
+      frame: frame(1, 'reasoning', { textDelta: '先分析问题' }),
+      threadId: 'thread-a',
+      afterStreamSequence: 0,
+    });
+    const second = applyTransientConversationFrame({
+      current: first.draft,
+      frame: frame(2, 'reasoning', { textDelta: '再选择方案' }),
+      threadId: 'thread-a',
+      afterStreamSequence: first.lastStreamSequence,
+    });
+
+    expect(second.draft).toMatchObject({
+      runId: 'run-a',
+      reasoningText: '先分析问题再选择方案',
+    });
+    expect(second.draft?.text).toBe('');
+  });
+
   it('ignores other threads and marks only the matching run terminal without clearing it', () => {
     const current = {
       runId: 'run-a',
@@ -112,6 +134,7 @@ describe('chat transient stream reducer', () => {
     expect(terminal.draft).toEqual({
       ...current,
       terminal: true,
+      terminalState: 'completed',
     });
     expect(terminal.terminal).toBe(true);
   });
@@ -171,21 +194,21 @@ describe('chat transient stream reducer', () => {
     });
   });
 
-  it('drains only a bounded visible batch per paint instead of swallowing the whole queue', () => {
+  it('drains every already-arrived non-boundary frame regardless of legacy budgets', () => {
     const queued = Array.from({ length: 8 }, (_, index) =>
       frame(index + 1, 'text', { textDelta: 'stream' }),
     );
 
-    const firstPaint = takeTransientConversationFrameBatch(queued, {
-      maxFrames: 3,
-      maxTextCharacters: 12,
+    const batch = takeTransientConversationFrameBatch(queued, {
+      maxFrames: 1,
+      maxTextCharacters: 1,
     });
 
-    expect(firstPaint.frames.map((item) => item.streamSequence)).toEqual([1, 2]);
-    expect(firstPaint.remaining.map((item) => item.streamSequence)).toEqual([3, 4, 5, 6, 7, 8]);
+    expect(batch.frames.map((item) => item.streamSequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(batch.remaining).toEqual([]);
   });
 
-  it('preserves process and terminal ordering behind already queued text', () => {
+  it('preserves process and terminal ordering boundaries', () => {
     const queued = [
       frame(1, 'text', { textDelta: 'before tool' }),
       frame(2, 'process'),
@@ -193,98 +216,158 @@ describe('chat transient stream reducer', () => {
       frame(4, 'terminal', { terminalState: 'completed' }),
     ];
 
-    const firstPaint = takeTransientConversationFrameBatch(queued, {
-      maxFrames: 8,
-      maxTextCharacters: 100,
+    const firstBoundary = takeTransientConversationFrameBatch(queued, {
+      maxFrames: 1,
+      maxTextCharacters: 1,
     });
-    const secondPaint = takeTransientConversationFrameBatch(firstPaint.remaining, {
-      maxFrames: 8,
-      maxTextCharacters: 100,
+    const secondBoundary = takeTransientConversationFrameBatch(firstBoundary.remaining, {
+      maxFrames: 1,
+      maxTextCharacters: 1,
     });
 
-    expect(firstPaint.frames.map((item) => item.kind)).toEqual(['text', 'process']);
-    expect(secondPaint.frames.map((item) => item.kind)).toEqual(['text', 'terminal']);
+    expect(firstBoundary.frames.map((item) => item.kind)).toEqual(['text', 'process']);
+    expect(secondBoundary.frames.map((item) => item.kind)).toEqual(['text', 'terminal']);
+    expect(secondBoundary.remaining).toEqual([]);
   });
 
-  it('paces one oversized commentary frame without advancing its cursor early', () => {
-    const oversized = frame(1, 'commentary', {
-      textDelta: '思考内容'.repeat(120),
-    });
-    const firstPaint = takeConversationDisplayQueueBatch(
-      [{ source: 'transient', frame: oversized, offset: 0 }],
-      {
-        maxFrames: 4,
-        maxTextCharacters: 24,
-      },
+  it('submits small provider deltas immediately without client-side replay', () => {
+    const queue = Array.from({ length: 4 }, (_, index) => ({
+      source: 'transient' as const,
+      frame: frame(index + 1, 'text', { textDelta: 'x'.repeat(20) }),
+      offset: 0,
+    }));
+    const batch = takeConversationDisplayQueueBatch(
+      queue,
+      getConversationDisplayQueueBatchOptions(queue),
     );
 
-    expect(firstPaint.operations).toEqual([
-      expect.objectContaining({
-        type: 'commentary.delta',
-        delta: oversized.textDelta!.slice(0, 24),
-      }),
-    ]);
-    expect(firstPaint.completed).toEqual([]);
-    expect(firstPaint.remaining).toEqual([
-      { source: 'transient', frame: oversized, offset: 24 },
-    ]);
+    expect(batch.operations).toHaveLength(4);
+    expect(batch.completed).toHaveLength(4);
+    expect(batch.remaining).toEqual([]);
   });
 
-  it('paces one oversized final answer and completes only after every slice is visible', () => {
-    const oversized = frame(1, 'text', {
-      textDelta: '最终总结'.repeat(40),
-    });
-    let queue = [{ source: 'transient' as const, frame: oversized, offset: 0 }];
-    let visible = '';
-    let completed = false;
+  it('publishes every text delta already received in one display frame', () => {
+    const queue = [
+      { source: 'transient' as const, frame: frame(1, 'text', { textDelta: 'fine-a' }), offset: 0 },
+      { source: 'transient' as const, frame: frame(2, 'text', { textDelta: 'fine-b' }), offset: 0 },
+      {
+        source: 'transient' as const,
+        frame: frame(3, 'text', { textDelta: 'coarse'.repeat(200) }),
+        offset: 0,
+      },
+    ];
+    const batch = takeConversationDisplayQueueBatch(
+      queue,
+      getConversationDisplayQueueBatchOptions(queue),
+    );
 
-    while (queue.length > 0) {
-      const paint = takeConversationDisplayQueueBatch(queue, {
-        maxFrames: 4,
-        maxTextCharacters: 17,
-      });
-      visible += paint.operations
-        .filter((operation) => operation.type === 'text.delta')
-        .map((operation) => operation.delta)
-        .join('');
-      completed ||= paint.completed.some((item) => item.source === 'transient');
-      queue = paint.remaining as typeof queue;
-      if (queue.length > 0) expect(completed).toBe(false);
+    expect(batch.operations.map((operation) => operation.type)).toEqual([
+      'text.delta',
+      'text.delta',
+      'text.delta',
+    ]);
+    expect(batch.completed).toHaveLength(3);
+    expect(batch.remaining).toEqual([]);
+  });
+
+  it('publishes a coarse provider delta atomically instead of replaying client-side chunks', () => {
+    const largeText = 'x'.repeat(10_000);
+    const largeFrame = frame(1, 'text', { textDelta: largeText });
+    const queue = [{ source: 'transient' as const, frame: largeFrame, offset: 0 }];
+    const batch = takeConversationDisplayQueueBatch(
+      queue,
+      getConversationDisplayQueueBatchOptions(queue),
+    );
+
+    expect(batch.operations).toHaveLength(1);
+    expect(batch.operations[0]).toMatchObject({ type: 'text.delta', delta: largeText });
+    expect(batch.remaining).toEqual([]);
+  });
+
+  it('finishes a coarse text operation before its following process boundary', () => {
+    const textFrame = frame(1, 'text', { textDelta: 'before tool'.repeat(200) });
+    const processFrame = frame(2, 'process');
+    const afterTool = frame(3, 'text', { textDelta: 'after tool' });
+    let queue = [
+      { source: 'transient' as const, frame: textFrame, offset: 0 },
+      { source: 'transient' as const, frame: processFrame, offset: 0 },
+      { source: 'transient' as const, frame: afterTool, offset: 0 },
+    ];
+    const operationTypes: string[] = [];
+    let textBeforeBoundary = '';
+
+    while (queue.length > 0 && !operationTypes.includes('process.boundary')) {
+      const batch = takeConversationDisplayQueueBatch(
+        queue,
+        getConversationDisplayQueueBatchOptions(queue),
+      );
+      for (const operation of batch.operations) {
+        operationTypes.push(operation.type);
+        if (operation.type === 'text.delta') textBeforeBoundary += operation.delta;
+      }
+      queue = batch.remaining as typeof queue;
     }
 
-    expect(visible).toBe(oversized.textDelta);
-    expect(completed).toBe(true);
+    expect(textBeforeBoundary).toBe(textFrame.textDelta);
+    expect(operationTypes.at(-1)).toBe('process.boundary');
+    expect(queue).toEqual([{ source: 'transient', frame: afterTool, offset: 0 }]);
   });
 
-  it('does not let a process boundary overtake a partially displayed text frame', () => {
-    const textFrame = frame(1, 'text', { textDelta: 'before tool'.repeat(20) });
-    const processFrame = frame(2, 'process');
-    const firstPaint = takeConversationDisplayQueueBatch(
-      [
-        { source: 'transient', frame: textFrame, offset: 0 },
-        { source: 'transient', frame: processFrame, offset: 0 },
+  it('publishes the complete timeline snapshot with its provider delta', () => {
+    const text = 'timeline'.repeat(80);
+    const textFrame = frame(1, 'text', {
+      textDelta: text,
+      assistantTimeline: [
+        {
+          id: 'answer',
+          sequence: 0,
+          kind: 'text',
+          phase: 'final_answer',
+          text,
+          status: 'streaming',
+        },
       ],
+    });
+    const queue = [{ source: 'transient' as const, frame: textFrame, offset: 0 }];
+    const batch = takeConversationDisplayQueueBatch(
+      queue,
+      getConversationDisplayQueueBatchOptions(queue),
+    );
+    const operation = batch.operations[0];
+
+    expect(operation?.type).toBe('text.delta');
+    if (operation?.type !== 'text.delta') throw new Error('expected text delta');
+    const visibleSegment = operation.assistantTimeline?.[0];
+    expect(visibleSegment?.kind).toBe('text');
+    if (visibleSegment?.kind !== 'text') throw new Error('expected text timeline segment');
+    expect(visibleSegment.text).toBe(operation.delta);
+    expect(visibleSegment.text).toBe(text);
+  });
+
+  it('publishes terminal after the complete queued delta in the same boundary batch', () => {
+    const text = 'final'.repeat(2_000);
+    const queue = [
+      { source: 'transient' as const, frame: frame(1, 'text', { textDelta: text }), offset: 0 },
       {
-        maxFrames: 8,
-        maxTextCharacters: 12,
+        source: 'transient' as const,
+        frame: frame(2, 'terminal', { terminalState: 'completed' }),
+        offset: 0,
       },
+    ];
+    const batch = takeConversationDisplayQueueBatch(
+      queue,
+      getConversationDisplayQueueBatchOptions(queue),
     );
 
-    expect(firstPaint.operations.map((operation) => operation.type)).toEqual(['text.delta']);
-    expect(firstPaint.completed).toEqual([]);
-    expect(firstPaint.remaining[0]).toEqual({
-      source: 'transient',
-      frame: textFrame,
-      offset: 12,
-    });
-    expect(firstPaint.remaining[1]).toEqual({
-      source: 'transient',
-      frame: processFrame,
-      offset: 0,
-    });
+    expect(batch.operations.map((operation) => operation.type)).toEqual([
+      'text.delta',
+      'run.terminal',
+    ]);
+    expect(batch.operations[0]).toMatchObject({ type: 'text.delta', delta: text });
+    expect(batch.remaining).toEqual([]);
   });
 
-  it('paces reset snapshot catch-up before reconciling complete metadata', () => {
+  it('reconciles reset snapshots directly instead of replaying catch-up characters', () => {
     const current = {
       runId: 'run-a',
       text: '',
@@ -310,20 +393,50 @@ describe('chat transient stream reducer', () => {
       incoming: target,
       streamSequence: 12,
     });
-    const firstPaint = takeConversationDisplayQueueBatch(queue, {
-      maxFrames: 4,
-      maxTextCharacters: 4,
+    const batch = takeConversationDisplayQueueBatch(queue, {
+      maxFrames: 1,
+      maxTextCharacters: 1,
     });
 
-    expect(firstPaint.operations).toEqual([
-      expect.objectContaining({ type: 'commentary.delta', delta: '，继续分' }),
+    expect(queue).toEqual([
+      {
+        source: 'snapshot',
+        draft: target,
+        streamSequence: 12,
+      },
     ]);
-    expect(firstPaint.completed.some((item) => item.source === 'snapshot')).toBe(false);
-    expect(firstPaint.remaining.at(-1)).toEqual({
-      source: 'snapshot',
-      draft: target,
-      streamSequence: 12,
-    });
+    expect(batch.operations).toEqual([]);
+    expect(batch.completed).toEqual(queue);
+    expect(batch.remaining).toEqual([]);
+  });
+
+  it('drains all ordering boundaries in one RAF loop with no leftover characters', () => {
+    const frames = [
+      frame(1, 'text', { textDelta: 'a'.repeat(10_000) }),
+      frame(2, 'process'),
+      frame(3, 'commentary', { textDelta: '正在继续。' }),
+      frame(4, 'terminal', { terminalState: 'completed' }),
+    ];
+    let queue = frames.map((item) => ({ source: 'transient' as const, frame: item, offset: 0 }));
+    const operationTypes: string[] = [];
+
+    while (queue.length > 0) {
+      const batch = takeConversationDisplayQueueBatch(queue, {
+        maxFrames: Number.MAX_SAFE_INTEGER,
+        maxTextCharacters: Number.MAX_SAFE_INTEGER,
+      });
+      operationTypes.push(...batch.operations.map((operation) => operation.type));
+      expect(batch.completed.length + batch.operations.length).toBeGreaterThan(0);
+      queue = batch.remaining as typeof queue;
+    }
+
+    expect(operationTypes).toEqual([
+      'text.delta',
+      'process.boundary',
+      'commentary.delta',
+      'run.terminal',
+    ]);
+    expect(queue).toEqual([]);
   });
 
   it('keeps commentary when a same-run process frame arrives', () => {
@@ -341,7 +454,10 @@ describe('chat transient stream reducer', () => {
         threadId: 'thread-a',
         afterStreamSequence: 1,
       }).draft,
-    ).toBe(current);
+    ).toEqual({
+      ...current,
+      timestamp: '2026-07-27T00:00:02.000Z',
+    });
   });
 
   it('merges reset snapshots monotonically instead of replacing newer commentary with stale data', () => {
@@ -430,10 +546,35 @@ describe('chat transient stream reducer', () => {
       afterStreamSequence: 0,
     });
 
-    expect(result).toEqual({
-      draft: null,
+    expect(result).toMatchObject({
       lastStreamSequence: 1,
       terminal: false,
+    });
+    expect(result.draft).toMatchObject({
+      runId: 'run-a',
+      reasoningText: 'internal diagnostic summary',
+    });
+    expect(result.draft?.commentaryText).toBeUndefined();
+  });
+
+  it('surfaces run.failed terminalState and errorMessage on the draft', () => {
+    const current = { runId: 'run-a', text: 'partial', timestamp: '2026-07-27T00:00:01.000Z' };
+    const result = applyTransientConversationFrame({
+      current,
+      frame: frame(2, 'terminal', {
+        terminalState: 'failed',
+        errorMessage: 'unexpected status 502 Bad Gateway: content is not iterable',
+      }),
+      threadId: 'thread-a',
+      afterStreamSequence: 1,
+    });
+
+    expect(result.draft).toMatchObject({
+      runId: 'run-a',
+      text: 'partial',
+      terminal: true,
+      terminalState: 'failed',
+      terminalError: 'unexpected status 502 Bad Gateway: content is not iterable',
     });
   });
 });

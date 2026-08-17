@@ -7,6 +7,12 @@ export interface ConversationUsageMetrics {
   tokensIn: number;
   tokensOut: number;
   requestCount: number;
+  /**
+   * Context occupancy of the LAST provider request in the scope (totalInput +
+   * output), not the billing cumulative. Tool loops re-send the growing prefix,
+   * so tokensIn sums every request; this watermark is the honest occupancy.
+   */
+  contextWatermarkTokens?: number;
 }
 
 function nonNegativeNumber(value: unknown): number | undefined {
@@ -90,6 +96,7 @@ export function projectConversationUsageMetrics(input: {
     string,
     { tokensIn: number; tokensOut: number; totalTokens?: number }
   >();
+  const usageRequestSequence = new Map<string, number>();
   let firstStart: number | undefined;
   let lastEnd: number | undefined;
 
@@ -130,6 +137,26 @@ export function projectConversationUsageMetrics(input: {
         current.totalTokens === undefined ? totalTokens : Math.max(current.totalTokens, totalTokens);
     }
     usageByRequest.set(requestId, current);
+    usageRequestSequence.set(
+      requestId,
+      Math.max(usageRequestSequence.get(requestId) ?? 0, event.sequence),
+    );
+  }
+
+  // Context watermark: tokens consumed by the LAST request in scope (honest
+  // occupancy) vs the billing cumulative summed below.
+  let contextWatermarkTokens: number | undefined;
+  let lastRequestId: string | undefined;
+  let lastRequestSequence = -1;
+  for (const [requestId, sequence] of usageRequestSequence) {
+    if (sequence > lastRequestSequence) {
+      lastRequestSequence = sequence;
+      lastRequestId = requestId;
+    }
+  }
+  if (lastRequestId !== undefined) {
+    const last = usageByRequest.get(lastRequestId);
+    if (last) contextWatermarkTokens = last.tokensIn + last.tokensOut;
   }
 
   let tokensIn = 0;
@@ -150,6 +177,7 @@ export function projectConversationUsageMetrics(input: {
     totalTokens,
     tokensIn,
     tokensOut,
+    ...(contextWatermarkTokens !== undefined ? { contextWatermarkTokens } : {}),
     requestCount: usageByRequest.size,
   };
 }

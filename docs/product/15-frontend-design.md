@@ -164,7 +164,7 @@ Locked 布局规则：
 边框/阴影/材质：细边框 + 微内阴影 + 极少外阴影；可有极轻表面纹理
 按钮：次要线框、主操作反转、批准/危险有明确重量差
 表单：紧凑但可点；错误内联；导入预览先于保存
-消息：用户使用右侧紧凑气泡；助手使用“圆形 Agent 头像 + 名称 + 无框 Markdown”阅读流；助手消息内联呈现执行过程（思考行/摘要/工具卡片）后再给出最终总结回答（见 §12.16）；模型 / Run 元信息只在 Trace 与 Manifest 展示；代码/产物块有独立质感
+消息：用户使用右侧紧凑气泡；助手使用无头像、无外框的 Markdown 阅读流，必要时保留紧凑身份文字；助手消息按 ordered timeline 内联呈现 Think、说明、工具和状态后再给出最终回答（见 §12.17）；模型 / Run 元信息只在 Trace 与 Manifest 展示；代码/产物块有独立质感
 弹窗/抽屉：审批与 inspector 不切断任务上下文；背后状态仍可感知
 图标：线性精密；关键状态可有小面积实心标记
 ```
@@ -273,24 +273,25 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 
 ## 12. 设计变更记录
 
-| 日期       | 变更                                                                                               | 原因                                                                 | 影响范围                                                       |
-| ---------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------- |
-| 2026-07-11 | 以 V3 为结构基线初始化前端设计文档与 token                                                         | `/zno-init`                                                          | 全 UI                                                          |
-| 2026-07-11 | 确认 V3 仅锁 IA；视觉/交互升级为可获奖级，Claude 主导原创                                          | 用户确认文档并提高设计标准                                           | 全 UI / tokens 可进化 / 组件必须原创                           |
-| 2026-07-12 | 产品首屏隐藏重复 readiness；M1 验证改为默认折叠单行工作台                                          | 用户反馈页面拥挤，要求参考 Codex 工作台                              | 主工作台密度 / 不改变 Locked IA                                |
-| 2026-07-12 | 左栏采用任务树常驻 + 单层覆盖式工具抽屉；Provider 网络错误改为中文行动提示                         | 用户选择视觉方案 C，并反馈发现模型英文错误                           | 左栏信息层级 / 工具详情 / 错误 UX                              |
-| 2026-07-12 | 助手输出改为无框 Markdown 阅读流；Composer 收为输入 + 模型入口 + 图标操作，正常态不展示重复状态    | 用户要求对照 Codex 输出样式继续减负                                  | 对话消息 / Composer / Trace 与 Manifest 信息归属               |
-| 2026-07-15 | Context 结构位改为工作区/任务/对话；M1 验证退出产品表面；助手回复恢复稳定 Agent 头像与名称         | 用户反馈现有标签无法理解，并要求参考 Multica 暴露 Agent 身份         | 任务头 / 对话消息 / Agent 抽屉跳转；不恢复模型与 Run 元信息    |
-| 2026-07-16 | 参考 Multica 重排新人信息层级：文字主导航、任务负责人/模型、单一下一步、右侧任务进度与三步空态     | 用户反馈当前桌面对新人不友好                                         | 主工作台表达；数据合同、Composer 与三栏结构保持不变            |
-| 2026-07-16 | 折叠右轨收敛为仅图标控制，移除折叠态标题和说明文字；协作 CTA 保持单一                              | 1280-1440px 视觉审计发现 44px 右轨出现逐字竖排                       | AppShell 折叠态 / 任务操作去重                                 |
-| 2026-07-16 | 项目目录改为悬浮提示，项目切换进入 Compose，任务首条消息命名，对话意图自动生成协作计划             | 用户要求减少头部重复信息，并以一条持续对话承载单 Agent 与协作        | 项目树 / Compose / 任务头 / 任务命名 / 协作入口                |
-| 2026-07-28 | 主舞台升级为递归 Pane + Pane 内对话/文件 Tab；文件编辑加入脏状态与冲突条                           | 对照 NewMax 工作区调研实现 P0，同时保留 Sync-Think 安全边界          | 主舞台 / Tab 条 / 文件编辑 / Workspace 恢复                    |
-| 2026-07-28 | 文件 Dock 增加内容搜索；Pane Tab 增加懒加载 xterm 受控终端                                         | 落地 NewMax P1 编码工作流，同时控制首屏体积和进程权限面              | 文件搜索 / 终端 Tab / 浅深主题 / Workspace 恢复                |
-| 2026-07-29 | Composer 增加每轮 Skill 多选菜单，目录 metadata 按打开懒加载                                       | 落地 NewMax P2 的显式上下文控制，避免 Agent Skill 全量常驻           | 对话 Compose / 欢迎页首条消息 / Agent 与 Team 所有者状态       |
-| 2026-08-04 | 使用统计改为缓存命中率优先、四类 Token 常显与逐行费用展开                                          | 原请求表信息拥挤，详情复选框失控，缓存创建 0 容易被误判              | 设置 / 使用统计 / 消息 Token 悬浮明细 / 浅深主题               |
-| 2026-08-07 | 执行过程改为默认折叠的单层披露行，展开后使用紧凑工具横条与连续思考正文                             | 历史运行态残留且旧式卡片嵌套过重，用户要求严格对齐参考图             | 对话执行过程 / Runtime 状态投影 / 浅深主题                     |
-| 2026-08-08 | 回复恢复逐帧增长与单轮统计，增加消息导航轨道，上下文环拆分当前占用和会话累计，连接变化显示明确状态 | 修复整段跳出、长对话定位困难、统计串任务及重连/fallback 无感知问题   | 对话流式回复 / 消息导航 / Composer 上下文环 / Runtime 连接状态 |
-| 2026-08-08 | 请求日志展开态使用请求信息、Token、费用三段并列详情区                                              | 让真实 requestId、Provider 模型、推理与总 Token 可追踪，避免只见费用 | 设置 / 使用统计 / 请求日志                                     |
+| 日期       | 变更                                                                                                                          | 原因                                                                 | 影响范围                                                       |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------- |
+| 2026-07-11 | 以 V3 为结构基线初始化前端设计文档与 token                                                                                    | `/zno-init`                                                          | 全 UI                                                          |
+| 2026-07-11 | 确认 V3 仅锁 IA；视觉/交互升级为可获奖级，Claude 主导原创                                                                     | 用户确认文档并提高设计标准                                           | 全 UI / tokens 可进化 / 组件必须原创                           |
+| 2026-07-12 | 产品首屏隐藏重复 readiness；M1 验证改为默认折叠单行工作台                                                                     | 用户反馈页面拥挤，要求参考 Codex 工作台                              | 主工作台密度 / 不改变 Locked IA                                |
+| 2026-07-12 | 左栏采用任务树常驻 + 单层覆盖式工具抽屉；Provider 网络错误改为中文行动提示                                                    | 用户选择视觉方案 C，并反馈发现模型英文错误                           | 左栏信息层级 / 工具详情 / 错误 UX                              |
+| 2026-07-12 | 助手输出改为无框 Markdown 阅读流；Composer 收为输入 + 模型入口 + 图标操作，正常态不展示重复状态                               | 用户要求对照 Codex 输出样式继续减负                                  | 对话消息 / Composer / Trace 与 Manifest 信息归属               |
+| 2026-07-15 | Context 结构位改为工作区/任务/对话；M1 验证退出产品表面；助手回复恢复稳定 Agent 头像与名称                                    | 用户反馈现有标签无法理解，并要求参考 Multica 暴露 Agent 身份         | 任务头 / 对话消息 / Agent 抽屉跳转；不恢复模型与 Run 元信息    |
+| 2026-07-16 | 参考 Multica 重排新人信息层级：文字主导航、任务负责人/模型、单一下一步、右侧任务进度与三步空态                                | 用户反馈当前桌面对新人不友好                                         | 主工作台表达；数据合同、Composer 与三栏结构保持不变            |
+| 2026-07-16 | 折叠右轨收敛为仅图标控制，移除折叠态标题和说明文字；协作 CTA 保持单一                                                         | 1280-1440px 视觉审计发现 44px 右轨出现逐字竖排                       | AppShell 折叠态 / 任务操作去重                                 |
+| 2026-07-16 | 项目目录改为悬浮提示，项目切换进入 Compose，任务首条消息命名，对话意图自动生成协作计划                                        | 用户要求减少头部重复信息，并以一条持续对话承载单 Agent 与协作        | 项目树 / Compose / 任务头 / 任务命名 / 协作入口                |
+| 2026-07-28 | 主舞台升级为递归 Pane + Pane 内对话/文件 Tab；文件编辑加入脏状态与冲突条                                                      | 对照 NewMax 工作区调研实现 P0，同时保留 Sync-Think 安全边界          | 主舞台 / Tab 条 / 文件编辑 / Workspace 恢复                    |
+| 2026-07-28 | 文件 Dock 增加内容搜索；Pane Tab 增加懒加载 xterm 受控终端                                                                    | 落地 NewMax P1 编码工作流，同时控制首屏体积和进程权限面              | 文件搜索 / 终端 Tab / 浅深主题 / Workspace 恢复                |
+| 2026-07-29 | Composer 增加每轮 Skill 多选菜单，目录 metadata 按打开懒加载                                                                  | 落地 NewMax P2 的显式上下文控制，避免 Agent Skill 全量常驻           | 对话 Compose / 欢迎页首条消息 / Agent 与 Team 所有者状态       |
+| 2026-08-04 | 使用统计改为缓存命中率优先、四类 Token 常显与逐行费用展开                                                                     | 原请求表信息拥挤，详情复选框失控，缓存创建 0 容易被误判              | 设置 / 使用统计 / 消息 Token 悬浮明细 / 浅深主题               |
+| 2026-08-07 | 执行过程改为默认折叠的单层披露行，展开后使用紧凑工具横条与连续思考正文                                                        | 历史运行态残留且旧式卡片嵌套过重，用户要求严格对齐参考图             | 对话执行过程 / Runtime 状态投影 / 浅深主题                     |
+| 2026-08-08 | 回复恢复逐帧增长与单轮统计，增加消息导航轨道，上下文环拆分当前占用和会话累计，连接变化显示明确状态                            | 修复整段跳出、长对话定位困难、统计串任务及重连/fallback 无感知问题   | 对话流式回复 / 消息导航 / Composer 上下文环 / Runtime 连接状态 |
+| 2026-08-08 | 请求日志展开态使用请求信息、Token、费用三段并列详情区                                                                         | 让真实 requestId、Provider 模型、推理与总 Token 可追踪，避免只见费用 | 设置 / 使用统计 / 请求日志                                     |
+| 2026-08-16 | Native、Claude Code、Codex 统一为 DSH ordered timeline；已到达 delta 在下一 RAF 全量提交，不做字符 replay；助手执行区移除头像 | 用户确认图四 DSH 为唯一展示基线，并要求兼顾不同内核的真实输出粒度    | 对话执行过程 / 消息持久化 / transient stream / 浅深主题        |
 
 ### 12.1 新人工作区覆盖规则（2026-07-16）
 
@@ -499,13 +500,92 @@ hover/focus/active：focus 必须可见；hover 可有 1–2px 层级变化，�
 8. `@` 弹层打开时，输入框 Tab 必须进入当前 Pane 的联网分段控件；控件内 Escape 和首段 Shift+Tab 必须关闭弹层并把焦点归还同一输入框。多 Pane 不得使用全局选择器定位设置控件。
 9. Composer 浮层必须根据锚点上下空间自动翻转，并在视口四周保留至少 8px 边距；可用高度不足时缩短自身并让内容区滚动，不得以固定最小高度把弹层顶出窗口。
 
-### 12.16 内联执行过程与最终回答规则（2026-08-16 用户确认）
+### 12.16 内联执行过程与最终回答规则（已由 §12.17 取代）
 
-1. 助手消息完全按 DSH 样式**平铺**呈现执行过程：思考行、中间摘要文本、工具批次**直接内联在消息流中**（无外层折叠面板），按**时间顺序**流式出现，最后一条无工具调用的 text 块作为**最终总结回答**独立收尾。
-2. 思考（reasoning）块渲染为可折叠“思考”行：折叠态摘要为推理文本的**第一行**（流式中取最新一行），展开后显示完整推理内容；流式快照的 reasoning 文本（transient snapshot 字段）在流式中即按时间前置渲染，完成态由 blocks 派生且不重复。
-3. 中间摘要（text/commentary 块）内联显示为正文或弱化注释文本；native 内核的摘要/工具按 `buildExecutionTimeline` 的边界序（commentary afterSequence 与 step sequence）交错，忠实于模型输出时间顺序。
-4. **工具批次面板**：相邻且没有思考/摘要分隔的工具调用合并为一个批次（标题聚合同名计数 + 批次耗时，如「read_file ×2 · write_file · 2s」），批次展开后每个工具是独立卡片，可再单独展开查看参数与结果；失败工具红色标记。
-5. 最终回答 = 消息中**最后一个非空 text 块**（完成态派生）；流式期间正在输出的回答文本紧随流程之后流式呈现，完成后独立于流程收尾。无 text 块时消息只呈现执行过程。
-6. 原生内核完成态 blocks 顺序为 思考 → 摘要 → 回答（`buildFinalAssistantBlocks` reasoning 前置）；外部内核（claude-code / codex）保持既有 `[text … reasoning]` 顺序（gap-transcript 恢复依赖）。
-7. 内联过程视图的样式使用既有主题变量（`--color-*`、`--font-mono`），圆角 8–10px、细边框、低对比背景；不新增独立色彩体系。
-8. **语言跟随**：系统提示词要求模型思考、说明、回复均使用用户最新消息的语言（`LANGUAGE_FOLLOW_PROMPT`，native 内核所有对话生效）；可见文本（摘要/回答）已实测跟随，模型内部推理语言取决于模型行为。
+本节旧版的平铺过程、工具批次和末段文本推断规则不再生效；当前实现与后续修改统一遵循 §12.17。语言跟随规则继续有效：系统提示词要求模型思考、说明和回复使用用户最新消息的语言；可见文本已实测跟随，模型内部推理语言取决于模型行为。
+
+### 12.17 DSH ordered assistant turn 与实时流式规则（2026-08-16 用户确认）
+
+本节是当前权威规则；涉及执行过程 Renderer、工具分组、reasoning 可见性、消息持久化和字符预算时，覆盖 §12.8、§12.9、§12.14、§12.16 中与本节冲突的旧描述。
+
+1. Native、Claude Code、Codex 三种内核统一投影为一个按真实发生顺序排列的 assistant ordered timeline。每个 Run 在产品表面与新持久化数据中只对应一个 assistant turn，不按 Provider 轮次或工具轮次拆成多条助手消息。
+2. timeline segment 类型为 `thinking`、带明确 `commentary | final_answer` phase 的 Markdown `text`、`tool` 和 `status`。除 `final_answer` 外，thinking、commentary、工具、重试、连接、终止和文件变更统一收纳在一个“执行过程”外层折叠面板中，并在面板内按 segment sequence 保持真实顺序；最终回答独立位于面板之后。
+3. 只有内核提供真实 reasoning/thinking 数据时才显示 Think。Think 默认是一行摘要，完成态取首个非空行，流式态取最新非空行；点击后在“执行过程”面板内原地展开完整 Markdown 内容，再次点击原地折叠，不创建第二层过程面板。
+4. 每个工具调用独占一行。禁止连续工具批次、`调用了 N 个工具`、`×2` 或同名聚合；两次同名工具调用必须保留两条独立、稳定的行。
+5. 工具主行显示用户可读的友好名称、关键参数摘要和 `running | completed | failed` 状态。工具结果通过 `toolCallId` 更新原行，不追加重复完成行；展开详情显示原始工具名、完整参数、输出、耗时和错误。
+6. retry、model switch、connection、compaction 等运行状态各自占一行，并处于其真实时间位置。状态不得覆盖相邻 Think、说明、工具或最终回答，也不得伪装成模型 commentary。
+7. commentary 与 final answer 都使用 Markdown 渲染，并由 phase 明确区分。最终回答不是“最后一个 text 猜测值”，而是 timeline 中 `phase: final_answer` 的文本；一个 assistant turn 的 footer 只在整个 turn 末尾出现一次。
+8. 助手执行与回答区域不显示 Agent、模型或默认机器人头像；Composer、任务头和资源库仍可显示身份头像。Run 需要说明责任主体时允许使用紧凑身份文字，但不得恢复消息左侧头像列。
+9. 新 Run 终态只持久化一个稳定消息 `asst-${runId}`。metadata commentary block 保存完整有界 timeline，兼容 blocks 只服务旧消费者和 Provider 上下文重建；Desktop 优先读取 timeline 并禁止重复渲染兼容 blocks。
+10. 旧历史消息、旧 checkpoint 或缺少 timeline 的数据继续走 legacy fallback，不在读取时强制迁移。reasoning-only legacy 孤立消息继续隐藏；新 timeline 中只有 thinking 的合法 assistant turn 可显示。
+11. transient frame 与 snapshot 可携带当前完整 timeline。所有已经到达的连续 text/thinking chunk 在下一次 `requestAnimationFrame` 合并为一次累计状态发布；不按模型名配置固定字速，不按 chunk 大小重新切片，也不保留客户端字符 replay 队列。
+12. process、tool、terminal 与 reset 属于即时边界。边界到达时取消尚未执行的 RAF，把其前全部已到达文本连同边界按顺序立即收口；terminal 后不得留下待显示字符。
+13. 流式 Markdown 使用 append-only 增量解析器：只保留最后两个顶层 Markdown block 为不稳定尾部，之前 block 按源码 offset 使用稳定 key 冻结，后续帧不得重新解析或重渲染冻结块。
+14. 流式阶段延迟 syntax highlight、Mermaid 和 HTML embed 等富渲染；终态只执行一次完整 Markdown 解析与富渲染。该切换不得改变正文、链接、代码或表格内容。
+15. 对话贴底使用稳定 flow-tip signature 处理消息边界，并由 `ResizeObserver` 跟随 Markdown、过程和图片的真实高度变化。禁止把完整 `messages` 数组作为每个流式帧的强制布局读写触发器；用户主动上滚后继续停止跟随。
+16. Think、commentary、工具与状态行不显示 Markdown 输入光标，运行状态分别由 Think/tool spinner 表达；整个 assistant turn 最多只在最终回答末尾显示一个流式光标。
+17. 所有行、展开详情、Markdown、状态与 footer 使用现有主题 token，在浅色和深色主题下保持可读；running 原位转 completed/failed 时不得重挂载整条消息或丢失用户的 Think/工具展开选择。
+18. 对没有原生 phase metadata 的 Provider，Runtime 在 tool/terminal 边界前不能确定当前 text 是 commentary 还是 final answer。Renderer 必须把尚未被 timeline 分类的 `draft.text` 后缀临时显示在当前顺序位置；边界分类后该后缀无损迁入对应 timeline segment，禁止因已有 thinking/process 而把已到达文本隐藏到终态。
+19. “执行过程”面板在 Run 执行且最终回答尚未开始时自动展开；最终回答开始或 Run 进入终态时自动折叠。用户手动展开/折叠后，本 Run 内自动规则不再覆盖该选择；切换到新 Run 时清除手动覆盖并重新应用阶段默认值。历史完成消息默认折叠。
+20. Provider 即使把工具前的短正文标为 `final_answer`，后续工具边界仍具有更高语义优先级：该工具之前的所有 text 必须归一化为 commentary，并按原 sequence 显示在“执行过程”面板内；只有最后一个工具之后的 final text 位于面板外。读取既有 timeline 时应用同一非破坏性归一化规则。
+21. “执行过程”标题行同时显示过程项数和本 Run 总耗时，格式为“执行过程 N 项 · X秒/分/小时”。运行中依据 `startedAt` 每秒更新；终态优先使用 `RunProcessView.startedAt → completedAt`，Run process 尚未取回时从持久 timeline 的首尾时间推导，最后才使用 `durationMs`，折叠与展开状态下都保持可见。
+
+### 12.18 plan/exec 规划与执行规则（2026-08-16 用户确认）
+
+规划与执行双模型把「先规划、审阅批准、再执行」拆成两段，各用独立模型（可配置思考强度）。设置位于「设置 → 模型 → 规划 & 执行模型」（app-setting `plan-act`：`enabled / planModelId / actModelId / planReasoningEffort / actReasoningEffort`）。
+
+1. **触发**：对话进入规划模式（`/plan` 或模式条）后发送需求 → 规划轮只读调研（写工具被拦截）→ 模型调用 `plan_submit` 提交结构化计划 → 出现方案卡（draft）。规划轮模型 = `planModelId`（配置时强制，覆盖手动模型选择）。
+2. **模型路由（runtime 强制，单一事实源）**：`prepareRunBinding` 在 run 创建前按轮次路由——规划轮（对话 `interactionMode === 'plan'`）→ `planModelId`；**执行已批准方案的轮次（`appendMessage` 携带 `planExecuting` 标志，仅本轮）→ `actModelId`**；普通 execute 模式消息**不路由**，手动模型选择与 Agent 默认照常生效。对应角色的 `*ReasoningEffort` 随模型一并强制。未启用或对应角色未配置模型时走既有解析链。`ModelResolutionSource` 记录来源 `planAct`。执行模型只在批准方案后那一轮生效，避免普通聊天轮次被工作流模型覆盖。
+3. **方案卡（可编辑）**：compose 上方粘性卡，draft 状态可全字段就地编辑——标题、目标、范围/假设/决策（列表增删）、步骤（标题/描述/验收标准/期望文件，可增删步骤）、风险（描述/缓解）、总验收标准。必填校验：标题非空、至少一个步骤且步骤标题与描述非空。
+4. **保存修改**：有改动时「批准并执行」禁用并提示先保存；「保存修改」调用 `conversation.plan.revise(expectedRevision, plan)` 生成新版本（仍为 draft），编辑底稿切换到最新版本。
+5. **批准并执行**：`conversation.plan.approve` → 对话切到 execute 模式 → 发送执行指令（计划全文 JSON 内联，`buildPlanExecutionInstruction`）→ 执行轮由 `actModelId` 驱动；方案卡随后收起。执行轮展示与普通轮完全一致（§12.17 平铺规则）。
+6. **版本历史**：卡片头部版本 chips（v1…vN，最新高亮）；点击历史版本进入只读回看（字段禁用 + 提示条），「返回编辑最新版本」恢复编辑。历史查看不影响当前 draft。
+7. **要求修改 / 取消计划**：「要求修改」切回规划模式，由规划模型按新描述重新出方案；「取消计划」调用 `conversation.plan.cancel` 使计划进入 cancelled 并收起卡片。
+8. **生效模型提示**：规划模式下（plan-act 启用且配置了 `planModelId`）compose 输入框上方显示「🧭 本轮由规划模型驱动：{模型 · 供应商}」；若对话已手动选择其他模型，附注「（已忽略所选 {模型}）」使覆盖透明。执行方案轮由批准动作触发、无需提示；普通 execute 模式不显示（不路由）。手动选择仅在规划轮可能被路由覆盖——这是进入规划模式（显式工作流阶段）的预期行为。
+9. **与任务清单的关系**：方案卡（批准前的人类审批计划，持久化、带版本）与 RunTaskCapsule 任务清单（执行轮内模型实时维护的待办进度，瞬态）时机互斥、语义不同，不重复显示；右侧栏「任务面板」为工作区级持久任务体系，与对话方案卡无关。
+
+> 本节方案卡（PlanApprovalCard / plan_submit）与任务清单（RunTaskCapsule）已由 §12.19 取代（plan 审批改为 ask_user_question plan-review 特例卡，任务清单改为常驻 TodoPanel）。
+
+### 12.19 问询卡片、任务清单与 plan 审批替换（2026-08-16 用户确认）
+
+本节取代 §12.18 中方案卡（plan_submit → PlanApprovalCard）与瞬态任务胶囊的旧描述；模型路由（§12.18 规则 1-2、8）继续有效。
+
+1. **模型主动问询（ask_user_question）**：平台工具对所有内核注入（native / claude-code / codex），schema 对齐 DSH——`questions[]` 每项含 `id`（答案回显）、`question`、可选 `header`（小标题）、`detail`（Markdown 补充）、`options[{label, description}]`、`multi_select`。**推荐项 = label 末尾「（推荐）」/「(Recommended)」后缀且放第一位**。claude-code 内置 AskUserQuestion 保持禁用（stdio 桥接无法回填 updatedInput）。
+2. **挂起机制**：工具调用挂起等待（复用平台工具审批同款 Promise 挂起 + abort 信号），发出持久化事件 `conversation.ask_pending`；用户作答后 `conversation.ask.answer {askId, answers:[{id, selected[], custom?}]}` 回填为工具结果，`conversation.ask.cancel` 以 cancelled 结束；`conversation.ask.pending {threadId}` 供刷新恢复（挂起为运行态，run 中断即消失）。
+3. **问询卡片（接管 composer）**：pending ask 存在时输入区让位，卡片占据 compose 容器（模式条/提示条保留在上方）。通用形态对齐 DSH QuestionComposer：header（eyebrow + 标题 + ✕ 放弃整组）、detail Markdown、选项列表（单选编号 / 多选 checkbox）、**推荐徽章**（剥离后缀渲染）、description 小字、自定义答案输入（有选项时单行、无选项时 textarea；Enter 提交且 IME 组合不触发）、多问题分页（一次一题，‹ 1/3 › + 进度）、跳过本题、提交前校验未答跳回、busy 禁用。
+4. **plan-review 特例卡（方案待审）**：单问题 + `intent.kind=plan-review` + `detail` 方案全文 + 二选一（含 `intent.approve` 标签）时渲染特例形态——警示条「方案待审」+ Markdown 方案 + 「拒绝 / 确认执行 / 去聊天里说」。**已取代 plan_submit → PlanApprovalCard 流程**：规划模式提示词要求模型用 ask_user_question 提交方案；确认执行后规划轮结束，桌面端切执行模式并带 `planExecuting` 标志发起执行轮（执行指令 = 方案全文 Markdown，actModelId 路由见 §12.18）。`plan_submit` 工具不再注入；conversation.plan.* 命令族与存储保留为兼容层（历史数据可读）。
+5. **对话区问询记录**：消息流中该 run 的工具行照常显示 `ask_user_question` 调用；回答后工具结果渲染为可读文本（「你选择了：A、B」/「你的回答：xxx」/「已跳过」），问与答完整可回溯。
+6. **任务清单面板（对齐 DSH TodoPanel）**：composer 上方常驻 dock，默认折叠一行（图标 + 「任务清单」+ 进度文案「N 完成 · N 进行中 · N 待办」，零计数省略 + chevron），点击内嵌展开列表（max-height 180px 滚动，勾/转圈/圆点状态图标）。**持久化投影**：任务工具（update_task_plan / TaskCreate/TaskUpdate/TaskList）快照写事件流；最近一次 `run.started` 之后的有效快照为当前清单，run 终态保留刚完成的清单，新 `run.started` 清空——刷新/回放可恢复。
+
+### 12.20 定时任务与随机任务（2026-08-16 用户确认）
+
+定时任务 = 绑定执行者（智能体 / 直接模型）的专属会话 + 触发规则 + 触发时注入的指令。规则四种：`at`（单次）/ `every`（固定间隔，≥5 分钟）/ `random`（每日窗口随机 N 次）/ `cron`（croner 表达式，任务时区）。
+
+1. **任务模型**：`ScheduledTask { name, instruction, target: {kind:'agent'|'model', ref}, rule, timeZone, enabled, nextRunAt, lastRunAt, lastResult, conversationId }`。执行者二选一：智能体（会话 track='agent'，人设/模型/技能全套生效）或直接模型（track='model'）；会话标题「任务 · {名}」，会话列表带「任务」徽标，可正常进入聊天与手动接管。
+2. **调度引擎（runtime）**：30s 心跳（单飞防重入）扫描 `next_run_at <= now` 的启用任务；`nextRunAt` 持久化（任务表列），重启恢复天然成立。触发 = 惰性创建任务会话（inbox 派生）→ 注入用户消息「【定时任务 · {名}】{指令}」→ 走普通 run 路径（`prepareRunBinding` + `executeKernelRun`，仿 goal 轮次，不经 socket）。触发前先落库（nextRunAt/lastRunAt/lastResult），崩溃最多重复一次触发。
+3. **规则推算**（`task-scheduler.ts` 纯函数）：`at` 触发后无下次；`every` = 触发时刻 + 间隔；`cron` = croner 下一次（任务时区）；`random` = **确定性日计划**——seed(任务 id + 日期) 生成当日 min..max 个窗口内随机时刻（等分随机，重启重算一致），取 lastRunAt 之后第一个，当日耗尽则取明日计划首个。
+4. **并发与错峰**：全局任务并发上限默认 2（app-setting `task-scheduler.maxConcurrent`，1-5 可调）；达到上限的到期任务跳过并记 `skipped（并发上限）`。同一 tick 多任务按任务 id 排序逐个触发、间隔 2-5s（随机任务天然错峰）。浏览器自动化为共享单实例，靠上限 + 错峰缓解冲突；MCP 连接器与文件写冲突同理靠上限缓解（文档提示自动化任务建议错开时段）。
+5. **错过执行**：恢复后 tick 发现 `nextRunAt` 已过期 → 补跑一次（先落库再触发）；不设顺延（at 任务触发后完成）。
+6. **会话忙**：任务会话有 in-flight run 时跳过本次并记 `skipped（会话忙）`。
+7. **命令与事件**：`scheduledTask.create/list/update/delete/trigger`；事件 `scheduledTask.updated / fired / skipped`（桌面端据此刷新）。
+8. **模型工具 task_schedule**（平台工具，全内核）：action `create | list | cancel`；create/cancel 在 ask-mode 下走工具审批（复用审批卡），list 免审批；规划模式目录不注入（`PLANNING_MODE_DENIED_TOOLS`）。
+9. **UI（侧栏「定时任务」stage）**：任务卡片列表（名称、执行者、规则摘要、下次触发本地时间、最近结果 ✓/⏭/✗、启停开关、操作：立即触发/编辑/删除/打开任务会话）；新建/编辑对话框——名称、指令、执行者两组下拉（智能体库带人设摘要 / 模型目录带供应商）、规则四 tab（单次 datetime-local / 周期分钟数 / 随机窗口+次数 / cron 表达式）、时区下拉（UTC/常见 IANA）、必填与合法性校验（单次须晚于当前、周期 ≥5、随机 min≥1 且 max≥min、窗口 HH:mm）。
+10. **与 goal 模式区分**：goal = 一个目标的持续自动推进（评估器判完成）；定时任务 = 到点干一件事（独立规则）。任务触发的 run 是普通 run，互不干扰。
+
+### 12.21 目标模式增强与本地 Skill 发现（2026-08-16 用户确认）
+
+**目标模式**（在既有 goal.set/get/clear + 评估器自动续轮基础上增强，对齐 DSH）：
+
+1. **状态机**：`active ⇄ paused`（暂停/恢复）、`active → blocked`（模型报受阻或轮次耗尽，可 resume）、`active → achieved`（评估器 met 或模型 complete）、`cleared`。持久化扩展 `GoalStatus`：`maxGoalRounds`、`roundsStarted`、`pausedAt`、`blockedAt`、`blockedReason`。
+2. **轮次上限**：`goal.set` 可带 `maxGoalRounds`（默认 5）；`roundsStarted` 达上限且评估未 met → 自动 `blocked（已达轮次上限）`，停止续轮（防无限烧 token）。
+3. **结构化轮次提示**：自动轮注入 `<goal_round>` 块（Objective / Round N/max + 继续指示 + 完成前取证并 complete / 受阻才 block）。
+4. **模型工具 goal_manage**（平台工具全内核）：`complete`（自证完成）/ `block`（受阻说明停下）/ `progress`（进度记录）；仅该对话有 active goal 时可用；complete 直接标记 achieved。
+5. **命令**：`goal.pause` / `goal.resume`（恢复即续轮）；事件随 goal 状态变化。
+6. **目标卡 UI**（GoalCapsule 升级）：常驻胶囊 + hover 卡——状态徽标（进行中转圈 / 暂停 ⏸ / 受阻警告 / 达成 ✓）、objective、轮次进度 `第 N/上限 轮`、按钮（暂停/恢复、编辑=唤起 /goal 输入、清除）、最近评估/受阻原因。
+
+**本地 Skill 发现**（能力中心「本地」tab）：
+
+7. **约定目录**：`<home>/.sync-think/skills`（递归扫描 `SKILL.md`/`skill.md`，深度 ≤4、文件 ≤500、忽略 node_modules/.git/dist 等）。frontmatter 解析 name/description + 指令首行摘要。
+8. **watch**：runtime 启动时监听约定目录（recursive，变更 debounce 300ms）→ 自动重扫并发 `skill.local_changed` 事件；UI 30s 轮询 + 手动刷新兜底。
+9. **命令**：`skill.local.scan`（返回候选列表 + 已导入标记 + 目录/watch 状态）、`skill.local.import {path}`（路径须在约定目录内；读文件 → 复用 parseSkillMd + finishSkillImport，originType=local、originRef=文件路径）。
+10. **UI（能力中心 skills 第三 tab「本地」）**：目录横幅（路径 + 自动监听/目录不存在提示）、候选卡片（名称、描述、指令摘要、路径 + 大小、已导入徽标）、搜索过滤（名称/描述/指令/路径全字段）、导入按钮（导入后自动刷新候选与「我的 Skill」）。

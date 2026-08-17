@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { Conversation, Message } from '@sync-think/shared';
 import { ChatView } from './ChatView.js';
 
@@ -73,9 +73,11 @@ describe('ChatView terminal failure reason', () => {
       />,
     );
 
-    // The standard failure notice is visible…
+    const processToggle = await screen.findByTestId('process-panel-toggle');
+    expect(processToggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(processToggle);
+    // The failure notice and concrete reason live inside the execution panel.
     expect(await screen.findByText('回复失败，已保留中断前内容')).toBeTruthy();
-    // …and the concrete reason is now visible inline (not only a tooltip).
     const reason = screen.getByTestId('assistant-terminal-error');
     expect(reason.textContent).toContain('请求被网关拒绝（400）');
     expect(reason.textContent).toContain('enable_thinking');

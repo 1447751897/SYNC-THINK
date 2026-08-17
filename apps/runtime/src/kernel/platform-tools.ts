@@ -118,6 +118,111 @@ export const PLATFORM_MCP_TOOL_DEFINITIONS: readonly PlatformMcpToolDefinition[]
     approval: 'never',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'ask_user_question',
+    description:
+      '向用户提问并等待回答（工具会挂起直到用户作答，回答作为工具结果返回）。需要用户确认、选择或补充信息时调用。推荐选项放第一位并在 label 末尾加「（推荐）」。规划模式下用它提交方案：intent={"kind":"plan-review","approve":"确认执行"}，detail=方案全文，options=[{"label":"确认执行"},{"label":"拒绝"}]。',
+    approval: 'never',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['questions'],
+      properties: {
+        questions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['id', 'question'],
+            properties: {
+              id: { type: 'string', description: 'Stable id for this question; echoed in the answer.' },
+              question: { type: 'string', description: 'The specific question to ask the user.' },
+              header: { type: 'string', description: 'Optional short heading, e.g. "Confirm" or "Choose Mode".' },
+              detail: { type: 'string', description: 'Optional Markdown detail / full plan text.' },
+              intent: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', description: "'plan-review' renders the plan review card." },
+                  approve: { type: 'string', description: 'plan-review: the approve option label.' },
+                },
+              },
+              options: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['label'],
+                  properties: {
+                    label: { type: 'string', description: 'Short user-facing option label.' },
+                    description: { type: 'string', description: 'One sentence explaining the tradeoff or impact.' },
+                  },
+                },
+              },
+              multi_select: { type: 'boolean', description: 'Whether the user may select more than one option. Defaults to false.' },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'task_schedule',
+    description:
+      'Manage scheduled tasks (定时任务). Actions: "create" (name, instruction, target {kind:"agent",agentId} or {kind:"model",modelId}, rule {kind:"at",runAt} | {kind:"every",intervalMinutes≥5,firstRunAt?} | {kind:"random",windowStart,windowEnd,minTimes,maxTimes} | {kind:"cron",expression}, timeZone?) creates a task that fires by injecting the instruction into its own conversation; "list" returns all tasks; "cancel" (taskId) disables a task. Creating or cancelling requires approval outside full-access mode.',
+    approval: 'never',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['create', 'list', 'cancel'] },
+        name: { type: 'string', description: 'Task name (create).' },
+        instruction: { type: 'string', description: 'Instruction injected to the task conversation when it fires (create).' },
+        target: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string', enum: ['agent', 'model'] },
+            agentId: { type: 'string' },
+            modelId: { type: 'string' },
+          },
+        },
+        rule: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            kind: { type: 'string', enum: ['at', 'every', 'random', 'cron'] },
+            runAt: { type: 'string' },
+            intervalMinutes: { type: 'number' },
+            firstRunAt: { type: 'string' },
+            windowStart: { type: 'string' },
+            windowEnd: { type: 'string' },
+            minTimes: { type: 'number' },
+            maxTimes: { type: 'number' },
+            expression: { type: 'string' },
+          },
+        },
+        timeZone: { type: 'string', description: 'IANA time zone, default UTC.' },
+        taskId: { type: 'string', description: 'Task id to cancel.' },
+      },
+    },
+  },
+  {
+    name: 'goal_manage',
+    description:
+      'Manage the active goal (目标模式). Actions: "complete" (mark the objective achieved with evidence you gathered), "block" (reason — stop and wait for the user when an unresolvable obstacle blocks progress), "progress" (note — record a short progress note). Only usable while a goal is active in this conversation.',
+    approval: 'never',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['complete', 'block', 'progress'] },
+        reason: { type: 'string', description: 'Block reason or progress note (≤500 chars).' },
+      },
+    },
+  },
 ];
 /** Host-only workspace tools implemented by `executePlatformTool` itself. */
 const PLATFORM_FILE_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -135,6 +240,71 @@ export function isPlatformFileToolName(name: string): boolean {
   return PLATFORM_FILE_TOOL_NAMES.has(name);
 }
 
+/**
+ * Tools that are NOT allowed during「规划模式」(planning mode). Planning runs
+ * analyse read-only and submit an approvable plan; any write, command, browser
+ * interaction or resource mutation is hard-blocked in the host executor — this
+ * set is the single source of truth for both the catalog filter and the fence.
+ */
+export const PLANNING_MODE_DENIED_TOOLS: ReadonlySet<string> = new Set([
+  // Workspace file writes.
+  'file_write',
+  'write_file',
+  // Command execution.
+  'run_command',
+  // Task plan mutations.
+  'update_task_plan',
+  'TaskCreate',
+  'TaskUpdate',
+  // Agent mutations.
+  'create_agent',
+  'update_agent',
+  'archive_agent',
+  // Team mutations.
+  'create_team',
+  'update_team',
+  'delete_team',
+  // Skill mutations.
+  'create_skill',
+  'update_skill',
+  'delete_skill',
+  'import_remote_skill',
+  // MCP registry mutations.
+  'register_remote_mcp',
+  // Browser interactions (side-effecting on a live page).
+  'browser_click',
+  'browser_type',
+  // Browser workflow mutations.
+  'browser_workflow_create_draft',
+  'browser_workflow_execute',
+  // Scheduled task mutations.
+  'task_schedule',
+]);
+
+/** True when the tool is a planning-mode write/side-effect tool. */
+export function isPlanningDeniedTool(name: string): boolean {
+  return PLANNING_MODE_DENIED_TOOLS.has(name);
+}
+
+/**
+ * Native 内核的模型工具目录：把平台工具（ask_user_question / task_schedule /
+ * goal_manage 等）并入 native 的 provider tools。跳过 host-only 文件工具
+ * （file_read 等）——native 有等价的内置文件工具（read_file 等），避免
+ * 同一能力双名暴露；task_list/agent_list 等重名由 extraTools 去重吸收。
+ */
+export function nativePlatformToolSchemas(options: {
+  planningMode?: boolean;
+} = {}): import('@sync-think/adapters').ProviderToolSchema[] {
+  const definitions = buildPlatformMcpToolDefinitions({ planningMode: options.planningMode });
+  return definitions
+    .filter((definition) => !PLATFORM_FILE_TOOL_NAMES.has(definition.name))
+    .map((definition) => ({
+      name: definition.name,
+      description: definition.description,
+      inputSchema: definition.inputSchema,
+    }));
+}
+
 export interface PlatformToolCatalogOptions {
   executionMode?: string;
   networkEnabled?: boolean;
@@ -145,6 +315,8 @@ export interface PlatformToolCatalogOptions {
   includeMcpTools?: boolean;
   includeTeamTools?: boolean;
   includeSkillTools?: boolean;
+  /** Planning mode: drop all side-effecting tools from the catalog. */
+  planningMode?: boolean;
 }
 
 function toPlatformDefinition(
@@ -164,9 +336,10 @@ function toPlatformDefinition(
 /**
  * Build the per-run host catalog from the authoritative chat tool schemas.
  *
- * Browser/desktop tools are intentionally NOT exposed to external kernels this
- * round: their host executors need the Browser/Desktop controller origin-grant
- * and risk fences, which are wired for the native loop only.
+ * Browser tools ARE exposed to external kernels when 联网 is on and
+ * includeBrowserTools is set: the external-kernel path reuses the Browser
+ * Worker's origin-grant / approval fences (see executeExternalKernelBrowserTool).
+ * Desktop tools stay host-only for now.
  */
 export function buildPlatformMcpToolDefinitions(
   options: PlatformToolCatalogOptions = {},
@@ -197,6 +370,11 @@ export function buildPlatformMcpToolDefinitions(
   }
   if (options.networkEnabled && options.includeBrowserTools) add(CHAT_BROWSER_TOOL_SCHEMAS);
   if (options.includeDesktopTools) add(CHAT_DESKTOP_TOOL_SCHEMAS);
+  if (options.planningMode) {
+    // Planning runs only ever see read-only tools (the executor fence enforces
+    // the same set — this filter just keeps them out of the model's sight).
+    return definitions.filter((definition) => !isPlanningDeniedTool(definition.name));
+  }
   return definitions;
 }
 

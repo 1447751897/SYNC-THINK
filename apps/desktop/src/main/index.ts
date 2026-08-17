@@ -161,6 +161,16 @@ function parseGoalClearPayloadLocal(value: unknown): import('@sync-think/protoco
   const conversationId = goalConversationId(value);
   return conversationId ? { conversationId } : undefined;
 }
+
+function parseGoalPausePayloadLocal(value: unknown): import('@sync-think/protocol').GoalPausePayload | undefined {
+  const conversationId = goalConversationId(value);
+  return conversationId ? { conversationId } : undefined;
+}
+
+function parseGoalResumePayloadLocal(value: unknown): import('@sync-think/protocol').GoalResumePayload | undefined {
+  const conversationId = goalConversationId(value);
+  return conversationId ? { conversationId } : undefined;
+}
 import {
   parseCapabilityGovernanceListPayload,
   parseCapabilityWorkspaceListPayload,
@@ -262,6 +272,22 @@ import {
   parseRenameConversationPayload,
   parseSetConversationArchivedPayload,
   parseSetConversationExecutionModePayload,
+  parseSetConversationInteractionModePayload,
+  parseConversationPlanSubmitPayload,
+  parseConversationPlanGetPayload,
+  parseConversationPlanApprovePayload,
+  parseConversationPlanRevisePayload,
+  parseConversationPlanCancelPayload,
+  parseConversationAskAnswerPayload,
+  parseConversationAskCancelPayload,
+  parseConversationAskPendingPayload,
+  parseCreateScheduledTaskPayload,
+  parseListScheduledTasksPayload,
+  parseUpdateScheduledTaskPayload,
+  parseDeleteScheduledTaskPayload,
+  parseTriggerScheduledTaskPayload,
+  parseSkillLocalScanPayload,
+  parseSkillLocalImportPayload,
   parseSetConversationPinnedPayload,
   parseSetTeamRunStatusPayload,
   parseStartTeamRunPayload,
@@ -1779,6 +1805,129 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request(
       'conversation.setExecutionMode',
       parseSetConversationExecutionModePayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-set-interaction-mode', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.setInteractionMode',
+      parseSetConversationInteractionModePayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-plan-submit', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.plan.submit',
+      parseConversationPlanSubmitPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-plan-get', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.plan.get',
+      parseConversationPlanGetPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-plan-approve', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.plan.approve',
+      parseConversationPlanApprovePayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-plan-revise', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.plan.revise',
+      parseConversationPlanRevisePayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-plan-cancel', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.plan.cancel',
+      parseConversationPlanCancelPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-ask-answer', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.ask.answer',
+      parseConversationAskAnswerPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-ask-cancel', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.ask.cancel',
+      parseConversationAskCancelPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:conversation-ask-pending', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'conversation.ask.pending',
+      parseConversationAskPendingPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:scheduled-task-create', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('scheduledTask.create', parseCreateScheduledTaskPayload(value));
+  });
+  ipcMain.handle('runtime:scheduled-task-list', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('scheduledTask.list', parseListScheduledTasksPayload(value));
+  });
+  ipcMain.handle('runtime:scheduled-task-update', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('scheduledTask.update', parseUpdateScheduledTaskPayload(value));
+  });
+  ipcMain.handle('runtime:scheduled-task-delete', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('scheduledTask.delete', parseDeleteScheduledTaskPayload(value));
+  });
+  ipcMain.handle('runtime:scheduled-task-trigger', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'scheduledTask.trigger',
+      parseTriggerScheduledTaskPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:goal-pause', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('goal.pause', parseGoalPausePayloadLocal(value));
+  });
+  ipcMain.handle('runtime:goal-resume', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('goal.resume', parseGoalResumePayloadLocal(value));
+  });
+  ipcMain.handle('runtime:skill-local-scan', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('skill.local.scan', parseSkillLocalScanPayload(value));
+  });
+  ipcMain.handle('runtime:skill-local-import', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'skill.local.import',
+      parseSkillLocalImportPayload(value),
     );
   });
   ipcMain.handle('runtime:conversation-decide-tool-approval', async (event, value: unknown) => {

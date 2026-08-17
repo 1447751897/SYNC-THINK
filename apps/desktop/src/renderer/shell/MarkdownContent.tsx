@@ -1,10 +1,11 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { Check, ChevronDown, Copy } from 'lucide-react';
 import { MermaidChart } from './MermaidChart.js';
 import { HtmlSandbox } from './HtmlSandbox.js';
+import { IncrementalMarkdownParser } from './incremental-markdown.js';
 
 interface MarkdownContentProps {
   text: string;
@@ -154,7 +155,7 @@ function markdownUrlTransform(url: string): string {
   return defaultUrlTransform(url);
 }
 
-function MarkdownRenderer({
+const MarkdownRenderer = memo(function MarkdownRenderer({
   text,
   streaming,
   interactiveEmbeds,
@@ -166,7 +167,7 @@ function MarkdownRenderer({
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
+      rehypePlugins={streaming ? undefined : [rehypeHighlight]}
       urlTransform={markdownUrlTransform}
       components={{
         a: ({ href, children }) => (
@@ -211,6 +212,23 @@ function MarkdownRenderer({
     >
       {text}
     </ReactMarkdown>
+  );
+});
+
+const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text }: { text: string }) {
+  return <MarkdownRenderer text={text} streaming interactiveEmbeds={false} />;
+});
+
+function IncrementalStreamingMarkdown({ text }: { text: string }) {
+  const parserRef = useRef<IncrementalMarkdownParser>();
+  if (!parserRef.current) parserRef.current = new IncrementalMarkdownParser();
+  const snapshot = parserRef.current.update(text);
+  return (
+    <>
+      {snapshot.blocks.map((block) => (
+        <StreamingMarkdownBlock key={block.key} text={block.text} />
+      ))}
+    </>
   );
 }
 
@@ -265,26 +283,30 @@ export function MarkdownContent({
   interactiveEmbeds = true,
   className,
 }: MarkdownContentProps) {
-  const sections = useMemo(() => splitMarkdownSections(text), [text]);
+  const sections = useMemo(() => (streaming ? [] : splitMarkdownSections(text)), [streaming, text]);
   return (
     <div className={`shell-md ${className ?? ''}`} data-streaming={streaming ? '1' : '0'}>
-      {sections.map((section, index) =>
-        section.title ? (
-          <CollapsibleSection
-            key={`${index}:${section.title}`}
-            title={section.title}
-            body={section.body}
-            streaming={streaming}
-            interactiveEmbeds={interactiveEmbeds}
-          />
-        ) : (
-          <MarkdownRenderer
-            key={`intro:${index}`}
-            text={section.body}
-            streaming={streaming}
-            interactiveEmbeds={interactiveEmbeds}
-          />
-        ),
+      {streaming ? (
+        <IncrementalStreamingMarkdown text={text} />
+      ) : (
+        sections.map((section, index) =>
+          section.title ? (
+            <CollapsibleSection
+              key={`${index}:${section.title}`}
+              title={section.title}
+              body={section.body}
+              streaming={false}
+              interactiveEmbeds={interactiveEmbeds}
+            />
+          ) : (
+            <MarkdownRenderer
+              key={`intro:${index}`}
+              text={section.body}
+              streaming={false}
+              interactiveEmbeds={interactiveEmbeds}
+            />
+          ),
+        )
       )}
       {streaming ? <span className="shell-md-cursor" aria-hidden="true" /> : null}
     </div>

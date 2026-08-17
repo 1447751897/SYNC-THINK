@@ -13,13 +13,14 @@
     "start": "tsx src/main.ts"
   },
   "dependencies": {
-    "@sync-think/shared": "workspace:*",
-    "@sync-think/protocol": "workspace:*",
-    "@sync-think/storage": "workspace:*",
-    "@sync-think/secure-store": "workspace:*",
-    "@sync-think/core": "workspace:*",
     "@sync-think/adapters": "workspace:*",
-    "@sync-think/workers": "workspace:*"
+    "@sync-think/core": "workspace:*",
+    "@sync-think/protocol": "workspace:*",
+    "@sync-think/secure-store": "workspace:*",
+    "@sync-think/shared": "workspace:*",
+    "@sync-think/storage": "workspace:*",
+    "@sync-think/workers": "workspace:*",
+    "croner": "^10.0.1"
   },
   "devDependencies": {
     "@sync-think/test-fixtures": "workspace:*",

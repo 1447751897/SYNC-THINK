@@ -69,7 +69,10 @@ function imageBlockToPart(block: AnthropicContentBlock): OpenAIResponsesContentP
   return undefined;
 }
 
-function convertUserItem(message: AnthropicWireMessage): OpenAIResponsesInputItem[] {
+function convertUserItem(
+  message: AnthropicWireMessage,
+  continuationItemRefs?: ReadonlyMap<string, string>,
+): OpenAIResponsesInputItem[] {
   const blocks =
     typeof message.content === 'string'
       ? message.content === ''
@@ -82,10 +85,12 @@ function convertUserItem(message: AnthropicWireMessage): OpenAIResponsesInputIte
     if (block.type === 'tool_result') {
       const result = block as { tool_use_id: string; content?: string | AnthropicContentBlock[]; is_error?: boolean };
       const text = toolResultText(result.content);
+      const itemReference = continuationItemRefs?.get(result.tool_use_id);
       items.push({
         type: 'function_call_output',
         call_id: result.tool_use_id,
         output: result.is_error === true ? `Error: ${text}` : text,
+        ...(itemReference ? { item_reference: itemReference } : {}),
       });
     } else if (block.type === 'text' && typeof (block as { text?: unknown }).text === 'string') {
       parts.push({ type: 'input_text', text: (block as { text: string }).text });
@@ -164,46 +169,63 @@ function convertToolChoice(
 export interface AnthropicToResponsesOptions {
   /** Provider-facing model string (already resolved by the gateway router). */
   targetModel: string;
-  /** Resolve the Responses response that produced an earlier function call. */
-  resolveFunctionResponseId?(callId: string): string | undefined;
+  /**
+   * Resolve the Responses *item* id that produced an earlier function call.
+   * HTTP Responses requires tool results to continue via `item_reference`
+   * (matching each call_id); `previous_response_id` continuation is
+   * WebSocket-only and relays reject it on HTTP.
+   */
+  resolveFunctionItemId?(callId: string): string | undefined;
 }
 
-function resolveLatestToolContinuation(
+/**
+ * Build the Responses `input` for one inbound Anthropic request.
+ *
+ * When the last message carries tool results and every result's originating
+ * `function_call` item id is resolvable, the tool results are sent as a
+ * continuation (each `function_call_output` carries its `item_reference` and
+ * no historical `function_call` is replayed). This is the HTTP-correct shape
+ * for parallel tool use — relays reject both a full in-context replay of
+ * concurrent calls ("tool use concurrency issues") and WebSocket-only
+ * `previous_response_id` continuation.
+ *
+ * Otherwise the full message history is replayed as paired items (which
+ * Responses accepts without references).
+ */
+function buildResponsesInput(
   request: AnthropicMessagesRequest,
-  resolveFunctionResponseId: ((callId: string) => string | undefined) | undefined,
-): { previousResponseId: string; input: OpenAIResponsesInputItem[] } | undefined {
-  if (!resolveFunctionResponseId) return undefined;
-  const message = request.messages.at(-1);
-  if (!message || message.role !== 'user' || typeof message.content === 'string') {
-    return undefined;
-  }
-  const results = message.content.filter((block) => block.type === 'tool_result') as Array<{
-    tool_use_id: string;
-  }>;
-  if (results.length === 0) return undefined;
-
-  const responseIds = results.map((result) =>
-    resolveFunctionResponseId(result.tool_use_id),
-  );
-  const resolvedIds = responseIds.filter(
-    (responseId): responseId is string => typeof responseId === 'string' && responseId !== '',
-  );
-  if (resolvedIds.length === 0) return undefined;
-  if (resolvedIds.length !== results.length) {
-    throw new Error(
-      'Responses continuation is missing a provider response id for one or more tool results.',
+  resolveFunctionItemId: ((callId: string) => string | undefined) | undefined,
+): OpenAIResponsesInputItem[] {
+  const input: OpenAIResponsesInputItem[] = [];
+  const last = request.messages.at(-1);
+  const lastHasToolResults =
+    last !== undefined &&
+    last.role === 'user' &&
+    typeof last.content !== 'string' &&
+    (last.content as AnthropicContentBlock[]).some((block) => block.type === 'tool_result');
+  if (resolveFunctionItemId && last && lastHasToolResults) {
+    const results = (last.content as AnthropicContentBlock[]).filter(
+      (block): block is AnthropicContentBlock & { tool_use_id: string } =>
+        block.type === 'tool_result',
     );
+    const itemIds = results.map((result) => resolveFunctionItemId(result.tool_use_id));
+    if (itemIds.every((itemId): itemId is string => typeof itemId === 'string' && itemId !== '')) {
+      const continuationRefs = new Map<string, string>();
+      results.forEach((result, index) => {
+        const itemId = itemIds[index];
+        if (itemId) continuationRefs.set(result.tool_use_id, itemId);
+      });
+      return convertUserItem(last, continuationRefs);
+    }
   }
-  const uniqueResponseIds = new Set(resolvedIds);
-  if (uniqueResponseIds.size !== 1) {
-    throw new Error(
-      'All tool results in one continuation batch must belong to the same Responses response.',
-    );
+  for (const message of request.messages) {
+    if (message.role === 'assistant') {
+      input.push(...convertAssistantItem(message));
+    } else {
+      input.push(...convertUserItem(message));
+    }
   }
-  return {
-    previousResponseId: resolvedIds[0],
-    input: convertUserItem(message),
-  };
+  return input;
 }
 
 /** Translate an Anthropic Messages request body into an OpenAI Responses body. */
@@ -211,26 +233,12 @@ export function anthropicRequestToOpenAIResponses(
   request: AnthropicMessagesRequest,
   options: AnthropicToResponsesOptions,
 ): OpenAIResponsesRequest {
-  const continuation = resolveLatestToolContinuation(
-    request,
-    options.resolveFunctionResponseId,
-  );
-  const input: OpenAIResponsesInputItem[] = continuation?.input ?? [];
-  if (!continuation) {
-    for (const message of request.messages) {
-      if (message.role === 'assistant') {
-        input.push(...convertAssistantItem(message));
-      } else {
-        input.push(...convertUserItem(message));
-      }
-    }
-  }
+  const input = buildResponsesInput(request, options.resolveFunctionItemId);
   const body: OpenAIResponsesRequest = {
     model: options.targetModel,
     input,
     stream: request.stream !== false,
   };
-  if (continuation) body.previous_response_id = continuation.previousResponseId;
   const system = flattenAnthropicSystem(request.system);
   if (system) body.instructions = system;
   if (typeof request.max_tokens === 'number' && request.max_tokens > 0) {
@@ -301,7 +309,7 @@ export class OpenAIResponsesStreamEmitter {
   constructor(
     private readonly messageId: string,
     private readonly model: string,
-    private readonly onFunctionCall?: (callId: string) => void,
+    private readonly onFunctionCall?: (callId: string, itemId?: string) => void,
   ) {}
 
   /** Frames for one upstream SSE event (empty array when nothing to emit). */
@@ -436,13 +444,13 @@ export class OpenAIResponsesStreamEmitter {
   }
 
   private recordFunctionCall(call: OpenAIResponsesFunctionCallItem): void {
-    if (call.call_id) this.recordFunctionCallId(call.call_id);
+    if (call.call_id) this.recordFunctionCallId(call.call_id, call.id);
   }
 
-  private recordFunctionCallId(callId: string): void {
+  private recordFunctionCallId(callId: string, itemId?: string): void {
     if (this.recordedFunctionCallIds.has(callId)) return;
     this.recordedFunctionCallIds.add(callId);
-    this.onFunctionCall?.(callId);
+    this.onFunctionCall?.(callId, itemId);
   }
 
   private onOutputItemAdded(
@@ -576,7 +584,7 @@ export class OpenAIResponsesStreamEmitter {
   private maybeRecordPendingFunctionCall(pending: PendingResponsesToolCall): void {
     if (pending.functionCallRecorded || !pending.callId) return;
     pending.functionCallRecorded = true;
-    this.recordFunctionCallId(pending.callId);
+    this.recordFunctionCallId(pending.callId, pending.itemId);
   }
 
   private resolveToolOutputIndex(event: {

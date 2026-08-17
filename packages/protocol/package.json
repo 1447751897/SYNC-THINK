@@ -14,6 +14,10 @@
       "types": "./dist/conversation-context-status.d.ts",
       "default": "./dist/conversation-context-status.js"
     },
+    "./assistant-turn": {
+      "types": "./dist/assistant-turn.d.ts",
+      "default": "./dist/assistant-turn.js"
+    },
     "./plugins": {
       "types": "./dist/plugins.d.ts",
       "default": "./dist/plugins.js"

@@ -30,7 +30,9 @@ describe('run process renderer wiring', () => {
     expect(chatViewSource).toContain('visibleDurableMessages');
     expect(chatViewSource).toContain('const runIds = new Set(');
     expect(chatViewSource).toContain('runProcessRetryTimersRef.current.delete(runId)');
-    expect(chatViewSource).not.toContain("loadedMessages\n        .filter((message) => message.role === 'assistant'");
+    expect(chatViewSource).not.toContain(
+      "loadedMessages\n        .filter((message) => message.role === 'assistant'",
+    );
   });
 
   it('retries transient historical process query failures with bounded backoff', () => {
@@ -59,12 +61,16 @@ describe('run process renderer wiring', () => {
     expect(chatViewSource).not.toContain('onRegenerate={() => void handleRegenerate(msg.id)}');
   });
 
-  it('batches transient text and reasoning frames to one animation-frame commit', () => {
+  it('uses one adaptive display batch per animation frame and reschedules bounded catch-up', () => {
     expect(chatViewSource).toContain('transientFrameQueueRef');
     expect(chatViewSource).toContain('transientFrameFlushRef');
     expect(chatViewSource).toContain('window.requestAnimationFrame(flushTransientFrames)');
     expect(chatViewSource).toContain('takeConversationDisplayQueueBatch');
-    expect(chatViewSource).toContain('maxTextCharacters: 24');
+    expect(chatViewSource).toContain('getConversationDisplayQueueBatchOptions(queued)');
+    expect(chatViewSource).not.toContain('while (queued.length > 0)');
+    expect(chatViewSource).toContain(
+      'if (queued.length > 0 && transientFrameFlushRef.current === null)',
+    );
     expect(chatViewSource).toContain('applyConversationStreamOperations');
     expect(chatViewSource).toContain('lastTransientSequenceRef.current = Math.max');
   });

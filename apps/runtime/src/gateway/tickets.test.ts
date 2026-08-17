@@ -43,22 +43,22 @@ describe('GatewayTicketRegistry', () => {
     const registry = new GatewayTicketRegistry();
     const a = registry.issue('run-a', route);
     const b = registry.issue('run-b', { ...route, providerId: 'prov-b', apiKey: 'sk-b' });
-    registry.recordResponseForFunctionCall(a.id, 'call-1', 'resp-a');
-    registry.recordResponseForFunctionCall(b.id, 'call-1', 'resp-b');
-    expect(registry.resolveResponseForFunctionCall(a.id, 'call-1')).toBe('resp-a');
-    expect(registry.resolveResponseForFunctionCall(b.id, 'call-1')).toBe('resp-b');
+    registry.recordContinuationItem(a.id, 'call-1', 'resp-a');
+    registry.recordContinuationItem(b.id, 'call-1', 'resp-b');
+    expect(registry.resolveContinuationItem(a.id, 'call-1')).toBe('resp-a');
+    expect(registry.resolveContinuationItem(b.id, 'call-1')).toBe('resp-b');
     registry.revokeRun('run-a');
     expect(registry.resolve(a.id)).toBeUndefined();
-    expect(registry.resolveResponseForFunctionCall(a.id, 'call-1')).toBeUndefined();
+    expect(registry.resolveContinuationItem(a.id, 'call-1')).toBeUndefined();
     expect(registry.resolve(b.id)?.providerId).toBe('prov-b');
-    expect(registry.resolveResponseForFunctionCall(b.id, 'call-1')).toBe('resp-b');
+    expect(registry.resolveContinuationItem(b.id, 'call-1')).toBe('resp-b');
   });
 
   it('revoking an unknown run is a no-op and clear() drops everything', () => {
     const registry = new GatewayTicketRegistry();
     registry.revokeRun('never-existed');
     const ticket = registry.issue('run-1', route);
-    registry.recordResponseForFunctionCall(ticket.id, 'call-1', 'resp-1');
+    registry.recordContinuationItem(ticket.id, 'call-1', 'resp-1');
     registry.recordRunUsage('run-1', {
       requestId: 'request-1',
       providerId: 'prov-a',
@@ -69,7 +69,7 @@ describe('GatewayTicketRegistry', () => {
     });
     registry.clear();
     expect(registry.resolve(ticket.id)).toBeUndefined();
-    expect(registry.resolveResponseForFunctionCall(ticket.id, 'call-1')).toBeUndefined();
+    expect(registry.resolveContinuationItem(ticket.id, 'call-1')).toBeUndefined();
     expect(registry.consumeRunUsage('run-1')).toEqual([]);
     expect(registry.size).toBe(0);
   });
@@ -151,12 +151,12 @@ describe('GatewayTicketRegistry', () => {
   it('clears response continuation items when a run ticket is re-issued', () => {
     const registry = new GatewayTicketRegistry();
     const first = registry.issue('run-1', route);
-    registry.recordResponseForFunctionCall(first.id, 'call-1', 'resp-1');
+    registry.recordContinuationItem(first.id, 'call-1', 'resp-1');
 
     const second = registry.issue('run-1', route);
 
-    expect(registry.resolveResponseForFunctionCall(first.id, 'call-1')).toBeUndefined();
-    expect(registry.resolveResponseForFunctionCall(second.id, 'call-1')).toBeUndefined();
+    expect(registry.resolveContinuationItem(first.id, 'call-1')).toBeUndefined();
+    expect(registry.resolveContinuationItem(second.id, 'call-1')).toBeUndefined();
   });
 
   it('keeps a stable session continuation scope when one run ticket is revoked', () => {
@@ -166,7 +166,7 @@ describe('GatewayTicketRegistry', () => {
       ...route,
       responseContinuationScopeId: scopeId,
     });
-    registry.recordResponseForFunctionCall(scopeId, 'call-1', 'resp-1');
+    registry.recordContinuationItem(scopeId, 'call-1', 'resp-1');
 
     registry.revokeRun('run-1');
     const second = registry.issue('run-2', {
@@ -179,7 +179,7 @@ describe('GatewayTicketRegistry', () => {
       ...route,
       responseContinuationScopeId: scopeId,
     });
-    expect(registry.resolveResponseForFunctionCall(scopeId, 'call-1')).toBe('resp-1');
+    expect(registry.resolveContinuationItem(scopeId, 'call-1')).toBe('resp-1');
   });
 
   it('restores persisted continuation items after the process-local cache is cleared', () => {
@@ -196,17 +196,17 @@ describe('GatewayTicketRegistry', () => {
     };
     const scopeId = 'kernel_persisted_scope';
     const firstRegistry = new GatewayTicketRegistry(persistence);
-    firstRegistry.recordResponseForFunctionCall(scopeId, 'call-1', 'resp-1');
+    firstRegistry.recordContinuationItem(scopeId, 'call-1', 'resp-1');
     firstRegistry.clear();
 
     const restoredRegistry = new GatewayTicketRegistry(persistence);
-    expect(restoredRegistry.resolveResponseForFunctionCall(scopeId, 'call-1')).toBe(
+    expect(restoredRegistry.resolveContinuationItem(scopeId, 'call-1')).toBe(
       'resp-1',
     );
 
     restoredRegistry.clearResponseFunctionItems(scopeId);
     const afterRemoval = new GatewayTicketRegistry(persistence);
-    expect(afterRemoval.resolveResponseForFunctionCall(scopeId, 'call-1')).toBeUndefined();
+    expect(afterRemoval.resolveContinuationItem(scopeId, 'call-1')).toBeUndefined();
   });
 });
 
@@ -227,10 +227,14 @@ describe('kernelNeedsGateway', () => {
     expect(kernelNeedsGateway(claudeCode, 'anthropic-messages')).toBe(false);
   });
 
-  it('routes Codex through the gateway only for Anthropic upstreams', () => {
-    const codex = ['openai-chat', 'openai-responses'];
+  it('routes Codex through the gateway for Anthropic and Chat upstreams (it only speaks Responses)', () => {
+    const codex = ['openai-responses'];
     expect(kernelNeedsGateway(codex, 'anthropic-messages')).toBe(true);
-    expect(kernelNeedsGateway(codex, 'openai-chat')).toBe(false);
+    // Codex's wire_api only supports "responses" (Chat was removed upstream in
+    // 2026-02), so a Chat-Completions upstream needs the responses→chat
+    // translation the gateway provides.
+    expect(kernelNeedsGateway(codex, 'openai-chat')).toBe(true);
+    expect(kernelNeedsGateway(codex, 'openai-responses')).toBe(false);
   });
 
   it('never routes a kernel that already speaks both dialects', () => {

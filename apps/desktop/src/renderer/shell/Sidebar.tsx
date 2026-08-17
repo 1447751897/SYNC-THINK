@@ -209,7 +209,8 @@ export function Sidebar(props: SidebarProps) {
           icon={<CalendarClock size={15} />}
           label="定时任务"
           testId="nav-scheduled"
-          placeholder
+          active={props.nav.stage === 'tasks'}
+          onClick={() => props.onSelectStage('tasks')}
         />
         <ActionRow
           icon={<Globe size={15} />}
@@ -854,6 +855,11 @@ function ConversationRow(props: {
           </span>
         ) : null}
         <span className="flex-1 truncate text-[13px] font-medium leading-5">{title}</span>
+        {title.startsWith('任务 ·') ? (
+          <span className="shell-task-conv-badge" title="定时任务会话">
+            任务
+          </span>
+        ) : null}
         {props.activity?.running ? (
           <span
             className="shell-activity-dot shell-activity-dot--running mr-0.5"

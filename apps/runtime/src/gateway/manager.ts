@@ -93,10 +93,10 @@ export class OpenGatewayManager {
         externalToken: this.externalToken,
         resolveTicket: (key) => this.tickets.resolveWithRun(key),
         recordRunUsage: (runId, usage) => this.tickets.recordRunUsage(runId, usage),
-        resolveResponseForFunctionCall: (scopeId, callId) =>
-          this.tickets.resolveResponseForFunctionCall(scopeId, callId),
-        recordResponseForFunctionCall: (scopeId, callId, responseId) =>
-          this.tickets.recordResponseForFunctionCall(scopeId, callId, responseId),
+        resolveContinuationItem: (scopeId, callId) =>
+          this.tickets.resolveContinuationItem(scopeId, callId),
+        recordContinuationItem: (scopeId, callId, itemId) =>
+          this.tickets.recordContinuationItem(scopeId, callId, itemId),
         resolveModelName: (model) => this.resolveExternalModel(model),
         listModels: () => this.listCatalogModels(),
         ...(this.deps.fetchImpl ? { fetchImpl: this.deps.fetchImpl } : {}),

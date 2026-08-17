@@ -214,9 +214,7 @@ async function createPartialMessageFixture(terminal: 'failed' | 'cancelled') {
   return { connection, installId, messageStore, provider, runtime, store, threadId, workspaceId };
 }
 
-async function createReasoningOnlyMessageFixture(
-  terminal: 'completed' | 'failed' | 'cancelled',
-) {
+async function createReasoningOnlyMessageFixture(terminal: 'completed' | 'failed' | 'cancelled') {
   const dir = mkdtempSync(join(tmpdir(), `sync-think-reasoning-only-${terminal}-`));
   tempDirs.push(dir);
   const dbPath = join(dir, 'sync-think.db');
@@ -247,10 +245,7 @@ async function createReasoningOnlyMessageFixture(
 function transientFrames(inbox: ReturnType<typeof createInbox>): ConversationTransientFrame[] {
   return inbox.queued
     .filter((frame) => frame.kind === 'event' && frame.type === 'conversation.transientFrame')
-    .map(
-      (frame) =>
-        (frame.payload as { frame: ConversationTransientFrame }).frame,
-    );
+    .map((frame) => (frame.payload as { frame: ConversationTransientFrame }).frame);
 }
 
 describe('conversation transient shadow stream', () => {
@@ -296,13 +291,28 @@ describe('conversation transient shadow stream', () => {
         const assistant = fixture.messageStore
           .listMessages(fixture.threadId as never)
           .messages.find((message: Message) => message.role === 'assistant');
-        expect(assistant?.blocks).toEqual([
-          { type: 'text', text: 'partial answer' },
+        expect(assistant?.blocks.map((block) => block.type)).toEqual([
+          'commentary',
+          'text',
+          'error',
+        ]);
+        expect(assistant?.blocks[0]?.payload).toMatchObject({
+          assistantTimeline: [
+            expect.objectContaining({
+              kind: 'text',
+              phase: 'final_answer',
+              text: 'partial answer',
+              status: 'completed',
+            }),
+          ],
+        });
+        expect(assistant?.blocks[1]).toEqual({ type: 'text', text: 'partial answer' });
+        expect(assistant?.blocks[2]).toEqual(
           expect.objectContaining({
             type: 'error',
             payload: expect.objectContaining({ terminalState: terminal }),
           }),
-        ]);
+        );
       } finally {
         socket.destroy();
         await fixture.runtime.stop();
@@ -353,14 +363,23 @@ describe('conversation transient shadow stream', () => {
         const assistant = fixture.messageStore
           .listMessages(fixture.threadId as never)
           .messages.find((message: Message) => message.role === 'assistant');
-        expect(assistant?.blocks[0]).toMatchObject({
+        expect(assistant?.blocks[0]?.payload).toMatchObject({
+          assistantTimeline: [
+            expect.objectContaining({
+              kind: 'thinking',
+              text: 'reasoning-only summary',
+              status: 'completed',
+            }),
+          ],
+        });
+        expect(assistant?.blocks[1]).toMatchObject({
           type: 'reasoning',
           reasoningText: 'reasoning-only summary',
         });
         if (terminal === 'completed') {
-          expect(assistant?.blocks).toHaveLength(1);
+          expect(assistant?.blocks).toHaveLength(2);
         } else {
-          expect(assistant?.blocks[1]).toEqual(
+          expect(assistant?.blocks[2]).toEqual(
             expect.objectContaining({
               type: 'error',
               payload: expect.objectContaining({ terminalState: terminal }),
@@ -652,14 +671,17 @@ describe('conversation transient shadow stream', () => {
   });
 
   it('keeps 1000 output chunks transient while persisting one terminal boundary', async () => {
-    const fixture = await createFixture(() => [
-      ...Array.from({ length: 1_000 }, (_, index) =>
-        index % 2 === 0
-          ? ({ type: 'text-delta', text: 'a' } as const)
-          : ({ type: 'reasoning-delta', text: 'r' } as const),
-      ),
-      { type: 'finished', reason: 'stop' } as const,
-    ], 0);
+    const fixture = await createFixture(
+      () => [
+        ...Array.from({ length: 1_000 }, (_, index) =>
+          index % 2 === 0
+            ? ({ type: 'text-delta', text: 'a' } as const)
+            : ({ type: 'reasoning-delta', text: 'r' } as const),
+        ),
+        { type: 'finished', reason: 'stop' } as const,
+      ],
+      0,
+    );
     const producer = await connectRuntime(fixture.installId);
     const producerInbox = createInbox(producer);
     try {

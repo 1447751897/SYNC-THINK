@@ -20,6 +20,7 @@ import type {
   KernelUsage,
 } from '@sync-think/shared';
 import {
+  codexReasoningText,
   codexToolCallArgsJson,
   codexToolCallName,
   createCodexLineBuffer,
@@ -36,6 +37,10 @@ import { probeKernel } from './detect.js';
 import { formatKernelExitDiagnostic, sanitizeKernelDiagnostic } from './kernel-diagnostics.js';
 import { startKernelProcess, type KernelProcessHandle } from './process.js';
 import { buildCodexMcpConfigArgs } from './platform-mcp-config.js';
+import {
+  createCodexRolloutCompactionWatcher,
+  type RolloutCompactionWatcher,
+} from './codex-rollout-compaction.js';
 
 export interface CodexAdapterDeps {
   /** Test seam: replace the real spawn (fixture codex processes). */
@@ -44,6 +49,13 @@ export interface CodexAdapterDeps {
   globalArgs?: readonly string[];
   /** Controlled `codex exec` flags, used by isolated real-CLI verification. */
   execArgs?: readonly string[];
+  /** `$CODEX_HOME` override — defaults to `~/.codex`. Test seam. */
+  codexHome?: string;
+  /** Test seam: replace the rollout compaction watcher factory. */
+  createRolloutWatcher?: (
+    sessionId: string,
+    onCompacted: () => void,
+  ) => RolloutCompactionWatcher;
 }
 
 export class CodexKernelAdapter implements KernelAdapter {
@@ -51,7 +63,10 @@ export class CodexKernelAdapter implements KernelAdapter {
   readonly name = 'Codex';
   readonly icon = 'codex';
   readonly capabilities = {
-    protocols: ['openai-chat' as const, 'openai-responses' as const],
+    // Codex only speaks the OpenAI Responses dialect: the Chat Completions wire
+    // API was removed upstream in 2026-02. Chat-only upstreams therefore need
+    // the gateway (see kernelNeedsGateway).
+    protocols: ['openai-responses' as const],
     permission: 'own' as const,
     permissionBridge: false,
     pause: 'session' as const,
@@ -106,6 +121,57 @@ export class CodexKernelAdapter implements KernelAdapter {
       request.workspaceDir,
     ];
     if (request.providerModelId) args.push('--model', request.providerModelId);
+    // Override the model context window so codex honors the host-configured
+    // budget (verified 0.145.0 accepts `-c model_context_window=<n>`).
+    const effectiveWindow =
+      request.effectiveContextWindow ?? request.contextWindow ?? 128_000;
+    args.push('-c', `model_context_window=${effectiveWindow}`);
+    // Surface host reasoning effort so codex requests provider thinking and
+    // emits reasoning items (mapped to KernelEvent reasoning → the UI thinking
+    // region). Off → explicit no-thinking; otherwise pass the effort level.
+    if (request.reasoningEffort) {
+      const codexEffort = request.reasoningEffort === 'off' ? 'minimal' : request.reasoningEffort;
+      args.push('-c', `model_reasoning_effort=${codexEffort}`);
+    }
+    // Reasoning effort controls token allocation, not whether `exec --json`
+    // publishes readable reasoning items. Request a summary explicitly so the
+    // adapter receives displayable text instead of usage-only reasoning tokens.
+    args.push('-c', 'model_reasoning_summary=detailed');
+    // Enable codex's own auto-compaction so it frees context before hitting the
+    // window, instead of overrunning the host budget. We hand codex the same
+    // window limit and let its native mechanism pick the compaction point (its
+    // internal clamp keeps it below the window); the host only observes the
+    // `compacted` event and shows a "compacting" notice — it never re-compacts
+    // an autonomous kernel (design §2.3 ②). Verified 0.145.0 accepts the key.
+    args.push('-c', `model_auto_compact_token_limit=${effectiveWindow}`);
+    // Codex reads ~/.codex/config.toml, where users commonly pin a global
+    // `model_provider` (e.g. a CC-Switch relay such as `custom` → KMKAPI). That
+    // would hijack every run to the user's relay instead of the provider this
+    // run actually selected. The `-c` dotted overrides below pin a per-run
+    // provider to the resolved upstream (the gateway inbound URL when the run
+    // goes through the gateway, otherwise the provider's own base URL) so the
+    // selected provider always wins. Codex's `wire_api` only supports
+    // "responses" (Chat was removed upstream in 2026-02), so chat-only upstreams
+    // must go through the gateway — that decision lives in
+    // resolveKernelCredential / kernelNeedsGateway.
+    const env: Record<string, string> = {};
+    if (request.credential.reuseLocalLogin !== true && request.credential.apiKey) {
+      if (request.credential.baseUrl) {
+        const providerId = `st_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+        const envKey = `ST_KERNEL_KEY_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+        const toml = (value: string): string => JSON.stringify(value);
+        args.push('-c', `model_provider=${toml(providerId)}`);
+        args.push('-c', `model_providers.${providerId}.name=${toml('SYNC-THINK')}`);
+        args.push('-c', `model_providers.${providerId}.base_url=${toml(request.credential.baseUrl)}`);
+        args.push('-c', `model_providers.${providerId}.wire_api=${toml('responses')}`);
+        args.push('-c', `model_providers.${providerId}.requires_openai_auth=false`);
+        args.push('-c', `model_providers.${providerId}.env_key=${toml(envKey)}`);
+        env[envKey] = request.credential.apiKey;
+        env.OPENAI_API_KEY = request.credential.apiKey;
+      } else {
+        env.OPENAI_API_KEY = request.credential.apiKey;
+      }
+    }
     args.push('--skip-git-repo-check');
     // Slice 5: codex exec has no --mcp-config; the -c mcp_servers.* overrides
     // register the platform MCP server for this invocation only (verified on
@@ -120,12 +186,6 @@ export class CodexKernelAdapter implements KernelAdapter {
       args.push('-');
     }
 
-    const env: Record<string, string> = {};
-    if (request.credential.reuseLocalLogin !== true && request.credential.apiKey) {
-      if (request.credential.baseUrl) env.OPENAI_BASE_URL = request.credential.baseUrl;
-      env.OPENAI_API_KEY = request.credential.apiKey;
-    }
-
     const handle = this.deps.spawn
       ? this.deps.spawn(args, env, request.workspaceDir)
       : startKernelProcess({
@@ -135,7 +195,8 @@ export class CodexKernelAdapter implements KernelAdapter {
           env,
         });
     this.handle = handle;
-    this.activeContextWindow = request.contextWindow || 128_000;
+    this.activeContextWindow =
+      request.effectiveContextWindow ?? request.contextWindow ?? 128_000;
     const child = handle.child;
 
     const queue: KernelEvent[] = [];
@@ -185,8 +246,34 @@ export class CodexKernelAdapter implements KernelAdapter {
 
     const buffer = createCodexLineBuffer((line) => {
       const event = parseCodexEvent(line);
-      if (event) this.processEvent(event, pushEvent);
+      if (!event) return;
+      // Kick off the rollout compaction watcher as soon as the thread/session
+      // id is known (exec JSON stdout never carries compaction events).
+      if (event.type === 'thread.started') {
+        const threadId = (event as { thread_id?: string }).thread_id?.trim();
+        if (threadId) startRolloutWatcher(threadId);
+      }
+      this.processEvent(event, pushEvent);
     });
+    // The exec JSON stdout does not surface auto-compaction (the serializer
+    // drops ContextCompaction items). Tail codex's own rollout JSONL for the
+    // thread to observe `compacted` lines and map them to host events. The
+    // watcher is advisory and stops with the run.
+    let rolloutWatcher: RolloutCompactionWatcher | undefined;
+    const startRolloutWatcher = (sessionId: string): void => {
+      rolloutWatcher?.stop();
+      rolloutWatcher = this.deps.createRolloutWatcher
+        ? this.deps.createRolloutWatcher(sessionId, () => pushEvent({ type: 'compacted' }))
+        : createCodexRolloutCompactionWatcher({
+            codexHome: this.deps.codexHome,
+            sessionId,
+            onCompacted: () => pushEvent({ type: 'compacted' }),
+          });
+    };
+    const stopRolloutWatcher = (): void => {
+      rolloutWatcher?.stop();
+      rolloutWatcher = undefined;
+    };
     let stdoutEnded = child.stdout == null;
     const flushStdout = (): void => {
       if (stdoutEnded) return;
@@ -199,6 +286,7 @@ export class CodexKernelAdapter implements KernelAdapter {
     const finalize = (code: number | null, processError?: unknown): void => {
       if (finalized) return;
       finalized = true;
+      stopRolloutWatcher();
       flushStdout();
       const stderrTail = sanitizeKernelDiagnostic(handle.stderrTail(), [request.credential.apiKey]);
       if (!terminalSeen) {
@@ -229,7 +317,8 @@ export class CodexKernelAdapter implements KernelAdapter {
     if (stdin) {
       const prompt =
         request.session?.mode === 'resume'
-          ? request.userText
+          ? // resume → user text, prefixed by the cross-kernel gap catch-up block
+            [request.session.catchUp, request.userText].filter(Boolean).join('\n\n')
           : [request.systemContext, request.userText].filter(Boolean).join('\n\n');
       stdin.write(prompt + '\n');
       stdin.end();
@@ -280,6 +369,22 @@ export class CodexKernelAdapter implements KernelAdapter {
           status: 'failed',
           error: extractCodexErrorMessage(error) ?? 'codex turn failed',
         });
+        return;
+      }
+      case 'compacted': {
+        // Codex compacted its own context (auto-compaction). The host records
+        // the boundary and surfaces a "kernel compacted context" notice; it
+        // must never re-compact an autonomous kernel (§2.3 ②).
+        push({ type: 'compacted' });
+        return;
+      }
+      case 'event_msg': {
+        // Some codex builds also emit a `context_compacted` marker inside an
+        // event_msg after compaction (observed in rollout JSONL history).
+        const payload = (event as { payload?: { type?: string } }).payload;
+        if (payload?.type === 'context_compacted') {
+          push({ type: 'compacted' });
+        }
         return;
       }
       case 'error': {
@@ -335,7 +440,7 @@ export class CodexKernelAdapter implements KernelAdapter {
         return;
       case 'reasoning':
       case 'agent_reasoning':
-        if (item.text) push({ type: 'reasoning', text: item.text });
+        push({ type: 'reasoning', text: codexReasoningText(item) });
         return;
       case 'command_execution':
         push({

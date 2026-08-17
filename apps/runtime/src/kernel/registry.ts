@@ -98,6 +98,9 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
       pause: 'turn',
       compress: 'own',
       usageReport: true,
+      // No CLI/config entry to override the window; CC auto-compacts on its own
+      // 200k native budget, so the host must trim to min(configured, 200k).
+      contextWindow: { nativeLimit: 200_000, overridable: false },
     },
     knownGoodVersions: ['2.1.222'],
     // Accept the whole 2.x line; 3.0 must be re-validated before it is trusted.
@@ -114,12 +117,20 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
     icon: 'codex',
     kind: 'subprocess',
     capabilities: {
-      protocols: ['openai-chat', 'openai-responses'],
+      // Codex speaks only the OpenAI Responses dialect: the Chat wire API was
+      // removed upstream in 2026-02 (codex-adapter.ts mirrors this). Declaring
+      // openai-chat here would make kernelNeedsGateway skip the bridge for
+      // Chat-only upstreams (e.g. DeepSeek) and Codex would then miss provider
+      // reasoning (thinking is not exposed over the Chat wire).
+      protocols: ['openai-responses'],
       permission: 'own',
       permissionBridge: false,
       pause: 'session',
       compress: 'own',
       usageReport: true,
+      // codex exec accepts `-c model_context_window=<n>` (verified 0.145.0), so
+      // the host overrides the window directly; nativeLimit is informational.
+      contextWindow: { nativeLimit: 128_000, overridable: true },
     },
     knownGoodVersions: ['0.145.0'],
     // Codex is pre-1.0; the CLI protocol has been stable since 0.140.
@@ -151,7 +162,7 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
   return [
     {
       id: 'native',
-      name: '原生内核',
+      name: 'Sync-Think',
       icon: 'native',
       kind: 'in-process',
       capabilities: nativeKernelAdapter.capabilities,
@@ -159,7 +170,7 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
       createAdapter: () => nativeKernelAdapter,
       detect: async () => ({
         kernelId: 'native',
-        name: '原生内核',
+        name: 'Sync-Think',
         icon: 'native',
         capabilities: nativeKernelAdapter.capabilities,
         installed: true,

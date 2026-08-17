@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  codexReasoningText,
   createCodexLineBuffer,
   extractCodexErrorMessage,
   mapCodexApprovalPolicy,
@@ -51,5 +52,41 @@ describe('codex-protocol', () => {
     expect(extractCodexErrorMessage('plain message')).toBe('plain message');
     expect(extractCodexErrorMessage(undefined)).toBeUndefined();
     expect(extractCodexErrorMessage(null)).toBeUndefined();
+  });
+
+  it('extracts reasoning text from Responses content blocks or top-level text', () => {
+    expect(
+      codexReasoningText({
+        type: 'reasoning',
+        id: 'r1',
+        content: [{ type: 'reasoning_text', text: 'first thought' }],
+      }),
+    ).toBe('first thought');
+    expect(
+      codexReasoningText({
+        type: 'reasoning',
+        content: [
+          { type: 'reasoning_text', text: 'first' },
+          { type: 'reasoning_text', text: 'second' },
+        ],
+      }),
+    ).toBe('first\nsecond');
+    expect(codexReasoningText({ type: 'reasoning', text: 'top-level thought' })).toBe(
+      'top-level thought',
+    );
+    expect(codexReasoningText({ type: 'reasoning' })).toBe('');
+    expect(codexReasoningText({ type: 'reasoning', content: [] })).toBe('');
+  });
+
+  it('extracts reasoning text from Codex summary blocks', () => {
+    expect(
+      codexReasoningText({
+        type: 'reasoning',
+        summary: [
+          { type: 'summary_text', text: 'Inspecting the project' },
+          { type: 'summary_text', text: 'Planning the fix' },
+        ],
+      }),
+    ).toBe('Inspecting the project\nPlanning the fix');
   });
 });

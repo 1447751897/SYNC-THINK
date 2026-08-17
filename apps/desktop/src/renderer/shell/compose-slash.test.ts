@@ -85,7 +85,16 @@ describe('parseSlashCommand', () => {
       trailing: '然后继续',
     });
     expect(parseSlashCommand('请先 /compact')).toEqual({ kind: 'none' });
-    expect(parseSlashCommand('/plan')).toEqual({ kind: 'unknown', command: '/plan' });
+    expect(parseSlashCommand('/unknown-cmd')).toEqual({ kind: 'unknown', command: '/unknown-cmd' });
+  });
+
+  it('parses /plan bare, with-request, and /execute', () => {
+    expect(parseSlashCommand('/plan')).toEqual({ kind: 'plan' });
+    expect(parseSlashCommand('/plan 完善登录功能')).toEqual({
+      kind: 'plan-with-request',
+      request: '完善登录功能',
+    });
+    expect(parseSlashCommand('/execute')).toEqual({ kind: 'execute' });
   });
 
   it('parses /goal with condition, bare, and clear forms', () => {

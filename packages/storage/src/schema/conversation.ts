@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { idColumn, tsColumns } from './ids.js';
 
 /**
@@ -29,6 +29,11 @@ export const conversation = sqliteTable(
     /** Permission mode chosen on this conversation's Compose (the ONLY permission knob). */
     executionMode: text('execution_mode').notNull().default('workspace'),
     /**
+     * Interaction work mode: 'execute' (default) | 'plan'. Independent of the
+     * executionMode permission knob.
+     */
+    interactionMode: text('interaction_mode').notNull().default('execute'),
+    /**
      * Lazily-bound task backing this conversation's message thread. Null until
      * the first message creates a task (P1.1). One task per conversation.
      */
@@ -44,3 +49,54 @@ export const conversation = sqliteTable(
   }),
 );
 export type ConversationRow = typeof conversation.$inferSelect;
+
+/**
+ * Conversation-level plan (chat planning mode). One active plan per
+ * conversation; revisions accumulate in conversation_plan_revision. The plan is
+ * a model-submitted, human-approved execution outline — distinct from the
+ * multi-agent orchestration `plan` (orchestration.ts).
+ */
+export const conversationPlan = sqliteTable(
+  'conversation_plan',
+  {
+    id: idColumn('id'),
+    /** One plan per conversation. */
+    conversationId: text('conversation_id').notNull().unique(),
+    currentRevision: integer('current_revision').notNull().default(0),
+    /** 'draft' | 'approved' | 'cancelled'. */
+    state: text('state').notNull().default('draft'),
+    ...tsColumns(),
+  },
+  (t) => ({
+    stateCheck: check(
+      'conversation_plan_state_check',
+      sql`${t.state} IN ('draft','approved','cancelled')`,
+    ),
+  }),
+);
+
+export const conversationPlanRevision = sqliteTable(
+  'conversation_plan_revision',
+  {
+    id: idColumn('id'),
+    planId: text('plan_id').notNull(),
+    revision: integer('revision').notNull(),
+    /** ChatPlanSubmission JSON. */
+    planJson: text('plan_json').notNull().default('{}'),
+    /** 'draft' | 'approved' | 'cancelled'. */
+    state: text('state').notNull().default('draft'),
+    approvedAt: text('approved_at'),
+    ...tsColumns(),
+  },
+  (t) => ({
+    byPlan: index('conversation_plan_revision_plan_idx').on(t.planId),
+    uniqueRevision: uniqueIndex('conversation_plan_revision_uidx').on(t.planId, t.revision),
+    stateCheck: check(
+      'conversation_plan_revision_state_check',
+      sql`${t.state} IN ('draft','approved','cancelled')`,
+    ),
+  }),
+);
+
+export type ConversationPlanRow = typeof conversationPlan.$inferSelect;
+export type ConversationPlanRevisionRow = typeof conversationPlanRevision.$inferSelect;

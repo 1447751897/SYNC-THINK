@@ -836,8 +836,8 @@ export function ModelPickerMenu(props: {
                       </span>
                       <div className="shell-menu__item-text">
                         <div className="shell-menu__item-title">
-                          <span className="shell-menu__kernel-name">{kernel.name}</span>
                           <KernelBadge iconKey={kernel.icon} name={kernel.name} />
+                          <span className="shell-menu__kernel-name">{kernel.name}</span>
                         </div>
                         <div
                           className={`shell-menu__item-hint ${
@@ -1033,6 +1033,12 @@ export function ContextRing(props: {
   limit: number;
   /** True when the runtime fell back to 128k because the model has no window metadata. */
   contextWindowEstimated?: boolean;
+  /**
+   * Why the displayed limit may differ from the model's configured window:
+   * 'configured' / 'kernel-capped' (non-overridable kernel native cap, e.g.
+   * Claude Code 200k) / 'estimated' (no metadata, fell back to 128k).
+   */
+  contextWindowSource?: 'configured' | 'kernel-capped' | 'estimated';
   /** Runtime-computed ratio; may exceed 1 when the request is over the window. */
   usageRatio?: number;
   /** Runtime-owned auto-compact threshold (currently 70%). */
@@ -1041,6 +1047,13 @@ export function ContextRing(props: {
   compactedAt?: string;
   /** Audit-only Runtime breakdown. It contains category names and token counts only. */
   sections?: ContextStatusSection[];
+  /**
+   * True when `used` comes from an external kernel's reported context watermark
+   * (claude-code / codex) instead of the host estimate. The host cannot see the
+   * kernel's internal breakdown, so the section audit is hidden and replaced by
+   * a "kernel-managed" note.
+   */
+  kernelSelfManaged?: boolean;
   /** 本会话累计时长（ms），tooltip 里展示。 */
   sessionDurationMs?: number;
   /** 本会话累计消耗 tokens（输入+输出跨全部轮次），tooltip 里展示。 */
@@ -1242,6 +1255,14 @@ export function ContextRing(props: {
                       {' '}
                       · 估算
                     </span>
+                  ) : props.contextWindowSource === 'kernel-capped' ? (
+                    <span
+                      className="shell-ctx-tooltip__pct"
+                      data-testid="context-limit-kernel-capped"
+                    >
+                      {' '}
+                      · 受内核限制
+                    </span>
                   ) : null}
                 </strong>
               </div>
@@ -1273,10 +1294,16 @@ export function ContextRing(props: {
                 <span>最近压缩</span>
                 <strong data-testid="context-compacted-at">{compactedAtLabel ?? '尚未发生'}</strong>
               </div>
-              <div className="shell-ctx-tooltip__hint">
-                当前占用来自 Runtime 将发送给模型的完整对话上下文，不是单条回复的 Token。
-              </div>
-              {sections.length > 0 ? (
+              {props.kernelSelfManaged ? (
+                <div className="shell-ctx-tooltip__hint" data-testid="context-kernel-self-managed">
+                  当前占用来自外部内核（Claude Code / Codex）上报的最后一次请求水位；内核历史由内核自管，宿主不可见明细。
+                </div>
+              ) : (
+                <div className="shell-ctx-tooltip__hint">
+                  当前占用来自 Runtime 将发送给模型的完整对话上下文，不是单条回复的 Token。
+                </div>
+              )}
+              {props.kernelSelfManaged ? null : sections.length > 0 ? (
                 <>
                   <div className="shell-ctx-tooltip__divider" aria-hidden="true" />
                   <div className="shell-ctx-tooltip__title shell-ctx-tooltip__title--section">

@@ -75,8 +75,9 @@ import type {
 import { splitProviderUsageTokens } from '@sync-think/shared';
 import type { RendererUpdateProviderPayload } from '../../provider-payloads.js';
 import { BrandLogoMark } from './BrandLogoMark.js';
-import { resolveProviderBrandLogo } from './brand-icons.js';
+import { resolveProviderBrandLogo, resolveProviderBrandLogoByName } from './brand-icons.js';
 import { useDialog } from './Dialog.js';
+import { REASONING_OPTIONS } from './compose-toolbar.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,8 @@ interface PlanActSetting {
   enabled: boolean;
   planModelId: string | null;
   actModelId: string | null;
+  planReasoningEffort: string | null;
+  actReasoningEffort: string | null;
 }
 
 type PricingDraft = ModelPricingEntry;
@@ -613,12 +616,26 @@ function parseVisionFallback(raw: unknown): VisionFallbackSetting {
 
 function parsePlanAct(raw: unknown): PlanActSetting {
   if (!raw || typeof raw !== 'object')
-    return { enabled: false, planModelId: null, actModelId: null };
+    return {
+      enabled: false,
+      planModelId: null,
+      actModelId: null,
+      planReasoningEffort: null,
+      actReasoningEffort: null,
+    };
   const o = raw as Record<string, unknown>;
   return {
     enabled: o.enabled === true,
     planModelId: typeof o.planModelId === 'string' && o.planModelId ? o.planModelId : null,
     actModelId: typeof o.actModelId === 'string' && o.actModelId ? o.actModelId : null,
+    planReasoningEffort:
+      typeof o.planReasoningEffort === 'string' && o.planReasoningEffort
+        ? o.planReasoningEffort
+        : null,
+    actReasoningEffort:
+      typeof o.actReasoningEffort === 'string' && o.actReasoningEffort
+        ? o.actReasoningEffort
+        : null,
   };
 }
 
@@ -673,6 +690,8 @@ export const ModelSettings = forwardRef<
     enabled: false,
     planModelId: null,
     actModelId: null,
+    planReasoningEffort: null,
+    actReasoningEffort: null,
   });
 
   const [providerOrders, setProviderOrders] = useState<Record<string, ProviderModelSummary[]>>({});
@@ -1851,9 +1870,7 @@ export const ModelSettings = forwardRef<
                                   'is-active',
                               )}
                             >
-                              <span className="model-enabled-row__avatar">
-                                {provider.name[0]?.toUpperCase() ?? '?'}
-                              </span>
+                              <ProviderRowAvatar provider={provider} />
                               <button
                                 type="button"
                                 className="model-enabled-row__main"
@@ -2238,7 +2255,9 @@ function ProviderBrandIcon({
     ) : providerId === 'cc-switch' ? (
       <Download size={15} />
     ) : null;
-  const brandLogo = specialIcon ? undefined : resolveProviderBrandLogo(providerId);
+  const brandLogo = specialIcon
+    ? undefined
+    : (resolveProviderBrandLogo(providerId) ?? resolveProviderBrandLogoByName(providerName));
   return (
     <span
       className={clsx(
@@ -2560,6 +2579,27 @@ function providerPrimaryModel(provider: ProviderSummary): ProviderModelSummary |
   return [...provider.models].sort((a, b) => a.priority - b.priority)[0];
 }
 
+/**
+ * Provider avatar in the enabled/disabled provider lists: real brand logo when
+ * the provider maps to a known brand (preset id, or display-name fallback for
+ * user-added providers whose id is a random ULID), otherwise the letter glyph.
+ */
+function ProviderRowAvatar({ provider }: { provider: ProviderSummary }) {
+  const brandLogo =
+    resolveProviderBrandLogo(provider.providerId) ?? resolveProviderBrandLogoByName(provider.name);
+  if (brandLogo) {
+    return (
+      <span
+        className="model-enabled-row__avatar model-enabled-row__avatar--logo"
+        aria-hidden="true"
+      >
+        <BrandLogoMark logo={brandLogo} size={16} />
+      </span>
+    );
+  }
+  return <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>;
+}
+
 function SortableProviderRow({
   provider,
   index,
@@ -2629,7 +2669,7 @@ function SortableProviderRow({
         <GripVertical size={14} />
       </button>
       <button type="button" className="model-enabled-row__main" onClick={onSelect}>
-        <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>
+        <ProviderRowAvatar provider={provider} />
         <span className="model-enabled-row__copy">
           <span>
             {provider.name}
@@ -2697,7 +2737,7 @@ function ProviderRowPreview({ provider }: { provider: ProviderSummary | null }) 
       <span className="model-enabled-row__grip is-static">
         <GripVertical size={14} />
       </span>
-      <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>
+      <ProviderRowAvatar provider={provider} />
       <span className="model-enabled-row__copy">
         <span>{provider.name}</span>
         <small>{primaryModel?.displayName ?? '未添加模型'}</small>
@@ -3997,7 +4037,43 @@ function PlanActPanel({
             ))}
           </select>
         </Field>
-        <p className="model-strategy-panel__hint">更改会立即保存。</p>
+        <Field label="规划思考强度">
+          <select
+            className="st-field-input"
+            value={value.planReasoningEffort ?? ''}
+            disabled={busy || !value.enabled}
+            onChange={(event) =>
+              onChange({ ...value, planReasoningEffort: event.target.value || null })
+            }
+          >
+            <option value="">跟随对话设置</option>
+            {REASONING_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.title}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="执行思考强度">
+          <select
+            className="st-field-input"
+            value={value.actReasoningEffort ?? ''}
+            disabled={busy || !value.enabled}
+            onChange={(event) =>
+              onChange({ ...value, actReasoningEffort: event.target.value || null })
+            }
+          >
+            <option value="">跟随对话设置</option>
+            {REASONING_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.title}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <p className="model-strategy-panel__hint">
+          规划模式强制使用规划模型；批准方案后的执行轮强制执行模型（含思考强度）；普通对话消息不干预，手动选择的模型照常生效。
+        </p>
       </div>
     </div>
   );

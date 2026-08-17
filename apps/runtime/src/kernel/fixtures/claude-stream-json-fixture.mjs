@@ -152,15 +152,23 @@ rl.on('line', (line) => {
     };
     emit(assistantEvent);
     if (fixtureMode === 'duplicate-assistant-tool-use') emit(assistantEvent);
+    const builtinProbe = fixtureMode === 'builtin-deny-probe';
     emit({
       type: 'control_request',
-      request_id: 'perm-1',
-      request: {
-        subtype: 'can_use_tool',
-        tool_name: 'Bash',
-        input: { command: 'echo hi' },
-        tool_use_id: 'toolu_fixture_1',
-      },
+      request_id: builtinProbe ? 'perm-builtin-1' : 'perm-1',
+      request: builtinProbe
+        ? {
+            subtype: 'can_use_tool',
+            tool_name: 'AskUserQuestion',
+            input: { questions: [{ question: 'Proceed?', header: 'Ask' }] },
+            tool_use_id: 'toolu_fixture_1',
+          }
+        : {
+            subtype: 'can_use_tool',
+            tool_name: 'Bash',
+            input: { command: 'echo hi' },
+            tool_use_id: 'toolu_fixture_1',
+          },
     });
     awaitingDecision = true;
     return;

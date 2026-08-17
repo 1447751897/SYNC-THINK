@@ -135,6 +135,9 @@ export interface OpenAIUsage {
   completion_tokens_details?: {
     reasoning_tokens?: number;
   };
+  /** DeepSeek-compatible non-standard cache reporting (openai-compatible relays). */
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
 }
 
 export interface OpenAIStreamChunk {
@@ -168,8 +171,25 @@ export type OpenAIResponsesContentPart =
 
 export type OpenAIResponsesInputItem =
   | { role: 'user' | 'assistant' | 'system' | 'developer'; content: string | OpenAIResponsesContentPart[] }
-  | { type: 'function_call_output'; call_id: string; output: string }
-  | { type: 'function_call'; call_id: string; name: string; arguments: string };
+  | {
+      type: 'function_call_output';
+      call_id: string;
+      output: string;
+      /**
+       * HTTP Responses requires tool results to reference the item id of the
+       * `function_call` they answer (`previous_response_id` continuation is
+       * WebSocket-only). Omitted during a full in-context replay.
+       */
+      item_reference?: string;
+    }
+  | { type: 'function_call'; call_id: string; name: string; arguments: string; namespace?: string }
+  | {
+      type: 'custom_tool_call';
+      call_id: string;
+      name: string;
+      input: string;
+      namespace?: string;
+    };
 
 export interface OpenAIResponsesTool {
   type: 'function';
@@ -178,6 +198,24 @@ export interface OpenAIResponsesTool {
   parameters?: Record<string, unknown>;
   strict?: boolean;
 }
+
+/**
+ * A namespace tool declaration (Codex 0.147+). The sub-tools live under a
+ * `namespace` name (e.g. `mcp__sync_think_platform`); the model sees the
+ * namespace wrapper and calls a sub-tool by its bare name. Chat upstreams have
+ * no namespace concept, so the gateway flattens these into `function` tools
+ * whose name is `{namespace}__{subToolName}` (the `/` separator is rejected by
+ * DeepSeek's `^[a-zA-Z0-9_-]+$` function-name pattern) and maps calls back to a
+ * `custom_tool_call` (name + namespace) on the way out.
+ */
+export interface OpenAIResponsesNamespaceTool {
+  type: 'namespace';
+  name: string;
+  description?: string;
+  tools?: OpenAIResponsesTool[];
+}
+
+export type OpenAIResponsesToolEntry = OpenAIResponsesTool | OpenAIResponsesNamespaceTool;
 
 export type OpenAIResponsesToolChoice =
   | { type: 'auto' | 'none' | 'required' }
@@ -188,7 +226,7 @@ export interface OpenAIResponsesRequest {
   instructions?: string;
   input: OpenAIResponsesInputItem[];
   previous_response_id?: string;
-  tools?: OpenAIResponsesTool[];
+  tools?: OpenAIResponsesToolEntry[];
   tool_choice?: OpenAIResponsesToolChoice;
   max_output_tokens?: number;
   temperature?: number;
@@ -205,6 +243,20 @@ export interface OpenAIResponsesFunctionCallItem {
   arguments?: string;
 }
 
+/**
+ * A namespaced tool call (Codex 0.147+). Model calls a sub-tool inside a
+ * namespace: `name` is the bare sub-tool name, `namespace` is the enclosing
+ * namespace (e.g. `mcp__sync_think_platform`), `input` is the JSON arguments.
+ */
+export interface OpenAIResponsesCustomToolCallItem {
+  type: 'custom_tool_call';
+  id?: string;
+  call_id?: string;
+  name?: string;
+  namespace?: string;
+  input?: string;
+}
+
 export interface OpenAIResponsesOutputTextPart {
   type: 'output_text';
   text: string;
@@ -213,11 +265,23 @@ export interface OpenAIResponsesOutputTextPart {
 
 export interface OpenAIResponsesMessageItem {
   type: 'message';
+  id?: string;
   role?: 'assistant';
   content?: OpenAIResponsesOutputTextPart[];
 }
 
-export type OpenAIResponsesOutputItem = OpenAIResponsesMessageItem | OpenAIResponsesFunctionCallItem;
+/** Responses reasoning item carrying the provider's thinking summary. */
+export interface OpenAIResponsesReasoningItem {
+  type: 'reasoning';
+  id?: string;
+  summary?: Array<{ type: 'summary_text'; text?: string }>;
+}
+
+export type OpenAIResponsesOutputItem =
+  | OpenAIResponsesMessageItem
+  | OpenAIResponsesFunctionCallItem
+  | OpenAIResponsesCustomToolCallItem
+  | OpenAIResponsesReasoningItem;
 
 export interface OpenAIResponsesUsage {
   input_tokens?: number;
@@ -235,6 +299,7 @@ export interface OpenAIResponsesUsage {
 /** The response envelope a completed (non-streaming) call returns. */
 export interface OpenAIResponsesBody {
   id?: string;
+  object?: string;
   model?: string;
   status?: string;
   output?: OpenAIResponsesOutputItem[];
@@ -250,7 +315,16 @@ export type OpenAIResponseSseEvent =
   | { type: 'response.content_part.added'; item_id?: string; output_index?: number; part?: OpenAIResponsesOutputTextPart }
   | { type: 'response.output_text.delta'; delta?: string; item_id?: string; output_index?: number }
   | { type: 'response.output_text.done'; text?: string; item_id?: string; output_index?: number }
+  | { type: 'response.reasoning_summary_part.added'; item_id?: string; output_index?: number; summary_index?: number; part?: { type?: string; text?: string } }
+  | { type: 'response.reasoning_summary_part.done'; item_id?: string; output_index?: number; summary_index?: number; part?: { type?: string; text?: string } }
   | { type: 'response.function_call_arguments.delta'; delta?: string; item_id?: string; output_index?: number }
+  | {
+      type: 'response.custom_tool_call_input.delta';
+      delta?: string;
+      item_id?: string;
+      call_id?: string;
+      output_index?: number;
+    }
   | {
       type: 'response.function_call_arguments.done';
       arguments?: string;

@@ -254,6 +254,8 @@ async function openLegacyConflictStore() {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     await runMigrations(dbPath);
   } finally {

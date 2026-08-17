@@ -1,5 +1,5 @@
 import type { Event } from '@sync-think/shared';
-import type { CommentaryTimelineSegment } from '@sync-think/protocol';
+import type { AssistantTurnSegment, CommentaryTimelineSegment } from '@sync-think/protocol';
 import {
   isHistoricalOrphanRunStart,
   type RunActivityAuthority,
@@ -10,9 +10,16 @@ export interface ConversationStreamDraft {
   text: string;
   commentaryText?: string;
   commentarySegments?: CommentaryTimelineSegment[];
+  /** Provider reasoning summary streamed live and persisted on the message. */
+  reasoningText?: string;
+  /** Exact provider/kernel event order for the current assistant turn. */
+  assistantTimeline?: AssistantTurnSegment[];
   timestamp: string;
   /** Terminal drafts stay mounted until the same Run is visible durably. */
   terminal?: boolean;
+  /** Why the run ended (failed/cancelled) so the live bubble shows the error. */
+  terminalState?: 'completed' | 'failed' | 'cancelled';
+  terminalError?: string;
 }
 
 /** A terminal draft is renderable only when the provider emitted user-visible content. */
@@ -21,13 +28,20 @@ export function hasConversationStreamDraftContent(
 ): boolean {
   return Boolean(
     draft &&
-      (draft.text.trim() ||
-        draft.commentaryText?.trim() ||
-        draft.commentarySegments?.some((segment) => segment.text.trim())),
+    (draft.text.trim() ||
+      draft.commentaryText?.trim() ||
+      draft.commentarySegments?.some((segment) => segment.text.trim()) ||
+      draft.reasoningText?.trim() ||
+      draft.assistantTimeline?.some(
+        (segment) =>
+          segment.kind === 'tool' ||
+          segment.kind === 'status' ||
+          ((segment.kind === 'thinking' || segment.kind === 'text') && segment.text.trim()),
+      )),
   );
 }
 
-export type ConversationStreamOperation =
+export type ConversationStreamOperation = (
   | {
       type: 'text.delta';
       runId?: string;
@@ -37,6 +51,14 @@ export type ConversationStreamOperation =
     }
   | {
       type: 'commentary.delta';
+      runId?: string;
+      delta: string;
+      occurredAt: string;
+      sequence: number;
+      afterSequence?: number;
+    }
+  | {
+      type: 'reasoning.delta';
       runId?: string;
       delta: string;
       occurredAt: string;
@@ -54,7 +76,10 @@ export type ConversationStreamOperation =
       runId?: string;
       sequence: number;
       occurredAt?: string;
-    };
+      terminalState?: 'completed' | 'failed' | 'cancelled';
+      terminalError?: string;
+    }
+) & { assistantTimeline?: AssistantTurnSegment[] };
 
 export interface ConversationStreamBatch {
   maxSeenSequence: number;
@@ -288,13 +313,38 @@ export function collectConversationStreamBatch(input: {
     if (event.type === 'message.commentary_delta') {
       const delta =
         typeof event.payload.textDelta === 'string'
-            ? event.payload.textDelta
+          ? event.payload.textDelta
+          : typeof event.payload.delta === 'string'
+            ? event.payload.delta
+            : '';
+      if (delta) {
+        operations.push({
+          type: 'commentary.delta',
+          runId: event.runId,
+          delta,
+          occurredAt: event.occurredAt,
+          sequence: event.sequence,
+          afterSequence:
+            typeof event.payload.afterSequence === 'number'
+              ? event.payload.afterSequence
+              : event.sequence,
+        });
+      }
+      continue;
+    }
+
+    if (event.type === 'message.reasoning_delta') {
+      const delta =
+        typeof event.payload.textDelta === 'string'
+          ? event.payload.textDelta
+          : typeof event.payload.reasoningDelta === 'string'
+            ? event.payload.reasoningDelta
             : typeof event.payload.delta === 'string'
               ? event.payload.delta
               : '';
       if (delta) {
         operations.push({
-          type: 'commentary.delta',
+          type: 'reasoning.delta',
           runId: event.runId,
           delta,
           occurredAt: event.occurredAt,
@@ -320,11 +370,21 @@ export function collectConversationStreamBatch(input: {
 
     if (isRunTerminalEventType(event.type)) {
       sawTerminalEvent = true;
+      const terminalState =
+        event.type === 'run.completed'
+          ? 'completed'
+          : event.type === 'run.failed'
+            ? 'failed'
+            : 'cancelled';
+      const terminalError =
+        typeof event.payload.errorMessage === 'string' ? event.payload.errorMessage : undefined;
       operations.push({
         type: 'run.terminal',
         runId: event.runId,
         sequence: event.sequence,
         occurredAt: event.occurredAt,
+        terminalState,
+        ...(terminalError ? { terminalError } : {}),
       });
     }
   }
@@ -347,7 +407,19 @@ export function applyConversationStreamOperations(
           operation.occurredAt ?? draft.timestamp,
         );
         draft = hasConversationStreamDraftContent(finalized)
-          ? { ...finalized, terminal: true }
+          ? {
+              ...finalized,
+              terminal: true,
+              ...(operation.terminalState ? { terminalState: operation.terminalState } : {}),
+              ...(operation.terminalError ? { terminalError: operation.terminalError } : {}),
+              ...(operation.assistantTimeline
+                ? {
+                    assistantTimeline: operation.assistantTimeline.map((segment) => ({
+                      ...segment,
+                    })),
+                  }
+                : {}),
+            }
           : null;
       }
       continue;
@@ -361,19 +433,22 @@ export function applyConversationStreamOperations(
       runId: operation.runId,
       text: '',
       timestamp: operation.occurredAt,
+      ...(operation.assistantTimeline
+        ? { assistantTimeline: operation.assistantTimeline.map((segment) => ({ ...segment })) }
+        : {}),
     };
     const activeBase = { ...base };
     delete activeBase.terminal;
     if (operation.type === 'process.boundary') {
       const closed = closeDraftCommentarySegment(activeBase, operation.occurredAt);
-      draft =
-        closed === activeBase
-          ? base
-          : {
-              ...closed,
-              runId: activeBase.runId ?? operation.runId,
-              timestamp: operation.occurredAt,
-            };
+      draft = {
+        ...(closed === activeBase ? base : closed),
+        runId: activeBase.runId ?? operation.runId,
+        timestamp: operation.occurredAt,
+        ...(operation.assistantTimeline
+          ? { assistantTimeline: operation.assistantTimeline.map((segment) => ({ ...segment })) }
+          : {}),
+      };
       continue;
     }
     const commentarySegments =
@@ -388,12 +463,20 @@ export function applyConversationStreamOperations(
       operation.type === 'commentary.delta'
         ? (activeBase.commentaryText ?? '') + operation.delta
         : activeBase.commentaryText;
+    const reasoningText =
+      operation.type === 'reasoning.delta'
+        ? (activeBase.reasoningText ?? '') + operation.delta
+        : activeBase.reasoningText;
     draft = {
       ...activeBase,
       runId: activeBase.runId ?? operation.runId,
       text: operation.type === 'text.delta' ? activeBase.text + operation.delta : activeBase.text,
       ...(commentaryText !== undefined ? { commentaryText } : {}),
       ...(commentarySegments && commentarySegments.length > 0 ? { commentarySegments } : {}),
+      ...(reasoningText !== undefined && reasoningText.length > 0 ? { reasoningText } : {}),
+      ...(operation.assistantTimeline
+        ? { assistantTimeline: operation.assistantTimeline.map((segment) => ({ ...segment })) }
+        : {}),
       timestamp: operation.occurredAt,
     };
   }
@@ -437,11 +520,7 @@ function appendDraftCommentaryDelta(
   if (!input.textDelta) return boundCommentarySegments(current);
   const segments = (current ?? []).map((segment) => ({ ...segment }));
   const last = segments.at(-1);
-  if (
-    last &&
-    last.completedAt === undefined &&
-    last.afterSequence === input.afterSequence
-  ) {
+  if (last && last.completedAt === undefined && last.afterSequence === input.afterSequence) {
     last.text += input.textDelta;
   } else {
     segments.push({
@@ -461,10 +540,7 @@ function closeCommentarySegments(
   if (!current || current.length === 0) return undefined;
   const last = current.at(-1);
   if (!last || last.completedAt !== undefined) return current as CommentaryTimelineSegment[];
-  return [
-    ...current.slice(0, -1).map((segment) => ({ ...segment })),
-    { ...last, completedAt },
-  ];
+  return [...current.slice(0, -1).map((segment) => ({ ...segment })), { ...last, completedAt }];
 }
 
 function closeDraftCommentarySegment(

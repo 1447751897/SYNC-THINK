@@ -93,6 +93,8 @@ describe('conversation usage projection', () => {
       tokensIn: 220,
       tokensOut: 32,
       requestCount: 2,
+      // watermark = last request (request-b at seq 4) occupancy: 80 + 12.
+      contextWatermarkTokens: 92,
     });
   });
 

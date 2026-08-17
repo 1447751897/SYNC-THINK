@@ -377,4 +377,39 @@ export class SqliteMessageStore {
       ...(hasMore && messages.length > 0 ? { nextCursor: messages[0].sequence } : {}),
     };
   }
+
+  /**
+   * Look up the kernel that produced each run (from the `run.started` event in
+   * the shared event log). Used by the runtime to backfill message badges for
+   * runs persisted before kernel tracking existed — the event log is indexed by
+   * run_id, so per-batch IN lookups stay cheap.
+   */
+  resolveRunKernelIds(runIds: readonly string[]): Map<string, string> {
+    const result = new Map<string, string>();
+    const unique = [
+      ...new Set(runIds.filter((id): id is string => typeof id === 'string' && id.length > 0)),
+    ];
+    if (unique.length === 0) return result;
+    for (let i = 0; i < unique.length; i += 200) {
+      const batch = unique.slice(i, i + 200);
+      const placeholders = batch.map(() => '?').join(',');
+      const rows = this.raw
+        .prepare(
+          `SELECT run_id, payload_json FROM event
+           WHERE run_id IN (${placeholders}) AND type = 'run.started'`,
+        )
+        .all(...batch) as Array<{ run_id: string; payload_json: string }>;
+      for (const row of rows) {
+        try {
+          const payload = JSON.parse(row.payload_json) as { kernelId?: unknown };
+          if (typeof payload.kernelId === 'string' && payload.kernelId) {
+            result.set(row.run_id, payload.kernelId);
+          }
+        } catch {
+          // Malformed event payload — skip.
+        }
+      }
+    }
+    return result;
+  }
 }

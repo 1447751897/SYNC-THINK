@@ -433,6 +433,8 @@ describe('0040 capability governance migration', () => {
       '0039_capability_enablement',
       '0040_capability_governance',
       '0041_task_plan',
+      '0042_conversation_interaction_mode',
+      '0043_conversation_plan',
     ]);
     const after = await openDatabaseAsync({ path: dbPath });
     try {

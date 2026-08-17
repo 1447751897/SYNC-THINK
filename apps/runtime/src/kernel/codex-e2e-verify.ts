@@ -102,6 +102,8 @@ async function main(): Promise<number> {
       providerModelId: MODEL,
       userText: PROMPT,
       contextWindow: 128_000,
+      effectiveContextWindow: 128_000,
+      contextWindowSource: 'configured',
       credential: { reuseLocalLogin: true },
       systemContext: '## AGENTS.md\n\nReply tersely.',
       platformTools: [],
@@ -119,6 +121,8 @@ async function main(): Promise<number> {
       events.push(event);
       if (event.type === 'session-started')
         console.log('[kernel-event] session-started', event.sessionId);
+      if (event.type === 'reasoning')
+        console.log('[kernel-event] reasoning', JSON.stringify(event.text));
       if (event.type === 'delta') console.log('[kernel-event] delta', JSON.stringify(event.text));
       if (event.type === 'tool-call') console.log('[kernel-event] tool-call', event.name);
       if (event.type === 'tool-result')
@@ -148,6 +152,13 @@ async function main(): Promise<number> {
     .filter((event): event is Extract<KernelEvent, { type: 'delta' }> => event.type === 'delta')
     .map((event) => event.text)
     .join('');
+  const reasoningText = events
+    .filter(
+      (event): event is Extract<KernelEvent, { type: 'reasoning' }> =>
+        event.type === 'reasoning',
+    )
+    .map((event) => event.text)
+    .join('\n');
   const toolCalls = events.filter(
     (event): event is Extract<KernelEvent, { type: 'tool-call' }> => event.type === 'tool-call',
   );
@@ -168,6 +179,7 @@ async function main(): Promise<number> {
     terminal.status === 'completed' &&
     fileContent === 'hi from codex' &&
     finalText.includes('hi from codex') &&
+    reasoningText.trim().length > 0 &&
     toolCalls.some((event) => event.name.includes('file_write')) &&
     toolCalls.some((event) => event.name.includes('file_read')) &&
     toolResults.length >= 2 &&
@@ -182,6 +194,7 @@ async function main(): Promise<number> {
       toolResults: toolResults.length,
       usage: usage?.usage,
       finalText,
+      reasoningText,
       fileContent,
     }),
   );

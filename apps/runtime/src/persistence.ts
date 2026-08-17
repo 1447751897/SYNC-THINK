@@ -35,6 +35,7 @@ import {
   SqliteUnitOfWork,
   SqliteAppSettingStore,
   SqliteAgentContextStore,
+  SqliteScheduledTaskStore,
 } from '@sync-think/storage';
 import {
   SecureStore,
@@ -336,6 +337,7 @@ export async function openPersistentRuntime(
       secureStore,
       stepExecutor,
       appSettingStore,
+      scheduledTaskStore: new SqliteScheduledTaskStore(connection.raw),
       queryUsageSummary,
       browserHost,
       browserProfileGate,

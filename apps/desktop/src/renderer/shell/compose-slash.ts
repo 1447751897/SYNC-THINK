@@ -46,9 +46,17 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
     id: 'plan',
     command: '/plan',
     label: '计划模式',
-    description: '先出可审批大纲再执行（即将支持）',
-    kind: 'coming-soon',
-    keywords: ['outline', '规划', '计划'],
+    description: '只读分析并提交可审批计划；发送后才进入规划模式（可附加需求，如 /plan 完善登录功能）',
+    kind: 'prefix',
+    keywords: ['outline', '规划', '计划', 'plan'],
+  },
+  {
+    id: 'execute',
+    command: '/execute',
+    label: '执行模式',
+    description: '退出规划模式，恢复正常执行（发送后生效）',
+    kind: 'prefix',
+    keywords: ['执行', 'execute', 'exit plan', 'plan'],
   },
   {
     id: 'goal',
@@ -117,6 +125,9 @@ export type ParsedSlashCommand =
   | { kind: 'goal' }
   | { kind: 'goal-with-condition'; condition: string }
   | { kind: 'goal-clear' }
+  | { kind: 'plan' }
+  | { kind: 'plan-with-request'; request: string }
+  | { kind: 'execute' }
   | { kind: 'unknown'; command: string }
   | { kind: 'none' };
 
@@ -139,6 +150,13 @@ export function parseSlashCommand(text: string): ParsedSlashCommand {
     if (/^clear$/i.test(trailing)) return { kind: 'goal-clear' };
     if (trailing) return { kind: 'goal-with-condition', condition: trailing };
     return { kind: 'goal' };
+  }
+  if (command === '/plan') {
+    if (trailing) return { kind: 'plan-with-request', request: trailing };
+    return { kind: 'plan' };
+  }
+  if (command === '/execute') {
+    return { kind: 'execute' };
   }
   return { kind: 'unknown', command };
 }

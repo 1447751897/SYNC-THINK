@@ -10,3 +10,5 @@ export * from './sse-lines.js';
 export * from './anthropic-to-openai.js';
 export * from './anthropic-to-responses.js';
 export * from './openai-to-anthropic.js';
+export * from './openai-responses-to-chat.js';
+export * from './chat-stream-to-responses.js';

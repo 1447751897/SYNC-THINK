@@ -275,6 +275,46 @@ describe('open gateway server', () => {
     });
   });
 
+  it('captures DeepSeek-style prompt_cache_hit_tokens as cache hits', async () => {
+    const tickets = new GatewayTicketRegistry();
+    const ticket = tickets.issue('run-deepseek-cache', openAiRoute);
+    const usage = captureUsage();
+    const upstream = sseFetch([
+      'data: {"id":"chatcmpl-ds-1","choices":[{"index":0,"delta":{"content":"Hi"}}]}\n\n',
+      'data: {"id":"chatcmpl-ds-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16,"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":4}}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const { server } = await startServer({
+      resolveTicket: (key) => tickets.resolveWithRun(key),
+      recordRunUsage: usage.recordRunUsage,
+      fetchImpl: upstream.impl,
+    });
+
+    const response = await fetch(urlFor(server, '/anthropic/v1/messages'), {
+      method: 'POST',
+      headers: { 'x-api-key': ticket.id, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        max_tokens: 1024,
+        system: 'be brief',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(usage.records).toHaveLength(1);
+    expect(usage.records[0]).toMatchObject({
+      runId: 'run-deepseek-cache',
+      usage: {
+        providerModelId: 'gpt-5.6-sol',
+        tokensIn: 12,
+        tokensOut: 4,
+        cachedTokensHit: 8,
+        totalTokens: 16,
+      },
+    });
+  });
+
   it('translates an OpenAI request onto an Anthropic upstream and streams back', async () => {
     const tickets = new GatewayTicketRegistry();
     const ticket = tickets.issue('run-2', anthropicRoute);
@@ -570,10 +610,10 @@ describe('open gateway server', () => {
     }) as unknown as typeof fetch;
     const { server } = await startServer({
       resolveTicket: (key) => tickets.resolveWithRun(key),
-      resolveResponseForFunctionCall: (scopeId, callId) =>
-        tickets.resolveResponseForFunctionCall(scopeId, callId),
-      recordResponseForFunctionCall: (scopeId, callId, responseId) =>
-        tickets.recordResponseForFunctionCall(scopeId, callId, responseId),
+      resolveContinuationItem: (scopeId, callId) =>
+        tickets.resolveContinuationItem(scopeId, callId),
+      recordContinuationItem: (scopeId, callId, itemId) =>
+        tickets.recordContinuationItem(scopeId, callId, itemId),
       fetchImpl,
     });
 
@@ -631,15 +671,20 @@ describe('open gateway server', () => {
     expect(second.status).toBe(200);
     expect(secondText).toContain('"text":"完成"');
     expect(calls).toHaveLength(2);
+    expect((calls[1].body as { previous_response_id?: string }).previous_response_id).toBeUndefined();
     expect(calls[1].body).toMatchObject({
-      previous_response_id: 'resp_stream_1',
       input: [
-      { type: 'function_call_output', call_id: 'call_1', output: 'ok' },
+        {
+          type: 'function_call_output',
+          call_id: 'call_1',
+          output: 'ok',
+          item_reference: 'fc_item_1',
+        },
       ],
     });
   });
 
-  it('continues a non-streaming Responses tool call with previous_response_id', async () => {
+  it('continues a non-streaming Responses tool call with item_reference', async () => {
     const tickets = new GatewayTicketRegistry();
     const ticket = tickets.issue('run-responses-json', responsesRoute);
     const calls: Array<{ body: unknown }> = [];
@@ -675,10 +720,10 @@ describe('open gateway server', () => {
     }) as unknown as typeof fetch;
     const { server } = await startServer({
       resolveTicket: (key) => tickets.resolveWithRun(key),
-      resolveResponseForFunctionCall: (scopeId, callId) =>
-        tickets.resolveResponseForFunctionCall(scopeId, callId),
-      recordResponseForFunctionCall: (scopeId, callId, responseId) =>
-        tickets.recordResponseForFunctionCall(scopeId, callId, responseId),
+      resolveContinuationItem: (scopeId, callId) =>
+        tickets.resolveContinuationItem(scopeId, callId),
+      recordContinuationItem: (scopeId, callId, itemId) =>
+        tickets.recordContinuationItem(scopeId, callId, itemId),
       fetchImpl,
     });
 
@@ -726,13 +771,14 @@ describe('open gateway server', () => {
       }),
     });
     expect(await readAll(second)).toContain('"text":"json-complete"');
+    expect((calls[1].body as { previous_response_id?: string }).previous_response_id).toBeUndefined();
     expect(calls[1].body).toMatchObject({
-      previous_response_id: 'resp_json_1',
       input: [
         {
           type: 'function_call_output',
           call_id: 'call_json',
           output: 'ok',
+          item_reference: 'fc_item_json',
         },
       ],
     });
@@ -751,5 +797,90 @@ describe('open gateway server', () => {
     });
     expect(response.status).toBe(502);
     expect(await response.text()).toContain('not supported yet');
+  });
+
+  it('translates a Codex Responses request onto a Chat upstream and streams Responses events back', async () => {
+    const chatSse = [
+      'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"你"},"finish_reason":null}]}\n\n',
+      'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":null}]}\n\n',
+      'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}\n\n',
+      'data: [DONE]\n\n',
+    ];
+    const upstream = sseFetch(chatSse);
+    const { server } = await startServer({
+      resolveTicket: () => ({ runId: 'run-r2c', route: openAiRoute }),
+      fetchImpl: upstream.impl,
+    });
+    const response = await fetch(urlFor(server, '/openai/v1/responses'), {
+      method: 'POST',
+      headers: { 'x-api-key': 'ticket-r2c' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        instructions: 'be brief',
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+        stream: true,
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const text = await response.text();
+    expect(text).toContain('event: response.created');
+    expect(text).toContain('event: response.output_text.delta');
+    expect(text).toContain('event: response.completed');
+    // The upstream must have received a Chat body at /chat/completions, with
+    // the model rewritten to the ticket's provider model (routing is
+    // authoritative over whatever the kernel wrote).
+    expect(upstream.calls[0].url).toContain('/chat/completions');
+    expect(upstream.calls[0].body).toMatchObject({
+      model: 'gpt-5.6-sol',
+      messages: [
+        { role: 'system', content: 'be brief' },
+        { role: 'user', content: 'hello' },
+      ],
+      stream: true,
+    });
+  });
+
+  it('translates a Responses tool loop onto Chat tool messages and back', async () => {
+    const chatSse = [
+      'data: {"id":"c","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell_ls","arguments":""}}]},"finish_reason":null}]}\n\n',
+      'data: {"id":"c","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"dir\\":\\".\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      'data: [DONE]\n\n',
+    ];
+    const upstream = sseFetch(chatSse);
+    const { server } = await startServer({
+      resolveTicket: () => ({ runId: 'run-r2c-tool', route: openAiRoute }),
+      fetchImpl: upstream.impl,
+    });
+    const response = await fetch(urlFor(server, '/openai/v1/responses'), {
+      method: 'POST',
+      headers: { 'x-api-key': 'ticket-r2c-tool' },
+      body: JSON.stringify({
+        model: 'm',
+        input: [
+          { role: 'user', content: 'list' },
+          { type: 'function_call', call_id: 'call_1', name: 'shell_ls', arguments: '{}' },
+          { type: 'function_call_output', call_id: 'call_1', output: 'file.txt' },
+        ],
+        stream: true,
+      }),
+    });
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('event: response.function_call_arguments.delta');
+    expect(text).toContain('event: response.completed');
+    expect(upstream.calls[0].body).toMatchObject({
+      messages: [
+        { role: 'user', content: 'list' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { id: 'call_1', type: 'function', function: { name: 'shell_ls', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: 'file.txt' },
+      ],
+    });
   });
 });

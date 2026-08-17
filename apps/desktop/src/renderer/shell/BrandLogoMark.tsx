@@ -7,6 +7,16 @@
  */
 import type { BrandLogo } from './brand-icons.js';
 
+/**
+ * The esbuild `dataurl` loader keeps SVG attribute quotes as literal `"`, which
+ * terminates the CSS `url("...")` string and silently drops the mask (renders a
+ * solid color box with no shape). Percent-encode quotes (and #) so the mask
+ * URL is parseable.
+ */
+function cssMaskUrl(src: string): string {
+  return `url("${src.replace(/"/g, '%22').replace(/#/g, '%23')}")`;
+}
+
 export function BrandLogoMark({
   logo,
   size = 18,
@@ -18,6 +28,7 @@ export function BrandLogoMark({
 }) {
   const classes = ['shell-brand-logo', className].filter(Boolean).join(' ');
   if (logo.mono) {
+    const mask = cssMaskUrl(logo.src);
     return (
       <span
         className={`${classes} shell-brand-logo--mono`}
@@ -26,8 +37,8 @@ export function BrandLogoMark({
         style={{
           width: size,
           height: size,
-          maskImage: `url("${logo.src}")`,
-          WebkitMaskImage: `url("${logo.src}")`,
+          maskImage: mask,
+          WebkitMaskImage: mask,
         }}
       />
     );

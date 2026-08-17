@@ -40,9 +40,7 @@ import {
 } from 'lucide-react';
 import {
   splitProviderUsageTokens,
-  type ChatPlanRevision,
   type Conversation,
-  type ConversationPlanSummary,
   type Event,
   type GlobalAgent,
   type KernelDetectionResult,
@@ -53,6 +51,9 @@ import {
   type Team,
 } from '@sync-think/shared';
 import type {
+  AssistantTurnSegment,
+  AskQuestion,
+  AskQuestionAnswer,
   ConversationGetContextStatusResponse,
   ConversationGetRunProcessResponse,
   ConversationListMessagesResponse,
@@ -66,6 +67,7 @@ import type {
   UsageSummaryResponse,
   WorkspaceSummary,
 } from '@sync-think/protocol';
+import { normalizeAssistantTurnPhases } from '@sync-think/protocol/assistant-turn';
 import { parseConversationGetContextStatusResponse } from '@sync-think/protocol/conversation-context-status';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { AgentAvatarView } from './AgentAvatarView.js';
@@ -142,6 +144,14 @@ import {
   formatRunModelLabel,
 } from './execution-process.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import {
+  AskQuestionCard,
+  formatAskToolResult,
+  planReviewOf,
+  type PendingAsk,
+} from './AskQuestionCard.js';
+import { TodoPanel } from './TodoPanel.js';
+import { projectTodoFromEvents } from './todo-projection.js';
 import { InlineProcessFlow } from './InlineProcessFlow.js';
 import {
   buildAssistantTurnNavigationItems,
@@ -160,6 +170,7 @@ import {
 } from './chat-stream.js';
 import {
   buildConversationSnapshotDisplayQueue,
+  getConversationDisplayQueueBatchOptions,
   mergeTransientConversationDraft,
   reconcileTransientConversationDraft,
   takeConversationDisplayQueueBatch,
@@ -197,19 +208,44 @@ const MAX_LOCAL_ERRORS = 50;
  * cards, in durable block order. The final answer is NOT part of this list.
  */
 export type InlineProcessItem =
-  | { kind: 'reasoning'; text: string }
-  | { kind: 'text'; text: string }
-  | { kind: 'commentary'; text: string }
+  | {
+      kind: 'reasoning';
+      text: string;
+      id?: string;
+      sequence?: number;
+      status?: 'streaming' | 'completed';
+    }
+  | {
+      kind: 'text' | 'commentary';
+      text: string;
+      id?: string;
+      sequence?: number;
+      status?: 'streaming' | 'completed';
+    }
   | {
       kind: 'tool';
+      id?: string;
+      sequence?: number;
+      toolCallId?: string;
       name: string;
+      displayName?: string;
+      inputSummary?: string;
       argumentsJson: string;
       result?: string;
       failed?: boolean;
+      status?: 'running' | 'completed' | 'failed';
       /** First observed tool boundary (native steps carry these). */
       startedAt?: string;
       /** Terminal tool boundary, when reported. */
       completedAt?: string;
+    }
+  | {
+      kind: 'status';
+      id?: string;
+      sequence?: number;
+      statusType: Extract<AssistantTurnSegment, { kind: 'status' }>['statusType'];
+      label: string;
+      detail?: string;
     };
 
 export interface ChatMessage {
@@ -222,6 +258,8 @@ export interface ChatMessage {
   commentarySegments?: CommentaryTimelineSegment[];
   /** Provider reasoning summary — shown as a collapsible thinking region. */
   reasoningText?: string;
+  /** Exact ordered assistant turn emitted by Runtime. */
+  assistantTimeline?: AssistantTurnSegment[];
   /** Final formal answer: the last non-empty text block of the message. */
   answerText?: string;
   /** Ordered execution-process items before the final answer (DSH-style inline view). */
@@ -307,58 +345,285 @@ export type RuntimeConnectionNotice =
   { state: 'retrying'; text: string } | { state: 'failed'; text: string } | null;
 
 /** Convert a durable Message from the store into the UI ChatMessage shape. */
+function parseAssistantTimeline(
+  blocks: readonly MessageBlock[],
+): AssistantTurnSegment[] | undefined {
+  const statusTypes = new Set<Extract<AssistantTurnSegment, { kind: 'status' }>['statusType']>([
+    'retry',
+    'model_switch',
+    'connection',
+    'compaction',
+    'other',
+  ]);
+  for (const block of blocks) {
+    const payload =
+      block.payload && typeof block.payload === 'object'
+        ? (block.payload as Record<string, unknown>)
+        : undefined;
+    if (!Array.isArray(payload?.assistantTimeline)) continue;
+    const parsed = payload.assistantTimeline.flatMap((candidate): AssistantTurnSegment[] => {
+      if (!candidate || typeof candidate !== 'object') return [];
+      const segment = candidate as Record<string, unknown>;
+      if (typeof segment.id !== 'string' || typeof segment.sequence !== 'number') return [];
+      if (
+        segment.kind === 'thinking' &&
+        typeof segment.text === 'string' &&
+        (segment.status === 'streaming' || segment.status === 'completed')
+      ) {
+        return [{ ...(segment as unknown as Extract<AssistantTurnSegment, { kind: 'thinking' }>) }];
+      }
+      if (
+        segment.kind === 'text' &&
+        (segment.phase === 'commentary' || segment.phase === 'final_answer') &&
+        typeof segment.text === 'string' &&
+        (segment.status === 'streaming' || segment.status === 'completed')
+      ) {
+        return [{ ...(segment as unknown as Extract<AssistantTurnSegment, { kind: 'text' }>) }];
+      }
+      if (
+        segment.kind === 'tool' &&
+        typeof segment.toolCallId === 'string' &&
+        typeof segment.name === 'string' &&
+        (segment.status === 'running' ||
+          segment.status === 'completed' ||
+          segment.status === 'failed')
+      ) {
+        return [{ ...(segment as unknown as Extract<AssistantTurnSegment, { kind: 'tool' }>) }];
+      }
+      if (
+        segment.kind === 'status' &&
+        typeof segment.label === 'string' &&
+        typeof segment.statusType === 'string' &&
+        statusTypes.has(
+          segment.statusType as Extract<AssistantTurnSegment, { kind: 'status' }>['statusType'],
+        )
+      ) {
+        return [{ ...(segment as unknown as Extract<AssistantTurnSegment, { kind: 'status' }>) }];
+      }
+      return [];
+    });
+    if (parsed.length > 0) {
+      return normalizeAssistantTurnPhases(
+        parsed.sort((left, right) => left.sequence - right.sequence),
+      );
+    }
+  }
+  return undefined;
+}
+
+function assistantTimelineToChatFields(timeline: readonly AssistantTurnSegment[] | undefined): {
+  answerText?: string;
+  commentaryText?: string;
+  reasoningText?: string;
+  processItems?: InlineProcessItem[];
+} {
+  if (!timeline?.length) return {};
+  const ordered = [...timeline].sort((left, right) => left.sequence - right.sequence);
+  const answerText = ordered
+    .filter(
+      (segment): segment is Extract<AssistantTurnSegment, { kind: 'text' }> =>
+        segment.kind === 'text' && segment.phase === 'final_answer',
+    )
+    .map((segment) => segment.text)
+    .join('');
+  const commentaryText = ordered
+    .filter(
+      (segment): segment is Extract<AssistantTurnSegment, { kind: 'text' }> =>
+        segment.kind === 'text' && segment.phase === 'commentary',
+    )
+    .map((segment) => segment.text)
+    .join('');
+  const reasoningText = ordered
+    .filter(
+      (segment): segment is Extract<AssistantTurnSegment, { kind: 'thinking' }> =>
+        segment.kind === 'thinking',
+    )
+    .map((segment) => segment.text)
+    .join('\n\n');
+  const processItems = ordered.flatMap((segment): InlineProcessItem[] => {
+    if (segment.kind === 'thinking') {
+      return segment.text.trim()
+        ? [
+            {
+              kind: 'reasoning',
+              id: segment.id,
+              sequence: segment.sequence,
+              text: segment.text,
+              status: segment.status,
+            },
+          ]
+        : [];
+    }
+    if (segment.kind === 'text') {
+      if (segment.phase === 'final_answer' || !segment.text.trim()) return [];
+      return [
+        {
+          kind: 'commentary',
+          id: segment.id,
+          sequence: segment.sequence,
+          text: segment.text,
+          status: segment.status,
+        },
+      ];
+    }
+    if (segment.kind === 'tool') {
+      return [
+        {
+          kind: 'tool',
+          id: segment.id,
+          sequence: segment.sequence,
+          toolCallId: segment.toolCallId,
+          name: segment.name,
+          ...(segment.displayName ? { displayName: segment.displayName } : {}),
+          ...(segment.inputSummary ? { inputSummary: segment.inputSummary } : {}),
+          argumentsJson: segment.argumentsJson ?? '',
+          ...(segment.output !== undefined ? { result: segment.output } : {}),
+          ...(segment.isError || segment.status === 'failed' ? { failed: true } : {}),
+          status: segment.status,
+          ...(segment.startedAt ? { startedAt: segment.startedAt } : {}),
+          ...(segment.completedAt ? { completedAt: segment.completedAt } : {}),
+        },
+      ];
+    }
+    return [
+      {
+        kind: 'status',
+        id: segment.id,
+        sequence: segment.sequence,
+        statusType: segment.statusType,
+        label: segment.label,
+        ...(segment.detail ? { detail: segment.detail } : {}),
+      },
+    ];
+  });
+  return {
+    ...(answerText ? { answerText } : {}),
+    ...(commentaryText ? { commentaryText } : {}),
+    ...(reasoningText ? { reasoningText } : {}),
+    ...(processItems.length > 0 ? { processItems } : {}),
+  };
+}
+
+export function assistantTimelineProcessTiming(
+  timeline: readonly AssistantTurnSegment[] | undefined,
+  settled: boolean,
+): { startedAt?: string; completedAt?: string } {
+  let startedAt: { value: string; time: number } | undefined;
+  let completedAt: { value: string; time: number } | undefined;
+  for (const segment of timeline ?? []) {
+    const timing = segment as {
+      startedAt?: string;
+      completedAt?: string;
+      occurredAt?: string;
+    };
+    const startValue = timing.startedAt ?? timing.occurredAt;
+    const startTime = Date.parse(startValue ?? '');
+    if (Number.isFinite(startTime) && (!startedAt || startTime < startedAt.time)) {
+      startedAt = { value: startValue!, time: startTime };
+    }
+    if (!settled) continue;
+    const completedValue = timing.completedAt ?? timing.occurredAt;
+    const completedTime = Date.parse(completedValue ?? '');
+    if (Number.isFinite(completedTime) && (!completedAt || completedTime > completedAt.time)) {
+      completedAt = { value: completedValue!, time: completedTime };
+    }
+  }
+  return {
+    ...(startedAt ? { startedAt: startedAt.value } : {}),
+    ...(completedAt ? { completedAt: completedAt.value } : {}),
+  };
+}
+
+export function projectTransientAnswerText(
+  draftText: string,
+  timeline: readonly AssistantTurnSegment[] | undefined,
+): string | undefined {
+  const ordered = [...(timeline ?? [])].sort((left, right) => left.sequence - right.sequence);
+  const classifiedText = ordered
+    .filter(
+      (segment): segment is Extract<AssistantTurnSegment, { kind: 'text' }> =>
+        segment.kind === 'text',
+    )
+    .map((segment) => segment.text)
+    .join('');
+  const classifiedAnswer = ordered
+    .filter(
+      (segment): segment is Extract<AssistantTurnSegment, { kind: 'text' }> =>
+        segment.kind === 'text' && segment.phase === 'final_answer',
+    )
+    .map((segment) => segment.text)
+    .join('');
+  const pendingText = classifiedText
+    ? draftText.startsWith(classifiedText)
+      ? draftText.slice(classifiedText.length)
+      : ''
+    : draftText;
+  const visibleText = classifiedAnswer + pendingText;
+  return visibleText || undefined;
+}
+
 export function messageToChat(msg: Message): ChatMessage {
+  const assistantTimeline = parseAssistantTimeline(msg.blocks);
+  const timelineFields = assistantTimelineToChatFields(assistantTimeline);
   const textBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'text');
-  const text = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
+  const legacyText = textBlocks.map((b: MessageBlock) => b.text ?? '').join('\n');
+  const text = timelineFields.answerText ?? legacyText;
   // Final formal answer: the LAST non-empty text block. Everything before it
   // is execution process (reasoning / commentary / intermediate text / tools).
   const answerBlock =
     [...textBlocks].reverse().find((b: MessageBlock) => (b.text ?? '').trim() !== '') ?? undefined;
   const processItems: InlineProcessItem[] = [];
-  for (const block of msg.blocks) {
-    if (block === answerBlock) continue;
-    switch (block.type) {
-      case 'reasoning': {
-        const blockReasoning =
-          typeof block.reasoningText === 'string'
-            ? block.reasoningText
-            : block.payload && typeof block.payload === 'object'
-              ? (block.payload as Record<string, unknown>).reasoningText
-              : undefined;
-        const reasoning =
-          typeof blockReasoning === 'string' ? blockReasoning : (block.text ?? '');
-        if (reasoning.trim()) processItems.push({ kind: 'reasoning', text: reasoning });
-        break;
-      }
-      case 'text':
-        if ((block.text ?? '').trim()) processItems.push({ kind: 'text', text: block.text ?? '' });
-        break;
-      case 'commentary':
-        if ((block.text ?? '').trim())
-          processItems.push({ kind: 'commentary', text: block.text ?? '' });
-        break;
-      case 'tool-call': {
-        const payload = (block.payload ?? {}) as { name?: string; argumentsJson?: string };
-        processItems.push({
-          kind: 'tool',
-          name: payload.name ?? '工具',
-          argumentsJson: payload.argumentsJson ?? '',
-        });
-        break;
-      }
-      case 'tool-result': {
-        const last = processItems[processItems.length - 1];
-        if (last?.kind === 'tool') {
-          last.result = block.text ?? '';
-          const payload = (block.payload ?? {}) as { failed?: boolean };
-          if (payload.failed === true) last.failed = true;
+  if (!assistantTimeline)
+    for (const block of msg.blocks) {
+      if (block === answerBlock) continue;
+      switch (block.type) {
+        case 'reasoning': {
+          const blockReasoning =
+            typeof block.reasoningText === 'string'
+              ? block.reasoningText
+              : block.payload && typeof block.payload === 'object'
+                ? (block.payload as Record<string, unknown>).reasoningText
+                : undefined;
+          const reasoning =
+            typeof blockReasoning === 'string' ? blockReasoning : (block.text ?? '');
+          if (reasoning.trim()) processItems.push({ kind: 'reasoning', text: reasoning });
+          break;
         }
-        break;
+        case 'text':
+          if ((block.text ?? '').trim())
+            processItems.push({ kind: 'text', text: block.text ?? '' });
+          break;
+        case 'commentary':
+          if ((block.text ?? '').trim())
+            processItems.push({ kind: 'commentary', text: block.text ?? '' });
+          break;
+        case 'tool-call': {
+          const payload = (block.payload ?? {}) as { name?: string; argumentsJson?: string };
+          processItems.push({
+            kind: 'tool',
+            name: payload.name ?? '工具',
+            argumentsJson: payload.argumentsJson ?? '',
+          });
+          break;
+        }
+        case 'tool-result': {
+          const last = processItems[processItems.length - 1];
+          if (last?.kind === 'tool') {
+            // ask_user_question 结果渲染为可读回答（问询记录在消息流中可见）。
+            if (last.name === 'ask_user_question') {
+              last.result = formatAskToolResult(block.text ?? '') ?? block.text ?? '';
+            } else {
+              last.result = block.text ?? '';
+            }
+            const payload = (block.payload ?? {}) as { failed?: boolean };
+            if (payload.failed === true) last.failed = true;
+          }
+          break;
+        }
+        default:
+          break;
       }
-      default:
-        break;
     }
-  }
   const commentaryBlocks = msg.blocks.filter((b: MessageBlock) => b.type === 'commentary');
   const persistedCommentaryText = commentaryBlocks
     .map((b: MessageBlock) => b.text ?? '')
@@ -401,9 +666,9 @@ export function messageToChat(msg: Message): ChatMessage {
       const blockReasoning =
         typeof b.reasoningText === 'string'
           ? b.reasoningText
-          : (b.payload && typeof b.payload === 'object'
-              ? (b.payload as Record<string, unknown>).reasoningText
-              : undefined);
+          : b.payload && typeof b.payload === 'object'
+            ? (b.payload as Record<string, unknown>).reasoningText
+            : undefined;
       return typeof blockReasoning === 'string' ? blockReasoning : (b.text ?? '');
     })
     .filter(Boolean)
@@ -435,11 +700,16 @@ export function messageToChat(msg: Message): ChatMessage {
     id: String(msg.id),
     role,
     text,
-    commentaryText: commentaryText || undefined,
-    commentarySegments: commentarySegments.length > 0 ? commentarySegments : undefined,
-    reasoningText: reasoningText || undefined,
-    answerText: answerBlock?.text || undefined,
-    processItems,
+    commentaryText: timelineFields.commentaryText ?? (commentaryText || undefined),
+    commentarySegments: assistantTimeline
+      ? undefined
+      : commentarySegments.length > 0
+        ? commentarySegments
+        : undefined,
+    reasoningText: timelineFields.reasoningText ?? (reasoningText || undefined),
+    assistantTimeline,
+    answerText: timelineFields.answerText ?? (answerBlock?.text || undefined),
+    processItems: timelineFields.processItems ?? processItems,
     images,
     timestamp: msg.createdAt ?? '',
     sequence: msg.sequence,
@@ -458,6 +728,8 @@ export function shouldDisplayChatMessage(message: ChatMessage): boolean {
     message.text.trim().length > 0 ||
     Boolean(message.commentaryText?.trim()) ||
     Boolean(message.commentarySegments?.some((segment) => segment.text.trim())) ||
+    Boolean(message.processItems?.some((item) => item.kind !== 'reasoning')) ||
+    Boolean(message.assistantTimeline?.length) ||
     Boolean(message.images?.length) ||
     Boolean(message.terminalState)
   );
@@ -604,37 +876,70 @@ export function ChatView({
   useEffect(() => {
     setInteractionMode(conversation.interactionMode === 'plan' ? 'plan' : 'execute');
   }, [conversation.id, conversation.interactionMode]);
-  // 对话计划（规划模式审批卡）。
-  const [conversationPlan, setConversationPlan] = useState<ConversationPlanSummary | undefined>();
-  const [planBusy, setPlanBusy] = useState(false);
-  const lastPlanEventSeqRef = useRef(0);
-  const refreshConversationPlan = useCallback(() => {
+  // 挂起的模型问询（ask_user_question → 接管 composer 的问询卡片）。
+  const [pendingAsk, setPendingAsk] = useState<PendingAsk | undefined>();
+  const lastAskEventSeqRef = useRef(0);
+  const refreshPendingAsk = useCallback(() => {
     const api = bridge();
-    if (!conversation || !api?.conversationPlanGet) return;
+    if (!conversation || !api?.conversationAskPending) return;
     void api
-      .conversationPlanGet({ conversationId: conversation.id })
-      .then((res) => setConversationPlan(res.plan ?? undefined))
-      .catch(() => setConversationPlan(undefined));
+      .conversationAskPending({ threadId: String(conversation.id) })
+      .then((res) => setPendingAsk(res.ask))
+      .catch(() => setPendingAsk(undefined));
   }, [conversation]);
   useEffect(() => {
-    // 会话切换 / 刷新恢复：始终拉取一次当前计划。
-    refreshConversationPlan();
-    // 计划生命周期事件（submit/approve/revise/cancel）后重新拉取。
-    const planEvents = eventHistory
+    // 会话切换 / 刷新恢复：始终查询一次当前挂起问询。
+    refreshPendingAsk();
+    // 问询生命周期事件（pending/answered/cancelled）后刷新。
+    const askEvents = eventHistory
       .filter(
         (e) =>
-          e.type === 'conversation.plan_submitted' ||
-          e.type === 'conversation.plan_approved' ||
-          e.type === 'conversation.plan_revised' ||
-          e.type === 'conversation.plan_cancelled',
+          e.type === 'conversation.ask_pending' ||
+          e.type === 'conversation.ask_answered' ||
+          e.type === 'conversation.ask_cancelled',
       )
       .map((e) => e.sequence);
-    const latest = planEvents.length > 0 ? Math.max(...planEvents) : 0;
-    if (latest > lastPlanEventSeqRef.current) {
-      lastPlanEventSeqRef.current = latest;
-      refreshConversationPlan();
+    const latest = askEvents.length > 0 ? Math.max(...askEvents) : 0;
+    if (latest > lastAskEventSeqRef.current) {
+      lastAskEventSeqRef.current = latest;
+      refreshPendingAsk();
     }
-  }, [eventHistory, refreshConversationPlan]);
+  }, [eventHistory, refreshPendingAsk]);
+  // plan-review 确认执行：结束规划轮，切执行模式并发起执行轮（actModelId + 全工具）。
+  // 定义在 sendUserText 之后（见 sendUserText 定义处下方的 executeApprovedPlanReview）。
+  // plan-act（规划/执行双模型）设置：用于提示本轮生效模型。
+  const [planActSetting, setPlanActSetting] = useState<{
+    enabled: boolean;
+    planModelId: string | null;
+    actModelId: string | null;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const api = bridge();
+    if (!api?.getSettings) return;
+    void api
+      .getSettings({ keys: ['plan-act'] })
+      .then((res) => {
+        if (cancelled) return;
+        const raw = res.settings?.['plan-act'];
+        const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+        setPlanActSetting(
+          o
+            ? {
+                enabled: o.enabled === true,
+                planModelId:
+                  typeof o.planModelId === 'string' && o.planModelId ? o.planModelId : null,
+                actModelId:
+                  typeof o.actModelId === 'string' && o.actModelId ? o.actModelId : null,
+              }
+            : null,
+        );
+      })
+      .catch(() => setPlanActSetting(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [conversation.id]);
   const [goalState, setGoalState] = useState<
     import('@sync-think/protocol').GoalGetResponse | undefined
   >();
@@ -664,6 +969,26 @@ export function ChatView({
   const [modelOverride, setModelOverride] = useState<string>(
     () => readConversationModelOverride(String(conversation.id)) ?? '',
   );
+  // plan-act 生效模型提示（规划模式路由）：显示规划模型，手动选择被忽略时附注。
+  const planActHint = useMemo(() => {
+    const setting = planActSetting;
+    // 仅规划模式有路由提示：普通 execute 消息不路由，执行方案轮由批准动作
+    // 触发、无需提示；执行模型只在批准后那一轮生效。
+    if (!setting?.enabled || interactionMode !== 'plan') return null;
+    const modelId = setting.planModelId;
+    if (!modelId) return null;
+    const option = models?.find((model) => model.modelId === modelId);
+    const label = option ? `${option.displayName} · ${option.providerName}` : modelId;
+    let ignoredLabel: string | undefined;
+    const manualId = modelOverride.trim();
+    if (manualId && manualId !== modelId) {
+      const manualOption = models?.find((model) => model.modelId === manualId);
+      ignoredLabel = manualOption
+        ? `${manualOption.displayName} · ${manualOption.providerName}`
+        : manualId;
+    }
+    return { role: 'plan' as const, label, ignoredLabel };
+  }, [interactionMode, modelOverride, models, planActSetting]);
   // Multi-kernel selector: per-conversation kernel id (default = native).
   const [kernelOverride, setKernelOverride] = useState<string>(
     () => readConversationKernelOverride(String(conversation.id)) ?? 'native',
@@ -788,15 +1113,22 @@ export function ChatView({
   const renderTransientDraft = useCallback(
     (draft: ConversationStreamDraft | null, fallbackSequence: number) => {
       transientDraftRef.current = draft;
+      const timelineFields = assistantTimelineToChatFields(draft?.assistantTimeline);
+      const answerText = draft
+        ? projectTransientAnswerText(draft.text, draft.assistantTimeline)
+        : undefined;
       setStreamingMessage(
         draft
           ? {
               id: `streaming-${draft.runId ?? fallbackSequence}`,
               role: 'assistant',
-              text: draft.text,
-              commentaryText: draft.commentaryText,
-              commentarySegments: draft.commentarySegments,
-              reasoningText: draft.reasoningText,
+              text: answerText ?? '',
+              commentaryText: timelineFields.commentaryText ?? draft.commentaryText,
+              commentarySegments: draft.assistantTimeline ? undefined : draft.commentarySegments,
+              reasoningText: timelineFields.reasoningText ?? draft.reasoningText,
+              assistantTimeline: draft.assistantTimeline,
+              answerText,
+              processItems: timelineFields.processItems,
               timestamp: draft.timestamp,
               streaming: !draft.terminal,
               runId: draft.runId,
@@ -814,12 +1146,13 @@ export function ChatView({
     transientFrameFlushRef.current = null;
     const queued = transientFrameQueueRef.current;
     if (!threadId || queued.length === 0) return;
-    const batch = takeConversationDisplayQueueBatch(queued, {
-      maxFrames: 6,
-      maxTextCharacters: 24,
-    });
+    let nextDraft = transientDraftRef.current;
+    const batch = takeConversationDisplayQueueBatch(
+      queued,
+      getConversationDisplayQueueBatchOptions(queued),
+    );
     queued.splice(0, queued.length, ...batch.remaining);
-    let nextDraft = applyConversationStreamOperations(transientDraftRef.current, batch.operations);
+    nextDraft = applyConversationStreamOperations(nextDraft, batch.operations);
     for (const item of batch.completed) {
       if (item.source === 'snapshot') {
         nextDraft = mergeTransientConversationDraft(nextDraft, item.draft);
@@ -866,6 +1199,22 @@ export function ChatView({
       transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
     }
   }, [renderTransientDraft, threadId, updateRunProcess]);
+  const scheduleTransientFrameFlush = useCallback(
+    (publication: 'animation-frame' | 'immediate' = 'animation-frame') => {
+      if (publication === 'immediate') {
+        if (transientFrameFlushRef.current !== null) {
+          window.cancelAnimationFrame(transientFrameFlushRef.current);
+          transientFrameFlushRef.current = null;
+        }
+        flushTransientFrames();
+        return;
+      }
+      if (transientFrameFlushRef.current === null) {
+        transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
+      }
+    },
+    [flushTransientFrames],
+  );
   /** Active @-mention query (null = picker closed). */
   const [mention, setMention] = useState<MentionQuery | null>(null);
   const [mentionFiles, setMentionFiles] = useState<
@@ -914,6 +1263,7 @@ export function ChatView({
   const [compactNow, setCompactNow] = useState(() => Date.now());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
   /** Prevent duplicate history-page requests while a top-edge load is pending. */
   const loadingMoreRef = useRef(false);
   /** Invalidates an async prepend anchor when the user keeps scrolling meanwhile. */
@@ -1743,6 +2093,8 @@ export function ChatView({
                   text: event.snapshot.text,
                   commentaryText: event.snapshot.commentaryText,
                   commentarySegments: event.snapshot.commentarySegments,
+                  reasoningText: event.snapshot.reasoningText,
+                  assistantTimeline: event.snapshot.assistantTimeline,
                   timestamp: event.snapshot.updatedAt,
                 },
                 streamSequence: latestStreamSequence,
@@ -1761,9 +2113,7 @@ export function ChatView({
               }),
             );
           }
-          if (transientFrameFlushRef.current === null) {
-            transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
-          }
+          scheduleTransientFrameFlush('immediate');
           return;
         }
         const frame = event.frame;
@@ -1791,9 +2141,9 @@ export function ChatView({
         }
         transientStreamHealthyRef.current = true;
         frameQueue.push({ source: 'transient', frame, offset: 0 });
-        if (transientFrameFlushRef.current === null) {
-          transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
-        }
+        scheduleTransientFrameFlush(
+          frame.kind === 'process' || frame.kind === 'terminal' ? 'immediate' : 'animation-frame',
+        );
       },
     );
     void subscription.ready.catch(() => {
@@ -1820,6 +2170,7 @@ export function ChatView({
     loadMessages,
     refreshContextStatus,
     renderTransientDraft,
+    scheduleTransientFrameFlush,
     threadId,
     updateRunProcess,
   ]);
@@ -1851,15 +2202,20 @@ export function ChatView({
           offset: 0,
         })),
       );
-      if (transientFrameFlushRef.current === null) {
-        transientFrameFlushRef.current = window.requestAnimationFrame(flushTransientFrames);
-      }
+      scheduleTransientFrameFlush(
+        batch.operations.some(
+          (operation) => operation.type === 'process.boundary' || operation.type === 'run.terminal',
+        )
+          ? 'immediate'
+          : 'animation-frame',
+      );
     }
   }, [
     conversation.id,
     conversation.taskId,
     eventHistory,
     flushTransientFrames,
+    scheduleTransientFrameFlush,
     threadId,
     transientFallbackEpoch,
   ]);
@@ -2230,9 +2586,10 @@ export function ChatView({
     visibleDurableMessages,
   ]);
 
-  // Pin to bottom without a smooth animation. Once the user scrolls upward,
-  // streaming/process updates must leave the historical viewport untouched.
-  useLayoutEffect(() => {
+  const flowTipSignature = `${conversation.id}:${messages.at(-1)?.id ?? 'empty'}:${
+    messages.at(-1)?.streaming ? 'streaming' : 'settled'
+  }:${pendingApprovals.at(-1)?.approvalId ?? 'no-approval'}`;
+  const pinMessagesToBottom = useCallback(() => {
     const scroller = messagesScrollRef.current;
     if (!scroller || !stickToBottomRef.current) return;
     const target = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
@@ -2241,7 +2598,20 @@ export function ChatView({
       scroller.scrollTop = target;
     }
     lastObservedScrollTopRef.current = scroller.scrollTop;
-  }, [messages, conversation.id]);
+  }, []);
+
+  // Message boundaries use a stable tip signature. Actual Markdown/process
+  // growth follows ResizeObserver and does not force layout on every text delta.
+  useLayoutEffect(() => {
+    pinMessagesToBottom();
+  }, [flowTipSignature, pinMessagesToBottom]);
+  useEffect(() => {
+    const content = messagesContentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => pinMessagesToBottom());
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [conversation.id, pinMessagesToBottom]);
 
   const sendUserText = useCallback(
     async (
@@ -2253,6 +2623,8 @@ export function ChatView({
         kernelOverride?: string;
         reasoningEffort?: ReasoningEffort;
         networkEnabled?: boolean;
+        /** 批准方案后的执行轮：runtime 据此强制 plan-act 的执行模型。 */
+        planExecuting?: boolean;
       },
     ) => {
       const api = bridge();
@@ -2376,6 +2748,7 @@ export function ChatView({
           // 'auto' 原样透传：runtime 透传后由 adapters 映射为默认思考档（auto=开启思考）。
           reasoningEffort: selectedReasoningEffort,
           networkEnabled: selectedNetworkEnabled || undefined,
+          planExecuting: options?.planExecuting === true ? true : undefined,
           skillVersionIds,
           images:
             images.length > 0
@@ -2461,6 +2834,48 @@ export function ChatView({
       selectedSkillVersionIds,
     ],
   );
+
+  // plan-review 确认执行：结束规划轮，切执行模式并发起执行轮（actModelId + 全工具）。
+  // 放在 sendUserText 定义之后；事件回调经 lastAskAnsweredSeqRef 幂等。
+  const executeApprovedPlanReview = useCallback(
+    (questions: readonly AskQuestion[], answers: readonly AskQuestionAnswer[]) => {
+      const review = planReviewOf(questions);
+      if (!review) return;
+      const answer = answers.find((item) => item.id === review.id);
+      const approved = answer?.selected.includes(review.approveLabel) === true;
+      if (!approved) return;
+      const api = bridge();
+      void api?.setConversationInteractionMode?.({
+        conversationId: conversation.id,
+        interactionMode: 'execute',
+      });
+      setInteractionMode('execute');
+      const instruction = [
+        '【执行已批准方案】',
+        `方案：${review.question}`,
+        '',
+        '请严格按以下已批准方案执行，每步完成后按方案中的验收标准自检；如发现方案不再适用，暂停并说明偏差，不要擅自扩大范围。',
+        '',
+        '【已批准方案全文】',
+        review.plan,
+      ].join('\n');
+      void sendUserText(instruction, [], { planExecuting: true });
+    },
+    [conversation.id, sendUserText],
+  );
+  const lastAskAnsweredSeqRef = useRef(0);
+  useEffect(() => {
+    const answeredEvents = eventHistory.filter((e) => e.type === 'conversation.ask_answered');
+    const latest = answeredEvents[answeredEvents.length - 1];
+    if (!latest) return;
+    const seq = Number(latest.sequence);
+    if (!Number.isFinite(seq) || seq <= lastAskAnsweredSeqRef.current) return;
+    lastAskAnsweredSeqRef.current = seq;
+    const questions = Array.isArray(latest.payload?.questions) ? latest.payload.questions : [];
+    const answers = Array.isArray(latest.payload?.answers) ? latest.payload.answers : [];
+    if (questions.length === 0 || answers.length === 0) return;
+    executeApprovedPlanReview(questions as AskQuestion[], answers as AskQuestionAnswer[]);
+  }, [eventHistory, executeApprovedPlanReview]);
 
   const dispatchQueuedComposeRequest = useCallback(
     async (request: QueuedComposeRequest, mode: 'auto' | 'interject') => {
@@ -3997,17 +4412,9 @@ export function ChatView({
     }
   }, [eventHistory, projectFolder, threadId]);
 
-  // Live task progress for the active run — powers the checklist capsule above
-  // the composer. Tool calls remain in the execution process timeline and are
-  // never presented as checklist items.
-  const liveTaskView = projected.activeRunId
-    ? displayRunProcessById.get(projected.activeRunId)
-    : undefined;
-  const showTaskCapsule = Boolean(
-    (sending || projected.streaming) &&
-    liveTaskView &&
-    (liveTaskView.taskPlan?.items.length ?? 0) > 0,
-  );
+  // 任务清单投影（对齐 DSH todo projection）：持久化事件流 → 常驻面板。
+  // run 结束保留完成清单，新 run 开始清空。
+  const todoProjection = useMemo(() => projectTodoFromEvents(eventHistory), [eventHistory]);
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -4134,7 +4541,7 @@ export function ChatView({
               </div>
             )}
             {/* Keep message column and compose at the same content width. */}
-            <div className="shell-chat-content mx-auto flex flex-col">
+            <div ref={messagesContentRef} className="shell-chat-content mx-auto flex flex-col">
               {loadingMore && (
                 <div className="flex items-center justify-center py-3">
                   <LoaderCircle className="h-4 w-4 animate-spin text-text-faint" />
@@ -4142,10 +4549,7 @@ export function ChatView({
                 </div>
               )}
               {kernelCompactionEvents.length > 0 ? (
-                <div
-                  className="shell-kernel-compact-note"
-                  data-testid="kernel-compact-note"
-                >
+                <div className="shell-kernel-compact-note" data-testid="kernel-compact-note">
                   <Info size={13} />
                   <span>
                     内核已自动压缩上下文
@@ -4177,7 +4581,9 @@ export function ChatView({
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
                     onOpenImage={setLightbox}
-                    kernelId={msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)}
+                    kernelId={
+                      msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
+                    }
                   />
                 </div>
               ))}
@@ -4219,7 +4625,9 @@ export function ChatView({
                     onOpenReview={onOpenReview}
                     projectFolder={projectFolder}
                     onOpenImage={setLightbox}
-                    kernelId={msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)}
+                    kernelId={
+                      msg.kernelId ?? (msg.runId ? runKernelById.get(String(msg.runId)) : undefined)
+                    }
                   />
                 </div>
               ))}
@@ -4289,11 +4697,25 @@ export function ChatView({
                 onCancel={() => void decideBrowserHandoff(handoff, 'cancel')}
               />
             ))}
-            {showTaskCapsule && liveTaskView ? <RunTaskCapsule view={liveTaskView} /> : null}
+            {todoProjection ? <TodoPanel todo={todoProjection} /> : null}
             {goalState?.goal ? (
               <GoalCapsule
                 goal={goalState.goal}
                 evaluatorConfigured={Boolean(goalState.evaluatorConfigured)}
+                onPause={() => {
+                  const api = bridge();
+                  if (!conversation || !api?.goalPause) return;
+                  void api.goalPause({ conversationId: String(conversation.id) }).then(refreshGoal);
+                }}
+                onResume={() => {
+                  const api = bridge();
+                  if (!conversation || !api?.goalResume) return;
+                  void api.goalResume({ conversationId: String(conversation.id) }).then(refreshGoal);
+                }}
+                onEdit={() => {
+                  setInput('/goal ');
+                  inputRef.current?.focus();
+                }}
                 onClear={() => {
                   const api = bridge();
                   if (!conversation || !api?.clearGoal) return;
@@ -4561,30 +4983,37 @@ export function ChatView({
                 </div>
               )}
 
-              {/* The textarea stays editable while streaming. Send queues a draft;
-                  only the queued item's explicit 插话 action supersedes the Run. */}
-              <textarea
-                ref={inputRef}
-                className="shell-compose__input"
-                data-testid="compose-input"
-                placeholder={
-                  hasProjectFolder
-                    ? '有什么我能帮你的吗？输入 @ 引用文件，/ 打开命令'
-                    : '有什么我能帮你的吗？输入 / 打开命令'
-                }
-                value={input}
-                onChange={handleInputChange}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                onClick={(e) =>
-                  updatePickersFromCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
-                }
-                onSelect={(e) =>
-                  updatePickersFromCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
-                }
-                rows={1}
-                disabled={compactProgress?.status === 'running'}
-              />
+              {/* 问询卡片（ask_user_question 接管 composer；含方案待审特例） */}
+              {pendingAsk ? (
+                <AskQuestionCard ask={pendingAsk} onSettled={() => setPendingAsk(undefined)} />
+              ) : (
+                <>
+                  {/* The textarea stays editable while streaming. Send queues a draft;
+                      only the queued item's explicit 插话 action supersedes the Run. */}
+                  <textarea
+                    ref={inputRef}
+                    className="shell-compose__input"
+                    data-testid="compose-input"
+                    placeholder={
+                      hasProjectFolder
+                        ? '有什么我能帮你的吗？输入 @ 引用文件，/ 打开命令'
+                        : '有什么我能帮你的吗？输入 / 打开命令'
+                    }
+                    value={input}
+                    onChange={handleInputChange}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    onClick={(e) =>
+                      updatePickersFromCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
+                    }
+                    onSelect={(e) =>
+                      updatePickersFromCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
+                    }
+                    rows={1}
+                    disabled={compactProgress?.status === 'running'}
+                  />
+                </>
+              )}
 
               <input
                 ref={imageInputRef}
@@ -4596,149 +5025,12 @@ export function ChatView({
                 tabIndex={-1}
               />
 
-              {/* 计划审批卡（规划模式提交后显示） */}
-              {conversationPlan && conversationPlan.state === 'draft' && (
-                <div className="shell-plan-card" data-testid="plan-approval-card">
-                  <div className="shell-plan-card__head">
-                    <span className="shell-plan-card__title">
-                      📋 {conversationPlan.latest.plan.title || '执行计划'}
-                    </span>
-                    <span className="shell-plan-card__rev">v{conversationPlan.currentRevision}</span>
-                  </div>
-                  <div className="shell-plan-card__goal">{conversationPlan.latest.plan.goal}</div>
-                  <div className="shell-plan-card__meta">
-                    {conversationPlan.latest.plan.steps.length} 个步骤 ·{' '}
-                    {conversationPlan.latest.plan.finalAcceptanceChecks.length} 条验收标准
-                  </div>
-                  <div className="shell-plan-card__steps">
-                    {conversationPlan.latest.plan.steps.map((step, index) => (
-                      <div className="shell-plan-card__step" key={step.id}>
-                        <span className="shell-plan-card__step-no">{index + 1}</span>
-                        <span>{step.title}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="shell-plan-card__actions">
-                    <button
-                      type="button"
-                      className="shell-plan-card__approve"
-                      disabled={planBusy}
-                      onClick={() => {
-                        void (async () => {
-                          if (!conversationPlan || planBusy) return;
-                          setPlanBusy(true);
-                          try {
-                            const api = bridge();
-                            const rev = conversationPlan.currentRevision;
-                            await api?.conversationPlanApprove?.({
-                              conversationId: conversation.id,
-                              revision: rev,
-                            });
-                            await api?.setConversationInteractionMode?.({
-                              conversationId: conversation.id,
-                              interactionMode: 'execute',
-                            });
-                            setInteractionMode('execute');
-                            setConversationPlan(undefined);
-                            await sendUserText(
-                              buildPlanExecutionInstruction(conversationPlan.latest, rev),
-                              [],
-                            );
-                          } catch (error) {
-                            const raw = error instanceof Error ? error.message : String(error);
-                            setLocalErrors((errs) => [
-                              ...errs,
-                              {
-                                id: `plan-approve-err-${Date.now()}`,
-                                role: 'system',
-                                tone: 'error',
-                                text: `批准计划失败: ${raw}`,
-                                timestamp: new Date().toISOString(),
-                              },
-                            ]);
-                          } finally {
-                            setPlanBusy(false);
-                          }
-                        })();
-                      }}
-                    >
-                      {planBusy ? '处理中…' : '批准并执行'}
-                    </button>
-                    <button
-                      type="button"
-                      className="shell-plan-card__revise"
-                      disabled={planBusy}
-                      onClick={() => {
-                        void (async () => {
-                          setPlanBusy(true);
-                          try {
-                            const api = bridge();
-                            await api?.setConversationInteractionMode?.({
-                              conversationId: conversation.id,
-                              interactionMode: 'plan',
-                            });
-                            setInteractionMode('plan');
-                            setLocalErrors((errs) => [
-                              ...errs,
-                              {
-                                id: `plan-revise-${Date.now()}`,
-                                role: 'system',
-                                tone: 'info',
-                                text: '已切回规划模式。请描述需要修改的地方，模型将修订计划并生成新版本',
-                                timestamp: new Date().toISOString(),
-                              },
-                            ]);
-                          } finally {
-                            setPlanBusy(false);
-                          }
-                        })();
-                      }}
-                    >
-                      要求修改
-                    </button>
-                    <button
-                      type="button"
-                      className="shell-plan-card__cancel"
-                      disabled={planBusy}
-                      onClick={() => {
-                        void (async () => {
-                          setPlanBusy(true);
-                          try {
-                            const api = bridge();
-                            await api?.conversationPlanCancel?.({
-                              conversationId: conversation.id,
-                            });
-                            setConversationPlan(undefined);
-                          } catch (error) {
-                            const raw = error instanceof Error ? error.message : String(error);
-                            setLocalErrors((errs) => [
-                              ...errs,
-                              {
-                                id: `plan-cancel-err-${Date.now()}`,
-                                role: 'system',
-                                tone: 'error',
-                                text: `取消计划失败: ${raw}`,
-                                timestamp: new Date().toISOString(),
-                              },
-                            ]);
-                          } finally {
-                            setPlanBusy(false);
-                          }
-                        })();
-                      }}
-                    >
-                      取消计划
-                    </button>
-                  </div>
-                </div>
-              )}
-
               {/* Interaction work mode strip (规划/执行) */}
               {interactionMode === 'plan' && (
                 <div className="shell-compose__mode-strip" data-mode="plan">
                   <span className="shell-compose__mode-label">🧭 规划模式</span>
                   <span className="shell-compose__mode-hint">
-                    只读分析，提交可审批计划后等待批准
+                    只读分析，提交方案等待审批
                   </span>
                   <button
                     type="button"
@@ -4754,6 +5046,25 @@ export function ChatView({
                   >
                     切到执行模式
                   </button>
+                </div>
+              )}
+
+              {/* plan-act 生效模型提示（规划模式路由） */}
+              {planActHint && (
+                <div
+                  className="shell-compose__mode-strip"
+                  data-mode={planActHint.role}
+                  data-testid="plan-act-hint"
+                >
+                  <span className="shell-compose__mode-label">
+                    🧭 本轮由规划模型驱动
+                  </span>
+                  <span className="shell-compose__mode-hint">
+                    {planActHint.label}
+                    {planActHint.ignoredLabel
+                      ? `（已忽略所选 ${planActHint.ignoredLabel}）`
+                      : ''}
+                  </span>
                 </div>
               )}
 
@@ -5120,7 +5431,11 @@ const MessageBubble = memo(function MessageBubble({
     // 累计求和——后者（tokensIn+tokensOut 累加）会让人误以为上下文占用了那么大。
     const watermark = processView.contextWatermarkTokens;
     if (typeof watermark === 'number') {
-      return formatCompactRunMetrics({ durationMs: processView.durationMs, tokensIn: watermark, tokensOut: 0 });
+      return formatCompactRunMetrics({
+        durationMs: processView.durationMs,
+        tokensIn: watermark,
+        tokensOut: 0,
+      });
     }
     return formatCompactRunMetrics({
       durationMs: processView.durationMs,
@@ -5293,61 +5608,20 @@ const MessageBubble = memo(function MessageBubble({
   }
 
   // AI message — thinking + process + file changes + markdown + NewMax-style footer
-  const explicitAgentId = message.globalAgentId?.trim() || runAgentIdentity?.id;
-  const visibleAgentLabel = message.globalAgentName?.trim();
-  const explicitAgentLabel = visibleAgentLabel || runAgentIdentity?.name;
-  const canUseConversationFallback = !explicitAgentId && !explicitAgentLabel;
-  const agentId =
-    explicitAgentId || (canUseConversationFallback ? String(fallbackAgent?.id ?? '') : '');
-  const agentLabel =
-    explicitAgentLabel || (canUseConversationFallback ? fallbackAgent?.name.trim() : undefined);
-  // Resolve the live agent record so chat shows the exact avatar designed in
-  // the library (emoji or imported image); fall back to name lookup for runs
-  // recorded before agent ids were stamped on events.
-  const agentRecord = agents?.find(
-    (a) =>
-      (agentId && String(a.id) === agentId) || (!agentId && agentLabel && a.name === agentLabel),
-  );
+  const visibleAgentLabel = message.globalAgentName?.trim() || runAgentIdentity?.name;
+  void agents;
+  void fallbackAgent;
   const hasAnswerText = Boolean((message.answerText ?? message.text).trim());
+  const timelineTiming = assistantTimelineProcessTiming(
+    message.assistantTimeline,
+    !message.streaming,
+  );
   const showFooter = !message.streaming && (hasAnswerText || Boolean(processView));
   return (
-    <div className="shell-msg shell-msg--assistant group relative flex items-start gap-3">
-      {agentRecord?.avatar?.trim() ? (
-        <div className="mt-0.5" data-agent-id={agentId || undefined}>
-          <AgentAvatarView
-            name={agentRecord?.name ?? agentLabel ?? '助手'}
-            avatar={agentRecord?.avatar}
-            size={26}
-            title={agentRecord?.name ?? agentLabel ?? '助手'}
-          />
-        </div>
-      ) : (
-        <div
-          className="shell-ai-avatar mt-0.5"
-          data-agent-id={agentId || undefined}
-          title={agentRecord?.name ?? agentLabel ?? '助手'}
-        >
-          <Bot size={13} />
-        </div>
-      )}
+    <div className="shell-msg shell-msg--assistant group relative">
       <div className="min-w-0 flex-1 pt-0.5">
         {visibleAgentLabel ? (
           <div className="mb-1 text-[11.5px] font-medium text-text-faint">{visibleAgentLabel}</div>
-        ) : null}
-        {message.processStatus ? (
-          <div
-            className="shell-run-connection-status"
-            data-state={message.processStatusState}
-            role="status"
-            aria-live="polite"
-          >
-            {message.processStatusState === 'failed' ? (
-              <AlertCircle size={12} aria-hidden="true" />
-            ) : (
-              <RefreshCw size={12} aria-hidden="true" />
-            )}
-            <span>{message.processStatus}</span>
-          </div>
         ) : null}
         <InlineProcessFlow
           items={[
@@ -5363,6 +5637,74 @@ const MessageBubble = memo(function MessageBubble({
           steps={processView?.steps}
           commentarySegments={message.commentarySegments}
           streaming={Boolean(message.streaming)}
+          answerStarted={hasAnswerText}
+          runId={message.runId ?? message.id}
+          startedAt={processView?.startedAt ?? timelineTiming.startedAt}
+          completedAt={processView?.completedAt ?? timelineTiming.completedAt}
+          durationMs={processView?.durationMs}
+          supplementalContent={
+            message.processStatus ||
+            message.terminalState ||
+            (!message.streaming && (processView?.fileChanges.length ?? 0) > 0) ? (
+              <>
+                {message.processStatus ? (
+                  <div
+                    className="shell-run-connection-status"
+                    data-state={message.processStatusState}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {message.processStatusState === 'failed' ? (
+                      <AlertCircle size={12} aria-hidden="true" />
+                    ) : (
+                      <RefreshCw size={12} aria-hidden="true" />
+                    )}
+                    <span>{message.processStatus}</span>
+                  </div>
+                ) : null}
+                {message.terminalState ? (
+                  <div
+                    className="mt-2 flex items-start gap-1.5 text-[11.5px] text-text-faint"
+                    data-testid={`assistant-terminal-${message.terminalState}`}
+                  >
+                    {message.terminalState === 'failed' ? (
+                      <AlertCircle
+                        size={12}
+                        className="mt-0.5 shrink-0 text-[var(--color-error)]"
+                      />
+                    ) : (
+                      <Square size={11} className="mt-0.5 shrink-0" />
+                    )}
+                    <span className="min-w-0">
+                      <span>
+                        {message.terminalState === 'failed'
+                          ? '回复失败，已保留中断前内容'
+                          : '已停止生成，以上内容已保留'}
+                      </span>
+                      {message.terminalState === 'failed' && message.terminalError ? (
+                        <span
+                          className="shell-terminal-error"
+                          data-testid="assistant-terminal-error"
+                          title={message.terminalError}
+                        >
+                          {message.terminalError}
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
+                ) : null}
+                {!message.streaming && processView && processView.fileChanges.length > 0 ? (
+                  <FileChangesCard
+                    view={processView}
+                    nested
+                    onOpenChange={onOpenChange}
+                    onOpenReview={onOpenReview}
+                    projectFolder={projectFolder}
+                  />
+                ) : null}
+              </>
+            ) : undefined
+          }
         />
         {message.answerText || (!message.processItems?.length && message.text) ? (
           <MarkdownContent
@@ -5376,50 +5718,6 @@ const MessageBubble = memo(function MessageBubble({
           !message.processItems?.length ? (
           <TypingDots inline />
         ) : null}
-        {/* The durable run panel was removed: the inline process panel above is
-            the single execution-process view (usage/elapsed ride its title and
-            the message footer). */}
-        {message.terminalState ? (
-          <div
-            className="mt-2 flex items-start gap-1.5 text-[11.5px] text-text-faint"
-            data-testid={`assistant-terminal-${message.terminalState}`}
-          >
-            {message.terminalState === 'failed' ? (
-              <AlertCircle size={12} className="mt-0.5 shrink-0 text-[var(--color-error)]" />
-            ) : (
-              <Square size={11} className="mt-0.5 shrink-0" />
-            )}
-            <span className="min-w-0">
-              <span>
-                {message.terminalState === 'failed'
-                  ? '回复失败，已保留中断前内容'
-                  : '已停止生成，以上内容已保留'}
-              </span>
-              {message.terminalState === 'failed' && message.terminalError ? (
-                <span
-                  className="shell-terminal-error"
-                  data-testid="assistant-terminal-error"
-                  title={message.terminalError}
-                >
-                  {message.terminalError}
-                </span>
-              ) : null}
-            </span>
-          </div>
-        ) : null}
-        {/* NewMax: the per-run file summary stays visible after the reply
-            lands (outside the auto-collapsing process group) so「本轮改了
-            哪些文件」is always one glance away. */}
-        {!message.streaming && processView ? (
-          <FileChangesCard
-            view={processView}
-            nested
-            onOpenChange={onOpenChange}
-            onOpenReview={onOpenReview}
-            projectFolder={projectFolder}
-          />
-        ) : null}
-
         {showFooter ? (
           <div className="shell-msg-footer">
             {hasAnswerText ? (
@@ -5485,13 +5783,17 @@ const MessageBubble = memo(function MessageBubble({
                       {typeof metricsDetail.contextWatermarkTokens === 'number' ? (
                         <div className="shell-meta-tip__row">
                           <span>上下文占用</span>
-                          <strong>{formatCompactCount(metricsDetail.contextWatermarkTokens)}</strong>
+                          <strong>
+                            {formatCompactCount(metricsDetail.contextWatermarkTokens)}
+                          </strong>
                         </div>
                       ) : null}
                       {metricsDetail.lastTokens ? (
                         <div className="shell-meta-tip__row">
                           <span>普通输入</span>
-                          <strong>{formatCompactCount(metricsDetail.lastTokens.inputTokens)}</strong>
+                          <strong>
+                            {formatCompactCount(metricsDetail.lastTokens.inputTokens)}
+                          </strong>
                         </div>
                       ) : null}
                       {metricsDetail.lastTokens ? (
@@ -5507,7 +5809,9 @@ const MessageBubble = memo(function MessageBubble({
                       {metricsDetail.lastTokens ? (
                         <div className="shell-meta-tip__row">
                           <span>输出</span>
-                          <strong>{formatCompactCount(metricsDetail.lastTokens.outputTokens)}</strong>
+                          <strong>
+                            {formatCompactCount(metricsDetail.lastTokens.outputTokens)}
+                          </strong>
                         </div>
                       ) : null}
                       {metricsDetail.model ? (
@@ -6070,18 +6374,36 @@ export function RunTaskCapsule({ view }: { view: RunProcessView }) {
 function GoalCapsule({
   goal,
   evaluatorConfigured,
+  onPause,
+  onResume,
+  onEdit,
   onClear,
 }: {
   goal: import('@sync-think/protocol').GoalStatus;
   evaluatorConfigured: boolean;
+  onPause: () => void;
+  onResume: () => void;
+  onEdit: () => void;
   onClear: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
-  if (goal.status !== 'active' && goal.status !== 'achieved') return null;
+  if (goal.status !== 'active' && goal.status !== 'paused' && goal.status !== 'blocked' && goal.status !== 'achieved') {
+    return null;
+  }
   const elapsedMinutes = Math.max(
     0,
     Math.floor((Date.now() - Date.parse(goal.startedAt)) / 60_000),
   );
+  const roundsStarted = goal.roundsStarted ?? 0;
+  const maxRounds = goal.maxGoalRounds ?? 5;
+  const stateLabel =
+    goal.status === 'achieved'
+      ? '目标已达成'
+      : goal.status === 'paused'
+        ? '目标已暂停'
+        : goal.status === 'blocked'
+          ? '目标受阻'
+          : '目标进行中';
   return (
     <div
       className="shell-goal-capsule-wrap"
@@ -6092,43 +6414,54 @@ function GoalCapsule({
     >
       {hovered ? (
         <div className="shell-task-capsule__pop shell-goal-capsule__pop">
-          <div className="shell-task-capsule__pop-title">
-            {goal.status === 'achieved' ? '目标已达成' : '目标模式进行中'}
-          </div>
+          <div className="shell-task-capsule__pop-title">{stateLabel}</div>
           <div className="shell-goal-capsule__condition" title={goal.condition}>
             {goal.condition}
           </div>
           <div className="shell-goal-capsule__meta">
-            已运行 {elapsedMinutes} 分钟 · 评估 {goal.turnCount} 轮
+            已运行 {elapsedMinutes} 分钟 · 第 {roundsStarted}/{maxRounds} 轮
             {!evaluatorConfigured ? ' · 评估模型未配置' : ''}
           </div>
           {goal.lastReason ? (
-            <div className="shell-goal-capsule__reason">最近评估：{goal.lastReason}</div>
+            <div className="shell-goal-capsule__reason">
+              {goal.status === 'blocked' ? `受阻原因：${goal.blockedReason ?? goal.lastReason}` : `最近评估：${goal.lastReason}`}
+            </div>
           ) : null}
-          {goal.status === 'active' ? (
-            <button
-              type="button"
-              className="shell-goal-capsule__clear"
-              onClick={onClear}
-              title="清除目标"
-            >
+          <div className="shell-goal-capsule__actions">
+            {goal.status === 'active' ? (
+              <button type="button" className="shell-goal-capsule__clear" onClick={onPause} title="暂停目标">
+                ⏸ 暂停
+              </button>
+            ) : goal.status === 'paused' || goal.status === 'blocked' ? (
+              <button type="button" className="shell-goal-capsule__clear" onClick={onResume} title="恢复目标">
+                ▶ 恢复
+              </button>
+            ) : null}
+            <button type="button" className="shell-goal-capsule__clear" onClick={onEdit} title="编辑目标">
+              ✎ 编辑
+            </button>
+            <button type="button" className="shell-goal-capsule__clear" onClick={onClear} title="清除目标">
               <X size={12} />
               清除目标
             </button>
-          ) : null}
+          </div>
         </div>
       ) : null}
       <div className="shell-task-capsule shell-goal-capsule">
         {goal.status === 'active' ? (
           <LoaderCircle size={13} className="shell-process-spin" />
+        ) : goal.status === 'paused' ? (
+          <span className="shell-goal-capsule__paused-icon">⏸</span>
+        ) : goal.status === 'blocked' ? (
+          <AlertCircle size={13} className="text-[var(--color-warning)]" />
         ) : (
           <Check size={13} className="text-[var(--color-success)]" />
         )}
-        <span className="shell-task-capsule__label">
-          {goal.status === 'achieved' ? '目标已达成' : '目标进行中'}
-        </span>
-        {goal.status === 'active' ? (
-          <span className="shell-task-capsule__count">{goal.turnCount} 轮</span>
+        <span className="shell-task-capsule__label">{stateLabel}</span>
+        {goal.status === 'active' || goal.status === 'paused' || goal.status === 'blocked' ? (
+          <span className="shell-task-capsule__count">
+            {roundsStarted}/{maxRounds} 轮
+          </span>
         ) : null}
       </div>
     </div>
@@ -6167,27 +6500,4 @@ function TypingIndicator({ agent }: { agent?: GlobalAgent }) {
       <TypingDots />
     </div>
   );
-}
-
-/**
- * Build the user-turn instruction that starts the execution run for an
- * approved conversation plan. The full plan is embedded so the executing
- * kernel never needs to re-read it, and the revision id is pinned.
- */
-function buildPlanExecutionInstruction(plan: ChatPlanRevision, revision: number): string {
-  const summary = plan.plan.steps
-    .map((step, index) => `${index + 1}. ${step.title}（验收：${step.acceptanceChecks.length} 项）`)
-    .join('\n');
-  return [
-    `【执行已批准计划 v${revision}】`,
-    `计划：${plan.plan.title}`,
-    `目标：${plan.plan.goal}`,
-    '',
-    `步骤概览：\n${summary}`,
-    '',
-    '请严格按以下已批准计划执行，每步完成后按该步验收标准自检，最终按总验收标准逐项核对；如发现计划不再适用，暂停并说明偏差，不要擅自扩大范围。',
-    '',
-    `【已批准计划 v${revision} 全文】`,
-    JSON.stringify(plan.plan, null, 2),
-  ].join('\n');
 }

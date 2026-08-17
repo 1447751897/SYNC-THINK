@@ -90,19 +90,16 @@ afterEach(() => {
   Reflect.deleteProperty(window, 'syncThink');
 });
 
-describe('ChatView agent avatar projection', () => {
-  it('uses the live conversation agent avatar for persisted replies and the compose identity', async () => {
+describe('ChatView assistant identity projection', () => {
+  it('keeps persisted assistant replies avatar-free while using the live agent avatar in compose', async () => {
     const avatar = 'data:image/png;base64,frontend-avatar-v1';
     render(chat([agent(avatar)]));
 
     const answer = await screen.findByText('头像应该与智能体保持一致');
     const messageRow = answer.closest('[data-message-id]');
     expect(messageRow).toBeTruthy();
-    expect(
-      within(messageRow as HTMLElement)
-        .getByRole('img', { name: '前端工程师' })
-        .getAttribute('src'),
-    ).toBe(avatar);
+    expect(within(messageRow as HTMLElement).queryByRole('img')).toBeNull();
+    expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
     expect(within(messageRow as HTMLElement).queryByText('前端工程师')).toBeNull();
 
     expect(
@@ -112,7 +109,7 @@ describe('ChatView agent avatar projection', () => {
     ).toBe(avatar);
   });
 
-  it('refreshes existing conversation avatars after the agent avatar changes', async () => {
+  it('refreshes the compose avatar after an agent change without adding one to existing replies', async () => {
     const view = render(chat([agent('data:image/png;base64,frontend-avatar-v1')]));
     await screen.findByText('头像应该与智能体保持一致');
 
@@ -120,16 +117,18 @@ describe('ChatView agent avatar projection', () => {
     view.rerender(chat([agent(nextAvatar)]));
 
     await waitFor(() => {
-      const messageRow = screen.getByText('头像应该与智能体保持一致').closest('[data-message-id]');
       expect(
-        within(messageRow as HTMLElement)
+        within(screen.getByTestId('compose-identity'))
           .getByRole('img', { name: '前端工程师' })
           .getAttribute('src'),
       ).toBe(nextAvatar);
     });
+    const messageRow = screen.getByText('头像应该与智能体保持一致').closest('[data-message-id]');
+    expect(within(messageRow as HTMLElement).queryByRole('img')).toBeNull();
+    expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
   });
 
-  it('keeps the Run agent identity when the conversation is later rebound', async () => {
+  it('does not render the historical Run agent identity inside the assistant execution area', async () => {
     const current = agent('data:image/png;base64,current-agent');
     const original = agent('data:image/png;base64,original-agent', {
       id: 'agent-original' as GlobalAgent['id'],
@@ -156,14 +155,12 @@ describe('ChatView agent avatar projection', () => {
     const messageRow = (await screen.findByText('头像应该与智能体保持一致')).closest(
       '[data-message-id]',
     );
-    expect(
-      within(messageRow as HTMLElement)
-        .getByRole('img', { name: '原智能体' })
-        .getAttribute('src'),
-    ).toBe('data:image/png;base64,original-agent');
+    expect(within(messageRow as HTMLElement).queryByRole('img')).toBeNull();
+    expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
+    expect(within(messageRow as HTMLElement).getByText('原智能体')).toBeTruthy();
   });
 
-  it('keeps the default assistant icon for model conversations', async () => {
+  it('keeps model-conversation assistant replies avatar-free', async () => {
     const modelConversation = {
       ...conversation,
       track: 'model',
@@ -176,6 +173,6 @@ describe('ChatView agent avatar projection', () => {
       '[data-message-id]',
     );
     expect(within(messageRow as HTMLElement).queryByRole('img')).toBeNull();
-    expect(messageRow?.querySelector('.shell-ai-avatar .lucide-bot')).toBeTruthy();
+    expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
   });
 });

@@ -1,6 +1,8 @@
 // Runtime - long-lived Agent Runtime process entry. UI lifecycle independent:
 // killing the UI must not terminate active Runs (design �?6 / �?).
 
+import { existsSync, readFileSync } from 'node:fs';
+import { relative, sep } from 'node:path';
 import {
   pipePathPortable,
   encodeFrame,
@@ -105,6 +107,7 @@ import {
   type GoalSetResponse,
   type GoalGetResponse,
   type GoalClearResponse,
+  type GoalResumeResponse,
   type GoalStatus,
   type PlanDraftResponse,
   type PlanReviseResponse,
@@ -132,6 +135,21 @@ import {
   type ConversationResponse,
   type ConversationPlanResponse,
   type ConversationPlanApproveResponse,
+  type ConversationAskPendingResponse,
+  type AskQuestion,
+  type CreateScheduledTaskPayload,
+  type ListScheduledTasksPayload,
+  type ListScheduledTasksResponse,
+  type UpdateScheduledTaskPayload,
+  type DeleteScheduledTaskPayload,
+  type TriggerScheduledTaskPayload,
+  type TriggerScheduledTaskResponse,
+  type SkillLocalScanPayload,
+  type SkillLocalScanResponse,
+  type SkillLocalImportPayload,
+  type SkillLocalImportResponse,
+  type LocalSkillCandidate,
+  type AssistantTurnSegment,
   type ConversationTransientFrame,
   type ConversationTransientSnapshot,
   type SubscribeConversationTransientStreamResponse,
@@ -201,6 +219,10 @@ import {
   type Conversation,
   type Message,
   type MessageBlock,
+  type ConversationId,
+  type ScheduledTask,
+  type ScheduledTaskTarget,
+  type TaskRule,
 } from '@sync-think/shared';
 import type {
   ProviderContentPart,
@@ -220,6 +242,8 @@ import {
 import {
   WorkspacePathError,
   MessageStoreError,
+  MAX_MESSAGE_BLOCKS,
+  MAX_MESSAGE_BLOCKS_JSON_BYTES,
   type CheckpointDraft,
   type CommitTransitionInput,
   type CommittedTransition,
@@ -231,6 +255,7 @@ import {
   type ProviderCatalogEntry,
   type ModelRecord,
   type SqliteAppSettingStore,
+  type SqliteScheduledTaskStore,
   type SqliteAgentStore,
   type SqliteMemoryStore,
   type SqliteSkillStore,
@@ -309,8 +334,12 @@ import { createHash, randomUUID } from 'node:crypto';
 // cc-switch import helpers re-exported via core
 import type { Socket } from 'node:net';
 import {
+  appendAssistantStatus,
+  appendAssistantTextDelta,
+  appendAssistantThinkingDelta,
   appendCommentaryTimelineDelta,
   applyDemoRunEvent,
+  closeAssistantTimeline,
   closeCommentaryTimelineSegment,
   createDemoProviderRequest,
   createDemoRun,
@@ -321,6 +350,8 @@ import {
   serializeDemoRun,
   serializeDemoRuns,
   shouldRetrySameModel,
+  startAssistantTool,
+  completeAssistantTool,
   type DemoProvider,
   type DemoRunState,
   type KernelToolEventRecord,
@@ -502,6 +533,10 @@ import {
   parseConversationPlanApprovePayload,
   parseConversationPlanRevisePayload,
   parseConversationPlanCancelPayload,
+  parseAskUserQuestionInput,
+  parseConversationAskAnswerPayload,
+  parseConversationAskCancelPayload,
+  parseConversationAskPendingPayload,
   parseUpgradeConversationTrackPayload,
   parseDeleteConversationPayload,
   parseConversationCompactPayload,
@@ -536,6 +571,8 @@ import {
   parseGoalSetPayload,
   parseGoalGetPayload,
   parseGoalClearPayload,
+  parseGoalPausePayload,
+  parseGoalResumePayload,
 } from './validation/goal.js';
 import { createPipeServer, type PipeServerHandlers } from './pipe/server.js';
 import { healthcheck, type HealthcheckResult, type HealthcheckError } from './healthcheck.js';
@@ -564,10 +601,26 @@ import {
   buildPlatformMcpToolDefinitions,
   isPlatformFileToolName,
   isPlanningDeniedTool,
+  nativePlatformToolSchemas,
   PLATFORM_MCP_TOOL_DEFINITIONS,
   type PlatformToolContext,
 } from './kernel/platform-tools.js';
 import { resolvePlatformMcpServerEntry } from './kernel/platform-mcp-entry.js';
+import {
+  PLAN_ACT_SETTING_KEY,
+  parsePlanActSetting,
+  resolvePlanActRouteForContext,
+  type PlanActRoute,
+} from './plan-act.js';
+import {
+  computeNextRunAt,
+  initialNextRunAt,
+} from './task-scheduler.js';
+import {
+  localSkillsDirectory,
+  scanLocalSkills,
+  watchLocalSkills,
+} from './local-skill-discovery.js';
 import type {
   KernelAdapter,
   KernelCredential,
@@ -705,6 +758,8 @@ export interface RuntimeOptions {
   discoveryAdapter?: DemoProvider;
   /** 0026: app-level KV settings (vision fallback, plan & act). */
   appSettingStore?: SqliteAppSettingStore;
+  /** 0044: 定时任务表。 */
+  scheduledTaskStore?: SqliteScheduledTaskStore;
   /** 0026+: usage rows, request log, and tool aggregates from durable runtime events. */
   queryUsageSummary?: (sinceIso?: string) => Promise<UsageSummaryRawResult>;
   /**
@@ -1032,6 +1087,262 @@ export function buildFinalAssistantBlocks(input: {
  * message per round — thinking + commentary + that round's text + tool calls
  * with their results — then the final answer as the last message).
  */
+/**
+ * Convert the exact assistant turn timeline into durable compatibility blocks.
+ * The first metadata-only commentary block is the renderer source of truth;
+ * following blocks preserve provider/gap-transcript compatibility in sequence.
+ */
+export function assistantTimelineToMessageBlocks(
+  timeline: readonly AssistantTurnSegment[],
+): MessageBlock[] {
+  if (timeline.length === 0) return [];
+  const ordered = [...timeline].map((segment) => ({ ...segment })) as AssistantTurnSegment[];
+  ordered.sort((left, right) => left.sequence - right.sequence);
+
+  const completeBlocks = buildAssistantTimelineBlocks(ordered);
+  if (
+    completeBlocks.length <= MAX_MESSAGE_BLOCKS - 1 &&
+    messageBlocksJsonBytes(completeBlocks) <= MAX_MESSAGE_BLOCKS_JSON_BYTES - 8 * 1024
+  ) {
+    return completeBlocks;
+  }
+
+  let maxSegments = 96;
+  let detailCharacters = 4_096;
+  let finalAnswerCharacters = 96 * 1024;
+  let storedTimeline = compactAssistantTimeline(ordered, {
+    maxSegments,
+    detailCharacters,
+    finalAnswerCharacters,
+  });
+  let metadataBlock: MessageBlock = {
+    type: 'commentary',
+    payload: { assistantTimeline: storedTimeline },
+  };
+  const metadataBudget = Math.floor((MAX_MESSAGE_BLOCKS_JSON_BYTES - 8 * 1024) / 2);
+  while (messageBlocksJsonBytes([metadataBlock]) > metadataBudget) {
+    if (detailCharacters > 256) {
+      detailCharacters = Math.max(256, Math.floor(detailCharacters / 2));
+    } else if (maxSegments > 24) {
+      maxSegments = Math.max(24, Math.floor(maxSegments / 2));
+    } else if (finalAnswerCharacters > 8_192) {
+      finalAnswerCharacters = Math.max(8_192, Math.floor(finalAnswerCharacters / 2));
+    } else {
+      storedTimeline = compactAssistantTimeline(ordered, {
+        maxSegments: 8,
+        detailCharacters: 128,
+        finalAnswerCharacters: 4_096,
+      });
+      metadataBlock = { type: 'commentary', payload: { assistantTimeline: storedTimeline } };
+      break;
+    }
+    storedTimeline = compactAssistantTimeline(ordered, {
+      maxSegments,
+      detailCharacters,
+      finalAnswerCharacters,
+    });
+    metadataBlock = { type: 'commentary', payload: { assistantTimeline: storedTimeline } };
+  }
+
+  const compatibilityBlocks = buildAssistantTimelineBlocks(storedTimeline).slice(1);
+  const selectedIndexes = new Set<number>();
+  compatibilityBlocks.forEach((block, index) => {
+    if (block.type === 'text') selectedIndexes.add(index);
+  });
+  const buildSelectedBlocks = (): MessageBlock[] => [
+    metadataBlock,
+    ...[...selectedIndexes]
+      .sort((left, right) => left - right)
+      .map((index) => compatibilityBlocks[index]!),
+  ];
+
+  for (let index = compatibilityBlocks.length - 1; index >= 0; index -= 1) {
+    if (selectedIndexes.has(index)) continue;
+    selectedIndexes.add(index);
+    const candidate = buildSelectedBlocks();
+    if (
+      candidate.length > MAX_MESSAGE_BLOCKS - 1 ||
+      messageBlocksJsonBytes(candidate) > MAX_MESSAGE_BLOCKS_JSON_BYTES - 8 * 1024
+    ) {
+      selectedIndexes.delete(index);
+    }
+  }
+  return buildSelectedBlocks();
+}
+
+const DURABLE_TRUNCATION_MARKER = '\n[... content truncated for durable storage ...]';
+
+function truncateDurableText(text: string, maxCharacters: number): string {
+  if (text.length <= maxCharacters) return text;
+  if (maxCharacters <= DURABLE_TRUNCATION_MARKER.length) {
+    return DURABLE_TRUNCATION_MARKER.slice(0, maxCharacters);
+  }
+  let end = maxCharacters - DURABLE_TRUNCATION_MARKER.length;
+  const lastCodeUnit = text.charCodeAt(end - 1);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end -= 1;
+  return `${text.slice(0, end)}${DURABLE_TRUNCATION_MARKER}`;
+}
+
+function compactAssistantTimeline(
+  ordered: readonly AssistantTurnSegment[],
+  limits: {
+    maxSegments: number;
+    detailCharacters: number;
+    finalAnswerCharacters: number;
+  },
+): AssistantTurnSegment[] {
+  const retainedCount = Math.max(1, limits.maxSegments - 1);
+  const omittedCount = Math.max(0, ordered.length - retainedCount);
+  const selected = omittedCount > 0 ? ordered.slice(omittedCount) : ordered;
+  const compacted = selected.map((segment): AssistantTurnSegment => {
+    if (segment.kind === 'thinking') {
+      return {
+        ...segment,
+        id: truncateDurableText(segment.id, 256),
+        text: truncateDurableText(segment.text, limits.detailCharacters),
+      };
+    }
+    if (segment.kind === 'text') {
+      return {
+        ...segment,
+        id: truncateDurableText(segment.id, 256),
+        text: truncateDurableText(
+          segment.text,
+          segment.phase === 'final_answer' ? limits.finalAnswerCharacters : limits.detailCharacters,
+        ),
+      };
+    }
+    if (segment.kind === 'tool') {
+      return {
+        ...segment,
+        id: truncateDurableText(segment.id, 256),
+        toolCallId: truncateDurableText(segment.toolCallId, 256),
+        name: truncateDurableText(segment.name, 512),
+        ...(segment.displayName
+          ? { displayName: truncateDurableText(segment.displayName, 512) }
+          : {}),
+        ...(segment.inputSummary
+          ? { inputSummary: truncateDurableText(segment.inputSummary, 1_024) }
+          : {}),
+        ...(segment.argumentsJson !== undefined
+          ? {
+              argumentsJson: truncateDurableText(
+                segment.argumentsJson,
+                Math.min(1_024, limits.detailCharacters),
+              ),
+            }
+          : {}),
+        ...(segment.output !== undefined
+          ? { output: truncateDurableText(segment.output, limits.detailCharacters) }
+          : {}),
+      };
+    }
+    return {
+      ...segment,
+      id: truncateDurableText(segment.id, 256),
+      label: truncateDurableText(segment.label, 1_024),
+      ...(segment.detail
+        ? { detail: truncateDurableText(segment.detail, limits.detailCharacters) }
+        : {}),
+    };
+  });
+  if (omittedCount === 0) return compacted;
+  return [
+    {
+      id: 'durable-timeline-truncated',
+      sequence: Math.max(0, (compacted[0]?.sequence ?? 1) - 1),
+      kind: 'status',
+      statusType: 'other',
+      label: `${omittedCount} earlier process segments truncated for durable storage`,
+    },
+    ...compacted,
+  ];
+}
+
+function buildAssistantTimelineBlocks(
+  storedTimeline: readonly AssistantTurnSegment[],
+): MessageBlock[] {
+  const blocks: MessageBlock[] = [
+    {
+      type: 'commentary',
+      payload: { assistantTimeline: storedTimeline },
+    },
+  ];
+  for (const segment of storedTimeline) {
+    if (segment.kind === 'thinking') {
+      if (segment.text.trim()) blocks.push({ type: 'reasoning', reasoningText: segment.text });
+      continue;
+    }
+    if (segment.kind === 'text') {
+      if (!segment.text.trim()) continue;
+      blocks.push(
+        segment.phase === 'commentary'
+          ? { type: 'commentary', text: segment.text }
+          : { type: 'text', text: segment.text },
+      );
+      continue;
+    }
+    if (segment.kind !== 'tool') continue;
+    blocks.push({
+      type: 'tool-call',
+      payload: {
+        toolCallId: segment.toolCallId,
+        name: segment.name,
+        argumentsJson: segment.argumentsJson ?? '',
+      },
+    });
+    if (segment.output !== undefined || segment.status !== 'running') {
+      blocks.push({
+        type: 'tool-result',
+        text: segment.output ?? '',
+        payload: {
+          toolCallId: segment.toolCallId,
+          ...(segment.isError || segment.status === 'failed' ? { failed: true } : {}),
+        },
+      });
+    }
+  }
+  return blocks;
+}
+
+function messageBlocksJsonBytes(blocks: readonly MessageBlock[]): number {
+  return Buffer.byteLength(JSON.stringify(blocks), 'utf8');
+}
+
+export function assistantTextFallbackMessageBlocks(text: string): MessageBlock[] {
+  if (!text.trim()) return [];
+  const complete: MessageBlock[] = [{ type: 'text', text }];
+  if (messageBlocksJsonBytes(complete) <= MAX_MESSAGE_BLOCKS_JSON_BYTES) return complete;
+
+  let low = 0;
+  let high = text.length;
+  let best = DURABLE_TRUNCATION_MARKER;
+  while (low <= high) {
+    const midpoint = Math.floor((low + high) / 2);
+    const candidate = truncateDurableText(text, midpoint);
+    if (
+      messageBlocksJsonBytes([{ type: 'text', text: candidate }]) <= MAX_MESSAGE_BLOCKS_JSON_BYTES
+    ) {
+      best = candidate;
+      low = midpoint + 1;
+    } else {
+      high = midpoint - 1;
+    }
+  }
+  return [{ type: 'text', text: best }];
+}
+
+export function assistantTimelineFinalText(timeline: readonly AssistantTurnSegment[]): string {
+  return [...timeline]
+    .sort((left, right) => left.sequence - right.sequence)
+    .filter(
+      (segment): segment is Extract<AssistantTurnSegment, { kind: 'text' }> =>
+        segment.kind === 'text' && segment.phase === 'final_answer',
+    )
+    .map((segment) => segment.text)
+    .join('');
+}
+
 export function buildRoundMessageBlocks(input: {
   reasoningDelta: string;
   transcriptMessages: readonly { phase?: string; content: unknown }[];
@@ -1072,7 +1383,8 @@ export function buildRoundMessageBlocks(input: {
   return blocks;
 }
 
-export function durableMessagesToGapProviderMessages(  messages: readonly Message[],
+export function durableMessagesToGapProviderMessages(
+  messages: readonly Message[],
 ): ProviderMessage[] {
   const result: ProviderMessage[] = [];
   for (const message of messages) {
@@ -1135,9 +1447,7 @@ export function computeKernelGapFromMessages(
     messages.length > KERNEL_SESSION_GAP_MESSAGE_LIMIT ||
     roughTokens > effectiveWindow * KERNEL_SESSION_GAP_TOKEN_RATIO;
   if (oversized) return { count: messages.length, oversized: true };
-  const catchUp = formatKernelGapTranscript(
-    durableMessagesToGapProviderMessages(messages),
-  );
+  const catchUp = formatKernelGapTranscript(durableMessagesToGapProviderMessages(messages));
   return { count: messages.length, oversized: false, ...(catchUp ? { catchUp } : {}) };
 }
 
@@ -1402,6 +1712,13 @@ function appendProviderRoundToolCall(
   transcript: ProviderRoundTranscript,
   toolCall: ProviderToolCall,
 ): void {
+  transcript.messages = transcript.messages.map((message) =>
+    message.role === 'assistant' &&
+    typeof message.content === 'string' &&
+    message.phase === 'final_answer'
+      ? { ...message, phase: 'commentary' }
+      : message,
+  );
   transcript.messages.push({
     role: 'assistant',
     content: [{ type: 'tool-call', toolCall }],
@@ -1434,6 +1751,20 @@ function providerVisibleMessagesFromRoundTranscript(
   );
 }
 
+/** 一个挂起的 ask_user_question 等待（模型问询 → 用户作答 → 回填工具结果）。 */
+interface PendingAskEntry {
+  askId: string;
+  runId: RunId;
+  threadId: string;
+  questions: AskQuestion[];
+  createdAt: string;
+  resolve(result: { ok: boolean; content?: string; error?: string }): void;
+  onAbort(): void;
+}
+
+/** 目标模式默认轮次上限（防无限烧 token；达上限自动 blocked）。 */
+const DEFAULT_GOAL_MAX_ROUNDS = 5;
+
 export class Runtime {
   readonly startedAt = Date.now();
   readonly installId: string;
@@ -1456,9 +1787,17 @@ export class Runtime {
   private readonly modelRetryBaseDelayMs: number;
   private readonly providerStore?: SqliteProviderStore;
   private readonly appSettingStore?: SqliteAppSettingStore;
+  /** 0044: 定时任务表与调度心跳。 */
+  private readonly scheduledTaskStore?: SqliteScheduledTaskStore;
+  private taskSchedulerTimer?: ReturnType<typeof setInterval>;
+  private taskSchedulerTicking = false;
+  /** 当前由定时任务触发的 run（并发上限统计）。 */
+  private readonly taskRuns = new Set<string>();
   /** Persisted runId → kernelId, so message-stream kernel badges survive restarts. */
   private readonly runKernelIds: Map<string, string> = new Map();
   private runKernelIdsLoaded = false;
+  /** 挂起的 ask_user_question（模型问询等待用户作答）。 */
+  private readonly pendingAsks = new Map<string, PendingAskEntry>();
   /**
    * Open gateway (开放网关): loopback protocol bridge that lets a kernel speak
    * its native dialect against an upstream that speaks the other one.
@@ -1593,6 +1932,7 @@ export class Runtime {
     this.modelRetryBaseDelayMs = Math.max(0, opts.modelRetryBaseDelayMs ?? 500);
     this.providerStore = opts.providerStore;
     this.appSettingStore = opts.appSettingStore;
+    this.scheduledTaskStore = opts.scheduledTaskStore;
     this.openGateway = new OpenGatewayManager({
       listCatalog: () => this.collectGatewayCatalog(),
       resolveProviderSecret: (providerId) => this.resolveProviderSecret(providerId),
@@ -1822,6 +2162,34 @@ export class Runtime {
         }
         if (frame.type === 'goal.clear') {
           this.handleGoalClear(socket, frame);
+          return;
+        }
+        if (frame.type === 'goal.pause') {
+          this.handleGoalPause(socket, frame);
+          return;
+        }
+        if (frame.type === 'goal.resume') {
+          this.handleGoalResume(socket, frame);
+          return;
+        }
+        if (frame.type === 'scheduledTask.create') {
+          this.handleCreateScheduledTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'scheduledTask.list') {
+          this.handleListScheduledTasks(socket, frame);
+          return;
+        }
+        if (frame.type === 'scheduledTask.update') {
+          this.handleUpdateScheduledTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'scheduledTask.delete') {
+          this.handleDeleteScheduledTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'scheduledTask.trigger') {
+          this.handleTriggerScheduledTask(socket, frame);
           return;
         }
         if (frame.type === 'workspace.create') {
@@ -2152,6 +2520,18 @@ export class Runtime {
           this.handleConversationPlanCancel(socket, frame);
           return;
         }
+        if (frame.type === 'conversation.ask.answer') {
+          this.handleConversationAskAnswer(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.ask.cancel') {
+          this.handleConversationAskCancel(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.ask.pending') {
+          this.handleConversationAskPending(socket, frame);
+          return;
+        }
         if (frame.type === 'conversation.upgradeTrack') {
           this.handleUpgradeConversationTrack(socket, frame);
           return;
@@ -2282,6 +2662,14 @@ export class Runtime {
         }
         if (frame.type === 'skill.importRemote') {
           this.trackBackgroundTask(this.handleImportRemoteSkill(socket, frame));
+          return;
+        }
+        if (frame.type === 'skill.local.scan') {
+          this.handleSkillLocalScan(socket, frame);
+          return;
+        }
+        if (frame.type === 'skill.local.import') {
+          this.handleSkillLocalImport(socket, frame);
           return;
         }
         if (frame.type === 'skill.list') {
@@ -7621,9 +8009,15 @@ export class Runtime {
           ? this.workspaceStore.getTask(conversation.taskId)
           : undefined;
       const threadId = task?.threadId ? String(task.threadId) : String(conversation.id);
+      // plan/exec 路由的模型与对话模式一致，上下文预览也按路由后的模型估算。
+      const planActRoute = this.resolvePlanActRouteForThread(threadId);
+      const contextModelId =
+        planActRoute.applied && planActRoute.modelId
+          ? planActRoute.modelId
+          : (payload.modelId ?? this.resolveConversationDefaultModelId(conversation));
       const snapshot = this.getOrBuildConversationContextSnapshot({
         threadId,
-        modelId: payload.modelId ?? this.resolveConversationDefaultModelId(conversation),
+        modelId: contextModelId,
         track: conversation.track,
         globalAgentId: conversation.track === 'agent' ? conversation.targetRef : undefined,
         teamId: conversation.track === 'team' ? conversation.targetRef : undefined,
@@ -8071,6 +8465,124 @@ export class Runtime {
     } catch (error) {
       this.writeTeamModelCommandError(socket, frame, error);
     }
+  }
+
+  // ── Conversation ask（模型主动问询） ─────────────────────────────────────
+
+  private handleConversationAskAnswer(socket: Socket, frame: Frame): void {
+    const payload = parseConversationAskAnswerPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const entry = this.pendingAsks.get(payload.askId);
+    if (!entry) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.ask.answer',
+          payload: {},
+          error: {
+            code: ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
+            message: 'Ask not found or already settled',
+          },
+        }),
+      );
+      return;
+    }
+    this.pendingAsks.delete(payload.askId);
+    entry.resolve({ ok: true, content: JSON.stringify({ answers: payload.answers }) });
+    this.publishEvent(
+      this.appendEvent('system', 'conversation.ask_answered', {
+        askId: payload.askId,
+        threadId: entry.threadId,
+        runId: entry.runId,
+        answers: payload.answers,
+        questions: entry.questions,
+      }),
+    );
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'conversation.ask.answer',
+        payload: { askId: payload.askId },
+      }),
+    );
+  }
+
+  private handleConversationAskCancel(socket: Socket, frame: Frame): void {
+    const payload = parseConversationAskCancelPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const entry = this.pendingAsks.get(payload.askId);
+    if (!entry) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'conversation.ask.cancel',
+          payload: {},
+          error: {
+            code: ErrorCode.PROTOCOL_UNEXPECTED_REQUEST,
+            message: 'Ask not found or already settled',
+          },
+        }),
+      );
+      return;
+    }
+    this.pendingAsks.delete(payload.askId);
+    entry.resolve({ ok: false, error: 'ask_user_question cancelled' });
+    this.publishEvent(
+      this.appendEvent('system', 'conversation.ask_cancelled', {
+        askId: payload.askId,
+        threadId: entry.threadId,
+        runId: entry.runId,
+        reason: 'user-cancelled',
+      }),
+    );
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'conversation.ask.cancel',
+        payload: { askId: payload.askId },
+      }),
+    );
+  }
+
+  private handleConversationAskPending(socket: Socket, frame: Frame): void {
+    const payload = parseConversationAskPendingPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const entries = [...this.pendingAsks.values()].filter(
+      (entry) => entry.threadId === payload.threadId,
+    );
+    const latest = entries.sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+    const response: ConversationAskPendingResponse = latest
+      ? {
+          ask: {
+            askId: latest.askId,
+            threadId: latest.threadId,
+            runId: latest.runId,
+            questions: latest.questions,
+            createdAt: latest.createdAt,
+          },
+        }
+      : {};
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'conversation.ask.pending',
+        payload: response,
+      }),
+    );
   }
 
   private handleUpgradeConversationTrack(socket: Socket, frame: Frame): void {
@@ -10261,6 +10773,102 @@ export class Runtime {
     } catch (error) {
       this.writeProviderCommandError(socket, frame, error);
     }
+  }
+
+  // ── 本地 Skill 发现（约定目录 ~/.sync-think/skills） ───────────────────────
+
+  private localSkillWatchCleanup?: () => void;
+  private localSkillCache: LocalSkillCandidate[] = [];
+
+  private handleSkillLocalScan(socket: Socket, frame: Frame): void {
+    const payload = (frame.payload ?? {}) as SkillLocalScanPayload;
+    if (payload.refresh === true || this.localSkillCache.length === 0) {
+      this.refreshLocalSkillCache();
+    }
+    const response: SkillLocalScanResponse = {
+      directory: localSkillsDirectory(),
+      candidates: this.localSkillCache,
+      exists: existsSync(localSkillsDirectory()),
+      watching: Boolean(this.localSkillWatchCleanup),
+    };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'skill.local.scan',
+        payload: response,
+      }),
+    );
+  }
+
+  private handleSkillLocalImport(socket: Socket, frame: Frame): void {
+    const payload = frame.payload as SkillLocalImportPayload | undefined;
+    if (!payload || typeof payload.path !== 'string' || payload.path.length === 0) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.skillStore) {
+      this.writeSkillStoreUnavailable(socket, frame);
+      return;
+    }
+    const root = localSkillsDirectory();
+    const relativePath = relative(root, payload.path);
+    if (relativePath.startsWith('..') || relativePath.startsWith('.' + sep) || relativePath === '..') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const skillMd = readFileSync(payload.path, 'utf8');
+      const parsed = parseSkillMd(skillMd);
+      const imported = this.finishSkillImport(skillMd, parsed, {
+        originType: 'local',
+        originRef: payload.path,
+      });
+      this.refreshLocalSkillCache();
+      this.publishEvent(
+        this.appendEvent('system', 'skill.local_changed', {
+          action: 'import',
+          path: payload.path,
+        }),
+      );
+      const response: SkillLocalImportResponse = { ...imported, path: payload.path };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'skill.local.import',
+          payload: response,
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private refreshLocalSkillCache(): void {
+    if (!this.skillStore) return;
+    const candidates = scanLocalSkills(localSkillsDirectory());
+    for (const candidate of candidates) {
+      const existing = this.skillStore.findLatestByName(candidate.name ?? candidate.folderName);
+      candidate.imported = Boolean(existing);
+      candidate.skillId = existing?.skillId;
+    }
+    this.localSkillCache = candidates;
+  }
+
+  private startLocalSkillWatch(): void {
+    if (this.localSkillWatchCleanup || !this.skillStore) return;
+    const root = localSkillsDirectory();
+    if (!existsSync(root)) return;
+    this.localSkillWatchCleanup = watchLocalSkills(root, () => {
+      this.refreshLocalSkillCache();
+      this.publishEvent(
+        this.appendEvent('system', 'skill.local_changed', {
+          action: 'scan',
+          directory: root,
+        }),
+      );
+    });
   }
 
   /** Fingerprint + persist + permission diff + events for a parsed SKILL.md. */
@@ -13893,6 +14501,7 @@ export class Runtime {
           reasoningEffort:
             typeof payload.reasoningEffort === 'string' ? payload.reasoningEffort : undefined,
           networkEnabled: payload.networkEnabled === true ? true : undefined,
+          planExecuting: payload.planExecuting === true ? true : undefined,
           images: Array.isArray(payload.images)
             ? payload.images.map((raw) => ({
                 name: raw.name,
@@ -14132,6 +14741,7 @@ export class Runtime {
       turnCount: 0,
       tokensIn: 0,
       tokensOut: 0,
+      maxGoalRounds: payload.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS,
     };
     this.saveGoal(goal);
     const evaluatorConfigured = Boolean(this.evaluatorModelId());
@@ -14143,6 +14753,79 @@ export class Runtime {
         id: frame.id,
         kind: 'response',
         type: 'goal.set',
+        payload: response,
+      }),
+    );
+  }
+
+  private handleGoalPause(socket: Socket, frame: Frame): void {
+    const payload = parseGoalPausePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const goal = this.loadGoal(payload.conversationId);
+    if (goal && goal.status === 'active') {
+      this.saveGoal({ ...goal, status: 'paused', pausedAt: new Date().toISOString() });
+    }
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'goal.pause',
+        payload: { goal: this.loadGoal(payload.conversationId) },
+      }),
+    );
+  }
+
+  private handleGoalResume(socket: Socket, frame: Frame): void {
+    const payload = parseGoalResumePayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const current = this.loadGoal(payload.conversationId);
+    const evaluatorConfigured = Boolean(this.evaluatorModelId());
+    if (current && (current.status === 'paused' || current.status === 'blocked')) {
+      const resumed: GoalStatus = {
+        ...current,
+        status: 'active',
+        pausedAt: undefined,
+        blockedAt: undefined,
+        blockedReason: undefined,
+      };
+      this.saveGoal(resumed);
+      const started = evaluatorConfigured;
+      if (started) void this.triggerGoalTurn(payload.conversationId, resumed);
+      const response: GoalResumeResponse = { goal: resumed, started, evaluatorConfigured };
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'goal.resume',
+          payload: response,
+        }),
+      );
+      return;
+    }
+    const response: GoalResumeResponse = {
+      goal: current ?? {
+        conversationId: payload.conversationId,
+        condition: '',
+        status: 'cleared',
+        startedAt: new Date().toISOString(),
+        turnCount: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+      },
+      started: false,
+      evaluatorConfigured,
+    };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'goal.resume',
         payload: response,
       }),
     );
@@ -14191,6 +14874,224 @@ export class Runtime {
     );
   }
 
+  // ── 定时任务命令（scheduledTask.*） ───────────────────────────────────────
+
+  private validateTaskRule(rule: TaskRule): string | undefined {
+    if (rule.kind === 'every' && (!Number.isInteger(rule.intervalMinutes) || rule.intervalMinutes < 5)) {
+      return 'intervalMinutes 必须为 ≥5 的整数';
+    }
+    if (
+      rule.kind === 'random' &&
+      (!Number.isInteger(rule.minTimes) || !Number.isInteger(rule.maxTimes) || rule.minTimes < 1 || rule.maxTimes < rule.minTimes)
+    ) {
+      return 'random 的 minTimes/maxTimes 非法';
+    }
+    if (rule.kind === 'cron' && !rule.expression.trim()) {
+      return 'cron 表达式不能为空';
+    }
+    return undefined;
+  }
+
+  private handleCreateScheduledTask(socket: Socket, frame: Frame): void {
+    const payload = frame.payload as CreateScheduledTaskPayload | undefined;
+    if (!payload || typeof payload.name !== 'string' || typeof payload.instruction !== 'string') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.scheduledTaskStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    const target = payload.target;
+    const rule = payload.rule;
+    const ruleError = this.validateTaskRule(rule);
+    if (!target || !rule || ruleError) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    try {
+      const id = `task-${ulid()}`;
+      const timeZone = payload.timeZone?.trim() || 'UTC';
+      const task: ScheduledTask = {
+        id,
+        name: payload.name.trim(),
+        instruction: payload.instruction.trim(),
+        target,
+        rule,
+        timeZone,
+        enabled: payload.enabled !== false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const nextRunAt = payload.nextRunAt ?? initialNextRunAt(task);
+      const stored = this.scheduledTaskStore.create({
+        id,
+        name: task.name,
+        instruction: task.instruction,
+        target,
+        rule,
+        timeZone,
+        enabled: task.enabled,
+        ...(nextRunAt ? { nextRunAt } : {}),
+      });
+      this.publishTaskEvent('scheduledTask.updated', id, { taskId: id, action: 'create' });
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'scheduledTask.create',
+          payload: { task: stored },
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleListScheduledTasks(socket: Socket, frame: Frame): void {
+    if (!this.scheduledTaskStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    const payload = (frame.payload ?? {}) as ListScheduledTasksPayload;
+    const tasks = this.scheduledTaskStore.list(payload.includeDisabled !== false);
+    const response: ListScheduledTasksResponse = { tasks };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'scheduledTask.list',
+        payload: response,
+      }),
+    );
+  }
+
+  private handleUpdateScheduledTask(socket: Socket, frame: Frame): void {
+    const payload = frame.payload as UpdateScheduledTaskPayload | undefined;
+    if (!payload || typeof payload.taskId !== 'string' || !payload.patch) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.scheduledTaskStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    const patch = payload.patch;
+    if (patch.rule) {
+      const ruleError = this.validateTaskRule(patch.rule);
+      if (ruleError) {
+        this.writeMalformedPayload(socket, frame);
+        return;
+      }
+    }
+    try {
+      let nextRunAt: string | null | undefined;
+      if (patch.rule || patch.nextRunAt !== undefined) {
+        const current = this.scheduledTaskStore.get(payload.taskId);
+        if (current) {
+          const rule = patch.rule ?? current.rule;
+          const timeZone = patch.timeZone ?? current.timeZone;
+          nextRunAt =
+            patch.nextRunAt === null
+              ? null
+              : (patch.nextRunAt ?? initialNextRunAt({ ...current, rule, timeZone }));
+        }
+      }
+      const updated = this.scheduledTaskStore.update(payload.taskId, {
+        ...patch,
+        ...(nextRunAt !== undefined ? { nextRunAt } : {}),
+      });
+      if (!updated) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'scheduledTask.update',
+            payload: {},
+            error: { code: ErrorCode.TASK_NOT_FOUND, message: 'Scheduled task not found' },
+          }),
+        );
+        return;
+      }
+      this.publishTaskEvent('scheduledTask.updated', updated.id, { taskId: updated.id, action: 'update' });
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'scheduledTask.update',
+          payload: { task: updated },
+        }),
+      );
+    } catch (error) {
+      this.writeTeamModelCommandError(socket, frame, error);
+    }
+  }
+
+  private handleDeleteScheduledTask(socket: Socket, frame: Frame): void {
+    const payload = frame.payload as DeleteScheduledTaskPayload | undefined;
+    if (!payload || typeof payload.taskId !== 'string') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.scheduledTaskStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    const deleted = this.scheduledTaskStore.delete(payload.taskId);
+    this.publishTaskEvent('scheduledTask.updated', payload.taskId, {
+      taskId: payload.taskId,
+      action: 'delete',
+    });
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'scheduledTask.delete',
+        payload: { deleted },
+      }),
+    );
+  }
+
+  private async handleTriggerScheduledTask(socket: Socket, frame: Frame): Promise<void> {
+    const payload = frame.payload as TriggerScheduledTaskPayload | undefined;
+    if (!payload || typeof payload.taskId !== 'string') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.scheduledTaskStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    const task = this.scheduledTaskStore.get(payload.taskId);
+    if (!task) {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'scheduledTask.trigger',
+          payload: {},
+          error: { code: ErrorCode.TASK_NOT_FOUND, message: 'Scheduled task not found' },
+        }),
+      );
+      return;
+    }
+    const result = await this.fireScheduledTask(task);
+    const refreshed = this.scheduledTaskStore.get(payload.taskId);
+    const response: TriggerScheduledTaskResponse = {
+      task: refreshed ?? task,
+      fired: result.fired,
+      ...(result.reason ? { reason: result.reason } : {}),
+    };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'scheduledTask.trigger',
+        payload: response,
+      }),
+    );
+  }
+
   /** Resolve the thread id backing a conversation (goal turns run on its thread). */
   private resolveConversationThreadId(conversationId: string): string | undefined {
     const conversation = this.conversationStore?.get(
@@ -14215,6 +15116,24 @@ export class Runtime {
     const conversationId = this.resolveConversationIdForThread(threadId);
     if (!conversationId || !this.conversationStore) return false;
     return this.conversationStore.get(conversationId)?.interactionMode === 'plan';
+  }
+
+  /**
+   * plan/exec 双模型路由：规划模式 → 规划模型；执行已批准方案的轮次
+   * （planExecuting 标志）→ 执行模型；普通 execute 消息不干预（手动覆盖
+   * / Agent 默认链照常生效）。
+   */
+  private resolvePlanActRouteForThread(
+    threadId: string,
+    planExecuting = false,
+  ): PlanActRoute {
+    return resolvePlanActRouteForContext(
+      parsePlanActSetting(this.appSettingStore?.get(PLAN_ACT_SETTING_KEY)?.value),
+      {
+        planningMode: this.isPlanningModeForThread(threadId),
+        planExecuting,
+      },
+    );
   }
 
   private buildGoalTranscript(threadId: string): string {
@@ -14316,13 +15235,26 @@ export class Runtime {
     const { met, reason } = await this.evaluateGoal(conversationId, goal);
     const current = this.loadGoal(conversationId);
     if (!current || current.status !== 'active') return;
+    const roundsStarted = (current.roundsStarted ?? 0) + 1;
     const updated: GoalStatus = {
       ...current,
       turnCount: current.turnCount + 1,
+      roundsStarted,
       lastReason: reason,
     };
     if (met) {
       this.saveGoal({ ...updated, status: 'achieved', achievedAt: new Date().toISOString() });
+      return;
+    }
+    // 轮次上限：耗尽自动 blocked（防无限烧 token）。
+    const maxRounds = current.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS;
+    if (maxRounds > 0 && roundsStarted >= maxRounds) {
+      this.saveGoal({
+        ...updated,
+        status: 'blocked',
+        blockedAt: new Date().toISOString(),
+        blockedReason: `已达轮次上限（${maxRounds} 轮）`,
+      });
       return;
     }
     this.saveGoal(updated);
@@ -14348,6 +15280,8 @@ export class Runtime {
       const demoRun = prepared.run;
       const occurredAt = new Date().toISOString();
       const task = this.workspaceStore?.getTaskByThreadId(threadId as ThreadId);
+      const round = (goal.roundsStarted ?? 0) + 1;
+      const maxRounds = goal.maxGoalRounds ?? DEFAULT_GOAL_MAX_ROUNDS;
       const messageEventDraft: EventDraft = {
         id: ulid() as Event['id'],
         workspaceId: task?.workspaceId ?? this.workspaceId,
@@ -14359,7 +15293,16 @@ export class Runtime {
         payload: {
           threadId,
           role: 'user',
-          text: `【目标模式】继续执行目标：${goal.condition}${goal.lastReason ? `\n（上一轮评估：${goal.lastReason}）` : ''}`,
+          text: [
+            '【目标模式】',
+            `<goal_round>\nObjective: ${goal.condition}\nRound: ${round}/${maxRounds}`,
+            '',
+            'Continue working toward the objective in this same conversation. Inspect the current workspace, tool results and durable session state instead of assuming earlier narration is still current. Make concrete progress and verify the result. Before claiming completion, gather evidence that the whole objective is achieved, read the current goal, and call goal_manage complete. If blocked by an unresolvable obstacle, call goal_manage block with the reason. Otherwise leave the goal active for the next round.',
+            '</goal_round>',
+            goal.lastReason ? `（上一轮评估：${goal.lastReason}）` : '',
+          ]
+            .filter(Boolean)
+            .join('\n'),
         },
       };
       const projectedRuns = new Map(this.demoRuns);
@@ -14396,6 +15339,234 @@ export class Runtime {
     } catch {
       // Goal turns must never break the session; the goal stays active for retry.
     }
+  }
+
+  // ── 定时任务调度（0044） ──────────────────────────────────────────────────
+
+  private startTaskSchedulerHeartbeat(): void {
+    if (this.taskSchedulerTimer || !this.scheduledTaskStore) return;
+    this.taskSchedulerTimer = setInterval(() => {
+      void this.taskSchedulerTick().catch((error) =>
+        console.warn('[runtime] scheduled task tick failed', error),
+      );
+    }, 30_000);
+  }
+
+  private stopTaskSchedulerHeartbeat(): void {
+    if (this.taskSchedulerTimer) {
+      clearInterval(this.taskSchedulerTimer);
+      this.taskSchedulerTimer = undefined;
+    }
+  }
+
+  /** 任务并发上限（app-setting 'task-scheduler' → {maxConcurrent}，默认 2）。 */
+  private taskMaxConcurrent(): number {
+    const raw = this.appSettingStore?.get('task-scheduler')?.value;
+    const value =
+      raw && typeof raw === 'object'
+        ? ((raw as Record<string, unknown>).maxConcurrent as number | undefined)
+        : undefined;
+    const clamped = Number.isFinite(value) ? Math.min(5, Math.max(1, Math.floor(value ?? 2))) : 2;
+    return clamped;
+  }
+
+  /** 心跳 tick：单飞；处理所有到期任务（错峰触发）。 */
+  private async taskSchedulerTick(): Promise<void> {
+    if (this.taskSchedulerTicking || !this.scheduledTaskStore) return;
+    this.taskSchedulerTicking = true;
+    try {
+      const now = new Date();
+      const due = this.scheduledTaskStore.listDue(now.toISOString());
+      if (due.length === 0) return;
+      // 错峰：按任务 id 排序逐个触发，间隔 2-5s。
+      const ordered = [...due].sort((a, b) => a.id.localeCompare(b.id));
+      for (const task of ordered) {
+        await this.fireScheduledTask(task, now);
+        await new Promise((resolve) =>
+          setTimeout(resolve, 2_000 + Math.floor(Math.random() * 3_000)),
+        );
+      }
+    } finally {
+      this.taskSchedulerTicking = false;
+    }
+  }
+
+  /**
+   * 触发一个任务：并发/忙检查 → 创建/复用任务会话 → 注入指令启动 run →
+   * 更新 nextRunAt（错过 ≤24h 补跑，否则顺延）。返回是否已触发。
+   */
+  private async fireScheduledTask(
+    task: ScheduledTask,
+    now: Date = new Date(),
+  ): Promise<{ fired: boolean; reason?: string }> {
+    if (!this.scheduledTaskStore || !this.conversationStore || !this.workspaceStore) {
+      return { fired: false, reason: '存储不可用' };
+    }
+    const firedAt = now.toISOString();
+    const missedMs = now.getTime() - Date.parse(task.nextRunAt ?? firedAt);
+    const missedHours = Math.max(0, missedMs / 3_600_000);
+
+    // 并发上限：任务 run 计数（内存近似）。
+    if (this.taskRuns.size >= this.taskMaxConcurrent()) {
+      this.recordTaskSkipped(task, firedAt, '并发上限');
+      return { fired: false, reason: '并发上限' };
+    }
+
+    // 会话忙：该任务会话有 in-flight run。
+    const conversationId = await this.getOrCreateTaskConversation(task, now);
+    if (!conversationId) return { fired: false, reason: '任务会话创建失败' };
+    const threadId = this.resolveConversationThreadId(conversationId);
+    if (threadId) {
+      const busy = [...this.demoRuns.values()].some(
+        (run) => run.threadId === threadId && this.inFlight.has(String(run.runId)),
+      );
+      if (busy) {
+        this.recordTaskSkipped(task, firedAt, '会话忙');
+        return { fired: false, reason: '会话忙' };
+      }
+    }
+
+    // 更新状态（先落库再启动，崩溃最多重复一次触发）。
+    const nextRunAt = computeNextRunAt(task, firedAt, now);
+    const updated = this.scheduledTaskStore.update(task.id, {
+      nextRunAt,
+      lastRunAt: firedAt,
+      lastResult: { status: 'success', firedAt },
+      ...(conversationId ? { conversationId } : {}),
+    });
+    this.publishTaskEvent('scheduledTask.fired', task.id, {
+      taskId: task.id,
+      firedAt,
+      nextRunAt: nextRunAt ?? null,
+      missedHours: Math.round(missedHours * 10) / 10,
+    });
+
+    // 注入指令启动 run（仿 triggerGoalTurn 路径，不经 socket）。
+    if (threadId && this.stateStore && this.canStartModelRun()) {
+      const runId = ulid() as RunId;
+      try {
+        const prepared = this.prepareRunBinding({
+          runId,
+          threadId: threadId as ThreadId,
+          userText: task.instruction,
+          skillVersionIds: [],
+        });
+        const demoRun = prepared.run;
+        const occurredAt = new Date().toISOString();
+        const workspaceTask = this.workspaceStore.getTaskByThreadId(threadId as ThreadId);
+        const messageEventDraft: EventDraft = {
+          id: ulid() as Event['id'],
+          workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
+          taskId: workspaceTask?.id,
+          runId,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt,
+          payload: {
+            threadId,
+            role: 'user',
+            text: `【定时任务 · ${task.name}】${task.instruction}`,
+          },
+        };
+        const projectedRuns = new Map(this.demoRuns);
+        projectedRuns.set(runId, demoRun);
+        const packetEvent: EventDraft = {
+          id: ulid() as Event['id'],
+          workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
+          taskId: workspaceTask?.id,
+          runId,
+          category: 'context',
+          type: 'context.packet.built',
+          occurredAt,
+          payload: {
+            threadId,
+            packetId: prepared.packetId,
+            proofHash: prepared.proofHash,
+            modelId: demoRun.modelId,
+            providerModelId: demoRun.providerModelId,
+            resolutionSource: demoRun.resolutionSource,
+            credentialRefId: demoRun.credentialRefId,
+            skillVersionIds: prepared.skillVersionIds,
+            mcpServerIds: prepared.mcpServerIds,
+          },
+        };
+        const events = this.persistProjectedEvents(
+          [messageEventDraft, packetEvent],
+          new Map(this.threadVersions),
+          projectedRuns,
+        );
+        this.recordCommittedEvents(events);
+        this.demoRuns.set(runId, demoRun);
+        this.taskRuns.add(String(runId));
+        this.attachTaskRunCleanup(runId);
+        for (const event of events) this.publishEvent(event);
+        void this.executeKernelRun(runId);
+      } catch (error) {
+        this.scheduledTaskStore.update(task.id, {
+          lastResult: {
+            status: 'failed',
+            firedAt,
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        });
+        return { fired: false, reason: 'run 启动失败' };
+      }
+    }
+    void updated;
+    return { fired: true };
+  }
+
+  /** 任务 run 结束时从并发计数移除（监听终态事件）。 */
+  private attachTaskRunCleanup(runId: string): void {
+    const check = (): void => {
+      const run = this.demoRuns.get(runId as RunId);
+      if (!run || !this.inFlight.has(runId)) {
+        this.taskRuns.delete(runId);
+        return;
+      }
+      setTimeout(check, 5_000);
+    };
+    setTimeout(check, 30_000);
+  }
+
+  private recordTaskSkipped(task: ScheduledTask, firedAt: string, reason: string): void {
+    this.scheduledTaskStore?.update(task.id, {
+      lastRunAt: firedAt,
+      lastResult: { status: 'skipped', firedAt, reason },
+    });
+    this.publishTaskEvent('scheduledTask.skipped', task.id, {
+      taskId: task.id,
+      firedAt,
+      reason,
+    });
+  }
+
+  private publishTaskEvent(type: string, _taskId: string, payload: Record<string, unknown>): void {
+    this.publishEvent(this.appendEvent('system', type, payload));
+  }
+
+  /** 任务专属会话：按 target 创建（track agent/model，标题「任务 · {名}」）或复用。 */
+  private async getOrCreateTaskConversation(
+    task: ScheduledTask,
+    now: Date = new Date(),
+  ): Promise<string | undefined> {
+    if (!this.conversationStore || !this.workspaceStore) return undefined;
+    if (task.conversationId) {
+      const existing = this.conversationStore.get(task.conversationId as ConversationId);
+      if (existing) return existing.id;
+    }
+    const workspaceId = this.getOrCreateInboxWorkspace();
+    const conversation = this.conversationStore.create({
+      target:
+        task.target.kind === 'agent'
+          ? { track: 'agent', agentId: task.target.agentId as AgentId }
+          : { track: 'model', modelId: task.target.modelId as ModelId },
+      workspaceId,
+      title: `任务 · ${task.name}`,
+      now: now.toISOString(),
+    });
+    this.scheduledTaskStore?.update(task.id, { conversationId: conversation.id });
+    return conversation.id;
   }
 
   private handleCancelRun(socket: Socket, frame: Frame): void {
@@ -14874,8 +16045,15 @@ export class Runtime {
               workspaceRoot,
               executionMode,
               networkEnabled,
+              platformSchemas: nativePlatformToolSchemas({
+                planningMode: initialRun.planningMode === true,
+              }),
               signal: abort.signal,
             });
+            if (process.env.SYNC_THINK_E2E_DEBUG === '1') {
+              const schemas = nativePlatformToolSchemas({ planningMode: initialRun.planningMode === true });
+              console.log('[e2e-debug] platformSchemas:', schemas.map((s) => s.name).join(','));
+            }
             if (finalTurn) {
               // Consume at most one final no-tool turn.
               forceFinalAnswer = false;
@@ -15144,6 +16322,41 @@ export class Runtime {
                 projectionOccurredAt,
               );
             }
+            if (projection.nextRun) {
+              if (adapterEvent.type === 'reasoning-delta') {
+                projection.nextRun = appendAssistantThinkingDelta(
+                  projection.nextRun,
+                  adapterEvent.text,
+                  projectionOccurredAt,
+                );
+              } else if (adapterEvent.type === 'assistant-message-delta') {
+                projection.nextRun = appendAssistantTextDelta(
+                  projection.nextRun,
+                  adapterEvent.phase === 'commentary' ? 'commentary' : 'final_answer',
+                  adapterEvent.text,
+                  projectionOccurredAt,
+                );
+              } else if (adapterEvent.type === 'assistant-message-end') {
+                projection.nextRun = closeAssistantTimeline(
+                  projection.nextRun,
+                  projectionOccurredAt,
+                );
+              } else if (adapterEvent.type === 'tool-call') {
+                projection.nextRun = startAssistantTool(projection.nextRun, {
+                  toolCallId: adapterEvent.toolCall.id,
+                  name: adapterEvent.toolCall.name,
+                  argumentsJson: adapterEvent.toolCall.argumentsJson,
+                  occurredAt: projectionOccurredAt,
+                });
+              } else if (adapterEvent.type === 'tool-result') {
+                projection.nextRun = completeAssistantTool(projection.nextRun, {
+                  toolCallId: adapterEvent.toolCallId,
+                  output: adapterEvent.result,
+                  failed: projection.type === 'tool.failed',
+                  occurredAt: projectionOccurredAt,
+                });
+              }
+            }
             if (suppressTerminal) {
               // Keep run alive for the tool follow-up turn.
               projection.terminal = false;
@@ -15242,6 +16455,7 @@ export class Runtime {
                 commentarySegments: projection.nextRun.commentarySegments,
                 reasoningText: projection.nextRun.reasoningText,
                 reasoningSegments: projection.nextRun.reasoningSegments,
+                assistantTimeline: projection.nextRun.assistantTimeline,
                 updatedAt: occurredAt,
               });
               // Skip publishing the intermediate tool-turn marker to keep user UI clean.
@@ -15269,17 +16483,13 @@ export class Runtime {
               // Make the durable final visible before consumers observe run.completed.
               // ChatView can then refresh the message page immediately on the terminal event
               // without racing a later message-store write.
+              const terminalRun = projection.nextRun ?? currentRun;
               if (projection.terminal && projection.type === 'run.completed') {
-                this.persistAssistantFinalMessage(
-                  runId,
-                  closeCommentaryTimelineSegment(currentRun, projectionOccurredAt),
-                  projection.payload,
-                  {
-                    reasoningDelta: currentRun.reasoningText.slice(lastRoundReasoningStart),
-                    transcriptMessages: activeRoundTranscript?.messages ?? [],
-                    hasToolRounds: toolLoopRound > 0,
-                  },
-                );
+                this.persistAssistantFinalMessage(runId, terminalRun, projection.payload, {
+                  reasoningDelta: terminalRun.reasoningText.slice(lastRoundReasoningStart),
+                  transcriptMessages: activeRoundTranscript?.messages ?? [],
+                  hasToolRounds: toolLoopRound > 0,
+                });
                 // NewMax-style goal mode: after each finished turn, a separate
                 // evaluator checks the completion condition and either continues
                 // the goal loop or marks the goal achieved.
@@ -15287,7 +16497,7 @@ export class Runtime {
               } else if (projection.terminal && projection.type === 'run.failed') {
                 this.persistAssistantTerminalMessage(
                   runId,
-                  closeCommentaryTimelineSegment(currentRun, projectionOccurredAt),
+                  terminalRun,
                   'failed',
                   typeof projection.payload.errorMessage === 'string'
                     ? projection.payload.errorMessage
@@ -15709,20 +16919,8 @@ export class Runtime {
             if (live) {
               this.demoRuns.set(runId, { ...live, nextAdapterEventIndex: 0 });
             }
-            // DSH parity: persist one assistant message per tool round
-            // (thinking + commentary + the round's tool calls/results).
-            const roundRun = this.demoRuns.get(runId);
-            if (roundRun) {
-              this.persistAssistantRoundMessage({
-                runId,
-                run: roundRun,
-                roundIndex: toolLoopRound,
-                reasoningDelta: roundRun.reasoningText.slice(roundReasoningStart),
-                transcriptMessages: roundTranscript.messages,
-                toolCalls: pendingToolCalls,
-                toolResults: completedResults.map((result) => result.content),
-              });
-            }
+            // One run stays one durable assistant turn; persist only at terminal.
+
             continue;
           }
 
@@ -15877,20 +17075,7 @@ export class Runtime {
             this.publishKernelTextDelta(runId, initialRun.threadId, event.text);
             break;
           case 'reasoning':
-            // Kernel reasoning: stream it live AND accumulate it on the run so
-            // the final assistant message persists a reasoning block (matching
-            // native provider reasoning). The UI renders it as a collapsible
-            // thinking region.
             this.publishKernelReasoningDelta(runId, initialRun.threadId, event.text);
-            {
-              const live = this.demoRuns.get(runId);
-              if (live) {
-                this.demoRuns.set(runId, {
-                  ...live,
-                  reasoningText: `${live.reasoningText ?? ''}${event.text}`,
-                });
-              }
-            }
             break;
           case 'session-started':
             reportedSessionId ??= this.saveReportedKernelConversationSession(
@@ -16005,9 +17190,10 @@ export class Runtime {
    * the kernel's native limit; the configured value wins otherwise. Used for
    * context trimming, kernel injection and the observable run snapshot.
    */
-  private effectiveContextWindowForRun(
-    run: DemoRunState,
-  ): { window: number; source: 'configured' | 'kernel-capped' | 'estimated' } {
+  private effectiveContextWindowForRun(run: DemoRunState): {
+    window: number;
+    source: 'configured' | 'kernel-capped' | 'estimated';
+  } {
     const configured = run.contextWindow ?? 128_000;
     const estimated = run.contextWindowEstimated === true && run.contextWindow === undefined;
     let window = configured;
@@ -16271,9 +17457,7 @@ export class Runtime {
       });
       if (page.messages.length === 0) break;
       if (page.messages[0].sequence <= afterSequence) {
-        collected.unshift(
-          ...page.messages.filter((message) => message.sequence > afterSequence),
-        );
+        collected.unshift(...page.messages.filter((message) => message.sequence > afterSequence));
         break;
       }
       collected.unshift(...page.messages);
@@ -16613,8 +17797,8 @@ export class Runtime {
         [
           '## 规划模式（Planning mode）',
           '你正处于规划模式：只做只读调研，禁止任何写入、编辑、命令执行、浏览器交互或资源变更（宿主会在执行层强制拦截）。',
-          '完成调研后，调用 `plan_submit` 提交一份结构化执行计划，然后简要总结要点并停止，等待用户审批——不要继续执行。',
-          '宿主已禁用 EnterPlanMode / ExitPlanMode / AskUserQuestion，不要调用它们，也不要尝试进入 Claude 原生规划流程。',
+          '完成调研后，调用 `ask_user_question` 提交最终执行方案并等待审批：发送单个问题，`header` 设为「方案待审」或类似标题，`intent` 设为 {"kind":"plan-review","approve":"确认执行"}，`detail` 填入完整方案（Markdown：目标、步骤与各自验收标准、风险），`options` 为 [{"label":"确认执行"},{"label":"拒绝"}]。收到「确认执行」的回答后，简要总结要点并停止——宿主会启动执行轮；收到「拒绝」则根据用户的反馈调整方案。',
+          '宿主已禁用 EnterPlanMode / ExitPlanMode / AskUserQuestion（claude-code 内置），不要调用它们，也不要尝试进入 Claude 原生规划流程；问询请使用宿主提供的 `ask_user_question` 工具。',
         ].join('\n'),
       );
     }
@@ -16736,15 +17920,30 @@ export class Runtime {
     // generic chat classifier. Injecting them for external kernels makes
     // browser_open/click/type/read/screenshot work identically on every kernel.
     if (CHAT_BROWSER_TOOL_NAMES.has(call.tool)) {
-      return this.executeExternalKernelBrowserTool(runId, run, workspaceRoot, call, argumentsJson, executionMode);
+      return this.executeExternalKernelBrowserTool(
+        runId,
+        run,
+        workspaceRoot,
+        call,
+        argumentsJson,
+        executionMode,
+      );
     }
 
-    // plan_submit (规划模式) delivers the approved-to-be plan: persist the plan
-    // on the conversation and surface it to the UI as an approval card. The
-    // planning run then ends naturally (the tool description tells the model to
-    // stop and wait for approval).
-    if (call.tool === 'plan_submit') {
-      return this.handlePlanSubmitToolCall(runId, run, call, argumentsJson);
+    // ask_user_question (模型主动问询): 挂起工具调用等待用户作答，回答回填为
+    // 工具结果；plan-review intent 渲染「方案待审」卡，确认后由桌面端发起执行轮。
+    if (call.tool === 'ask_user_question') {
+      return this.handleAskUserQuestionToolCall(runId, run, call);
+    }
+
+    // task_schedule (定时任务管理): create/cancel 在 ask-mode 下需审批。
+    if (call.tool === 'task_schedule') {
+      return this.executeTaskScheduleTool(runId, run, call, executionMode);
+    }
+
+    // goal_manage (目标模式): 模型自证完成 / 报受阻 / 记进度。
+    if (call.tool === 'goal_manage') {
+      return this.executeGoalManageTool(run, call);
     }
 
     // Host-only file tools keep the ask-mode tier; every chat tool defers to the
@@ -16788,54 +17987,272 @@ export class Runtime {
    * approval in non-full-access mode, then run the visible Browser Worker action.
    */
   /**
-   * plan_submit executor (规划模式). Persists the model-submitted plan on the
-   * conversation and emits `conversation.plan_submitted` so the UI can render
-   * the approval card. The planning run then finishes naturally.
+   * goal_manage executor（目标模式）：模型 complete（自证完成）/ block（受阻）/
+   * progress（进度说明）。仅该对话存在 active goal 时可用。
    */
-  private async handlePlanSubmitToolCall(
+  private executeGoalManageTool(
+    run: DemoRunState,
+    call: PlatformMcpToolCall,
+  ): { ok: boolean; content?: string; error?: string } {
+    const conversationId = this.resolveConversationIdForThread(run.threadId);
+    const goal = conversationId ? this.loadGoal(conversationId) : undefined;
+    if (!goal || goal.status !== 'active') {
+      return { ok: false, error: 'goal_manage: 当前对话没有进行中的目标' };
+    }
+    const input =
+      call.input && typeof call.input === 'object'
+        ? (call.input as Record<string, unknown>)
+        : {};
+    const action = input.action;
+    const reason =
+      typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim().slice(0, 500) : '';
+    if (action !== 'complete' && action !== 'block' && action !== 'progress') {
+      return { ok: false, error: 'goal_manage: action 必须为 complete/block/progress' };
+    }
+    const now = new Date().toISOString();
+    if (action === 'complete') {
+      this.saveGoal({ ...goal, status: 'achieved', achievedAt: now, lastReason: reason || '模型自证完成' });
+      return { ok: true, content: '目标已标记完成。' };
+    }
+    if (action === 'block') {
+      if (!reason) return { ok: false, error: 'goal_manage: block 需要 reason' };
+      this.saveGoal({
+        ...goal,
+        status: 'blocked',
+        blockedAt: now,
+        blockedReason: reason,
+        lastReason: reason,
+      });
+      return { ok: true, content: '已标记受阻，等待用户处理。' };
+    }
+    this.saveGoal({ ...goal, lastReason: reason || '（进度更新）' });
+    return { ok: true, content: '进度已记录。' };
+  }
+
+  /**
+   * ask_user_question executor（模型主动问询）。挂起工具调用并发出
+   * `conversation.ask_pending`（持久化，桌面端据此接管 composer 展示问询
+   * 卡片）；用户经 conversation.ask.answer / cancel 命令作答后回填为工具
+   * 结果。plan-review intent 由桌面端特例渲染为「方案待审」卡。
+   */
+  private async handleAskUserQuestionToolCall(
     runId: RunId,
     run: DemoRunState,
     call: PlatformMcpToolCall,
-    argumentsJson: string,
   ): Promise<{ ok: boolean; content?: string; error?: string }> {
-    void runId;
-    const conversationId = this.resolveConversationIdForThread(run.threadId);
-    if (!conversationId || !this.conversationStore) {
-      return { ok: false, error: 'conversation store unavailable' };
+    const parsed = parseAskUserQuestionInput(call.input);
+    if (!parsed || parsed.questions.length === 0) {
+      return { ok: false, error: 'ask_user_question: invalid questions structure' };
     }
-    const parsed = parseConversationPlanSubmitPayload({
-      conversationId,
-      plan: call.input,
+    const askId = `ask-${ulid()}`;
+    const threadId = run.threadId;
+    return new Promise((resolve) => {
+      const entry: PendingAskEntry = {
+        askId,
+        runId,
+        threadId,
+        questions: parsed.questions,
+        createdAt: new Date().toISOString(),
+        resolve,
+        onAbort: () => {
+          if (this.pendingAsks.delete(askId)) {
+            this.publishEvent(
+              this.appendEvent('system', 'conversation.ask_cancelled', {
+                askId,
+                threadId,
+                runId,
+                reason: 'run-cancelled',
+              }),
+            );
+            resolve({ ok: false, error: 'ask_user_question cancelled' });
+          }
+        },
+      };
+      this.pendingAsks.set(askId, entry);
+      if (call.signal.aborted) {
+        entry.onAbort();
+        return;
+      }
+      call.signal.addEventListener('abort', entry.onAbort, { once: true });
+      this.publishEvent(
+        this.persistProjectedEvent(
+          {
+            id: ulid() as Event['id'],
+            workspaceId: this.resolveEventWorkspaceId(threadId),
+            taskId: this.resolveEventTaskId(threadId),
+            runId,
+            category: 'system',
+            type: 'conversation.ask_pending',
+            occurredAt: entry.createdAt,
+            payload: {
+              askId,
+              threadId,
+              runId,
+              questions: parsed.questions,
+            },
+          },
+          new Map(this.demoRuns),
+        ),
+      );
     });
-    if (!parsed) {
-      return { ok: false, error: 'plan_submit: invalid plan structure' };
+  }
+
+  /**
+   * task_schedule executor（定时任务管理）。list 免审批；create/cancel 在
+   * ask-mode 下先走工具审批（复用 requestPlatformToolApproval）。
+   */
+  private async executeTaskScheduleTool(
+    runId: RunId,
+    run: DemoRunState,
+    call: PlatformMcpToolCall,
+    executionMode: 'ask' | 'workspace' | 'full-access',
+  ): Promise<{ ok: boolean; content?: string; error?: string }> {
+    if (!this.scheduledTaskStore) {
+      return { ok: false, error: 'task_schedule: 定时任务存储不可用' };
+    }
+    const input =
+      call.input && typeof call.input === 'object'
+        ? (call.input as Record<string, unknown>)
+        : {};
+    const action = input.action;
+    if (action !== 'create' && action !== 'list' && action !== 'cancel') {
+      return { ok: false, error: 'task_schedule: action 必须为 create/list/cancel' };
+    }
+    if (action === 'create' || action === 'cancel') {
+      if (executionMode === 'ask') {
+        const decision = await this.requestPlatformToolApproval(runId, run.threadId, call);
+        if (decision !== 'approve') {
+          return { ok: false, error: '宿主已拒绝此操作' };
+        }
+      }
+      if (call.signal.aborted || !this.demoRuns.has(runId)) {
+        return { ok: false, error: 'platform tool call was cancelled before execution' };
+      }
     }
     try {
-      const plan = this.conversationStore.submitConversationPlan(
-        parsed.conversationId,
-        parsed.plan,
-      );
-      const event = this.appendEvent('system', 'conversation.plan_submitted', {
-        conversationId: parsed.conversationId,
-        revision: plan.currentRevision,
-        runId,
+      if (action === 'list') {
+        const tasks = this.scheduledTaskStore.list();
+        return {
+          ok: true,
+          content: JSON.stringify(
+            tasks.map((task) => ({
+              id: task.id,
+              name: task.name,
+              enabled: task.enabled,
+              nextRunAt: task.nextRunAt ?? null,
+              lastRunAt: task.lastRunAt ?? null,
+              rule: task.rule,
+              target: task.target,
+            })),
+          ),
+        };
+      }
+      if (action === 'cancel') {
+        const taskId = typeof input.taskId === 'string' ? input.taskId : '';
+        if (!taskId) return { ok: false, error: 'task_schedule: cancel 需要 taskId' };
+        const updated = this.scheduledTaskStore.update(taskId, { enabled: false });
+        if (!updated) return { ok: false, error: 'task_schedule: 任务不存在' };
+        this.publishTaskEvent('scheduledTask.updated', taskId, {
+          taskId,
+          action: 'cancel',
+        });
+        return { ok: true, content: JSON.stringify({ cancelled: true, taskId }) };
+      }
+      // create
+      const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : '';
+      const instruction =
+        typeof input.instruction === 'string' && input.instruction.trim()
+          ? input.instruction.trim()
+          : '';
+      const targetRaw =
+        input.target && typeof input.target === 'object'
+          ? (input.target as Record<string, unknown>)
+          : {};
+      const ruleRaw =
+        input.rule && typeof input.rule === 'object'
+          ? (input.rule as Record<string, unknown>)
+          : {};
+      const targetKind = targetRaw.kind;
+      const target: ScheduledTaskTarget | undefined =
+        targetKind === 'agent' && typeof targetRaw.agentId === 'string'
+          ? { kind: 'agent', agentId: targetRaw.agentId }
+          : targetKind === 'model' && typeof targetRaw.modelId === 'string'
+            ? { kind: 'model', modelId: targetRaw.modelId }
+            : undefined;
+      const ruleKind = ruleRaw.kind;
+      let rule: TaskRule | undefined;
+      if (ruleKind === 'at' && typeof ruleRaw.runAt === 'string') {
+        rule = { kind: 'at', runAt: ruleRaw.runAt };
+      } else if (
+        ruleKind === 'every' &&
+        typeof ruleRaw.intervalMinutes === 'number' &&
+        Number.isInteger(ruleRaw.intervalMinutes) &&
+        ruleRaw.intervalMinutes >= 5
+      ) {
+        rule = {
+          kind: 'every',
+          intervalMinutes: ruleRaw.intervalMinutes,
+          ...(typeof ruleRaw.firstRunAt === 'string' ? { firstRunAt: ruleRaw.firstRunAt } : {}),
+        };
+      } else if (
+        ruleKind === 'random' &&
+        typeof ruleRaw.windowStart === 'string' &&
+        typeof ruleRaw.windowEnd === 'string' &&
+        typeof ruleRaw.minTimes === 'number' &&
+        typeof ruleRaw.maxTimes === 'number'
+      ) {
+        rule = {
+          kind: 'random',
+          windowStart: ruleRaw.windowStart,
+          windowEnd: ruleRaw.windowEnd,
+          minTimes: Math.max(1, Math.floor(ruleRaw.minTimes)),
+          maxTimes: Math.max(1, Math.floor(ruleRaw.maxTimes)),
+        };
+      } else if (ruleKind === 'cron' && typeof ruleRaw.expression === 'string') {
+        rule = { kind: 'cron', expression: ruleRaw.expression };
+      }
+      if (!name || !instruction || !target || !rule) {
+        return {
+          ok: false,
+          error: 'task_schedule: create 需要 name/instruction/target/rule 且参数合法',
+        };
+      }
+      const id = `task-${ulid()}`;
+      const timeZone = typeof input.timeZone === 'string' && input.timeZone.trim() ? input.timeZone.trim() : 'UTC';
+      const task: ScheduledTask = {
+        id,
+        name,
+        instruction,
+        target,
+        rule,
+        timeZone,
+        enabled: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const nextRunAt = initialNextRunAt(task);
+      const stored = this.scheduledTaskStore.create({
+        id,
+        name,
+        instruction,
+        target,
+        rule,
+        timeZone,
+        enabled: true,
+        ...(nextRunAt ? { nextRunAt } : {}),
       });
-      this.publishEvent(event);
-      void argumentsJson;
+      this.publishTaskEvent('scheduledTask.updated', id, { taskId: id, action: 'create' });
       return {
         ok: true,
         content: JSON.stringify({
-          ok: true,
-          planSubmitted: true,
-          revision: plan.currentRevision,
-          message: '计划已提交，等待用户审批。请简要总结计划要点并停止执行，不要继续做任何改动。',
+          created: true,
+          taskId: stored.id,
+          name: stored.name,
+          nextRunAt: stored.nextRunAt ?? null,
         }),
       };
     } catch (error) {
-      return {
-        ok: false,
-        error: `plan_submit failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
+      return { ok: false, error: `task_schedule failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -16867,7 +18284,11 @@ export class Runtime {
     if (permission.decision === 'approval-required') {
       if (executionMode === 'full-access') {
         const approvalId = `auto-full-access:${runId}:${call.id}`;
-        this.browserController.recordPermissionDecision(browserPermissionInput, 'allow', approvalId);
+        this.browserController.recordPermissionDecision(
+          browserPermissionInput,
+          'allow',
+          approvalId,
+        );
         browserApproval = { approvalId };
       } else {
         const decision = await this.requestPlatformToolApproval(runId, run.threadId, call);
@@ -16880,7 +18301,11 @@ export class Runtime {
           return { ok: false, error: '宿主已拒绝此浏览器操作' };
         }
         const approvalId = `kappr:${runId}:${call.id}`;
-        this.browserController.recordPermissionDecision(browserPermissionInput, 'allow', approvalId);
+        this.browserController.recordPermissionDecision(
+          browserPermissionInput,
+          'allow',
+          approvalId,
+        );
         browserApproval = { approvalId };
       }
     }
@@ -17182,8 +18607,15 @@ export class Runtime {
 
   private publishKernelTextDelta(runId: RunId, threadId: string, text: string): void {
     const run = this.demoRuns.get(runId);
-    if (!run) return;
+    if (!run || !text) return;
     const occurredAt = new Date().toISOString();
+    const next = appendAssistantTextDelta(
+      { ...run, assistantText: run.assistantText + text },
+      'final_answer',
+      text,
+      occurredAt,
+    );
+    this.demoRuns.set(runId, next);
     this.publishTransientDelta({
       threadId: threadId as ThreadId,
       runId,
@@ -17191,13 +18623,12 @@ export class Runtime {
       textDelta: text,
       occurredAt,
     });
-    const next = { ...run, assistantText: run.assistantText + text };
-    this.demoRuns.set(runId, next);
     this.updateTransientTextSnapshot({
       threadId: threadId as ThreadId,
       runId,
       streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
       text: next.assistantText,
+      assistantTimeline: next.assistantTimeline,
       updatedAt: occurredAt,
     });
   }
@@ -17211,28 +18642,41 @@ export class Runtime {
     try {
       const run = this.demoRuns.get(runId);
       const occurredAt = new Date().toISOString();
-      // Keep the run's tool history in event order so the durable assistant
-      // message can carry tool-call / tool-result blocks (cross-kernel gap
-      // transcripts restore the tool names, arguments and results).
       if (run) {
-        run.kernelToolEvents ??= [];
-        if (type === 'tool.requested') {
-          run.kernelToolEvents.push({
-            kind: 'tool-call',
-            sequence: run.kernelToolEvents.length,
-            toolId: (event as { toolId: string }).toolId,
-            name: (event as { name: string }).name,
-            argsJson: (event as { argsJson: string }).argsJson,
-          });
-        } else {
-          run.kernelToolEvents.push({
-            kind: 'tool-result',
-            sequence: run.kernelToolEvents.length,
-            toolId: (event as { toolId: string }).toolId,
-            output: (event as { output: string }).output,
-            ...((event as { isError?: boolean }).isError ? { failed: true } : {}),
-          });
-        }
+        let nextRun =
+          type === 'tool.requested'
+            ? startAssistantTool(run, {
+                toolCallId: (event as { toolId: string }).toolId,
+                name: (event as { name: string }).name,
+                argumentsJson: (event as { argsJson: string }).argsJson,
+                occurredAt,
+              })
+            : completeAssistantTool(run, {
+                toolCallId: (event as { toolId: string }).toolId,
+                output: (event as { output: string }).output,
+                failed: (event as { isError?: boolean }).isError === true,
+                occurredAt,
+              });
+        const history = [...(nextRun.kernelToolEvents ?? [])];
+        history.push(
+          type === 'tool.requested'
+            ? {
+                kind: 'tool-call',
+                sequence: history.length,
+                toolId: (event as { toolId: string }).toolId,
+                name: (event as { name: string }).name,
+                argsJson: (event as { argsJson: string }).argsJson,
+              }
+            : {
+                kind: 'tool-result',
+                sequence: history.length,
+                toolId: (event as { toolId: string }).toolId,
+                output: (event as { output: string }).output,
+                ...((event as { isError?: boolean }).isError ? { failed: true } : {}),
+              },
+        );
+        nextRun = { ...nextRun, kernelToolEvents: history };
+        this.demoRuns.set(runId, nextRun);
       }
       const draft: EventDraft = {
         id: ulid() as Event['id'],
@@ -17271,13 +18715,30 @@ export class Runtime {
    * It streams for live visibility but never becomes durable chat text.
    */
   private publishKernelReasoningDelta(runId: RunId, threadId: string, text: string): void {
-    if (!text) return;
+    const run = this.demoRuns.get(runId);
+    if (!run || !text) return;
+    const occurredAt = new Date().toISOString();
+    const next = appendAssistantThinkingDelta(
+      { ...run, reasoningText: `${run.reasoningText ?? ''}${text}` },
+      text,
+      occurredAt,
+    );
+    this.demoRuns.set(runId, next);
     this.publishTransientDelta({
       threadId: threadId as ThreadId,
       runId,
       kind: 'reasoning',
       textDelta: text,
-      occurredAt: new Date().toISOString(),
+      occurredAt,
+    });
+    this.updateTransientTextSnapshot({
+      threadId: threadId as ThreadId,
+      runId,
+      streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
+      text: next.assistantText,
+      reasoningText: next.reasoningText,
+      assistantTimeline: next.assistantTimeline,
+      updatedAt: occurredAt,
     });
   }
 
@@ -17293,6 +18754,16 @@ export class Runtime {
     try {
       const occurredAt = new Date().toISOString();
       const run = this.demoRuns.get(runId);
+      if (run) {
+        this.demoRuns.set(
+          runId,
+          appendAssistantStatus(run, {
+            statusType: 'compaction',
+            label: '内核已压缩上下文',
+            occurredAt,
+          }),
+        );
+      }
       const committed = this.persistProjectedEvent(
         {
           id: ulid() as Event['id'],
@@ -17339,8 +18810,8 @@ export class Runtime {
           requestId: usage.requestId ?? `kernel-${runId}-${sequence}`,
           ...(usage.providerResponseId ? { providerResponseId: usage.providerResponseId } : {}),
           providerId: preferUsageIdentity
-            ? usage.providerId ?? run.providerId ?? run.kernelId ?? 'kernel'
-            : run.providerId ?? usage.providerId ?? run.kernelId ?? 'kernel',
+            ? (usage.providerId ?? run.providerId ?? run.kernelId ?? 'kernel')
+            : (run.providerId ?? usage.providerId ?? run.kernelId ?? 'kernel'),
           providerModelId: usage.modelId ?? run.providerModelId,
           purpose: 'normal',
           tokensIn: usage.input ?? usage.real,
@@ -17380,13 +18851,9 @@ export class Runtime {
         ...(usage.cachedTokensCreated !== undefined
           ? { cachedTokensCreated: usage.cachedTokensCreated }
           : {}),
-        ...(usage.reasoningTokens !== undefined
-          ? { reasoningTokens: usage.reasoningTokens }
-          : {}),
+        ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
         requestId: usage.requestId,
-        ...(usage.providerResponseId
-          ? { providerResponseId: usage.providerResponseId }
-          : {}),
+        ...(usage.providerResponseId ? { providerResponseId: usage.providerResponseId } : {}),
         ...(usage.providerId ? { providerId: usage.providerId } : {}),
         modelId: usage.providerModelId,
       },
@@ -17402,26 +18869,31 @@ export class Runtime {
     error?: string,
   ): void {
     const occurredAt = new Date().toISOString();
+    const terminalRun = closeAssistantTimeline(
+      closeCommentaryTimelineSegment(run, occurredAt),
+      occurredAt,
+    );
+    this.demoRuns.set(runId, terminalRun);
     const failed = status === 'failed';
     const payload: Record<string, unknown> = {
-      threadId: run.threadId,
+      threadId: terminalRun.threadId,
       ...(failed
         ? { failureClass: 'unknown', errorMessage: error ?? 'kernel failed' }
         : { reason: 'stop' }),
-      assistantText: run.assistantText,
-      adapterEventIndex: run.nextAdapterEventIndex,
+      assistantText: terminalRun.assistantText,
+      adapterEventIndex: terminalRun.nextAdapterEventIndex,
       idempotencyKey: run.runId,
-      modelId: run.modelId,
-      providerModelId: run.providerModelId,
-      packetId: run.packetId,
-      kernelId: run.kernelId,
+      modelId: terminalRun.modelId,
+      providerModelId: terminalRun.providerModelId,
+      packetId: terminalRun.packetId,
+      kernelId: terminalRun.kernelId,
     };
     try {
       const event = this.persistProjectedEvent(
         {
           id: ulid() as Event['id'],
-          workspaceId: this.resolveEventWorkspaceId(run.threadId),
-          taskId: this.resolveEventTaskId(run.threadId),
+          workspaceId: this.resolveEventWorkspaceId(terminalRun.threadId),
+          taskId: this.resolveEventTaskId(terminalRun.threadId),
           runId,
           category: 'run',
           type: failed ? 'run.failed' : 'run.completed',
@@ -17431,29 +18903,20 @@ export class Runtime {
         new Map(this.demoRuns),
       );
       if (failed) {
-        this.persistAssistantTerminalMessage(
-          runId,
-          closeCommentaryTimelineSegment(run, occurredAt),
-          'failed',
-          error,
-        );
+        this.persistAssistantTerminalMessage(runId, terminalRun, 'failed', error);
         // Publish the terminal BEFORE the diagnostic: recordRunDiagnostic emits
         // a later-sequence event, and publishEvent drops anything older than
         // the subscriber's live cursor — reordering here would silently lose
         // run.failed from every live stream (UI stuck on "executing").
         this.publishEvent(event);
-        this.recordRunDiagnostic(runId, run, payload);
+        this.recordRunDiagnostic(runId, terminalRun, payload);
       } else {
-        this.persistAssistantFinalMessage(
-          runId,
-          closeCommentaryTimelineSegment(run, occurredAt),
-          payload,
-        );
-        this.maybeProposeRunMemory(runId, run, payload);
+        this.persistAssistantFinalMessage(runId, terminalRun, payload);
+        this.maybeProposeRunMemory(runId, terminalRun, payload);
         this.publishEvent(event);
       }
       this.demoRuns.delete(runId);
-      this.transientSnapshotByThread.delete(run.threadId as ThreadId);
+      this.transientSnapshotByThread.delete(terminalRun.threadId as ThreadId);
     } catch {
       // Finalization must not throw into the run loop.
     }
@@ -17937,6 +19400,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     skillContextMode?: 'run' | 'maintenance';
     reasoningEffort?: string;
     networkEnabled?: boolean;
+    /** 批准方案后的执行轮：强制使用 plan-act 的执行模型（仅本轮）。 */
+    planExecuting?: boolean;
     images?: Array<{
       name: string;
       mimeType: string;
@@ -18120,6 +19585,33 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       modelRecord = this.providerStore.getModel(resolvedModelId);
     }
 
+    // plan/exec 双模型路由：规划模式 → 规划模型；执行已批准方案的轮次
+    // （planExecuting 标志）→ 执行模型（+ 对应思考强度）。普通 execute 消息
+    // 不干预，手动覆盖 / Agent 默认照常生效。路由后同样允许
+    // providerModelId 字符串 → catalog modelId 的映射。
+    const planActRoute = this.resolvePlanActRouteForThread(
+      input.threadId,
+      input.planExecuting === true,
+    );
+    if (planActRoute.applied && planActRoute.modelId) {
+      resolvedModelId = planActRoute.modelId as ModelId;
+      source = 'planAct';
+      modelRecord = this.providerStore?.getModel(resolvedModelId);
+      if (!modelRecord && this.providerStore) {
+        for (const entry of this.providerStore.listProviders()) {
+          const found = this.providerStore.findModelByProviderModelId(
+            entry.provider.id,
+            resolvedModelId,
+          );
+          if (found) {
+            modelRecord = found;
+            resolvedModelId = found.id as ModelId;
+            break;
+          }
+        }
+      }
+    }
+
     const useFake = !modelRecord || !this.providerStore || !this.secureStore;
     const provider = modelRecord
       ? this.providerStore?.getProvider(modelRecord.providerId)
@@ -18185,12 +19677,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     });
 
     // Reasoning effort resolution (lowest-precedence → highest):
-    // 1. explicit caller value (UI picker / Compose) wins;
-    // 2. else the bound global agent's configured effort (agent-track runs);
-    // 3. else product default 'auto' — adapters map it to a default thinking
+    // 1. plan/exec 路由强制的思考强度（plan-act 设置，按对话模式）;
+    // 2. explicit caller value (UI picker / Compose) wins;
+    // 3. else the bound global agent's configured effort (agent-track runs);
+    // 4. else product default 'auto' — adapters map it to a default thinking
     //    effort, so unconfigured runs still produce a reasoning trace.
     // 'off' remains the only way to explicitly disable thinking.
     const reasoningEffort =
+      (planActRoute.applied && planActRoute.reasoningEffort
+        ? planActRoute.reasoningEffort
+        : undefined) ??
       input.reasoningEffort ??
       (globalAgent && globalAgent.reasoningEffort ? globalAgent.reasoningEffort : undefined) ??
       'auto';
@@ -18436,8 +19932,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     failureClass: FailureClass,
   ): void {
     this.updateDemoRun(runId, { retryCount });
-    const run = this.demoRuns.get(runId);
-    if (!run) return;
+    const currentRun = this.demoRuns.get(runId);
+    if (!currentRun) return;
+    const occurredAt = new Date().toISOString();
+    const run = appendAssistantStatus(currentRun, {
+      statusType: 'retry',
+      label: `正在重试当前模型（${retryCount}/${MODEL_RETRY_MAX}）`,
+      detail: failureClass,
+      occurredAt,
+    });
+    this.demoRuns.set(runId, run);
 
     try {
       const event = this.persistProjectedEvent(
@@ -18448,7 +19952,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           runId,
           category: 'run',
           type: 'run.retrying',
-          occurredAt: new Date().toISOString(),
+          occurredAt,
           payload: {
             threadId: run.threadId,
             attempt: retryCount,
@@ -18649,6 +20153,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return 'paused';
     }
 
+    const occurredAt = new Date().toISOString();
+    nextRun = appendAssistantStatus(nextRun, {
+      statusType: 'model_switch',
+      label: '已切换模型',
+      detail: `${run.providerModelId || run.modelId} → ${nextRun.providerModelId || nextRun.modelId}`,
+      occurredAt,
+    });
     const projectedRuns = new Map(this.demoRuns);
     projectedRuns.set(runId, nextRun);
 
@@ -18680,7 +20191,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             runId,
             category: 'run',
             type: 'run.fallback.selected',
-            occurredAt: new Date().toISOString(),
+            occurredAt,
             payload: {
               threadId: run.threadId,
               fromModelId: run.modelId,
@@ -18703,7 +20214,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             runId,
             category: 'context',
             type: 'context.packet.built',
-            occurredAt: new Date().toISOString(),
+            occurredAt,
             payload: {
               threadId: nextRun.threadId,
               packetId: nextRun.packetId,
@@ -19509,6 +21020,18 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ? this.browserFailureSummaryFromPersistedResult(persistedResult)
         : this.scrubDiagnosticMessage(errorSummary)
       : undefined;
+    const liveRun = this.demoRuns.get(runId);
+    if (liveRun) {
+      this.demoRuns.set(
+        runId,
+        completeAssistantTool(liveRun, {
+          toolCallId: toolCall.id,
+          output: persistedResult,
+          failed,
+          occurredAt: new Date().toISOString(),
+        }),
+      );
+    }
     const completedEvent = this.persistProjectedEvent(
       {
         id: ulid() as Event['id'],
@@ -22731,6 +24254,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       signal?: AbortSignal;
       /** When set, replaces the default coding/chat system prompt (used by compact). */
       systemPromptOverride?: string;
+      /** Native 内核的平台工具 schema（ask_user_question / task_schedule 等）。 */
+      platformSchemas?: import('@sync-think/adapters').ProviderToolSchema[];
     } = {},
   ): Promise<AsyncIterable<import('@sync-think/adapters').AdapterEvent> | undefined> {
     const signal = options.signal ?? new AbortController().signal;
@@ -22791,7 +24316,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
               includeMcpCatalogTools: mcpCatalogToolsEnabled,
               includeMcpRegistryTools: mcpRegistryToolsEnabled,
-              extraTools: mcpExtra.tools,
+              extraTools: [
+                ...mcpExtra.tools,
+                ...(options.platformSchemas ?? []),
+              ],
             }),
           ]
         : undefined;
@@ -22971,6 +24499,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     sequence?: number;
   }): void {
     if (!this.messageStore) return;
+    let durableMessage: Message | undefined;
     try {
       const text = typeof input.text === 'string' ? input.text : '';
       const blocks: MessageBlock[] =
@@ -23002,11 +24531,41 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ...(input.modelId ? { modelId: input.modelId } : {}),
         ...(input.credentialRefId ? { credentialRefId: input.credentialRefId } : {}),
       };
+      durableMessage = message;
       this.messageStore.createFinalMessage(message);
     } catch (error) {
       if (error instanceof MessageStoreError && error.code === 'message.conflict') {
         // Idempotent retry / same-id replay �?ignore.
         return;
+      }
+      if (
+        durableMessage &&
+        input.role === 'assistant' &&
+        input.text.trim() &&
+        error instanceof MessageStoreError &&
+        error.code === 'message.invalid_input'
+      ) {
+        try {
+          this.messageStore.createFinalMessage({
+            ...durableMessage,
+            blocks: assistantTextFallbackMessageBlocks(input.text),
+          });
+          console.warn(
+            '[runtime] durable assistant details exceeded limits; stored final text only',
+          );
+          return;
+        } catch (fallbackError) {
+          if (
+            fallbackError instanceof MessageStoreError &&
+            fallbackError.code === 'message.conflict'
+          ) {
+            return;
+          }
+          console.warn(
+            '[runtime] durable assistant text fallback failed:',
+            fallbackError instanceof Error ? fallbackError.message : fallbackError,
+          );
+        }
       }
       console.warn(
         '[runtime] durable message write failed:',
@@ -23015,138 +24574,74 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     }
   }
 
-  /**
-   * Persist one assistant message for a completed tool round (DSH parity:
-   * 思考 → 摘要 → 工具 → … per round, final answer as the last message).
-   */
-  private persistAssistantRoundMessage(options: {
-    runId: RunId;
-    run: DemoRunState;
-    roundIndex: number;
-    reasoningDelta: string;
-    transcriptMessages: readonly { phase?: string; content: unknown }[];
-    toolCalls: readonly { name: string; argumentsJson?: string }[];
-    toolResults: readonly string[];
-  }): void {
-    const blocks = buildRoundMessageBlocks({
-      reasoningDelta: options.reasoningDelta,
-      transcriptMessages: options.transcriptMessages,
-      toolCalls: options.toolCalls,
-      toolResults: options.toolResults,
-    });
-    if (blocks.length === 0) return;
-    this.persistFinalChatMessage({
-      // Deterministic id so resume/redelivery of the round stays idempotent.
-      id: `asst-${options.runId}-r${options.roundIndex}` as MessageId,
-      threadId: options.run.threadId as ThreadId,
-      role: 'assistant',
-      text: '',
-      blocks,
-      runId: options.runId,
-      modelId: options.run.modelId ? (options.run.modelId as ModelId) : undefined,
-      credentialRefId: options.run.credentialRefId
-        ? (options.run.credentialRefId as CredentialRefId)
-        : undefined,
-      agentVersionId: options.run.agentVersionId
-        ? (options.run.agentVersionId as AgentVersionId)
-        : undefined,
-    });
-  }
-
   private persistAssistantFinalMessage(
     runId: RunId,
     run: DemoRunState,
     payload: Record<string, unknown>,
-    round?: {
+    _round?: {
       reasoningDelta: string;
       transcriptMessages: readonly { phase?: string; content: unknown }[];
       hasToolRounds: boolean;
     },
   ): void {
-    // Native kernel with tool rounds, DSH parity: the final message is built
-    // from the LAST provider round only (its thinking + commentary + final
-    // answer text), while earlier tool rounds were persisted as their own
-    // messages. Runs without tool rounds (single turn, fallback walk) keep
-    // the aggregated legacy build below, which carries the whole commentary
-    // timeline with segments.
-    if (round?.hasToolRounds) {
-      const blocks = buildRoundMessageBlocks({
-        reasoningDelta: round.reasoningDelta,
-        transcriptMessages: round.transcriptMessages,
-        toolCalls: [],
-        toolResults: [],
-      });
-      if (blocks.length === 0) return;
-      this.persistFinalChatMessage({
-        // Deterministic id so resume/redelivery of run.completed stays idempotent.
-        id: `asst-${runId}` as MessageId,
-        threadId: run.threadId as ThreadId,
-        role: 'assistant',
-        text: '',
-        blocks,
-        runId,
-        modelId: run.modelId ? (run.modelId as ModelId) : undefined,
-        credentialRefId: run.credentialRefId ? (run.credentialRefId as CredentialRefId) : undefined,
-        agentVersionId: run.agentVersionId ? (run.agentVersionId as AgentVersionId) : undefined,
-      });
-      return;
-    }
+    const occurredAt = new Date().toISOString();
+    const terminalRun = closeAssistantTimeline(
+      closeCommentaryTimelineSegment(run, occurredAt),
+      occurredAt,
+    );
+    const timeline = terminalRun.assistantTimeline ?? [];
+    const timelineText = assistantTimelineFinalText(timeline);
     const assistantText =
-      typeof payload.assistantText === 'string'
+      timelineText ||
+      (typeof payload.assistantText === 'string'
         ? payload.assistantText
-        : typeof run.assistantText === 'string'
-          ? run.assistantText
-          : '';
+        : typeof terminalRun.assistantText === 'string'
+          ? terminalRun.assistantText
+          : '');
     const commentaryText =
       typeof payload.commentaryText === 'string' && payload.commentaryText.trim()
         ? payload.commentaryText
-        : typeof run.commentaryText === 'string' && run.commentaryText.trim()
-          ? run.commentaryText
+        : typeof terminalRun.commentaryText === 'string' && terminalRun.commentaryText.trim()
+          ? terminalRun.commentaryText
           : undefined;
-    const commentarySegments = run.commentarySegments.filter((segment) => segment.text.trim());
+    const commentarySegments = terminalRun.commentarySegments.filter((segment) =>
+      segment.text.trim(),
+    );
     const reasoningText =
-      typeof run.reasoningText === 'string' && run.reasoningText.trim()
-        ? run.reasoningText
+      typeof terminalRun.reasoningText === 'string' && terminalRun.reasoningText.trim()
+        ? terminalRun.reasoningText
         : undefined;
-    const reasoningSegments = run.reasoningSegments.filter((segment) => segment.text.trim());
-    // External-kernel tool calls are persisted as durable blocks so a resumed
-    // kernel after a cross-kernel switch can see which tools ran and their
-    // results (gap transcripts rebuild them via durableMessagesToGapProviderMessages).
-    const toolBlocks = externalKernelToolEventsToMessageBlocks(run.kernelToolEvents);
-    if (
-      !assistantText.trim() &&
-      !commentaryText &&
-      commentarySegments.length === 0 &&
-      !reasoningText &&
-      reasoningSegments.length === 0 &&
-      toolBlocks.length === 0
-    ) {
-      return;
-    }
+    const reasoningSegments = terminalRun.reasoningSegments.filter((segment) =>
+      segment.text.trim(),
+    );
+    const toolBlocks = externalKernelToolEventsToMessageBlocks(terminalRun.kernelToolEvents);
+    const blocks =
+      timeline.length > 0
+        ? assistantTimelineToMessageBlocks(timeline)
+        : buildFinalAssistantBlocks({
+            commentaryText,
+            commentarySegments,
+            assistantText,
+            reasoningText,
+            reasoningSegments,
+            toolBlocks,
+            reasoningFirst: terminalRun.kernelId === 'native' || !terminalRun.kernelId,
+          });
+    if (blocks.length === 0) return;
     this.persistFinalChatMessage({
-      // Deterministic id so resume/redelivery of run.completed stays idempotent.
       id: `asst-${runId}` as MessageId,
-      threadId: run.threadId as ThreadId,
+      threadId: terminalRun.threadId as ThreadId,
       role: 'assistant',
       text: assistantText,
-      blocks: buildFinalAssistantBlocks({
-        commentaryText,
-        commentarySegments,
-        assistantText,
-        reasoningText,
-        reasoningSegments,
-        toolBlocks,
-        // Reasoning rows lead only for the native kernel (the model thinks
-        // before it speaks, so the inline process view shows 思考 → 摘要 →
-        // 工具 in time order). External kernels — claude-code / codex /
-        // fixtures — keep the legacy `[text … reasoning]` order locked by
-        // their finalization tests and gap-transcript recovery.
-        reasoningFirst: run.kernelId === 'native' || !run.kernelId,
-      }),
+      blocks,
       runId,
-      modelId: run.modelId ? (run.modelId as ModelId) : undefined,
-      credentialRefId: run.credentialRefId ? (run.credentialRefId as CredentialRefId) : undefined,
-      agentVersionId: run.agentVersionId ? (run.agentVersionId as AgentVersionId) : undefined,
+      modelId: terminalRun.modelId ? (terminalRun.modelId as ModelId) : undefined,
+      credentialRefId: terminalRun.credentialRefId
+        ? (terminalRun.credentialRefId as CredentialRefId)
+        : undefined,
+      agentVersionId: terminalRun.agentVersionId
+        ? (terminalRun.agentVersionId as AgentVersionId)
+        : undefined,
     });
   }
 
@@ -23156,16 +24651,27 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     terminalState: 'failed' | 'cancelled',
     errorMessage?: string,
   ): void {
+    const occurredAt = new Date().toISOString();
     const classifiedRun = run.legacyPendingText
-      ? {
-          ...run,
-          assistantText: run.assistantText + run.legacyPendingText,
-          legacyPendingText: '',
-        }
+      ? appendAssistantTextDelta(
+          {
+            ...run,
+            assistantText: run.assistantText + run.legacyPendingText,
+            legacyPendingText: '',
+          },
+          'final_answer',
+          run.legacyPendingText,
+          occurredAt,
+        )
       : run;
-    const terminalRun = closeCommentaryTimelineSegment(classifiedRun, new Date().toISOString());
+    const terminalRun = closeAssistantTimeline(
+      closeCommentaryTimelineSegment(classifiedRun, occurredAt),
+      occurredAt,
+    );
+    const timeline = terminalRun.assistantTimeline ?? [];
     const assistantText =
-      typeof terminalRun.assistantText === 'string' ? terminalRun.assistantText : '';
+      assistantTimelineFinalText(timeline) ||
+      (typeof terminalRun.assistantText === 'string' ? terminalRun.assistantText : '');
     const scrubbedMessage = this.scrubDiagnosticMessage(errorMessage);
     const commentaryText =
       typeof terminalRun.commentaryText === 'string' && terminalRun.commentaryText.trim()
@@ -23181,40 +24687,27 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     const reasoningSegments = terminalRun.reasoningSegments.filter((segment) =>
       segment.text.trim(),
     );
-    if (
-      !assistantText.trim() &&
-      !commentaryText &&
-      commentarySegments.length === 0 &&
-      !reasoningText &&
-      reasoningSegments.length === 0
-    ) {
-      return;
-    }
+    const toolBlocks = externalKernelToolEventsToMessageBlocks(terminalRun.kernelToolEvents);
+    const contentBlocks =
+      timeline.length > 0
+        ? assistantTimelineToMessageBlocks(timeline)
+        : buildFinalAssistantBlocks({
+            commentaryText,
+            commentarySegments,
+            assistantText,
+            reasoningText,
+            reasoningSegments,
+            toolBlocks,
+            reasoningFirst: terminalRun.kernelId === 'native' || !terminalRun.kernelId,
+          });
+    if (contentBlocks.length === 0) return;
     this.persistFinalChatMessage({
       id: `asst-${runId}` as MessageId,
-      threadId: run.threadId as ThreadId,
+      threadId: terminalRun.threadId as ThreadId,
       role: 'assistant',
       text: assistantText,
       blocks: [
-        ...(commentaryText || commentarySegments.length > 0
-          ? [
-              {
-                type: 'commentary' as const,
-                ...(commentaryText ? { text: commentaryText } : {}),
-                ...(commentarySegments.length > 0 ? { payload: { commentarySegments } } : {}),
-              },
-            ]
-          : []),
-        ...(assistantText.trim() ? [{ type: 'text' as const, text: assistantText }] : []),
-        ...(reasoningText || reasoningSegments.length > 0
-          ? [
-              {
-                type: 'reasoning' as const,
-                ...(reasoningText ? { reasoningText } : {}),
-                ...(reasoningSegments.length > 0 ? { payload: { reasoningSegments } } : {}),
-              },
-            ]
-          : []),
+        ...contentBlocks,
         {
           type: 'error',
           payload: {
@@ -23557,6 +25050,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         ? { commentaryText: current.commentaryText + textDelta }
         : { assistantText: current.assistantText + textDelta }),
     };
+    nextRun = appendAssistantTextDelta(nextRun, input.phase, textDelta, input.occurredAt);
     if (input.phase === 'commentary') {
       nextRun = appendCommentaryTimelineDelta(nextRun, {
         textDelta,
@@ -23590,6 +25084,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       commentarySegments: nextRun.commentarySegments,
       reasoningText: nextRun.reasoningText,
       reasoningSegments: nextRun.reasoningSegments,
+      assistantTimeline: nextRun.assistantTimeline,
       updatedAt: input.occurredAt,
     });
     return nextRun;
@@ -23603,12 +25098,16 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     afterSequence?: number;
     occurredAt: string;
   }): void {
+    const run = this.demoRuns.get(input.runId);
     this.publishTransientFrame({
       threadId: input.threadId,
       runId: input.runId,
       kind: input.kind,
       textDelta: input.textDelta,
       ...(input.afterSequence !== undefined ? { afterSequence: input.afterSequence } : {}),
+      ...(run?.assistantTimeline?.length
+        ? { assistantTimeline: run.assistantTimeline.map((segment) => ({ ...segment })) }
+        : {}),
       occurredAt: input.occurredAt,
     });
   }
@@ -23622,6 +25121,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     commentarySegments?: ConversationTransientSnapshot['commentarySegments'];
     reasoningText?: string;
     reasoningSegments?: ConversationTransientSnapshot['reasoningSegments'];
+    assistantTimeline?: ConversationTransientSnapshot['assistantTimeline'];
     updatedAt: string;
   }): void {
     const current = this.transientSnapshotByThread.get(input.threadId);
@@ -23637,6 +25137,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       ...(input.reasoningText ? { reasoningText: input.reasoningText } : {}),
       ...(input.reasoningSegments && input.reasoningSegments.length > 0
         ? { reasoningSegments: input.reasoningSegments.map((segment) => ({ ...segment })) }
+        : {}),
+      ...(input.assistantTimeline && input.assistantTimeline.length > 0
+        ? { assistantTimeline: input.assistantTimeline.map((segment) => ({ ...segment })) }
         : {}),
       ...(current?.runId === input.runId && current.process ? { process: current.process } : {}),
       updatedAt: input.updatedAt,
@@ -23718,6 +25221,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       projection = { kind: 'terminal', terminalState: 'cancelled', process: runProcess() };
     } else if (
       event.type === 'run.started' ||
+      event.type === 'run.retrying' ||
+      event.type === 'run.fallback.selected' ||
+      event.type === 'kernel.context_compacted' ||
       event.type === 'provider.usage' ||
       event.type === 'tool.requested' ||
       event.type === 'tool.completed' ||
@@ -23732,11 +25238,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       return;
     }
 
+    const liveRun = this.demoRuns.get(event.runId);
     const transientFrame = this.publishTransientFrame({
       threadId,
       runId: event.runId,
       occurredAt: event.occurredAt,
       ...projection,
+      ...(liveRun?.assistantTimeline?.length
+        ? { assistantTimeline: liveRun.assistantTimeline.map((segment) => ({ ...segment })) }
+        : {}),
     });
     if (projection.kind === 'terminal') {
       this.transientSnapshotByThread.delete(threadId);
@@ -23767,6 +25277,11 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               })),
             }
           : {}),
+        ...(liveRun?.assistantTimeline?.length
+          ? { assistantTimeline: liveRun.assistantTimeline.map((segment) => ({ ...segment })) }
+          : current?.runId === event.runId && current.assistantTimeline
+            ? { assistantTimeline: current.assistantTimeline.map((segment) => ({ ...segment })) }
+            : {}),
         process: projection.process,
         updatedAt: event.occurredAt,
       });
@@ -23844,6 +25359,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             .catch((error) => console.warn('[runtime] orchestration recovery failed', error));
           this.trackBackgroundTask(recovery);
         }
+        this.startTaskSchedulerHeartbeat();
+        this.startLocalSkillWatch();
         resolve();
       });
       this.server.on('error', (e) => reject(e));
@@ -23851,6 +25368,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   }
 
   async stop(): Promise<void> {
+    this.stopTaskSchedulerHeartbeat();
+    this.localSkillWatchCleanup?.();
+    this.localSkillWatchCleanup = undefined;
     await new Promise<void>((resolve) => {
       if (!this.server) {
         resolve();

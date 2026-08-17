@@ -87,7 +87,8 @@ function mapPermissionMode(mode: KernelRequest['permissionMode']): string {
  * be approved over the stdio bridge (an allow response requires an
  * `updatedInput` answer the host does not hold, which makes Claude loop on a
  * ZodError); EnterPlanMode/ExitPlanMode belong to Claude's native planning
- * flow, which the host does not use (planning runs submit via `plan_submit`).
+ * flow, which the host does not use (planning runs ask via the host's
+ * `ask_user_question` platform tool instead).
  * These are denied in the adapter so the model never hangs on an approval that
  * cannot succeed.
  */
@@ -98,7 +99,7 @@ const CLAUDE_HOST_DENIED_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 const CLAUDE_HOST_DENIED_TOOLS_MESSAGE =
-  '宿主不支持该工具。完成只读调研后请直接调用 plan_submit 提交结构化计划（规划模式），或在执行模式直接完成任务；不要进入 Claude 原生规划流程。';
+  '宿主不支持该工具。问询请使用宿主提供的 ask_user_question 工具（规划模式用它提交方案等待审批），或在执行模式直接完成任务；不要进入 Claude 原生规划流程。';
 
 export interface ClaudeCodeAdapterDeps {
   /** Test seam: replace the real spawn (fixture claude processes). */

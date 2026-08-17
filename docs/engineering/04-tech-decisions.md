@@ -1271,3 +1271,42 @@ Computer Use built-in plugin
 8. 同一个 `Conversation + Kernel` 的 Run 必须串行，且下一轮在上一轮完成 Session 确认/持久化后才构建请求；不同 Conversation 继续并行。排队取消不得启动 Adapter，活动取消必须终止进程树并释放队列。
 9. Provider reasoning 继续只进入诊断流，用户可见执行说明与最终回答遵循 TD-039；Token usage 按 Provider request ID 投影输入、输出、缓存读取和缓存创建值，不因进程重启伪造缓存命中。
 10. 该方案保留 CLI 的磁盘 Session 与 Provider 管理的 Prompt Cache，但不承诺每轮必然命中缓存。进程内临时状态会随单轮结束释放，连续性来源必须是持久 Session、稳定上下文指纹和 Provider 返回的真实 usage。
+
+### TD-043：DSH ordered assistant turn、单消息持久化与 RAF 全量提交（2026-08-16）
+
+状态：已采用。
+
+背景：此前 Native、Claude Code 与 Codex 分别依赖 commentary segment、工具 process view、reasoning blocks 或按工具轮次拆分的 assistant message。Renderer 还使用字符预算和 offset 对已经到达的文本进行二次播放，造成顺序语义分叉、同名工具聚合、终态重复消息，以及“Provider 已返回但 SYNC-THINK 仍慢速输出”的延迟。用户确认 DeepSeek Harness 的 ordered timeline 是三内核统一展示基线。
+
+方案对比：
+
+| 方案                                                    | 优点                                               | 缺点                                                               | 结论   |
+| ------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------ | ------ |
+| 保持各内核独立投影与旧工具批次                          | 改动较小                                           | 展示不一致，顺序和终态恢复继续分叉                                 | 不采用 |
+| 只在 Renderer 临时拼接 DSH 样式                         | UI 可快速接近参考                                  | 刷新后缺少权威顺序，Provider context 与 durable history 仍可能不同 | 不采用 |
+| Protocol/Runtime/Storage/Renderer 共享 ordered timeline | 顺序、流式、终态和冷恢复使用同一语义，可兼容旧数据 | 需要新增协议结构并迁移测试                                         | 采用   |
+
+采用合同：
+
+1. Protocol 定义有界 `AssistantTurnSegment[]`，segment 至少覆盖 `thinking`、带 `commentary | final_answer` phase 的 `text`、按 `toolCallId` 标识的 `tool` 和运行 `status`；每个 segment 带稳定 `id` 与递增 `sequence`。
+2. Native AdapterEvent、Claude Code KernelEvent 与 Codex KernelEvent 都在 Runtime reducer 中更新同一 timeline。thinking/text 增量只合并到匹配且仍 streaming 的尾段；工具请求创建一段，结果按 `toolCallId` 原位更新为 completed/failed；retry、model switch、connection 和 compaction 追加独立 status 段。
+3. 每个新 Run 只持久化一条 `asst-${runId}` assistant message。第一个 metadata commentary block 保存完整 ordered timeline；随后生成有序 compatibility blocks，供现有 Provider context 重建和旧消费者使用。status 只存在 metadata，不进入 Provider 对话内容。
+4. Desktop `messageToChat` 优先解析 metadata timeline，并忽略同一消息中的 compatibility blocks，避免 thinking/text/tool 重复。缺少 timeline 的旧消息继续使用 legacy block/process fallback，不执行破坏性历史迁移。
+5. final answer 由 `phase: final_answer` 的 timeline text 汇总；commentary 保持 Markdown phase。除 final answer 外，thinking、commentary、tool、status、终止信息和文件变更统一进入一个外层“执行过程”面板，final answer 在面板外独立渲染。没有真实 thinking segment 时不生成 Think。reasoning-only legacy 孤立消息继续隐藏，新 timeline thinking-only turn 保持合法可见。
+6. terminal completion、failure 和 cancellation 都先封口 timeline，再持久化同一消息。取消时尚未得到 Provider phase 边界的 `legacyPendingText` 按终止时的 `final_answer` 可见部分写入 timeline，避免退回 `[text,error]` legacy 形态。
+7. 工具 UI 一调用一行，不建立批次或计数标题。主行使用友好名称、关键参数和状态；详情保留原始名称、参数、输出、耗时和错误。运行结果更新稳定行，不因状态变化追加副本。
+8. Assistant 消息执行区不渲染头像；整个 assistant turn 只渲染一次 footer。Composer 和其他身份表面不受该规则影响。
+9. transient frame/snapshot 可携带 timeline 快照。Renderer display queue 保持 frame/boundary 顺序，但一次 RAF 会 drain 当时所有已到达的连续 chunk 并只提交一次累计结果；不保留递增 offset，也不进行字符切片重播。
+10. process、terminal 和 reset 使用 immediate publication：若已有 RAF 等待执行，先取消它，再把其前文本与当前边界一次收口。terminal frame 后队列必须没有待播放字符。该规则只消除客户端人为延迟，不改变 Provider、Kernel、网络或工具本身的真实速度。
+11. 流式 Markdown 采用 append-only parser，并与 DSH 一样保留两个顶层 block 作为 unstable tail。稳定前缀按源码 offset 冻结并保持 React identity；每个后续 chunk 只解析尾部，避免完整累计文档逐帧重解析形成二次复杂度。
+12. `rehype-highlight`、Mermaid 和 HTML embed 在 streaming 阶段不执行；terminal 后切换到现有完整 Markdown renderer 并只做一次最终富渲染。新增 `unified`、`remark-parse` 为 Desktop 直接依赖，GFM 继续复用既有 `remark-gfm`。
+13. 对话贴底由稳定 flow-tip signature 与内容容器 `ResizeObserver` 驱动；每帧变化的完整 `messages` 数组不再触发布局阶段的 `scrollHeight/scrollTop` 读写，用户上滚意图与历史分页锚点语义保持不变。
+14. timeline 与 metadata payload 必须完全 JSON-serializable；可选字段缺失时省略属性，不写入值为 `undefined` 的 own property。
+15. 本决策覆盖 TD-039 第 4、6、8、10 条中关于 durable 聚合 commentary、普通 UI 隐藏 reasoning、连续工具分组和旧 Renderer transient 展示的部分；TD-039 对 Provider phase、上下文重建、fallback 连续性和不伪造 commentary 的约束继续有效。
+16. 对 legacy Provider 的 phase 未定 text，Desktop 用“累计 `draft.text` 减去 timeline 已分类 text 前缀”得到 provisional suffix，并在流式 assistant turn 尾部显示。tool/terminal 边界写入权威 phase 后 suffix 自动归零，由 timeline 接管；该投影只影响瞬时可见性，不写入新的持久化字段。
+17. 外层过程面板使用 `RunId` 作为 disclosure reset key：执行且 final answer 尚未开始时自动展开，final answer 开始或 terminal 后自动折叠；当前 Run 内任何人工切换都优先于后续自动状态，新 Run 清除人工覆盖。Think 和单工具详情继续拥有各自独立 disclosure 状态。
+18. Codex 的 `model_reasoning_effort` 只控制 reasoning token 预算，并不保证 `exec --json` 暴露可读 reasoning item。Codex Adapter 必须额外传入 `model_reasoning_summary=detailed`，并同时读取 item 顶层 `text`、`content[].reasoning_text.text` 与 `summary[].summary_text.text`。Provider/CLI 没有返回任何非空摘要时不伪造思考内容。
+19. Provider 声明的 phase 不是工具边界之上的绝对事实。timeline 一旦追加 tool segment，所有 sequence 早于最后工具且仍标为 `final_answer` 的 text 必须改投影为 commentary；Provider round transcript 同步应用该规则，保证下一轮上下文、transient UI、终态持久化和历史恢复使用同一语义。Desktop 读取旧 timeline 时执行同一纯投影归一化，不回写或迁移原始消息。
+20. 过程面板总耗时优先来自 `RunProcessView.startedAt/completedAt/durationMs`；历史首屏尚未取回 Run process 时，Renderer 从 durable timeline 的最早 `startedAt/occurredAt` 与最晚 `completedAt/occurredAt` 推导同一墙钟区间。禁止把工具耗时求和，避免并行工具重复计时；运行态仅设置一个每秒更新的轻量时钟，终态停止计时并显示持久值。
+
+回滚：Renderer 可切回 legacy blocks/process view，Runtime 仍可保留 metadata timeline；若需要停止新格式写入，只移除新 Run timeline 投影并继续读取 compatibility blocks，不删除已持久化消息。

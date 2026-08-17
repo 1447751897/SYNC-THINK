@@ -62,7 +62,7 @@ describe('Phase3VisualFixture accessibility', () => {
   it('keeps trace disclosure state explicit for open and closed evidence', () => {
     const view = render(<Phase3VisualFixture visualCase="long-trace-open" />);
     const outerToggle = screen.getByRole('button', {
-      name: /^执行过程 · 18秒$/,
+      name: /^过程 · 18秒$/,
     });
     expect(outerToggle.getAttribute('aria-expanded')).toBe('true');
     const timeline = screen.getByTestId('execution-timeline');
@@ -108,7 +108,7 @@ describe('Phase3VisualFixture accessibility', () => {
     view.unmount();
     render(<Phase3VisualFixture visualCase="long-trace-closed" />);
     const closedToggle = screen.getByRole('button', {
-      name: /^执行过程 · 18秒$/,
+      name: /^过程 · 18秒$/,
     });
     expect(closedToggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByTestId('execution-timeline')).toBeNull();
@@ -118,7 +118,7 @@ describe('Phase3VisualFixture accessibility', () => {
   it('follows thinking, active tools, continued thinking and final-answer disclosure states', () => {
     render(<Phase3VisualFixture visualCase="execution-auto-disclosure" />);
 
-    const outerToggle = screen.getByRole('button', { name: /^执行过程/ });
+    const outerToggle = screen.getByRole('button', { name: /^过程/ });
     expect(outerToggle.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('先检查项目配置，再运行相关测试。')).toBeTruthy();
 

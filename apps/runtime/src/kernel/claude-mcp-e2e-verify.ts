@@ -175,10 +175,10 @@ async function main(): Promise<number> {
       externalToken: createExternalGatewayToken(),
       resolveTicket: (key) => tickets.resolveWithRun(key),
       recordRunUsage: (runId, usage) => tickets.recordRunUsage(runId, usage),
-      resolveResponseForFunctionCall: (scopeId, callId) =>
-        tickets.resolveResponseForFunctionCall(scopeId, callId),
-      recordResponseForFunctionCall: (scopeId, callId, responseId) =>
-        tickets.recordResponseForFunctionCall(scopeId, callId, responseId),
+      resolveContinuationItem: (scopeId, callId) =>
+        tickets.resolveContinuationItem(scopeId, callId),
+      recordContinuationItem: (scopeId, callId, itemId) =>
+        tickets.recordContinuationItem(scopeId, callId, itemId),
       onLog: (message) => console.log('[gateway]', message),
     });
     runId = `claude-mcp-e2e-${randomUUID()}`;
@@ -240,6 +240,8 @@ async function main(): Promise<number> {
       providerModelId: target.model.providerModelId,
       userText: PROMPT,
       contextWindow: 200_000,
+      effectiveContextWindow: 200_000,
+      contextWindowSource: 'configured',
       credential: {
         baseUrl: gatewayUrls.anthropicBaseUrl,
         apiKey: ticket.id,

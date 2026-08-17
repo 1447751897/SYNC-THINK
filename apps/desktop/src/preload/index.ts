@@ -254,6 +254,33 @@ import type {
   SetConversationPinnedPayload,
   SetConversationArchivedPayload,
   SetConversationExecutionModePayload,
+  SetConversationInteractionModePayload,
+  ConversationPlanSubmitPayload,
+  ConversationPlanGetPayload,
+  ConversationPlanApprovePayload,
+  ConversationPlanRevisePayload,
+  ConversationPlanCancelPayload,
+  ConversationPlanResponse,
+  ConversationPlanApproveResponse,
+  ConversationAskAnswerPayload,
+  ConversationAskCancelPayload,
+  ConversationAskPendingPayload,
+  ConversationAskPendingResponse,
+  CreateScheduledTaskPayload,
+  ListScheduledTasksPayload,
+  ListScheduledTasksResponse,
+  UpdateScheduledTaskPayload,
+  DeleteScheduledTaskPayload,
+  TriggerScheduledTaskPayload,
+  TriggerScheduledTaskResponse,
+  GoalPausePayload,
+  GoalResumePayload,
+  GoalResumeResponse,
+  GoalStatus,
+  SkillLocalScanPayload,
+  SkillLocalScanResponse,
+  SkillLocalImportPayload,
+  SkillLocalImportResponse,
   UpgradeConversationTrackPayload,
   RebindConversationTargetPayload,
   DeleteConversationPayload,
@@ -603,6 +630,90 @@ const api = {
         'runtime:conversation-set-execution-mode',
         payload,
       ) as Promise<ConversationResponse>,
+    setConversationInteractionMode: (payload: SetConversationInteractionModePayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-set-interaction-mode',
+        payload,
+      ) as Promise<ConversationResponse>,
+    conversationPlanSubmit: (payload: ConversationPlanSubmitPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-plan-submit',
+        payload,
+      ) as Promise<ConversationPlanResponse>,
+    conversationPlanGet: (payload: ConversationPlanGetPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-plan-get',
+        payload,
+      ) as Promise<ConversationPlanResponse>,
+    conversationPlanApprove: (payload: ConversationPlanApprovePayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-plan-approve',
+        payload,
+      ) as Promise<ConversationPlanApproveResponse>,
+    conversationPlanRevise: (payload: ConversationPlanRevisePayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-plan-revise',
+        payload,
+      ) as Promise<ConversationPlanResponse>,
+    conversationPlanCancel: (payload: ConversationPlanCancelPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-plan-cancel',
+        payload,
+      ) as Promise<ConversationPlanResponse>,
+    conversationAskAnswer: (payload: ConversationAskAnswerPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-ask-answer',
+        payload,
+      ) as Promise<{ askId: string }>,
+    conversationAskCancel: (payload: ConversationAskCancelPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-ask-cancel',
+        payload,
+      ) as Promise<{ askId: string }>,
+    conversationAskPending: (payload: ConversationAskPendingPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-ask-pending',
+        payload,
+      ) as Promise<ConversationAskPendingResponse>,
+    createScheduledTask: (payload: CreateScheduledTaskPayload) =>
+      ipcRenderer.invoke(
+        'runtime:scheduled-task-create',
+        payload,
+      ) as Promise<{ task: import('@sync-think/shared').ScheduledTask }>,
+    listScheduledTasks: (payload?: ListScheduledTasksPayload) =>
+      ipcRenderer.invoke(
+        'runtime:scheduled-task-list',
+        payload ?? {},
+      ) as Promise<ListScheduledTasksResponse>,
+    updateScheduledTask: (payload: UpdateScheduledTaskPayload) =>
+      ipcRenderer.invoke(
+        'runtime:scheduled-task-update',
+        payload,
+      ) as Promise<{ task: import('@sync-think/shared').ScheduledTask }>,
+    deleteScheduledTask: (payload: DeleteScheduledTaskPayload) =>
+      ipcRenderer.invoke(
+        'runtime:scheduled-task-delete',
+        payload,
+      ) as Promise<{ deleted: boolean }>,
+    triggerScheduledTask: (payload: TriggerScheduledTaskPayload) =>
+      ipcRenderer.invoke(
+        'runtime:scheduled-task-trigger',
+        payload,
+      ) as Promise<TriggerScheduledTaskResponse>,
+    goalPause: (payload: GoalPausePayload) =>
+      ipcRenderer.invoke('runtime:goal-pause', payload) as Promise<{ goal?: GoalStatus }>,
+    goalResume: (payload: GoalResumePayload) =>
+      ipcRenderer.invoke('runtime:goal-resume', payload) as Promise<GoalResumeResponse>,
+    skillLocalScan: (payload?: SkillLocalScanPayload) =>
+      ipcRenderer.invoke(
+        'runtime:skill-local-scan',
+        payload ?? {},
+      ) as Promise<SkillLocalScanResponse>,
+    skillLocalImport: (payload: SkillLocalImportPayload) =>
+      ipcRenderer.invoke(
+        'runtime:skill-local-import',
+        payload,
+      ) as Promise<SkillLocalImportResponse>,
     decideToolApproval: (payload: ConversationDecideToolApprovalPayload) =>
       ipcRenderer.invoke(
         'runtime:conversation-decide-tool-approval',

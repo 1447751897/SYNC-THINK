@@ -131,6 +131,19 @@ describe('MarkdownContent', () => {
     expect(html).toContain('shell-md-code');
   });
 
+  it('defers syntax highlighting until the streaming response settles', () => {
+    const text = '```ts\nconst answer = true;\n```';
+    const streamingHtml = renderToStaticMarkup(
+      createElement(MarkdownContent, { text, streaming: true }),
+    );
+    const settledHtml = renderToStaticMarkup(
+      createElement(MarkdownContent, { text, streaming: false }),
+    );
+
+    expect(streamingHtml).not.toContain('hljs-keyword');
+    expect(settledHtml).toContain('hljs-keyword');
+  });
+
   it('renders a fenced html block inside the sandbox webview', () => {
     const html = renderToStaticMarkup(
       createElement(MarkdownContent, {

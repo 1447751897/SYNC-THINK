@@ -58,10 +58,10 @@ export interface GatewayRunUsage {
 }
 
 export interface GatewayResponseContinuationPersistence {
-  load(scopeId: string): readonly (readonly [callId: string, responseId: string])[] | undefined;
+  load(scopeId: string): readonly (readonly [callId: string, itemId: string])[] | undefined;
   save(
     scopeId: string,
-    items: readonly (readonly [callId: string, responseId: string])[],
+    items: readonly (readonly [callId: string, itemId: string])[],
   ): void;
   remove(scopeId: string): void;
   onError?(operation: 'load' | 'save' | 'remove', scopeId: string, error: unknown): void;
@@ -79,7 +79,7 @@ export class GatewayTicketRegistry {
   private readonly byRun = new Map<string, string>();
   /** run id → request id → progressively merged provider usage. */
   private readonly runUsage = new Map<string, Map<string, GatewayRunUsage>>();
-  /** Continuation scope → Responses call id → provider response id. */
+  /** Continuation scope → Responses call id → provider function_call item id. */
   private readonly responseByFunctionCall = new Map<string, Map<string, string>>();
 
   constructor(
@@ -132,9 +132,12 @@ export class GatewayTicketRegistry {
     return requests ? [...requests.values()] : [];
   }
 
-  /** Remember the response id required to continue a Responses function call. */
-  recordResponseForFunctionCall(scopeId: string, callId: string, responseId: string): void {
-    if (!scopeId || !callId || !responseId) return;
+  /**
+   * Remember the provider `function_call` item id required to continue a
+   * Responses function call via HTTP `item_reference`.
+   */
+  recordContinuationItem(scopeId: string, callId: string, itemId: string): void {
+    if (!scopeId || !callId || !itemId) return;
     const responses = this.responsesForScope(scopeId, true);
     if (!responses) return;
     if (
@@ -145,12 +148,12 @@ export class GatewayTicketRegistry {
       if (typeof oldestCall === 'string') responses.delete(oldestCall);
     }
     responses.delete(callId);
-    responses.set(callId, responseId);
+    responses.set(callId, itemId);
     this.persistResponses(scopeId, responses);
   }
 
-  /** Resolve the provider response that produced a call within one session scope. */
-  resolveResponseForFunctionCall(scopeId: string, callId: string): string | undefined {
+  /** Resolve the provider item id that produced a call within one session scope. */
+  resolveContinuationItem(scopeId: string, callId: string): string | undefined {
     return this.responsesForScope(scopeId, false)?.get(callId);
   }
 
@@ -200,7 +203,7 @@ export class GatewayTicketRegistry {
     }
 
     let loaded:
-      | readonly (readonly [callId: string, responseId: string])[]
+      | readonly (readonly [callId: string, itemId: string])[]
       | undefined;
     try {
       loaded = this.responseContinuationPersistence?.load(scopeId);
@@ -212,10 +215,10 @@ export class GatewayTicketRegistry {
     const items = new Map<string, string>();
     for (const entry of loaded ?? []) {
       const callId = typeof entry?.[0] === 'string' ? entry[0].trim() : '';
-      const responseId = typeof entry?.[1] === 'string' ? entry[1].trim() : '';
-      if (!callId || !responseId) continue;
+      const itemId = typeof entry?.[1] === 'string' ? entry[1].trim() : '';
+      if (!callId || !itemId) continue;
       items.delete(callId);
-      items.set(callId, responseId);
+      items.set(callId, itemId);
       if (items.size > GatewayTicketRegistry.MAX_FUNCTION_ITEMS_PER_SCOPE) {
         const oldestCall = items.keys().next().value;
         if (typeof oldestCall === 'string') items.delete(oldestCall);
@@ -321,6 +324,11 @@ export function toGatewayUpstreamProtocol(
 /**
  * Whether a kernel needs the gateway: it only speaks dialects that the chosen
  * upstream does not. Same-dialect runs keep talking to the provider directly.
+ *
+ * `openai-chat` is intentionally strict: a kernel that only speaks the OpenAI
+ * Responses dialect (Codex) cannot talk to a Chat-Completions upstream directly —
+ * the Chat wire API was removed from Codex in 2026-02, so those runs must go
+ * through the gateway for a responses→chat translation.
  */
 export function kernelNeedsGateway(
   kernelProtocols: readonly string[],
@@ -329,7 +337,5 @@ export function kernelNeedsGateway(
   if (kernelProtocols.length === 0) return false;
   if (upstream === 'anthropic-messages') return !kernelProtocols.includes('anthropic-messages');
   if (upstream === 'openai-responses') return !kernelProtocols.includes('openai-responses');
-  return !kernelProtocols.some(
-    (protocol) => protocol === 'openai-chat' || protocol === 'openai-responses',
-  );
+  return !kernelProtocols.includes('openai-chat');
 }

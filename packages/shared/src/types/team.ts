@@ -1,4 +1,5 @@
 import type { AgentId, ConversationId, ModelId, TaskId, TeamId, WorkspaceId } from './ids.js';
+import type { InteractionMode } from './chat-plan.js';
 
 // ─── Mutable global Agent / Team model (2026-07-22) ─────────────────────────
 // Agents/teams are global, mutable assets. Permission is NOT configured here:
@@ -73,6 +74,12 @@ export interface Conversation {
   archivedAt?: string;
   /** The ONLY permission knob: 'read-only' (ask) | 'workspace' | 'full-access'. */
   executionMode: string;
+  /**
+   * Interaction work mode: 'execute' (default) runs the conversation directly;
+   * 'plan' makes the kernel analyse read-only and submit an approvable plan
+   * before any side-effecting execution happens. Independent of executionMode.
+   */
+  interactionMode: InteractionMode;
   lastMessageAt?: string;
   /**
    * Task backing this conversation's message thread.

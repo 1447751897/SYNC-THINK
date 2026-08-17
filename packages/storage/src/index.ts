@@ -1,4 +1,4 @@
-﻿export * from './schema/index.js';
+export * from './schema/index.js';
 export * from './schema/ids.js';
 export * from './connection.js';
 export * from './unit-of-work.js';
@@ -38,6 +38,7 @@ export * from './cc-switch-db.js';
 export * from './desktop-store.js';
 export * from './agent-context-store.js';
 export * from './task-plan-store.js';
+export * from './scheduled-task-store.js';
 export * from './event-payload-backfill-executor.js';
 export * from './event-payload-backfill-rollback.js';
 export * from './event-payload-sidecar-gc.js';

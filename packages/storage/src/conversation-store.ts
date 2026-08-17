@@ -1,6 +1,9 @@
 import type {
   AgentId,
+  ChatPlanRevision,
+  ChatPlanSubmission,
   ConversationId,
+  ConversationPlanSummary,
   ModelId,
   TaskId,
   TeamId,
@@ -29,6 +32,8 @@ export interface ConversationRecord {
   pinnedAt?: string;
   archivedAt?: string;
   executionMode: string;
+  /** 'plan' | 'execute' — independent of the executionMode permission knob. */
+  interactionMode: 'plan' | 'execute';
   lastMessageAt?: string;
   /** Task backing this conversation's thread; undefined until first message. */
   taskId?: TaskId;
@@ -46,6 +51,7 @@ export interface CreateConversationInput {
   workspaceId?: WorkspaceId;
   title?: string;
   executionMode?: string;
+  interactionMode?: 'plan' | 'execute';
   id?: ConversationId;
   now?: string;
 }
@@ -65,6 +71,7 @@ interface ConversationDbRow {
   pinned_at: string | null;
   archived_at: string | null;
   execution_mode: string;
+  interaction_mode: string;
   last_message_at: string | null;
   task_id: string | null;
   created_at: string;
@@ -81,6 +88,7 @@ function mapRow(row: ConversationDbRow): ConversationRecord {
     pinnedAt: row.pinned_at ?? undefined,
     archivedAt: row.archived_at ?? undefined,
     executionMode: row.execution_mode,
+    interactionMode: row.interaction_mode === 'plan' ? 'plan' : 'execute',
     lastMessageAt: row.last_message_at ?? undefined,
     taskId: row.task_id ? (row.task_id as TaskId) : undefined,
     createdAt: row.created_at,
@@ -100,7 +108,7 @@ function targetRefOf(target: ConversationTarget): string {
 }
 
 const SELECT_COLUMNS = `id, track, target_ref, workspace_id, title, pinned_at,
-  archived_at, execution_mode, last_message_at, task_id, created_at, updated_at`;
+  archived_at, execution_mode, interaction_mode, last_message_at, task_id, created_at, updated_at`;
 
 export class SqliteConversationStore {
   constructor(private readonly raw: BetterSQLite3Raw) {}
@@ -111,9 +119,9 @@ export class SqliteConversationStore {
     this.raw
       .prepare(
         `INSERT INTO conversation (
-           id, track, target_ref, workspace_id, title, execution_mode,
+           id, track, target_ref, workspace_id, title, execution_mode, interaction_mode,
            last_message_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       )
       .run(
         id,
@@ -122,6 +130,7 @@ export class SqliteConversationStore {
         input.workspaceId ?? null,
         input.title ?? '',
         input.executionMode ?? 'full-access',
+        input.interactionMode ?? 'execute',
         now,
         now,
       );
@@ -188,6 +197,14 @@ export class SqliteConversationStore {
 
   setExecutionMode(conversationId: ConversationId, mode: string, now?: string): ConversationRecord {
     return this.patch(conversationId, 'execution_mode = ?', [mode], now);
+  }
+
+  setInteractionMode(
+    conversationId: ConversationId,
+    mode: 'plan' | 'execute',
+    now?: string,
+  ): ConversationRecord {
+    return this.patch(conversationId, 'interaction_mode = ?', [mode], now);
   }
 
   touchLastMessage(conversationId: ConversationId, now?: string): ConversationRecord {
@@ -266,6 +283,158 @@ export class SqliteConversationStore {
 
   delete(conversationId: ConversationId): void {
     this.raw.prepare('DELETE FROM conversation WHERE id = ?').run(conversationId);
+  }
+
+  // ── Conversation plan (chat planning mode) ────────────────────────────────
+
+  getConversationPlan(conversationId: ConversationId): ConversationPlanSummary | undefined {
+    const plan = this.raw
+      .prepare('SELECT id FROM conversation_plan WHERE conversation_id = ?')
+      .get(conversationId) as { id: string } | undefined;
+    return plan ? this.toPlanSummary(plan.id) : undefined;
+  }
+
+  submitConversationPlan(
+    conversationId: ConversationId,
+    plan: ChatPlanSubmission,
+    now?: string,
+  ): ConversationPlanSummary {
+    const ts = now ?? new Date().toISOString();
+    const existing = this.getConversationPlan(conversationId);
+    let planId: string;
+    if (!existing) {
+      planId = `plan-${ulid()}`;
+      this.raw
+        .prepare(
+          `INSERT INTO conversation_plan (id, conversation_id, current_revision, state, created_at, updated_at)
+           VALUES (?, ?, 0, 'draft', ?, ?)`,
+        )
+        .run(planId, conversationId, ts, ts);
+    } else {
+      planId = existing.planId;
+      // A fresh revision flips an approved plan back to draft.
+      this.raw
+        .prepare(`UPDATE conversation_plan SET state = 'draft', updated_at = ? WHERE id = ?`)
+        .run(ts, planId);
+    }
+    const revision = (existing?.currentRevision ?? 0) + 1;
+    const revisionId = `planrev-${ulid()}`;
+    this.raw
+      .prepare(
+        `INSERT INTO conversation_plan_revision (id, plan_id, revision, plan_json, state, created_at)
+         VALUES (?, ?, ?, ?, 'draft', ?)`,
+      )
+      .run(revisionId, planId, revision, JSON.stringify(plan), ts);
+    this.raw
+      .prepare(`UPDATE conversation_plan SET current_revision = ?, updated_at = ? WHERE id = ?`)
+      .run(revision, ts, planId);
+    const summary = this.toPlanSummary(planId);
+    if (!summary) throw new Error('conversation plan submit failed');
+    return summary;
+  }
+
+  /** Idempotent: approving an already-approved plan returns the existing plan. */
+  approveConversationPlan(
+    conversationId: ConversationId,
+    revision: number,
+    now?: string,
+  ): ConversationPlanSummary {
+    const existing = this.getConversationPlan(conversationId);
+    if (!existing) throw new Error('conversation plan not found');
+    const target = existing.revisions.find((r) => r.revision === revision);
+    if (!target) throw new Error(`conversation plan revision not found: ${revision}`);
+    if (existing.state === 'approved') return existing;
+    const ts = now ?? new Date().toISOString();
+    this.raw
+      .prepare(`UPDATE conversation_plan SET state = 'approved', updated_at = ? WHERE id = ?`)
+      .run(ts, existing.planId);
+    this.raw
+      .prepare(
+        `UPDATE conversation_plan_revision SET state = 'approved', approved_at = ?
+         WHERE plan_id = ? AND revision = ?`,
+      )
+      .run(ts, existing.planId, revision);
+    const summary = this.toPlanSummary(existing.planId);
+    if (!summary) throw new Error('conversation plan approve failed');
+    return summary;
+  }
+
+  reviseConversationPlan(
+    conversationId: ConversationId,
+    expectedRevision: number,
+    plan: ChatPlanSubmission,
+    now?: string,
+  ): ConversationPlanSummary {
+    const existing = this.getConversationPlan(conversationId);
+    if (!existing) throw new Error('conversation plan not found');
+    if (existing.currentRevision !== expectedRevision) {
+      throw new Error('conversation plan stale revision');
+    }
+    return this.submitConversationPlan(conversationId, plan, now);
+  }
+
+  cancelConversationPlan(conversationId: ConversationId, now?: string): ConversationPlanSummary {
+    const existing = this.getConversationPlan(conversationId);
+    if (!existing) throw new Error('conversation plan not found');
+    if (existing.state === 'cancelled') return existing;
+    const ts = now ?? new Date().toISOString();
+    this.raw
+      .prepare(`UPDATE conversation_plan SET state = 'cancelled', updated_at = ? WHERE id = ?`)
+      .run(ts, existing.planId);
+    const summary = this.toPlanSummary(existing.planId);
+    if (!summary) throw new Error('conversation plan cancel failed');
+    return summary;
+  }
+
+  private toPlanSummary(planId: string): ConversationPlanSummary | undefined {
+    const plan = this.raw
+      .prepare(
+        `SELECT id, conversation_id, current_revision, state, created_at, updated_at
+         FROM conversation_plan WHERE id = ?`,
+      )
+      .get(planId) as
+      | {
+          id: string;
+          conversation_id: string;
+          current_revision: number;
+          state: string;
+          created_at: string;
+          updated_at: string;
+        }
+      | undefined;
+    if (!plan) return undefined;
+    const rows = this.raw
+      .prepare(
+        `SELECT id, revision, plan_json, state, approved_at, created_at
+         FROM conversation_plan_revision WHERE plan_id = ? ORDER BY revision ASC`,
+      )
+      .all(planId) as Array<{
+      id: string;
+      revision: number;
+      plan_json: string;
+      state: string;
+      approved_at: string | null;
+      created_at: string;
+    }>;
+    const revisions: ChatPlanRevision[] = rows.map((r) => ({
+      id: r.id,
+      conversationId: plan.conversation_id as ConversationId,
+      revision: r.revision,
+      plan: JSON.parse(r.plan_json) as ChatPlanSubmission,
+      state: r.state as ChatPlanRevision['state'],
+      createdAt: r.created_at,
+      approvedAt: r.approved_at ?? undefined,
+    }));
+    const latest = revisions[revisions.length - 1];
+    if (!latest) return undefined;
+    return {
+      planId: plan.id,
+      conversationId: plan.conversation_id as ConversationId,
+      currentRevision: plan.current_revision,
+      state: plan.state as ConversationPlanSummary['state'],
+      latest,
+      revisions,
+    };
   }
 
   private patch(

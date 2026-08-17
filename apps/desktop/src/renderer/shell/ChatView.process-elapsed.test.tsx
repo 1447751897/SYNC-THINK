@@ -47,14 +47,14 @@ describe('AssistantProcessGroup elapsed clock', () => {
     );
 
     const toggle = screen.getByRole('button');
-    expect(toggle.textContent).toContain('执行过程 · 5秒');
+    expect(toggle.textContent).toContain('过程 · 5秒');
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('process body')).toBeTruthy();
 
     act(() => {
       vi.advanceTimersByTime(1_000);
     });
-    expect(screen.getByRole('button').textContent).toContain('执行过程 · 6秒');
+    expect(screen.getByRole('button').textContent).toContain('过程 · 6秒');
   });
 
   it('freezes a paused run at its durable terminal time', () => {
@@ -72,11 +72,11 @@ describe('AssistantProcessGroup elapsed clock', () => {
       </AssistantProcessGroup>,
     );
 
-    expect(screen.getByRole('button').textContent).toContain('执行过程 · 8秒');
+    expect(screen.getByRole('button').textContent).toContain('过程 · 8秒');
     act(() => {
       vi.advanceTimersByTime(5_000);
     });
-    expect(screen.getByRole('button').textContent).toContain('执行过程 · 8秒');
+    expect(screen.getByRole('button').textContent).toContain('过程 · 8秒');
   });
 
   it('supports a deterministic initially expanded fixture without changing later user state', () => {
@@ -143,7 +143,7 @@ describe('AssistantProcessGroup elapsed clock', () => {
     );
 
     const toggle = screen.getByRole('button');
-    expect(toggle.textContent).toBe('执行过程 · 8秒');
+    expect(toggle.textContent).toBe('过程 · 8秒');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByText('process body')).toBeNull();
 

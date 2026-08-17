@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   MessageId,
   ThreadId,
   WorkspaceId,
@@ -120,6 +120,15 @@ export type CommandType =
   | 'conversation.setPinned'
   | 'conversation.setArchived'
   | 'conversation.setExecutionMode'
+  | 'conversation.setInteractionMode'
+  | 'conversation.plan.submit'
+  | 'conversation.plan.get'
+  | 'conversation.plan.approve'
+  | 'conversation.plan.revise'
+  | 'conversation.plan.cancel'
+  | 'conversation.ask.answer'
+  | 'conversation.ask.cancel'
+  | 'conversation.ask.pending'
   | 'conversation.upgradeTrack'
   | 'conversation.rebindTarget'
   | 'conversation.delete'
@@ -153,6 +162,8 @@ export type CommandType =
   | 'desktop.command.cancel'
   | 'skill.import'
   | 'skill.importRemote'
+  | 'skill.local.scan'
+  | 'skill.local.import'
   | 'skill.list'
   | 'skill.get'
   | 'skill.delete'
@@ -190,6 +201,13 @@ export type CommandType =
   | 'goal.set'
   | 'goal.get'
   | 'goal.clear'
+  | 'goal.pause'
+  | 'goal.resume'
+  | 'scheduledTask.create'
+  | 'scheduledTask.list'
+  | 'scheduledTask.update'
+  | 'scheduledTask.delete'
+  | 'scheduledTask.trigger'
   | 'kernel.detect'
   | 'gateway.status';
 
@@ -453,6 +471,12 @@ export interface AppendMessagePayload {
    */
   networkEnabled?: boolean;
   /**
+   * 批准方案后的执行轮标志。为 true 时本轮 run 强制使用 plan-act 设置中的
+   * 执行模型（actModelId + actReasoningEffort）；普通 execute 模式消息不带
+   * 此标志，plan-act 不干预。不落库；仅影响当前 live run。
+   */
+  planExecuting?: boolean;
+  /**
    * Exact immutable Skill versions selected for this turn.
    * Undefined keeps the legacy Agent-default behavior; [] explicitly loads none.
    */
@@ -527,11 +551,7 @@ export interface UnsubscribeConversationTransientStreamPayload {
 }
 
 export type ConversationTransientFrameKind =
-  | 'text'
-  | 'commentary'
-  | 'reasoning'
-  | 'process'
-  | 'terminal';
+  'text' | 'commentary' | 'reasoning' | 'process' | 'terminal';
 export type ConversationTransientTerminalState = 'completed' | 'failed' | 'cancelled';
 
 /**
@@ -568,6 +588,8 @@ export interface ConversationTransientFrame {
   errorMessage?: string;
   /** Already-projected run-local process snapshot; never raw durable events. */
   process?: RunProcessView;
+  /** Exact ordered assistant turn snapshot after this frame. */
+  assistantTimeline?: import('./assistant-turn.js').AssistantTurnSegment[];
   occurredAt: string;
 }
 
@@ -583,6 +605,8 @@ export interface ConversationTransientSnapshot {
   reasoningText?: string;
   /** Legacy provider reasoning timeline kept for backward-compatible snapshots. */
   reasoningSegments?: ReasoningTimelineSegment[];
+  /** Exact ordered assistant turn snapshot; preferred by new renderers. */
+  assistantTimeline?: import('./assistant-turn.js').AssistantTurnSegment[];
   process?: RunProcessView;
   updatedAt: string;
 }
@@ -1949,6 +1973,50 @@ export interface ImportRemoteSkillResponse extends ImportSkillResponse {
   fetchedBytes: number;
 }
 
+// --- 本地 Skill 发现（约定目录 ~/.sync-think/skills 扫描 + watch） ---
+
+export interface LocalSkillCandidate {
+  /** 文件绝对路径。 */
+  path: string;
+  /** SKILL.md 所在目录名（skill 名候选）。 */
+  folderName: string;
+  /** frontmatter 解析的 name（若有）。 */
+  name?: string;
+  description?: string;
+  /** 指令正文首行摘要（≤120 字）。 */
+  summary?: string;
+  /** 是否已导入（skillId 去重）。 */
+  imported: boolean;
+  /** 已导入时的 skillId。 */
+  skillId?: string;
+  sizeBytes: number;
+  modifiedAt: string;
+}
+
+export interface SkillLocalScanPayload {
+  /** 是否强制重扫（默认返回缓存 + watch 增量）。 */
+  refresh?: boolean;
+}
+
+export interface SkillLocalScanResponse {
+  /** 约定目录路径。 */
+  directory: string;
+  candidates: LocalSkillCandidate[];
+  /** 目录是否存在。 */
+  exists: boolean;
+  /** watch 是否生效。 */
+  watching: boolean;
+}
+
+export interface SkillLocalImportPayload {
+  /** 候选文件绝对路径（须位于约定目录内）。 */
+  path: string;
+}
+
+export interface SkillLocalImportResponse extends ImportSkillResponse {
+  path: string;
+}
+
 export interface ListSkillsPayload {
   limit?: number;
   /** Current workspace for ordinary Compose and "/" discovery. */
@@ -3142,6 +3210,23 @@ export interface RunProcessView {
   tokensOut?: number;
   cachedTokensHit?: number;
   cachedTokensCreated?: number;
+  /**
+   * Context occupancy of the LAST provider request in this run (totalInput +
+   * output), not the billing cumulative. Distinct from tokensIn/tokensOut,
+   * which sum every request and inflate when a tool loop re-sends the prefix.
+   */
+  contextWatermarkTokens?: number;
+  /**
+   * Per-request usage of the LAST provider request in this run (single-request
+   * granularity), for showing real input/cache/output in the footer without the
+   * tool-loop cumulative inflation.
+   */
+  lastRequestUsage?: {
+    tokensIn?: number;
+    tokensOut?: number;
+    cachedTokensHit?: number;
+    cachedTokensCreated?: number;
+  };
   durationMs?: number;
   providerModelId?: string;
   modelId?: string;
@@ -3182,6 +3267,119 @@ export interface SetConversationArchivedPayload {
 export interface SetConversationExecutionModePayload {
   conversationId: import('@sync-think/shared').ConversationId;
   executionMode: string;
+}
+
+// --- Conversation interaction work mode ('plan' | 'execute') ---
+// Independent of executionMode (permission knob). Plan mode makes the kernel
+// analyse read-only and submit an approvable plan before side-effecting work.
+
+export interface SetConversationInteractionModePayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  interactionMode: import('@sync-think/shared').InteractionMode;
+}
+
+// --- Conversation-level plan lifecycle (chat planning mode) ---
+
+export interface ConversationPlanSubmitPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  plan: import('@sync-think/shared').ChatPlanSubmission;
+}
+
+export interface ConversationPlanGetPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+}
+
+export interface ConversationPlanApprovePayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  revision: number;
+}
+
+export interface ConversationPlanRevisePayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+  expectedRevision: number;
+  plan: import('@sync-think/shared').ChatPlanSubmission;
+}
+
+export interface ConversationPlanCancelPayload {
+  conversationId: import('@sync-think/shared').ConversationId;
+}
+
+export interface ConversationPlanResponse {
+  conversation: import('@sync-think/shared').Conversation;
+  plan?: import('@sync-think/shared').ConversationPlanSummary;
+}
+
+export interface ConversationPlanApproveResponse {
+  conversation: import('@sync-think/shared').Conversation;
+  plan: import('@sync-think/shared').ConversationPlanSummary;
+  /** Fresh execution run created for the approved revision (idempotent). */
+  runId?: import('@sync-think/shared').RunId;
+  /** True when a new execution run was created; false when it already existed. */
+  createdRun: boolean;
+}
+
+// --- Conversation-level ask (模型主动问询, ask_user_question 工具) ---
+// 模型调用平台工具 ask_user_question 后，宿主挂起工具调用并发出
+// `conversation.ask_pending` 事件；桌面端接管 composer 展示问询卡片；
+// 用户作答后经 answer/cancel 命令回填为工具结果。plan-review intent
+// 渲染为「方案待审」特例卡（确认执行 → 桌面端切执行模式并发起执行轮）。
+
+export interface AskQuestionIntent {
+  /** 'plan-review' 时渲染方案审阅特例卡。 */
+  kind?: 'plan-review' | string;
+  /** plan-review：确认按钮的选项 label（须与 options 中某一 label 一致）。 */
+  approve?: string;
+}
+
+export interface AskQuestionOption {
+  /** 用户可见文案；推荐项以「（推荐）」/「(Recommended)」后缀标记并置于首位。 */
+  label: string;
+  /** 一句话说明权衡或影响。 */
+  description?: string;
+}
+
+export interface AskQuestion {
+  /** 稳定 id，答案中回显。 */
+  id: string;
+  question: string;
+  /** 可选短标题（如 "Confirm" / "Choose Mode"）。 */
+  header?: string;
+  /** 可选 Markdown 补充说明 / 方案全文。 */
+  detail?: string;
+  intent?: AskQuestionIntent;
+  options?: AskQuestionOption[];
+  multiSelect?: boolean;
+}
+
+export interface AskQuestionAnswer {
+  id: string;
+  /** 用户选择的选项 label；跳过时为 []。 */
+  selected: string[];
+  /** 自定义答案（与 selected 二选一）。 */
+  custom?: string;
+}
+
+export interface ConversationAskAnswerPayload {
+  askId: string;
+  answers: AskQuestionAnswer[];
+}
+
+export interface ConversationAskCancelPayload {
+  askId: string;
+}
+
+export interface ConversationAskPendingPayload {
+  threadId: string;
+}
+
+export interface ConversationAskPendingResponse {
+  ask?: {
+    askId: string;
+    threadId: string;
+    runId: string;
+    questions: AskQuestion[];
+    createdAt: string;
+  };
 }
 /** Requires an explicit user confirmation upstream — never a silent upgrade. */
 export interface UpgradeConversationTrackPayload {
@@ -3720,7 +3918,7 @@ export interface CancelBrowserHandoffResponse {
 // --- Goal mode (NewMax-style /goal: keep working until a completion
 // condition is met; a separate evaluator model checks after every turn) ---
 
-export type GoalStatusState = 'active' | 'achieved' | 'cleared';
+export type GoalStatusState = 'active' | 'paused' | 'blocked' | 'achieved' | 'cleared';
 
 export interface GoalStatus {
   /** Conversation-scoped goal identity (conversation id). */
@@ -3735,12 +3933,21 @@ export interface GoalStatus {
   /** Most recent evaluator reason ("why the condition is or isn't met"). */
   lastReason?: string;
   achievedAt?: string;
+  /** 轮次上限（0/缺省 = 不设上限；耗尽自动 blocked）。 */
+  maxGoalRounds?: number;
+  /** 已启动的自动轮次数。 */
+  roundsStarted?: number;
+  pausedAt?: string;
+  blockedAt?: string;
+  blockedReason?: string;
 }
 
 export interface GoalSetPayload {
   conversationId: string;
   /** Completion condition, up to 4000 chars. Setting a new goal replaces the active one. */
   condition: string;
+  /** 轮次上限（≥1）；缺省用默认值（5）。 */
+  maxGoalRounds?: number;
 }
 
 export interface GoalSetResponse {
@@ -3766,6 +3973,74 @@ export interface GoalClearPayload {
 export interface GoalClearResponse {
   cleared: boolean;
   goal?: GoalStatus;
+}
+
+export interface GoalPausePayload {
+  conversationId: string;
+}
+
+export interface GoalResumePayload {
+  conversationId: string;
+}
+
+export interface GoalResumeResponse {
+  goal: GoalStatus;
+  /** 恢复后立即启动下一轮（若评估器已配置）。 */
+  started: boolean;
+  evaluatorConfigured: boolean;
+}
+
+// --- 定时任务（scheduledTask） ---
+// 任务 = 专属会话 + 触发规则（at/every/random/cron）+ 指令；runtime 心跳
+// 检查 nextRunAt 到期后向任务会话注入指令启动 run。规则/目标类型见
+// @sync-think/shared 的 scheduled-task。
+
+export interface CreateScheduledTaskPayload {
+  name: string;
+  instruction: string;
+  target: import('@sync-think/shared').ScheduledTaskTarget;
+  rule: import('@sync-think/shared').TaskRule;
+  timeZone?: string;
+  enabled?: boolean;
+  /** 单次/首次触发时间（UTC 绝对时刻）；缺省按规则推算。 */
+  nextRunAt?: string;
+}
+
+export interface ListScheduledTasksPayload {
+  includeDisabled?: boolean;
+}
+
+export interface ListScheduledTasksResponse {
+  tasks: import('@sync-think/shared').ScheduledTask[];
+}
+
+export interface UpdateScheduledTaskPayload {
+  taskId: string;
+  patch: Partial<{
+    name: string;
+    instruction: string;
+    target: import('@sync-think/shared').ScheduledTaskTarget;
+    rule: import('@sync-think/shared').TaskRule;
+    timeZone: string;
+    enabled: boolean;
+    nextRunAt: string | null;
+  }>;
+}
+
+export interface DeleteScheduledTaskPayload {
+  taskId: string;
+}
+
+/** 立即触发一次（手动测试，独立于规则）。 */
+export interface TriggerScheduledTaskPayload {
+  taskId: string;
+}
+
+export interface TriggerScheduledTaskResponse {
+  task: import('@sync-think/shared').ScheduledTask;
+  fired: boolean;
+  /** 未触发原因（并发上限 / 会话忙 / 不可用）。 */
+  reason?: string;
 }
 
 // Helper: build a typed request envelope.

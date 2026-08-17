@@ -77,7 +77,7 @@ const MAX_SKILL_MD_CHARS = 512_000;
 const CONTEXT_BUDGET_TOKENS = 15_000;
 
 type AbilitySection = 'skills' | 'mcp';
-type CatalogTab = 'market' | 'mine';
+type CatalogTab = 'market' | 'mine' | 'local';
 type StatusFilter = 'all' | 'active' | 'enabled' | 'inactive' | 'unused' | 'problem';
 type SourceFilter = 'all' | 'market' | 'local' | 'derived';
 
@@ -155,6 +155,10 @@ export function AbilitiesPage(props: {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(fallbackWorkspaceId);
   const [skills, setSkills] = useState<SkillVersionSummary[]>([]);
   const [servers, setServers] = useState<McpServerSummary[]>([]);
+  const [localCandidates, setLocalCandidates] = useState<import('@sync-think/protocol').LocalSkillCandidate[]>([]);
+  const [localDirectory, setLocalDirectory] = useState('');
+  const [localWatching, setLocalWatching] = useState(false);
+  const [localExists, setLocalExists] = useState(true);
   const [governance, setGovernance] = useState<CapabilityGovernanceListResponse>();
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string>();
@@ -216,6 +220,41 @@ export function AbilitiesPage(props: {
   useEffect(() => {
     void loadCatalog();
   }, [loadCatalog]);
+
+  const loadLocalSkills = useCallback(async () => {
+    const api = runtimeBridge();
+    if (!api?.skillLocalScan) return;
+    try {
+      const res = await api.skillLocalScan({ refresh: true });
+      setLocalCandidates(res.candidates);
+      setLocalDirectory(res.directory);
+      setLocalWatching(res.watching);
+      setLocalExists(res.exists);
+    } catch {
+      // 扫描失败保持现状。
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadLocalSkills();
+    const timer = window.setInterval(() => void loadLocalSkills(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [loadLocalSkills]);
+
+  const importLocalSkill = useCallback(
+    async (path: string) => {
+      const api = runtimeBridge();
+      if (!api?.skillLocalImport) return;
+      try {
+        await api.skillLocalImport({ path });
+        await loadLocalSkills();
+        await loadCatalog();
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    },
+    [loadCatalog, loadLocalSkills],
+  );
 
   const families = useMemo(() => groupSkillVersions(skills), [skills]);
   const skillGovernanceRows = governance?.skills ?? fallbackSkillRows(skills);
@@ -693,6 +732,19 @@ export function AbilitiesPage(props: {
             {section === 'skills' ? '我的 Skill' : '我的 MCP'}
             <span>{section === 'skills' ? families.length : servers.length}</span>
           </button>
+          {section === 'skills' ? (
+            <button
+              type="button"
+              role="tab"
+              data-testid="skill-tab-local"
+              aria-selected={tab === 'local'}
+              className={tab === 'local' ? 'is-active' : undefined}
+              onClick={() => setTab('local')}
+            >
+              本地
+              <span>{localCandidates.length}</span>
+            </button>
+          ) : null}
         </div>
         <label className="capability-center__search">
           <Search size={14} />
@@ -750,6 +802,11 @@ export function AbilitiesPage(props: {
           }
           onDelete={(skill) => void deleteSkill(skill)}
           onOrganize={() => void previewOrganize()}
+          localCandidates={localCandidates}
+          localDirectory={localDirectory}
+          localWatching={localWatching}
+          localExists={localExists}
+          onLocalImport={(path) => void importLocalSkill(path)}
         />
       ) : (
         <McpSurface
@@ -1001,8 +1058,72 @@ function SkillSurface(props: {
   onWorkspaceActive(skill: SkillVersionSummary, active: boolean): void;
   onDelete(skill: SkillVersionSummary): void;
   onOrganize(): void;
+  localCandidates: import('@sync-think/protocol').LocalSkillCandidate[];
+  localDirectory: string;
+  localWatching: boolean;
+  localExists: boolean;
+  onLocalImport(path: string): void;
 }): JSX.Element {
   const needle = props.query.trim().toLocaleLowerCase();
+  if (props.tab === 'local') {
+    const visible = props.localCandidates.filter((candidate) => {
+      if (!needle) return true;
+      return [candidate.name ?? candidate.folderName, candidate.description ?? '', candidate.summary ?? '', candidate.path]
+        .join('\n')
+        .toLocaleLowerCase()
+        .includes(needle);
+    });
+    return (
+      <section className="capability-center__content" data-testid="skill-local-surface">
+        <div className="capability-local__banner">
+          <span className="capability-local__banner-dot" aria-hidden="true" />
+          本地 Skill 目录：<code>{props.localDirectory}</code>
+          {props.localWatching ? '（自动监听中）' : props.localExists ? '（未监听）' : '（目录不存在，创建后自动发现）'}
+        </div>
+        {visible.length === 0 ? (
+          <div className="capability-center__empty">
+            {props.localCandidates.length === 0
+              ? '未在本地目录发现 SKILL.md。把 skill 文件放入约定目录（任意子目录下的 SKILL.md）即可被自动发现。'
+              : '没有匹配的本地 skill。'}
+          </div>
+        ) : (
+          <div className="capability-local__list">
+            {visible.map((candidate) => (
+              <div key={candidate.path} className="capability-local__card" data-imported={candidate.imported ? '1' : '0'}>
+                <div className="capability-local__card-main">
+                  <div className="capability-local__card-title">
+                    <span>{candidate.name ?? candidate.folderName}</span>
+                    {candidate.imported ? (
+                      <span className="capability-local__badge">已导入</span>
+                    ) : null}
+                  </div>
+                  {candidate.description ? (
+                    <div className="capability-local__desc">{candidate.description}</div>
+                  ) : null}
+                  {candidate.summary ? (
+                    <div className="capability-local__summary">{candidate.summary}</div>
+                  ) : null}
+                  <div className="capability-local__meta">
+                    <code>{candidate.path}</code>
+                    <span>· {(candidate.sizeBytes / 1024).toFixed(1)} KB</span>
+                  </div>
+                </div>
+                {!candidate.imported ? (
+                  <button
+                    type="button"
+                    className="capability-local__import"
+                    onClick={() => props.onLocalImport(candidate.path)}
+                  >
+                    导入
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
   const marketItems = SKILL_MARKET.filter((item) => {
     const categoryMatches = props.category === '全部' || item.category === props.category;
     const searchMatches =

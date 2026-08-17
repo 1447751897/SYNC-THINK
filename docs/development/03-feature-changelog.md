@@ -1,3 +1,113 @@
+## 2026-08-16：目标模式增强 + 本地 Skill 发现
+
+### Added
+
+- **目标模式增强**（对齐 DSH）：状态机扩展 `active/paused/blocked/achieved/cleared`（`goal.pause` / `goal.resume` 命令）；`maxGoalRounds` 轮次上限（默认 5，达上限自动 blocked 防无限烧 token）；自动轮注入结构化 `<goal_round>` 提示（objective/round/max + 取证 complete / 受阻 block）；模型工具 `goal_manage`（complete/block/progress，仅 active goal 可用）；GoalCapsule 升级目标卡——状态徽标、轮次进度 N/上限、暂停/恢复/编辑/清除按钮。
+- **本地 Skill 发现**（能力中心「本地」tab）：约定目录 `<home>/.sync-think/skills` 递归扫描 SKILL.md（深度 ≤4、≤500 文件、忽略 node_modules 等）；frontmatter 解析 + 指令摘要；runtime watch（recursive + 300ms debounce）自动重扫并发 `skill.local_changed`；命令 `skill.local.scan` / `skill.local.import`（路径限制在约定目录内，originType=local）；UI 候选卡片（名称/描述/摘要/路径/已导入徽标/导入按钮）+ 全字段搜索 + 目录/watch 状态横幅。
+
+### Verification
+
+- Runtime：`local-skill-discovery.test.ts` 3 项（嵌套发现/frontmatter/摘要、缺失目录、坏文件容错）通过；typecheck 通过。
+- Runtime 全量、Desktop 全量、build 门禁通过（见最终验证记录）。
+
+## 2026-08-16：定时任务与随机任务（专属会话 + 四类规则 + 绑定智能体/模型）
+
+
+### Added
+
+- **定时任务模型**（0044 迁移 `scheduled_task` 表 + `SqliteScheduledTaskStore`）：任务 = 绑定执行者（智能体 / 直接模型）的专属会话 + 触发规则 + 指令；会话标题「任务 · {名}」、会话列表带「任务」徽标、可手动接管。
+- **调度引擎**（`apps/runtime/src/task-scheduler.ts` + runtime 心跳 30s 单飞）：`at` 单次 / `every` 固定间隔（≥5 分钟）/ `random` 每日窗口随机 N 次（**确定性日计划**：seed=任务id+日期，重启重算一致）/ `cron`（croner，任务时区）。`nextRunAt` 持久化重启恢复；触发 = 惰性创建任务会话 → 注入「【定时任务 · {名}】{指令}」→ 普通 run 路径（仿 goal 轮次）。错过 ≤ 任意时长补跑一次；会话忙跳过；全局并发上限默认 2（`task-scheduler.maxConcurrent`，1-5）；同 tick 多任务按 id 排序错峰 2-5s。
+- **命令与事件**：`scheduledTask.create/list/update/delete/trigger` + `scheduledTask.updated/fired/skipped` 事件；Feature 门禁加 `scheduledTask`。
+- **模型工具 task_schedule**（平台工具全内核）：create/list/cancel；create/cancel 在 ask-mode 下走工具审批，list 免审批；规划模式不注入。
+- **UI（侧栏「定时任务」stage，`TaskPanel.tsx`）**：任务卡片列表（名称/执行者/规则摘要/下次触发/最近结果/启停/立即触发/编辑/删除/打开任务会话）+ 新建/编辑对话框（指令、执行者两组下拉——智能体库带人设摘要、模型目录带供应商、规则四 tab、时区、必填与合法性校验）。
+
+### Verification
+
+- Runtime：`tests/task-scheduler.test.ts` 12 项（确定性随机、窗口边界、at/every/cron 推算、首次时间、时区零点换算）通过；typecheck 通过。
+- Desktop：`TaskPanel.test.tsx` 6 项（列表渲染/空态/新建校验与保存/启停/立即触发/删除确认）通过；typecheck 通过。
+- Runtime 全量、Desktop 全量、build 门禁通过（见最终验证记录）。
+
+## 2026-08-16：ask_user_question 问询卡片 + 任务清单面板 + plan 审批替换
+
+### Added
+
+- **ask_user_question 平台工具**（native / claude-code / codex 全内核注入，对齐 DSH）：`id/question/header/detail/options[{label,description}]/multi_select`；推荐项 = label「（推荐）」后缀且放第一位。工具调用挂起等待（复用平台工具审批同款 Promise 挂起 + abort 信号），持久化事件 `conversation.ask_pending`，作答/取消经 `conversation.ask.answer / cancel` 回填为工具结果，`conversation.ask.pending` 供刷新恢复。
+- **问询卡片（接管 composer）**（`AskQuestionCard.tsx`）：pending ask 时输入区让位；通用形态对齐 DSH QuestionComposer——eyebrow + 标题 + ✕ 放弃整组、detail Markdown、单选编号/多选 checkbox、推荐徽章（剥离「（推荐）」后缀）、自定义答案（Enter 提交 + IME 保护）、多问题分页（一次一题 ‹ 1/3 ›）、跳过、提交校验、busy 禁用。
+- **plan-review 特例卡（方案待审）**：单问题 + `intent.kind=plan-review` + detail 方案全文 + 二选一（含 approve 标签）→ 警示条 + Markdown 方案 + 「拒绝 / 确认执行 / 去聊天里说」。
+- **plan 审批替换**：`plan_submit` 工具移除，规划模式提示词改为 `ask_user_question`（plan-review）提交方案；确认执行后桌面端切 execute 并带 `planExecuting` 标志发起执行轮（执行指令 = 方案全文）；`conversation.plan.*` 命令族与存储保留为兼容层。claude-code 内置 AskUserQuestion 保持禁用。
+- **对话区问询记录**：消息流工具行照常显示 ask 调用，回答后结果渲染为可读文本（「你选择了：A、B」/「你的回答：xxx」/「已跳过」）。
+- **任务清单面板（对齐 DSH TodoPanel）**（`TodoPanel.tsx` + `todo-projection.ts`）：composer 上方常驻 dock，默认折叠（图标 + 任务清单 + 「N 完成 · N 进行中 · N 待办」+ chevron），点击内嵌展开；持久化投影——任务工具快照写事件流，最近一次 `run.started` 后的快照有效，run 终态保留完成清单，新 run 清空，刷新/回放可恢复。
+
+### Changed
+
+- RunTaskCapsule（hover 瞬态胶囊）由 TodoPanel（常驻折叠面板 + 持久化投影）取代；组件与旧测试保留为兼容层。
+- 协议新增 `conversation.ask.*` 命令族与 `conversation.ask_pending/answered/cancelled` 事件；Feature 门禁加 `conversation.ask`。
+
+### Verification
+
+- Runtime：`tests/ask-user-question.test.ts` 4 项（目录含 ask / plan_submit 移除、挂起回答、abort 取消、非法结构拒绝）；全量 **111 files / 786 tests** 通过；typecheck 通过。
+- Desktop：`AskQuestionCard.test.tsx` 11 项（渲染/推荐徽章/单选前进/多选/自定义 Enter 提交/跳过/校验/取消/plan-review 三动作/结果格式化）、`TodoPanel.test.tsx` 7 项（投影生命周期/进度文案/折叠展开）；全量 **166 files / 1276 tests** 通过；typecheck、tsc emit、build 通过。
+
+## 2026-08-16：plan/exec 规划与执行双模型（可编辑方案卡 + 模型路由）
+
+### Added
+
+- **plan-act 模型路由（runtime 强制，两阶段）**：`prepareRunBinding` 在 run 创建前读取 app-setting `plan-act`（设置 → 模型 → 规划 & 执行模型）。**规划轮**（对话 `interactionMode === 'plan'`）强制使用 `planModelId`；**执行已批准方案的轮次**（`appendMessage` 新增 `planExecuting` 标志，批准执行时由桌面端携带，仅本轮生效）强制使用 `actModelId`；普通 execute 模式消息**不路由**，手动模型选择与 Agent 默认照常生效。对应角色的思考强度（`planReasoningEffort` / `actReasoningEffort`）随模型一并强制。纯函数模块 `apps/runtime/src/plan-act.ts`（`parsePlanActSetting` / `resolvePlanActRouting` / `resolvePlanActRouteForContext`），`ModelResolutionSource` 新增 `'planAct'` 来源。上下文预览（`conversation.getContextStatus`）在规划模式按路由模型估算。
+- **可编辑方案卡**（`apps/desktop/src/renderer/shell/PlanApprovalCard.tsx`）：方案卡从只读展示升级为全字段就地编辑——标题、目标、范围/假设/决策、步骤（标题/描述/验收标准/期望文件、增删步骤）、风险（描述/缓解）、总验收标准。「保存修改」调用 `conversation.plan.revise` 生成新版本（仍为 draft）；「批准并执行」在有未保存改动时禁用并提示先保存，批准后切执行模式并带 `planExecuting` 标志发起执行指令（计划 JSON 内联，与既有 `buildPlanExecutionInstruction` 一致）；「要求修改」「取消计划」保留。版本历史支持回看（只读），可返回最新版本继续编辑。
+- **设置面板思考强度**：「规划 & 执行模型」面板新增「规划思考强度」「执行思考强度」两个下拉（auto/off/low/medium/high/xhigh/max，空 = 跟随对话设置）。
+- **compose 生效模型提示**：规划模式下显示「本轮由规划模型驱动：{模型 · 供应商}」；手动选择与路由不同时附注「（已忽略所选 {模型}）」使覆盖透明。执行模型只在批准方案后的执行轮生效，普通 execute 消息不显示提示。
+
+### Changed
+
+- 原 `shell-plan-card` 只读审批卡由 `PlanApprovalCard` 可编辑组件替代（`data-testid="plan-approval-card"` 保持不变）。
+- act 路由作用域按用户确认收窄：执行模型仅用于「执行已批准方案」的那一轮（显式 `planExecuting` 标志），不再作用于 execute 模式所有消息——普通聊天轮次的手动模型选择恢复生效。
+
+### Verification
+
+- `apps/runtime/tests/plan-act.test.ts` 13 项（解析归一化、plan/execute 路由、思考强度、未配置回退、三态上下文选择：规划优先 / 仅 planExecuting 用执行模型 / 普通 execute 不路由）通过；Runtime typecheck 通过。
+- 新增 `PlanApprovalCard.test.tsx` 7 项（草稿渲染、dirty 禁用与保存修订、批准→执行交接、历史只读回看、取消、步骤增删与校验提示、验收标准渲染）；`ModelSettings.test.tsx` plan-act 断言更新；Desktop typecheck 通过。
+- Desktop 全量测试、Runtime 全量测试、build 门禁通过（见最终验证记录）。
+
+
+### Changed
+
+- 助手消息除最终回答外的 thinking、commentary、工具、状态、连接/终止提示与文件变更统一进入一个“执行过程”折叠面板；面板内部继续按 ordered timeline 的真实顺序逐行显示，最终 Markdown 回答保持在面板外。
+- 过程面板在执行中且最终回答尚未开始时自动展开，最终回答开始或 Run 终止时自动折叠；用户本轮手动选择优先，新 Run 会重置该选择，Think 与单工具详情的独立折叠保持不变。
+- Native、Claude Code、Codex 的可见执行过程统一为一个按真实发生顺序排列的 assistant timeline：`thinking → commentary/final_answer Markdown → tool → status`，每个新 Run 只持久化一条稳定的 `asst-${runId}` 消息。
+- Runtime reducer 现在合并连续 thinking/text 增量，工具按 `toolCallId` 原位从 running 更新到 completed/failed，retry、model switch、connection、compaction 各自保留独立状态行；metadata commentary block 保存完整 timeline，ordered compatibility blocks 继续支持 Provider 上下文与旧消费者。
+- Desktop 优先读取 timeline，避免 compatibility blocks 重复显示；旧消息继续走 legacy fallback，缺少真实 reasoning 时不生成 Think，legacy reasoning-only 孤立消息继续隐藏。
+- 执行 UI 在统一“执行过程”面板内保持 DSH 轻量有序行：Think 默认单行并可原地展开；每个工具调用独占一行，不再显示工具批次、`×N` 或“调用了 N 个工具”；主行显示友好名称、关键参数和状态，详情显示原始名称、完整参数、输出、耗时与错误。
+- “执行过程”标题新增本 Run 总耗时，折叠态同样显示“项数 · 耗时”；运行中每秒更新，结束后使用持久 Run 时间，不对并行工具耗时求和。
+- 助手执行区移除 Agent/模型/机器人头像，每个 assistant turn 只保留一次 footer；Composer 身份头像继续保留。
+- 前端流式发布改为 DSH 同款累计 RAF：同一绘制帧收到的连续 delta 合并后只提交一次，快慢模型都保持 Provider 原始到达节奏；粗粒度 burst 不再由客户端拆成 3–10 帧重播，process/terminal/reset 边界即时收口。
+- 新增 append-only 增量 Markdown parser：已完成的顶层块保留稳定 identity，只重解析最后两个不稳定块；流式期间暂停代码高亮、Mermaid 和 HTML embed，终态执行一次完整富渲染。
+- 对话自动贴底改为稳定 flow-tip signature + 内容容器 `ResizeObserver`，不再让每个流式帧因完整 `messages` 数组变化而强制读取和写入滚动布局；用户上滚、返回底部和历史分页锚点语义保持不变。
+
+### Fixed
+
+- 修复 Codex 明明产生 `reasoning_output_tokens`、UI 却没有 Think 内容的问题：`model_reasoning_effort` 只分配推理预算，CLI 默认未必发布可读摘要；Adapter 现在显式传入 `model_reasoning_summary=detailed`，并兼容顶层 text、Responses reasoning content 与 summary blocks。使用当前 Codex 0.147.0 真实请求已确认会发出 `item.completed/type=reasoning`。
+- 修复 Claude Code 等内核把工具前短正文标成 `final_answer` 后，Desktop 将多段中间说明拼接到面板外的问题：工具边界现在会把此前 final text 归一化为 commentary，按真实 sequence 插回过程面板；历史 timeline 读取时应用同一规则，无需重跑或迁移消息。
+- 修复取消 Run 时 `legacyPendingText` 尚未得到 Provider phase 边界、终态消息退回 legacy `[text,error]` 的竞态：取消持久化会把已可见部分写入 `final_answer` timeline 后再封口。
+- 修复 timeline 可序列化边界：缺失的工具参数和 status detail 直接省略，不写入值为 `undefined` 的属性。
+- 迁移旧助手头像测试，锁定“回复执行区无头像、Composer 仍使用当前智能体头像”的新产品规则。
+- 修复全局 streaming 状态传入每个过程 Markdown，导致展开的 Think、commentary 和中间文本各自出现绿色闪烁光标；过程行现在只使用 spinner 表达运行状态。
+- 修复已到达信息仍滞留在客户端字符队列、界面继续慢速追帧的问题；timeline 与正文现在在同一次累计发布中更新，terminal 前不再存在隐藏 offset。
+- 修复 Native 等缺少原生 phase metadata 的 Provider 已逐 delta 发布正文、但 timeline 中存在 thinking/process 后 `MessageBubble` 隐藏 `draft.text` 直到 terminal 的问题；Renderer 现在显示尚未分类的文本后缀，工具或终态边界分类后由 ordered timeline 无损接管。
+- 修复大型工具输出在 timeline metadata 与兼容 blocks 中重复保存，导致 `blocks_json` 超过 256KB 后整条 `asst-${runId}` 缺失；超限时压缩旧过程详情、从尾部保留兼容块并优先保留最终回答，写库校验失败时以同 ID/sequence 重试有界纯正文。
+
+### Verification
+
+- Runtime 全量：**109 files / 768 tests** 通过。
+- Desktop 全量：**163 files / 1248 tests** 通过；Runtime 全量继续为 **109 files / 768 tests** 通过。
+- Desktop typecheck、正式 build、lint（0 errors，15 条既有 Hook warnings）、`pnpm lint:tokens` 与 `git diff --check` 通过；流式/Markdown/投影定向回归为 **4 files / 55 tests**。
+- 聚焦覆盖：ordered segment 顺序、同名工具独立行、过程区零 Markdown 光标、Think 折叠/流式摘要、工具原位状态与详情、timeline durable 字节预算、纯正文持久化兜底、snapshot reconciliation、同帧 delta 合并、10,000 字符原子提交、terminal 即时顺序、Markdown 尾部增量解析与终态高亮。
+- 真实 Native 隔离链路通过：`deepseek-v4-flash` 返回 5 个细粒度 text delta，单 terminal 完成；稳定消息 `asst-${runId}` 在隔离 Runtime 重启后仍完整保存 `NATIVE_STREAM_OK`。
+- 真实 Claude Code 2.1.222 + `deepseek-v4-flash` 经 MCP 完成 `file_write`/`file_read`，观测到 token 级 partial delta 并返回 `CC_MCP_OK`；真实 Codex 0.147.0 经两个 MCP 调用完成并返回 `KERNEL_OK`，同时确认 Codex 正文可能以单个粗粒度 delta 到达。
+- Codex reasoning 修复后再次使用本机 0.147.0 真实 E2E：收到非空 `KernelEvent reasoning`（`Planning MCP tool discovery`），随后 `file_write`、`file_read`、最终回答、usage 和 completed terminal 全部成功，`KERNEL_OK`。
+- 本次工具边界 phase 修复聚焦回归 **5 files / 38 tests** 通过，覆盖共享归一化、Runtime reducer、错误 phase 的完整工具循环、历史消息读取、timeline 时间兜底与面板总耗时；Protocol、Runtime、Desktop 三包 typecheck 通过。
+- 真实用户数据库源码窗口检查通过：历史完成消息默认折叠为“执行过程 N 项”，展开后 Think/工具/状态按序位于同一面板，最终回答保持在面板外；源码 Electron 通过 CDP 9333 运行。
+- 最新源码窗口三内核长 Markdown 复测全部完成：Claude Code 采集到 32 次正文长度变化，其中 31 次为 streaming；流式期间不执行 syntax highlight，终态恢复高亮，最终回答最多一个光标且过程区始终为零光标。Native 与 Codex 本轮 final answer 分别以单个约 3.2K/2.7K 粗粒度块到达并按 DSH 规则原子显示，不进行伪造打字回放。证据位于 `.data/stream-smoothness-20260816/`。
+
 ## 2026-08-16：native 内核按轮次持久化 assistant 消息（DSH parity）
 
 ### Changed

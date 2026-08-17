@@ -42,6 +42,11 @@ export interface CodexUsage {
   reasoning_output_tokens?: number;
 }
 
+export interface CodexCompactedPayload {
+  message?: string;
+  [key: string]: unknown;
+}
+
 export type CodexJsonEvent =
   | { type: 'thread.started'; thread_id?: string }
   | { type: 'turn.started' }
@@ -50,6 +55,8 @@ export type CodexJsonEvent =
   | { type: 'turn.completed'; usage?: CodexUsage }
   | { type: 'turn.failed'; error?: unknown }
   | { type: 'error'; message?: string; error?: unknown }
+  | { type: 'compacted'; payload?: CodexCompactedPayload }
+  | { type: 'event_msg'; payload?: { type?: string; [key: string]: unknown } }
   | { type: string };
 
 /** Parse one JSONL line; returns null for blank lines / unparseable JSON. */
@@ -105,6 +112,44 @@ export function codexToolCallName(item: CodexItem): string {
   if (server && tool) return `mcp__${server}__${tool}`;
   if (tool) return tool;
   return 'mcp_tool_call';
+}
+
+/**
+ * Reasoning text for a codex `reasoning` / `agent_reasoning` item. Codex emits
+ * the thinking inside `content[].reasoning_text.text` (Responses item shape),
+ * not the top-level `text` used by agent_message — so read both.
+ */
+export function codexReasoningText(item: CodexItem): string {
+  if (typeof item.text === 'string' && item.text.trim()) return item.text;
+  const content = Array.isArray(item.content)
+    ? item.content
+    : typeof item.content === 'object' && item.content !== null
+      ? [item.content]
+      : [];
+  const parts: string[] = [];
+  for (const entry of content) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const text = typeof record.text === 'string' ? record.text : undefined;
+    if (text) parts.push(text);
+  }
+  if (parts.length > 0) return parts.join('\n');
+
+  const summary = Array.isArray(item.summary)
+    ? item.summary
+    : typeof item.summary === 'object' && item.summary !== null
+      ? [item.summary]
+      : [];
+  return summary
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') return '';
+      const record = entry as Record<string, unknown>;
+      return record.type === 'summary_text' && typeof record.text === 'string'
+        ? record.text.trim()
+        : '';
+    })
+    .filter(Boolean)
+    .join('\n');
 }
 
 /** Arguments JSON for a codex tool item (real `arguments` when reported). */

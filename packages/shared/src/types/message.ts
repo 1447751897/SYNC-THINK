@@ -32,6 +32,8 @@ export interface Message {
   /** Run/Step this message belongs to (empty for plain conversation). */
   runId?: RunId;
   stepId?: StepId;
+  /** Kernel that produced this run (persisted so UI badges survive restarts). */
+  kernelId?: string;
   blocks: MessageBlock[];
   createdAt: string;
   /** Logical ordering within thread (stable across retries & recovery). */

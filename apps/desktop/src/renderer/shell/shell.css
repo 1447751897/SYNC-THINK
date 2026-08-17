@@ -808,6 +808,21 @@ body {
   background: color-mix(in srgb, var(--color-error) 10%, transparent);
 }
 
+.shell-goal-capsule__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shell-goal-capsule__actions .shell-goal-capsule__clear {
+  margin-top: 8px;
+}
+
+.shell-goal-capsule__paused-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
 .shell-task-capsule__pop {
   /* bottom:100% + 自身 padding 充当间距，保证鼠标从胶囊移入弹层不丢 hover。 */
   position: absolute;
@@ -4212,7 +4227,7 @@ body {
 /* ── DSH-style inline execution process (思考行 / 摘要 / 工具卡片) ────────── */
 .shell-process-panel {
   border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
-  border-radius: 10px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--color-elevated) 40%, var(--color-surface));
   margin: 2px 0 8px;
   overflow: hidden;
@@ -4251,6 +4266,12 @@ body {
   color: var(--color-text-faint);
 }
 
+.shell-process-panel__elapsed {
+  font-size: 11.5px;
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .shell-process-panel__chevron {
   margin-left: auto;
   flex: none;
@@ -4270,230 +4291,223 @@ body {
   margin: 0 9px;
 }
 
-.shell-tool-batch {
-  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-elevated) 60%, var(--color-surface));
-  overflow: hidden;
-}
-.shell-tool-batch.has-failed {
-  border-color: color-mix(in srgb, var(--color-error) 45%, var(--color-border));
+.shell-process-panel__body > .shell-inline-process {
+  margin: 0;
 }
 
-.shell-tool-batch__toggle {
-  appearance: none;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 9px;
-  font: inherit;
-  color: var(--color-text-secondary);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  text-align: left;
-}
-.shell-tool-batch__toggle:hover {
-  background: color-mix(in srgb, var(--color-accent-soft) 25%, transparent);
-}
-.shell-tool-batch__toggle:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
-  outline-offset: -2px;
-}
-
-.shell-tool-batch__title {
+.shell-process-panel__supplemental {
   min-width: 0;
-  flex: 1;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.shell-tool-batch__count {
-  flex: none;
-  font-size: 11px;
-  color: var(--color-text-faint);
-}
-
-.shell-tool-batch__body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 5px 7px 7px;
-  border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
-  margin: 0 7px;
+.shell-process-panel__supplemental > .shell-run-connection-status {
+  margin: 2px 4px;
 }
 
 .shell-inline-process {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  margin: 2px 0 8px;
+  gap: 3px;
+  margin: 1px 0 8px;
 }
 
-.shell-inline-process__think {
-  border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-elevated) 55%, var(--color-surface));
-  overflow: hidden;
+.shell-inline-process__think,
+.shell-inline-process__tool {
+  min-width: 0;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
 }
 
-.shell-inline-process__think-toggle {
+.shell-inline-process__think-toggle,
+.shell-inline-process__tool-toggle {
   appearance: none;
   width: 100%;
+  min-height: 26px;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 9px;
-  font: inherit;
-  color: var(--color-text-secondary);
-  background: transparent;
+  gap: 6px;
+  padding: 3px 4px;
   border: 0;
-  cursor: pointer;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   text-align: left;
-}
-.shell-inline-process__think-toggle:hover {
-  background: color-mix(in srgb, var(--color-accent-soft) 30%, transparent);
-}
-.shell-inline-process__think-toggle:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
-  outline-offset: -2px;
+  cursor: pointer;
 }
 
-.shell-inline-process__think-label {
+.shell-inline-process__think-toggle:hover,
+.shell-inline-process__tool-toggle:hover {
+  background: color-mix(in srgb, var(--color-accent-soft) 26%, transparent);
+}
+
+.shell-inline-process__think-toggle:focus-visible,
+.shell-inline-process__tool-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 58%, transparent);
+  outline-offset: 1px;
+}
+
+.shell-inline-process__think-label,
+.shell-inline-process__tool-name {
   flex: none;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--color-text-secondary);
 }
 
-.shell-inline-process__think-summary {
+.shell-inline-process__think-summary,
+.shell-inline-process__tool-summary {
   min-width: 0;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+  font-weight: 400;
   color: var(--color-text-faint);
+}
+
+.shell-inline-process__think-body,
+.shell-inline-process__tool-body {
+  margin: 1px 4px 4px 19px;
+  padding: 4px 0 5px 10px;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  color: var(--color-text-faint);
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 
 .shell-inline-process__chevron {
   flex: none;
   color: var(--color-text-faint);
-  transition: transform 0.16s ease;
+  transition: transform 0.14s ease;
 }
+
 .shell-inline-process__chevron.is-open {
   transform: rotate(180deg);
 }
 
-.shell-inline-process__think-body {
-  padding: 2px 10px 8px;
-  color: var(--color-text-faint);
-  font-size: 12.5px;
-  line-height: 1.6;
-  border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
-  margin: 0 9px;
+.shell-inline-process__spin {
+  flex: none;
+  color: var(--color-accent);
+  animation: shell-spin 0.9s linear infinite;
 }
 
-.shell-inline-process__text {
-  font-size: 13.5px;
+.shell-inline-process__markdown {
+  padding: 1px 4px 2px 23px;
+  font-size: 13px;
   line-height: 1.65;
   color: var(--color-text-secondary);
-  padding: 0 2px;
 }
 
-.shell-inline-process__commentary {
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--color-text-faint);
-  padding: 0 2px;
-}
-
-.shell-inline-process__tool {
-  border: 1px solid color-mix(in srgb, var(--color-border) 65%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-elevated) 55%, var(--color-surface));
-  overflow: hidden;
-}
 .shell-inline-process__tool.is-failed {
-  border-color: color-mix(in srgb, var(--color-error) 45%, var(--color-border));
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 7%, transparent);
 }
 
-.shell-inline-process__tool-toggle {
-  appearance: none;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 9px;
-  font: inherit;
-  color: var(--color-text-secondary);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  text-align: left;
-}
-.shell-inline-process__tool-toggle:hover {
-  background: color-mix(in srgb, var(--color-accent-soft) 30%, transparent);
-}
-.shell-inline-process__tool-toggle:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
-  outline-offset: -2px;
-}
-
-.shell-inline-process__tool-name {
-  min-width: 0;
-  flex: 1;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.shell-inline-process__tool-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-text-faint);
 }
 
 .shell-inline-process__tool-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   flex: none;
   font-size: 11px;
   color: var(--color-text-faint);
 }
-.shell-inline-process__tool.is-failed .shell-inline-process__tool-status {
-  color: var(--color-error);
+
+.shell-inline-process__tool-status[data-status='completed'] {
+  color: color-mix(in srgb, var(--color-accent) 72%, var(--color-text-secondary));
 }
-.shell-inline-process__tool-failed-icon {
-  flex: none;
+
+.shell-inline-process__tool-status[data-status='failed'] {
   color: var(--color-error);
 }
 
-.shell-inline-process__tool-body {
+.shell-inline-process__detail-row {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 6px 9px 8px;
-  border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
-  margin: 0 9px;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.shell-inline-process__detail-row > span,
+.shell-inline-process__detail-block > span {
+  flex: none;
+  width: 52px;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+
+.shell-inline-process__detail-row code {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.shell-inline-process__detail-block {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
 }
 
 .shell-inline-process__tool-code {
+  min-width: 0;
+  max-height: 220px;
+  overflow: auto;
   margin: 0;
   padding: 6px 8px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--color-elevated) 70%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-elevated) 65%, var(--color-surface));
   color: var(--color-text-secondary);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11.5px;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 180px;
-  overflow: auto;
 }
+
 .shell-inline-process__tool-code.is-failed {
+  border-color: color-mix(in srgb, var(--color-error) 32%, var(--color-border));
   color: var(--color-error);
+}
+
+.shell-inline-process__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 4px 2px 23px;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+}
+
+.shell-inline-process__status.is-failed {
+  color: var(--color-error);
+}
+
+.shell-inline-process__status-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-inline-process__spin {
+    animation: none;
+  }
+  .shell-inline-process__chevron {
+    transition: none;
+  }
 }
 
 .shell-system-bubble {
@@ -5335,6 +5349,1216 @@ body {
   border-color: color-mix(in srgb, var(--color-error) 40%, transparent);
   background: transparent;
   color: var(--color-error);
+}
+
+/* ─── 可编辑方案卡（plan/exec 审批卡编辑器） ─────────────────────────────── */
+
+.shell-plan-card__title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.shell-plan-card__title-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  background: var(--color-elevated);
+  color: var(--color-text);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  outline: none;
+}
+
+.shell-plan-card__title-input:focus {
+  border-color: var(--color-accent);
+}
+
+.shell-plan-card__history {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--color-text-secondary);
+}
+
+.shell-plan-card__rev-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.shell-plan-card__rev-chip[data-active='1'] {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  font-weight: 600;
+}
+
+.shell-plan-card__rev-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.shell-plan-card__note {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+}
+
+.shell-plan-card__note.is-warn {
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+}
+
+.shell-plan-card__body {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.shell-plan-card__field {
+  display: grid;
+  gap: 4px;
+}
+
+.shell-plan-card__field > span,
+.shell-plan-card__section-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+
+.shell-plan-card__field input,
+.shell-plan-card__field textarea,
+.shell-plan-card__step-editor input,
+.shell-plan-card__step-editor textarea,
+.shell-plan-card__tag-row input,
+.shell-plan-card__risk-row input {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  background: var(--color-elevated);
+  color: var(--color-text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  outline: none;
+}
+
+.shell-plan-card__field textarea,
+.shell-plan-card__step-editor textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.shell-plan-card__field input:focus,
+.shell-plan-card__field textarea:focus,
+.shell-plan-card__step-editor input:focus,
+.shell-plan-card__step-editor textarea:focus,
+.shell-plan-card__tag-row input:focus,
+.shell-plan-card__risk-row input:focus {
+  border-color: var(--color-accent);
+}
+
+.shell-plan-card__field input:disabled,
+.shell-plan-card__field textarea:disabled,
+.shell-plan-card__step-editor input:disabled,
+.shell-plan-card__step-editor textarea:disabled,
+.shell-plan-card__tag-row input:disabled,
+.shell-plan-card__risk-row input:disabled {
+  opacity: 0.6;
+}
+
+.shell-plan-card__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.shell-plan-card__list {
+  display: grid;
+  gap: 4px;
+}
+
+.shell-plan-card__tag-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.shell-plan-card__tag-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.shell-plan-card__icon-btn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.shell-plan-card__icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  color: var(--color-error);
+}
+
+.shell-plan-card__icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.shell-plan-card__add {
+  align-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px dashed var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.shell-plan-card__add:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  color: var(--color-accent);
+}
+
+.shell-plan-card__add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.shell-plan-card__step-editor {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-border) 14%, transparent);
+}
+
+.shell-plan-card__step-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shell-plan-card__step-editor-head .shell-plan-card__step-no {
+  flex: none;
+}
+
+.shell-plan-card__step-editor-head input {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.shell-plan-card__step-lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.shell-plan-card__risk-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shell-plan-card__risk-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.shell-plan-card__secondary {
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: inherit;
+}
+
+.shell-plan-card__secondary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.shell-plan-card__approve,
+.shell-plan-card__revise,
+.shell-plan-card__cancel,
+.shell-plan-card__secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ─── 任务清单面板（对齐 DSH TodoPanel，composer 上方常驻） ───────────────── */
+
+.shell-todo-panel {
+  margin: 4px 8px 0;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 12px 12px 0 0;
+  background: color-mix(in srgb, var(--color-border) 10%, transparent);
+  font-size: 12px;
+}
+
+.shell-todo-panel__body {
+  position: relative;
+}
+
+.shell-todo-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.shell-todo-panel__lead {
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-text-secondary);
+}
+
+.shell-todo-panel__title {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.shell-todo-panel__progress {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.shell-todo-panel__chevron {
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-text-secondary);
+}
+
+.shell-todo-panel__list {
+  max-height: 180px;
+  margin: 0;
+  padding: 0 0 6px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.shell-todo-panel__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 4px;
+}
+
+.shell-todo-panel__item + .shell-todo-panel__item {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+
+.shell-todo-panel__glyph {
+  flex: none;
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shell-todo-panel__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-border-strong);
+}
+
+.shell-todo-panel__content {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-todo-panel__item[data-status='completed'] .shell-todo-panel__content {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+/* ─── 问询卡片（ask_user_question 接管 composer；对齐 DSH QuestionComposer） ── */
+
+.shell-ask-card-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.shell-ask-card {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--color-border-strong) 75%, transparent);
+  border-radius: 16px;
+  background: var(--color-elevated);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-border-strong) 24%, transparent);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.shell-ask-card.is-plan-review {
+  border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
+}
+
+.shell-ask-card__strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+}
+
+.shell-ask-card__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-warning);
+}
+
+.shell-ask-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px 4px;
+}
+
+.shell-ask-card__heading-block {
+  min-width: 0;
+}
+
+.shell-ask-card__eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+
+.shell-ask-card__title {
+  margin: 2px 0 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--color-text);
+}
+
+.shell-ask-card__icon-btn {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.shell-ask-card__icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.shell-ask-card__icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.shell-ask-card__body {
+  padding: 8px 16px 4px;
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  line-height: 1.6;
+}
+
+.shell-ask-card__detail {
+  margin-bottom: 8px;
+  color: var(--color-text-secondary);
+}
+
+.shell-ask-card__options {
+  display: grid;
+  gap: 6px;
+}
+
+.shell-ask-card__option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.shell-ask-card__option:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+
+.shell-ask-card__option[data-selected='1'] {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent-soft) 12%, transparent);
+}
+
+.shell-ask-card__option:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.shell-ask-card__number {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.shell-ask-card__option[data-selected='1'] .shell-ask-card__number {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.shell-ask-card__checkbox {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  color: #fff;
+  background: transparent;
+}
+
+.shell-ask-card__option[data-selected='1'] .shell-ask-card__checkbox,
+.shell-ask-card__custom-row[data-active='1'] .shell-ask-card__checkbox {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.shell-ask-card__option-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.shell-ask-card__option-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.shell-ask-card__option-label {
+  font-weight: 500;
+}
+
+.shell-ask-card__badge {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent-soft) 22%, transparent);
+}
+
+.shell-ask-card__option-description {
+  width: 100%;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.shell-ask-card__custom-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 10px;
+}
+
+.shell-ask-card__custom-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 13px;
+  outline: none;
+}
+
+.shell-ask-card__custom-textarea {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-elevated);
+  color: var(--color-text);
+  padding: 8px 12px;
+  font-size: 13px;
+  resize: vertical;
+  outline: none;
+}
+
+.shell-ask-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px 12px;
+}
+
+.shell-ask-card__pager {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.shell-ask-card__progress {
+  min-width: 36px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.shell-ask-card__feedback {
+  flex: 1;
+  min-height: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--color-error);
+}
+
+.shell-ask-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shell-ask-card__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.shell-ask-card__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.shell-ask-card__btn.is-skip {
+  border-color: var(--color-border-strong);
+  background: transparent;
+  color: inherit;
+}
+
+.shell-ask-card__btn.is-primary,
+.shell-ask-card__btn.is-approve {
+  color: #fff;
+  background: var(--color-accent);
+}
+
+.shell-ask-card__btn.is-decline {
+  border-color: color-mix(in srgb, var(--color-error) 40%, transparent);
+  background: transparent;
+  color: var(--color-error);
+}
+
+.shell-ask-card__btn.is-discuss {
+  border-color: var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+/* ─── 定时任务面板（侧栏「定时任务」stage） ───────────────────────────────── */
+
+.task-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  padding: 16px 20px;
+  overflow-y: auto;
+  background: var(--color-panel, var(--color-elevated));
+}
+
+.task-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.task-panel__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.task-panel__subtitle {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.task-panel__new {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--color-accent);
+  cursor: pointer;
+}
+
+.task-panel__list {
+  display: grid;
+  gap: 8px;
+}
+
+.task-panel__empty {
+  padding: 28px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.task-panel__card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-elevated);
+}
+
+.task-panel__card[data-enabled='0'] {
+  opacity: 0.62;
+}
+
+.task-panel__card-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.task-panel__card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.task-panel__card-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.task-panel__badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.task-panel__badge.is-random {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent-soft) 22%, transparent);
+}
+
+.task-panel__badge.is-paused {
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.task-panel__badge.is-soon {
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+}
+
+.task-panel__card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  flex-wrap: wrap;
+}
+
+.task-panel__dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--color-border-strong);
+}
+
+.task-panel__card-last {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.task-panel__card-last[data-status='success'] {
+  color: var(--color-success);
+}
+
+.task-panel__card-last[data-status='skipped'] {
+  color: var(--color-warning);
+}
+
+.task-panel__card-last[data-status='failed'] {
+  color: var(--color-error);
+}
+
+.task-panel__card-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.task-panel__icon-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.task-panel__icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-border) 55%, transparent);
+  color: var(--color-text);
+}
+
+.task-panel__icon-btn.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  color: var(--color-error);
+}
+
+.task-panel__icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 任务会话徽标（会话列表） */
+.shell-task-conv-badge {
+  flex: none;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent-soft) 20%, transparent);
+}
+
+/* 新建/编辑对话框 */
+.task-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, #000 36%, transparent);
+  padding: 24px;
+}
+
+.task-editor {
+  width: 100%;
+  max-width: 560px;
+  max-height: min(84vh, 760px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border-strong);
+  box-shadow: 0 16px 48px color-mix(in srgb, #000 30%, transparent);
+  overflow: hidden;
+}
+
+.task-editor__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 8px;
+}
+
+.task-editor__head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.task-editor__subtitle {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.task-editor__close {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.task-editor__close:hover {
+  background: color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+
+.task-editor__body {
+  padding: 8px 18px 4px;
+  display: grid;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.task-editor__field {
+  display: grid;
+  gap: 5px;
+}
+
+.task-editor__field > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.task-editor__field input,
+.task-editor__field textarea,
+.task-editor__field select {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-elevated);
+  color: var(--color-text);
+  padding: 7px 10px;
+  font-size: 13px;
+  outline: none;
+}
+
+.task-editor__field input:focus,
+.task-editor__field textarea:focus,
+.task-editor__field select:focus {
+  border-color: var(--color-accent);
+}
+
+.task-editor__field textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.task-editor__target {
+  display: grid;
+  gap: 6px;
+}
+
+.task-editor__target-kind {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.task-editor__target-kind button,
+.task-editor__rule-tabs button {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.task-editor__target-kind button[data-active='1'],
+.task-editor__rule-tabs button[data-active='1'] {
+  border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
+  background: color-mix(in srgb, var(--color-accent-soft) 16%, transparent);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.task-editor__rule-tabs {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.task-editor__rule-body {
+  margin-top: 2px;
+}
+
+.task-editor__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.task-editor__row input {
+  width: 110px;
+  flex: none;
+}
+
+.task-editor__grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.task-editor__grid2 label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.task-editor__error {
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+}
+
+.task-editor__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px 16px;
+}
+
+.task-editor__cancel,
+.task-editor__save {
+  padding: 6px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-editor__cancel {
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: inherit;
+}
+
+.task-editor__save {
+  border: none;
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.task-editor__cancel:disabled,
+.task-editor__save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ─── 能力中心「本地」tab（本地 skill 发现） ─────────────────────────────── */
+
+.capability-local__banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-border) 14%, transparent);
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.capability-local__banner code {
+  font-size: 12px;
+  color: var(--color-text);
+}
+
+.capability-local__banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-success);
+}
+
+.capability-center__empty {
+  padding: 32px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.capability-local__list {
+  display: grid;
+  gap: 8px;
+}
+
+.capability-local__card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-elevated);
+}
+
+.capability-local__card[data-imported='1'] {
+  opacity: 0.62;
+}
+
+.capability-local__card-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.capability-local__card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.capability-local__badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent-soft) 20%, transparent);
+}
+
+.capability-local__desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.capability-local__summary {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  opacity: 0.85;
+}
+
+.capability-local__meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.capability-local__meta code {
+  font-size: 11px;
+}
+
+.capability-local__import {
+  flex: none;
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--color-accent);
+  cursor: pointer;
 }
 
 .shell-compose__bar-left,

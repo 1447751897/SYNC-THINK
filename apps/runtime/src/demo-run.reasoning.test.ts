@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { RunId } from '@sync-think/shared';
 import {
+  appendAssistantTextDelta,
   appendCommentaryTimelineDelta,
   closeCommentaryTimelineSegment,
   createDemoRun,
   parseDemoRuns,
   projectAdapterEvent,
   serializeDemoRun,
+  startAssistantTool,
 } from './demo-run.js';
 
 function run() {
@@ -18,6 +20,26 @@ function run() {
 }
 
 describe('DemoRun commentary timeline', () => {
+  it('reclassifies provider final text as commentary when a tool follows it', () => {
+    const text = appendAssistantTextDelta(
+      run(),
+      'final_answer',
+      '我先检查项目结构。',
+      '2026-08-16T10:00:00.000Z',
+    );
+    const withTool = startAssistantTool(text, {
+      toolCallId: 'tool-read',
+      name: 'read_file',
+      argumentsJson: '{"path":"README.md"}',
+      occurredAt: '2026-08-16T10:00:01.000Z',
+    });
+
+    expect(withTool.assistantTimeline).toEqual([
+      expect.objectContaining({ kind: 'text', phase: 'commentary' }),
+      expect.objectContaining({ kind: 'tool', toolCallId: 'tool-read' }),
+    ]);
+  });
+
   it('merges consecutive deltas at the same durable boundary', () => {
     const first = appendCommentaryTimelineDelta(run(), {
       textDelta: '先检查',

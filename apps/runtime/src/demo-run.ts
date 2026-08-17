@@ -1,8 +1,10 @@
 import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
-import type {
-  CommentaryTimelineSegment,
-  ReasoningTimelineSegment,
+import {
+  type AssistantTurnSegment,
+  type CommentaryTimelineSegment,
+  type ReasoningTimelineSegment,
 } from '@sync-think/protocol';
+import { normalizeAssistantTurnPhases } from '@sync-think/protocol/assistant-turn';
 import type { ContextSnapshot, ContextSnapshotSource } from './context-snapshot.js';
 import { isRetryable } from '@sync-think/shared';
 import type {
@@ -132,6 +134,19 @@ export interface DemoRunState {
   contextWindow?: number;
   /** True when contextWindow fell back to the 128k default (no model metadata). */
   contextWindowEstimated?: boolean;
+  /**
+   * Effective window actually honored this run (min of the configured window
+   * and a non-overridable kernel native cap). Drives trimming + kernel injection.
+   */
+  effectiveContextWindow?: number;
+  /** Why the effective window differs from the configured value (observability). */
+  contextWindowSource?: 'configured' | 'kernel-capped' | 'estimated';
+  /**
+   * Pre-resolved kernel session plan for observability (run.started payload):
+   * the create/resume decision and how many host turns were missing from the
+   * native session (cross-kernel gap). Native runs never set this.
+   */
+  kernelSessionPlan?: { mode: 'create' | 'resume'; gapCount: number };
   /** Included project/task/memory blocks selected for the real provider request. */
   projectContextPromptBlocks?: string[];
   /** Context Packet sources with their provider disposition. */
@@ -144,6 +159,11 @@ export interface DemoRunState {
   reasoningEffort?: string;
   /** Compose 联网开关：本轮是否暴露 web_search / web_fetch。 */
   networkEnabled?: boolean;
+  /**
+   * Planning mode: this run is a read-only analysis run that submits an
+   * approvable plan. The host hard-blocks side-effecting tools.
+   */
+  planningMode?: boolean;
   /** Multimodal images for this turn only (not persisted as durable event blobs). */
   images?: DemoRunImage[];
   packetId?: string;
@@ -161,10 +181,241 @@ export interface DemoRunState {
   reasoningText: string;
   /** Legacy provider reasoning fragments retained only for checkpoint compatibility. */
   reasoningSegments: ReasoningTimelineSegment[];
+  /** Exact provider/kernel emission order for the single visible assistant turn. */
+  assistantTimeline: AssistantTurnSegment[];
+  /**
+   * Tool calls executed by an external kernel this run, in event order. Kept so
+   * the durable assistant message can carry tool-call / tool-result blocks —
+   * cross-kernel gap transcripts then restore the tool names, arguments and
+   * results the resumed kernel otherwise never sees.
+   */
+  kernelToolEvents: KernelToolEventRecord[];
   /** When true, use demoProvider Fake path (no live secret). */
   useFakeProvider: boolean;
 }
 
+export interface KernelToolEventRecord {
+  kind: 'tool-call' | 'tool-result';
+  sequence: number;
+  toolId: string;
+  name?: string;
+  argsJson?: string;
+  output?: string;
+  failed?: boolean;
+}
+
+const MAX_ASSISTANT_TIMELINE_SEGMENTS = 512;
+
+function isAssistantTurnSegment(value: unknown): value is AssistantTurnSegment {
+  if (!value || typeof value !== 'object') return false;
+  const segment = value as Record<string, unknown>;
+  return (
+    typeof segment.id === 'string' &&
+    typeof segment.sequence === 'number' &&
+    (segment.kind === 'thinking' ||
+      segment.kind === 'text' ||
+      segment.kind === 'tool' ||
+      segment.kind === 'status')
+  );
+}
+
+function closeAssistantTimelineTail(
+  timeline: readonly AssistantTurnSegment[],
+  occurredAt?: string,
+): AssistantTurnSegment[] {
+  if (timeline.length === 0) return [];
+  const next = timeline.map((segment) => ({ ...segment })) as AssistantTurnSegment[];
+  const tail = next.at(-1);
+  if (tail?.kind === 'thinking' && tail.status === 'streaming') {
+    next[next.length - 1] = {
+      ...tail,
+      status: 'completed',
+      ...(occurredAt ? { completedAt: occurredAt } : {}),
+    };
+  } else if (tail?.kind === 'text' && tail.status === 'streaming') {
+    next[next.length - 1] = {
+      ...tail,
+      status: 'completed',
+      ...(occurredAt ? { completedAt: occurredAt } : {}),
+    };
+  }
+  return next;
+}
+
+function nextAssistantTimelineSequence(timeline: readonly AssistantTurnSegment[]): number {
+  return (timeline.at(-1)?.sequence ?? -1) + 1;
+}
+
+function boundAssistantTimeline(timeline: AssistantTurnSegment[]): AssistantTurnSegment[] {
+  return timeline.length > MAX_ASSISTANT_TIMELINE_SEGMENTS
+    ? timeline.slice(-MAX_ASSISTANT_TIMELINE_SEGMENTS)
+    : timeline;
+}
+
+export function appendAssistantThinkingDelta(
+  run: DemoRunState,
+  text: string,
+  occurredAt: string,
+): DemoRunState {
+  if (!text) return run;
+  const timeline = run.assistantTimeline ?? [];
+  const tail = timeline.at(-1);
+  if (tail?.kind === 'thinking' && tail.status === 'streaming') {
+    return {
+      ...run,
+      assistantTimeline: [...timeline.slice(0, -1), { ...tail, text: tail.text + text }],
+    };
+  }
+  const closed = closeAssistantTimelineTail(timeline, occurredAt);
+  const sequence = nextAssistantTimelineSequence(closed);
+  return {
+    ...run,
+    assistantTimeline: boundAssistantTimeline([
+      ...closed,
+      {
+        id: `think-${run.runId}-${sequence}`,
+        sequence,
+        kind: 'thinking',
+        text,
+        status: 'streaming',
+        startedAt: occurredAt,
+      },
+    ]),
+  };
+}
+
+export function appendAssistantTextDelta(
+  run: DemoRunState,
+  phase: 'commentary' | 'final_answer',
+  text: string,
+  occurredAt: string,
+): DemoRunState {
+  if (!text) return run;
+  const timeline = run.assistantTimeline ?? [];
+  const tail = timeline.at(-1);
+  if (tail?.kind === 'text' && tail.phase === phase && tail.status === 'streaming') {
+    return {
+      ...run,
+      assistantTimeline: [...timeline.slice(0, -1), { ...tail, text: tail.text + text }],
+    };
+  }
+  const closed = closeAssistantTimelineTail(timeline, occurredAt);
+  const sequence = nextAssistantTimelineSequence(closed);
+  return {
+    ...run,
+    assistantTimeline: boundAssistantTimeline([
+      ...closed,
+      {
+        id: `text-${run.runId}-${sequence}`,
+        sequence,
+        kind: 'text',
+        phase,
+        text,
+        status: 'streaming',
+        startedAt: occurredAt,
+      },
+    ]),
+  };
+}
+
+export function closeAssistantTimeline(run: DemoRunState, occurredAt: string): DemoRunState {
+  return {
+    ...run,
+    assistantTimeline: closeAssistantTimelineTail(run.assistantTimeline ?? [], occurredAt),
+  };
+}
+
+export function startAssistantTool(
+  run: DemoRunState,
+  input: { toolCallId: string; name: string; argumentsJson?: string; occurredAt: string },
+): DemoRunState {
+  const current = run.assistantTimeline ?? [];
+  const existingIndex = current.findIndex(
+    (segment) => segment.kind === 'tool' && segment.toolCallId === input.toolCallId,
+  );
+  if (existingIndex >= 0) {
+    const next = current.map((segment) => ({ ...segment })) as AssistantTurnSegment[];
+    const existing = next[existingIndex]!;
+    if (existing.kind === 'tool') {
+      next[existingIndex] = {
+        ...existing,
+        name: input.name || existing.name,
+        ...(input.argumentsJson !== undefined ? { argumentsJson: input.argumentsJson } : {}),
+      };
+    }
+    return { ...run, assistantTimeline: next };
+  }
+  const timeline = closeAssistantTimelineTail(current, input.occurredAt);
+  const sequence = nextAssistantTimelineSequence(timeline);
+  const withTool: AssistantTurnSegment[] = [
+    ...timeline,
+    {
+      id: `tool-${run.runId}-${input.toolCallId}`,
+      sequence,
+      kind: 'tool',
+      toolCallId: input.toolCallId,
+      name: input.name,
+      ...(input.argumentsJson !== undefined ? { argumentsJson: input.argumentsJson } : {}),
+      status: 'running',
+      startedAt: input.occurredAt,
+    },
+  ];
+  return {
+    ...run,
+    assistantTimeline: boundAssistantTimeline(normalizeAssistantTurnPhases(withTool)),
+  };
+}
+
+export function completeAssistantTool(
+  run: DemoRunState,
+  input: { toolCallId: string; output: string; failed?: boolean; occurredAt: string },
+): DemoRunState {
+  const timeline = (run.assistantTimeline ?? []).map((segment) => ({
+    ...segment,
+  })) as AssistantTurnSegment[];
+  const index = timeline.findIndex(
+    (segment) => segment.kind === 'tool' && segment.toolCallId === input.toolCallId,
+  );
+  if (index < 0) return run;
+  const existing = timeline[index]!;
+  if (existing.kind !== 'tool') return run;
+  timeline[index] = {
+    ...existing,
+    output: input.output,
+    isError: input.failed === true,
+    status: input.failed ? 'failed' : 'completed',
+    completedAt: input.occurredAt,
+  };
+  return { ...run, assistantTimeline: timeline };
+}
+
+export function appendAssistantStatus(
+  run: DemoRunState,
+  input: {
+    statusType: Extract<AssistantTurnSegment, { kind: 'status' }>['statusType'];
+    label: string;
+    detail?: string;
+    occurredAt: string;
+  },
+): DemoRunState {
+  const timeline = closeAssistantTimelineTail(run.assistantTimeline ?? [], input.occurredAt);
+  const sequence = nextAssistantTimelineSequence(timeline);
+  return {
+    ...run,
+    assistantTimeline: boundAssistantTimeline([
+      ...timeline,
+      {
+        id: `status-${run.runId}-${sequence}`,
+        sequence,
+        kind: 'status',
+        statusType: input.statusType,
+        label: input.label,
+        ...(input.detail !== undefined ? { detail: input.detail } : {}),
+        occurredAt: input.occurredAt,
+      },
+    ]),
+  };
+}
 export interface DemoRunEventProjection {
   category: EventCategory;
   type: string;
@@ -214,6 +465,7 @@ export interface CreateDemoRunInput {
   contextSources?: ContextSnapshotSource[];
   reasoningEffort?: string;
   networkEnabled?: boolean;
+  planningMode?: boolean;
   images?: DemoRunImage[];
   packetId?: string;
   proofHash?: string;
@@ -283,6 +535,7 @@ export function createDemoRun(
         : undefined,
     reasoningEffort: extras.reasoningEffort,
     networkEnabled: extras.networkEnabled === true ? true : undefined,
+    planningMode: extras.planningMode === true ? true : undefined,
     images: extras.images && extras.images.length > 0 ? extras.images : undefined,
     packetId: extras.packetId,
     proofHash: extras.proofHash,
@@ -293,6 +546,8 @@ export function createDemoRun(
     legacyPendingText: '',
     reasoningText: '',
     reasoningSegments: [],
+    assistantTimeline: [],
+    kernelToolEvents: [],
     useFakeProvider: useFake,
   };
 }
@@ -448,8 +703,7 @@ export function projectAdapterEvent(
     nextAdapterEventIndex,
     assistantText:
       adapterEvent.type === 'text-delta' ||
-      (adapterEvent.type === 'assistant-message-delta' &&
-        adapterEvent.phase === 'final_answer')
+      (adapterEvent.type === 'assistant-message-delta' && adapterEvent.phase === 'final_answer')
         ? run.assistantText + adapterEvent.text
         : run.assistantText,
     commentaryText:
@@ -531,8 +785,7 @@ export function projectAdapterEvent(
   if (adapterEvent.type === 'assistant-message-delta') {
     return {
       category: 'message',
-      type:
-        adapterEvent.phase === 'commentary' ? 'message.commentary_delta' : 'message.delta',
+      type: adapterEvent.phase === 'commentary' ? 'message.commentary_delta' : 'message.delta',
       payload: {
         threadId: run.threadId,
         textDelta: adapterEvent.text,
@@ -817,14 +1070,23 @@ function parseDemoRun(value: unknown): DemoRunState {
       'commentary',
       boundCommentaryTimeline,
     ),
-    legacyPendingText:
-      typeof run.legacyPendingText === 'string' ? run.legacyPendingText : '',
+    legacyPendingText: typeof run.legacyPendingText === 'string' ? run.legacyPendingText : '',
     reasoningText: typeof run.reasoningText === 'string' ? run.reasoningText : '',
-    reasoningSegments: parseTimelineSegments(
-      run.reasoningSegments,
-      'reasoning',
-      (segments) => segments.slice(-MAX_COMMENTARY_TIMELINE_SEGMENTS),
+    reasoningSegments: parseTimelineSegments(run.reasoningSegments, 'reasoning', (segments) =>
+      segments.slice(-MAX_COMMENTARY_TIMELINE_SEGMENTS),
     ),
+    assistantTimeline: Array.isArray(run.assistantTimeline)
+      ? run.assistantTimeline.filter(isAssistantTurnSegment).slice(-512)
+      : [],
+    // Legacy checkpoints predate kernel tool history; normalize to an empty list.
+    kernelToolEvents: Array.isArray(run.kernelToolEvents)
+      ? run.kernelToolEvents.filter(
+          (entry): entry is KernelToolEventRecord =>
+            Boolean(entry) &&
+            (entry.kind === 'tool-call' || entry.kind === 'tool-result') &&
+            typeof entry.toolId === 'string',
+        )
+      : [],
     useFakeProvider: run.useFakeProvider !== false && !run.providerId,
   };
 }
@@ -851,8 +1113,7 @@ function parseTimelineSegments<T extends CommentaryTimelineSegment>(
     ) {
       throw new Error(`Runtime checkpoint contains an invalid ${channel} timeline segment`);
     }
-    const completedAt =
-      typeof entry.completedAt === 'string' ? entry.completedAt : undefined;
+    const completedAt = typeof entry.completedAt === 'string' ? entry.completedAt : undefined;
     const afterSequence =
       typeof entry.afterSequence === 'number' &&
       Number.isInteger(entry.afterSequence) &&

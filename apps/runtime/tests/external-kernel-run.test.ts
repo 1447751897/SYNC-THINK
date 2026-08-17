@@ -262,8 +262,8 @@ interface RuntimeExternalKernelHarness {
   demoRunAborts: Map<string, AbortController>;
   openGateway: {
     tickets: {
-      recordResponseForFunctionCall(scopeId: string, callId: string, responseId: string): void;
-      resolveResponseForFunctionCall(scopeId: string, callId: string): string | undefined;
+      recordContinuationItem(scopeId: string, callId: string, responseId: string): void;
+      resolveContinuationItem(scopeId: string, callId: string): string | undefined;
       recordRunUsage(
         runId: string,
         usage: {
@@ -411,7 +411,19 @@ describe('Runtime external kernel finalization', () => {
       const assistant = assistantMessage(
         fixture.messageStore.listMessages(fixture.threadId as never).messages,
       );
-      expect(assistant?.blocks).toEqual([{ type: 'text', text: 'hello kernel' }]);
+      expect(assistant?.id).toBe(`asst-${fixture.runId}`);
+      expect(assistant?.blocks.map((block) => block.type)).toEqual(['commentary', 'text']);
+      expect(assistant?.blocks[0]?.payload).toMatchObject({
+        assistantTimeline: [
+          expect.objectContaining({
+            kind: 'text',
+            phase: 'final_answer',
+            text: 'hello kernel',
+            status: 'completed',
+          }),
+        ],
+      });
+      expect(assistant?.blocks[1]).toEqual({ type: 'text', text: 'hello kernel' });
     } finally {
       fixture.connection.raw.close();
     }
@@ -432,8 +444,18 @@ describe('Runtime external kernel finalization', () => {
       const assistant = assistantMessage(
         fixture.messageStore.listMessages(fixture.threadId as never).messages,
       );
-      expect(assistant?.blocks[0]).toEqual({ type: 'text', text: 'partial kernel output' });
-      expect(assistant?.blocks[1]).toEqual(
+      expect(assistant?.blocks.map((block) => block.type)).toEqual(['commentary', 'text', 'error']);
+      expect(assistant?.blocks[0]?.payload).toMatchObject({
+        assistantTimeline: [
+          expect.objectContaining({
+            kind: 'text',
+            phase: 'final_answer',
+            text: 'partial kernel output',
+          }),
+        ],
+      });
+      expect(assistant?.blocks[1]).toEqual({ type: 'text', text: 'partial kernel output' });
+      expect(assistant?.blocks[2]).toEqual(
         expect.objectContaining({
           type: 'error',
           payload: expect.objectContaining({ terminalState: 'failed' }),
@@ -500,11 +522,26 @@ describe('Runtime external kernel finalization', () => {
       await fixture.harness.executeExternalKernelRun(fixture.runId);
       const events = fixture.stateStore.listEventsByRun(fixture.runId);
 
-      // Reasoning is diagnostic-only: it must never become durable chat text.
+      // Ordered metadata preserves reasoning -> answer -> compaction exactly;
+      // compatibility blocks follow the same visible order without emitting a
+      // provider-context block for the status row.
       const assistant = assistantMessage(
         fixture.messageStore.listMessages(fixture.threadId as never).messages,
       );
-      expect(assistant?.blocks).toEqual([{ type: 'text', text: 'visible answer' }]);
+      expect(assistant?.blocks.map((block) => block.type)).toEqual([
+        'commentary',
+        'reasoning',
+        'text',
+      ]);
+      expect(assistant?.blocks[0]?.payload).toMatchObject({
+        assistantTimeline: [
+          expect.objectContaining({ kind: 'thinking', text: 'internal plan' }),
+          expect.objectContaining({ kind: 'text', phase: 'final_answer', text: 'visible answer' }),
+          expect.objectContaining({ kind: 'status', statusType: 'compaction' }),
+        ],
+      });
+      expect(assistant?.blocks[1]).toEqual({ type: 'reasoning', reasoningText: 'internal plan' });
+      expect(assistant?.blocks[2]).toEqual({ type: 'text', text: 'visible answer' });
 
       // The kernel compacted its own context; the host records a kernel-scoped
       // boundary and never the native context.compacted truncation marker.
@@ -839,7 +876,7 @@ describe('Runtime external kernel finalization', () => {
       expect(sessionValue?.responseContinuationScopeId).toMatch(/^kernel_/);
       const scopeId = sessionValue!.responseContinuationScopeId!;
 
-      firstRuntime.openGateway.tickets.recordResponseForFunctionCall(
+      firstRuntime.openGateway.tickets.recordContinuationItem(
         scopeId,
         'call-persisted',
         'resp-persisted',
@@ -853,7 +890,7 @@ describe('Runtime external kernel finalization', () => {
         appSettingStore,
       }) as unknown as RuntimeExternalKernelHarness;
       expect(
-        restoredRuntime.openGateway.tickets.resolveResponseForFunctionCall(scopeId, 'call-persisted'),
+        restoredRuntime.openGateway.tickets.resolveContinuationItem(scopeId, 'call-persisted'),
       ).toBe('resp-persisted');
 
       restoredRuntime.clearKernelConversationSession(
@@ -861,7 +898,7 @@ describe('Runtime external kernel finalization', () => {
         sessionValue!.sessionId,
       );
       expect(
-        restoredRuntime.openGateway.tickets.resolveResponseForFunctionCall(scopeId, 'call-persisted'),
+        restoredRuntime.openGateway.tickets.resolveContinuationItem(scopeId, 'call-persisted'),
       ).toBeUndefined();
       expect(appSettingStore.get(`gateway.response-continuation.${scopeId}`)?.value).toBeNull();
     } finally {
@@ -901,13 +938,13 @@ describe('Runtime external kernel finalization', () => {
         appSettingStore,
       }) as unknown as RuntimeExternalKernelHarness;
       expect(
-        runtime.openGateway.tickets.resolveResponseForFunctionCall(scopeId, 'call-legacy'),
+        runtime.openGateway.tickets.resolveContinuationItem(scopeId, 'call-legacy'),
       ).toBeUndefined();
 
       runtime.clearKernelConversationSessionByKey('claude-code', sessionKey, sessionId);
 
       expect(
-        runtime.openGateway.tickets.resolveResponseForFunctionCall(scopeId, 'call-legacy'),
+        runtime.openGateway.tickets.resolveContinuationItem(scopeId, 'call-legacy'),
       ).toBeUndefined();
       expect(appSettingStore.get(sessionKey)?.value).toBeNull();
       expect(appSettingStore.get(`gateway.response-continuation.${scopeId}`)?.value).toBeNull();

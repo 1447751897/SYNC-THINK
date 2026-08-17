@@ -15,12 +15,23 @@ import {
   type SetConversationPinnedPayload,
   type SetConversationArchivedPayload,
   type SetConversationExecutionModePayload,
+  type SetConversationInteractionModePayload,
+  type ConversationPlanSubmitPayload,
+  type ConversationPlanGetPayload,
+  type ConversationPlanApprovePayload,
+  type ConversationPlanRevisePayload,
+  type ConversationPlanCancelPayload,
+  type ConversationAskAnswerPayload,
+  type ConversationAskCancelPayload,
+  type ConversationAskPendingPayload,
+  type AskQuestion,
   type UpgradeConversationTrackPayload,
   type DeleteConversationPayload,
   type ConversationCompactPayload,
   type ConversationSubmitBrowserResultPayload,
 } from '@sync-think/protocol';
 import { MESSAGE_ROLES, hasOnlyKeys, isRecord, boundedAgentText, CONVERSATION_TRACKS, CONVERSATION_UPGRADE_TRACKS, TEAM_RUN_STATUSES, TEAM_KEYS, validTeamFields } from './shared.js';
+import type { ChatPlanSubmission } from '@sync-think/shared';
 
 export function parseAppendMessagePayload(value: unknown): AppendMessagePayload | undefined {
   if (!isRecord(value)) return undefined;
@@ -70,6 +81,9 @@ export function parseAppendMessagePayload(value: unknown): AppendMessagePayload 
   if (value.networkEnabled !== undefined && typeof value.networkEnabled !== 'boolean') {
     return undefined;
   }
+  if (value.planExecuting !== undefined && typeof value.planExecuting !== 'boolean') {
+    return undefined;
+  }
   if (value.images !== undefined) {
     if (!Array.isArray(value.images) || value.images.length > 8) return undefined;
     for (const image of value.images) {
@@ -110,6 +124,119 @@ export function parseAppendMessagePayload(value: unknown): AppendMessagePayload 
     ...value,
     ...(skillVersionIds === undefined ? {} : { skillVersionIds }),
   } as unknown as AppendMessagePayload;
+}
+
+/** 校验 ask_user_question 工具输入：questions 数组（id/question 必填）。 */
+export function parseAskUserQuestionInput(value: unknown): { questions: AskQuestion[] } | undefined {
+  if (!isRecord(value) || !Array.isArray(value.questions) || value.questions.length === 0) {
+    return undefined;
+  }
+  const questions: AskQuestion[] = [];
+  for (const raw of value.questions) {
+    if (!isRecord(raw)) return undefined;
+    if (typeof raw.id !== 'string' || raw.id.length === 0 || raw.id.length > 128) {
+      return undefined;
+    }
+    if (typeof raw.question !== 'string' || raw.question.length === 0 || raw.question.length > 4_000) {
+      return undefined;
+    }
+    if (raw.header !== undefined && (typeof raw.header !== 'string' || raw.header.length > 200)) {
+      return undefined;
+    }
+    if (raw.detail !== undefined && (typeof raw.detail !== 'string' || raw.detail.length > 40_000)) {
+      return undefined;
+    }
+    if (raw.multi_select !== undefined && typeof raw.multi_select !== 'boolean') {
+      return undefined;
+    }
+    let intent: AskQuestion['intent'];
+    if (raw.intent !== undefined) {
+      if (!isRecord(raw.intent)) return undefined;
+      if (raw.intent.kind !== undefined && typeof raw.intent.kind !== 'string') return undefined;
+      if (raw.intent.approve !== undefined && typeof raw.intent.approve !== 'string') return undefined;
+      intent = {
+        ...(typeof raw.intent.kind === 'string' ? { kind: raw.intent.kind } : {}),
+        ...(typeof raw.intent.approve === 'string' ? { approve: raw.intent.approve } : {}),
+      };
+    }
+    const options: AskQuestion['options'] = [];
+    if (raw.options !== undefined) {
+      if (!Array.isArray(raw.options) || raw.options.length > 12) return undefined;
+      for (const option of raw.options) {
+        if (!isRecord(option) || typeof option.label !== 'string' || option.label.length === 0 || option.label.length > 200) {
+          return undefined;
+        }
+        if (
+          option.description !== undefined &&
+          (typeof option.description !== 'string' || option.description.length > 1_000)
+        ) {
+          return undefined;
+        }
+        options.push({
+          label: option.label,
+          ...(typeof option.description === 'string' ? { description: option.description } : {}),
+        });
+      }
+    }
+    questions.push({
+      id: raw.id,
+      question: raw.question,
+      ...(typeof raw.header === 'string' ? { header: raw.header } : {}),
+      ...(typeof raw.detail === 'string' ? { detail: raw.detail } : {}),
+      ...(intent ? { intent } : {}),
+      ...(options.length > 0 ? { options } : {}),
+      ...(raw.multi_select === true ? { multiSelect: true } : {}),
+    });
+  }
+  return { questions };
+}
+
+export function parseConversationAskAnswerPayload(
+  value: unknown,
+): ConversationAskAnswerPayload | undefined {
+  if (!isRecord(value) || typeof value.askId !== 'string' || value.askId.length === 0 || value.askId.length > 128) {
+    return undefined;
+  }
+  if (!Array.isArray(value.answers) || value.answers.length === 0 || value.answers.length > 12) {
+    return undefined;
+  }
+  const answers: ConversationAskAnswerPayload['answers'] = [];
+  for (const raw of value.answers) {
+    if (!isRecord(raw) || typeof raw.id !== 'string' || raw.id.length === 0 || raw.id.length > 128) {
+      return undefined;
+    }
+    if (!Array.isArray(raw.selected) || raw.selected.length > 12) return undefined;
+    for (const label of raw.selected) {
+      if (typeof label !== 'string' || label.length > 200) return undefined;
+    }
+    if (raw.custom !== undefined && (typeof raw.custom !== 'string' || raw.custom.length > 4_000)) {
+      return undefined;
+    }
+    answers.push({
+      id: raw.id,
+      selected: [...raw.selected],
+      ...(typeof raw.custom === 'string' ? { custom: raw.custom } : {}),
+    });
+  }
+  return { askId: value.askId, answers };
+}
+
+export function parseConversationAskCancelPayload(
+  value: unknown,
+): ConversationAskCancelPayload | undefined {
+  if (!isRecord(value) || typeof value.askId !== 'string' || value.askId.length === 0 || value.askId.length > 128) {
+    return undefined;
+  }
+  return { askId: value.askId };
+}
+
+export function parseConversationAskPendingPayload(
+  value: unknown,
+): ConversationAskPendingPayload | undefined {
+  if (!isRecord(value) || typeof value.threadId !== 'string' || value.threadId.length === 0) {
+    return undefined;
+  }
+  return { threadId: value.threadId };
 }
 
 export function parseListTeamsPayload(value: unknown): Record<string, never> | undefined {
@@ -313,6 +440,144 @@ export function parseSetConversationExecutionModePayload(
     conversationId: value.conversationId as SetConversationExecutionModePayload['conversationId'],
     executionMode: value.executionMode,
   };
+}
+
+const INTERACTION_MODES = new Set(['plan', 'execute']);
+
+export function parseSetConversationInteractionModePayload(
+  value: unknown,
+): SetConversationInteractionModePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'interactionMode']) ||
+    !boundedAgentText(value.conversationId, 128) ||
+    typeof value.interactionMode !== 'string' ||
+    !INTERACTION_MODES.has(value.interactionMode)
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as SetConversationInteractionModePayload['conversationId'],
+    interactionMode: value.interactionMode as SetConversationInteractionModePayload['interactionMode'],
+  };
+}
+
+// ── Conversation plan (chat planning mode) ────────────────────────────────
+
+function isChatPlanStep(value: unknown): value is ChatPlanSubmission['steps'][number] {
+  if (!isRecord(value)) return false;
+  if (typeof value.id !== 'string' || value.id.length === 0 || value.id.length > 128) return false;
+  if (typeof value.title !== 'string' || value.title.length > 500) return false;
+  if (typeof value.description !== 'string' || value.description.length > 5000) return false;
+  if (value.expectedFiles !== undefined && !Array.isArray(value.expectedFiles)) return false;
+  if (value.expectedFiles !== undefined) {
+    for (const f of value.expectedFiles) {
+      if (typeof f !== 'string' || f.length > 1024) return false;
+    }
+  }
+  if (!Array.isArray(value.acceptanceChecks)) return false;
+  for (const c of value.acceptanceChecks) {
+    if (typeof c !== 'string' || c.length > 2000) return false;
+  }
+  return true;
+}
+
+function isChatPlanRisk(value: unknown): value is ChatPlanSubmission['risks'][number] {
+  if (!isRecord(value)) return false;
+  if (typeof value.description !== 'string' || value.description.length > 2000) return false;
+  if (typeof value.mitigation !== 'string' || value.mitigation.length > 2000) return false;
+  return true;
+}
+
+function isChatPlanSubmission(value: unknown): value is ChatPlanSubmission {
+  if (!isRecord(value)) return false;
+  if (typeof value.title !== 'string' || value.title.length === 0 || value.title.length > 200) return false;
+  if (typeof value.goal !== 'string' || value.goal.length > 5000) return false;
+  if (!Array.isArray(value.scope) || !Array.isArray(value.assumptions) || !Array.isArray(value.decisions)) return false;
+  if (!Array.isArray(value.steps) || value.steps.length === 0) return false;
+  for (const s of value.steps) if (!isChatPlanStep(s)) return false;
+  if (!Array.isArray(value.risks)) return false;
+  for (const r of value.risks) if (!isChatPlanRisk(r)) return false;
+  if (!Array.isArray(value.finalAcceptanceChecks)) return false;
+  for (const c of value.finalAcceptanceChecks) {
+    if (typeof c !== 'string' || c.length > 2000) return false;
+  }
+  return true;
+}
+
+export function parseConversationPlanSubmitPayload(
+  value: unknown,
+): ConversationPlanSubmitPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'plan']) ||
+    !boundedAgentText(value.conversationId, 128) ||
+    !isChatPlanSubmission(value.plan)
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as ConversationPlanSubmitPayload['conversationId'],
+    plan: value.plan as ConversationPlanSubmitPayload['plan'],
+  };
+}
+
+export function parseConversationPlanGetPayload(
+  value: unknown,
+): ConversationPlanGetPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId']) ||
+    !boundedAgentText(value.conversationId, 128)
+  )
+    return undefined;
+  return { conversationId: value.conversationId as ConversationPlanGetPayload['conversationId'] };
+}
+
+export function parseConversationPlanApprovePayload(
+  value: unknown,
+): ConversationPlanApprovePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'revision']) ||
+    !boundedAgentText(value.conversationId, 128) ||
+    !Number.isInteger(value.revision) ||
+    (value.revision as number) < 1
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as ConversationPlanApprovePayload['conversationId'],
+    revision: value.revision as number,
+  };
+}
+
+export function parseConversationPlanRevisePayload(
+  value: unknown,
+): ConversationPlanRevisePayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId', 'expectedRevision', 'plan']) ||
+    !boundedAgentText(value.conversationId, 128) ||
+    !Number.isInteger(value.expectedRevision) ||
+    (value.expectedRevision as number) < 1 ||
+    !isChatPlanSubmission(value.plan)
+  )
+    return undefined;
+  return {
+    conversationId: value.conversationId as ConversationPlanRevisePayload['conversationId'],
+    expectedRevision: value.expectedRevision as number,
+    plan: value.plan as ConversationPlanRevisePayload['plan'],
+  };
+}
+
+export function parseConversationPlanCancelPayload(
+  value: unknown,
+): ConversationPlanCancelPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['conversationId']) ||
+    !boundedAgentText(value.conversationId, 128)
+  )
+    return undefined;
+  return { conversationId: value.conversationId as ConversationPlanCancelPayload['conversationId'] };
 }
 
 export function parseConversationCompactPayload(

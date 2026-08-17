@@ -67,6 +67,7 @@ describe('conversation stream event consumption', () => {
       text: '完成',
       timestamp: new Date(1_000).toISOString(),
       terminal: true,
+      terminalState: 'completed',
     });
   });
 
@@ -117,6 +118,43 @@ describe('conversation stream event consumption', () => {
         afterSequence: 3,
       },
     ]);
+  });
+
+  it('accumulates message.reasoning_delta into draft reasoningText', () => {
+    const batch = collectConversationStreamBatch({
+      afterSequence: 0,
+      threadId: 'thread-a',
+      events: [
+        event({
+          sequence: 1,
+          type: 'message.reasoning_delta',
+          runId: 'run-a',
+          threadId: 'thread-a',
+          payload: { textDelta: '先思考步骤' },
+        }),
+        event({
+          sequence: 2,
+          type: 'message.reasoning_delta',
+          runId: 'run-a',
+          threadId: 'thread-a',
+          payload: { textDelta: '再执行' },
+        }),
+        event({
+          sequence: 3,
+          type: 'message.delta',
+          runId: 'run-a',
+          threadId: 'thread-a',
+          payload: { textDelta: '最终答案' },
+        }),
+      ],
+    });
+
+    const draft = applyConversationStreamOperations(null, batch.operations);
+    expect(draft).toMatchObject({
+      runId: 'run-a',
+      text: '最终答案',
+      reasoningText: '先思考步骤再执行',
+    });
   });
 
   it('projects run.paused as no longer streaming', () => {
@@ -467,7 +505,7 @@ describe('conversation stream event consumption', () => {
     expect(applyConversationStreamOperations(null, batch.operations)?.text).toBe('mine');
   });
 
-  it('keeps provider reasoning diagnostics out of the user-visible draft', () => {
+  it('keeps provider reasoning as reasoningText, never as answer text', () => {
     const batch = collectConversationStreamBatch({
       afterSequence: 0,
       threadId: 'thread-a',
@@ -482,7 +520,10 @@ describe('conversation stream event consumption', () => {
       ],
     });
 
-    expect(batch.operations).toEqual([]);
-    expect(applyConversationStreamOperations(null, batch.operations)).toBeNull();
+    expect(batch.operations).toHaveLength(1);
+    expect(batch.operations[0]).toMatchObject({ type: 'reasoning.delta' });
+    const draft = applyConversationStreamOperations(null, batch.operations);
+    expect(draft).toMatchObject({ runId: 'run-a', reasoningText: 'internal diagnostic summary' });
+    expect(draft?.text).toBe('');
   });
 });

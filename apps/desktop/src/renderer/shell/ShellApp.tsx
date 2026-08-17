@@ -36,6 +36,7 @@ import { disposeTerminalSession } from './terminal-session-store.js';
 import { BrowserPanel } from './BrowserPanel.js';
 import { ReviewPanel, WorkspaceFilesPanel } from './RightDock.js';
 import { AgentLibrary } from './AgentLibrary.js';
+import { TaskPanel } from './TaskPanel.js';
 import { TeamLibrary } from './TeamLibrary.js';
 import { AbilitiesPage } from './AbilitiesPage.js';
 import { BrowserStage } from './BrowserStage.js';
@@ -1863,6 +1864,7 @@ function ShellAppInner() {
       targetRef: draftSession.targetRef ?? '',
       title: '新对话',
       executionMode: readDefaultPermission(),
+      interactionMode: 'execute',
       createdAt: draftSession.createdAt,
       updatedAt: draftSession.createdAt,
     };
@@ -2603,6 +2605,15 @@ function ShellAppInner() {
                 void refresh();
               }}
               onGoToAgents={() => setNav((n) => selectStage(n, 'agents'))}
+            />
+          ) : nav.stage === 'tasks' ? (
+            <TaskPanel
+              agents={data.agents}
+              models={data.models}
+              onOpenConversation={(conversationId) => {
+                void openConversationById(conversationId);
+                setNav((n) => selectStage(n, 'talk'));
+              }}
             />
           ) : (
             <StagePlaceholder stage={nav.stage} />

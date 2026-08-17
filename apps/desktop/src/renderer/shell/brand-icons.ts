@@ -15,11 +15,12 @@
  * (NewMax Gateway, GPTNB, Pipellm, 百聆, …) intentionally keep the letter glyph
  * fallback rather than an invented mark.
  */
+import syncThinkLogo from './assets/sync-think-logo.png';
 import anthropicLogo from './assets/brands/anthropic.svg';
 import antigravityLogo from './assets/brands/antigravity-color.svg';
 import bailianLogo from './assets/brands/bailian-color.svg';
+import chatgptLogo from './assets/brands/chatgpt.svg';
 import claudeCodeLogo from './assets/brands/claudecode-color.svg';
-import codexLogo from './assets/brands/codex.svg';
 import deepseekLogo from './assets/brands/deepseek-color.svg';
 import geminiLogo from './assets/brands/gemini-color.svg';
 import grokLogo from './assets/brands/grok.svg';
@@ -88,17 +89,64 @@ export const PROVIDER_BRAND_LOGOS: Readonly<Record<string, BrandLogo>> = {
 };
 
 /**
- * Kernel `icon` asset key → upstream brand logo.
- * `native` has no third-party brand and keeps a lucide glyph in the UI.
+ * Kernel `icon` asset key → the kernel's own brand mark. Each kernel shows its
+ * own product logo (Claude Code → Claude Code, Codex → ChatGPT), not the parent
+ * company's; `native` has no third-party brand and keeps a lucide glyph.
  */
 export const KERNEL_BRAND_LOGOS: Readonly<Record<string, BrandLogo>> = {
+  native: logo(syncThinkLogo, 'Sync-Think', false),
   'claude-code': logo(claudeCodeLogo, 'Claude Code', false),
-  codex: logo(codexLogo, 'Codex', true),
+  codex: logo(chatgptLogo, 'ChatGPT', false),
   pi: logo(piLogo, 'Pi', true),
 };
 
 export function resolveProviderBrandLogo(providerId: string): BrandLogo | undefined {
   return PROVIDER_BRAND_LOGOS[providerId];
+}
+
+/**
+ * Fallback lookup for providers the user added themselves: their providerId is
+ * a random ULID, so it can never match the preset catalog keys. Match the
+ * provider's display name against known brands instead. Order matters — the
+ * first matching rule wins; `undefined` intentionally keeps the letter glyph
+ * for relay services without an official logo (e.g. KMKAPI).
+ */
+const PROVIDER_BRAND_BY_NAME: ReadonlyArray<readonly [RegExp, string | undefined]> = [
+  // Relay services without their own brand must be matched first so their
+  // model-family names (e.g. KMKAPI-GROK) do not collide with the real brand.
+  [/kamenking|kmkapi|kamen/i, undefined],
+  [/deepseek/i, 'deepseek'],
+  [/zhipu|智谱/i, 'zhipu'],
+  [/kimi|moonshot/i, 'kimi-coding'],
+  [/qwen|bailian|百炼|aliyun|阿里/i, 'bailian-coding'],
+  [/gemini|google/i, 'gemini-api'],
+  [/grok/i, 'supergrok'],
+  [/openai/i, 'openai'],
+  [/anthropic|claude/i, 'anthropic'],
+  [/minimax/i, 'minimax-cn'],
+  [/siliconflow|硅基/i, 'siliconflow-cn'],
+  [/volcengine|火山|doubao|豆包/i, 'volcengine-ark'],
+  [/modelscope|魔搭/i, 'modelscope'],
+  [/stepfun|阶跃/i, 'stepfun'],
+  [/longcat/i, 'longcat'],
+  [/xiaomi|mimo/i, 'xiaomi-mimo'],
+  [/ollama/i, 'ollama'],
+  [/lm\s*studio/i, 'lm-studio'],
+  [/openrouter/i, 'openrouter'],
+  [/z\.?ai/i, 'z-ai'],
+  [/antigravity/i, 'antigravity'],
+  [/opencode/i, 'opencode-go'],
+];
+
+export function resolveProviderBrandLogoByName(providerName: string): BrandLogo | undefined {
+  const name = providerName.trim();
+  if (!name) return undefined;
+  for (const [pattern, brandId] of PROVIDER_BRAND_BY_NAME) {
+    if (pattern.test(name)) {
+      return brandId ? PROVIDER_BRAND_LOGOS[brandId] : undefined;
+    }
+  }
+  return undefined;
 }
 
 export function resolveKernelBrandLogo(iconKey: string): BrandLogo | undefined {

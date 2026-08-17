@@ -1,4 +1,5 @@
 import type {
+  AssistantTurnSegment,
   CommentaryTimelineSegment,
   ConversationTransientFrame,
   RunProcessView,
@@ -55,13 +56,27 @@ export interface ConversationDisplayQueueBatch {
 function operationFromTransientFrame(
   frame: ConversationTransientFrame,
 ): ConversationStreamOperation | undefined {
-  if (frame.kind === 'reasoning') return undefined;
+  if (frame.kind === 'reasoning') {
+    return {
+      type: 'reasoning.delta',
+      runId: frame.runId,
+      delta: frame.textDelta ?? '',
+      occurredAt: frame.occurredAt,
+      sequence: frame.streamSequence,
+      ...(frame.assistantTimeline
+        ? { assistantTimeline: frame.assistantTimeline.map((segment) => ({ ...segment })) }
+        : {}),
+    };
+  }
   if (frame.kind === 'process') {
     return {
       type: 'process.boundary',
       runId: frame.runId,
       occurredAt: frame.occurredAt,
       sequence: frame.streamSequence,
+      ...(frame.assistantTimeline
+        ? { assistantTimeline: frame.assistantTimeline.map((segment) => ({ ...segment })) }
+        : {}),
     };
   }
   if (frame.kind === 'terminal') {
@@ -70,6 +85,11 @@ function operationFromTransientFrame(
       runId: frame.runId,
       sequence: frame.streamSequence,
       occurredAt: frame.occurredAt,
+      ...(frame.terminalState ? { terminalState: frame.terminalState } : {}),
+      ...(frame.errorMessage ? { terminalError: frame.errorMessage } : {}),
+      ...(frame.assistantTimeline
+        ? { assistantTimeline: frame.assistantTimeline.map((segment) => ({ ...segment })) }
+        : {}),
     };
   }
   return {
@@ -78,127 +98,53 @@ function operationFromTransientFrame(
     delta: frame.textDelta ?? '',
     occurredAt: frame.occurredAt,
     sequence: frame.streamSequence,
+    ...(frame.assistantTimeline
+      ? { assistantTimeline: frame.assistantTimeline.map((segment) => ({ ...segment })) }
+      : {}),
     ...(frame.kind === 'commentary' && frame.afterSequence !== undefined
       ? { afterSequence: frame.afterSequence }
       : {}),
   };
 }
 
-function isTextOperation(
-  operation: ConversationStreamOperation | undefined,
-): operation is Extract<
-  ConversationStreamOperation,
-  { type: 'text.delta' | 'commentary.delta' }
-> {
-  return operation?.type === 'text.delta' || operation?.type === 'commentary.delta';
-}
-
-function boundedTextEnd(text: string, offset: number, characterBudget: number): number {
-  let end = Math.min(text.length, offset + characterBudget);
-  const finalCodeUnit = text.charCodeAt(end - 1);
-  const nextCodeUnit = text.charCodeAt(end);
-  if (
-    end < text.length &&
-    finalCodeUnit >= 0xd800 &&
-    finalCodeUnit <= 0xdbff &&
-    nextCodeUnit >= 0xdc00 &&
-    nextCodeUnit <= 0xdfff
-  ) {
-    end -= 1;
-  }
-  return Math.max(offset, end);
-}
-
-function cloneQueueItemWithOffset(
+function operationFromDisplayQueueItem(
   item: Exclude<ConversationDisplayQueueItem, { source: 'snapshot' }>,
-  offset: number,
-): ConversationDisplayQueueItem {
-  return item.source === 'transient'
-    ? { source: 'transient', frame: item.frame, offset }
-    : { source: 'durable', operation: item.operation, offset };
+): ConversationStreamOperation | undefined {
+  return item.source === 'transient' ? operationFromTransientFrame(item.frame) : item.operation;
 }
 
-/**
- * Consume one paint-sized display batch. Large provider frames are sliced
- * without advancing their source cursor until the complete frame is visible.
- * Process, terminal, and snapshot boundaries end the paint so later content
- * cannot overtake them.
- */
+/** One cumulative publication per paint frame, independent of provider chunk size. */
+export function getConversationDisplayQueueBatchOptions(
+  _queued: readonly ConversationDisplayQueueItem[],
+): TransientFrameBatchOptions {
+  return {
+    maxFrames: Number.MAX_SAFE_INTEGER,
+    maxTextCharacters: Number.MAX_SAFE_INTEGER,
+  };
+}
+
 export function takeConversationDisplayQueueBatch(
   queued: readonly ConversationDisplayQueueItem[],
-  options: TransientFrameBatchOptions,
+  _options: TransientFrameBatchOptions,
 ): ConversationDisplayQueueBatch {
   if (queued.length === 0) return { operations: [], completed: [], remaining: [] };
 
-  const maxFrames = Math.max(1, Math.trunc(options.maxFrames));
-  const maxTextCharacters = Math.max(1, Math.trunc(options.maxTextCharacters));
   const operations: ConversationStreamOperation[] = [];
   const completed: ConversationDisplayQueueItem[] = [];
-  let consumedItems = 0;
-  let consumedTextCharacters = 0;
-  let remaining: ConversationDisplayQueueItem[] = [];
-
   for (let index = 0; index < queued.length; index += 1) {
     const item = queued[index]!;
-    if (consumedItems >= maxFrames) {
-      remaining = queued.slice(index);
-      break;
-    }
-
     if (item.source === 'snapshot') {
       completed.push(item);
-      consumedItems += 1;
-      remaining = queued.slice(index + 1);
-      break;
+      return { operations, completed, remaining: queued.slice(index + 1) };
     }
-
-    const operation =
-      item.source === 'transient' ? operationFromTransientFrame(item.frame) : item.operation;
-    if (!isTextOperation(operation)) {
-      if (operation) operations.push(operation);
-      completed.push(item);
-      consumedItems += 1;
-      remaining = queued.slice(index + 1);
-      break;
+    const operation = operationFromDisplayQueueItem(item);
+    if (operation) operations.push(operation);
+    completed.push(item);
+    if (operation && (operation.type === 'process.boundary' || operation.type === 'run.terminal')) {
+      return { operations, completed, remaining: queued.slice(index + 1) };
     }
-
-    const availableBudget = maxTextCharacters - consumedTextCharacters;
-    if (availableBudget <= 0) {
-      remaining = queued.slice(index);
-      break;
-    }
-    const end = boundedTextEnd(operation.delta, item.offset, availableBudget);
-    const delta = operation.delta.slice(item.offset, end);
-    if (delta) {
-      operations.push({ ...operation, delta });
-      consumedTextCharacters += delta.length;
-    }
-    consumedItems += 1;
-
-    if (end >= operation.delta.length) {
-      completed.push(item);
-      if (consumedTextCharacters >= maxTextCharacters) {
-        remaining = queued.slice(index + 1);
-        break;
-      }
-      if (index === queued.length - 1) remaining = [];
-      continue;
-    }
-
-    remaining = [
-      cloneQueueItemWithOffset(item, end),
-      ...queued.slice(index + 1),
-    ];
-    break;
   }
-
-  return { operations, completed, remaining };
-}
-
-function monotonicSuffix(current: string | undefined, incoming: string | undefined): string {
-  const currentText = current ?? '';
-  const incomingText = incoming ?? '';
-  return incomingText.startsWith(currentText) ? incomingText.slice(currentText.length) : '';
+  return { operations, completed, remaining: [] };
 }
 
 /**
@@ -214,85 +160,7 @@ export function buildConversationSnapshotDisplayQueue(input: {
   refreshDurable?: boolean;
 }): ConversationDisplayQueueItem[] {
   const target = mergeTransientConversationDraft(input.current, input.incoming);
-  const sameRun = Boolean(
-    input.current &&
-      target &&
-      (!input.current.runId || !target.runId || input.current.runId === target.runId),
-  );
-  const current = sameRun ? input.current : null;
-  const durableItems: ConversationDisplayQueueItem[] = [];
-
-  if (target) {
-    const currentSegments = current?.commentarySegments;
-    const targetSegments = target.commentarySegments;
-    const hasCurrentAggregateOnly = Boolean(current?.commentaryText) && !currentSegments?.length;
-    const canDiffSegments = Boolean(
-      targetSegments?.length &&
-        !hasCurrentAggregateOnly &&
-        (!currentSegments?.length ||
-          currentSegments.every((segment) => {
-            const incoming = targetSegments.find((candidate) => candidate.id === segment.id);
-            return Boolean(incoming?.text.startsWith(segment.text));
-          })),
-    );
-
-    if (canDiffSegments && targetSegments) {
-      const currentById = new Map(
-        (currentSegments ?? []).map((segment) => [segment.id, segment.text] as const),
-      );
-      for (const segment of targetSegments) {
-        const delta = monotonicSuffix(currentById.get(segment.id), segment.text);
-        if (!delta) continue;
-        durableItems.push({
-          source: 'durable',
-          offset: 0,
-          operation: {
-            type: 'commentary.delta',
-            runId: target.runId,
-            delta,
-            occurredAt: segment.startedAt,
-            sequence: input.streamSequence,
-            ...(segment.afterSequence !== undefined
-              ? { afterSequence: segment.afterSequence }
-              : {}),
-          },
-        });
-      }
-    } else {
-      const commentaryDelta = monotonicSuffix(current?.commentaryText, target.commentaryText);
-      if (commentaryDelta) {
-        durableItems.push({
-          source: 'durable',
-          offset: 0,
-          operation: {
-            type: 'commentary.delta',
-            runId: target.runId,
-            delta: commentaryDelta,
-            occurredAt: target.timestamp,
-            sequence: input.streamSequence,
-          },
-        });
-      }
-    }
-
-    const textDelta = monotonicSuffix(current?.text, target.text);
-    if (textDelta) {
-      durableItems.push({
-        source: 'durable',
-        offset: 0,
-        operation: {
-          type: 'text.delta',
-          runId: target.runId,
-          delta: textDelta,
-          occurredAt: target.timestamp,
-          sequence: input.streamSequence,
-        },
-      });
-    }
-  }
-
   return [
-    ...durableItems,
     {
       source: 'snapshot',
       draft: target,
@@ -310,38 +178,13 @@ export function buildConversationSnapshotDisplayQueue(input: {
  */
 export function takeTransientConversationFrameBatch(
   queued: readonly ConversationTransientFrame[],
-  options: TransientFrameBatchOptions,
+  _options: TransientFrameBatchOptions,
 ): TransientFrameBatch {
   if (queued.length === 0) return { frames: [], remaining: [] };
-
-  const maxFrames = Math.max(1, Math.trunc(options.maxFrames));
-  const maxTextCharacters = Math.max(1, Math.trunc(options.maxTextCharacters));
-  let consumedTextCharacters = 0;
-  let consumedFrames = 0;
-
-  for (const frame of queued) {
-    if (consumedFrames >= maxFrames) break;
-    const textCharacters =
-      frame.kind === 'text' || frame.kind === 'commentary' ? (frame.textDelta?.length ?? 0) : 0;
-    if (
-      consumedFrames > 0 &&
-      textCharacters > 0 &&
-      consumedTextCharacters + textCharacters > maxTextCharacters
-    ) {
-      break;
-    }
-
-    consumedFrames += 1;
-    consumedTextCharacters += textCharacters;
-    if (
-      frame.kind === 'process' ||
-      frame.kind === 'terminal' ||
-      consumedTextCharacters >= maxTextCharacters
-    ) {
-      break;
-    }
-  }
-
+  const boundaryIndex = queued.findIndex(
+    (frame) => frame.kind === 'process' || frame.kind === 'terminal',
+  );
+  const consumedFrames = boundaryIndex >= 0 ? boundaryIndex + 1 : queued.length;
   return {
     frames: queued.slice(0, consumedFrames),
     remaining: queued.slice(consumedFrames),
@@ -374,8 +217,7 @@ function mergeCommentarySegments(
       ...previous,
       ...segment,
       text,
-      startedAt:
-        previous.startedAt <= segment.startedAt ? previous.startedAt : segment.startedAt,
+      startedAt: previous.startedAt <= segment.startedAt ? previous.startedAt : segment.startedAt,
       completedAt: previous.completedAt ?? segment.completedAt,
     });
   }
@@ -394,6 +236,33 @@ function mergeCommentarySegments(
  * Reset snapshots can race newer live frames. Merge same-Run content
  * monotonically so a stale or empty snapshot never erases visible commentary.
  */
+function selectLatestAssistantTimeline(
+  current: readonly AssistantTurnSegment[] | undefined,
+  incoming: readonly AssistantTurnSegment[] | undefined,
+): AssistantTurnSegment[] | undefined {
+  if (!current?.length) return incoming?.map((segment) => ({ ...segment }));
+  if (!incoming?.length) return current.map((segment) => ({ ...segment }));
+  const currentLast = current.at(-1)?.sequence ?? -1;
+  const incomingLast = incoming.at(-1)?.sequence ?? -1;
+  if (incomingLast !== currentLast) {
+    return (incomingLast > currentLast ? incoming : current).map((segment) => ({ ...segment }));
+  }
+  const weight = (timeline: readonly AssistantTurnSegment[]) =>
+    timeline.reduce(
+      (total, segment) =>
+        total +
+        (segment.kind === 'thinking' || segment.kind === 'text'
+          ? segment.text.length
+          : segment.kind === 'tool'
+            ? (segment.output?.length ?? 0) + (segment.argumentsJson?.length ?? 0)
+            : segment.label.length + (segment.detail?.length ?? 0)),
+      0,
+    );
+  return (weight(incoming) >= weight(current) ? incoming : current).map((segment) => ({
+    ...segment,
+  }));
+}
+
 export function mergeTransientConversationDraft(
   current: ConversationStreamDraft | null,
   incoming: ConversationStreamDraft | null,
@@ -409,12 +278,19 @@ export function mergeTransientConversationDraft(
     current.commentarySegments,
     incoming.commentarySegments,
   );
+  const reasoningText = selectMonotonicText(current.reasoningText, incoming.reasoningText);
+  const assistantTimeline = selectLatestAssistantTimeline(
+    current.assistantTimeline,
+    incoming.assistantTimeline,
+  );
   const terminal = Boolean(current.terminal || incoming.terminal);
   return {
     runId: incoming.runId ?? current.runId,
     text: selectMonotonicText(current.text, incoming.text),
     ...(commentaryText ? { commentaryText } : {}),
     ...(commentarySegments?.length ? { commentarySegments } : {}),
+    ...(reasoningText ? { reasoningText } : {}),
+    ...(assistantTimeline?.length ? { assistantTimeline } : {}),
     timestamp: current.timestamp > incoming.timestamp ? current.timestamp : incoming.timestamp,
     ...(terminal ? { terminal: true } : {}),
   };
@@ -465,20 +341,12 @@ export function applyTransientConversationFrame(input: {
     };
   }
 
-  // Provider reasoning summaries are retained by Runtime for diagnostics only.
-  // Advancing the cursor prevents replay loops without exposing them as progress.
-  if (frame.kind === 'reasoning') {
-    return {
-      draft: input.current,
-      lastStreamSequence: frame.streamSequence,
-      terminal: false,
-    };
-  }
-
-  const operation = operationFromTransientFrame(frame)!;
+  const operation = operationFromTransientFrame(frame);
 
   return {
-    draft: applyConversationStreamOperations(input.current, [operation]),
+    draft: operation
+      ? applyConversationStreamOperations(input.current, [operation])
+      : input.current,
     lastStreamSequence: frame.streamSequence,
     terminal: frame.kind === 'terminal',
   };

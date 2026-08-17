@@ -19,6 +19,8 @@ function makeRequest(kernelId: string, overrides: Partial<KernelRequest> = {}): 
     providerModelId: 'capture-model',
     userText: 'replay the captured turn',
     contextWindow: 200_000,
+    effectiveContextWindow: 200_000,
+    contextWindowSource: 'configured',
     credential: { reuseLocalLogin: true },
     systemContext: '',
     platformTools: [],

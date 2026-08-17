@@ -127,6 +127,8 @@ export interface ProjectMemoryEntrySnapshot {
   value: string;
   scope: ProjectMemoryScope;
   taskId?: string;
+  /** ISO timestamp; used to resolve conflicting entries newest-first. */
+  updatedAt?: string;
 }
 
 export interface ResolveProjectMemorySourcesInput {
@@ -173,6 +175,7 @@ export function resolveProjectMemorySources(
       value: String(e.value || '').trim(),
       scope: (e.scope || 'project') as ProjectMemoryScope,
       taskId: e.taskId,
+      updatedAt: e.updatedAt,
     }))
     .filter((e) => e.id && e.key && e.value);
 
@@ -180,6 +183,15 @@ export function resolveProjectMemorySources(
     const ra = SCOPE_RANK[a.scope] ?? 9;
     const rb = SCOPE_RANK[b.scope] ?? 9;
     if (ra !== rb) return ra - rb;
+    // Same scope: newest first, so when run-digests conflict the model sees the
+    // most recent statement first and can resolve toward the latest fact.
+    const ta = a.updatedAt ? Date.parse(a.updatedAt) : Number.NaN;
+    const tb = b.updatedAt ? Date.parse(b.updatedAt) : Number.NaN;
+    const aValid = Number.isFinite(ta);
+    const bValid = Number.isFinite(tb);
+    if (aValid && bValid && ta !== tb) return tb - ta;
+    if (aValid && !bValid) return -1;
+    if (!aValid && bValid) return 1;
     return 0;
   });
 

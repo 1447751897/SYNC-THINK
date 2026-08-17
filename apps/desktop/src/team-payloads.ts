@@ -18,6 +18,22 @@ import type {
   RenameConversationPayload,
   SetConversationArchivedPayload,
   SetConversationExecutionModePayload,
+  SetConversationInteractionModePayload,
+  ConversationPlanSubmitPayload,
+  ConversationPlanGetPayload,
+  ConversationPlanApprovePayload,
+  ConversationPlanRevisePayload,
+  ConversationPlanCancelPayload,
+  ConversationAskAnswerPayload,
+  ConversationAskCancelPayload,
+  ConversationAskPendingPayload,
+  CreateScheduledTaskPayload,
+  ListScheduledTasksPayload,
+  UpdateScheduledTaskPayload,
+  DeleteScheduledTaskPayload,
+  TriggerScheduledTaskPayload,
+  SkillLocalScanPayload,
+  SkillLocalImportPayload,
   SetConversationPinnedPayload,
   SetTeamRunStatusPayload,
   StartTeamRunPayload,
@@ -29,6 +45,7 @@ import type {
   ConversationDecideToolApprovalPayload,
   ConversationSubmitBrowserResultPayload,
 } from '@sync-think/protocol';
+import type { ScheduledTaskTarget, TaskRule } from '@sync-think/shared';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -391,6 +408,256 @@ export function parseSetConversationExecutionModePayload(
     ) as SetConversationExecutionModePayload['conversationId'],
     executionMode: requiredString(value.executionMode, label),
   };
+}
+
+export function parseSetConversationInteractionModePayload(
+  value: unknown,
+): SetConversationInteractionModePayload {
+  const label = 'Invalid set-conversation-interaction-mode payload';
+  if (!isRecord(value)) throw new Error(label);
+  const mode = requiredString(value.interactionMode, label);
+  if (mode !== 'plan' && mode !== 'execute') throw new Error(label);
+  return {
+    conversationId: requiredString(
+      value.conversationId,
+      label,
+    ) as SetConversationInteractionModePayload['conversationId'],
+    interactionMode: mode,
+  };
+}
+
+function requiredChatPlanSubmission(value: unknown, label: string): ConversationPlanSubmitPayload['plan'] {
+  if (!isRecord(value)) throw new Error(label);
+  if (typeof value.title !== 'string' || typeof value.goal !== 'string') throw new Error(label);
+  if (!Array.isArray(value.steps) || !Array.isArray(value.finalAcceptanceChecks)) throw new Error(label);
+  return value as unknown as ConversationPlanSubmitPayload['plan'];
+}
+
+export function parseConversationPlanSubmitPayload(
+  value: unknown,
+): ConversationPlanSubmitPayload {
+  const label = 'Invalid conversation-plan-submit payload';
+  if (!isRecord(value)) throw new Error(label);
+  return {
+    conversationId: requiredString(
+      value.conversationId,
+      label,
+    ) as ConversationPlanSubmitPayload['conversationId'],
+    plan: requiredChatPlanSubmission(value.plan, label),
+  };
+}
+
+export function parseConversationPlanGetPayload(value: unknown): ConversationPlanGetPayload {
+  const label = 'Invalid conversation-plan-get payload';
+  if (!isRecord(value)) throw new Error(label);
+  return {
+    conversationId: requiredString(
+      value.conversationId,
+      label,
+    ) as ConversationPlanGetPayload['conversationId'],
+  };
+}
+
+export function parseConversationPlanApprovePayload(
+  value: unknown,
+): ConversationPlanApprovePayload {
+  const label = 'Invalid conversation-plan-approve payload';
+  if (!isRecord(value) || typeof value.revision !== 'number') throw new Error(label);
+  return {
+    conversationId: requiredString(
+      value.conversationId,
+      label,
+    ) as ConversationPlanApprovePayload['conversationId'],
+    revision: value.revision,
+  };
+}
+
+export function parseConversationPlanRevisePayload(
+  value: unknown,
+): ConversationPlanRevisePayload {
+  const label = 'Invalid conversation-plan-revise payload';
+  if (!isRecord(value)) throw new Error(label);
+  return {
+    conversationId: requiredString(
+      value.conversationId,
+      label,
+    ) as ConversationPlanRevisePayload['conversationId'],
+    expectedRevision: value.expectedRevision as number,
+    plan: requiredChatPlanSubmission(value.plan, label),
+  };
+}
+
+export function parseConversationPlanCancelPayload(
+  value: unknown,
+): ConversationPlanCancelPayload {
+  const label = 'Invalid conversation-plan-cancel payload';
+  if (!isRecord(value)) throw new Error(label);
+  return {
+    conversationId: requiredString(
+      value.conversationId,
+      label,
+    ) as ConversationPlanCancelPayload['conversationId'],
+  };
+}
+
+export function parseConversationAskAnswerPayload(
+  value: unknown,
+): ConversationAskAnswerPayload {
+  const label = 'Invalid conversation-ask-answer payload';
+  if (!isRecord(value)) throw new Error(label);
+  const askId = requiredString(value.askId, label);
+  if (!Array.isArray(value.answers) || value.answers.length === 0) throw new Error(label);
+  const answers = (value.answers as unknown[]).map((raw) => {
+    if (!isRecord(raw) || typeof raw.id !== 'string' || !Array.isArray(raw.selected)) {
+      throw new Error(label);
+    }
+    const selected = (raw.selected as unknown[]).filter(
+      (item): item is string => typeof item === 'string',
+    );
+    return {
+      id: raw.id,
+      selected,
+      ...(typeof raw.custom === 'string' ? { custom: raw.custom } : {}),
+    };
+  });
+  return { askId, answers };
+}
+
+export function parseConversationAskCancelPayload(
+  value: unknown,
+): ConversationAskCancelPayload {
+  const label = 'Invalid conversation-ask-cancel payload';
+  if (!isRecord(value)) throw new Error(label);
+  return { askId: requiredString(value.askId, label) };
+}
+
+export function parseConversationAskPendingPayload(
+  value: unknown,
+): ConversationAskPendingPayload {
+  const label = 'Invalid conversation-ask-pending payload';
+  if (!isRecord(value)) throw new Error(label);
+  return { threadId: requiredString(value.threadId, label) };
+}
+
+function parseTaskRule(value: unknown, label: string): TaskRule {
+  if (!isRecord(value) || typeof value.kind !== 'string') throw new Error(label);
+  switch (value.kind) {
+    case 'at':
+      if (typeof value.runAt !== 'string') throw new Error(label);
+      return { kind: 'at', runAt: value.runAt };
+    case 'every': {
+      if (typeof value.intervalMinutes !== 'number' || value.intervalMinutes < 5) {
+        throw new Error(label);
+      }
+      return {
+        kind: 'every',
+        intervalMinutes: Math.floor(value.intervalMinutes),
+        ...(typeof value.firstRunAt === 'string' ? { firstRunAt: value.firstRunAt } : {}),
+      };
+    }
+    case 'random': {
+      if (
+        typeof value.windowStart !== 'string' ||
+        typeof value.windowEnd !== 'string' ||
+        typeof value.minTimes !== 'number' ||
+        typeof value.maxTimes !== 'number'
+      ) {
+        throw new Error(label);
+      }
+      return {
+        kind: 'random',
+        windowStart: value.windowStart,
+        windowEnd: value.windowEnd,
+        minTimes: Math.max(1, Math.floor(value.minTimes)),
+        maxTimes: Math.max(1, Math.floor(value.maxTimes)),
+      };
+    }
+    case 'cron':
+      if (typeof value.expression !== 'string') throw new Error(label);
+      return { kind: 'cron', expression: value.expression };
+    default:
+      throw new Error(label);
+  }
+}
+
+function parseTaskTarget(value: unknown, label: string): ScheduledTaskTarget {
+  if (!isRecord(value)) throw new Error(label);
+  if (value.kind === 'agent' && typeof value.agentId === 'string') {
+    return { kind: 'agent', agentId: value.agentId };
+  }
+  if (value.kind === 'model' && typeof value.modelId === 'string') {
+    return { kind: 'model', modelId: value.modelId };
+  }
+  throw new Error(label);
+}
+
+export function parseCreateScheduledTaskPayload(value: unknown): CreateScheduledTaskPayload {
+  const label = 'Invalid scheduled-task-create payload';
+  if (!isRecord(value)) throw new Error(label);
+  const name = requiredString(value.name, label);
+  const instruction = requiredString(value.instruction, label);
+  const target = parseTaskTarget(value.target, label);
+  const rule = parseTaskRule(value.rule, label);
+  return {
+    name,
+    instruction,
+    target,
+    rule,
+    ...(typeof value.timeZone === 'string' ? { timeZone: value.timeZone } : {}),
+    ...(typeof value.enabled === 'boolean' ? { enabled: value.enabled } : {}),
+    ...(typeof value.nextRunAt === 'string' ? { nextRunAt: value.nextRunAt } : {}),
+  };
+}
+
+export function parseListScheduledTasksPayload(value: unknown): ListScheduledTasksPayload {
+  if (!isRecord(value)) return {};
+  return {
+    ...(typeof value.includeDisabled === 'boolean' ? { includeDisabled: value.includeDisabled } : {}),
+  };
+}
+
+export function parseUpdateScheduledTaskPayload(value: unknown): UpdateScheduledTaskPayload {
+  const label = 'Invalid scheduled-task-update payload';
+  if (!isRecord(value)) throw new Error(label);
+  const taskId = requiredString(value.taskId, label);
+  const patch = isRecord(value.patch) ? value.patch : {};
+  const out: UpdateScheduledTaskPayload['patch'] = {};
+  if (typeof patch.name === 'string') out.name = patch.name;
+  if (typeof patch.instruction === 'string') out.instruction = patch.instruction;
+  if (patch.target !== undefined) out.target = parseTaskTarget(patch.target, label);
+  if (patch.rule !== undefined) out.rule = parseTaskRule(patch.rule, label);
+  if (typeof patch.timeZone === 'string') out.timeZone = patch.timeZone;
+  if (typeof patch.enabled === 'boolean') out.enabled = patch.enabled;
+  if (patch.nextRunAt !== undefined) {
+    if (patch.nextRunAt === null) out.nextRunAt = null;
+    else if (typeof patch.nextRunAt === 'string') out.nextRunAt = patch.nextRunAt;
+  }
+  return { taskId, patch: out };
+}
+
+export function parseDeleteScheduledTaskPayload(value: unknown): DeleteScheduledTaskPayload {
+  const label = 'Invalid scheduled-task-delete payload';
+  if (!isRecord(value)) throw new Error(label);
+  return { taskId: requiredString(value.taskId, label) };
+}
+
+export function parseTriggerScheduledTaskPayload(value: unknown): TriggerScheduledTaskPayload {
+  const label = 'Invalid scheduled-task-trigger payload';
+  if (!isRecord(value)) throw new Error(label);
+  return { taskId: requiredString(value.taskId, label) };
+}
+
+export function parseSkillLocalScanPayload(value: unknown): SkillLocalScanPayload {
+  if (!isRecord(value)) return {};
+  return {
+    ...(typeof value.refresh === 'boolean' ? { refresh: value.refresh } : {}),
+  };
+}
+
+export function parseSkillLocalImportPayload(value: unknown): SkillLocalImportPayload {
+  const label = 'Invalid skill-local-import payload';
+  if (!isRecord(value)) throw new Error(label);
+  return { path: requiredString(value.path, label) };
 }
 
 export function parseConversationDecideToolApprovalPayload(

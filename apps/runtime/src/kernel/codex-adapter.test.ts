@@ -47,6 +47,8 @@ function makeRequest(overrides: Partial<KernelRequest> = {}): KernelRequest {
     providerModelId: 'gpt-5',
     userText: 'hello fixture',
     contextWindow: 200_000,
+    effectiveContextWindow: 200_000,
+    contextWindowSource: 'configured',
     credential: { reuseLocalLogin: true },
     systemContext: '## AGENTS.md\n\nfixture facts',
     platformTools: [],
@@ -382,26 +384,41 @@ describe('CodexKernelAdapter', () => {
     expect(joined).not.toContain('"');
   });
 
-  it('injects credentials via env only when local login is not reused', async () => {
+  it('pins a per-run model_provider to the resolved baseUrl and injects the key via env_key', async () => {
     const capture = captureSpawn();
     await runFixture(
       {
         credential: {
-          baseUrl: 'https://relay.example/v1',
+          baseUrl: 'https://api.deepseek.com/v1',
           apiKey: 'sk-test-secret-1234567890',
           reuseLocalLogin: false,
         },
       },
       { spawn: capture.spawn },
     );
-    const env = capture.calls[0].env;
+    const { args, env } = capture.calls[0];
+    const joined = args.join(' ');
+    // The global ~/.codex/config.toml `model_provider = "custom"` (KMKAPI) must
+    // be overridden with a per-run provider pointing at the selected upstream.
+    const providerMatch = /-c model_provider="(st_[a-f0-9]+)"/.exec(joined);
+    expect(providerMatch).not.toBeNull();
+    const providerId = providerMatch![1];
+    expect(joined).toContain(`model_providers.${providerId}.base_url="https://api.deepseek.com/v1"`);
+    expect(joined).toContain(`model_providers.${providerId}.wire_api="responses"`);
+    expect(joined).toContain(`model_providers.${providerId}.requires_openai_auth=false`);
+    const envKeyMatch = new RegExp(`model_providers\\.${providerId}\\.env_key="(ST_KERNEL_KEY_[A-Za-z0-9]+)"`).exec(joined);
+    expect(envKeyMatch).not.toBeNull();
+    // The secret rides only in the per-run env var, never on the command line.
+    expect(joined).not.toContain('sk-test-secret-1234567890');
+    expect(env[envKeyMatch![1]]).toBe('sk-test-secret-1234567890');
     expect(env.OPENAI_API_KEY).toBe('sk-test-secret-1234567890');
-    expect(env.OPENAI_BASE_URL).toBe('https://relay.example/v1');
+    expect(env.OPENAI_BASE_URL).toBeUndefined();
 
     const captureLocal = captureSpawn();
     await runFixture({ credential: { reuseLocalLogin: true } }, { spawn: captureLocal.spawn });
+    const localJoined = captureLocal.calls[0].args.join(' ');
+    expect(localJoined).not.toContain('model_provider=');
     expect(captureLocal.calls[0].env.OPENAI_API_KEY).toBeUndefined();
-    expect(captureLocal.calls[0].env.OPENAI_BASE_URL).toBeUndefined();
   });
 
   it('reports usage through the onUsage callback', async () => {
@@ -443,5 +460,95 @@ describe('CodexKernelAdapter', () => {
       }
     }
     expect(ended).toBe(true);
+  });
+
+  it('injects -c model_context_window=<effective> and echoes the effective window in usage', async () => {
+    const { calls, spawn } = captureSpawn();
+    const adapter = new CodexKernelAdapter({ spawn });
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(
+      makeRequest({ effectiveContextWindow: 96_000 }),
+    )) {
+      events.push(event);
+      if (event.type === 'terminal') break;
+    }
+    const args = calls[0]?.args ?? [];
+    const windowIndex = args.indexOf('-c');
+    expect(windowIndex).toBeGreaterThan(-1);
+    expect(args[windowIndex + 1]).toBe('model_context_window=96000');
+    // Codex's own auto-compaction threshold is handed the same window limit so
+    // its native mechanism decides when to compact (host never re-compacts).
+    expect(args).toContain('model_auto_compact_token_limit=96000');
+    const usage = events.find((event) => event.type === 'usage');
+    expect(usage && 'usage' in usage ? (usage.usage.window ?? null) : null).toBe(96_000);
+  });
+
+  it('injects -c model_reasoning_effort=<effort> when the host sets a reasoning effort', async () => {
+    const capture = captureSpawn();
+    await runFixture({ reasoningEffort: 'high' }, { spawn: capture.spawn });
+    expect(capture.calls[0].args).toContain('model_reasoning_effort=high');
+    expect(capture.calls[0].args).toContain('model_reasoning_summary=detailed');
+
+    // 'off' maps to codex's minimal reasoning so providers still emit thinking.
+    const captureOff = captureSpawn();
+    await runFixture({ reasoningEffort: 'off' }, { spawn: captureOff.spawn });
+    expect(captureOff.calls[0].args).toContain('model_reasoning_effort=minimal');
+
+    // Omitted effort → no reasoning override.
+    const captureNone = captureSpawn();
+    await runFixture({}, { spawn: captureNone.spawn });
+    expect(captureNone.calls[0].args.some((arg) => arg.includes('model_reasoning_effort'))).toBe(false);
+    expect(captureNone.calls[0].args).toContain('model_reasoning_summary=detailed');
+  });
+
+  it('maps codex auto-compaction (compacted + event_msg.context_compacted) to compacted events', async () => {
+    const { events } = await runFixture(
+      {},
+      { spawn: fixtureModeSpawn('auto-compacted') },
+    );
+    const compacted = events.filter((event) => event.type === 'compacted');
+    expect(compacted).toHaveLength(2);
+    const terminal = events[events.length - 1];
+    expect(terminal).toMatchObject({ type: 'terminal', status: 'completed' });
+  });
+
+  it('prefixes the resumed prompt with the catch-up transcript (never the full system context)', async () => {
+    let stdinChunks = '';
+    const adapter = new CodexKernelAdapter({
+      spawn: (args, env, cwd) => {
+        const handle = startKernelProcess({
+          command: process.execPath,
+          args: [fixturePath, ...args],
+          cwd,
+          env,
+        });
+        const stdin = handle.child.stdin;
+        if (stdin) {
+          const originalWrite = stdin.write.bind(stdin);
+          const write = vi.spyOn(stdin, 'write');
+          write.mockImplementation(((chunk: unknown, ...rest: unknown[]) => {
+            stdinChunks += String(chunk);
+            return Reflect.apply(originalWrite, stdin, [chunk, ...rest]);
+          }) as typeof stdin.write);
+        }
+        return handle;
+      },
+    });
+    for await (const event of adapter.start(
+      makeRequest({
+        userText: 'continue the work',
+        session: {
+          id: 'thread-1',
+          mode: 'resume',
+          catchUp: '## Cross-kernel session gap\n### User\ngap fact from claude era',
+        },
+      }),
+    )) {
+      if (event.type === 'terminal') break;
+    }
+    expect(stdinChunks).toContain('## Cross-kernel session gap');
+    expect(stdinChunks).toContain('gap fact from claude era');
+    expect(stdinChunks).toContain('continue the work');
+    expect(stdinChunks).not.toContain('AGENTS.md');
   });
 });

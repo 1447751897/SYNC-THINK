@@ -58,6 +58,21 @@ describe('platform tools', () => {
     expect(names).not.toContain('create_agent');
   });
 
+  it('exposes browser tools only when 联网 is enabled, even if includeBrowserTools is set', () => {
+    const names = buildPlatformMcpToolDefinitions({
+      executionMode: 'workspace',
+      includeBrowserTools: true,
+      includeTaskTools: true,
+      includeAgentTools: true,
+    }).map((definition) => definition.name);
+    // networkEnabled is false → browser_open/click/type/read/screenshot stay out.
+    expect(names).not.toContain('browser_open');
+    expect(names).not.toContain('browser_click');
+    expect(names).not.toContain('browser_type');
+    expect(names).not.toContain('browser_read');
+    expect(names).not.toContain('browser_screenshot');
+  });
+
   it('serves platform_context identity', async () => {
     const content = await executePlatformTool('platform_context', {}, {
       workspaceDir: 'C:/workspace',

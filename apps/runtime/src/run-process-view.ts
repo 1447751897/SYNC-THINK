@@ -358,6 +358,8 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
   /** write_file body often only appears on tool.requested args, not on completed result. */
   const writeContentByCall = new Map<string, string>();
   const providerUsageByRequest = new Map<string, ProviderUsageProjection>();
+  /** Max event sequence per requestId — used to pick the last request as the context watermark. */
+  const usageRequestSequence = new Map<string, number>();
   let startedAt: string | undefined;
   let completedAt: string | undefined;
   let providerModelId: string | undefined;
@@ -417,6 +419,10 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
           providerUsageNumber(event.payload.cachedTokensCreated),
         ),
       });
+      usageRequestSequence.set(
+        requestId,
+        Math.max(usageRequestSequence.get(requestId) ?? 0, event.sequence),
+      );
       providerModelId = eventProviderModelId(event) ?? providerModelId;
       modelId = eventModelId(event) ?? modelId;
       // Do NOT treat mid-run provider.usage as completion — tool loops emit usage
@@ -589,15 +595,22 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
     if (built.command) existing.command = built.command;
     if (built.url) existing.url = built.url;
     const titleDetail = existing.path ?? existing.command ?? existing.url;
+    // Tool identity (verb/name/kind) is established by the event that STARTED
+    // the step. Completion events carry no tool name (extractToolName falls
+    // back to the generic "tool") and must never overwrite the identity with
+    // that fallback — otherwise an mcp__foo step degrades to a bare "tool".
+    const identityComesFromStart = requested && built.kind !== 'other' && built.verb !== 'tool';
+    if (identityComesFromStart) {
+      existing.verb = built.verb || existing.verb;
+      existing.zh = built.zh || existing.zh;
+      existing.toolName = toolName || existing.toolName;
+      existing.kind = built.kind || existing.kind;
+    }
     if (titleDetail) {
-      existing.label = `${built.verb} ? ${shortText(titleDetail, 52)}`;
-    } else if (built.label !== built.verb || existing.label === existing.verb) {
+      existing.label = `${existing.verb ?? built.verb} ? ${shortText(titleDetail, 52)}`;
+    } else if (requested && built.label !== built.verb) {
       existing.label = built.label || existing.label;
     }
-    existing.verb = built.verb || existing.verb;
-    existing.zh = built.zh || existing.zh;
-    existing.toolName = toolName || existing.toolName;
-    existing.kind = built.kind || existing.kind;
     existing.occurredAt = event.occurredAt;
   }
 
@@ -657,6 +670,42 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
   const cachedTokensHit = sumUsageValues(usageRows, 'cachedTokensHit');
   const cachedTokensCreated = sumUsageValues(usageRows, 'cachedTokensCreated');
 
+  // Context watermark: what the provider's LAST request of this run actually
+  // consumed (totalInput + output). Distinct from the billing cumulative total
+  // above — a tool loop re-sends the growing prefix, so summing every request
+  // inflates "context used". The watermark is the honest occupancy figure.
+  let contextWatermarkTokens: number | undefined;
+  let lastRequestUsage: {
+    tokensIn?: number;
+    tokensOut?: number;
+    cachedTokensHit?: number;
+    cachedTokensCreated?: number;
+  } | undefined;
+  let lastRequestId: string | undefined;
+  let lastRequestSequence = -1;
+  for (const [requestId, sequence] of usageRequestSequence) {
+    if (sequence > lastRequestSequence) {
+      lastRequestSequence = sequence;
+      lastRequestId = requestId;
+    }
+  }
+  if (lastRequestId !== undefined) {
+    const last = providerUsageByRequest.get(lastRequestId);
+    if (last && (last.tokensIn !== undefined || last.tokensOut !== undefined)) {
+      contextWatermarkTokens = (last.tokensIn ?? 0) + (last.tokensOut ?? 0);
+    }
+    // 单次请求口径的明细（最后一次请求），供 footer 展示真实占用/缓存/输出，
+    // 与「计费累计」（求和）区分，避免工具循环重发导致的虚高。
+    if (last) {
+      lastRequestUsage = {
+        tokensIn: last.tokensIn,
+        tokensOut: last.tokensOut,
+        cachedTokensHit: last.cachedTokensHit,
+        cachedTokensCreated: last.cachedTokensCreated,
+      };
+    }
+  }
+
   let durationMs: number | undefined;
   if (startedAt && completedAt) {
     const start = Date.parse(startedAt);
@@ -678,6 +727,8 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
     tokensOut,
     cachedTokensHit,
     cachedTokensCreated,
+    ...(contextWatermarkTokens !== undefined ? { contextWatermarkTokens } : {}),
+    ...(lastRequestUsage !== undefined ? { lastRequestUsage } : {}),
     durationMs,
     providerModelId,
     modelId,

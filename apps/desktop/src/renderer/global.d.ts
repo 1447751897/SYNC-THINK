@@ -423,6 +423,60 @@ declare global {
         setConversationExecutionMode(
           payload: import('@sync-think/protocol').SetConversationExecutionModePayload,
         ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        setConversationInteractionMode(
+          payload: import('@sync-think/protocol').SetConversationInteractionModePayload,
+        ): Promise<import('@sync-think/protocol').ConversationResponse>;
+        conversationPlanSubmit(
+          payload: import('@sync-think/protocol').ConversationPlanSubmitPayload,
+        ): Promise<import('@sync-think/protocol').ConversationPlanResponse>;
+        conversationPlanGet(
+          payload: import('@sync-think/protocol').ConversationPlanGetPayload,
+        ): Promise<import('@sync-think/protocol').ConversationPlanResponse>;
+        conversationPlanApprove(
+          payload: import('@sync-think/protocol').ConversationPlanApprovePayload,
+        ): Promise<import('@sync-think/protocol').ConversationPlanApproveResponse>;
+        conversationPlanRevise(
+          payload: import('@sync-think/protocol').ConversationPlanRevisePayload,
+        ): Promise<import('@sync-think/protocol').ConversationPlanResponse>;
+        conversationPlanCancel(
+          payload: import('@sync-think/protocol').ConversationPlanCancelPayload,
+        ): Promise<import('@sync-think/protocol').ConversationPlanResponse>;
+        conversationAskAnswer(
+          payload: import('@sync-think/protocol').ConversationAskAnswerPayload,
+        ): Promise<{ askId: string }>;
+        conversationAskCancel(
+          payload: import('@sync-think/protocol').ConversationAskCancelPayload,
+        ): Promise<{ askId: string }>;
+        conversationAskPending(
+          payload: import('@sync-think/protocol').ConversationAskPendingPayload,
+        ): Promise<import('@sync-think/protocol').ConversationAskPendingResponse>;
+        createScheduledTask(
+          payload: import('@sync-think/protocol').CreateScheduledTaskPayload,
+        ): Promise<{ task: import('@sync-think/shared').ScheduledTask }>;
+        listScheduledTasks(
+          payload?: import('@sync-think/protocol').ListScheduledTasksPayload,
+        ): Promise<import('@sync-think/protocol').ListScheduledTasksResponse>;
+        updateScheduledTask(
+          payload: import('@sync-think/protocol').UpdateScheduledTaskPayload,
+        ): Promise<{ task: import('@sync-think/shared').ScheduledTask }>;
+        deleteScheduledTask(
+          payload: import('@sync-think/protocol').DeleteScheduledTaskPayload,
+        ): Promise<{ deleted: boolean }>;
+        triggerScheduledTask(
+          payload: import('@sync-think/protocol').TriggerScheduledTaskPayload,
+        ): Promise<import('@sync-think/protocol').TriggerScheduledTaskResponse>;
+        goalPause(
+          payload: import('@sync-think/protocol').GoalPausePayload,
+        ): Promise<{ goal?: import('@sync-think/protocol').GoalStatus }>;
+        goalResume(
+          payload: import('@sync-think/protocol').GoalResumePayload,
+        ): Promise<import('@sync-think/protocol').GoalResumeResponse>;
+        skillLocalScan(
+          payload?: import('@sync-think/protocol').SkillLocalScanPayload,
+        ): Promise<import('@sync-think/protocol').SkillLocalScanResponse>;
+        skillLocalImport(
+          payload: import('@sync-think/protocol').SkillLocalImportPayload,
+        ): Promise<import('@sync-think/protocol').SkillLocalImportResponse>;
         decideToolApproval(
           payload: import('@sync-think/protocol').ConversationDecideToolApprovalPayload,
         ): Promise<import('@sync-think/protocol').ConversationDecideToolApprovalResponse>;

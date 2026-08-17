@@ -1,4 +1,4 @@
-﻿// Migration runner: writes pending migrations, audit-records, and triggers a backup
+// Migration runner: writes pending migrations, audit-records, and triggers a backup
 // BEFORE applying any migration (搂20 rule 10). Implemented to run as `pnpm db:migrate`.
 
 import { closeSync, existsSync, openSync, rmSync, writeSync } from 'node:fs';
@@ -173,6 +173,59 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
   {
     name: '0041_task_plan',
     sql: taskPlanDdlSql(),
+  },
+  {
+    name: '0042_conversation_interaction_mode',
+    sql: `ALTER TABLE conversation ADD COLUMN interaction_mode TEXT NOT NULL DEFAULT 'execute'`,
+  },
+  {
+    name: '0043_conversation_plan',
+    sql: `CREATE TABLE conversation_plan (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL UNIQUE,
+      current_revision INTEGER NOT NULL DEFAULT 0,
+      state TEXT NOT NULL DEFAULT 'draft'
+        CHECK (state IN ('draft','approved','cancelled')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX conversation_plan_state_idx ON conversation_plan(state);
+    CREATE TABLE conversation_plan_revision (
+      id TEXT PRIMARY KEY,
+      plan_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      plan_json TEXT NOT NULL DEFAULT '{}',
+      state TEXT NOT NULL DEFAULT 'draft'
+        CHECK (state IN ('draft','approved','cancelled')),
+      approved_at TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (plan_id, revision)
+    );
+    CREATE INDEX conversation_plan_revision_plan_idx
+      ON conversation_plan_revision(plan_id);`,
+  },
+  {
+    name: '0044_scheduled_task',
+    sql: `CREATE TABLE scheduled_task (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      instruction TEXT NOT NULL,
+      target_kind TEXT NOT NULL CHECK (target_kind IN ('agent','model')),
+      target_ref TEXT NOT NULL,
+      rule_json TEXT NOT NULL DEFAULT '{}',
+      time_zone TEXT NOT NULL DEFAULT 'UTC',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      next_run_at TEXT,
+      last_run_at TEXT,
+      last_result_json TEXT,
+      conversation_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX scheduled_task_enabled_next_idx
+      ON scheduled_task(enabled, next_run_at);
+    CREATE INDEX scheduled_task_conversation_idx
+      ON scheduled_task(conversation_id);`,
   },
 ];
 

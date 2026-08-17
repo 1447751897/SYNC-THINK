@@ -195,7 +195,9 @@ describe('0017_reviewer_rework migration', () => {
     const browserAutomationIndex = names.indexOf('0038_browser_automation_workflow');
     const capabilityEnablementIndex = names.indexOf('0039_capability_enablement');
     const capabilityGovernanceIndex = names.indexOf('0040_capability_governance');
-    const latestIndex = names.indexOf('0041_task_plan');
+    const taskPlanIndex = names.indexOf('0041_task_plan');
+    const interactionModeIndex = names.indexOf('0042_conversation_interaction_mode');
+    const conversationPlanIndex = names.indexOf('0043_conversation_plan');
 
     expect(frozenIndex).toBeGreaterThanOrEqual(0);
     expect(reviewerReworkIndex).toBe(frozenIndex + 1);
@@ -203,8 +205,10 @@ describe('0017_reviewer_rework migration', () => {
     expect(browserAutomationIndex).toBe(browserRecordingIndex + 1);
     expect(capabilityEnablementIndex).toBe(browserAutomationIndex + 1);
     expect(capabilityGovernanceIndex).toBe(capabilityEnablementIndex + 1);
-    expect(latestIndex).toBe(capabilityGovernanceIndex + 1);
-    expect(latestIndex).toBe(names.length - 1);
+    expect(taskPlanIndex).toBe(capabilityGovernanceIndex + 1);
+    expect(interactionModeIndex).toBe(taskPlanIndex + 1);
+    expect(conversationPlanIndex).toBe(interactionModeIndex + 1);
+    expect(conversationPlanIndex).toBe(names.length - 1);
     expect(names.slice(frozenIndex, reviewerReworkIndex + 2)).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',
