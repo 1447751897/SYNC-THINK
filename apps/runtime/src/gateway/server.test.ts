@@ -674,17 +674,24 @@ describe('open gateway server', () => {
     expect((calls[1].body as { previous_response_id?: string }).previous_response_id).toBeUndefined();
     expect(calls[1].body).toMatchObject({
       input: [
+        { role: 'user', content: 'run it' },
+        {
+          type: 'function_call',
+          id: 'fc_item_1',
+          call_id: 'call_1',
+          name: 'Write-Output',
+          arguments: '{"value":"ok"}',
+        },
         {
           type: 'function_call_output',
           call_id: 'call_1',
           output: 'ok',
-          item_reference: 'fc_item_1',
         },
       ],
     });
   });
 
-  it('continues a non-streaming Responses tool call with item_reference', async () => {
+  it('continues a non-streaming Responses tool call by replaying function_call + output', async () => {
     const tickets = new GatewayTicketRegistry();
     const ticket = tickets.issue('run-responses-json', responsesRoute);
     const calls: Array<{ body: unknown }> = [];
@@ -774,11 +781,18 @@ describe('open gateway server', () => {
     expect((calls[1].body as { previous_response_id?: string }).previous_response_id).toBeUndefined();
     expect(calls[1].body).toMatchObject({
       input: [
+        { role: 'user', content: 'run json' },
+        {
+          type: 'function_call',
+          id: 'fc_item_json',
+          call_id: 'call_json',
+          name: 'Write-Output',
+          arguments: '{"value":"ok"}',
+        },
         {
           type: 'function_call_output',
           call_id: 'call_json',
           output: 'ok',
-          item_reference: 'fc_item_json',
         },
       ],
     });
@@ -797,6 +811,106 @@ describe('open gateway server', () => {
     });
     expect(response.status).toBe(502);
     expect(await response.text()).toContain('not supported yet');
+  });
+
+  it('replays function_call + output pairs in one request (HTTP Responses shape)', async () => {
+    const tickets = new GatewayTicketRegistry();
+    // Simulate a stateless HTTP Responses relay: it accepts tool results only
+    // when the answering function_call is replayed in the SAME request input
+    // and rejects the `item_reference` field outright (KMKAPI-style strict
+    // schema) — the pair is matched by call_id alone.
+    tickets.recordContinuationItem('scope-fallback', 'call_fb', 'fc_item_fb');
+    const calls: Array<{ body: unknown }> = [];
+    const fetchImpl = (async (_url: string | URL | Request, options?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(options?.body ?? '{}')) });
+      const encoder = new TextEncoder();
+      const chunks = [
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","content":[]}}\n\n',
+        'data: {"type":"response.output_text.delta","output_index":0,"delta":"回放成功"}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n',
+      ];
+      let index = 0;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (index >= chunks.length) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(encoder.encode(chunks[index++]));
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof fetch;
+    const { server } = await startServer({
+      resolveTicket: () => ({
+        runId: 'run-responses-replay',
+        route: { ...responsesRoute, responseContinuationScopeId: 'scope-fallback' },
+      }),
+      resolveContinuationItem: (scopeId, callId) =>
+        scopeId === 'scope-fallback' ? tickets.resolveContinuationItem(scopeId, callId) : undefined,
+      recordContinuationItem: (scopeId, callId, itemId) =>
+        tickets.recordContinuationItem(scopeId, callId, itemId),
+      fetchImpl,
+    });
+
+    const response = await fetch(urlFor(server, '/anthropic/v1/messages'), {
+      method: 'POST',
+      headers: { 'x-api-key': 'ticket-fallback' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4',
+        messages: [
+          { role: 'user', content: 'run it' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'call_fb',
+                name: 'Write-Output',
+                input: { value: 'ok' },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'call_fb',
+                content: 'ok',
+              },
+            ],
+          },
+        ],
+        stream: true,
+      }),
+    });
+    const text = await readAll(response);
+
+    expect(response.status).toBe(200);
+    expect(text).toContain('"text":"回放成功"');
+    expect(calls).toHaveLength(1);
+    const body = calls[0].body as { input: Array<Record<string, unknown>> };
+    // The replayed function_call carries the provider item id…
+    expect(body.input).toContainEqual({
+      type: 'function_call',
+      id: 'fc_item_fb',
+      call_id: 'call_fb',
+      name: 'Write-Output',
+      arguments: '{"value":"ok"}',
+    });
+    // …and the answering function_call_output pairs to it by call_id only
+    // (no item_reference: strict HTTP relays reject that field).
+    expect(body.input).toContainEqual({
+      type: 'function_call_output',
+      call_id: 'call_fb',
+      output: 'ok',
+    });
+    // The replayed pair must not carry item_reference anywhere.
+    const serialized = JSON.stringify(body.input);
+    expect(serialized).not.toContain('item_reference');
   });
 
   it('translates a Codex Responses request onto a Chat upstream and streams Responses events back', async () => {

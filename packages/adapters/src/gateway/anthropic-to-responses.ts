@@ -69,10 +69,7 @@ function imageBlockToPart(block: AnthropicContentBlock): OpenAIResponsesContentP
   return undefined;
 }
 
-function convertUserItem(
-  message: AnthropicWireMessage,
-  continuationItemRefs?: ReadonlyMap<string, string>,
-): OpenAIResponsesInputItem[] {
+function convertUserItem(message: AnthropicWireMessage): OpenAIResponsesInputItem[] {
   const blocks =
     typeof message.content === 'string'
       ? message.content === ''
@@ -85,12 +82,10 @@ function convertUserItem(
     if (block.type === 'tool_result') {
       const result = block as { tool_use_id: string; content?: string | AnthropicContentBlock[]; is_error?: boolean };
       const text = toolResultText(result.content);
-      const itemReference = continuationItemRefs?.get(result.tool_use_id);
       items.push({
         type: 'function_call_output',
         call_id: result.tool_use_id,
         output: result.is_error === true ? `Error: ${text}` : text,
-        ...(itemReference ? { item_reference: itemReference } : {}),
       });
     } else if (block.type === 'text' && typeof (block as { text?: unknown }).text === 'string') {
       parts.push({ type: 'input_text', text: (block as { text: string }).text });
@@ -111,7 +106,10 @@ function convertUserItem(
   return items;
 }
 
-function convertAssistantItem(message: AnthropicWireMessage): OpenAIResponsesInputItem[] {
+function convertAssistantItem(
+  message: AnthropicWireMessage,
+  itemIdByCallId?: ReadonlyMap<string, string>,
+): OpenAIResponsesInputItem[] {
   const blocks =
     typeof message.content === 'string'
       ? message.content === ''
@@ -130,8 +128,10 @@ function convertAssistantItem(message: AnthropicWireMessage): OpenAIResponsesInp
     } else if (block.type === 'tool_use') {
       const call = block as { id: string; name: string; input?: unknown };
       flushText();
+      const itemId = itemIdByCallId?.get(call.id);
       items.push({
         type: 'function_call',
+        ...(itemId ? { id: itemId } : {}),
         call_id: call.id,
         name: call.name,
         arguments: JSON.stringify(call.input ?? {}),
@@ -171,9 +171,11 @@ export interface AnthropicToResponsesOptions {
   targetModel: string;
   /**
    * Resolve the Responses *item* id that produced an earlier function call.
-   * HTTP Responses requires tool results to continue via `item_reference`
-   * (matching each call_id); `previous_response_id` continuation is
-   * WebSocket-only and relays reject it on HTTP.
+   * The gateway remembers each provider function-call item id; when resolvable
+   * it is reused as the replayed call's `id` so relays that track items by id
+   * keep stable identifiers across requests. Tool results are paired to their
+   * calls by `call_id` inside the same request input (`item_reference` is NOT
+   * emitted: some HTTP relays reject that field outright).
    */
   resolveFunctionItemId?(callId: string): string | undefined;
 }
@@ -181,46 +183,41 @@ export interface AnthropicToResponsesOptions {
 /**
  * Build the Responses `input` for one inbound Anthropic request.
  *
- * When the last message carries tool results and every result's originating
- * `function_call` item id is resolvable, the tool results are sent as a
- * continuation (each `function_call_output` carries its `item_reference` and
- * no historical `function_call` is replayed). This is the HTTP-correct shape
- * for parallel tool use — relays reject both a full in-context replay of
- * concurrent calls ("tool use concurrency issues") and WebSocket-only
- * `previous_response_id` continuation.
- *
- * Otherwise the full message history is replayed as paired items (which
- * Responses accepts without references).
+ * The full message history is always replayed as paired items: every
+ * `function_call` (with `call_id`) is followed by its `function_call_output`
+ * carrying the same `call_id`. This is the only tool-loop shape every stateless
+ * HTTP Responses relay accepts: an output whose call has no matching replayed
+ * `function_call` is rejected ("No tool call found for tool output with
+ * call_id"), while the `item_reference` field itself is rejected by other
+ * relays ("Unknown parameter: 'input[4].item_reference'"). The replayed
+ * `function_call` may carry a stable `id` when the provider item id is known
+ * (via `resolveFunctionItemId`); otherwise a deterministic synthetic id keeps
+ * the id self-consistent, though nothing references it.
  */
 function buildResponsesInput(
   request: AnthropicMessagesRequest,
   resolveFunctionItemId: ((callId: string) => string | undefined) | undefined,
 ): OpenAIResponsesInputItem[] {
-  const input: OpenAIResponsesInputItem[] = [];
-  const last = request.messages.at(-1);
-  const lastHasToolResults =
-    last !== undefined &&
-    last.role === 'user' &&
-    typeof last.content !== 'string' &&
-    (last.content as AnthropicContentBlock[]).some((block) => block.type === 'tool_result');
-  if (resolveFunctionItemId && last && lastHasToolResults) {
-    const results = (last.content as AnthropicContentBlock[]).filter(
-      (block): block is AnthropicContentBlock & { tool_use_id: string } =>
-        block.type === 'tool_result',
-    );
-    const itemIds = results.map((result) => resolveFunctionItemId(result.tool_use_id));
-    if (itemIds.every((itemId): itemId is string => typeof itemId === 'string' && itemId !== '')) {
-      const continuationRefs = new Map<string, string>();
-      results.forEach((result, index) => {
-        const itemId = itemIds[index];
-        if (itemId) continuationRefs.set(result.tool_use_id, itemId);
-      });
-      return convertUserItem(last, continuationRefs);
+  // Assign every historical tool_use a stable item id BEFORE converting, so the
+  // replayed function_call carries a consistent id (used by relays that track
+  // items by id; the pairing itself is done by call_id).
+  const itemIdByCallId = new Map<string, string>();
+  for (const message of request.messages) {
+    if (message.role !== 'assistant') continue;
+    const blocks =
+      typeof message.content === 'string' ? [] : (message.content as AnthropicContentBlock[]);
+    for (const block of blocks) {
+      if (block.type === 'tool_use') {
+        const call = block as { id: string };
+        const resolved = resolveFunctionItemId?.(call.id);
+        itemIdByCallId.set(call.id, resolved ?? `fc_replay_${call.id}`);
+      }
     }
   }
+  const input: OpenAIResponsesInputItem[] = [];
   for (const message of request.messages) {
     if (message.role === 'assistant') {
-      input.push(...convertAssistantItem(message));
+      input.push(...convertAssistantItem(message, itemIdByCallId));
     } else {
       input.push(...convertUserItem(message));
     }

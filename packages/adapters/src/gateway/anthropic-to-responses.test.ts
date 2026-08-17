@@ -106,13 +106,14 @@ describe('anthropicRequestToOpenAIResponses', () => {
     });
     expect(body.input[2]).toEqual({
       type: 'function_call',
+      id: 'fc_replay_toolu_2',
       call_id: 'toolu_2',
       name: 'read_file',
       arguments: '{"path":"a.txt"}',
     });
   });
 
-  it('continues from the provider response and sends only tool outputs plus new user content', () => {
+  it('replays the full history pairing function_call ids with outputs by call_id', () => {
     const body = anthropicRequestToOpenAIResponses(
       base({
         messages: [
@@ -153,17 +154,24 @@ describe('anthropicRequestToOpenAIResponses', () => {
 
     expect(body.previous_response_id).toBeUndefined();
     expect(body.input).toEqual([
+      { role: 'user', content: 'run it' },
+      {
+        type: 'function_call',
+        id: 'item_tool_1',
+        call_id: 'call_1',
+        name: 'Write-Output',
+        arguments: '{"value":"ok"}',
+      },
       {
         type: 'function_call_output',
         call_id: 'call_1',
         output: 'ok',
-        item_reference: 'item_tool_1',
       },
       { role: 'user', content: 'summarize the result' },
     ]);
   });
 
-  it('continues parallel tool calls via per-call item_reference (no same-response constraint)', () => {
+  it('replays parallel tool calls paired by call_id into the same input', () => {
     const body = anthropicRequestToOpenAIResponses(
       base({
         messages: [
@@ -193,22 +201,35 @@ describe('anthropicRequestToOpenAIResponses', () => {
 
     expect(body.previous_response_id).toBeUndefined();
     expect(body.input).toEqual([
+      { role: 'user', content: 'run both' },
+      {
+        type: 'function_call',
+        id: 'item_1',
+        call_id: 'call_1',
+        name: 'one',
+        arguments: '{}',
+      },
+      {
+        type: 'function_call',
+        id: 'item_2',
+        call_id: 'call_2',
+        name: 'two',
+        arguments: '{}',
+      },
       {
         type: 'function_call_output',
         call_id: 'call_1',
         output: 'one',
-        item_reference: 'item_1',
       },
       {
         type: 'function_call_output',
         call_id: 'call_2',
         output: 'two',
-        item_reference: 'item_2',
       },
     ]);
   });
 
-  it('falls back to a full in-context replay when a tool result has no resolvable item id', () => {
+  it('synthesizes stable item ids when no provider item id is resolvable', () => {
     const body = anthropicRequestToOpenAIResponses(
       base({
         messages: [
@@ -238,10 +259,30 @@ describe('anthropicRequestToOpenAIResponses', () => {
     expect(body.previous_response_id).toBeUndefined();
     expect(body.input).toEqual([
       { role: 'user', content: 'run both' },
-      { type: 'function_call', call_id: 'call_1', name: 'one', arguments: '{}' },
-      { type: 'function_call', call_id: 'call_2', name: 'two', arguments: '{}' },
-      { type: 'function_call_output', call_id: 'call_1', output: 'one' },
-      { type: 'function_call_output', call_id: 'call_2', output: 'two' },
+      {
+        type: 'function_call',
+        id: 'item_1',
+        call_id: 'call_1',
+        name: 'one',
+        arguments: '{}',
+      },
+      {
+        type: 'function_call',
+        id: 'fc_replay_call_2',
+        call_id: 'call_2',
+        name: 'two',
+        arguments: '{}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: 'one',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call_2',
+        output: 'two',
+      },
     ]);
   });
 

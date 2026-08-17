@@ -136,8 +136,9 @@ export class GatewayTicketRegistry {
   }
 
   /**
-   * Remember the provider `function_call` item id required to continue a
-   * Responses function call via HTTP `item_reference`.
+   * Remember the provider `function_call` item id so the next request can
+   * replay the call with a stable `id` (relays that track items by id keep
+   * continuity across stateless HTTP calls; pairing is by `call_id`).
    */
   recordContinuationItem(scopeId: string, callId: string, itemId: string): void {
     if (!scopeId || !callId || !itemId) return;

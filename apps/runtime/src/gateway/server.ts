@@ -762,30 +762,34 @@ async function translateAnthropicToOpenAIResponses(
     requestId: context.requestId,
     messages: summarizeAnthropicMessages(inbound),
   });
-  const upstreamBody = anthropicRequestToOpenAIResponses(inbound, {
-    targetModel: context.targetModel,
-    resolveFunctionItemId: (callId) => {
-      const itemId = context.responseContinuationScope
-        ? context.options.resolveContinuationItem?.(
-            context.responseContinuationScope,
-            callId,
-          )
-        : undefined;
-      traceGateway(context.options, 'responses.continuation.resolve', {
-        requestId: context.requestId,
-        callId,
-        itemId: itemId ?? null,
-      });
-      return itemId;
-    },
-  });
+  const buildUpstreamBody = (): OpenAIResponsesRequest => {
+    const body = anthropicRequestToOpenAIResponses(inbound, {
+      targetModel: context.targetModel,
+      resolveFunctionItemId: (callId) => {
+        const itemId = context.responseContinuationScope
+          ? context.options.resolveContinuationItem?.(
+              context.responseContinuationScope,
+              callId,
+            )
+          : undefined;
+        traceGateway(context.options, 'responses.continuation.resolve', {
+          requestId: context.requestId,
+          callId,
+          itemId: itemId ?? null,
+        });
+        return itemId;
+      },
+    });
+    if (!context.streamRequested) body.stream = false;
+    return body;
+  };
+  const upstreamBody = buildUpstreamBody();
   traceGateway(context.options, 'responses.upstream-input', {
     requestId: context.requestId,
     input: summarizeResponsesInput(
       upstreamBody.input as unknown as readonly Record<string, unknown>[],
     ),
   });
-  if (!context.streamRequested) upstreamBody.stream = false;
   context.audit = { upstreamBody };
   const abort = upstreamAbort(response);
   const functionCallItems = new Map<string, string>();
@@ -822,7 +826,12 @@ async function translateAnthropicToOpenAIResponses(
   );
   try {
     const upstreamStartedAt = Date.now();
-    const upstream = await callUpstream(context.route, upstreamBody, context.options, abort.signal);
+    const upstream = await callUpstream(
+      context.route,
+      upstreamBody,
+      context.options,
+      abort.signal,
+    );
     traceGateway(context.options, 'responses.upstream-response', {
       requestId: context.requestId,
       status: upstream.status,

@@ -176,13 +176,28 @@ export type OpenAIResponsesInputItem =
       call_id: string;
       output: string;
       /**
-       * HTTP Responses requires tool results to reference the item id of the
-       * `function_call` they answer (`previous_response_id` continuation is
-       * WebSocket-only). Omitted during a full in-context replay.
+       * Optional association to a specific `function_call` item. NOT emitted by
+       * the gateway's Anthropic→Responses translation: tool results are paired
+       * to their calls by `call_id` inside the same request input, because some
+       * HTTP relays reject the `item_reference` field itself ("Unknown
+       * parameter: 'input[4].item_reference'") while others reject outputs
+       * whose call is not replayed. Kept in the type for providers that opt in.
        */
       item_reference?: string;
     }
-  | { type: 'function_call'; call_id: string; name: string; arguments: string; namespace?: string }
+  | {
+      type: 'function_call';
+      /**
+       * Stable item id (provider-resolved when known). Kept as an identifier
+       * for relays that track items by id; the gateway's pairing is by
+       * `call_id` and does not require `function_call_output.item_reference`.
+       */
+      id?: string;
+      call_id: string;
+      name: string;
+      arguments: string;
+      namespace?: string;
+    }
   | {
       type: 'custom_tool_call';
       call_id: string;
