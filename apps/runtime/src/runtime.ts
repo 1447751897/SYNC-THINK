@@ -697,6 +697,7 @@ import * as skillQueries from './commands/skill-queries.js';
 import type { SkillQueryContext } from './commands/skill-query-context.js';
 import type { UsageSummaryRawResult } from './usage-summary-cache.js';
 import { decideSchedulerHeartbeat, probeDaemonPipe } from './daemon/yield.js';
+import { parseTaskFrame } from './daemon/protocol.js';
 
 const CODEX_STYLE_COMMENTARY_PROMPT = [
   'User-visible execution updates (Codex-style commentary):',
@@ -2208,6 +2209,10 @@ export class Runtime {
         }
         if (frame.type === 'scheduledTask.trigger') {
           this.handleTriggerScheduledTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'task.dispatch') {
+          this.handleTaskDispatch(socket, frame);
           return;
         }
         if (frame.type === 'scheduledTask.history') {
@@ -15188,6 +15193,45 @@ export class Runtime {
         payload: response,
       }),
     );
+  }
+
+  /**
+   * 守护进程投递任务（T7）：校验帧 → 立即 ack（不等执行完成）→ 异步执行。
+   * 投递帧契约见 daemon/protocol.ts（task.dispatch）。
+   */
+  private handleTaskDispatch(socket: Socket, frame: Frame): void {
+    const parsed = parseTaskFrame(frame);
+    if (!parsed.ok) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (parsed.frame.type !== 'task.dispatch') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const { taskId } = parsed.frame.payload;
+    // 立即 ack（spec：桌面收到指令立即回复，不等执行完成）。
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'task.dispatch.ack',
+        payload: { taskId, accepted: true },
+      }),
+    );
+    // 异步执行：校验任务存在 → fireScheduledTask（历史落库 + 摘要回填）。
+    void (async () => {
+      if (!this.scheduledTaskStore) return;
+      const task = this.scheduledTaskStore.get(taskId);
+      if (!task) {
+        console.warn(`[runtime] task.dispatch: task ${taskId} not found`);
+        return;
+      }
+      const result = await this.fireScheduledTask(task);
+      if (!result.fired) {
+        console.warn(`[runtime] task.dispatch: ${taskId} not fired: ${result.reason ?? 'unknown'}`);
+      }
+    })();
   }
 
   /** Resolve the thread id backing a conversation (goal turns run on its thread). */

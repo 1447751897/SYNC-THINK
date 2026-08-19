@@ -28,8 +28,10 @@ import {
   type DaemonStatus,
 } from './core.js';
 import { decideDue, type SchedulerDecision } from '../scheduler-core.js';
-import { chooseDispatchPath } from './dispatch.js';
+import { chooseDispatchPath, composeTaskCommand } from './dispatch.js';
 import { buildWorkerCommand, runWorkerProcess } from './worker.js';
+import { dispatchTaskToDesktop } from './dispatch-client.js';
+import { probeDaemonPipe } from './yield.js';
 
 const HEARTBEAT_INTERVAL_MS = 1_000;
 const STATUS_FILE = 'daemon-status.json';
@@ -135,35 +137,50 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     return clamped;
   };
 
-  // 到点处理器（默认：日志 + 今日触发计数；桌面活着投递在 T7 接入）。
+  // 到点处理器（默认：日志 + 今日触发计数；执行路径 = 投递 or 自拉）。
   const onFire: TaskFireHandler = options.onFire ?? ((taskId, decision) => {
     console.log(`[daemon] task ${taskId} due → action=${decision.action.type}`);
     status = updateDaemonStatus(status, { todayFired: status.todayFired + 1 });
     if (decision.action.type !== 'fire') return;
-    // 自拉路径（T6）：桌面探测 → 关着 → spawn worker 执行。
+    // 执行路径（T7）：探测桌面活着 → 投递；否则自拉 worker。
     void (async () => {
+      const task = taskStore.get(taskId);
+      if (!task) return;
+      const desktopAlive = await probeDaemonPipe(installId);
+      const path = chooseDispatchPath(desktopAlive);
+      if (path.kind === 'dispatched') {
+        const result = await dispatchTaskToDesktop(
+          {
+            installId,
+            helloSecret,
+            appVersion: 'sync-think-daemon',
+            timeoutMs: 30_000,
+          },
+          composeTaskCommand(task),
+        );
+        console.log(
+          `[daemon] dispatched ${taskId} → ok=${result.ok} acked=${result.acked}` +
+            (result.ok && !result.acked ? ' (no ack; T8 will takeover)' : ''),
+        );
+        if (result.ok) return;
+        // 投递失败（桌面刚关/握手失败）→ 降级自拉。
+        console.warn(`[daemon] dispatch ${taskId} failed; falling back to worker`);
+      }
       const entry = resolveRuntimeEntry();
       if (!entry) {
         console.error('[daemon] runtime entry not found; cannot spawn worker');
         return;
       }
-      const path = chooseDispatchPath(false); // T7 接入真实桌面探测
-      if (path.kind !== 'spawn-worker') return;
-      const command = buildWorkerCommand(resolveNodeBin(), {
+      const workerOptions = {
         runtimeEntry: entry,
         taskId,
         dbPath,
         installId,
         baseEnv: process.env,
-      });
+      };
+      const command = buildWorkerCommand(resolveNodeBin(), workerOptions);
       console.log(`[daemon] spawning worker for ${taskId}: ${command.command} ${command.args.join(' ')}`);
-      const result = await runWorkerProcess(resolveNodeBin(), {
-        runtimeEntry: entry,
-        taskId,
-        dbPath,
-        installId,
-        baseEnv: process.env,
-      });
+      const result = await runWorkerProcess(resolveNodeBin(), workerOptions);
       console.log(
         `[worker] task ${taskId} exited code=${result.code}${result.signal ? ` signal=${result.signal}` : ''}`,
       );
