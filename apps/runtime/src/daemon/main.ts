@@ -35,6 +35,7 @@ import { probeDaemonPipe } from './yield.js';
 import { classifyInterruption, DispatchedTracker, applyAbort } from './interrupt.js';
 import { parseTaskFrame } from './protocol.js';
 import { planCatchupSweep } from './catchup.js';
+import { TaskConcurrencyManager } from './queue.js';
 
 const HEARTBEAT_INTERVAL_MS = 1_000;
 const STATUS_FILE = 'daemon-status.json';
@@ -113,6 +114,33 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   const connection = await openDatabaseAsync({ path: dbPath });
   const taskStore = new SqliteScheduledTaskStore(connection.raw);
   const appSettingStore = new SqliteAppSettingStore(connection.raw);
+  // 并发队列（T9）：DB 持久化队列表（进程重启不丢，按入队顺序出队）。
+  const queueStore = {
+    enqueue: (taskId: string): boolean => {
+      try {
+        connection.raw
+          .prepare('INSERT OR IGNORE INTO daemon_task_queue (task_id, created_at) VALUES (?, ?)')
+          .run(taskId, new Date().toISOString());
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    dequeue: (): string | undefined => {
+      try {
+        const row = connection.raw
+          .prepare('SELECT task_id FROM daemon_task_queue ORDER BY created_at ASC LIMIT 1')
+          .get() as { task_id: string } | undefined;
+        if (!row) return undefined;
+        connection.raw
+          .prepare('DELETE FROM daemon_task_queue WHERE task_id = ?')
+          .run(row.task_id);
+        return row.task_id;
+      } catch {
+        return undefined;
+      }
+    },
+  };
 
   // 定时器注册表（croner 注册器）。
   const registrar = options.registrar ?? {
@@ -145,11 +173,30 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     return clamped;
   };
 
+  // 并发执行管理器（T9）：信号量 + running 跟踪 + DB 排队。
+  const concurrency = new TaskConcurrencyManager({
+    maxConcurrent: taskMaxConcurrent(),
+    enqueue: (taskId) => queueStore.enqueue(taskId),
+    store: queueStore,
+  });
+
   // 到点处理器（默认：日志 + 今日触发计数；执行路径 = 投递 or 自拉）。
   const onFire: TaskFireHandler = options.onFire ?? ((taskId, decision) => {
     console.log(`[daemon] task ${taskId} due → action=${decision.action.type}`);
     status = updateDaemonStatus(status, { todayFired: status.todayFired + 1 });
     if (decision.action.type !== 'fire') return;
+    // 并发槽位（T9）：占满则入队等待（decideDue 已给出 enqueue）。
+    if (!concurrency.acquire(taskId)) {
+      console.log(`[daemon] ${taskId} no slot; queued`);
+      return;
+    }
+    const completeTask = (): void => {
+      concurrency.release(taskId);
+      status = updateDaemonStatus(status, { queued: concurrency.activeCount() });
+      // 空出槽位 → 自动接上队首任务。
+      const next = queueStore.dequeue();
+      if (next) fireTask(next);
+    };
     // 执行路径（T7）：探测桌面活着 → 投递；否则自拉 worker。
     void (async () => {
       const task = taskStore.get(taskId);
@@ -172,6 +219,9 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         );
         if (result.ok && result.acked) {
           dispatched.add(taskId, now());
+          // 桌面接管执行：桌面有自己的并发管理，daemon 槽位立即释放
+          // （完成/中断由 T8 的崩溃检测/abort 闭环处置）。
+          completeTask();
           return;
         }
         if (result.ok && !result.acked) {
@@ -200,6 +250,8 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       console.log(
         `[worker] task ${taskId} exited code=${result.code}${result.signal ? ` signal=${result.signal}` : ''}`,
       );
+      // 自拉完成 → 释放槽位 + 接上队首。
+      completeTask();
     })();
   });
 
@@ -229,10 +281,22 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     }
     const decision = decideDue({
       task,
-      state: { running: false, activeRuns: 0 }, // T6/T9 接入真实并发状态
+      state: {
+        running: concurrency.isRunning(task.id),
+        activeRuns: concurrency.activeCount(),
+      },
       now: now(),
       maxConcurrent: taskMaxConcurrent(),
     });
+    if (decision.action.type === 'enqueue') {
+      // 并发满 → 排队（DB 持久化，完成自动接上）。不重复入队。
+      if (!concurrency.isRunning(task.id)) {
+        const queued = queueStore.enqueue(task.id);
+        console.log(`[daemon] ${taskId} concurrency full; queued=${queued}`);
+        status = updateDaemonStatus(status, { queued: concurrency.activeCount() });
+      }
+      return;
+    }
     onFire(taskId, decision);
   };
 

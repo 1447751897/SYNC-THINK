@@ -227,6 +227,74 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     CREATE INDEX scheduled_task_conversation_idx
       ON scheduled_task(conversation_id);`,
   },
+  {
+    name: '0045_scheduled_task_scope',
+    // 定时任务升级：target 支持 team（重建表放宽 CHECK 约束）；
+    // 新增 workspace_id（绑定工作区，NULL = 全局）与 skill_version_ids_json（触发注入）。
+    sql: `CREATE TABLE scheduled_task_new (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      instruction TEXT NOT NULL,
+      target_kind TEXT NOT NULL CHECK (target_kind IN ('agent','model','team')),
+      target_ref TEXT NOT NULL,
+      rule_json TEXT NOT NULL DEFAULT '{}',
+      time_zone TEXT NOT NULL DEFAULT 'UTC',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      next_run_at TEXT,
+      last_run_at TEXT,
+      last_result_json TEXT,
+      conversation_id TEXT,
+      workspace_id TEXT,
+      skill_version_ids_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO scheduled_task_new (
+      id, name, instruction, target_kind, target_ref, rule_json, time_zone,
+      enabled, next_run_at, last_run_at, last_result_json, conversation_id,
+      created_at, updated_at
+    ) SELECT
+      id, name, instruction, target_kind, target_ref, rule_json, time_zone,
+      enabled, next_run_at, last_run_at, last_result_json, conversation_id,
+      created_at, updated_at
+    FROM scheduled_task;
+    DROP TABLE scheduled_task;
+    ALTER TABLE scheduled_task_new RENAME TO scheduled_task;
+    CREATE INDEX scheduled_task_enabled_next_idx
+      ON scheduled_task(enabled, next_run_at);
+    CREATE INDEX scheduled_task_conversation_idx
+      ON scheduled_task(conversation_id);
+    CREATE INDEX scheduled_task_workspace_idx
+      ON scheduled_task(workspace_id);`,
+  },
+  {
+    name: '0046_scheduled_task_history',
+    // 定时任务执行历史：每次触发（成功/失败/跳过）落一条记录；
+    // run 终态后由 runtime 回填 summary（任务会话最后一条助手消息摘要）。
+    sql: `CREATE TABLE scheduled_task_history (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('success','failed','skipped','cancelled')),
+      fired_at TEXT NOT NULL,
+      run_id TEXT,
+      summary TEXT,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX scheduled_task_history_task_fired_idx
+      ON scheduled_task_history(task_id, fired_at DESC);`,
+  },
+  {
+    name: '0047_daemon_task_queue',
+    // 守护进程并发队列：多任务同时到期超限时排队（非内存队列——
+    // 进程重启队列不丢，spec T9/Q5a）。出队按入队顺序（created_at ASC）。
+    sql: `CREATE TABLE daemon_task_queue (
+      task_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX daemon_task_queue_created_idx
+      ON daemon_task_queue(created_at ASC);`,
+  },
 ];
 
 function taskPlanDdlSql(): string {

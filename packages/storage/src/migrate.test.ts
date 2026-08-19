@@ -87,6 +87,10 @@ async function createLegacy0013TerminalDatabase(dbPath: string) {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -303,6 +307,10 @@ async function createLegacy0011Database(dbPath: string, withMatchingEvent: boole
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     await runMigrations(dbPath);
   } finally {
@@ -567,6 +575,10 @@ describe('migration planner (pure)', () => {
           '0041_task_plan',
           '0042_conversation_interaction_mode',
           '0043_conversation_plan',
+          '0044_scheduled_task',
+          '0045_scheduled_task_scope',
+          '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
         ]);
         const after = await openDatabaseAsync({ path: dbPath });
         try {
@@ -678,6 +690,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
   });
 
@@ -716,6 +732,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
   });
 
@@ -762,6 +782,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
   });
 
@@ -801,6 +825,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
   });
 
@@ -839,6 +867,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
   });
 
@@ -894,6 +926,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1']);
   });
@@ -942,6 +978,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual(['0001_baseline_v1', '0002_fts_messages']);
   });
@@ -993,6 +1033,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1048,6 +1092,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1104,6 +1152,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1161,6 +1213,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1219,6 +1275,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual([
       '0001_baseline_v1',
@@ -1279,6 +1339,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1331,6 +1395,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual(prior);
   });
@@ -1380,6 +1448,10 @@ describe('migration planner (pure)', () => {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     expect(plan.skipped).toEqual(['0002_fts_messages']);
   });
@@ -1634,6 +1706,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       const after = await openDatabaseAsync({ path: dbPath });
       try {
@@ -1741,6 +1817,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       try {
         await runMigrations(dbPath);
@@ -1805,6 +1885,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       const upgraded = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2196,6 +2280,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2273,6 +2361,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2325,6 +2417,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       await runMigrations(dbPath);
     } finally {
@@ -2376,6 +2472,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       expect((await runMigrations(dbPath)).applied).toEqual([]);
       const after = await openDatabaseAsync({ path: dbPath });
@@ -2434,6 +2534,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2560,6 +2664,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
@@ -2637,6 +2745,10 @@ describe.skipIf(!canOpenNativeSqlite())('migration runner live sqlite', () => {
         '0041_task_plan',
         '0042_conversation_interaction_mode',
         '0043_conversation_plan',
+        '0044_scheduled_task',
+        '0045_scheduled_task_scope',
+        '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
       ]);
       const { raw } = await openDatabaseAsync({ path: dbPath });
       try {
