@@ -530,6 +530,8 @@ function initializeDesktopUpdater(): void {
         targetVersion: context.targetVersion,
         downloadedFile: context.downloadedFile,
       });
+      // T12：升级前先停守护进程——否则文件被占用，覆盖更新失败。
+      await stopManagedDaemon();
       await shutdownDesktopServices();
     },
     installSilently: desktopUpdateInstallProbeConfiguration !== null,
