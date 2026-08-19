@@ -5,6 +5,7 @@ import type {
   ScheduledTask,
   ScheduledTaskHistoryEntry,
   ScheduledTaskRunResult,
+  ScheduledTaskRunStatus,
   ScheduledTaskTarget,
   TaskRule,
 } from '@sync-think/shared';
@@ -22,6 +23,8 @@ interface ScheduledTaskRow {
   last_run_at: string | null;
   last_result_json: string | null;
   conversation_id: string | null;
+  workspace_id: string | null;
+  skill_version_ids_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -35,16 +38,48 @@ function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   }
 }
 
+interface ScheduledTaskHistoryRow {
+  id: string;
+  task_id: string;
+  status: string;
+  fired_at: string;
+  run_id: string | null;
+  summary: string | null;
+  reason: string | null;
+  created_at: string;
+}
+
+function mapHistoryRow(row: ScheduledTaskHistoryRow): ScheduledTaskHistoryEntry {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    status: row.status as ScheduledTaskHistoryEntry['status'],
+    firedAt: row.fired_at,
+    runId: row.run_id ?? undefined,
+    summary: row.summary ?? undefined,
+    reason: row.reason ?? undefined,
+  };
+}
+
+function targetRefOf(target: ScheduledTaskTarget): string {
+  if (target.kind === 'agent') return target.agentId;
+  if (target.kind === 'model') return target.modelId;
+  return target.teamId;
+}
+
 function mapRow(row: ScheduledTaskRow): ScheduledTask {
   const target = parseJson<ScheduledTaskTarget>(
     JSON.stringify({
       kind: row.target_kind,
       ...(row.target_kind === 'agent'
         ? { agentId: row.target_ref }
-        : { modelId: row.target_ref }),
+        : row.target_kind === 'team'
+          ? { teamId: row.target_ref }
+          : { modelId: row.target_ref }),
     }),
     { kind: 'model', modelId: row.target_ref },
   );
+  const skillVersionIds = parseJson<string[]>(row.skill_version_ids_json, []);
   return {
     id: row.id,
     name: row.name,
@@ -59,6 +94,8 @@ function mapRow(row: ScheduledTaskRow): ScheduledTask {
       ? parseJson<ScheduledTaskRunResult>(row.last_result_json, undefined as never)
       : undefined,
     conversationId: row.conversation_id ?? undefined,
+    workspaceId: row.workspace_id ?? undefined,
+    skillVersionIds,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -77,29 +114,32 @@ export class SqliteScheduledTaskStore {
     enabled: boolean;
     nextRunAt?: string;
     conversationId?: string;
+    workspaceId?: string;
+    skillVersionIds?: string[];
     now?: string;
   }): ScheduledTask {
     const now = input.now ?? new Date().toISOString();
-    const targetRef =
-      input.target.kind === 'agent' ? input.target.agentId : input.target.modelId;
     this.raw
       .prepare(
         `INSERT INTO scheduled_task (
           id, name, instruction, target_kind, target_ref, rule_json, time_zone,
-          enabled, next_run_at, conversation_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          enabled, next_run_at, conversation_id, workspace_id, skill_version_ids_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id,
         input.name,
         input.instruction,
         input.target.kind,
-        targetRef,
+        targetRefOf(input.target),
         JSON.stringify(input.rule),
         input.timeZone,
         input.enabled ? 1 : 0,
         input.nextRunAt ?? null,
         input.conversationId ?? null,
+        input.workspaceId ?? null,
+        JSON.stringify(input.skillVersionIds ?? []),
         now,
         now,
       );
@@ -116,9 +156,7 @@ export class SqliteScheduledTaskStore {
   list(includeDisabled = true): ScheduledTask[] {
     const rows = this.raw
       .prepare(
-        `SELECT * FROM scheduled_task ORDER BY created_at ASC${
-          includeDisabled ? '' : ' WHERE enabled = 1'
-        }`,
+        `SELECT * FROM scheduled_task${includeDisabled ? '' : ' WHERE enabled = 1'} ORDER BY created_at ASC`,
       )
       .all() as ScheduledTaskRow[];
     return rows.map(mapRow);
@@ -137,6 +175,8 @@ export class SqliteScheduledTaskStore {
       lastRunAt?: string | null;
       lastResult?: ScheduledTaskRunResult | null;
       conversationId?: string | null;
+      workspaceId?: string | null;
+      skillVersionIds?: string[] | null;
     }>,
     now?: string,
   ): ScheduledTask | undefined {
@@ -159,21 +199,27 @@ export class SqliteScheduledTaskStore {
         patch.conversationId === undefined
           ? current.conversationId
           : (patch.conversationId ?? undefined),
+      workspaceId:
+        patch.workspaceId === undefined ? current.workspaceId : (patch.workspaceId ?? undefined),
+      skillVersionIds:
+        patch.skillVersionIds === undefined
+          ? current.skillVersionIds
+          : (patch.skillVersionIds ?? []),
     };
-    const targetRef = next.target.kind === 'agent' ? next.target.agentId : next.target.modelId;
     this.raw
       .prepare(
         `UPDATE scheduled_task SET
           name = ?, instruction = ?, target_kind = ?, target_ref = ?, rule_json = ?,
           time_zone = ?, enabled = ?, next_run_at = ?, last_run_at = ?,
-          last_result_json = ?, conversation_id = ?, updated_at = ?
+          last_result_json = ?, conversation_id = ?, workspace_id = ?,
+          skill_version_ids_json = ?, updated_at = ?
         WHERE id = ?`,
       )
       .run(
         next.name,
         next.instruction,
         next.target.kind,
-        targetRef,
+        targetRefOf(next.target),
         JSON.stringify(next.rule),
         next.timeZone,
         next.enabled ? 1 : 0,
@@ -181,6 +227,8 @@ export class SqliteScheduledTaskStore {
         next.lastRunAt ?? null,
         next.lastResult ? JSON.stringify(next.lastResult) : null,
         next.conversationId ?? null,
+        next.workspaceId ?? null,
+        JSON.stringify(next.skillVersionIds ?? []),
         ts,
         id,
       );
@@ -203,12 +251,50 @@ export class SqliteScheduledTaskStore {
     return rows.map(mapRow);
   }
 
-  /** 最近执行历史（lastResult 快照 + 会话摘要，最多 N 条；按 firedAt 倒序）。 */
-  listHistory(taskId: string, limit = 10): ScheduledTaskHistoryEntry[] {
-    void taskId;
-    void limit;
-    // 历史来自任务会话消息流（run 事件回放），本 store 只提供 lastResult 快照；
-    // 完整历史由 runtime 从会话事件构造。
-    return [];
+  /** 最近执行历史（每次触发一条；按 firedAt 倒序，最多 N 条）。 */
+  listHistory(taskId: string, limit = 20): ScheduledTaskHistoryEntry[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT * FROM scheduled_task_history WHERE task_id = ?
+         ORDER BY fired_at DESC LIMIT ?`,
+      )
+      .all(taskId, limit) as ScheduledTaskHistoryRow[];
+    return rows.map(mapHistoryRow);
+  }
+
+  /** 写入一条执行历史（触发/失败/跳过时）。 */
+  addHistoryEntry(input: {
+    id: string;
+    taskId: string;
+    status: ScheduledTaskRunStatus;
+    firedAt: string;
+    runId?: string;
+    reason?: string;
+    now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    this.raw
+      .prepare(
+        `INSERT INTO scheduled_task_history (
+          id, task_id, status, fired_at, run_id, summary, reason, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.id,
+        input.taskId,
+        input.status,
+        input.firedAt,
+        input.runId ?? null,
+        null,
+        input.reason ?? null,
+        now,
+      );
+  }
+
+  /** run 终态后回填执行摘要（任务会话最后一条助手消息前 200 字）。 */
+  updateHistorySummary(entryId: string, summary: string): void {
+    this.raw
+      .prepare(`UPDATE scheduled_task_history SET summary = ? WHERE id = ?`)
+      .run(summary.slice(0, 200), entryId);
   }
 }

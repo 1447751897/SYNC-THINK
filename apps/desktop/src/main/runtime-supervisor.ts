@@ -10,7 +10,18 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { connect } from 'node:net';
-import { decodeFrames, encodeFrame, pipePathPortable } from '@sync-think/protocol';
+import {
+  computeClientProof,
+  computeHmac,
+  decodeFrames,
+  DEFAULT_FEATURES,
+  encodeFrame,
+  pipePathPortable,
+  PROTOCOL_VERSION,
+  type Hello,
+  type HelloProofPayload,
+} from '@sync-think/protocol';
+import { randomBytes } from 'node:crypto';
 import { stopRuntimeChild } from './runtime-child-shutdown.js';
 import type { DesktopRuntimeIdentity } from './packaged-install-identity.js';
 
@@ -552,6 +563,9 @@ function resolveDaemonEntry(): string | null {
 
 let daemonChild: ChildProcess | null = null;
 let daemonStarting: Promise<void> | null = null;
+/** 上次 spawn daemon 的时间（防抖：spawn 到管道监听有秒级延迟，期间重复调用不再拉起）。 */
+let daemonSpawnedAt = 0;
+const DAEMON_SPAWN_DEBOUNCE_MS = 10_000;
 
 /**
  * 桌面启动时兜底拉起守护进程（T3）：探测 daemon 管道——不在运行 →
@@ -565,6 +579,11 @@ export async function ensureDaemonProcess(
 
   if (await probeDaemonPipe(installId)) {
     return { ready: true, spawned: false };
+  }
+
+  // 防抖：短时间内已拉起过（管道可能还没监听）→ 不再重复 spawn。
+  if (Date.now() - daemonSpawnedAt < DAEMON_SPAWN_DEBOUNCE_MS) {
+    return { ready: false, spawned: true };
   }
 
   if (daemonStarting) {
@@ -593,6 +612,7 @@ export async function ensureDaemonProcess(
       shell: false,
     });
     daemonChild = childProcess;
+    daemonSpawnedAt = Date.now();
     childProcess.on('exit', () => {
       if (daemonChild === childProcess) daemonChild = null;
     });
@@ -632,6 +652,7 @@ export async function requestDaemonFrame(
   type: string,
   payload: unknown,
   installId: string,
+  helloSecret?: string,
   timeoutMs = 2_000,
 ): Promise<{ ok: boolean; payload?: unknown; error?: string }> {
   const path = daemonPipePath(installId);
@@ -644,10 +665,63 @@ export async function requestDaemonFrame(
     };
     const socket = connect(path);
     let buffer: Buffer = Buffer.alloc(0);
+    let authenticated = false;
+    let helloPhase: 'hello' | 'proof' | 'done' = 'hello';
+    let helloNonce = '';
+    let helloResolve: ((ok: boolean) => void) | null = null;
     const timer = setTimeout(() => {
       socket.destroy();
       done({ ok: false, error: 'daemon timeout' });
     }, timeoutMs);
+
+    const isChallenge = (value: unknown): value is { challenge: true; runtimeNonce: string; runtimeToken: string } => {
+      if (!value || typeof value !== 'object') return false;
+      const p = value as Record<string, unknown>;
+      return p.challenge === true && typeof p.runtimeNonce === 'string' && typeof p.runtimeToken === 'string';
+    };
+    const isAccepted = (value: unknown): value is { ok: true } =>
+      Boolean(value && typeof value === 'object' && (value as { ok?: unknown }).ok === true);
+
+    const handleHelloFrame = (frame: import('@sync-think/protocol').Frame): void => {
+      if (helloPhase === 'hello' && frame.type === '__hello') {
+        const payload = frame.payload as { challenge?: boolean; ok?: boolean; runtimeNonce?: string; runtimeToken?: string };
+        if (isAccepted(payload)) {
+          helloPhase = 'done';
+          authenticated = true;
+          helloResolve?.(true);
+          return;
+        }
+        if (!isChallenge(payload)) {
+          helloPhase = 'done';
+          helloResolve?.(false);
+          return;
+        }
+        helloPhase = 'proof';
+        if (!helloSecret) {
+          helloPhase = 'done';
+          helloResolve?.(false);
+          return;
+        }
+        const proof: HelloProofPayload = {
+          installId,
+          clientNonce: helloNonce,
+          runtimeNonce: payload.runtimeNonce,
+          token: computeClientProof(helloSecret, helloNonce, payload.runtimeNonce, installId),
+        };
+        socket.write(encodeFrame({ id: 'hello-proof', kind: 'request', type: '__hello.proof', payload: proof }));
+        return;
+      }
+      if (helloPhase === 'proof' && frame.type === '__hello.proof') {
+        if (isAccepted(frame.payload)) {
+          helloPhase = 'done';
+          authenticated = true;
+          helloResolve?.(true);
+          return;
+        }
+        helloPhase = 'done';
+        helloResolve?.(false);
+      }
+    };
 
     socket.on('data', (chunk: Buffer) => {
       const prev = buffer;
@@ -655,6 +729,10 @@ export async function requestDaemonFrame(
         const decoded = decodeFrames(prev.length === 0 ? chunk : Buffer.concat([prev, chunk]));
         buffer = decoded.remaining;
         for (const frame of decoded.frames) {
+          if (!authenticated) {
+            handleHelloFrame(frame);
+            continue;
+          }
           if (frame.type === type) {
             clearTimeout(timer);
             socket.end();
@@ -668,7 +746,34 @@ export async function requestDaemonFrame(
       }
     });
     socket.on('connect', () => {
-      socket.write(encodeFrame({ id: `daemon-mgmt-${Date.now()}`, kind: 'request', type, payload }));
+      // 1. 握手（__hello → 认证）→ 2. 发目标帧。
+      const helloOk = new Promise<boolean>((resolveHello) => {
+        helloResolve = resolveHello;
+        helloNonce = randomBytes(16).toString('hex');
+        const hello: Hello = {
+          protocolVersion: PROTOCOL_VERSION,
+          appVersion: 'sync-think-desktop',
+          installId,
+          nonce: helloNonce,
+          features: [...DEFAULT_FEATURES],
+        };
+        if (helloSecret) hello.token = computeHmac(helloSecret, helloNonce, installId);
+        socket.write(encodeFrame({ id: 'hello', kind: 'request', type: '__hello', payload: hello }));
+        setTimeout(() => {
+          if (helloPhase !== 'done') {
+            helloPhase = 'done';
+            resolveHello(false);
+          }
+        }, 2_000);
+      });
+      void helloOk.then((ok) => {
+        if (!ok) {
+          socket.end();
+          done({ ok: false, error: 'daemon handshake failed' });
+          return;
+        }
+        socket.write(encodeFrame({ id: `daemon-mgmt-${Date.now()}`, kind: 'request', type, payload }));
+      });
     });
     socket.on('error', () => {
       clearTimeout(timer);

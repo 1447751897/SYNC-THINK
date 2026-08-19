@@ -1949,7 +1949,7 @@ function setupRuntimeBridge(): void {
   // ── 守护进程管理（T11）：走 daemon 独立管道，不经过 runtime。 ──────────
   ipcMain.handle('daemon:get-status', async (event) => {
     assertRuntimeIpcSource(event);
-    return requestDaemonFrame('daemon.status', {}, getDesktopRuntimeIdentity().installId);
+    return requestDaemonFrame('daemon.status', {}, getDesktopRuntimeIdentity().installId, getDesktopRuntimeIdentity().pipeSecret);
   });
   ipcMain.handle('daemon:start', async (event) => {
     assertRuntimeIpcSource(event);
@@ -1958,7 +1958,7 @@ function setupRuntimeBridge(): void {
   });
   ipcMain.handle('daemon:stop', async (event) => {
     assertRuntimeIpcSource(event);
-    await requestDaemonFrame('daemon.stop', {}, getDesktopRuntimeIdentity().installId);
+    await requestDaemonFrame('daemon.stop', {}, getDesktopRuntimeIdentity().installId, getDesktopRuntimeIdentity().pipeSecret);
     await stopManagedDaemon();
     return { ok: true };
   });
@@ -1979,6 +1979,7 @@ function setupRuntimeBridge(): void {
       'daemon.setConfig',
       { maxConcurrent: clamped },
       getDesktopRuntimeIdentity().installId,
+      getDesktopRuntimeIdentity().pipeSecret,
     );
     return { ok: true, maxConcurrent: clamped };
   });
