@@ -15,6 +15,12 @@ export interface TaskQueueStore {
   enqueue(taskId: string): boolean;
   /** 取队首任务（无则 undefined）。 */
   dequeue(): string | undefined;
+  /** 当前持久化队列长度（状态展示/启动 drain）。 */
+  count?(): number;
+  /** 按入队顺序读取队列（启动恢复）。 */
+  list?(): string[];
+  /** 删除已失效的队列项。 */
+  remove?(taskId: string): void;
 }
 
 export interface ConcurrencyManagerOptions {

@@ -16,7 +16,7 @@ export interface TimerHandle {
 
 /** 真实定时器注册器（消费方用 croner 实现；测试用 fake）。 */
 export interface TimerRegistrar {
-  registerTimer(taskId: string, fire: () => void): TimerHandle;
+  registerTimer(taskId: string, fire: () => void, task?: ScheduledTask): TimerHandle;
   unregisterTimer(taskId: string): void;
 }
 
@@ -64,7 +64,7 @@ export class TimerRegistry {
       this.unregister(task.id);
       const handle = this.registrar.registerTimer(task.id, () => {
         this.fireCallbacks.get(task.id)?.();
-      });
+      }, task);
       this.handles.set(task.id, handle);
       changed.push(task.id);
     }
@@ -106,14 +106,36 @@ export interface DaemonStatus {
   heartbeatAt?: string;
   /** 今日触发次数（成功+失败）。 */
   todayFired: number;
+  /** todayFired 所属的本地日期；旧状态文件缺失时会在启动时补齐。 */
+  counterDate?: string;
   /** 当前排队任务数。 */
   queued: number;
   /** 当前注册的定时器数。 */
   timerCount: number;
 }
 
-export function createDaemonStatus(): DaemonStatus {
-  return { running: true, todayFired: 0, queued: 0, timerCount: 0 };
+function localDateString(now: Date): string {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function createDaemonStatus(now: Date = new Date()): DaemonStatus {
+  return {
+    running: true,
+    todayFired: 0,
+    counterDate: localDateString(now),
+    queued: 0,
+    timerCount: 0,
+  };
+}
+
+/** 将跨日的触发计数归零；状态文件可兼容旧版本缺失 counterDate。 */
+export function rollDaemonStatusDay(status: DaemonStatus, now: Date = new Date()): DaemonStatus {
+  const date = localDateString(now);
+  if (status.counterDate === date) return status;
+  return { ...status, counterDate: date, todayFired: 0 };
 }
 
 export interface DaemonStatusUpdate {

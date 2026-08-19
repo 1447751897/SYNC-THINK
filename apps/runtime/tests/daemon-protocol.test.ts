@@ -49,10 +49,10 @@ describe('encodeDispatchFrame', () => {
 // ── encodeDispatchAck / encodeAbort ────────────────────────────────────────
 
 describe('ack/abort encoding', () => {
-  it('encodes a dispatch ack with accepted flag', () => {
-    const frame = encodeDispatchAck('t_xxx', true);
+  it('encodes a dispatch ack with an optional rejection reason', () => {
+    const frame = encodeDispatchAck('t_xxx', false, '会话忙');
     expect(frame.type).toBe('task.dispatch.ack');
-    expect(frame.payload).toEqual({ taskId: 't_xxx', accepted: true });
+    expect(frame.payload).toEqual({ taskId: 't_xxx', accepted: false, reason: '会话忙' });
   });
 
   it('encodes an abort with reason', () => {
@@ -138,6 +138,16 @@ describe('parseTaskFrame', () => {
     };
     const parsed = parseTaskFrame(frame);
     expect(parsed.ok).toBe(false);
+  });
+
+  it('rejects an ack with a non-string reason', () => {
+    const frame: Frame = {
+      id: 'x',
+      kind: 'response',
+      type: 'task.dispatch.ack',
+      payload: { taskId: 't_xxx', accepted: false, reason: 42 },
+    };
+    expect(parseTaskFrame(frame).ok).toBe(false);
   });
 
   it('rejects an abort with empty reason', () => {

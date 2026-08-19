@@ -5799,9 +5799,17 @@ const MessageBubble = memo(function MessageBubble({
   }
 
   // AI message — thinking + process + file changes + markdown + NewMax-style footer
-  const visibleAgentLabel = message.globalAgentName?.trim() || runAgentIdentity?.name;
-  void agents;
-  void fallbackAgent;
+  // Agent avatar: prefer the run's immutable agent (matched by id), then the
+  // conversation's current agent, then a first-letter placeholder circle.
+  const identityAgent = runAgentIdentity?.id
+    ? agents?.find((agent) => String(agent.id) === runAgentIdentity.id)
+    : undefined;
+  const avatarSource = identityAgent ?? fallbackAgent;
+  // 名字与头像同源：优先消息/run 的智能体名；缺失时回退到当前绑定智能体
+  // （头像已回退到它），避免"有头像没名字"的割裂。
+  const visibleAgentLabel =
+    message.globalAgentName?.trim() || runAgentIdentity?.name || avatarSource?.name;
+  const avatarName = avatarSource?.name ?? visibleAgentLabel ?? '助手';
   const hasAnswerText = Boolean((message.answerText ?? message.text).trim());
   const timelineTiming = assistantTimelineProcessTiming(
     message.assistantTimeline,
@@ -5809,7 +5817,10 @@ const MessageBubble = memo(function MessageBubble({
   );
   const showFooter = !message.streaming && (hasAnswerText || Boolean(processView));
   return (
-    <div className="shell-msg shell-msg--assistant group relative">
+    <div className="shell-msg shell-msg--assistant group relative flex items-start gap-2.5">
+      <div className="shrink-0 pt-0.5">
+        <AgentAvatarView name={avatarName} avatar={avatarSource?.avatar} size={26} />
+      </div>
       <div className="min-w-0 flex-1 pt-0.5">
         {visibleAgentLabel ? (
           <div className="mb-1 text-[11.5px] font-medium text-text-faint">{visibleAgentLabel}</div>

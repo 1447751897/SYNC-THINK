@@ -645,7 +645,6 @@ async function runScenario(mode) {
     SYNC_THINK_DISABLE_DEMO_PROVIDER: '1',
     SYNC_THINK_NODE_BIN: node20,
     SYNC_THINK_RUNTIME_FORCE_RESTART: '1',
-    SYNC_THINK_SHELL: '1',
   };
 
   console.log(`\n=== desktop handoff E2E: ${mode} ===`);

@@ -10,6 +10,7 @@ import {
   createStatusStore,
   type StatusFileStore,
   readStatusFile,
+  rollDaemonStatusDay,
 } from '../src/daemon/core.js';
 import {
   composeTaskCommand,
@@ -141,6 +142,27 @@ describe('DaemonStatus', () => {
     expect(updated.heartbeatAt).toBeDefined();
     // 心跳超 5s → abnormal 由消费方按 heartbeatAt 判断；这里验证状态可读。
     expect(updated.running).toBe(true);
+  });
+
+  it('resets todayFired when the local calendar day changes', () => {
+    const previous = {
+      ...createDaemonStatus(new Date(2025, 0, 1, 23, 59, 59)),
+      todayFired: 7,
+    };
+
+    expect(rollDaemonStatusDay(previous, new Date(2025, 0, 2, 0, 0, 1))).toMatchObject({
+      todayFired: 0,
+      counterDate: '2025-01-02',
+    });
+  });
+
+  it('keeps todayFired within the same local calendar day', () => {
+    const current = {
+      ...createDaemonStatus(new Date(2025, 0, 2, 8, 0, 0)),
+      todayFired: 3,
+    };
+
+    expect(rollDaemonStatusDay(current, new Date(2025, 0, 2, 22, 0, 0)).todayFired).toBe(3);
   });
 });
 

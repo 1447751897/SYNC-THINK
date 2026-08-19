@@ -378,6 +378,6 @@ automatic rollback 使用独立、非 `userData` 的恢复根：
 
 ## 12. 本地源码重启验证（不生成安装包）
 
-UI 改动在本地源码实例验证时，先执行 `pnpm --filter @sync-think/desktop build`，再用 `pnpm dev:desktop` 启动 Electron。启动环境使用 `SYNC_THINK_SHELL=1`、`SYNC_THINK_DEV_NO_TOKEN=1` 和固定的本地 `SYNC_THINK_INSTALL_ID`；不运行 installer/portable/release 流程，也不复用签名发布产物。
+UI 改动在本地源码实例验证时，先执行 `pnpm --filter @sync-think/desktop build`，再用 `pnpm dev:desktop` 启动 Electron。启动环境使用 `SYNC_THINK_DEV_NO_TOKEN=1` 和固定的本地 `SYNC_THINK_INSTALL_ID`；不运行 installer/portable/release 流程，也不复用签名发布产物。（`SYNC_THINK_SHELL` 开关已于 2026-08-18 随旧渲染层删除，不再需要设置。）
 
 最小验收证据是：Electron 窗口可见且 `Responding=True`，Runtime 日志包含 `pipe ready`、`database ready`、`hello accepted`，并且测试操作只写入本地开发数据库。

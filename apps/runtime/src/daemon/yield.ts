@@ -73,3 +73,12 @@ export async function probeDaemonPipe(
 ): Promise<boolean> {
   return probe(daemonPipePath(installId), timeoutMs);
 }
+
+/** 探测桌面 runtime 管道（daemon 选择在线投递/worker 时使用）。 */
+export async function probeDesktopPipe(
+  installId: string,
+  probe: PipeProbe = defaultPipeProbe,
+  timeoutMs = 800,
+): Promise<boolean> {
+  return probe(pipePathPortable(installId), timeoutMs);
+}

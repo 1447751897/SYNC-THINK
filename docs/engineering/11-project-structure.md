@@ -19,7 +19,7 @@ SYNC-THINK/
 |  |- shared/           跨包类型与纯工具
 |  |- storage/          SQLite schema、迁移和各领域 store
 |  |- test-fixtures/    合同与集成测试夹具
-|  |- ui-kit/           共享 React 组件与样式生成
+|  |- ui-kit/           遗留 React 组件（仅剩 type-only 引用，样式已删）
 |  `- workers/          File/Terminal/Git/Browser/Desktop/MCP 隔离执行边界
 |- scripts/             本地启动、自检、构建辅助和诊断脚本
 `- docs/                产品、工程、开发、运维与交接真源
@@ -55,7 +55,8 @@ Main 或 Preload 发生变化后必须完整重启 Electron；只刷新 Renderer
 - `packages/workers` 负责最小权限执行。`terminal/terminal-worker.ts` 定义命令能力与输出上限，`process-runner.ts` 负责 spawn、流式读取、超时/取消和进程树清理。
 - `packages/workers/src/browser/browser-host.ts` 负责系统浏览器发现/启动、CDP、Profile Session、Page lease、同 Page 队列、Profile 站点数据查询/清除与具体 Playwright 动作；浏览器候选顺序为显式 executable、Chrome、Edge；registrable domain 由 `tldts` Public Suffix List 解析，Storage 操作固定走 Page target CDP，不读取 `storageState()`；`browser-worker.ts` 只把 capability token、路径与事件合同接到共享 Host。
 - `apps/runtime/src/browser/runtime-browser-controller.ts` 把聊天 `browser_*` 参数映射为 Worker action，使用 `SqliteBrowserStore` 持久化 origin grant、command 与人工 handoff，并保证 Runtime 的脱敏意图先于 Worker 副作用；Page lease 与浏览器进程仍由 `BrowserHost` 管理。
-- `packages/core` 保持无 I/O 的领域规则；`packages/adapters` 隔离 Provider 差异；`packages/ui-kit` 只承载可复用产品组件，不持有 Desktop 业务生命周期。
+- `packages/core` 保持无 I/O 的领域规则；`packages/adapters` 隔离 Provider 差异；`packages/ui-kit` 自 2026-08-18 起只剩旧渲染层遗留组件，Desktop 侧仅有 type-only 引用，不再提供样式或主题控制器。
+- 颜色/字体/圆角 token 的唯一真源是 `docs/product/16-shell-design-tokens.json`；`pnpm tokens:css`（`scripts/generate-shell-tokens.mjs`）生成 `apps/desktop/src/renderer/shell/tokens.css`，由 `shell.css` `@import`。生成物禁止手改；`scripts/check-design-tokens.mjs` 拦裸 hex。
 
 ## 4. Workspace 工具调用链
 

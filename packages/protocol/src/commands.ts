@@ -208,6 +208,7 @@ export type CommandType =
   | 'scheduledTask.update'
   | 'scheduledTask.delete'
   | 'scheduledTask.trigger'
+  | 'scheduledTask.history'
   | 'kernel.detect'
   | 'gateway.status'
   | 'gateway.logs'
@@ -4004,6 +4005,10 @@ export interface CreateScheduledTaskPayload {
   rule: import('@sync-think/shared').TaskRule;
   timeZone?: string;
   enabled?: boolean;
+  /** 绑定工作区 id；缺省 = 全局任务。 */
+  workspaceId?: string;
+  /** 触发时注入的 skill 版本 id（缺省 = 不注入）。 */
+  skillVersionIds?: string[];
   /** 单次/首次触发时间（UTC 绝对时刻）；缺省按规则推算。 */
   nextRunAt?: string;
 }
@@ -4025,6 +4030,10 @@ export interface UpdateScheduledTaskPayload {
     rule: import('@sync-think/shared').TaskRule;
     timeZone: string;
     enabled: boolean;
+    /** null = 解绑（改为全局）。 */
+    workspaceId: string | null;
+    /** null = 清空 skill 注入。 */
+    skillVersionIds: string[] | null;
     nextRunAt: string | null;
   }>;
 }
@@ -4043,6 +4052,16 @@ export interface TriggerScheduledTaskResponse {
   fired: boolean;
   /** 未触发原因（并发上限 / 会话忙 / 不可用）。 */
   reason?: string;
+}
+
+/** 查询某任务的执行历史（按 firedAt 倒序，最多 limit 条）。 */
+export interface ListScheduledTaskHistoryPayload {
+  taskId: string;
+  limit?: number;
+}
+
+export interface ListScheduledTaskHistoryResponse {
+  entries: import('@sync-think/shared').ScheduledTaskHistoryEntry[];
 }
 
 // Helper: build a typed request envelope.

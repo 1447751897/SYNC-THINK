@@ -1,3 +1,37 @@
+## 2026-08-18：删旧壳 + 颜色 token 单一真源（换肤地基 Batch A，零视觉变化）
+
+配色重构第一批：把「配色太杂 + 硬编码」的结构性成因清掉，为后续自定义配色 / 换肤铺地基。**本批刻意不改任何颜色值**——验收标准就是编译产物与改动前等价。
+
+### Added
+
+- **颜色 token 单一真源**（`docs/product/16-shell-design-tokens.json`，109 token / 15 组）：颜色值写成 `[light, dark]` 二元组，裸字符串表示与主题无关；分组自带 CSS 前缀（`--color-` / `--color-cap-` / `--color-syntax-` / `--color-avatar-` / `--color-brand-` / `--radius-` / `--font-`）。预留空 `skins: {}` 段给 Batch D 的皮肤预设。
+- **生成器 `scripts/generate-shell-tokens.mjs`** + 根脚本 `pnpm tokens:css` → 产出 `apps/desktop/src/renderer/shell/tokens.css`（`@theme` light 基准 + `.dark` 覆盖，生成物带「禁止手改」头注释）。皮肤选择器由生成器统一产出为 `:root[data-skin='x']:not(.dark)` / `:root[data-skin='x'].dark`——`:not(.dark)` 是**必须的**：`[data-skin]` 特异性 (0,2,0) 会压过 `.dark` 的 (0,1,0)，漏掉就会让浅色皮肤泄进深色模式。生成器对非法值（元组长度 ≠2、空串、非字符串）汇总报错后 `exit 1`，不产出半成品。
+- `shell.css` 头部改为 `@import 'tailwindcss'; @import './tokens.css';`，原 9–287 行手写 `@theme`/`.dark` 整体移出。已实测 Tailwind v4.3.3 CLI 会完整处理被 `@import` 文件里的 `@theme`——自定义属性和工具类都照常生成，`.dark` 覆盖保留。
+
+### Removed
+
+- **旧渲染层 UI**：`apps/desktop/src/renderer/{index.tsx, index.html, renderer.css}`、`apps/desktop/scripts/build-renderer.mjs`。**注意**：`src/renderer/` 不是纯旧壳目录，新壳从其中 import 共享逻辑（`conversation-activity.ts` / `runtime-connection.ts` / `run-activity-authority.ts` / `ui-preferences.ts` 等），这些**全部保留**，roadmap §320「删 src/renderer 全部文件」的说法已就地订正。
+- **第二套设计系统**：`packages/ui-kit/src/styles/{index.css, components.css}`（含 515 处 lint 扫不到的 hex 与一整套蓝色 accent + 绿灰底的 `--st-*` 命名空间、`[data-st-theme]` 切换机制）、`packages/ui-kit/scripts/generate-css.mjs`、`docs/product/15-frontend-design-tokens.json`。`packages/ui-kit` 的 `exports` 去掉 `./styles.css`，退化为纯类型/遗留组件提供者。至此颜色命名空间从 5 套降到 4 套（`--color-*` / `--color-cap-*` / `--task-*` / `--color-brand-*`），全部同源同切换机制。
+- **`SYNC_THINK_SHELL` 开关**：主进程无条件加载 `../renderer-shell/index.html`；`start:legacy` 脚本、两个 selftest 脚本里的残留 env、以及文档中的设置说明一并清掉。
+
+### Changed
+
+- `apps/desktop/package.json` 的 `build` 去掉 `build-renderer.mjs`；`build-shell.mjs` 头注释订正（不再声称旧壳并行保留）。
+- `packages/ui-kit/src/theme.ts` 加弃用头注释（它只操作 `data-st-theme` 属性、**零颜色值**，因所依赖样式表已删而事实失效；仅因 `AppShell.tsx` 仍在调用而暂留，随死组件清理一起走），并指明现行控制器是壳的 `.dark` + `sync-think-shell-theme`。
+- 文档同源：`AI_DEVELOPMENT_RULES.md` §4.1/4.2、`docs/README.md`、`docs/00_START_HERE.md`、`docs/product/15-frontend-design.md` §4、`docs/engineering/{04-tech-decisions,11-project-structure}.md`、`docs/operations/{07-local-development,08-deployment}.md`、`CONTEXT-MAP.md`、roadmap §52/§318-321/§353 全部改指向新 token 管道。
+- 顺手修一处既存类型缺口：`clearGatewayLogs` 的 `Promise<unknown>`（commit 17b8f41 引入）收紧为 `Promise<void>`，恢复 `global.d.ts` 全量精确类型的既有断言。
+
+### Verification
+
+- **零回归证明**：改动前存 `dist/renderer-shell/shell.css` 基线，改动后重新编译——两侧同为 **592645 字节**，`diff` 只有 1 处差异：`--color-modal-shadow` 在同一个 `.dark` 块内下移两行（JSON 把 syntax 组聚在一起，旧手写块是穿插的）。同块内不同名自定义属性顺序无关，**无任何值变化、无视觉变化**。
+- Desktop：`typecheck` 通过；`lint` 0 error（18 项 react-hooks 既存 warning）+ `design tokens ok`；`build` 三段（tsc → preload → shell）通过。
+- 测试：修复 9 个读了被删文件的测试文件（3 个整删——`beginner-desktop-shell` / `left-tool-drawer-layout` / `conversation-agent-identity` 全为旧壳断言；`m2-renderer-wiring` 12 项重写为 4 项；其余 6 个逐项外科手术，凡指向存活代码的断言全部保留）。`phase3-accessibility` 的浅深契约断言改读 `tokens.css`。Desktop 全量 **164/165 files · 1295/1296 tests** 通过；ui-kit **21 files / 233 tests** 全通过。
+- 唯一遗留失败 `tests/runtime-session.test.ts`（活动流分类多了第 4 项）**与本批无关**：测试文件与被测 `main/runtime-session.ts` 均在 HEAD 未被本批触碰，且不引用任何本批改动的文件；根因是工作区里未提交的 in-flight 改动（`packages/protocol/src/commands.ts`）。另 `ChatView.browser-handoff` / `ChatView.desktop-waiting` 两项在全量并行满载时会因 `findByRole` 超时偶发红（1.4s 左右），单独跑通过——同属既存 in-flight 改动（`ChatView.tsx`）范畴。
+
+### Known gaps（既存问题，非本批引入）
+
+删旧壳暴露出三处**旧壳是唯一消费方**的功能——Main/preload/protocol 侧完整，缺的只是新壳 UI 入口，测试里已就地留 `KNOWN GAP` 注释并保留安全侧断言：Artifact 图片预览（`getArtifactImagePreview`）、Artifact 合并冲突列举/解决（`listArtifactMergeConflicts` / `resolveArtifactMergeConflict`）、`bindWorkspaceFolder`（新壳只在创建时经 `pickFolder` 绑定）。另：壳的 `index.html` CSP 只写了 `default-src 'self'`，缺旧壳有过的 `base-uri 'none'`——`base-uri` **不会**回退到 `default-src`，这是真实弱化，属安全加固范畴，未在本批处理。
+
 ## 2026-08-16：目标模式增强 + 本地 Skill 发现
 
 ### Added

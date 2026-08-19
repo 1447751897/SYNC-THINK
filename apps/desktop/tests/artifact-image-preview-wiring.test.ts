@@ -8,7 +8,6 @@ describe('artifact image preview wiring', () => {
     const main = readFileSync(join(root, 'src/main/index.ts'), 'utf8');
     const preload = readFileSync(join(root, 'src/preload/index.ts'), 'utf8');
     const global = readFileSync(join(root, 'src/renderer/global.d.ts'), 'utf8');
-    const renderer = readFileSync(join(root, 'src/renderer/index.tsx'), 'utf8');
     expect(main).toContain("ipcMain.handle('runtime:artifact-image-preview'");
     expect(main).toContain("'artifact.getVersion'");
     expect(main).toContain("url.hostname === 'artifact'");
@@ -17,11 +16,14 @@ describe('artifact image preview wiring', () => {
     expect(preload).toContain('getArtifactImagePreview');
     expect(global).toContain('getArtifactImagePreview(');
     expect(preload).not.toContain('contentRef: string');
-    expect(renderer).toContain('runtime.getArtifactImagePreview({');
-    expect(renderer).toContain('version.hasContentRef');
-    expect(renderer).toContain('version.imageGeneration');
-    expect(renderer).toContain('(?:png|jpeg|webp)');
-    expect(renderer).toContain('artifactLoadGateRef.current.isCurrent(requestToken)');
-    expect(renderer).not.toContain('.contentRef');
+    // KNOWN GAP: nothing in src/renderer/shell/ calls getArtifactImagePreview, so
+    // artifact image preview is currently unreachable from the shipping UI. The
+    // renderer-side assertions that used to live here only passed because the
+    // legacy renderer (deleted 2026-08-18) had an Artifact rail.
+    //
+    // The Main/preload assertions above are kept regardless: they guard the
+    // security property that contentRef never crosses the bridge and the renderer
+    // only ever receives an opaque, typed, short-lived grant. That contract must
+    // hold before a shell surface is built on top of it, not after.
   });
 });

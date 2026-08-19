@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildManagedRuntimeEnvironment } from './runtime-supervisor.js';
+import { buildDaemonAutostartCommand, buildManagedRuntimeEnvironment } from './runtime-supervisor.js';
 
 describe('buildManagedRuntimeEnvironment', () => {
   it('passes the exact packaged install id and pipe secret to Runtime with no-token disabled', () => {
@@ -38,5 +38,17 @@ describe('buildManagedRuntimeEnvironment', () => {
     expect(environment.SYNC_THINK_DEV_NO_TOKEN).toBe('1');
     expect(environment.SYNC_THINK_PIPE_SECRET).toBeUndefined();
     expect(environment.ELECTRON_RUN_AS_NODE).toBeUndefined();
+  });
+
+  it('keeps daemon autostart identity in a bootstrap path instead of argv', () => {
+    const command = buildDaemonAutostartCommand(
+      'C:\\node\\node.exe',
+      'C:\\runtime\\daemon\\index.js',
+      'C:\\Users\\fixture\\daemon-bootstrap.json',
+    );
+
+    expect(command).toContain('--bootstrap');
+    expect(command).toContain('daemon-bootstrap.json');
+    expect(command).not.toContain('pipe-secret');
   });
 });

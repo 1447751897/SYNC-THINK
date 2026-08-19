@@ -29,6 +29,7 @@ import type {
   ConversationAskPendingPayload,
   CreateScheduledTaskPayload,
   ListScheduledTasksPayload,
+  ListScheduledTaskHistoryPayload,
   UpdateScheduledTaskPayload,
   DeleteScheduledTaskPayload,
   TriggerScheduledTaskPayload,
@@ -553,6 +554,8 @@ function parseTaskRule(value: unknown, label: string): TaskRule {
         kind: 'every',
         intervalMinutes: Math.floor(value.intervalMinutes),
         ...(typeof value.firstRunAt === 'string' ? { firstRunAt: value.firstRunAt } : {}),
+        ...(typeof value.windowStart === 'string' ? { windowStart: value.windowStart } : {}),
+        ...(typeof value.windowEnd === 'string' ? { windowEnd: value.windowEnd } : {}),
       };
     }
     case 'random': {
@@ -588,6 +591,33 @@ function parseTaskTarget(value: unknown, label: string): ScheduledTaskTarget {
   if (value.kind === 'model' && typeof value.modelId === 'string') {
     return { kind: 'model', modelId: value.modelId };
   }
+  if (value.kind === 'team' && typeof value.teamId === 'string') {
+    return { kind: 'team', teamId: value.teamId };
+  }
+  throw new Error(label);
+}
+
+/** workspaceId: undefined = 不修改；null = 解绑为全局；string = 绑定工作区。 */
+function parseOptionalWorkspaceId(value: unknown, label: string): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === 'string') return value;
+  throw new Error(label);
+}
+
+/** skillVersionIds: undefined = 不修改；null = 清空；string[] = 注入列表。 */
+function parseOptionalSkillVersionIds(
+  value: unknown,
+  label: string,
+): string[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === 'string')
+  ) {
+    return value;
+  }
   throw new Error(label);
 }
 
@@ -598,6 +628,13 @@ export function parseCreateScheduledTaskPayload(value: unknown): CreateScheduled
   const instruction = requiredString(value.instruction, label);
   const target = parseTaskTarget(value.target, label);
   const rule = parseTaskRule(value.rule, label);
+  // 新建语义：缺省 workspaceId = 全局任务，缺省 skillVersionIds = 不注入（无需 null）。
+  const workspaceId = typeof value.workspaceId === 'string' ? value.workspaceId : undefined;
+  const skillVersionIds =
+    Array.isArray(value.skillVersionIds) &&
+    value.skillVersionIds.every((item) => typeof item === 'string')
+      ? value.skillVersionIds
+      : undefined;
   return {
     name,
     instruction,
@@ -606,6 +643,8 @@ export function parseCreateScheduledTaskPayload(value: unknown): CreateScheduled
     ...(typeof value.timeZone === 'string' ? { timeZone: value.timeZone } : {}),
     ...(typeof value.enabled === 'boolean' ? { enabled: value.enabled } : {}),
     ...(typeof value.nextRunAt === 'string' ? { nextRunAt: value.nextRunAt } : {}),
+    ...(workspaceId !== undefined ? { workspaceId } : {}),
+    ...(skillVersionIds !== undefined ? { skillVersionIds } : {}),
   };
 }
 
@@ -632,6 +671,10 @@ export function parseUpdateScheduledTaskPayload(value: unknown): UpdateScheduled
     if (patch.nextRunAt === null) out.nextRunAt = null;
     else if (typeof patch.nextRunAt === 'string') out.nextRunAt = patch.nextRunAt;
   }
+  const workspaceId = parseOptionalWorkspaceId(patch.workspaceId, label);
+  if (workspaceId !== undefined) out.workspaceId = workspaceId;
+  const skillVersionIds = parseOptionalSkillVersionIds(patch.skillVersionIds, label);
+  if (skillVersionIds !== undefined) out.skillVersionIds = skillVersionIds;
   return { taskId, patch: out };
 }
 
@@ -645,6 +688,19 @@ export function parseTriggerScheduledTaskPayload(value: unknown): TriggerSchedul
   const label = 'Invalid scheduled-task-trigger payload';
   if (!isRecord(value)) throw new Error(label);
   return { taskId: requiredString(value.taskId, label) };
+}
+
+export function parseListScheduledTaskHistoryPayload(
+  value: unknown,
+): ListScheduledTaskHistoryPayload {
+  const label = 'Invalid scheduled-task-history payload';
+  if (!isRecord(value)) throw new Error(label);
+  return {
+    taskId: requiredString(value.taskId, label),
+    ...(typeof value.limit === 'number' && Number.isInteger(value.limit)
+      ? { limit: value.limit }
+      : {}),
+  };
 }
 
 export function parseSkillLocalScanPayload(value: unknown): SkillLocalScanPayload {

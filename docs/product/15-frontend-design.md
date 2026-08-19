@@ -100,7 +100,7 @@
 
 ## 4. 色彩策略
 
-以 V3 的中性绿灰为**基因起点**，但允许在保持识别的前提下提升对比、材质与强调色精度。完整浅/深两套 token 见 `15-frontend-design-tokens.json`；视觉 refinement 时可进化 token，不可退化成分裂主题。
+以 V3 的中性绿灰为**基因起点**，但允许在保持识别的前提下提升对比、材质与强调色精度。完整浅/深两套 token 见 `16-shell-design-tokens.json`（改 JSON 后 `pnpm tokens:css` 生成 `apps/desktop/src/renderer/shell/tokens.css`）；视觉 refinement 时可进化 token，不可退化成分裂主题。现行落地色系为暖米底 + 墨绿强调，`skins` 段预留自定义配色 / 换肤。
 
 ```text
 主色：石墨工作色（浅深反转用于强操作）

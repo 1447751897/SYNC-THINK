@@ -33,7 +33,12 @@ interface FakeDesktop {
   close(): Promise<void>;
 }
 
-async function startFakeDesktop(options: { replyAck?: boolean; delayAckMs?: number } = {}): Promise<FakeDesktop> {
+async function startFakeDesktop(options: {
+  replyAck?: boolean;
+  delayAckMs?: number;
+  accepted?: boolean;
+  reason?: string;
+} = {}): Promise<FakeDesktop> {
   const received: Frame[] = [];
   const server = createPipeServer({
     expectedInstallId: INSTALL_ID,
@@ -51,7 +56,11 @@ async function startFakeDesktop(options: { replyAck?: boolean; delayAckMs?: numb
               id: frame.id,
               kind: 'response',
               type: 'task.dispatch.ack',
-              payload: { taskId: (frame.payload as DispatchPayload).taskId, accepted: true },
+              payload: {
+                taskId: (frame.payload as DispatchPayload).taskId,
+                accepted: options.accepted ?? true,
+                ...(options.reason ? { reason: options.reason } : {}),
+              },
             }),
           );
         if (options.delayAckMs) setTimeout(reply, options.delayAckMs);
@@ -102,6 +111,7 @@ describe('dispatchTaskToDesktop (Seam 2/3 集成)', () => {
     const result = await dispatchTaskToDesktop(clientOptions(), payload);
     expect(result.ok).toBe(true);
     expect(result.acked).toBe(true);
+    expect(result.outcome).toBe('accepted');
     expect(desktop.received.some((f) => f.type === 'task.dispatch')).toBe(true);
   });
 
@@ -111,11 +121,25 @@ describe('dispatchTaskToDesktop (Seam 2/3 集成)', () => {
     const result = await dispatchTaskToDesktop(clientOptions(), payload);
     expect(result.ok).toBe(true);
     expect(result.acked).toBe(false);
+    expect(result.outcome).toBe('timeout');
+  });
+
+  it('distinguishes an explicit rejection from an ack timeout', async () => {
+    const desktop = await startFakeDesktop({ accepted: false, reason: '会话忙' });
+    servers.push(desktop);
+    const result = await dispatchTaskToDesktop(clientOptions(), payload);
+    expect(result).toMatchObject({
+      ok: true,
+      acked: false,
+      outcome: 'rejected',
+      reason: '会话忙',
+    });
   });
 
   it('fails when the desktop pipe is not listening (desktop closed)', async () => {
     const result = await dispatchTaskToDesktop(clientOptions(), payload);
     expect(result.ok).toBe(false);
+    expect(result.outcome).toBe('unreachable');
   });
 
   it('fails when the secret does not match (auth rejected)', async () => {

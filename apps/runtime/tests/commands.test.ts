@@ -10,7 +10,12 @@ import type {
   ProviderAdapter,
   ProviderCallRequest,
 } from '@sync-think/adapters';
-import { openDatabaseAsync, runMigrations, SqliteEventCheckpointStore } from '@sync-think/storage';
+import {
+  openDatabaseAsync,
+  runMigrations,
+  SqliteEventCheckpointStore,
+  SqliteScheduledTaskStore,
+} from '@sync-think/storage';
 import type { Event, RunId, WorkspaceId } from '@sync-think/shared';
 import { Runtime, type RuntimeStateStore } from '../src/runtime.js';
 
@@ -25,6 +30,22 @@ class RecordingProvider implements ProviderAdapter {
   async *call(_request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
     this.callCount++;
     yield { type: 'finished', reason: 'stop' };
+  }
+}
+
+class FailingProvider implements ProviderAdapter {
+  readonly protocol = 'openai-chat' as const;
+
+  async discoverModels(): Promise<string[]> {
+    return ['fake-mini'];
+  }
+
+  async *call(_request: ProviderCallRequest): AsyncIterable<AdapterEvent> {
+    yield {
+      type: 'error',
+      failureClass: 'unknown',
+      message: 'fixture provider failure',
+    };
   }
 }
 
@@ -128,6 +149,114 @@ async function hello(
 }
 
 describe('runtime commands', () => {
+  it('reports a scheduled task trigger as fired without creating a duplicate failure', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduled-trigger-'));
+    const dbPath = join(dir, 'sync-think.db');
+    const installId = `test-scheduled-trigger-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const provider = new RecordingProvider();
+    const session = await (await import('../src/persistence.js')).openPersistentRuntime({
+      installId,
+      dbPath,
+      secureStoreKeyPath: join(dir, 'secure-key.bin'),
+      allowNoToken: true,
+      demoProvider: provider,
+    });
+    const inspectConnection = await openDatabaseAsync({ path: dbPath });
+    const taskStore = new SqliteScheduledTaskStore(inspectConnection.raw);
+    const taskId = 'scheduled-regression-1';
+    taskStore.create({
+      id: taskId,
+      name: 'Regression task',
+      instruction: 'run the regression task',
+      target: { kind: 'model', modelId: 'fake-mini' },
+      rule: { kind: 'every', intervalMinutes: 30 },
+      timeZone: 'UTC',
+      enabled: true,
+      nextRunAt: '2099-01-01T00:00:00.000Z',
+    });
+    await session.runtime.start();
+    const socket = await connectRuntime(installId);
+    const reader = createFrameReader(socket);
+
+    try {
+      await hello(socket, reader, installId);
+      const response = await writeAndRead(socket, reader, {
+        id: 'scheduled-trigger-regression',
+        kind: 'request',
+        type: 'scheduledTask.trigger',
+        payload: { taskId },
+      });
+
+      expect(response.error).toBeUndefined();
+      expect(response.payload).toMatchObject({ fired: true });
+      expect(
+        await waitFor(
+          () => provider.callCount > 0 && taskStore.listHistory(taskId).length === 1,
+          2_000,
+        ),
+      ).toBe(true);
+
+      const stored = taskStore.get(taskId);
+      expect(stored?.lastResult?.status).toBe('success');
+      expect(taskStore.listHistory(taskId)).toHaveLength(1);
+      expect(taskStore.listHistory(taskId)[0]?.status).toBe('success');
+    } finally {
+      socket.destroy();
+      await session.close();
+      inspectConnection.raw.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('records a provider failure as one failed terminal history entry', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduled-failure-'));
+    const dbPath = join(dir, 'sync-think.db');
+    const installId = `test-scheduled-failure-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const session = await (await import('../src/persistence.js')).openPersistentRuntime({
+      installId,
+      dbPath,
+      secureStoreKeyPath: join(dir, 'secure-key.bin'),
+      allowNoToken: true,
+      demoProvider: new FailingProvider(),
+    });
+    const inspectConnection = await openDatabaseAsync({ path: dbPath });
+    const taskStore = new SqliteScheduledTaskStore(inspectConnection.raw);
+    const taskId = 'scheduled-regression-failure';
+    taskStore.create({
+      id: taskId,
+      name: 'Failure task',
+      instruction: 'fail the regression task',
+      target: { kind: 'model', modelId: 'fake-mini' },
+      rule: { kind: 'every', intervalMinutes: 30 },
+      timeZone: 'UTC',
+      enabled: true,
+      nextRunAt: '2099-01-01T00:00:00.000Z',
+    });
+    await session.runtime.start();
+    const socket = await connectRuntime(installId);
+    const reader = createFrameReader(socket);
+    try {
+      await hello(socket, reader, installId);
+      const response = await writeAndRead(socket, reader, {
+        id: 'scheduled-failure-regression',
+        kind: 'request',
+        type: 'scheduledTask.trigger',
+        payload: { taskId },
+      });
+      expect(response.payload).toMatchObject({ fired: true });
+      expect(
+        await waitFor(() => taskStore.listHistory(taskId).length === 1, 2_000),
+      ).toBe(true);
+      expect(taskStore.listHistory(taskId)[0]?.status).toBe('failed');
+      expect(taskStore.get(taskId)?.lastResult?.status).toBe('failed');
+    } finally {
+      socket.destroy();
+      await session.close();
+      inspectConnection.raw.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('stops while an authenticated client is still connected', async () => {
     const installId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const runtime = new Runtime({ installId, allowNoToken: true });

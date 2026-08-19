@@ -70,8 +70,8 @@ AI 修改代码时必须遵守：
 
 如果任务涉及前端，必须遵守：
 
-1. 先读取 `docs/product/15-frontend-design.md` 和 `docs/product/15-frontend-design-tokens.json`；如果缺失或内容为空，必须先根据项目类型补齐 UI 风格参考、设计关键词和 token 值。
-2. 所有颜色、间距、圆角、字体、阴影必须引用 `15-frontend-design-tokens.json` 中的 token 值，禁止硬编码随意值。如果需要新增 token，先添加到 token 文件再引用。
+1. 先读取 `docs/product/15-frontend-design.md` 和 `docs/product/16-shell-design-tokens.json`；如果缺失或内容为空，必须先根据项目类型补齐 UI 风格参考、设计关键词和 token 值。
+2. 所有颜色、间距、圆角、字体、阴影必须引用 `16-shell-design-tokens.json` 中的 token 值，禁止硬编码随意值。如果需要新增 token，先加到该 JSON 再跑 `pnpm tokens:css` 重新生成 `apps/desktop/src/renderer/shell/tokens.css`（生成物禁止手改），然后在样式里引用；`scripts/check-design-tokens.mjs` 会拦裸 hex。
 3. 优先匹配现有设计系统、组件库、间距、字体、颜色和交互习惯。
 4. 页面必须在目标 Windows 分辨率与缩放下不出现明显布局错乱。
 5. 文本不能溢出按钮、卡片、表格单元格或弹窗。

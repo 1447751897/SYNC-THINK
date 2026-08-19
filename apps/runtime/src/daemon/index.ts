@@ -7,8 +7,20 @@
  */
 
 import { runDaemon } from './main.js';
+import { applyDaemonBootstrap } from './bootstrap.js';
+import { existsSync } from 'node:fs';
 
-runDaemon().catch((error) => {
+async function main(): Promise<void> {
+  process.env.SYNC_THINK_DAEMON_FILE_LOG = '1';
+  const bootstrapFlag = process.argv.indexOf('--bootstrap');
+  const bootstrapPath =
+    process.env.SYNC_THINK_DAEMON_BOOTSTRAP ??
+    (bootstrapFlag >= 0 ? process.argv[bootstrapFlag + 1] : undefined);
+  if (bootstrapPath && existsSync(bootstrapPath)) await applyDaemonBootstrap(bootstrapPath);
+  await runDaemon();
+}
+
+main().catch((error) => {
   console.error('[daemon] fatal', error);
   process.exit(1);
 });

@@ -78,7 +78,6 @@ pnpm dev:desktop
 
 ```powershell
 pnpm --filter @sync-think/desktop build
-$env:SYNC_THINK_SHELL = '1'
 $env:SYNC_THINK_DEV_NO_TOKEN = '1'
 $env:SYNC_THINK_INSTALL_ID = 'dev-0001'
 pnpm dev:desktop
@@ -121,7 +120,7 @@ apps/desktop/src/preload/index.ts
 
 `apps/desktop/scripts/build-preload.mjs` 负责该转换。不要把 preload 改回直接加载 ESM；Electron sandbox preload 不支持当前 ESM 入口方式。
 
-Renderer 由 `apps/desktop/scripts/build-renderer.mjs` 打包为本地 JS/CSS，CSP 不允许 `unsafe-eval`。
+Renderer 由 `apps/desktop/scripts/build-shell.mjs` 打包为本地 JS/CSS（esbuild + Tailwind v4，输出 `dist/renderer-shell/`），CSP 不允许 `unsafe-eval`。颜色 token 由 `pnpm tokens:css` 从 `docs/product/16-shell-design-tokens.json` 生成到 `src/renderer/shell/tokens.css`，构建时被 `shell.css` `@import` 进来。
 
 ## 6. 联调检查
 

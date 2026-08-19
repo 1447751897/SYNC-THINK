@@ -1,6 +1,8 @@
-// Builds the NEW shell renderer (2026-07-22 rewrite): esbuild bundle + Tailwind v4 CSS.
-// Output lands in dist/renderer-shell; the legacy renderer keeps dist/renderer
-// until the shell reaches feature parity and the switchover removes it.
+// Builds the shell renderer (2026-07-22 rewrite): esbuild bundle + Tailwind v4 CSS.
+// Output lands in dist/renderer-shell, which is now the only renderer bundle —
+// the legacy dist/renderer and build-renderer.mjs were removed at the 2026-08-18
+// switchover. Tailwind resolves `@import './tokens.css'` from shell.css, so the
+// generated palette (scripts/generate-shell-tokens.mjs) is picked up here too.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, copyFileSync } from 'node:fs';
 import { createRequire } from 'node:module';

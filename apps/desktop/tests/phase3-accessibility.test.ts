@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const css = readFileSync(new URL('../src/renderer/shell/shell.css', import.meta.url), 'utf8');
+const tokens = readFileSync(new URL('../src/renderer/shell/tokens.css', import.meta.url), 'utf8');
 const trace = readFileSync(
   new URL('../src/renderer/shell/ExecutionProcessBlock.tsx', import.meta.url),
   'utf8',
@@ -36,9 +37,13 @@ describe('Phase 3 accessibility contract', () => {
     expect(css).toContain('@media (max-width: 820px)');
     expect(css).toContain('@media (max-width: 560px)');
     expect(css).toContain(':root {');
-    expect(css).toContain('.dark {');
-    expect(css).toContain('--color-text:');
-    expect(css).toContain('--color-accent:');
+    // The palette lives in the generated tokens.css that shell.css imports, so the
+    // light/dark contract is asserted there — shell.css only consumes the vars.
+    expect(css).toContain("@import './tokens.css';");
+    expect(tokens).toContain('@theme {');
+    expect(tokens).toContain('.dark {');
+    expect(tokens).toContain('--color-text:');
+    expect(tokens).toContain('--color-accent:');
   });
 
   it('isolates visual evidence behind an explicit query route and disables motion', () => {

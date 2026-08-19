@@ -698,7 +698,10 @@ import type { SkillQueryContext } from './commands/skill-query-context.js';
 import type { UsageSummaryRawResult } from './usage-summary-cache.js';
 import { decideSchedulerHeartbeat, probeDaemonPipe } from './daemon/yield.js';
 import { parseTaskFrame } from './daemon/protocol.js';
-import { sendAbortToDaemon } from './daemon/dispatch-client.js';
+import {
+  sendAbortToDaemon,
+  sendTaskCompletionToDaemon,
+} from './daemon/dispatch-client.js';
 
 const CODEX_STYLE_COMMENTARY_PROMPT = [
   'User-visible execution updates (Codex-style commentary):',
@@ -1814,8 +1817,14 @@ export class Runtime {
   private taskSchedulerTicking = false;
   /** 当前由定时任务触发的 run（并发上限统计）。 */
   private readonly taskRuns = new Set<string>();
-  /** runId → 定时任务历史条目 id（run 终态时回填 summary）。 */
-  private readonly taskHistoryByRun: Map<string, string> = new Map();
+  /** runId → 定时任务元数据；历史只在 run 终态时写入。 */
+  private readonly scheduledTaskRuns = new Map<
+    string,
+    { task: ScheduledTask; firedAt: string; run: DemoRunState }
+  >();
+  /** Completion frames in flight; shutdown waits so daemon does not retry a finished run. */
+  private readonly daemonCompletionPromises = new Set<Promise<boolean>>();
+  private runtimeStopped = false;
   /** Persisted runId → kernelId, so message-stream kernel badges survive restarts. */
   private readonly runKernelIds: Map<string, string> = new Map();
   private runKernelIdsLoaded = false;
@@ -15215,31 +15224,63 @@ export class Runtime {
       return;
     }
     const { taskId } = parsed.frame.payload;
+    const dispatchTask = this.scheduledTaskStore?.get(taskId);
+    const rejectionReason = dispatchTask ? this.scheduledTaskDispatchRejection(dispatchTask) : '任务不存在';
     // 立即 ack（spec：桌面收到指令立即回复，不等执行完成）。
     socket.write(
       encodeFrame({
         id: frame.id,
         kind: 'response',
         type: 'task.dispatch.ack',
-        payload: { taskId, accepted: true },
+        payload: {
+          taskId,
+          accepted: !rejectionReason,
+          ...(rejectionReason ? { reason: rejectionReason } : {}),
+        },
       }),
     );
+    if (rejectionReason) {
+      console.warn(`[runtime] task.dispatch: task ${taskId} rejected: ${rejectionReason}`);
+      if (dispatchTask && (rejectionReason === '并发上限' || rejectionReason === '会话忙')) {
+        const skippedAt = new Date().toISOString();
+        this.recordTaskSkipped(dispatchTask, skippedAt, rejectionReason);
+        this.recordTaskHistory(dispatchTask, 'skipped', skippedAt, undefined, rejectionReason);
+      }
+      return;
+    }
     // 异步执行：校验任务存在 → fireScheduledTask（历史落库 + 摘要回填）。
     void (async () => {
       if (!this.scheduledTaskStore) return;
-      const task = this.scheduledTaskStore.get(taskId);
+      const task = this.scheduledTaskStore.get(taskId) ?? dispatchTask;
       if (!task) {
         console.warn(`[runtime] task.dispatch: task ${taskId} not found`);
         return;
       }
+      // Register before starting the run so a very fast provider completion
+      // cannot race the tracker update.
+      this.dispatchedTasks.add(taskId);
       const result = await this.fireScheduledTask(task);
       if (!result.fired) {
+        this.dispatchedTasks.delete(taskId);
         console.warn(`[runtime] task.dispatch: ${taskId} not fired: ${result.reason ?? 'unknown'}`);
         return;
       }
-      // 投递任务进入跟踪（stop() 时向其发 abort；run 终态移除）。
-      this.dispatchedTasks.add(taskId);
     })();
+  }
+
+  private scheduledTaskDispatchRejection(task: ScheduledTask): string | undefined {
+    if (!task.enabled) return '任务已停用';
+    if (this.taskRuns.size >= this.taskMaxConcurrent()) return '并发上限';
+    const threadId = task.conversationId ? this.resolveConversationThreadId(task.conversationId) : undefined;
+    if (
+      threadId &&
+      [...this.demoRuns.values()].some(
+        (run) => run.threadId === threadId && this.inFlight.has(String(run.runId)),
+      )
+    ) {
+      return '会话忙';
+    }
+    return undefined;
   }
 
   /** Resolve the thread id backing a conversation (goal turns run on its thread). */
@@ -15514,9 +15555,16 @@ export class Runtime {
   private startTaskSchedulerHeartbeat(): void {
     if (this.taskSchedulerTimer || !this.scheduledTaskStore) return;
     this.taskSchedulerTimer = setInterval(() => {
-      void this.taskSchedulerTick().catch((error) =>
-        console.warn('[runtime] scheduled task tick failed', error),
-      );
+      void (async () => {
+        // A daemon may come online after Runtime's initial probe. Re-check
+        // ownership immediately before a local tick to avoid a duplicate fire.
+        if (await probeDaemonPipe(this.installId)) {
+          this.stopTaskSchedulerHeartbeat();
+          console.log('[runtime] daemon appeared; local scheduler yielded');
+          return;
+        }
+        await this.taskSchedulerTick();
+      })().catch((error) => console.warn('[runtime] scheduled task tick failed', error));
     }, 30_000);
   }
 
@@ -15534,7 +15582,7 @@ export class Runtime {
       raw && typeof raw === 'object'
         ? ((raw as Record<string, unknown>).maxConcurrent as number | undefined)
         : undefined;
-    const clamped = Number.isFinite(value) ? Math.min(5, Math.max(1, Math.floor(value ?? 2))) : 2;
+    const clamped = Number.isFinite(value) ? Math.min(8, Math.max(1, Math.floor(value ?? 2))) : 2;
     return clamped;
   }
 
@@ -15601,7 +15649,6 @@ export class Runtime {
     const updated = this.scheduledTaskStore.update(task.id, {
       nextRunAt,
       lastRunAt: firedAt,
-      lastResult: { status: 'success', firedAt },
       ...(conversationId ? { conversationId } : {}),
     });
     this.publishTaskEvent('scheduledTask.fired', task.id, {
@@ -15674,11 +15721,13 @@ export class Runtime {
         this.demoRuns.set(runId, demoRun);
         this.taskRuns.add(String(runId));
         this.taskIdByRun.set(String(runId), task.id);
+        this.scheduledTaskRuns.set(String(runId), { task, firedAt, run: demoRun });
         this.attachTaskRunCleanup(runId);
-        const historyEntryId = this.recordTaskHistory(task, 'success', firedAt, String(runId));
-        if (historyEntryId) this.taskHistoryByRun.set(String(runId), historyEntryId);
         for (const event of events) this.publishEvent(event);
         void this.executeKernelRun(runId);
+        // The run has been durably prepared and execution has been handed off.
+        // Do not fall through to the unavailable-model failure branch below.
+        return { fired: true };
       } catch (error) {
         this.scheduledTaskStore.update(task.id, {
           lastResult: {
@@ -15726,21 +15775,39 @@ export class Runtime {
   /** 任务 run 结束时从并发计数移除并回填执行摘要（监听终态事件）。 */
   private attachTaskRunCleanup(runId: string): void {
     const check = (): void => {
+      if (this.runtimeStopped) return;
       const run = this.demoRuns.get(runId as RunId);
       if (!run || !this.inFlight.has(runId)) {
         this.taskRuns.delete(runId);
         // 投递任务 run 终态：从 dispatchedTasks 移除（完成，无需 abort）。
         const taskId = this.taskIdByRun.get(runId);
+        const wasDispatched = taskId ? this.dispatchedTasks.has(taskId) : false;
         if (taskId) {
           this.taskIdByRun.delete(runId);
           this.dispatchedTasks.delete(taskId);
         }
-        this.fillTaskHistorySummary(runId);
+        const result = this.finalizeScheduledTaskRun(runId);
+        if (wasDispatched && taskId && result) {
+          const completion = sendTaskCompletionToDaemon(
+            {
+              installId: this.installId,
+              helloSecret: this.handlers.expectedSecret,
+              appVersion: 'sync-think-runtime',
+              handshakeTimeoutMs: 2_000,
+            },
+            { taskId, runId, status: result.status, ...(result.reason ? { reason: result.reason } : {}) },
+          );
+          this.daemonCompletionPromises.add(completion);
+          void completion.then(
+            () => this.daemonCompletionPromises.delete(completion),
+            () => this.daemonCompletionPromises.delete(completion),
+          );
+        }
         return;
       }
-      setTimeout(check, 5_000);
+      setTimeout(check, 50);
     };
-    setTimeout(check, 30_000);
+    setTimeout(check, 50);
   }
 
   private recordTaskSkipped(task: ScheduledTask, firedAt: string, reason: string): void {
@@ -15777,13 +15844,8 @@ export class Runtime {
   }
 
   /** run 终态后回填历史 summary：任务会话最后一条非空助手消息前 200 字。 */
-  private fillTaskHistorySummary(runId: string): void {
-    const entryId = this.taskHistoryByRun.get(runId);
-    if (!entryId) return;
-    this.taskHistoryByRun.delete(runId);
+  private fillTaskHistorySummary(entryId: string, run: DemoRunState): void {
     if (!this.scheduledTaskStore || !this.messageStore) return;
-    const run = this.demoRuns.get(runId as RunId);
-    if (!run) return;
     // listMessages 按 sequence 倒序，第一页即最新消息。
     const page = this.messageStore.listMessages(run.threadId as ThreadId, { limit: 50 });
     for (const message of page.messages) {
@@ -15797,6 +15859,60 @@ export class Runtime {
       this.scheduledTaskStore.updateHistorySummary(entryId, text);
       return;
     }
+  }
+
+  /** 将定时任务 run 的终态统一写入任务结果与唯一历史条目。 */
+  private finalizeScheduledTaskRun(
+    runId: string,
+  ): { status: 'success' | 'failed' | 'cancelled'; reason?: string } | undefined {
+    const metadata = this.scheduledTaskRuns.get(runId);
+    if (!metadata || !this.scheduledTaskStore) return undefined;
+    this.scheduledTaskRuns.delete(runId);
+
+    let events: Event[];
+    try {
+      events = this.stateStore?.listEventsByRun
+        ? this.stateStore.listEventsByRun(runId as RunId)
+        : this.events.filter((event) => event.runId === runId);
+    } catch {
+      // Shutdown can close the store while a cleanup timer is pending.
+      return undefined;
+    }
+    const terminal = [...events]
+      .reverse()
+      .find((event) => TERMINAL_RUN_EVENT_TYPES.has(event.type));
+    const status: 'success' | 'failed' | 'cancelled' =
+      terminal?.type === 'run.completed'
+        ? 'success'
+        : terminal?.type === 'run.cancelled'
+          ? 'cancelled'
+          : 'failed';
+    const payload = (terminal?.payload ?? {}) as Record<string, unknown>;
+    const reason =
+      typeof payload.reason === 'string'
+        ? payload.reason
+        : typeof payload.errorMessage === 'string'
+          ? payload.errorMessage
+          : terminal
+            ? undefined
+            : 'run 未产生终态事件';
+    const entryId = this.recordTaskHistory(
+      metadata.task,
+      status,
+      metadata.firedAt,
+      runId,
+      reason,
+    );
+    this.scheduledTaskStore.update(metadata.task.id, {
+      lastResult: {
+        status,
+        firedAt: metadata.firedAt,
+        runId,
+        ...(reason ? { reason } : {}),
+      },
+    });
+    if (entryId) this.fillTaskHistorySummary(entryId, metadata.run);
+    return { status, ...(reason ? { reason } : {}) };
   }
 
   private publishTaskEvent(type: string, _taskId: string, payload: Record<string, unknown>): void {
@@ -21747,7 +21863,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (typeof raw !== 'string') return { ok: false, error: 'avatar must be a string' };
       const trimmed = raw.trim();
       if (!trimmed) return { ok: true, avatar: '' };
-      if (/[\u0000-\u001F\u007F]/.test(trimmed)) {
+      if ([...trimmed].some((char) => {
+        const code = char.charCodeAt(0);
+        return code <= 0x1f || code === 0x7f;
+      })) {
         return { ok: false, error: 'avatar contains control characters' };
       }
       if (trimmed.startsWith('data:image/')) {
@@ -25966,13 +26085,15 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   }
 
   async stop(): Promise<void> {
+    this.runtimeStopped = true;
     this.stopTaskSchedulerHeartbeat();
     this.localSkillWatchCleanup?.();
     this.localSkillWatchCleanup = undefined;
     // 投递任务尚未完成 → 向守护进程发 abort（用户主动关闭，app-closed）。
     if (this.dispatchedTasks.size > 0 && !this.daemonWorker) {
       const taskIds = [...this.dispatchedTasks];
-      void sendAbortToDaemon(
+      try {
+        await sendAbortToDaemon(
         {
           installId: this.installId,
           helloSecret: this.handlers.expectedSecret,
@@ -25980,9 +26101,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           handshakeTimeoutMs: 2_000,
         },
         taskIds,
-      ).catch(() => {
-        /* 尽力而为 */
-      });
+        );
+      } catch {
+        /* 尽力而为；连接超时由客户端内部有界返回。 */
+      }
+    }
+    if (this.daemonCompletionPromises.size > 0) {
+      await Promise.allSettled([...this.daemonCompletionPromises]);
     }
     await new Promise<void>((resolve) => {
       if (!this.server) {

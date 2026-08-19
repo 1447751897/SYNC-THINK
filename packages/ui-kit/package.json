@@ -9,15 +9,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./styles.css": "./src/styles/index.css"
+    }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/generate-css.mjs",
+    "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "eslint src --ext .ts,.tsx",
-    "tokens:css": "node scripts/generate-css.mjs"
+    "lint": "eslint src --ext .ts,.tsx"
   },
   "dependencies": {
     "@sync-think/shared": "workspace:*",

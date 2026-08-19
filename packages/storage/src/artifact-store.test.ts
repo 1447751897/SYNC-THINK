@@ -256,6 +256,9 @@ async function openLegacyConflictStore() {
       '0041_task_plan',
       '0042_conversation_interaction_mode',
       '0043_conversation_plan',
+      '0044_scheduled_task',
+      '0045_scheduled_task_scope',
+      '0046_scheduled_task_history',
     ]);
     await runMigrations(dbPath);
   } finally {

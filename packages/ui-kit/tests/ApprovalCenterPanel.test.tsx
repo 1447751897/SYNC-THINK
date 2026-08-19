@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
@@ -34,20 +32,6 @@ const sampleHuman: ApprovalItemView = {
 };
 
 describe('ApprovalCenterPanel (section 13)', () => {
-  it('uses theme-aware design tokens instead of dark-only fallback variables', () => {
-    const css = readFileSync(join(process.cwd(), 'src/styles/components.css'), 'utf8');
-    const approvalCss = css.slice(
-      css.indexOf('/* Approval Center'),
-      css.indexOf('/* MCP discovered tool catalog'),
-    );
-
-    expect(approvalCss).toContain('var(--st-color-surface)');
-    expect(approvalCss).toContain('var(--st-color-text-primary)');
-    expect(approvalCss).not.toMatch(
-      /var\(--st-(?:surface(?:-2)?|text(?:-muted|-secondary)?|accent|border)(?:,|\))/,
-    );
-  });
-
   it('renders human-only chips and empty pending', () => {
     render(
       <ApprovalCenterPanel

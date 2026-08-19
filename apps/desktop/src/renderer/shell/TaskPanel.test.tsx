@@ -1,8 +1,8 @@
 /**
  * @vitest-environment jsdom
  *
- * 定时任务面板：空态、列表渲染（规则摘要/徽标）、新建对话框校验与创建、
- * 启停/立即触发/删除操作。
+ * 定时任务面板：空态、列表渲染（规则摘要/徽标）、筛选（归属/状态）、
+ * 执行历史弹层、新建对话框校验与创建、启停/立即触发/删除操作。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -13,6 +13,8 @@ import { TaskPanel } from './TaskPanel.js';
 const agent = {
   id: 'agent-1',
   name: '代码审查员',
+  avatar: '🛡️',
+  description: '代码巡检与风险报告',
   defaultModelId: 'model-a',
   fallbackModelIds: [],
   skillIds: [],
@@ -46,6 +48,17 @@ function mockBridge(overrides: Record<string, unknown> = {}) {
     updateScheduledTask: vi.fn(async () => ({ task })),
     deleteScheduledTask: vi.fn(async () => ({ deleted: true })),
     triggerScheduledTask: vi.fn(async () => ({ task, fired: true })),
+    scheduledTaskHistory: vi.fn(async () => ({
+      entries: [
+        {
+          id: 'h1',
+          taskId: 'task-1',
+          status: 'success',
+          firedAt: '2025-01-01T01:00:00.000Z',
+          summary: '未发现新的未提交改动，仓库状态正常',
+        },
+      ],
+    })),
     ...overrides,
   };
   (window as unknown as Record<string, unknown>).syncThink = { runtime };
@@ -53,7 +66,15 @@ function mockBridge(overrides: Record<string, unknown> = {}) {
 }
 
 function renderPanel() {
-  return render(<TaskPanel agents={[agent]} models={models} />);
+  return render(
+    <TaskPanel
+      agents={[agent]}
+      models={models}
+      teams={[]}
+      workspaces={[]}
+      skills={[]}
+    />,
+  );
 }
 
 describe('TaskPanel', () => {
@@ -66,9 +87,9 @@ describe('TaskPanel', () => {
     mockBridge();
     renderPanel();
     expect(await screen.findByText('每日代码巡检')).toBeTruthy();
-    expect(screen.getByText('每 60 分钟')).toBeTruthy();
+    expect(screen.getByText(/每 60 分钟/)).toBeTruthy();
     expect(screen.getByText(/智能体 · 代码审查员/)).toBeTruthy();
-    const last = document.querySelector('.task-panel__card-last[data-status="success"]');
+    const last = document.querySelector('.task-panel__last-result[data-status="success"]');
     expect(last).toBeTruthy();
     expect(last?.textContent).toContain('✓');
   });
@@ -148,5 +169,35 @@ describe('TaskPanel', () => {
       expect(runtime.deleteScheduledTask).toHaveBeenCalledWith({ taskId: 'task-1' });
     });
     confirmSpy.mockRestore();
+  });
+
+  it('filters by state chips', async () => {
+    mockBridge({
+      listScheduledTasks: vi.fn(async () => ({
+        tasks: [
+          task,
+          { ...task, id: 'task-2', name: '停用任务', enabled: false },
+        ],
+      })),
+    });
+    renderPanel();
+    await screen.findByText('每日代码巡检');
+    fireEvent.click(screen.getByRole('button', { name: /已停用/ }));
+    expect(screen.getByText('停用任务')).toBeTruthy();
+    expect(screen.queryByText('每日代码巡检')).toBeNull();
+  });
+
+  it('opens the history panel and loads entries', async () => {
+    const runtime = mockBridge();
+    renderPanel();
+    await screen.findByText('每日代码巡检');
+    fireEvent.click(screen.getByTitle('执行历史'));
+    expect(await screen.findByTestId('task-history')).toBeTruthy();
+    expect(runtime.scheduledTaskHistory).toHaveBeenCalledWith({
+      taskId: 'task-1',
+      limit: 20,
+    });
+    expect(await screen.findByText('未发现新的未提交改动，仓库状态正常')).toBeTruthy();
+    expect(screen.getByText(/成功 1/)).toBeTruthy();
   });
 });

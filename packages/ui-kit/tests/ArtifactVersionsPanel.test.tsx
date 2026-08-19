@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ArtifactVersionsPanel } from '../src/components/ArtifactVersionsPanel.js';
@@ -74,18 +72,6 @@ const conflicts = [
 ];
 
 describe('ArtifactVersionsPanel', () => {
-  it('adapts graph controls and artifact versions to a narrow host drawer', () => {
-    const css = readFileSync(join(process.cwd(), 'src/styles/components.css'), 'utf8');
-
-    expect(css).toContain('@container (max-width: 420px)');
-    expect(css).toMatch(
-      /\.st-graph__controls,\s*\.st-artifacts__actions\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s,
-    );
-    expect(css).toMatch(
-      /\.st-artifacts__shelf\s*\{[^}]*grid-auto-flow:\s*row;[^}]*overflow-x:\s*hidden/s,
-    );
-  });
-
   it('keeps immutable versions visible and renders a stable comparison', () => {
     render(<ArtifactVersionsPanel artifact={artifact} comparison={comparison} />);
 

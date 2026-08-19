@@ -531,7 +531,7 @@ function initializeDesktopUpdater(): void {
         downloadedFile: context.downloadedFile,
       });
       // T12：升级前先停守护进程——否则文件被占用，覆盖更新失败。
-      await stopManagedDaemon();
+      await stopManagedDaemon(5_000, getDesktopRuntimeIdentity());
       await shutdownDesktopServices();
     },
     installSilently: desktopUpdateInstallProbeConfiguration !== null,
@@ -991,9 +991,10 @@ async function ensureRuntimeConnection(): Promise<RuntimeConnectResult> {
   // pre-launched `pnpm dev:runtime`.
   await ensureRuntimeProcess(getDesktopRuntimeIdentity());
   // 守护进程兜底（T3）：不在运行则拉起（定时任务无人值守的前提）。
-  void ensureDaemonProcess(getDesktopRuntimeIdentity()).catch((error) =>
-    console.warn('[desktop] daemon fallback spawn failed', error),
-  );
+  const daemon = await ensureDaemonProcess(getDesktopRuntimeIdentity());
+  if (!daemon.ready) {
+    console.warn('[desktop] daemon is not ready; Runtime scheduler may run as fallback', daemon.error);
+  }
   const result = await getRuntimeSession().connect();
   markDesktopUpdateRollbackHealthy();
   return result;
@@ -1971,7 +1972,7 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('daemon:set-autostart', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     const enabled = Boolean(value && typeof value === 'object' && (value as { enabled?: unknown }).enabled);
-    return setDaemonAutostart(enabled);
+    return setDaemonAutostart(enabled, getDesktopRuntimeIdentity());
   });
   ipcMain.handle('daemon:set-max-concurrent', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

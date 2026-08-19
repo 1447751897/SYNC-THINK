@@ -5,7 +5,14 @@
 // Also force-restarts an orphan runtime when Desktop starts, so rebuilds do not
 // keep serving a stale process that already holds the named pipe.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+  mkdirSync,
+  renameSync,
+} from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -24,6 +31,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import { stopRuntimeChild } from './runtime-child-shutdown.js';
 import type { DesktopRuntimeIdentity } from './packaged-install-identity.js';
+import { createPowerShellDpapiBridge } from '@sync-think/secure-store';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -563,36 +571,122 @@ function resolveDaemonEntry(): string | null {
 
 let daemonChild: ChildProcess | null = null;
 let daemonStarting: Promise<void> | null = null;
+let daemonInstallId: string | null = null;
+let daemonIdentity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'> | null = null;
+let daemonStopRequested = false;
+let daemonRestartTimer: NodeJS.Timeout | null = null;
+let daemonRestartAttempts = 0;
+let daemonEnsureLock: Promise<DaemonEnsureResult> | null = null;
 /** 上次 spawn daemon 的时间（防抖：spawn 到管道监听有秒级延迟，期间重复调用不再拉起）。 */
 let daemonSpawnedAt = 0;
 const DAEMON_SPAWN_DEBOUNCE_MS = 10_000;
+const DAEMON_RESTART_MAX_ATTEMPTS = 3;
+
+interface DaemonEnsureResult {
+  ready: boolean;
+  spawned: boolean;
+  error?: string;
+}
+
+function daemonStateDir(): string {
+  return dirname(resolveManagedRuntimeDatabasePath());
+}
+
+function daemonPidPath(installId: string): string {
+  return join(daemonStateDir(), `daemon-${installId}.pid`);
+}
+
+function readDaemonPid(installId: string): number | null {
+  try {
+    const pid = Number(readFileSync(daemonPidPath(installId), 'utf8').trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDaemonPid(installId: string, pid: number): void {
+  try {
+    mkdirSync(defaultDataRoot(), { recursive: true });
+    writeFileSync(daemonPidPath(installId), String(pid), 'utf8');
+  } catch (error) {
+    console.warn('[desktop] failed to write daemon pid file', error);
+  }
+}
+
+function clearDaemonPid(installId: string): void {
+  try {
+    unlinkSync(daemonPidPath(installId));
+  } catch {
+    /* ignore */
+  }
+}
+
+async function waitForDaemonPipe(installId: string, totalMs = 12_000): Promise<boolean> {
+  const started = Date.now();
+  while (Date.now() - started < totalMs) {
+    if (await probeDaemonPipe(installId, 500)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return probeDaemonPipe(installId, 500);
+}
+
+async function waitForDaemonPipeDown(installId: string, totalMs = 5_000): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < totalMs) {
+    if (!(await probeDaemonPipe(installId, 300))) return;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+}
 
 /**
  * 桌面启动时兜底拉起守护进程（T3）：探测 daemon 管道——不在运行 →
  * spawn daemon 进程（登录自启之外的第二重保证）。已注册自启时也兜底
  * （自启可能在下次登录才生效）。
  */
-export async function ensureDaemonProcess(
+async function ensureDaemonProcessInternal(
   identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
-): Promise<{ ready: boolean; spawned: boolean; error?: string }> {
+): Promise<DaemonEnsureResult> {
   const installId = identity.installId;
+  daemonInstallId = installId;
+  daemonIdentity = identity;
+  daemonStopRequested = false;
 
   if (await probeDaemonPipe(installId)) {
+    daemonRestartAttempts = 0;
     return { ready: true, spawned: false };
   }
 
-  // 清理孤儿 daemon（探测不到健康管道时）：旧代码拉起的 daemon 在
-  // EADDRINUSE 后不会退出（定时器仍在跑），会与新建 daemon 抢触发任务。
-  await killOrphanDaemonProcesses();
+  // 先按当前安装的 PID 清理残留，避免 detached/autostart daemon 占用旧代码。
+  const stalePid = readDaemonPid(installId);
+  if (
+    stalePid &&
+    stalePid !== process.pid &&
+    (!daemonChild || daemonChild.pid !== stalePid)
+  ) {
+    if (isProcessAlive(stalePid)) {
+      const existingReady = await waitForDaemonPipe(installId, 3_000);
+      if (existingReady) {
+        daemonRestartAttempts = 0;
+        return { ready: true, spawned: false };
+      }
+    }
+    killProcessTree(stalePid);
+    clearDaemonPid(installId);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  await killOrphanDaemonProcesses(installId);
 
   // 防抖：短时间内已拉起过（管道可能还没监听）→ 不再重复 spawn。
   if (Date.now() - daemonSpawnedAt < DAEMON_SPAWN_DEBOUNCE_MS) {
-    return { ready: false, spawned: true };
+    const ready = await waitForDaemonPipe(installId, 3_000);
+    return { ready, spawned: true, ...(ready ? {} : { error: 'daemon readiness timeout' }) };
   }
 
   if (daemonStarting) {
     await daemonStarting;
-    return { ready: await probeDaemonPipe(installId), spawned: Boolean(daemonChild) };
+    const ready = await waitForDaemonPipe(installId, 3_000);
+    return { ready, spawned: Boolean(daemonChild), ...(ready ? {} : { error: 'daemon readiness timeout' }) };
   }
 
   daemonStarting = (async () => {
@@ -610,20 +704,26 @@ export async function ensureDaemonProcess(
     console.log('[desktop] starting managed daemon', { entry, nodeBin });
     const childProcess = spawn(nodeBin, [entry], {
       env,
-      // detached + stdio ignore：daemon 脱离 Electron 进程组独立存活，
-      // 桌面退出不杀它；stdio 全 ignore 避免管道在父进程退出后被破坏
-      // （daemon 状态以 daemon-status.json 为准，console 输出可丢）。
+      // daemon/index.js writes daemon.log itself; stdio remains detached from
+      // Electron so process lifetime is independent of the desktop window.
       stdio: 'ignore',
       windowsHide: true,
       detached: true,
       shell: false,
     });
     daemonChild = childProcess;
+    daemonInstallId = installId;
+    daemonIdentity = identity;
     daemonSpawnedAt = Date.now();
+    writeDaemonPid(installId, childProcess.pid ?? 0);
     // detached 子进程需要 unref，否则父进程会等待它退出。
     childProcess.unref();
     childProcess.on('exit', () => {
       if (daemonChild === childProcess) daemonChild = null;
+      clearDaemonPid(installId);
+      if (!daemonStopRequested && daemonIdentity?.installId === installId) {
+        scheduleDaemonRestart();
+      }
     });
     childProcess.on('error', (error) => {
       console.error('[desktop] daemon spawn failed', error);
@@ -635,16 +735,34 @@ export async function ensureDaemonProcess(
   } finally {
     daemonStarting = null;
   }
-  return { ready: await probeDaemonPipe(installId), spawned: Boolean(daemonChild) };
+  if (!daemonChild && !(await probeDaemonPipe(installId))) {
+    return { ready: false, spawned: false, error: 'daemon entry not found or process exited' };
+  }
+  const ready = await waitForDaemonPipe(installId);
+  if (ready) daemonRestartAttempts = 0;
+  return { ready, spawned: Boolean(daemonChild), ...(ready ? {} : { error: 'daemon readiness timeout' }) };
+}
+
+/** Serialize cold-start/reconnect calls so two IPC requests cannot spawn two daemons. */
+export async function ensureDaemonProcess(
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+): Promise<DaemonEnsureResult> {
+  if (daemonEnsureLock) return daemonEnsureLock;
+  const operation = ensureDaemonProcessInternal(identity);
+  daemonEnsureLock = operation.finally(() => {
+    daemonEnsureLock = null;
+  });
+  return daemonEnsureLock;
 }
 
 /** 清理所有孤儿 daemon 进程（命令行含 daemon/index.js 的 node 进程）。 */
-async function killOrphanDaemonProcesses(): Promise<void> {
-  const pattern = 'daemon.*index.js';
+async function killOrphanDaemonProcesses(installId: string): Promise<void> {
+  if (process.platform !== 'win32') return;
+  const pattern = `SYNC_THINK_INSTALL_ID[= ]+${installId}`;
   const kill = spawn('powershell', [
     '-NoProfile',
     '-Command',
-    `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '${pattern}' -and $_.Name -eq 'node.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+    `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '${pattern}' -and $_.CommandLine -match 'daemon[\\\\/]+index\\.js' -and $_.Name -eq 'node.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
   ], { stdio: 'ignore', windowsHide: true });
   await new Promise<void>((resolve) => {
     kill.on('exit', () => resolve());
@@ -653,15 +771,63 @@ async function killOrphanDaemonProcesses(): Promise<void> {
   });
 }
 
+function scheduleDaemonRestart(): void {
+  if (daemonRestartTimer || daemonStopRequested || !daemonIdentity) return;
+  if (daemonRestartAttempts >= DAEMON_RESTART_MAX_ATTEMPTS) {
+    console.error('[desktop] daemon restart limit reached');
+    return;
+  }
+  daemonRestartAttempts += 1;
+  daemonRestartTimer = setTimeout(() => {
+    daemonRestartTimer = null;
+    const identity = daemonIdentity;
+    if (!identity || daemonStopRequested) return;
+    void ensureDaemonProcess(identity).catch((error) =>
+      console.warn('[desktop] daemon restart failed', error),
+    );
+  }, Math.min(5_000, daemonRestartAttempts * 1_000));
+}
+
 /** 停止守护进程（应用退出 / 升级前）。 */
-export async function stopManagedDaemon(timeoutMs = 5_000): Promise<void> {
+export async function stopManagedDaemon(
+  timeoutMs = 5_000,
+  requestedIdentity?: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+): Promise<void> {
+  daemonStopRequested = true;
+  if (daemonRestartTimer) {
+    clearTimeout(daemonRestartTimer);
+    daemonRestartTimer = null;
+  }
+  const identity = requestedIdentity ?? daemonIdentity ??
+    (daemonInstallId
+      ? {
+          installId: daemonInstallId,
+          pipeSecret: process.env.SYNC_THINK_PIPE_SECRET,
+          allowNoToken: process.env.SYNC_THINK_DEV_NO_TOKEN === '1',
+        }
+      : null);
   const proc = daemonChild;
   daemonChild = null;
-  if (!proc) return;
-  if (proc.exitCode !== null) return;
-  const result = await stopRuntimeChild(proc, { timeoutMs });
-  if (result.forced) {
-    console.warn('[desktop] daemon graceful shutdown timed out; terminated daemon process');
+  if (identity) {
+    await requestDaemonFrame(
+      'daemon.stop',
+      {},
+      identity.installId,
+      identity.pipeSecret,
+      Math.min(timeoutMs, 2_000),
+    ).catch(() => undefined);
+  }
+  if (proc && proc.exitCode === null) {
+    const result = await stopRuntimeChild(proc, { timeoutMs });
+    if (result.forced) {
+      console.warn('[desktop] daemon graceful shutdown timed out; terminated daemon process');
+    }
+  }
+  if (identity) {
+    const pid = readDaemonPid(identity.installId);
+    if (pid && pid !== process.pid) killProcessTree(pid);
+    clearDaemonPid(identity.installId);
+    await waitForDaemonPipeDown(identity.installId, timeoutMs);
   }
 }
 
@@ -809,7 +975,7 @@ export async function requestDaemonFrame(
 /** 读取 daemon 日志文件（状态目录下 daemon.log，尾部 200 行）。 */
 export function readDaemonLogs(limit = 200): string[] {
   try {
-    const logPath = join(defaultDataRoot(), 'SYNC-THINK', 'daemon.log');
+    const logPath = join(daemonStateDir(), 'daemon.log');
     if (!existsSync(logPath)) return [];
     const content = readFileSync(logPath, 'utf8');
     const lines = content.split(/\r?\n/).filter(Boolean);
@@ -823,20 +989,62 @@ export function readDaemonLogs(limit = 200): string[] {
  * 设置登录自启（schtasks 注册/移除）。
  * 注册需要 node + daemon 入口路径；移除只删任务。
  */
-export async function setDaemonAutostart(enabled: boolean): Promise<{ ok: boolean }> {
+async function writeDaemonBootstrap(
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+): Promise<string> {
+  const dataRoot = daemonStateDir();
+  mkdirSync(dataRoot, { recursive: true });
+  const path = join(dataRoot, 'daemon-bootstrap.json');
+  let pipeSecretCiphertext: string | undefined;
+  if (identity.pipeSecret) {
+    const bridge = createPowerShellDpapiBridge();
+    pipeSecretCiphertext = await bridge.protect(Buffer.from(identity.pipeSecret, 'utf8'));
+  }
+  const payload = {
+    version: 1 as const,
+    installId: identity.installId,
+    dbPath: resolveManagedRuntimeDatabasePath(),
+    allowNoToken: identity.allowNoToken,
+    ...(pipeSecretCiphertext ? { pipeSecretCiphertext } : {}),
+  };
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(payload)}\n`, { encoding: 'utf8', mode: 0o600 });
+  renameSync(temporary, path);
+  return path;
+}
+
+/** Build the scheduled-task command; secrets stay in the protected bootstrap file. */
+export function buildDaemonAutostartCommand(
+  nodeBin: string,
+  daemonEntry: string,
+  bootstrapPath: string,
+): string {
+  return `schtasks /Create /TN "SYNC-THINK Daemon" /TR "\\"${nodeBin}\\" \\"${daemonEntry}\\" --bootstrap \\"${bootstrapPath}\\"" /SC ONLOGON /RL LIMITED /F`;
+}
+
+export async function setDaemonAutostart(
+  enabled: boolean,
+  identity?: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+): Promise<{ ok: boolean }> {
   try {
     if (!enabled) {
       const result = spawnSync(
         'schtasks /Delete /TN "SYNC-THINK Daemon" /F',
         { shell: true, windowsHide: true, encoding: 'utf8' },
       );
+      try {
+        unlinkSync(join(daemonStateDir(), 'daemon-bootstrap.json'));
+      } catch {
+        /* ignore */
+      }
       return { ok: result.status === 0 };
     }
     const entry = resolveDaemonEntry();
     const nodeBin = resolveNodeBinary();
-    if (!entry || !nodeBin) return { ok: false };
+    if (!entry || !nodeBin || !identity) return { ok: false };
+    const bootstrapPath = await writeDaemonBootstrap(identity);
     const result = spawnSync(
-      `schtasks /Create /TN "SYNC-THINK Daemon" /TR "\\"${nodeBin}\\" \\"${entry}\\"" /SC ONLOGON /RL LIMITED /F`,
+      buildDaemonAutostartCommand(nodeBin, entry, bootstrapPath),
       { shell: true, windowsHide: true, encoding: 'utf8' },
     );
     return { ok: result.status === 0 };

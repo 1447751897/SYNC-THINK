@@ -208,7 +208,9 @@ describe('0017_reviewer_rework migration', () => {
     expect(taskPlanIndex).toBe(capabilityGovernanceIndex + 1);
     expect(interactionModeIndex).toBe(taskPlanIndex + 1);
     expect(conversationPlanIndex).toBe(interactionModeIndex + 1);
-    expect(conversationPlanIndex).toBe(names.length - 1);
+    const taskHistoryIndex = names.indexOf('0046_scheduled_task_history');
+    expect(taskHistoryIndex).toBe(names.length - 1);
+    expect(taskHistoryIndex).toBe(conversationPlanIndex + 3);
     expect(names.slice(frozenIndex, reviewerReworkIndex + 2)).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',

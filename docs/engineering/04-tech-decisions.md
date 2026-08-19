@@ -486,7 +486,7 @@ A.
 
 ```text
 A. Continuum UI Kit
-  - tokens: docs/product/15-frontend-design-tokens.json → 生成 CSS variables
+  - tokens: docs/product/16-shell-design-tokens.json → 生成 CSS variables
   - 行为原语：Radix（Dialog/Popover/Tabs/Focus）可选引入
   - 外观：100% 自研（Button/Message/Trace/ContinuumRail/...）
   - 图标：Lucide（可替换子集）

@@ -28,7 +28,13 @@ import {
   type HelloProofPayload,
 } from '@sync-think/protocol';
 import { daemonPipePath } from './yield.js';
-import { encodeAbort, encodeDispatchFrame, type DispatchPayload } from './protocol.js';
+import {
+  encodeAbort,
+  encodeDispatchComplete,
+  encodeDispatchFrame,
+  type DispatchCompletePayload,
+  type DispatchPayload,
+} from './protocol.js';
 
 export interface DispatchClientOptions {
   installId: string;
@@ -43,6 +49,8 @@ export interface DispatchClientOptions {
 export interface DispatchResult {
   ok: boolean;
   acked: boolean;
+  outcome: 'accepted' | 'rejected' | 'timeout' | 'unreachable';
+  reason?: string;
 }
 
 function isChallenge(payload: unknown): payload is {
@@ -103,7 +111,13 @@ export async function dispatchTaskToDesktop(
       }
       if (frame.type === 'task.dispatch.ack') {
         if (ackTimer) clearTimeout(ackTimer);
-        done({ ok: true, acked: Boolean((frame.payload as { accepted?: boolean }).accepted) });
+        const ack = frame.payload as { accepted?: boolean; reason?: string };
+        done({
+          ok: true,
+          acked: Boolean(ack.accepted),
+          outcome: ack.accepted ? 'accepted' : 'rejected',
+          ...(ack.reason ? { reason: ack.reason } : {}),
+        });
         socket.end();
       }
     };
@@ -168,7 +182,7 @@ export async function dispatchTaskToDesktop(
         for (const frame of decoded.frames) handleFrame(frame);
       } catch {
         socket.destroy();
-        done({ ok: false, acked: false });
+        done({ ok: false, acked: false, outcome: 'unreachable' });
       }
     });
 
@@ -198,58 +212,68 @@ export async function dispatchTaskToDesktop(
       void helloOk.then((ok) => {
         if (!ok) {
           socket.end();
-          done({ ok: false, acked: false });
+          done({ ok: false, acked: false, outcome: 'unreachable' });
           return;
         }
         // 2. dispatch + 等 ack（超时 → acked=false）。
         ackTimer = setTimeout(() => {
-          done({ ok: true, acked: false });
+          done({ ok: true, acked: false, outcome: 'timeout' });
           socket.end();
         }, timeoutMs);
         socket.write(encodeFrame(encodeDispatchFrame(payload)));
       });
     });
 
-    socket.on('error', () => done({ ok: false, acked: false }));
+    socket.on('error', () => done({ ok: false, acked: false, outcome: 'unreachable' }));
     socket.on('close', () => {
       if (ackTimer) clearTimeout(ackTimer);
       if (helloTimer) clearTimeout(helloTimer);
-      done({ ok: false, acked: false });
+      done({ ok: false, acked: false, outcome: 'unreachable' });
     });
   });
 }
 
 /**
- * 桌面 runtime 退出前向守护进程发送 abort（用户主动关闭，spec T8）。
- * 尽力而为：守护进程不在/握手失败 → 静默忽略（返回 false，不抛错）。
- * 连接目标 = daemon 管道（daemonPipePath）。
+ * Send authenticated, fire-and-close frames to the daemon. The bounded
+ * socket-end callback ensures local buffers are flushed before the caller
+ * proceeds with shutdown.
  */
-export async function sendAbortToDaemon(
+async function sendFramesToDaemon(
   options: DispatchClientOptions,
-  taskIds: string[],
+  frames: Frame[],
 ): Promise<boolean> {
-  if (taskIds.length === 0) return true;
+  if (frames.length === 0) return true;
   const handshakeTimeoutMs = options.handshakeTimeoutMs ?? 5_000;
+  const totalTimeoutMs = Math.max(handshakeTimeoutMs + 1_000, 2_000);
 
   return new Promise((resolve) => {
     let settled = false;
-    const done = (ok: boolean): void => {
-      if (settled) return;
-      settled = true;
-      resolve(ok);
-    };
-
-    const socket = connect(daemonPipePath(options.installId));
-    socket.setNoDelay(true);
-    let buffer: Buffer = Buffer.alloc(0);
+    let closing = false;
     let authenticated = false;
+    let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let helloPhase: 'hello' | 'proof' | 'done' = 'hello';
     let helloNonce = '';
     let helloResolve: ((ok: boolean) => void) | null = null;
+    const socket = connect(daemonPipePath(options.installId));
+    socket.setNoDelay(true);
+    const timeout = setTimeout(() => finish(false), totalTimeoutMs);
 
-    const handleHelloFrame = (frame: Frame): void => {
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (!socket.destroyed && !closing) socket.destroy();
+      resolve(ok);
+    };
+
+    const handleHello = (frame: Frame): void => {
       if (helloPhase === 'hello' && frame.type === '__hello') {
-        const payload = frame.payload as { challenge?: boolean; ok?: boolean; runtimeNonce?: string; runtimeToken?: string };
+        const payload = frame.payload as {
+          challenge?: boolean;
+          ok?: boolean;
+          runtimeNonce?: string;
+          runtimeToken?: string;
+        };
         if (isAccepted(payload)) {
           helloPhase = 'done';
           authenticated = true;
@@ -261,13 +285,13 @@ export async function sendAbortToDaemon(
           helloResolve?.(false);
           return;
         }
-        const expectedRuntimeProof = computeRuntimeProof(
+        const expected = computeRuntimeProof(
           options.helloSecret,
           helloNonce,
           payload.runtimeNonce,
           options.installId,
         );
-        if (!verifyHmac(expectedRuntimeProof, payload.runtimeToken)) {
+        if (!verifyHmac(expected, payload.runtimeToken)) {
           helloPhase = 'done';
           helloResolve?.(false);
           return;
@@ -288,34 +312,26 @@ export async function sendAbortToDaemon(
         return;
       }
       if (helloPhase === 'proof' && frame.type === '__hello.proof') {
-        if (isAccepted(frame.payload)) {
-          helloPhase = 'done';
-          authenticated = true;
-          helloResolve?.(true);
-          return;
-        }
         helloPhase = 'done';
-        helloResolve?.(false);
+        authenticated = isAccepted(frame.payload);
+        helloResolve?.(authenticated);
       }
     };
 
     socket.on('data', (chunk: Buffer) => {
-      const prev = buffer;
       try {
-        const decoded = decodeFrames(prev.length === 0 ? chunk : Buffer.concat([prev, chunk]));
+        const decoded = decodeFrames(buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]));
         buffer = decoded.remaining;
         for (const frame of decoded.frames) {
-          if (!authenticated) handleHelloFrame(frame);
+          if (!authenticated) handleHello(frame);
         }
       } catch {
-        socket.destroy();
-        done(false);
+        finish(false);
       }
     });
-
     socket.on('connect', () => {
-      const helloOk = new Promise<boolean>((resolve) => {
-        helloResolve = resolve;
+      const helloOk = new Promise<boolean>((resolveHello) => {
+        helloResolve = resolveHello;
         helloNonce = randomBytes(16).toString('hex');
         const hello: Hello = {
           protocolVersion: PROTOCOL_VERSION,
@@ -324,35 +340,46 @@ export async function sendAbortToDaemon(
           nonce: helloNonce,
           features: [...DEFAULT_FEATURES],
         };
-        if (options.helloSecret) {
-          hello.token = computeHmac(options.helloSecret, helloNonce, options.installId);
-        }
+        if (options.helloSecret) hello.token = computeHmac(options.helloSecret, helloNonce, options.installId);
         socket.write(encodeFrame({ id: 'hello', kind: 'request', type: '__hello', payload: hello }));
         setTimeout(() => {
           if (helloPhase !== 'done') {
             helloPhase = 'done';
-            resolve(false);
+            resolveHello(false);
           }
         }, handshakeTimeoutMs);
       });
       void helloOk.then((ok) => {
         if (!ok) {
-          socket.end();
-          done(false);
+          closing = true;
+          socket.end(() => finish(false));
           return;
         }
-        // 逐个发送 abort（尽力而为，不等待响应）。
-        for (const taskId of taskIds) {
-          socket.write(encodeFrame(encodeAbort(taskId, 'app-closed')));
-        }
-        setTimeout(() => {
-          socket.end();
-          done(true);
-        }, 100);
+        for (const frame of frames) socket.write(encodeFrame(frame));
+        closing = true;
+        socket.end(() => finish(true));
       });
     });
-
-    socket.on('error', () => done(false));
-    socket.on('close', () => done(true));
+    socket.on('error', () => finish(false));
+    socket.on('close', () => finish(closing && authenticated));
   });
+}
+
+/** 桌面 runtime 退出前向守护进程发送 abort（用户主动关闭）。 */
+export function sendAbortToDaemon(
+  options: DispatchClientOptions,
+  taskIds: string[],
+): Promise<boolean> {
+  return sendFramesToDaemon(
+    options,
+    taskIds.map((taskId) => encodeAbort(taskId, 'app-closed')),
+  );
+}
+
+/** 桌面 runtime run 终态通知 daemon，清理崩溃接管 tracker。 */
+export function sendTaskCompletionToDaemon(
+  options: DispatchClientOptions,
+  payload: DispatchCompletePayload,
+): Promise<boolean> {
+  return sendFramesToDaemon(options, [encodeDispatchComplete(payload)]);
 }

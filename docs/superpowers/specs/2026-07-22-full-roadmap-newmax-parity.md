@@ -48,9 +48,10 @@ packages/
 apps/
   runtime/    Node 常驻进程，named pipe 服务；18 条新命令 handler 已接
   desktop/    Electron；main IPC + preload 桥已通
-    src/renderer/          旧渲染层（保留，默认加载）
-    src/renderer/shell/    新渲染层（SYNC_THINK_SHELL=1 加载）
-      shell.css            Tailwind v4 @theme tokens（深浅色，.dark 类切换）
+    src/renderer/          共享逻辑模块（旧壳 UI 已于 2026-08-18 删除）
+    src/renderer/shell/    唯一渲染层（主进程直接加载 dist/renderer-shell）
+      tokens.css           生成物：由 docs/product/16-shell-design-tokens.json + pnpm tokens:css 产出
+      shell.css            Tailwind v4，@import './tokens.css'（深浅色，.dark 类切换）
       shell-state.ts       导航状态纯函数（stage/track/分组）
       Sidebar.tsx          最近对话三分组 + 置顶 + 各组新建 +
       ShellApp.tsx         壳根组件（refresh/新建/置顶已接真实桥）
@@ -316,11 +317,13 @@ P10 切换与清理：新壳设为默认，删除旧 renderer 与 ui-kit 死代�
 
 ### P10 · 切换与清理
 
-1. `SYNC_THINK_SHELL` 默认值翻转为新壳；旧壳改为 `SYNC_THINK_LEGACY=1` 逃生口
-2. 两个版本共存一个迭代收集问题后：删除 `src/renderer/`（旧）全部文件与 `build-renderer.mjs`；`packages/ui-kit` 中仅旧壳引用的组件删除或迁移
+1. ~~`SYNC_THINK_SHELL` 默认值翻转为新壳；旧壳改为 `SYNC_THINK_LEGACY=1` 逃生口~~ **已完成（2026-08-18）**：开关连同逃生口一起删除，主进程无条件加载 `dist/renderer-shell/index.html`
+2. ~~两个版本共存一个迭代收集问题后：删除 `src/renderer/`（旧）全部文件与 `build-renderer.mjs`~~ **已完成（2026-08-18），但原文说法需订正**：`src/renderer/` **不是**纯旧壳目录，新壳从其中 import 共享逻辑（`conversation-activity.ts` / `runtime-connection.ts` / `run-activity-authority.ts` / `ui-preferences.ts` 等），只删了旧壳 UI 层（`index.tsx` / `index.html` / `renderer.css` / `build-renderer.mjs`）与 `packages/ui-kit/src/styles/`。`m0-*`/`m1-*`/`m2-*` 等只服务旧壳的逻辑模块及 `packages/ui-kit` 遗留组件仍在，留作单独清理任务
 3. 旧本机 UI 偏好置顶 → 已由 DB 置顶替代，删除偏好读写代码
 4. 全仓 test/typecheck/build + 手工冒烟清单（三轨对话/小队执行/右栏/项目/主题/托盘）
 5. changelog + 本规格标记完成状态
+
+**切换时发现的三处功能缺口**（均为既存问题：旧壳是唯一消费方，删旧壳把它们变成不可达，不是本次改坏的）：Artifact 图片预览（`getArtifactImagePreview`）、Artifact 合并冲突列举/解决（`listArtifactMergeConflicts` / `resolveArtifactMergeConflict`）、`bindWorkspaceFolder`（新壳只在创建时通过 `pickFolder` 绑定）。三者的 Main/preload/protocol 侧仍完整，缺的只是新壳 UI 入口。
 
 ---
 
@@ -347,4 +350,4 @@ P9 独立性强，可随时插入但建议 P8 后
 P10 收尾
 ```
 
-单阶段内：先数据/命令 → 再 UI → 再测试收口。每阶段完成后重启验证（`pnpm dev:runtime` + `SYNC_THINK_SHELL=1 pnpm dev:desktop`）。
+单阶段内：先数据/命令 → 再 UI → 再测试收口。每阶段完成后重启验证（`pnpm dev:runtime` + `pnpm dev:desktop`；`SYNC_THINK_SHELL` 已删，不再需要设）。

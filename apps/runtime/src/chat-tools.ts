@@ -165,6 +165,11 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
       required: ['name'],
       properties: {
         name: { type: 'string', description: 'Agent display name (non-empty)' },
+        avatar: {
+          type: 'string',
+          description:
+            'Optional avatar: a single emoji or short decorative text (≤ 8 chars), or a small data:image data URL. Purely cosmetic.',
+        },
         description: {
           type: 'string',
           description: 'Short description shown in the Agent Library',
@@ -208,6 +213,11 @@ export const CHAT_AGENT_TOOL_SCHEMAS: readonly ProviderToolSchema[] = [
         name: {
           type: 'string',
           description: 'New display name (must not collide with another agent)',
+        },
+        avatar: {
+          type: 'string',
+          description:
+            'New avatar: a single emoji or short decorative text (≤ 8 chars), or a small data:image data URL. Pass "" to clear.',
         },
         description: { type: 'string', description: 'New short description' },
         persona: { type: 'string', description: 'New system instructions / persona' },

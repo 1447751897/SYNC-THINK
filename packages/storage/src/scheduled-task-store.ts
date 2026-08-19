@@ -297,4 +297,15 @@ export class SqliteScheduledTaskStore {
       .prepare(`UPDATE scheduled_task_history SET summary = ? WHERE id = ?`)
       .run(summary.slice(0, 200), entryId);
   }
+
+  /** run 终态后回填状态/原因，保持历史条目 id 稳定。 */
+  updateHistoryResult(
+    entryId: string,
+    status: ScheduledTaskRunStatus,
+    reason?: string,
+  ): void {
+    this.raw
+      .prepare(`UPDATE scheduled_task_history SET status = ?, reason = ? WHERE id = ?`)
+      .run(status, reason ?? null, entryId);
+  }
 }

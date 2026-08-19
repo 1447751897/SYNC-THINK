@@ -42,7 +42,7 @@ docs/
     01-requirements-clarification.md
     06-roadmap.md
     15-frontend-design.md
-    15-frontend-design-tokens.json
+    16-shell-design-tokens.json
   engineering/
     02-development-principles.md
     04-tech-decisions.md        # on-demand / 选型后

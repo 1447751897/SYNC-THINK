@@ -4,7 +4,14 @@ import { describe, expect, it } from 'vitest';
 const mainSource = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 const preloadSource = readFileSync(new URL('../src/preload/index.ts', import.meta.url), 'utf8');
 const globalSource = readFileSync(new URL('../src/renderer/global.d.ts', import.meta.url), 'utf8');
-const rendererSource = readFileSync(new URL('../src/renderer/index.tsx', import.meta.url), 'utf8');
+const shellSource = readFileSync(
+  new URL('../src/renderer/shell/ShellApp.tsx', import.meta.url),
+  'utf8',
+);
+const dialogSource = readFileSync(
+  new URL('../src/renderer/shell/Dialog.tsx', import.meta.url),
+  'utf8',
+);
 
 describe('project folder binding desktop wiring', () => {
   it('bridges explicit folder binding through main and preload', () => {
@@ -16,10 +23,13 @@ describe('project folder binding desktop wiring', () => {
     expect(globalSource).toContain('bindWorkspaceFolder(');
   });
 
-  it('creates projects in-product without prompting for a folder', () => {
-    expect(rendererSource).toContain('<ProjectCreateDialog');
-    expect(rendererSource).toContain('await runtime.createWorkspace({ name });');
-    expect(rendererSource).not.toContain("window.prompt('工作区名称'");
-    expect(rendererSource).not.toContain("window.prompt('本地文件夹绝对路径'");
+  it('creates projects through a native picker or in-app dialog, never window.prompt', () => {
+    // The shell binds a folder at create time (native picker, or a path supplied by
+    // the create dialog) instead of the legacy renderer's two chained prompts.
+    expect(shellSource).toContain('await api.pickFolder();');
+    expect(shellSource).toContain('await api.createWorkspace({ name, folderPath: picked.path });');
+    expect(shellSource).not.toContain('window.prompt');
+    // Dialog.tsx exists precisely so no surface reaches for the native modals.
+    expect(dialogSource).toContain('Replaces window.prompt');
   });
 });

@@ -91,16 +91,18 @@ afterEach(() => {
 });
 
 describe('ChatView assistant identity projection', () => {
-  it('keeps persisted assistant replies avatar-free while using the live agent avatar in compose', async () => {
+  it('renders the agent avatar beside each assistant reply while compose shows the live avatar', async () => {
     const avatar = 'data:image/png;base64,frontend-avatar-v1';
     render(chat([agent(avatar)]));
 
     const answer = await screen.findByText('头像应该与智能体保持一致');
     const messageRow = answer.closest('[data-message-id]');
     expect(messageRow).toBeTruthy();
-    expect(within(messageRow as HTMLElement).queryByRole('img')).toBeNull();
+    expect(
+      within(messageRow as HTMLElement).getByRole('img', { name: '前端工程师' }),
+    ).toBeTruthy();
     expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
-    expect(within(messageRow as HTMLElement).queryByText('前端工程师')).toBeNull();
+    expect(within(messageRow as HTMLElement).getByText('前端工程师')).toBeTruthy();
 
     expect(
       within(screen.getByTestId('compose-identity'))
@@ -109,7 +111,7 @@ describe('ChatView assistant identity projection', () => {
     ).toBe(avatar);
   });
 
-  it('refreshes the compose avatar after an agent change without adding one to existing replies', async () => {
+  it('refreshes the compose avatar after an agent change without changing reply avatars', async () => {
     const view = render(chat([agent('data:image/png;base64,frontend-avatar-v1')]));
     await screen.findByText('头像应该与智能体保持一致');
 
@@ -124,11 +126,13 @@ describe('ChatView assistant identity projection', () => {
       ).toBe(nextAvatar);
     });
     const messageRow = screen.getByText('头像应该与智能体保持一致').closest('[data-message-id]');
-    expect(within(messageRow as HTMLElement).queryByRole('img')).toBeNull();
+    expect(
+      within(messageRow as HTMLElement).getByRole('img', { name: '前端工程师' }),
+    ).toBeTruthy();
     expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
   });
 
-  it('does not render the historical Run agent identity inside the assistant execution area', async () => {
+  it('uses the historical Run agent identity avatar beside the assistant reply', async () => {
     const current = agent('data:image/png;base64,current-agent');
     const original = agent('data:image/png;base64,original-agent', {
       id: 'agent-original' as GlobalAgent['id'],
@@ -155,7 +159,7 @@ describe('ChatView assistant identity projection', () => {
     const messageRow = (await screen.findByText('头像应该与智能体保持一致')).closest(
       '[data-message-id]',
     );
-    expect(within(messageRow as HTMLElement).queryByRole('img')).toBeNull();
+    expect(within(messageRow as HTMLElement).getByRole('img', { name: '原智能体' })).toBeTruthy();
     expect(messageRow?.querySelector('.shell-ai-avatar')).toBeNull();
     expect(within(messageRow as HTMLElement).getByText('原智能体')).toBeTruthy();
   });

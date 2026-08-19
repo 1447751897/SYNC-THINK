@@ -1,0 +1,290 @@
+/*
+ * AUTO-GENERATED from docs/product/16-shell-design-tokens.json
+ * by scripts/generate-shell-tokens.mjs. Do not edit by hand —
+ * change the JSON and run `pnpm tokens:css`.
+ *
+ * Light is the reference; dark overrides via the `.dark` class on <html>.
+ * Components consume ONLY these tokens — never raw hex — so a skin is just
+ * another set of overrides on this same contract.
+ */
+
+@theme {
+  /* One sans stack for the whole shell, CJK fallbacks included. Components must consume the token rather than re-declaring a family: a local stack that omitted PingFang/YaHei is what made Chinese text in the reasoning block render in a different face from everything around it. */
+  --font-sans: 'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', system-ui, sans-serif;
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /*
+   * Surface stack, sampled pixel-for-pixel from NewMax light mode.
+   * The window background (--color-page) is the *darkest* layer: both the
+   * sidebar and the stage float on top of it as inset boards, so the visible
+   * gutter between them is the page showing through.
+   *   page (#f2eee6) < sidebar (#f6f4ef) < stage (#faf9f5) < overlay (#ffffff)
+   * The ramp is warm beige, not neutral gray — dropping the warmth is what
+   * made our shell read as "cold" next to the reference. Dark mirrors the
+   * same ordering, with hues carrying a trace of warmth (green/red slightly
+   * above blue) so it reads as the same product rather than a cold blue-gray.
+   */
+  --color-page: #f2eee6;
+  --color-page-gutter: #e4e0d7;
+  --color-sidebar: #f6f4ef;
+  --color-surface: #faf9f5;
+  --color-elevated: #f6f4ef;
+  --color-overlay: #ffffff;
+
+  /*
+   * Stage sub-surfaces. Light keeps the historical flat values so the beige
+   * ramp is unchanged; dark follows the product spec: stage panel + tab strip
+   * #343736, chat canvas #1e1f1f (selected tabs share it), inner boxes
+   * #2a2d2b.
+   */
+  --color-panel: #faf9f5;
+  --color-chat: #faf9f5;
+  --color-recent: #faf9f5;
+  --color-stage-tabs: #f6f4ef;
+  --color-tab-active-border: #e7e4db;
+  --color-tab-active-fill: #d5d1c6;
+
+  --color-border: #e7e4db;
+  --color-border-strong: #d5d1c6;
+
+  --color-text: #181b19;
+  --color-text-secondary: #666763;
+  --color-text-faint: #8c8c87;
+
+  --color-accent: #2f9b5b;
+  --color-accent-soft: #e6f5ec;
+  --color-accent-text: #1f6b3f;
+  /* Foreground for text/icons sitting on --color-accent. Dark flips this to a near-black because the dark accent is a bright mint and white text on it fails contrast. */
+  --color-accent-fg: #ffffff;
+
+  /*
+   * Sidebar selection in NewMax is *recessed*, not raised: the pill is filled
+   * with the page color so it reads as a hole punched through the sidebar
+   * board. Hence --color-active === --color-page by design, in both themes.
+   */
+  --color-hover: #efece3;
+  --color-active: #f2eee6;
+
+  /*
+   * Status colors follow the theme: dark uses higher-luminance variants to
+   * hold contrast on the dark surfaces. `success` references accent directly
+   * so the two greens cannot drift apart across a theme switch.
+   */
+  --color-success: #2f9b5b;
+  --color-error: #c4453d;
+  --color-warning: #b07d2a;
+  --color-info: #3568a8;
+
+  /* Deterministic avatar palette (hashed by name). */
+  --color-avatar-1: #2f9b5b;
+  --color-avatar-2: #3568a8;
+  --color-avatar-3: #7c5ab8;
+  --color-avatar-4: #b07d2a;
+  --color-avatar-5: #c4453d;
+  --color-avatar-6: #2b8a8a;
+  --color-avatar-7: #8a5a2b;
+  --color-avatar-8: #5a2b8a;
+  --color-avatar-fg: #ffffff;
+
+  /* Syntax highlighting (highlight.js). */
+  --color-syntax-keyword: #7c6af0;
+  --color-syntax-string: #2f9e6b;
+  --color-syntax-title: #3b82c4;
+  --color-syntax-number: #c27803;
+  --color-syntax-builtin: #0e9aa7;
+
+  /*
+   * Modal shadow is pinned to near-black in BOTH themes: light text tokens
+   * (e.g. dark-mode --color-text) would otherwise glow around the card. Dark
+   * uses a heavier drop so the card sits on, not above, the scrim.
+   */
+  --color-modal-shadow: color-mix(in srgb, #000 18%, transparent);
+
+  /*
+   * Capability center: a light, neutral governance workbench by default.
+   * TODO(batch-c): collapse this 50-token sub-palette into var(--color-*)
+   * aliases, keeping only the handful of genuinely distinct values.
+   */
+  --color-cap-bg: #f1f5f2;
+  --color-cap-surface: #ffffff;
+  --color-cap-surface-raised: #f8faf8;
+  --color-cap-surface-soft: #eef2ef;
+  --color-cap-border: #d2ddd5;
+  --color-cap-border-strong: #b8c8bd;
+  --color-cap-text: #18231e;
+  --color-cap-muted: #4e5f55;
+  --color-cap-faint: #687a6e;
+  --color-cap-green: #218a55;
+  --color-cap-green-deep: #176c43;
+  --color-cap-yellow: #9b681a;
+  --color-cap-red: #bd4f45;
+  --color-cap-surface-deep: #e9eeeb;
+  --color-cap-surface-selected: #e3ece7;
+  --color-cap-accent-fg: #ffffff;
+  --color-cap-green-bright: #18784a;
+  --color-cap-text-secondary: #405048;
+  --color-cap-popover: #ffffff;
+  --color-cap-toolbar: #e9efeb;
+  --color-cap-rail: #e2eae5;
+  --color-cap-search: #e0e9e3;
+  --color-cap-search-hover: #d9e4dc;
+  --color-cap-search-focus: #ffffff;
+  --color-cap-placeholder: #60736a;
+  --color-cap-mcp: #356cad;
+  --color-cap-stat-label: #34463b;
+  --color-cap-meter-track: #d3dfd7;
+  --color-cap-meter-green: #218a55;
+  --color-cap-meter-yellow: #c18a2f;
+  --color-cap-meter-red: #c95a4f;
+  --color-cap-option-text: #18231e;
+  --color-cap-option-bg: #ffffff;
+  --color-cap-rule-strong: #33453b;
+  --color-cap-origin: #3f5147;
+  --color-cap-toggle-track: #aabbb0;
+  --color-cap-toggle-thumb: #ffffff;
+  --color-cap-toggle-active-thumb: #ffffff;
+  --color-cap-form-bg: #ffffff;
+  --color-cap-form-focus: #fbfdfc;
+  --color-cap-form-readonly: #f0f4f1;
+  --color-cap-code-text: #26372e;
+  --color-cap-trust-bg: #e4ebe7;
+  --color-cap-hover: #edf2ef;
+  --color-cap-active: #e3ece7;
+  --color-cap-control: #ffffff;
+  --color-cap-row: #ffffff;
+  --color-cap-form: #ffffff;
+  --color-cap-overlay-border: rgba(24, 35, 30, 0.12);
+  --color-cap-shadow: rgba(24, 35, 30, 0.16);
+  --color-cap-divider: #dce6df;
+  --color-cap-dialog-overlay: rgba(24, 35, 30, 0.28);
+  --color-cap-inset-highlight: rgba(255, 255, 255, 0.82);
+
+  /*
+   * Provider brand accents are tokens so model settings can be re-themed.
+   * Theme-agnostic on purpose: these are real vendor brand colors, not part
+   * of the skinnable palette.
+   */
+  --color-brand-openai: #74aa9c;
+  --color-brand-anthropic: #d4a27f;
+  --color-brand-moonshot: #5f8df7;
+  --color-brand-moonshot-text: #79a0ff;
+  --color-brand-deepseek: #6f78ff;
+  --color-brand-deepseek-text: #8189ff;
+  --color-brand-gemini: #6da7ff;
+  --color-brand-gemini-text: #7bb4ff;
+
+  --radius-card: 12px;
+  --radius-row: 8px;
+  --radius-compose: 16px;
+
+  --sidebar-width: 300px;
+}
+
+.dark {
+  --color-page: #0d0d0c;
+  --color-page-gutter: #2a2d2b;
+  --color-sidebar: #252726;
+  --color-surface: #343736;
+  --color-elevated: #252726;
+  --color-overlay: #201f1d;
+
+  --color-panel: #343736;
+  --color-chat: #1e1f1f;
+  --color-recent: #2a2d2b;
+  --color-stage-tabs: #343736;
+  --color-tab-active-border: #2a2d2b;
+  --color-tab-active-fill: #2a2d2b;
+
+  --color-border: #2a2926;
+  --color-border-strong: #3a3833;
+
+  --color-text: #eceae4;
+  --color-text-secondary: #a3a099;
+  --color-text-faint: #75726b;
+
+  --color-accent: #3ecf7a;
+  --color-accent-soft: #143324;
+  --color-accent-text: #7ee0a8;
+  /* Foreground for text/icons sitting on --color-accent. Dark flips this to a near-black because the dark accent is a bright mint and white text on it fails contrast. */
+  --color-accent-fg: #08130d;
+
+  --color-hover: #201f1c;
+  --color-active: #0d0d0c;
+
+  --color-success: var(--color-accent);
+  --color-error: #e0716a;
+  --color-warning: #d6a44e;
+  --color-info: #5b93d6;
+
+  --color-avatar-1: #3ecf7a;
+  --color-avatar-2: #5b93d6;
+  --color-avatar-3: #a688e0;
+  --color-avatar-4: #d6a44e;
+  --color-avatar-5: #e0716a;
+  --color-avatar-6: #4fb5b5;
+  --color-avatar-7: #b8875a;
+  --color-avatar-8: #8f66c9;
+  --color-avatar-fg: #0b0d10;
+
+  --color-syntax-keyword: #b3a6ff;
+  --color-syntax-string: #7ddea4;
+  --color-syntax-title: #7eb6ff;
+  --color-syntax-number: #f0b429;
+  --color-syntax-builtin: #5fd0d6;
+
+  --color-modal-shadow: color-mix(in srgb, #000 55%, transparent);
+
+  --color-cap-bg: #1b1d1e;
+  --color-cap-surface: #242728;
+  --color-cap-surface-raised: #2a2d2e;
+  --color-cap-surface-soft: #202324;
+  --color-cap-border: rgba(255, 255, 255, 0.08);
+  --color-cap-border-strong: rgba(255, 255, 255, 0.14);
+  --color-cap-text: #f2f4f3;
+  --color-cap-muted: #909795;
+  --color-cap-faint: #676f6d;
+  --color-cap-green: #32d58b;
+  --color-cap-green-deep: #1da86c;
+  --color-cap-yellow: #e8b54a;
+  --color-cap-red: #ee6b5d;
+  --color-cap-surface-deep: #161818;
+  --color-cap-surface-selected: #303536;
+  --color-cap-accent-fg: #07150e;
+  --color-cap-green-bright: #55e2a0;
+  --color-cap-text-secondary: #c9cfcd;
+  --color-cap-popover: #252829;
+  --color-cap-toolbar: #1e2021;
+  --color-cap-rail: #171919;
+  --color-cap-search: #282b2c;
+  --color-cap-search-hover: #2d3031;
+  --color-cap-search-focus: #292d2d;
+  --color-cap-placeholder: #777e7c;
+  --color-cap-mcp: #83b5ff;
+  --color-cap-stat-label: #d7dcda;
+  --color-cap-meter-track: #353a39;
+  --color-cap-meter-green: #27c77d;
+  --color-cap-meter-yellow: #f0b04d;
+  --color-cap-meter-red: #ed6d5d;
+  --color-cap-option-text: #18201d;
+  --color-cap-option-bg: #f6f8f7;
+  --color-cap-rule-strong: #d8dfdc;
+  --color-cap-origin: #c0c7c4;
+  --color-cap-toggle-track: #414746;
+  --color-cap-toggle-thumb: #a2aaa7;
+  --color-cap-toggle-active-thumb: #dfffee;
+  --color-cap-form-bg: #1c1f20;
+  --color-cap-form-focus: #202525;
+  --color-cap-form-readonly: #171a1b;
+  --color-cap-code-text: #e4ebe7;
+  --color-cap-trust-bg: #2f3634;
+  --color-cap-hover: rgba(255, 255, 255, 0.055);
+  --color-cap-active: #303536;
+  --color-cap-control: rgba(255, 255, 255, 0.045);
+  --color-cap-row: #242728;
+  --color-cap-form: #1c1f20;
+  --color-cap-overlay-border: rgba(255, 255, 255, 0.08);
+  --color-cap-shadow: rgba(0, 0, 0, 0.46);
+  --color-cap-divider: rgba(255, 255, 255, 0.045);
+  --color-cap-dialog-overlay: rgba(5, 7, 7, 0.68);
+  --color-cap-inset-highlight: rgba(255, 255, 255, 0.04);
+}

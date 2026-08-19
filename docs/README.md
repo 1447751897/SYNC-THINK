@@ -18,7 +18,7 @@ project-root/
       01-requirements-clarification.md
       06-roadmap.md
       15-frontend-design.md
-      15-frontend-design-tokens.json
+      16-shell-design-tokens.json
     engineering/
       02-development-principles.md
       04-tech-decisions.md        # on-demand
@@ -64,7 +64,7 @@ project-root/
 | 文档 | 作用 |
 | --- | --- |
 | `product/15-frontend-design.md` | 桌面端 UI 方向、IA、状态、禁忌 |
-| `product/15-frontend-design-tokens.json` | 可执行设计 token |
+| `product/16-shell-design-tokens.json` | 可执行设计 token（`pnpm tokens:css` 生成 shell/tokens.css） |
 | `engineering/04-tech-decisions.md` | 技术选型对比与结论 |
 | `engineering/11-project-structure.md` | 目录与模块地图 |
 

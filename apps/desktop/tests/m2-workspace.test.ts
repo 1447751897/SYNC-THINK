@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Event } from '@sync-think/shared';
 import type { ArtifactListItem, RunGraphResponse } from '@sync-think/protocol';
@@ -324,23 +323,6 @@ describe('M2 desktop workspace projection', () => {
     });
   });
 
-  it('wires the full Agent API into the product Agent workspace', () => {
-    const source = readFileSync(
-      new URL('../src/renderer/index.tsx', import.meta.url),
-      'utf8',
-    );
-    expect(source).toContain('runtime.listAgents');
-    expect(source).toContain('runtime.listAgentVersions');
-    expect(source).toContain('runtime.createAgentVersion');
-    expect(source).toContain('runtime.createAgent');
-    expect(source).toContain('selectedAgentId={selectedAgentId}');
-    expect(source).toContain('onSelectAgent=');
-    expect(source).toContain('onCreateAgent=');
-    expect(source).toContain('onSaveDefinition=');
-    expect(source).toContain('agentLoadRequestRef');
-    expect(source).toContain('requestId !== agentLoadRequestRef.current');
-  });
-
   it('provides pure guards for Agent selection, M2 refresh events and automatic recovery', () => {
     const api = m2Workspace as unknown as Record<string, (...args: never[]) => unknown>;
     expect(typeof api.canSaveAgentBindingForSelection).toBe('function');
@@ -422,20 +404,6 @@ describe('M2 desktop workspace projection', () => {
         runtimeRecovery: null,
       }),
     ).toBeNull();
-
-    const source = readFileSync(
-      new URL('../src/renderer/index.tsx', import.meta.url),
-      'utf8',
-    );
-    expect(source).not.toContain('<ModeSwitch');
-    expect(source).toContain('inferConversationCollaborationIntent(text)');
-    expect(source).toContain('collaborationIntent.shouldUpgrade');
-    expect(source).toContain('prepareConversationCollaboration({');
-    expect(source).toContain("runtime.setParticipationMode({");
-    expect(source).toContain("mode: 'collaboration'");
-    expect(source).toContain('runtime.createPlan({');
-    expect(source).toContain('<PlanRevisionPanel');
-    expect(source).toContain('approveCurrentPlan(input)');
   });
 
   it('commits only the latest scoped M2 load when Task responses resolve out of order', async () => {
@@ -479,27 +447,6 @@ describe('M2 desktop workspace projection', () => {
       gate.invalidate();
       expect(gate.isCurrent(invalidated), surface).toBe(false);
     }
-
-    const source = readFileSync(
-      new URL('../src/renderer/index.tsx', import.meta.url),
-      'utf8',
-    );
-    expect(source).toContain('approvalLoadGateRef.current.begin');
-    expect(source).toContain('policyLoadGateRef.current.begin');
-    expect(source).toContain('planLoadGateRef.current.begin');
-    expect(source).toContain('graphLoadGateRef.current.begin');
-    expect(source).toContain('artifactLoadGateRef.current.begin');
-    expect(source).toContain('openTaskLoadGateRef.current.begin');
-    expect(source).toContain('approvalLoadGateRef.current.invalidate()');
-    expect(source).toContain('policyLoadGateRef.current.invalidate()');
-    expect(source).toContain('planLoadGateRef.current.invalidate()');
-    expect(source).toContain('graphLoadGateRef.current.invalidate()');
-    expect(source).toContain('artifactLoadGateRef.current.invalidate()');
-    expect(source).toContain('openTaskLoadGateRef.current.invalidate()');
-    expect(source).toContain('graphLoadGateRef.current.isCurrent');
-    expect(source).toContain('artifactLoadGateRef.current.isCurrent');
-    expect(source).toContain('openTaskLoadGateRef.current.isCurrent');
-    expect(source).toContain('eventRefreshHandlersRef.current.loadApprovals()');
   });
 
   it('applies a returned task version only to the Task that initiated the request', () => {
@@ -519,13 +466,6 @@ describe('M2 desktop workspace projection', () => {
     expect(merge(taskB, 'task-a', 99)).toBe(taskB);
     expect(merge(taskB, 'task-b', 5)).toEqual({ ...taskB, taskVersion: 5 });
     expect(merge(taskB, 'task-b', 2)).toEqual(taskB);
-
-    const source = readFileSync(
-      new URL('../src/renderer/index.tsx', import.meta.url),
-      'utf8',
-    );
-    expect(source).toContain('activeTaskIdRef.current !== targetTaskId');
-    expect(source).toMatch(/syncTaskVersion\([^,]+,\s*result\.taskVersion\)/);
   });
 
   it('finds only the nearest common Artifact ancestor and errors when none exists', () => {

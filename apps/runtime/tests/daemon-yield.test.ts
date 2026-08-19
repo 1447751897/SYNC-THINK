@@ -4,6 +4,7 @@ import {
   daemonPipePath,
   decideSchedulerHeartbeat,
   probeDaemonPipe,
+  probeDesktopPipe,
   type PipeProbe,
 } from '../src/daemon/yield.js';
 
@@ -47,6 +48,19 @@ describe('probeDaemonPipe', () => {
     };
     await probeDaemonPipe('dev-0001', probe);
     expect(probedPath).toBe(daemonPipePath('dev-0001'));
+  });
+});
+
+describe('probeDesktopPipe', () => {
+  it('passes the desktop runtime pipe path to the probe', async () => {
+    let probedPath = '';
+    const probe: PipeProbe = (path) => {
+      probedPath = path;
+      return Promise.resolve(true);
+    };
+    await probeDesktopPipe('dev-0001', probe);
+    expect(probedPath).toBe(pipePathPortable('dev-0001'));
+    expect(probedPath).not.toBe(daemonPipePath('dev-0001'));
   });
 });
 

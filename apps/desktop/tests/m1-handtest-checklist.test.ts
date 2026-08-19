@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   isM1HandtestItemJumpable,
@@ -169,17 +168,6 @@ describe('projectM1CurrentMilestoneCopy', () => {
     });
     expect(copy.join('\n')).toMatch(/dogfood 1\/1.*仍缺外网手测/);
     expect(copy.join('\n')).not.toMatch(/M1 已完成/);
-  });
-
-  it('is wired into the current renderer instead of stale milestone copy', () => {
-    const source = readFileSync(new URL('../src/renderer/index.tsx', import.meta.url), 'utf8');
-    expect(source).toContain('projectM1CurrentMilestoneCopy({');
-    expect(source).not.toContain('当前禁用');
-    expect(source).not.toContain('勿启动 M2');
-    expect(source).not.toContain('勿启动');
-    expect(source).not.toContain('硬门槛仍要手测');
-    expect(source).not.toContain('外网手测与 dogfood 仍须人手完成');
-    expect(source).not.toContain('CC Switch 完整导入、安装包、图像流水线生产化不在 M1 范围');
   });
 });
 

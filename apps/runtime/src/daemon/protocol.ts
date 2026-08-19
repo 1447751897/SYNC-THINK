@@ -1,10 +1,11 @@
 /**
  * 守护进程 ↔ 桌面 runtime 的投递协议帧（spec 投递协议章节 + T4）。
  *
- * 三帧契约（与 spec 内联定义完全一致）：
+ * 投递协议帧契约（与 spec 内联定义完全一致）：
  *   task.dispatch      守护进程 → 桌面：{ taskId, instruction, target, skillVersionIds, workspaceId? }
  *   task.dispatch.ack  桌面 → 守护进程（立即回复，不等执行完成）：{ taskId, accepted }
  *   task.abort         桌面退出前 → 守护进程（用户主动关闭）：{ taskId, reason }
+ *   task.dispatch.complete 桌面 → 守护进程（run 终态）：{ taskId, status, runId? }
  *
  * 复用 protocol 包的 Frame / encodeFrame；本模块提供帧构造 + 字段白名单
  * 校验 + 非法帧拒绝。白名单语义：必填字段缺失 / 类型错误 → 拒绝；
@@ -27,6 +28,7 @@ export interface DispatchPayload {
 export interface DispatchAckPayload {
   taskId: string;
   accepted: boolean;
+  reason?: string;
 }
 
 export interface AbortPayload {
@@ -34,10 +36,18 @@ export interface AbortPayload {
   reason: string;
 }
 
+export interface DispatchCompletePayload {
+  taskId: string;
+  status: 'success' | 'failed' | 'cancelled';
+  runId?: string;
+  reason?: string;
+}
+
 export type TaskFrame =
   | { type: 'task.dispatch'; payload: DispatchPayload }
   | { type: 'task.dispatch.ack'; payload: DispatchAckPayload }
-  | { type: 'task.abort'; payload: AbortPayload };
+  | { type: 'task.abort'; payload: AbortPayload }
+  | { type: 'task.dispatch.complete'; payload: DispatchCompletePayload };
 
 export type ParseTaskFrameResult =
   | { ok: true; frame: TaskFrame }
@@ -49,12 +59,27 @@ export function encodeDispatchFrame(payload: DispatchPayload): Frame<DispatchPay
   return { id: `dispatch:${payload.taskId}`, kind: 'request', type: 'task.dispatch', payload };
 }
 
-export function encodeDispatchAck(taskId: string, accepted: boolean): Frame<DispatchAckPayload> {
-  return { id: `ack:${taskId}`, kind: 'response', type: 'task.dispatch.ack', payload: { taskId, accepted } };
+export function encodeDispatchAck(
+  taskId: string,
+  accepted: boolean,
+  reason?: string,
+): Frame<DispatchAckPayload> {
+  return {
+    id: `ack:${taskId}`,
+    kind: 'response',
+    type: 'task.dispatch.ack',
+    payload: { taskId, accepted, ...(reason ? { reason } : {}) },
+  };
 }
 
 export function encodeAbort(taskId: string, reason: string): Frame<AbortPayload> {
   return { id: `abort:${taskId}`, kind: 'request', type: 'task.abort', payload: { taskId, reason } };
+}
+
+export function encodeDispatchComplete(
+  payload: DispatchCompletePayload,
+): Frame<DispatchCompletePayload> {
+  return { id: `complete:${payload.taskId}`, kind: 'request', type: 'task.dispatch.complete', payload };
 }
 
 // ── 白名单校验 ─────────────────────────────────────────────────────────────
@@ -98,7 +123,12 @@ function parseAckPayload(payload: unknown): DispatchAckPayload | undefined {
   const raw = payload as Record<string, unknown>;
   if (!isNonEmptyString(raw.taskId)) return undefined;
   if (typeof raw.accepted !== 'boolean') return undefined;
-  return { taskId: raw.taskId, accepted: raw.accepted };
+  if (raw.reason !== undefined && typeof raw.reason !== 'string') return undefined;
+  return {
+    taskId: raw.taskId,
+    accepted: raw.accepted,
+    ...(raw.reason !== undefined ? { reason: raw.reason } : {}),
+  };
 }
 
 function parseAbortPayload(payload: unknown): AbortPayload | undefined {
@@ -107,6 +137,25 @@ function parseAbortPayload(payload: unknown): AbortPayload | undefined {
   if (!isNonEmptyString(raw.taskId)) return undefined;
   if (!isNonEmptyString(raw.reason)) return undefined;
   return { taskId: raw.taskId, reason: raw.reason };
+}
+
+function parseDispatchCompletePayload(payload: unknown): DispatchCompletePayload | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const raw = payload as Record<string, unknown>;
+  if (
+    !isNonEmptyString(raw.taskId) ||
+    (raw.status !== 'success' && raw.status !== 'failed' && raw.status !== 'cancelled')
+  ) {
+    return undefined;
+  }
+  if (raw.runId !== undefined && !isNonEmptyString(raw.runId)) return undefined;
+  if (raw.reason !== undefined && typeof raw.reason !== 'string') return undefined;
+  return {
+    taskId: raw.taskId,
+    status: raw.status,
+    ...(raw.runId !== undefined ? { runId: raw.runId } : {}),
+    ...(raw.reason !== undefined ? { reason: raw.reason } : {}),
+  };
 }
 
 // ── 解析入口 ───────────────────────────────────────────────────────────────
@@ -127,6 +176,11 @@ export function parseTaskFrame(frame: Frame): ParseTaskFrameResult {
       const payload = parseAbortPayload(frame.payload);
       if (!payload) return { ok: false, error: 'task.abort: 字段校验失败' };
       return { ok: true, frame: { type: 'task.abort', payload } };
+    }
+    case 'task.dispatch.complete': {
+      const payload = parseDispatchCompletePayload(frame.payload);
+      if (!payload) return { ok: false, error: 'task.dispatch.complete: 字段校验失败' };
+      return { ok: true, frame: { type: 'task.dispatch.complete', payload } };
     }
     default:
       return { ok: false, error: `未知帧类型: ${frame.type}` };

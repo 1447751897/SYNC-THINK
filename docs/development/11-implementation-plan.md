@@ -671,6 +671,7 @@ Tooling (recommended with spikes):
 ### M0.4 Design system spike (parallel, days 4–12)
 
 - Generate CSS variables from `15-frontend-design-tokens.json`
+  - 历史记录：该 spike 的 token 文件与 Continuum UI Kit 样式已于 2026-08-18 随旧渲染层一起删除，现行 token 源为 `docs/product/16-shell-design-tokens.json`
 - Build signature components: AppShell, ContinuumRail, MessageBubble, TraceList, Compose, ModeSwitch
 - Motion prototypes: trace collapse breath, agent handoff ribbon (reduced-motion static fallback)
 - Pass design review checklist on shell mock data

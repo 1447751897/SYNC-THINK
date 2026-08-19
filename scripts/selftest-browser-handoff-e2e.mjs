@@ -543,7 +543,6 @@ async function runScenario(mode, node20, browserExecutable) {
     SYNC_THINK_BROWSER_EXECUTABLE: browserExecutable,
     SYNC_THINK_NODE_BIN: node20,
     SYNC_THINK_RUNTIME_FORCE_RESTART: '1',
-    SYNC_THINK_SHELL: '1',
   };
 
   console.log(`\n=== browser handoff E2E: ${mode} ===`);

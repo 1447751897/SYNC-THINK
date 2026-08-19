@@ -17,6 +17,7 @@
     "test": "turbo run test",
     "lint": "turbo run lint --continue",
     "lint:tokens": "node scripts/check-design-tokens.mjs",
+    "tokens:css": "node scripts/generate-shell-tokens.mjs",
     "format": "prettier --write .",
     "selftest:m1-soft": "node scripts/selftest-m1-soft-regression.mjs",
     "selftest:m1-soft:quick": "node scripts/selftest-m1-soft-regression.mjs --quick",

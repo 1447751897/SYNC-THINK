@@ -10,15 +10,17 @@
  * 到点任务回调接到一个可替换的 handler（默认记录日志并更新状态）。
  */
 
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, writeFileSync, mkdirSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { Cron } from 'croner';
+import { fileURLToPath } from 'node:url';
+import { format } from 'node:util';
 import { openDatabaseAsync, runMigrations } from '@sync-think/storage';
 import { SqliteScheduledTaskStore } from '@sync-think/storage';
 import { SqliteAppSettingStore } from '@sync-think/storage';
 import { DEFAULT_DEV_INSTALL_ID, encodeFrame } from '@sync-think/protocol';
-import { daemonPipePath } from './yield.js';
+import { ulid } from '@sync-think/shared';
+import { daemonPipePath, probeDesktopPipe } from './yield.js';
 import { isAutostartRegistered as autostartRegistered } from './autostart.js';
 import { buildDaemonStatusPayload } from './manage.js';
 import { createPipeServer, type PipeServerHandlers } from '../pipe/server.js';
@@ -27,25 +29,71 @@ import {
   TimerRegistry,
   createDaemonStatus,
   updateDaemonStatus,
+  rollDaemonStatusDay,
   type DaemonStatus,
 } from './core.js';
 import { decideDue, type SchedulerDecision } from '../scheduler-core.js';
 import { chooseDispatchPath, composeTaskCommand } from './dispatch.js';
 import { buildWorkerCommand, runWorkerProcess } from './worker.js';
 import { dispatchTaskToDesktop } from './dispatch-client.js';
-import { probeDaemonPipe } from './yield.js';
 import { classifyInterruption, DispatchedTracker, applyAbort } from './interrupt.js';
 import { parseTaskFrame } from './protocol.js';
 import { planCatchupSweep } from './catchup.js';
 import { TaskConcurrencyManager } from './queue.js';
+import { createRuleAwareTimerRegistrar } from './timers.js';
 
 const HEARTBEAT_INTERVAL_MS = 1_000;
 const STATUS_FILE = 'daemon-status.json';
+let configuredLogPath: string | undefined;
+const baseConsole = {
+  log: console.log.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+};
+
+function configureFileLogging(dbPath: string): void {
+  if (process.env.SYNC_THINK_DAEMON_FILE_LOG !== '1') return;
+  const logPath = join(stateDir(dbPath), 'daemon.log');
+  if (configuredLogPath === logPath) return;
+  try {
+    mkdirSync(stateDir(dbPath), { recursive: true });
+  } catch {
+    return;
+  }
+  configuredLogPath = logPath;
+  const append = (level: string, args: unknown[]): void => {
+    try {
+      appendFileSync(logPath, `${new Date().toISOString()} [${level}] ${format(...args)}\n`, 'utf8');
+    } catch {
+      /* logging must never affect scheduling */
+    }
+  };
+  console.log = (...args: unknown[]) => {
+    baseConsole.log(...args);
+    append('info', args);
+  };
+  console.warn = (...args: unknown[]) => {
+    baseConsole.warn(...args);
+    append('warn', args);
+  };
+  console.error = (...args: unknown[]) => {
+    baseConsole.error(...args);
+    append('error', args);
+  };
+}
 
 /** runtime 入口探测（与 desktop runtime-supervisor 一致的多路径候选）。 */
 export function resolveRuntimeEntry(): string | null {
+  const resourcesPath =
+    process.env.SYNC_THINK_RESOURCES_PATH ??
+    (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     process.env.SYNC_THINK_RUNTIME_ENTRY,
+    resourcesPath ? join(resourcesPath, 'runtime', 'main.js') : undefined,
+    resourcesPath ? join(resourcesPath, 'runtime', 'dist', 'main.js') : undefined,
+    join(moduleDir, '..', 'main.js'),
+    join(moduleDir, '..', 'dist', 'main.js'),
     join(process.cwd(), 'apps', 'runtime', 'dist', 'main.js'),
     join(process.cwd(), '..', 'runtime', 'dist', 'main.js'),
     join(process.cwd(), 'runtime', 'main.js'),
@@ -77,36 +125,59 @@ export interface DaemonOptions {
   now?: () => Date;
 }
 
-function stateDir(): string {
+function stateDir(dbPath: string): string {
+  if (dbPath !== ':memory:') return dirname(dbPath);
   const dataRoot = process.env.LOCALAPPDATA ?? join(homedir(), '.sync-think');
   return join(dataRoot, 'SYNC-THINK');
 }
 
-function statusFilePath(): string {
-  return join(stateDir(), STATUS_FILE);
+function statusFilePath(dbPath: string): string {
+  return join(stateDir(dbPath), STATUS_FILE);
 }
 
-function readStatus(): DaemonStatus | undefined {
+function readStatus(dbPath: string): DaemonStatus | undefined {
   try {
-    const raw = readFileSync(statusFilePath(), 'utf8');
+    const raw = readFileSync(statusFilePath(dbPath), 'utf8');
     return JSON.parse(raw) as DaemonStatus;
   } catch {
     return undefined;
   }
 }
 
-function writeStatus(status: DaemonStatus): void {
+function writeStatus(dbPath: string, status: DaemonStatus): void {
   try {
-    mkdirSync(stateDir(), { recursive: true });
-    writeFileSync(statusFilePath(), JSON.stringify(status), 'utf8');
+    mkdirSync(stateDir(dbPath), { recursive: true });
+    writeFileSync(statusFilePath(dbPath), JSON.stringify(status), 'utf8');
   } catch (error) {
     console.warn('[daemon] failed to write status file', error);
+  }
+}
+
+function daemonPidPath(dbPath: string, installId: string): string {
+  return join(stateDir(dbPath), `daemon-${installId}.pid`);
+}
+
+function writeDaemonPid(dbPath: string, installId: string): void {
+  try {
+    mkdirSync(stateDir(dbPath), { recursive: true });
+    writeFileSync(daemonPidPath(dbPath, installId), String(process.pid), 'utf8');
+  } catch (error) {
+    console.warn('[daemon] failed to write pid file', error);
+  }
+}
+
+function clearDaemonPid(dbPath: string, installId: string): void {
+  try {
+    unlinkSync(daemonPidPath(dbPath, installId));
+  } catch {
+    /* ignore */
   }
 }
 
 export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   const installId = options.installId ?? process.env.SYNC_THINK_INSTALL_ID ?? DEFAULT_DEV_INSTALL_ID;
   const dbPath = options.dbPath ?? resolveRuntimeDatabasePath();
+  configureFileLogging(dbPath);
   const now = options.now ?? (() => new Date());
   const helloSecret = options.helloSecret ?? process.env.SYNC_THINK_PIPE_SECRET;
   const allowNoToken = options.allowNoToken ?? (process.env.SYNC_THINK_DEV_NO_TOKEN === '1' || !helloSecret);
@@ -142,24 +213,73 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         return undefined;
       }
     },
+    count: (): number => {
+      try {
+        const row = connection.raw
+          .prepare('SELECT COUNT(*) AS count FROM daemon_task_queue')
+          .get() as { count: number };
+        return Number(row.count ?? 0);
+      } catch {
+        return 0;
+      }
+    },
+    list: (): string[] => {
+      try {
+        const rows = connection.raw
+          .prepare('SELECT task_id FROM daemon_task_queue ORDER BY created_at ASC')
+          .all() as Array<{ task_id: string }>;
+        return rows.map((row) => row.task_id);
+      } catch {
+        return [];
+      }
+    },
+    remove: (taskId: string): void => {
+      try {
+        connection.raw.prepare('DELETE FROM daemon_task_queue WHERE task_id = ?').run(taskId);
+      } catch {
+        // Best effort cleanup; the next startup can retry the row.
+      }
+    },
   };
 
-  // 定时器注册表（croner 注册器）。
-  const registrar = options.registrar ?? {
-    registerTimer(_taskId: string, fire: () => void) {
-      const cron = new Cron('* * * * * *', () => fire());
-      return { cancel: () => cron.stop() };
-    },
-    unregisterTimer(_taskId: string) {
-      // croner 定时器由返回的 handle.cancel() 控制，注销由 TimerRegistry 处理。
-    },
-  };
+  // 定时器注册表：每个任务按自身规则/nextRunAt 注册，避免固定每秒唤醒。
+  const registrar = options.registrar ?? createRuleAwareTimerRegistrar({ now });
   const registry = new TimerRegistry(registrar);
 
   // 状态。
-  let status = readStatus() ?? createDaemonStatus();
+  const readPersistedStatus = options.statusStore
+    ? await options.statusStore.read()
+    : readStatus(dbPath);
+  let status = rollDaemonStatusDay(readPersistedStatus ?? createDaemonStatus(now()), now());
+  const persistStatus = (next: DaemonStatus): void => {
+    if (options.statusStore) {
+      void options.statusStore.write(next).catch((error) =>
+        console.warn('[daemon] failed to write injected status store', error),
+      );
+      return;
+    }
+    writeStatus(dbPath, next);
+  };
   // 投递任务跟踪（T8：崩溃检测 + abort 处理）。
   const dispatched = new DispatchedTracker();
+  const recordInterruptionHistory = (
+    taskId: string,
+    firedAt: string,
+    reason: 'app-closed' | 'runtime-crash',
+  ): void => {
+    const task = taskStore.get(taskId);
+    if (!task) return;
+    taskStore.addHistoryEntry({
+      id: ulid(),
+      taskId,
+      status: 'failed',
+      firedAt,
+      reason,
+    });
+    taskStore.update(taskId, {
+      lastResult: { status: 'failed', firedAt, reason },
+    });
+  };
   // 补跑计数（T10：latest_only，每任务最多补跑 1 次；内存态，重启后按
   // nextRunAt 与窗口重新判定，幂等）。
   const catchupCounts = new Map<string, number>();
@@ -185,86 +305,110 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   // 到点处理器（默认：日志 + 今日触发计数；执行路径 = 投递 or 自拉）。
   const onFire: TaskFireHandler = options.onFire ?? ((taskId, decision) => {
     console.log(`[daemon] task ${taskId} due → action=${decision.action.type}`);
+    status = rollDaemonStatusDay(status, now());
     status = updateDaemonStatus(status, { todayFired: status.todayFired + 1 });
     if (decision.action.type !== 'fire') return;
     // 并发槽位（T9）：占满则入队等待（decideDue 已给出 enqueue）。
     if (!concurrency.acquire(taskId)) {
+      queueStore.enqueue(taskId);
+      status = updateDaemonStatus(status, { queued: queueStore.count() });
       console.log(`[daemon] ${taskId} no slot; queued`);
       return;
     }
+    let released = false;
     const completeTask = (): void => {
+      if (released) return;
+      released = true;
       concurrency.release(taskId);
-      status = updateDaemonStatus(status, { queued: concurrency.activeCount() });
-      // 空出槽位 → 自动接上队首任务。
-      const next = queueStore.dequeue();
-      if (next) fireTask(next);
+      // 空出槽位 → 自动接上队首任务（同时清理重启后失效的行）。
+      drainQueue();
     };
     // 执行路径（T7）：探测桌面活着 → 投递；否则自拉 worker。
     void (async () => {
-      const task = taskStore.get(taskId);
-      if (!task) return;
-      const desktopAlive = await probeDaemonPipe(installId);
-      const path = chooseDispatchPath(desktopAlive);
-      if (path.kind === 'dispatched') {
-        const result = await dispatchTaskToDesktop(
-          {
-            installId,
-            helloSecret,
-            appVersion: 'sync-think-daemon',
-            timeoutMs: 30_000,
-          },
-          composeTaskCommand(task),
-        );
-        console.log(
-          `[daemon] dispatched ${taskId} → ok=${result.ok} acked=${result.acked}` +
-            (result.ok && !result.acked ? ' (no ack; taking over)' : ''),
-        );
-        if (result.ok && result.acked) {
-          dispatched.add(taskId, now());
-          // 桌面接管执行：桌面有自己的并发管理，daemon 槽位立即释放
-          // （完成/中断由 T8 的崩溃检测/abort 闭环处置）。
-          completeTask();
+      try {
+        const task = taskStore.get(taskId);
+        if (!task) {
+          console.warn(`[daemon] queued task ${taskId} no longer exists`);
           return;
         }
-        if (result.ok && !result.acked) {
-          // 桌面假死（30s 无 ack）→ desktop-hung → 接管自拉（T8）。
-          console.warn(`[daemon] ${taskId} hung (no ack); taking over`);
-          status = updateDaemonStatus(status, {});
+        const desktopAlive = await probeDesktopPipe(installId);
+        const path = chooseDispatchPath(desktopAlive);
+        if (path.kind === 'dispatched') {
+          // Register before waiting for the ack. A fast Runtime can finish and
+          // send task.dispatch.complete in the same event-loop turn as ack;
+          // registering only after dispatchTaskToDesktop resolves would lose
+          // that completion frame and leave a stale crash-retry entry.
+          dispatched.add(taskId, now());
+          const result = await dispatchTaskToDesktop(
+            {
+              installId,
+              helloSecret,
+              appVersion: 'sync-think-daemon',
+              timeoutMs: 30_000,
+            },
+            composeTaskCommand(task),
+          );
+          console.log(
+            `[daemon] dispatched ${taskId} → ok=${result.ok} acked=${result.acked}` +
+              (result.ok && !result.acked ? ' (no ack; taking over)' : ''),
+          );
+          if (result.outcome === 'accepted') {
+            // 桌面接管执行：桌面有自己的并发管理，daemon 槽位立即释放。
+            return;
+          }
+          dispatched.markCompleted(taskId);
+          if (result.outcome === 'timeout') {
+            // 桌面假死（30s 无 ack）→ desktop-hung → 接管自拉（T8）。
+            console.warn(`[daemon] ${taskId} hung (no ack); taking over`);
+          }
+          if (result.outcome === 'rejected') {
+            console.warn(
+              `[daemon] desktop rejected ${taskId}; no worker takeover` +
+                (result.reason ? ` reason=${result.reason}` : ''),
+            );
+            return;
+          }
+          // 投递失败（桌面刚关/握手失败）→ 降级自拉。
+          if (!result.ok) console.warn(`[daemon] dispatch ${taskId} failed; falling back to worker`);
         }
-        // 投递失败（桌面刚关/握手失败）→ 降级自拉。
-        if (!result.ok) console.warn(`[daemon] dispatch ${taskId} failed; falling back to worker`);
+        const entry = resolveRuntimeEntry();
+        if (!entry) {
+          console.error('[daemon] runtime entry not found; cannot spawn worker');
+          return;
+        }
+        const workerOptions = {
+          runtimeEntry: entry,
+          taskId,
+          dbPath,
+          installId,
+          baseEnv: process.env,
+        };
+        const command = buildWorkerCommand(resolveNodeBin(), workerOptions);
+        console.log(`[daemon] spawning worker for ${taskId}: ${command.command} ${command.args.join(' ')}`);
+        const result = await runWorkerProcess(resolveNodeBin(), workerOptions);
+        console.log(
+          `[worker] task ${taskId} exited code=${result.code}${result.signal ? ` signal=${result.signal}` : ''}`,
+        );
+      } catch (error) {
+        console.error(`[daemon] task ${taskId} execution failed`, error);
+      } finally {
+        // Every acquired slot is released exactly once, including lookup,
+        // probe, spawn and worker failures.
+        completeTask();
       }
-      const entry = resolveRuntimeEntry();
-      if (!entry) {
-        console.error('[daemon] runtime entry not found; cannot spawn worker');
-        return;
-      }
-      const workerOptions = {
-        runtimeEntry: entry,
-        taskId,
-        dbPath,
-        installId,
-        baseEnv: process.env,
-      };
-      const command = buildWorkerCommand(resolveNodeBin(), workerOptions);
-      console.log(`[daemon] spawning worker for ${taskId}: ${command.command} ${command.args.join(' ')}`);
-      const result = await runWorkerProcess(resolveNodeBin(), workerOptions);
-      console.log(
-        `[worker] task ${taskId} exited code=${result.code}${result.signal ? ` signal=${result.signal}` : ''}`,
-      );
-      // 自拉完成 → 释放槽位 + 接上队首。
-      completeTask();
     })();
   });
 
   // 到点回调：查询任务 → decideDue 决策 → 交给处理器。
-  const fireTask = (taskId: string): void => {
+  const fireTask = (taskId: string, force = false): void => {
     const task = taskStore.get(taskId);
     if (!task || !task.enabled) return;
+    const currentNow = now();
+    if (!force && task.nextRunAt && Date.parse(task.nextRunAt) > currentNow.getTime()) return;
     // 补跑判定（T10）：nextRunAt 已过期 → 限量补跑或顺延。
     const catchupPlan = planCatchupSweep({
       tasks: [task],
-      now: now(),
+      now: currentNow,
       catchupCounts: catchupCounts,
     });
     const catchupAction = catchupPlan.actions[0];
@@ -287,15 +431,18 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         running: concurrency.isRunning(task.id),
         activeRuns: concurrency.activeCount(),
       },
-      now: now(),
+      now: currentNow,
       maxConcurrent: taskMaxConcurrent(),
     });
+    if (decision.action.type === 'fire') {
+      taskStore.update(task.id, { nextRunAt: decision.nextRunAt ?? null });
+    }
     if (decision.action.type === 'enqueue') {
       // 并发满 → 排队（DB 持久化，完成自动接上）。不重复入队。
       if (!concurrency.isRunning(task.id)) {
         const queued = queueStore.enqueue(task.id);
         console.log(`[daemon] ${taskId} concurrency full; queued=${queued}`);
-        status = updateDaemonStatus(status, { queued: concurrency.activeCount() });
+        status = updateDaemonStatus(status, { queued: queueStore.count() });
       }
       return;
     }
@@ -304,7 +451,9 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
 
   // 全量重扫 + 定时重扫（支持任务增删改同步）。
   const rescan = (): void => {
-    const tasks = taskStore.list(false).filter((t) => t.enabled);
+    const tasks = taskStore
+      .list(false)
+      .filter((t) => t.enabled && !(t.rule.kind === 'at' && !t.nextRunAt));
     const changed = registry.sync(tasks);
     status = updateDaemonStatus(status, { timerCount: registry.size });
     if (changed.length > 0) {
@@ -315,7 +464,7 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     void (async () => {
       const pending = dispatched.listPending();
       if (pending.length === 0) return;
-      const desktopAlive = await probeDaemonPipe(installId);
+      const desktopAlive = await probeDesktopPipe(installId);
       for (const taskId of pending) {
         const entry = dispatched.get(taskId);
         if (!entry) continue;
@@ -327,17 +476,17 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         if (c.status === 'runtime-crash' && c.retry) {
           console.warn(`[daemon] ${taskId} runtime-crash; retrying once`);
           dispatched.markRetried(taskId);
-          fireTask(taskId); // 重试一次（自拉 worker）
+          fireTask(taskId, true); // 重试一次（自拉 worker），忽略已推进的周期时间
         } else if (c.status === 'runtime-crash') {
           console.warn(`[daemon] ${taskId} runtime-crash; already retried, terminal`);
+          recordInterruptionHistory(taskId, entry.dispatchedAt, 'runtime-crash');
           dispatched.markCompleted(taskId);
         }
       }
     })();
   };
-  rescan();
-  // 启动补跑（T10）：守护进程错过期间的任务立即补跑（≤24h + latest_only）。
-  // fireTask 内含补跑判定，这里只对「nextRunAt 已过期」的任务触发。
+  // 调度器在单实例管道成功监听后才启动，避免 loser daemon 在 EADDRINUSE
+  // 之前已经注册定时器或触发任务。
   const startupCatchup = (): void => {
     const overdue = taskStore.list(false).filter((t) => {
       if (!t.enabled || !t.nextRunAt) return false;
@@ -347,16 +496,29 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     console.log(`[daemon] startup catch-up: ${overdue.length} overdue task(s)`);
     for (const t of overdue) fireTask(t.id);
   };
-  setTimeout(startupCatchup, 1_000);
-  const rescanTimer = setInterval(rescan, 15_000);
+  const drainQueue = (): void => {
+    while (concurrency.activeCount() < taskMaxConcurrent()) {
+      const taskId = queueStore.dequeue();
+      if (!taskId) break;
+      const task = taskStore.get(taskId);
+      if (!task || !task.enabled) {
+        console.warn(`[daemon] dropping stale queued task ${taskId}`);
+        continue;
+      }
+      // A queued row represents an already-due trigger. The scheduler has
+      // already advanced nextRunAt when it enqueued the task, so do not wait
+      // for the next periodic occurrence before draining it.
+      fireTask(taskId, true);
+    }
+    status = updateDaemonStatus(status, { queued: queueStore.count() });
+  };
 
   // 心跳（1 次/秒）→ 状态文件。
   const heartbeat = (): void => {
     status = updateDaemonStatus(status, { heartbeatAt: now() });
-    writeStatus(status);
+    status = rollDaemonStatusDay(status, now());
+    persistStatus(status);
   };
-  heartbeat();
-  const heartbeatTimer = setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
 
   // 管道服务端（HMAC 握手；供 CLI 查询 / 未来投递协议）。
   const handlers: PipeServerHandlers = {
@@ -377,8 +539,20 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       const parsed = parseTaskFrame(frame);
       if (parsed.ok && parsed.frame.type === 'task.abort') {
         const { taskId, reason } = parsed.frame.payload;
+        const entry = dispatched.get(taskId);
         const classification = applyAbort(dispatched, taskId);
+        if (classification?.status === 'app-closed' && entry) {
+          recordInterruptionHistory(taskId, entry.dispatchedAt, 'app-closed');
+        }
         console.log(`[daemon] abort ${taskId} reason=${reason} → ${classification?.status ?? 'unknown'}`);
+        return;
+      }
+      if (parsed.ok && parsed.frame.type === 'task.dispatch.complete') {
+        const { taskId, status, reason } = parsed.frame.payload;
+        dispatched.markCompleted(taskId);
+        console.log(
+          `[daemon] dispatch complete ${taskId} status=${status}${reason ? ` reason=${reason}` : ''}`,
+        );
         return;
       }
       // 管理帧（T11）：设置页状态查询 / 停止 / 配置。
@@ -455,6 +629,15 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     });
   });
 
+  // 只有成功成为管道 owner 后才开启调度、补跑和心跳。
+  writeDaemonPid(dbPath, installId);
+  rescan();
+  const startupCatchupTimer = setTimeout(startupCatchup, 1_000);
+  const rescanTimer = setInterval(rescan, 15_000);
+  heartbeat();
+  const heartbeatTimer = setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
+  drainQueue();
+
   console.log(`[daemon] started. installId=${installId} pid=${process.pid} db=${dbPath}`);
 
   // 优雅关闭。
@@ -463,12 +646,14 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[daemon] shutting down');
-    clearInterval(rescanTimer);
-    clearInterval(heartbeatTimer);
+    if (rescanTimer) clearInterval(rescanTimer);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (startupCatchupTimer) clearTimeout(startupCatchupTimer);
     server.destroyConnections?.();
     server.close();
     if (connection.raw.open) connection.raw.close();
-    writeStatus({ ...status, running: false });
+    persistStatus({ ...status, running: false });
+    clearDaemonPid(dbPath, installId);
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown());

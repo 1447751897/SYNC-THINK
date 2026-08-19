@@ -8,7 +8,8 @@
 
 export type ScheduledTaskTarget =
   | { kind: 'agent'; agentId: string }
-  | { kind: 'model'; modelId: string };
+  | { kind: 'model'; modelId: string }
+  | { kind: 'team'; teamId: string };
 
 /** 单次触发。 */
 export interface TaskRuleAt {
@@ -23,6 +24,9 @@ export interface TaskRuleEvery {
   intervalMinutes: number;
   /** 首次触发时间（可为过去，则按间隔推算下一次）。 */
   firstRunAt?: string;
+  /** 每天时段窗口（任务时区 HH:mm）：窗口内才按间隔触发，窗口外顺延到下一窗口开始。 */
+  windowStart?: string;
+  windowEnd?: string;
 }
 
 /** 随机任务：每天时间窗内随机触发 minTimes..maxTimes 次。 */
@@ -70,6 +74,10 @@ export interface ScheduledTask {
   lastResult?: ScheduledTaskRunResult;
   /** 任务专属会话 id（触发时惰性创建）。 */
   conversationId?: string;
+  /** 绑定工作区 id；缺省 = 全局任务（收件箱工作区上下文执行）。 */
+  workspaceId?: string;
+  /** 触发时注入的 skill 版本 id（空数组 = 不注入）。 */
+  skillVersionIds?: string[];
   createdAt: string;
   updatedAt: string;
 }

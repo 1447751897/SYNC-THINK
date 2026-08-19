@@ -12,7 +12,7 @@ import type {
   Team,
   WorkspaceId,
 } from '@sync-think/shared';
-import type { RunProcessView, WorkspaceSummary } from '@sync-think/protocol';
+import type { RunProcessView, WorkspaceSummary, SkillVersionSummary } from '@sync-think/protocol';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { mergeEventHistory } from '../../event-history.js';
 import {
@@ -165,6 +165,7 @@ interface ShellData {
   modelNames: Map<string, string>;
   models: ModelOption[];
   workspaces: WorkspaceSummary[];
+  skills: SkillVersionSummary[];
 }
 
 interface DraftConversationSession {
@@ -182,6 +183,7 @@ const EMPTY: ShellData = {
   modelNames: new Map(),
   models: [],
   workspaces: [],
+  skills: [],
 };
 
 const MAX_MOUNTED_CHAT_VIEWS = 2;
@@ -967,12 +969,13 @@ function ShellAppInner() {
   const refresh = useCallback(async () => {
     const api = bridge();
     if (!api) return;
-    const [conversations, agents, teams, providers, workspaces] = await Promise.all([
+    const [conversations, agents, teams, providers, workspaces, skills] = await Promise.all([
       api.listConversations({ includeArchived: true }),
       api.listGlobalAgents({}),
       api.listTeams(),
       api.listProviders({}),
       api.listWorkspaces({}),
+      api.listSkills({}),
     ]);
     const modelNames = new Map<string, string>();
     const models: ModelOption[] = [];
@@ -995,6 +998,7 @@ function ShellAppInner() {
       modelNames,
       models,
       workspaces: workspaces.workspaces,
+      skills: skills.skills,
     });
 
     // Drop stale tabs per workspace and collapse empty branches without ever
@@ -1065,6 +1069,16 @@ function ShellAppInner() {
 
     const unsub = api.onEvent?.((event: Event) => {
       setEventHistory((prev) => mergeEventHistory(prev, [event]));
+      // 全局智能体库随事件即时刷新：AI 通过 create_agent / update_agent /
+      // archive_agent 工具变更智能体时发布 globalAgent.* 事件，不在此刷新则
+      // 智能体库列表要等手动刷新/切页才更新。
+      if (
+        event.type === 'globalAgent.created' ||
+        event.type === 'globalAgent.updated' ||
+        event.type === 'globalAgent.deleted'
+      ) {
+        void refresh();
+      }
     });
 
     const stopConnect = startRuntimeConnection({
@@ -2610,6 +2624,9 @@ function ShellAppInner() {
             <TaskPanel
               agents={data.agents}
               models={data.models}
+              teams={data.teams}
+              workspaces={data.workspaces}
+              skills={data.skills}
               onOpenConversation={(conversationId) => {
                 void openConversationById(conversationId);
                 setNav((n) => selectStage(n, 'talk'));
