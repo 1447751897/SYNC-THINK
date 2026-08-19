@@ -581,6 +581,10 @@ export async function ensureDaemonProcess(
     return { ready: true, spawned: false };
   }
 
+  // 清理孤儿 daemon（探测不到健康管道时）：旧代码拉起的 daemon 在
+  // EADDRINUSE 后不会退出（定时器仍在跑），会与新建 daemon 抢触发任务。
+  await killOrphanDaemonProcesses();
+
   // 防抖：短时间内已拉起过（管道可能还没监听）→ 不再重复 spawn。
   if (Date.now() - daemonSpawnedAt < DAEMON_SPAWN_DEBOUNCE_MS) {
     return { ready: false, spawned: true };
@@ -627,6 +631,21 @@ export async function ensureDaemonProcess(
     daemonStarting = null;
   }
   return { ready: await probeDaemonPipe(installId), spawned: Boolean(daemonChild) };
+}
+
+/** 清理所有孤儿 daemon 进程（命令行含 daemon/index.js 的 node 进程）。 */
+async function killOrphanDaemonProcesses(): Promise<void> {
+  const pattern = 'daemon.*index.js';
+  const kill = spawn('powershell', [
+    '-NoProfile',
+    '-Command',
+    `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '${pattern}' -and $_.Name -eq 'node.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+  ], { stdio: 'ignore', windowsHide: true });
+  await new Promise<void>((resolve) => {
+    kill.on('exit', () => resolve());
+    kill.on('error', () => resolve());
+    setTimeout(resolve, 3_000);
+  });
 }
 
 /** 停止守护进程（应用退出 / 升级前）。 */

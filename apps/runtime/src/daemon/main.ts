@@ -437,9 +437,19 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     },
   };
   const server = createPipeServer(handlers, installId);
-  server.on('error', (err) => console.error('[daemon] pipe server error', err));
-  await new Promise<void>((resolve) => {
+  // 单实例约束：管道已被占用（另一个 daemon 已在监听）→ 立即退出。
+  // 后启动的 daemon 不参与调度（唯一调度者），避免多实例重复触发任务。
+  server.on('error', (err) => {
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      console.error(`[daemon] pipe ${daemonPipePath(installId)} in use; another daemon is running. Exiting.`);
+      process.exit(0);
+    }
+    console.error('[daemon] pipe server error', err);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
     server.listen(daemonPipePath(installId), () => {
+      server.removeListener('error', reject);
       handlers.onReady(daemonPipePath(installId));
       resolve();
     });
