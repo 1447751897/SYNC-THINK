@@ -610,13 +610,18 @@ export async function ensureDaemonProcess(
     console.log('[desktop] starting managed daemon', { entry, nodeBin });
     const childProcess = spawn(nodeBin, [entry], {
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // detached + stdio ignore：daemon 脱离 Electron 进程组独立存活，
+      // 桌面退出不杀它；stdio 全 ignore 避免管道在父进程退出后被破坏
+      // （daemon 状态以 daemon-status.json 为准，console 输出可丢）。
+      stdio: 'ignore',
       windowsHide: true,
-      detached: false,
+      detached: true,
       shell: false,
     });
     daemonChild = childProcess;
     daemonSpawnedAt = Date.now();
+    // detached 子进程需要 unref，否则父进程会等待它退出。
+    childProcess.unref();
     childProcess.on('exit', () => {
       if (daemonChild === childProcess) daemonChild = null;
     });
