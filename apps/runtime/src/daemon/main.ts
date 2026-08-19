@@ -34,6 +34,7 @@ import { dispatchTaskToDesktop } from './dispatch-client.js';
 import { probeDaemonPipe } from './yield.js';
 import { classifyInterruption, DispatchedTracker, applyAbort } from './interrupt.js';
 import { parseTaskFrame } from './protocol.js';
+import { planCatchupSweep } from './catchup.js';
 
 const HEARTBEAT_INTERVAL_MS = 1_000;
 const STATUS_FILE = 'daemon-status.json';
@@ -129,6 +130,9 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   let status = readStatus() ?? createDaemonStatus();
   // 投递任务跟踪（T8：崩溃检测 + abort 处理）。
   const dispatched = new DispatchedTracker();
+  // 补跑计数（T10：latest_only，每任务最多补跑 1 次；内存态，重启后按
+  // nextRunAt 与窗口重新判定，幂等）。
+  const catchupCounts = new Map<string, number>();
 
   // 并发上限（app-setting 'task-scheduler' → {maxConcurrent}，默认 2，1–8）。
   const taskMaxConcurrent = (): number => {
@@ -203,6 +207,26 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   const fireTask = (taskId: string): void => {
     const task = taskStore.get(taskId);
     if (!task || !task.enabled) return;
+    // 补跑判定（T10）：nextRunAt 已过期 → 限量补跑或顺延。
+    const catchupPlan = planCatchupSweep({
+      tasks: [task],
+      now: now(),
+      catchupCounts: catchupCounts,
+    });
+    const catchupAction = catchupPlan.actions[0];
+    if (catchupAction?.action === 'defer') {
+      // 错过 >24h / 已补跑过 → 直接顺延，本次不触发。
+      if (catchupAction.nextRunAt) {
+        taskStore.update(task.id, { nextRunAt: catchupAction.nextRunAt });
+      }
+      console.log(`[daemon] ${taskId} missed beyond catch-up window; deferring`);
+      return;
+    }
+    if (catchupAction?.action === 'catchup') {
+      // 限量补跑（latest_only）：记录计数 + 标记历史后照常触发。
+      catchupCounts.set(task.id, (catchupCounts.get(task.id) ?? 0) + 1);
+      console.log(`[daemon] ${taskId} catching up (missed, count=${catchupCounts.get(task.id)})`);
+    }
     const decision = decideDue({
       task,
       state: { running: false, activeRuns: 0 }, // T6/T9 接入真实并发状态
@@ -246,6 +270,18 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     })();
   };
   rescan();
+  // 启动补跑（T10）：守护进程错过期间的任务立即补跑（≤24h + latest_only）。
+  // fireTask 内含补跑判定，这里只对「nextRunAt 已过期」的任务触发。
+  const startupCatchup = (): void => {
+    const overdue = taskStore.list(false).filter((t) => {
+      if (!t.enabled || !t.nextRunAt) return false;
+      return Date.parse(t.nextRunAt) <= now().getTime();
+    });
+    if (overdue.length === 0) return;
+    console.log(`[daemon] startup catch-up: ${overdue.length} overdue task(s)`);
+    for (const t of overdue) fireTask(t.id);
+  };
+  setTimeout(startupCatchup, 1_000);
   const rescanTimer = setInterval(rescan, 15_000);
 
   // 心跳（1 次/秒）→ 状态文件。
