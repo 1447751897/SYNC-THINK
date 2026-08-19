@@ -698,6 +698,7 @@ import type { SkillQueryContext } from './commands/skill-query-context.js';
 import type { UsageSummaryRawResult } from './usage-summary-cache.js';
 import { decideSchedulerHeartbeat, probeDaemonPipe } from './daemon/yield.js';
 import { parseTaskFrame } from './daemon/protocol.js';
+import { sendAbortToDaemon } from './daemon/dispatch-client.js';
 
 const CODEX_STYLE_COMMENTARY_PROMPT = [
   'User-visible execution updates (Codex-style commentary):',
@@ -1787,6 +1788,10 @@ export class Runtime {
   private server: ReturnType<typeof createPipeServer> | null = null;
   private readonly inFlight = new Set<string>();
   private readonly daemonWorker: boolean;
+  /** 投递来且尚未完成的任务 id（T8：stop() 时向其发 abort）。 */
+  private readonly dispatchedTasks = new Set<string>();
+  /** runId → taskId（投递任务终态时从 dispatchedTasks 移除）。 */
+  private readonly taskIdByRun = new Map<string, string>();
   private readonly threadVersions = new Map<string, number>();
   private readonly events: Event[] = [];
   private readonly subscriptions = new Map<string, RuntimeEventSubscription>();
@@ -15230,7 +15235,10 @@ export class Runtime {
       const result = await this.fireScheduledTask(task);
       if (!result.fired) {
         console.warn(`[runtime] task.dispatch: ${taskId} not fired: ${result.reason ?? 'unknown'}`);
+        return;
       }
+      // 投递任务进入跟踪（stop() 时向其发 abort；run 终态移除）。
+      this.dispatchedTasks.add(taskId);
     })();
   }
 
@@ -15665,6 +15673,7 @@ export class Runtime {
         this.recordCommittedEvents(events);
         this.demoRuns.set(runId, demoRun);
         this.taskRuns.add(String(runId));
+        this.taskIdByRun.set(String(runId), task.id);
         this.attachTaskRunCleanup(runId);
         const historyEntryId = this.recordTaskHistory(task, 'success', firedAt, String(runId));
         if (historyEntryId) this.taskHistoryByRun.set(String(runId), historyEntryId);
@@ -15720,6 +15729,12 @@ export class Runtime {
       const run = this.demoRuns.get(runId as RunId);
       if (!run || !this.inFlight.has(runId)) {
         this.taskRuns.delete(runId);
+        // 投递任务 run 终态：从 dispatchedTasks 移除（完成，无需 abort）。
+        const taskId = this.taskIdByRun.get(runId);
+        if (taskId) {
+          this.taskIdByRun.delete(runId);
+          this.dispatchedTasks.delete(taskId);
+        }
         this.fillTaskHistorySummary(runId);
         return;
       }
@@ -25954,6 +25969,21 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     this.stopTaskSchedulerHeartbeat();
     this.localSkillWatchCleanup?.();
     this.localSkillWatchCleanup = undefined;
+    // 投递任务尚未完成 → 向守护进程发 abort（用户主动关闭，app-closed）。
+    if (this.dispatchedTasks.size > 0 && !this.daemonWorker) {
+      const taskIds = [...this.dispatchedTasks];
+      void sendAbortToDaemon(
+        {
+          installId: this.installId,
+          helloSecret: this.handlers.expectedSecret,
+          appVersion: 'sync-think-runtime',
+          handshakeTimeoutMs: 2_000,
+        },
+        taskIds,
+      ).catch(() => {
+        /* 尽力而为 */
+      });
+    }
     await new Promise<void>((resolve) => {
       if (!this.server) {
         resolve();

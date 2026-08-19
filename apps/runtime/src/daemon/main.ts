@@ -32,6 +32,8 @@ import { chooseDispatchPath, composeTaskCommand } from './dispatch.js';
 import { buildWorkerCommand, runWorkerProcess } from './worker.js';
 import { dispatchTaskToDesktop } from './dispatch-client.js';
 import { probeDaemonPipe } from './yield.js';
+import { classifyInterruption, DispatchedTracker, applyAbort } from './interrupt.js';
+import { parseTaskFrame } from './protocol.js';
 
 const HEARTBEAT_INTERVAL_MS = 1_000;
 const STATUS_FILE = 'daemon-status.json';
@@ -125,6 +127,8 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
 
   // 状态。
   let status = readStatus() ?? createDaemonStatus();
+  // 投递任务跟踪（T8：崩溃检测 + abort 处理）。
+  const dispatched = new DispatchedTracker();
 
   // 并发上限（app-setting 'task-scheduler' → {maxConcurrent}，默认 2，1–8）。
   const taskMaxConcurrent = (): number => {
@@ -160,11 +164,19 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         );
         console.log(
           `[daemon] dispatched ${taskId} → ok=${result.ok} acked=${result.acked}` +
-            (result.ok && !result.acked ? ' (no ack; T8 will takeover)' : ''),
+            (result.ok && !result.acked ? ' (no ack; taking over)' : ''),
         );
-        if (result.ok) return;
+        if (result.ok && result.acked) {
+          dispatched.add(taskId, now());
+          return;
+        }
+        if (result.ok && !result.acked) {
+          // 桌面假死（30s 无 ack）→ desktop-hung → 接管自拉（T8）。
+          console.warn(`[daemon] ${taskId} hung (no ack); taking over`);
+          status = updateDaemonStatus(status, {});
+        }
         // 投递失败（桌面刚关/握手失败）→ 降级自拉。
-        console.warn(`[daemon] dispatch ${taskId} failed; falling back to worker`);
+        if (!result.ok) console.warn(`[daemon] dispatch ${taskId} failed; falling back to worker`);
       }
       const entry = resolveRuntimeEntry();
       if (!entry) {
@@ -209,6 +221,29 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       for (const taskId of changed) registry.onFire(taskId, () => fireTask(taskId));
       console.log(`[daemon] timers synced: ${changed.length} changed (${registry.size} active)`);
     }
+    // 崩溃检测（T8）：pending 投递任务 + 桌面管道已死 → runtime-crash 重试一次。
+    void (async () => {
+      const pending = dispatched.listPending();
+      if (pending.length === 0) return;
+      const desktopAlive = await probeDaemonPipe(installId);
+      for (const taskId of pending) {
+        const entry = dispatched.get(taskId);
+        if (!entry) continue;
+        const c = classifyInterruption({
+          aborted: entry.aborted,
+          desktopAlive,
+          alreadyRetried: entry.retried,
+        });
+        if (c.status === 'runtime-crash' && c.retry) {
+          console.warn(`[daemon] ${taskId} runtime-crash; retrying once`);
+          dispatched.markRetried(taskId);
+          fireTask(taskId); // 重试一次（自拉 worker）
+        } else if (c.status === 'runtime-crash') {
+          console.warn(`[daemon] ${taskId} runtime-crash; already retried, terminal`);
+          dispatched.markCompleted(taskId);
+        }
+      }
+    })();
   };
   rescan();
   const rescanTimer = setInterval(rescan, 15_000);
@@ -235,7 +270,14 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       console.log('[daemon] client hello ok:', hello.installId);
     },
     onClientGone: () => {},
-    onFrame: () => {}, // T4/T7 接入投递帧
+    onFrame: (_socket, frame) => {
+      // abort 帧：桌面退出前告知（用户主动关闭 → app-closed，不重试）。
+      const parsed = parseTaskFrame(frame);
+      if (!parsed.ok || parsed.frame.type !== 'task.abort') return;
+      const { taskId, reason } = parsed.frame.payload;
+      const classification = applyAbort(dispatched, taskId);
+      console.log(`[daemon] abort ${taskId} reason=${reason} → ${classification?.status ?? 'unknown'}`);
+    },
   };
   const server = createPipeServer(handlers, installId);
   server.on('error', (err) => console.error('[daemon] pipe server error', err));

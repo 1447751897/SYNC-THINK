@@ -27,7 +27,8 @@ import {
   type Hello,
   type HelloProofPayload,
 } from '@sync-think/protocol';
-import { encodeDispatchFrame, type DispatchPayload } from './protocol.js';
+import { daemonPipePath } from './yield.js';
+import { encodeAbort, encodeDispatchFrame, type DispatchPayload } from './protocol.js';
 
 export interface DispatchClientOptions {
   installId: string;
@@ -215,5 +216,143 @@ export async function dispatchTaskToDesktop(
       if (helloTimer) clearTimeout(helloTimer);
       done({ ok: false, acked: false });
     });
+  });
+}
+
+/**
+ * 桌面 runtime 退出前向守护进程发送 abort（用户主动关闭，spec T8）。
+ * 尽力而为：守护进程不在/握手失败 → 静默忽略（返回 false，不抛错）。
+ * 连接目标 = daemon 管道（daemonPipePath）。
+ */
+export async function sendAbortToDaemon(
+  options: DispatchClientOptions,
+  taskIds: string[],
+): Promise<boolean> {
+  if (taskIds.length === 0) return true;
+  const handshakeTimeoutMs = options.handshakeTimeoutMs ?? 5_000;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+
+    const socket = connect(daemonPipePath(options.installId));
+    socket.setNoDelay(true);
+    let buffer: Buffer = Buffer.alloc(0);
+    let authenticated = false;
+    let helloPhase: 'hello' | 'proof' | 'done' = 'hello';
+    let helloNonce = '';
+    let helloResolve: ((ok: boolean) => void) | null = null;
+
+    const handleHelloFrame = (frame: Frame): void => {
+      if (helloPhase === 'hello' && frame.type === '__hello') {
+        const payload = frame.payload as { challenge?: boolean; ok?: boolean; runtimeNonce?: string; runtimeToken?: string };
+        if (isAccepted(payload)) {
+          helloPhase = 'done';
+          authenticated = true;
+          helloResolve?.(true);
+          return;
+        }
+        if (!isChallenge(payload) || !options.helloSecret) {
+          helloPhase = 'done';
+          helloResolve?.(false);
+          return;
+        }
+        const expectedRuntimeProof = computeRuntimeProof(
+          options.helloSecret,
+          helloNonce,
+          payload.runtimeNonce,
+          options.installId,
+        );
+        if (!verifyHmac(expectedRuntimeProof, payload.runtimeToken)) {
+          helloPhase = 'done';
+          helloResolve?.(false);
+          return;
+        }
+        helloPhase = 'proof';
+        const proof: HelloProofPayload = {
+          installId: options.installId,
+          clientNonce: helloNonce,
+          runtimeNonce: payload.runtimeNonce,
+          token: computeClientProof(
+            options.helloSecret,
+            helloNonce,
+            payload.runtimeNonce,
+            options.installId,
+          ),
+        };
+        socket.write(encodeFrame({ id: 'hello-proof', kind: 'request', type: '__hello.proof', payload: proof }));
+        return;
+      }
+      if (helloPhase === 'proof' && frame.type === '__hello.proof') {
+        if (isAccepted(frame.payload)) {
+          helloPhase = 'done';
+          authenticated = true;
+          helloResolve?.(true);
+          return;
+        }
+        helloPhase = 'done';
+        helloResolve?.(false);
+      }
+    };
+
+    socket.on('data', (chunk: Buffer) => {
+      const prev = buffer;
+      try {
+        const decoded = decodeFrames(prev.length === 0 ? chunk : Buffer.concat([prev, chunk]));
+        buffer = decoded.remaining;
+        for (const frame of decoded.frames) {
+          if (!authenticated) handleHelloFrame(frame);
+        }
+      } catch {
+        socket.destroy();
+        done(false);
+      }
+    });
+
+    socket.on('connect', () => {
+      const helloOk = new Promise<boolean>((resolve) => {
+        helloResolve = resolve;
+        helloNonce = randomBytes(16).toString('hex');
+        const hello: Hello = {
+          protocolVersion: PROTOCOL_VERSION,
+          appVersion: options.appVersion,
+          installId: options.installId,
+          nonce: helloNonce,
+          features: [...DEFAULT_FEATURES],
+        };
+        if (options.helloSecret) {
+          hello.token = computeHmac(options.helloSecret, helloNonce, options.installId);
+        }
+        socket.write(encodeFrame({ id: 'hello', kind: 'request', type: '__hello', payload: hello }));
+        setTimeout(() => {
+          if (helloPhase !== 'done') {
+            helloPhase = 'done';
+            resolve(false);
+          }
+        }, handshakeTimeoutMs);
+      });
+      void helloOk.then((ok) => {
+        if (!ok) {
+          socket.end();
+          done(false);
+          return;
+        }
+        // 逐个发送 abort（尽力而为，不等待响应）。
+        for (const taskId of taskIds) {
+          socket.write(encodeFrame(encodeAbort(taskId, 'app-closed')));
+        }
+        setTimeout(() => {
+          socket.end();
+          done(true);
+        }, 100);
+      });
+    });
+
+    socket.on('error', () => done(false));
+    socket.on('close', () => done(true));
   });
 }
