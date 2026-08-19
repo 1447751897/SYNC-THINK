@@ -17,7 +17,8 @@ import { Cron } from 'croner';
 import { openDatabaseAsync, runMigrations } from '@sync-think/storage';
 import { SqliteScheduledTaskStore } from '@sync-think/storage';
 import { SqliteAppSettingStore } from '@sync-think/storage';
-import { pipePathPortable, DEFAULT_DEV_INSTALL_ID } from '@sync-think/protocol';
+import { DEFAULT_DEV_INSTALL_ID } from '@sync-think/protocol';
+import { daemonPipePath } from './yield.js';
 import { createPipeServer, type PipeServerHandlers } from '../pipe/server.js';
 import { resolveRuntimeDatabasePath } from '../persistence.js';
 import {
@@ -222,8 +223,8 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   const server = createPipeServer(handlers, installId);
   server.on('error', (err) => console.error('[daemon] pipe server error', err));
   await new Promise<void>((resolve) => {
-    server.listen(pipePathPortable(installId), () => {
-      handlers.onReady(pipePathPortable(installId));
+    server.listen(daemonPipePath(installId), () => {
+      handlers.onReady(daemonPipePath(installId));
       resolve();
     });
   });

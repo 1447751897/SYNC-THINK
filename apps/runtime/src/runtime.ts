@@ -696,6 +696,7 @@ import type { QueryContext } from './commands/query-context.js';
 import * as skillQueries from './commands/skill-queries.js';
 import type { SkillQueryContext } from './commands/skill-query-context.js';
 import type { UsageSummaryRawResult } from './usage-summary-cache.js';
+import { decideSchedulerHeartbeat, probeDaemonPipe } from './daemon/yield.js';
 
 const CODEX_STYLE_COMMENTARY_PROMPT = [
   'User-visible execution updates (Codex-style commentary):',
@@ -15440,6 +15441,24 @@ export class Runtime {
 
   // ── 定时任务调度（0044） ──────────────────────────────────────────────────
 
+  /**
+   * 双 tick 让位（T5）：探测守护进程管道——活着 → 不启动自身 tick
+   * （守护进程是唯一调度者）；死了/不在 → 启动自身 tick（现状行为）。
+   */
+  private async probeDaemonAndStartScheduler(): Promise<void> {
+    const daemonAlive = await probeDaemonPipe(this.installId);
+    if (decideSchedulerHeartbeat({ daemonAlive, daemonWorker: this.daemonWorker })) {
+      this.startTaskSchedulerHeartbeat();
+      console.log(`[runtime] daemon not detected (probe=${daemonAlive}); own tick active`);
+    } else {
+      console.log(
+        daemonAlive
+          ? '[runtime] daemon detected; own tick disabled (unique scheduler)'
+          : '[runtime] worker mode; own tick disabled',
+      );
+    }
+  }
+
   private startTaskSchedulerHeartbeat(): void {
     if (this.taskSchedulerTimer || !this.scheduledTaskStore) return;
     this.taskSchedulerTimer = setInterval(() => {
@@ -25876,7 +25895,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
             .catch((error) => console.warn('[runtime] orchestration recovery failed', error));
           this.trackBackgroundTask(recovery);
         }
-        this.startTaskSchedulerHeartbeat();
+        // 双 tick 让位（T5）：守护进程活着 → 关自身调度 tick（唯一调度者）。
+        void this.probeDaemonAndStartScheduler().catch((error) =>
+          console.warn('[runtime] daemon probe failed, falling back to own tick', error),
+        );
         this.startLocalSkillWatch();
         resolve();
       });
