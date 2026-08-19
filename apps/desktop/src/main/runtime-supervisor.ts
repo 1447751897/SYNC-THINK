@@ -10,7 +10,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { connect } from 'node:net';
-import { pipePathPortable } from '@sync-think/protocol';
+import { decodeFrames, encodeFrame, pipePathPortable } from '@sync-think/protocol';
 import { stopRuntimeChild } from './runtime-child-shutdown.js';
 import type { DesktopRuntimeIdentity } from './packaged-install-identity.js';
 
@@ -618,5 +618,100 @@ export async function stopManagedDaemon(timeoutMs = 5_000): Promise<void> {
   const result = await stopRuntimeChild(proc, { timeoutMs });
   if (result.forced) {
     console.warn('[desktop] daemon graceful shutdown timed out; terminated daemon process');
+  }
+}
+
+// ── 守护进程管理辅助（T11）───────────────────────────────────────────────
+
+/**
+ * 向守护进程发送一帧请求并等待响应（轻量客户端）。
+ * 连接 daemon 管道 → 发帧 → 等匹配响应（2s 超时）。
+ * 守护进程不在/超时 → 返回 { error }。
+ */
+export async function requestDaemonFrame(
+  type: string,
+  payload: unknown,
+  installId: string,
+  timeoutMs = 2_000,
+): Promise<{ ok: boolean; payload?: unknown; error?: string }> {
+  const path = daemonPipePath(installId);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (result: { ok: boolean; payload?: unknown; error?: string }): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const socket = connect(path);
+    let buffer: Buffer = Buffer.alloc(0);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      done({ ok: false, error: 'daemon timeout' });
+    }, timeoutMs);
+
+    socket.on('data', (chunk: Buffer) => {
+      const prev = buffer;
+      try {
+        const decoded = decodeFrames(prev.length === 0 ? chunk : Buffer.concat([prev, chunk]));
+        buffer = decoded.remaining;
+        for (const frame of decoded.frames) {
+          if (frame.type === type) {
+            clearTimeout(timer);
+            socket.end();
+            done({ ok: true, payload: frame.payload });
+            return;
+          }
+        }
+      } catch {
+        socket.destroy();
+        done({ ok: false, error: 'daemon frame parse error' });
+      }
+    });
+    socket.on('connect', () => {
+      socket.write(encodeFrame({ id: `daemon-mgmt-${Date.now()}`, kind: 'request', type, payload }));
+    });
+    socket.on('error', () => {
+      clearTimeout(timer);
+      done({ ok: false, error: 'daemon not reachable' });
+    });
+  });
+}
+
+/** 读取 daemon 日志文件（状态目录下 daemon.log，尾部 200 行）。 */
+export function readDaemonLogs(limit = 200): string[] {
+  try {
+    const logPath = join(defaultDataRoot(), 'SYNC-THINK', 'daemon.log');
+    if (!existsSync(logPath)) return [];
+    const content = readFileSync(logPath, 'utf8');
+    const lines = content.split(/\r?\n/).filter(Boolean);
+    return lines.slice(-limit);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 设置登录自启（schtasks 注册/移除）。
+ * 注册需要 node + daemon 入口路径；移除只删任务。
+ */
+export async function setDaemonAutostart(enabled: boolean): Promise<{ ok: boolean }> {
+  try {
+    if (!enabled) {
+      const result = spawnSync(
+        'schtasks /Delete /TN "SYNC-THINK Daemon" /F',
+        { shell: true, windowsHide: true, encoding: 'utf8' },
+      );
+      return { ok: result.status === 0 };
+    }
+    const entry = resolveDaemonEntry();
+    const nodeBin = resolveNodeBinary();
+    if (!entry || !nodeBin) return { ok: false };
+    const result = spawnSync(
+      `schtasks /Create /TN "SYNC-THINK Daemon" /TR "\\"${nodeBin}\\" \\"${entry}\\"" /SC ONLOGON /RL LIMITED /F`,
+      { shell: true, windowsHide: true, encoding: 'utf8' },
+    );
+    return { ok: result.status === 0 };
+  } catch {
+    return { ok: false };
   }
 }

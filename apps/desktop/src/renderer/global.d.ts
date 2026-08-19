@@ -260,7 +260,7 @@ declare global {
             converted?: boolean;
           };
         }): Promise<import('@sync-think/protocol').GatewayLogsResponse>;
-        clearGatewayLogs?(): Promise<unknown>;
+        clearGatewayLogs?(): Promise<void>;
         installKernel(kernelId: string): Promise<{ ok: true } | { ok: false; error: string }>;
         cancelRun(payload: CancelRunPayload): Promise<PauseResumeCancelResponse>;
         createWorkspace(payload: CreateWorkspacePayload): Promise<CreateWorkspaceResponse>;
@@ -475,12 +475,23 @@ declare global {
         triggerScheduledTask(
           payload: import('@sync-think/protocol').TriggerScheduledTaskPayload,
         ): Promise<import('@sync-think/protocol').TriggerScheduledTaskResponse>;
+        scheduledTaskHistory(
+          payload: import('@sync-think/protocol').ListScheduledTaskHistoryPayload,
+        ): Promise<import('@sync-think/protocol').ListScheduledTaskHistoryResponse>;
         goalPause(
           payload: import('@sync-think/protocol').GoalPausePayload,
         ): Promise<{ goal?: import('@sync-think/protocol').GoalStatus }>;
         goalResume(
           payload: import('@sync-think/protocol').GoalResumePayload,
         ): Promise<import('@sync-think/protocol').GoalResumeResponse>;
+        requestDaemonStatus(): Promise<{ ok: boolean; payload?: unknown; error?: string }>;
+        daemonStart(): Promise<{ ok: boolean; spawned: boolean }>;
+        daemonStop(): Promise<{ ok: boolean }>;
+        daemonSetAutostart(payload: { enabled: boolean }): Promise<{ ok: boolean }>;
+        daemonSetMaxConcurrent(payload: {
+          maxConcurrent: number;
+        }): Promise<{ ok: boolean; maxConcurrent: number }>;
+        daemonLogs(): Promise<string[]>;
         skillLocalScan(
           payload?: import('@sync-think/protocol').SkillLocalScanPayload,
         ): Promise<import('@sync-think/protocol').SkillLocalScanResponse>;

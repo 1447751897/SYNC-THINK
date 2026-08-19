@@ -3,6 +3,7 @@
 // product reference screenshots: searchable left navigation, compact rows,
 // page-local tabs, and a fixed completion action.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { DaemonCard } from './DaemonCard.js';
 import {
   AlertCircle,
   ArrowRight,
@@ -430,6 +431,8 @@ function GeneralSection() {
               })}
             </div>
           </section>
+
+          <DaemonCard />
         </>
       ) : (
         <PersonalizationPanel />

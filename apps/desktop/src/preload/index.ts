@@ -269,6 +269,8 @@ import type {
   CreateScheduledTaskPayload,
   ListScheduledTasksPayload,
   ListScheduledTasksResponse,
+  ListScheduledTaskHistoryPayload,
+  ListScheduledTaskHistoryResponse,
   UpdateScheduledTaskPayload,
   DeleteScheduledTaskPayload,
   TriggerScheduledTaskPayload,
@@ -336,7 +338,7 @@ const api = {
     getGatewayLogs: (query?: { offset?: number; limit?: number }) =>
       ipcRenderer.invoke('runtime:gateway-logs', query ?? {}) as Promise<GatewayLogsResponse>,
     clearGatewayLogs: () =>
-      ipcRenderer.invoke('runtime:gateway-logs-clear') as Promise<unknown>,
+      ipcRenderer.invoke('runtime:gateway-logs-clear') as Promise<void>,
     installKernel: (kernelId: string) =>
       ipcRenderer.invoke('desktop:kernel-install', kernelId) as Promise<
         { ok: true } | { ok: false; error: string }
@@ -705,10 +707,27 @@ const api = {
         'runtime:scheduled-task-trigger',
         payload,
       ) as Promise<TriggerScheduledTaskResponse>,
+    scheduledTaskHistory: (payload: ListScheduledTaskHistoryPayload) =>
+      ipcRenderer.invoke(
+        'runtime:scheduled-task-history',
+        payload,
+      ) as Promise<ListScheduledTaskHistoryResponse>,
     goalPause: (payload: GoalPausePayload) =>
       ipcRenderer.invoke('runtime:goal-pause', payload) as Promise<{ goal?: GoalStatus }>,
     goalResume: (payload: GoalResumePayload) =>
       ipcRenderer.invoke('runtime:goal-resume', payload) as Promise<GoalResumeResponse>,
+    requestDaemonStatus: () =>
+      ipcRenderer.invoke('daemon:get-status') as Promise<{ ok: boolean; payload?: unknown; error?: string }>,
+    daemonStart: () => ipcRenderer.invoke('daemon:start') as Promise<{ ok: boolean; spawned: boolean }>,
+    daemonStop: () => ipcRenderer.invoke('daemon:stop') as Promise<{ ok: boolean }>,
+    daemonSetAutostart: (payload: { enabled: boolean }) =>
+      ipcRenderer.invoke('daemon:set-autostart', payload) as Promise<{ ok: boolean }>,
+    daemonSetMaxConcurrent: (payload: { maxConcurrent: number }) =>
+      ipcRenderer.invoke('daemon:set-max-concurrent', payload) as Promise<{
+        ok: boolean;
+        maxConcurrent: number;
+      }>,
+    daemonLogs: () => ipcRenderer.invoke('daemon:get-logs') as Promise<string[]>,
     skillLocalScan: (payload?: SkillLocalScanPayload) =>
       ipcRenderer.invoke(
         'runtime:skill-local-scan',

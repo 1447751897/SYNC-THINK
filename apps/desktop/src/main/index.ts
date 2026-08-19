@@ -331,7 +331,11 @@ import { RuntimeSession } from './runtime-session.js';
 import {
   ensureDaemonProcess,
   ensureRuntimeProcess,
+  readDaemonLogs,
+  requestDaemonFrame,
   resolveManagedRuntimeDatabasePath,
+  setDaemonAutostart,
+  stopManagedDaemon,
   stopManagedRuntime,
 } from './runtime-supervisor.js';
 import { ArtifactImagePreviewRegistry } from './artifact-image-preview.js';
@@ -1941,6 +1945,42 @@ function setupRuntimeBridge(): void {
       'scheduledTask.history',
       parseListScheduledTaskHistoryPayload(value),
     );
+  });
+  // ── 守护进程管理（T11）：走 daemon 独立管道，不经过 runtime。 ──────────
+  ipcMain.handle('daemon:get-status', async (event) => {
+    assertRuntimeIpcSource(event);
+    return requestDaemonFrame('daemon.status', {}, getDesktopRuntimeIdentity().installId);
+  });
+  ipcMain.handle('daemon:start', async (event) => {
+    assertRuntimeIpcSource(event);
+    const result = await ensureDaemonProcess(getDesktopRuntimeIdentity());
+    return { ok: result.ready, spawned: result.spawned };
+  });
+  ipcMain.handle('daemon:stop', async (event) => {
+    assertRuntimeIpcSource(event);
+    await requestDaemonFrame('daemon.stop', {}, getDesktopRuntimeIdentity().installId);
+    await stopManagedDaemon();
+    return { ok: true };
+  });
+  ipcMain.handle('daemon:get-logs', async (event) => {
+    assertRuntimeIpcSource(event);
+    return readDaemonLogs();
+  });
+  ipcMain.handle('daemon:set-autostart', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const enabled = Boolean(value && typeof value === 'object' && (value as { enabled?: unknown }).enabled);
+    return setDaemonAutostart(enabled);
+  });
+  ipcMain.handle('daemon:set-max-concurrent', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const n = Number((value as { maxConcurrent?: unknown } | null)?.maxConcurrent ?? 2);
+    const clamped = Number.isFinite(n) ? Math.min(8, Math.max(1, Math.floor(n))) : 2;
+    await requestDaemonFrame(
+      'daemon.setConfig',
+      { maxConcurrent: clamped },
+      getDesktopRuntimeIdentity().installId,
+    );
+    return { ok: true, maxConcurrent: clamped };
   });
   ipcMain.handle('runtime:goal-pause', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

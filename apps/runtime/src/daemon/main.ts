@@ -17,8 +17,10 @@ import { Cron } from 'croner';
 import { openDatabaseAsync, runMigrations } from '@sync-think/storage';
 import { SqliteScheduledTaskStore } from '@sync-think/storage';
 import { SqliteAppSettingStore } from '@sync-think/storage';
-import { DEFAULT_DEV_INSTALL_ID } from '@sync-think/protocol';
+import { DEFAULT_DEV_INSTALL_ID, encodeFrame } from '@sync-think/protocol';
 import { daemonPipePath } from './yield.js';
+import { isAutostartRegistered as autostartRegistered } from './autostart.js';
+import { buildDaemonStatusPayload } from './manage.js';
 import { createPipeServer, type PipeServerHandlers } from '../pipe/server.js';
 import { resolveRuntimeDatabasePath } from '../persistence.js';
 import {
@@ -370,13 +372,68 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       console.log('[daemon] client hello ok:', hello.installId);
     },
     onClientGone: () => {},
-    onFrame: (_socket, frame) => {
+    onFrame: (socket, frame) => {
       // abort 帧：桌面退出前告知（用户主动关闭 → app-closed，不重试）。
       const parsed = parseTaskFrame(frame);
-      if (!parsed.ok || parsed.frame.type !== 'task.abort') return;
-      const { taskId, reason } = parsed.frame.payload;
-      const classification = applyAbort(dispatched, taskId);
-      console.log(`[daemon] abort ${taskId} reason=${reason} → ${classification?.status ?? 'unknown'}`);
+      if (parsed.ok && parsed.frame.type === 'task.abort') {
+        const { taskId, reason } = parsed.frame.payload;
+        const classification = applyAbort(dispatched, taskId);
+        console.log(`[daemon] abort ${taskId} reason=${reason} → ${classification?.status ?? 'unknown'}`);
+        return;
+      }
+      // 管理帧（T11）：设置页状态查询 / 停止 / 配置。
+      if (frame.type === 'daemon.status') {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'daemon.status',
+            payload: buildDaemonStatusPayload(status, {
+              running: true,
+              autostartRegistered: autostartRegistered(),
+              maxConcurrent: taskMaxConcurrent(),
+            }),
+          }),
+        );
+        return;
+      }
+      if (frame.type === 'daemon.stop') {
+        console.log('[daemon] stop requested via pipe');
+        socket.write(
+          encodeFrame({ id: frame.id, kind: 'response', type: 'daemon.stop', payload: { ok: true } }),
+        );
+        void shutdown();
+        return;
+      }
+      if (frame.type === 'daemon.setConfig') {
+        const raw = frame.payload as { maxConcurrent?: unknown } | undefined;
+        const value = Number(raw?.maxConcurrent ?? 2);
+        const clamped = Number.isFinite(value) ? Math.min(8, Math.max(1, Math.floor(value))) : 2;
+        try {
+          appSettingStore.set('task-scheduler', { maxConcurrent: clamped });
+          concurrency.setMaxConcurrent(clamped);
+        } catch (error) {
+          console.warn('[daemon] setConfig failed', error);
+          socket.write(
+            encodeFrame({
+              id: frame.id,
+              kind: 'response',
+              type: 'daemon.setConfig',
+              payload: { ok: false },
+            }),
+          );
+          return;
+        }
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'daemon.setConfig',
+            payload: { ok: true, maxConcurrent: clamped },
+          }),
+        );
+        return;
+      }
     },
   };
   const server = createPipeServer(handlers, installId);
