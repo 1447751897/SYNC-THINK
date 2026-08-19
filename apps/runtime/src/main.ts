@@ -41,6 +41,9 @@ function buildDiscoveryByProtocol() {
 
 async function main() {
   const installId = process.env.SYNC_THINK_INSTALL_ID ?? 'dev-0001';
+  // worker 模式（守护进程自拉）：禁用自身调度 tick，执行指定任务后退出。
+  const daemonWorker = process.env.SYNC_THINK_DAEMON_WORKER === '1';
+  const daemonTaskId = process.env.SYNC_THINK_DAEMON_TASK_ID;
   // Dev desktop sends no HMAC when SYNC_THINK_PIPE_SECRET is unset.
   // Allow no-token hello unless a pipe secret is configured, or DEV_NO_TOKEN=1.
   const allowNoToken =
@@ -60,6 +63,7 @@ async function main() {
     allowNoToken,
     helloSecret: process.env.SYNC_THINK_PIPE_SECRET,
     ...(eventPayloadSidecar ? { eventPayloadSidecar } : {}),
+    daemonWorker,
     demoProvider:
       process.env.SYNC_THINK_DISABLE_DEMO_PROVIDER === '1'
         ? undefined
@@ -67,6 +71,21 @@ async function main() {
     discoveryByProtocol: buildDiscoveryByProtocol(),
   });
   await session.runtime.start();
+
+  // worker 模式：执行指定任务后退出（跑完即退）。
+  if (daemonWorker) {
+    if (!daemonTaskId) {
+      console.error('[worker] no SYNC_THINK_DAEMON_TASK_ID; exiting');
+      await session.close();
+      process.exit(1);
+    }
+    console.log(`[worker] executing task ${daemonTaskId}`);
+    const result = await session.runtime.runDaemonTask(daemonTaskId);
+    console.log(`[worker] task ${daemonTaskId} → ok=${result.ok}${result.reason ? ` reason=${result.reason}` : ''}`);
+    await session.close();
+    process.exit(result.ok ? 0 : 1);
+  }
+
   console.log('[runtime] started. installId=', installId, 'pid=', process.pid);
   console.log('[runtime] database ready', session.databasePath);
   console.log('[runtime] discovery: openai-compatible GET /models enabled');

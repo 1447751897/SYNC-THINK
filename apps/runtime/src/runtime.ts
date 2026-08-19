@@ -144,6 +144,8 @@ import {
   type DeleteScheduledTaskPayload,
   type TriggerScheduledTaskPayload,
   type TriggerScheduledTaskResponse,
+  type ListScheduledTaskHistoryPayload,
+  type ListScheduledTaskHistoryResponse,
   type SkillLocalScanPayload,
   type SkillLocalScanResponse,
   type SkillLocalImportPayload,
@@ -224,6 +226,7 @@ import {
   type ConversationId,
   type ScheduledTask,
   type ScheduledTaskTarget,
+  type ScheduledTaskRunStatus,
   type TaskRule,
 } from '@sync-think/shared';
 import type {
@@ -709,6 +712,8 @@ export interface RuntimeOptions {
   installId: string;
   helloSecret?: string;
   allowNoToken?: boolean;
+  /** worker 模式（守护进程自拉）：不监听管道、不启动调度 tick、不恢复 run。 */
+  daemonWorker?: boolean;
   checkpoint?: RuntimeCheckpointSnapshot;
   stateStore?: RuntimeStateStore;
   workspaceStore?: SqliteWorkspaceStore;
@@ -1779,6 +1784,7 @@ export class Runtime {
   private readonly handlers: PipeServerHandlers;
   private server: ReturnType<typeof createPipeServer> | null = null;
   private readonly inFlight = new Set<string>();
+  private readonly daemonWorker: boolean;
   private readonly threadVersions = new Map<string, number>();
   private readonly events: Event[] = [];
   private readonly subscriptions = new Map<string, RuntimeEventSubscription>();
@@ -1801,6 +1807,8 @@ export class Runtime {
   private taskSchedulerTicking = false;
   /** 当前由定时任务触发的 run（并发上限统计）。 */
   private readonly taskRuns = new Set<string>();
+  /** runId → 定时任务历史条目 id（run 终态时回填 summary）。 */
+  private readonly taskHistoryByRun: Map<string, string> = new Map();
   /** Persisted runId → kernelId, so message-stream kernel badges survive restarts. */
   private readonly runKernelIds: Map<string, string> = new Map();
   private runKernelIdsLoaded = false;
@@ -1931,6 +1939,7 @@ export class Runtime {
 
   constructor(opts: RuntimeOptions) {
     this.installId = opts.installId;
+    this.daemonWorker = opts.daemonWorker ?? false;
     this.kernelAdapterResolver = opts.kernelAdapterResolver ?? resolveRegisteredKernelAdapter;
     this.stateStore = opts.stateStore;
     this.workspaceStore = opts.workspaceStore;
@@ -2198,6 +2207,10 @@ export class Runtime {
         }
         if (frame.type === 'scheduledTask.trigger') {
           this.handleTriggerScheduledTask(socket, frame);
+          return;
+        }
+        if (frame.type === 'scheduledTask.history') {
+          this.handleListScheduledTaskHistory(socket, frame);
           return;
         }
         if (frame.type === 'workspace.create') {
@@ -14911,6 +14924,18 @@ export class Runtime {
       return 'intervalMinutes 必须为 ≥5 的整数';
     }
     if (
+      rule.kind === 'every' &&
+      rule.windowStart !== undefined &&
+      rule.windowEnd !== undefined
+    ) {
+      const hm = /^([01]\d|2[0-3]):[0-5]\d$/.test(rule.windowStart) &&
+        /^([01]\d|2[0-3]):[0-5]\d$/.test(rule.windowEnd);
+      if (!hm) return 'every 的 windowStart/windowEnd 必须是 HH:mm';
+      const startMin = Number(rule.windowStart.slice(0, 2)) * 60 + Number(rule.windowStart.slice(3, 5));
+      const endMin = Number(rule.windowEnd.slice(0, 2)) * 60 + Number(rule.windowEnd.slice(3, 5));
+      if (endMin <= startMin) return 'every 的 windowEnd 必须晚于 windowStart';
+    }
+    if (
       rule.kind === 'random' &&
       (!Number.isInteger(rule.minTimes) || !Number.isInteger(rule.maxTimes) || rule.minTimes < 1 || rule.maxTimes < rule.minTimes)
     ) {
@@ -14942,6 +14967,17 @@ export class Runtime {
     try {
       const id = `task-${ulid()}`;
       const timeZone = payload.timeZone?.trim() || 'UTC';
+      const workspaceId =
+        typeof payload.workspaceId === 'string' && payload.workspaceId.trim()
+          ? payload.workspaceId.trim()
+          : undefined;
+      if (workspaceId && !this.workspaceStore?.getWorkspace(workspaceId as WorkspaceId)) {
+        this.writeMalformedPayload(socket, frame);
+        return;
+      }
+      const skillVersionIds = Array.isArray(payload.skillVersionIds)
+        ? payload.skillVersionIds.filter((item): item is string => typeof item === 'string')
+        : undefined;
       const task: ScheduledTask = {
         id,
         name: payload.name.trim(),
@@ -14950,6 +14986,8 @@ export class Runtime {
         rule,
         timeZone,
         enabled: payload.enabled !== false,
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(skillVersionIds && skillVersionIds.length > 0 ? { skillVersionIds } : {}),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -14962,6 +15000,8 @@ export class Runtime {
         rule,
         timeZone,
         enabled: task.enabled,
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(skillVersionIds ? { skillVersionIds } : {}),
         ...(nextRunAt ? { nextRunAt } : {}),
       });
       this.publishTaskEvent('scheduledTask.updated', id, { taskId: id, action: 'create' });
@@ -15013,6 +15053,14 @@ export class Runtime {
         this.writeMalformedPayload(socket, frame);
         return;
       }
+    }
+    if (
+      patch.workspaceId !== undefined &&
+      patch.workspaceId !== null &&
+      !this.workspaceStore?.getWorkspace(patch.workspaceId as WorkspaceId)
+    ) {
+      this.writeMalformedPayload(socket, frame);
+      return;
     }
     try {
       let nextRunAt: string | null | undefined;
@@ -15080,6 +15128,25 @@ export class Runtime {
         payload: { deleted },
       }),
     );
+  }
+
+  private handleListScheduledTaskHistory(socket: Socket, frame: Frame): void {
+    const payload = frame.payload as ListScheduledTaskHistoryPayload | undefined;
+    if (!payload || typeof payload.taskId !== 'string') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.scheduledTaskStore) {
+      this.writeTeamModelStoreUnavailable(socket, frame);
+      return;
+    }
+    const limit =
+      typeof payload.limit === 'number' && Number.isInteger(payload.limit)
+        ? Math.min(Math.max(payload.limit, 1), 100)
+        : 20;
+    const entries = this.scheduledTaskStore.listHistory(payload.taskId, limit);
+    const response: ListScheduledTaskHistoryResponse = { entries };
+    socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'scheduledTask.history', payload: response }));
   }
 
   private async handleTriggerScheduledTask(socket: Socket, frame: Frame): Promise<void> {
@@ -15439,6 +15506,7 @@ export class Runtime {
     // 并发上限：任务 run 计数（内存近似）。
     if (this.taskRuns.size >= this.taskMaxConcurrent()) {
       this.recordTaskSkipped(task, firedAt, '并发上限');
+      this.recordTaskHistory(task, 'skipped', firedAt, undefined, '并发上限');
       return { fired: false, reason: '并发上限' };
     }
 
@@ -15452,6 +15520,7 @@ export class Runtime {
       );
       if (busy) {
         this.recordTaskSkipped(task, firedAt, '会话忙');
+        this.recordTaskHistory(task, 'skipped', firedAt, undefined, '会话忙');
         return { fired: false, reason: '会话忙' };
       }
     }
@@ -15479,7 +15548,12 @@ export class Runtime {
           runId,
           threadId: threadId as ThreadId,
           userText: task.instruction,
-          skillVersionIds: [],
+          skillVersionIds: task.skillVersionIds ?? [],
+          ...(task.target.kind === 'agent'
+            ? { globalAgentId: task.target.agentId }
+            : task.target.kind === 'team'
+              ? { teamId: task.target.teamId }
+              : {}),
         });
         const demoRun = prepared.run;
         const occurredAt = new Date().toISOString();
@@ -15529,6 +15603,8 @@ export class Runtime {
         this.demoRuns.set(runId, demoRun);
         this.taskRuns.add(String(runId));
         this.attachTaskRunCleanup(runId);
+        const historyEntryId = this.recordTaskHistory(task, 'success', firedAt, String(runId));
+        if (historyEntryId) this.taskHistoryByRun.set(String(runId), historyEntryId);
         for (const event of events) this.publishEvent(event);
         void this.executeKernelRun(runId);
       } catch (error) {
@@ -15539,19 +15615,49 @@ export class Runtime {
             reason: error instanceof Error ? error.message : String(error),
           },
         });
+        this.recordTaskHistory(task, 'failed', firedAt, undefined, 'run 启动失败');
         return { fired: false, reason: 'run 启动失败' };
       }
     }
     void updated;
-    return { fired: true };
+    // 无法启动 run 时如实报告失败（不再静默返回成功）。
+    const blockReason = !threadId
+      ? '任务会话尚未就绪'
+      : !this.stateStore
+        ? '状态存储不可用'
+        : '无可用模型供应商';
+    this.scheduledTaskStore.update(task.id, {
+      lastResult: { status: 'failed', firedAt, reason: blockReason },
+    });
+    this.recordTaskHistory(task, 'failed', firedAt, undefined, blockReason);
+    return { fired: false, reason: blockReason };
   }
 
-  /** 任务 run 结束时从并发计数移除（监听终态事件）。 */
+  /**
+   * worker 模式执行单个定时任务（守护进程自拉路径）。
+   * 触发任务（fireScheduledTask）→ 等 run 进入终态（taskRuns 清空）→ 返回结果。
+   * 返回 { ok, reason }：ok=false 时 reason 为未触发的失败原因。
+   */
+  async runDaemonTask(taskId: string): Promise<{ ok: boolean; reason?: string }> {
+    if (!this.daemonWorker) return { ok: false, reason: 'not-worker-mode' };
+    const task = this.scheduledTaskStore?.get(taskId);
+    if (!task) return { ok: false, reason: '任务不存在' };
+    const result = await this.fireScheduledTask(task);
+    if (!result.fired) return { ok: false, reason: result.reason };
+    // 等待该任务的所有 run 结束（taskRuns 为空 = 无 in-flight 执行）。
+    while (this.taskRuns.size > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    return { ok: true };
+  }
+
+  /** 任务 run 结束时从并发计数移除并回填执行摘要（监听终态事件）。 */
   private attachTaskRunCleanup(runId: string): void {
     const check = (): void => {
       const run = this.demoRuns.get(runId as RunId);
       if (!run || !this.inFlight.has(runId)) {
         this.taskRuns.delete(runId);
+        this.fillTaskHistorySummary(runId);
         return;
       }
       setTimeout(check, 5_000);
@@ -15571,6 +15677,50 @@ export class Runtime {
     });
   }
 
+  /** 写入一条任务执行历史；返回条目 id（run 终态时用于回填 summary）。 */
+  private recordTaskHistory(
+    task: ScheduledTask,
+    status: ScheduledTaskRunStatus,
+    firedAt: string,
+    runId?: string,
+    reason?: string,
+  ): string | undefined {
+    if (!this.scheduledTaskStore) return undefined;
+    const entryId = ulid();
+    this.scheduledTaskStore.addHistoryEntry({
+      id: entryId,
+      taskId: task.id,
+      status,
+      firedAt,
+      runId,
+      reason,
+    });
+    return entryId;
+  }
+
+  /** run 终态后回填历史 summary：任务会话最后一条非空助手消息前 200 字。 */
+  private fillTaskHistorySummary(runId: string): void {
+    const entryId = this.taskHistoryByRun.get(runId);
+    if (!entryId) return;
+    this.taskHistoryByRun.delete(runId);
+    if (!this.scheduledTaskStore || !this.messageStore) return;
+    const run = this.demoRuns.get(runId as RunId);
+    if (!run) return;
+    // listMessages 按 sequence 倒序，第一页即最新消息。
+    const page = this.messageStore.listMessages(run.threadId as ThreadId, { limit: 50 });
+    for (const message of page.messages) {
+      if (message.role !== 'assistant') continue;
+      const text = message.blocks
+        .filter((block) => block.type === 'text' && block.text?.trim())
+        .map((block) => block.text!.trim())
+        .join('\n')
+        .trim();
+      if (!text) continue;
+      this.scheduledTaskStore.updateHistorySummary(entryId, text);
+      return;
+    }
+  }
+
   private publishTaskEvent(type: string, _taskId: string, payload: Record<string, unknown>): void {
     this.publishEvent(this.appendEvent('system', type, payload));
   }
@@ -15581,21 +15731,41 @@ export class Runtime {
     now: Date = new Date(),
   ): Promise<string | undefined> {
     if (!this.conversationStore || !this.workspaceStore) return undefined;
+    let conversation: import('@sync-think/storage').ConversationRecord | undefined;
     if (task.conversationId) {
-      const existing = this.conversationStore.get(task.conversationId as ConversationId);
-      if (existing) return existing.id;
+      conversation = this.conversationStore.get(task.conversationId as ConversationId);
     }
-    const workspaceId = this.getOrCreateInboxWorkspace();
-    const conversation = this.conversationStore.create({
-      target:
-        task.target.kind === 'agent'
-          ? { track: 'agent', agentId: task.target.agentId as AgentId }
-          : { track: 'model', modelId: task.target.modelId as ModelId },
-      workspaceId,
-      title: `任务 · ${task.name}`,
-      now: now.toISOString(),
-    });
-    this.scheduledTaskStore?.update(task.id, { conversationId: conversation.id });
+    if (!conversation) {
+      const workspaceId =
+        task.workspaceId && this.workspaceStore.getWorkspace(task.workspaceId as WorkspaceId)
+          ? (task.workspaceId as WorkspaceId)
+          : this.getOrCreateInboxWorkspace();
+      conversation = this.conversationStore.create({
+        target:
+          task.target.kind === 'agent'
+            ? { track: 'agent', agentId: task.target.agentId as AgentId }
+            : task.target.kind === 'team'
+              ? { track: 'team', teamId: task.target.teamId as TeamId }
+              : { track: 'model', modelId: task.target.modelId as ModelId },
+        workspaceId,
+        title: `任务 · ${task.name}`,
+        now: now.toISOString(),
+      });
+      this.scheduledTaskStore?.update(task.id, { conversationId: conversation.id });
+    }
+    // 懒创建 thread（仿 sendMessage 路径）：会话未绑定 workspace task 时
+    // （首次创建或历史遗留会话）创建任务并绑定——否则 resolveConversationThreadId
+    // 拿不到 threadId，触发会停在「任务会话尚未就绪」。
+    if (!conversation.taskId) {
+      const workspaceId = conversation.workspaceId ?? this.getOrCreateInboxWorkspace();
+      const created = this.workspaceStore.createTask({
+        workspaceId,
+        title: `任务 · ${task.name}`,
+        goal: task.instruction.slice(0, 200),
+      });
+      this.threadVersions.set(created.threadId, created.taskVersion);
+      this.conversationStore.bindTask(conversation.id, created.taskId);
+    }
     return conversation.id;
   }
 
@@ -19120,8 +19290,13 @@ export class Runtime {
         this.recordRunDiagnostic(runId, terminalRun, payload);
       } else {
         this.persistAssistantFinalMessage(runId, terminalRun, payload);
-        this.maybeProposeRunMemory(runId, terminalRun, payload);
+        // Publish the terminal BEFORE the memory proposal: maybeProposeRunMemory
+        // appends and publishes a later-sequence memory.change.proposed event,
+        // and publishEvent drops anything older than the subscriber's live
+        // cursor — publishing run.completed after it would silently lose the
+        // terminal event from every live stream (UI stuck on "executing").
         this.publishEvent(event);
+        this.maybeProposeRunMemory(runId, terminalRun, payload);
       }
       this.demoRuns.delete(runId);
       this.transientSnapshotByThread.delete(terminalRun.threadId as ThreadId);
@@ -21483,6 +21658,38 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       };
     };
 
+    // Accept an emoji / short decorative text (≤ 8 chars) or a small
+    // data:image data URL (UI avatars are a few KB). Reject remote URLs (the
+    // shell CSP blocks them anyway and they leak the model's browsing input)
+    // and control characters.
+    const resolveAgentAvatar = (
+      raw: unknown,
+    ): { ok: true; avatar?: string } | { ok: false; error: string } => {
+      if (raw === undefined || raw === null) return { ok: true };
+      if (typeof raw !== 'string') return { ok: false, error: 'avatar must be a string' };
+      const trimmed = raw.trim();
+      if (!trimmed) return { ok: true, avatar: '' };
+      if (/[\u0000-\u001F\u007F]/.test(trimmed)) {
+        return { ok: false, error: 'avatar contains control characters' };
+      }
+      if (trimmed.startsWith('data:image/')) {
+        if (trimmed.length > 200_000) {
+          return { ok: false, error: 'avatar data URL is too large (max ~200KB)' };
+        }
+        return { ok: true, avatar: trimmed };
+      }
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        return {
+          ok: false,
+          error: 'avatar must be an emoji, short text, or a data:image URL (remote URLs are not allowed)',
+        };
+      }
+      if (trimmed.length > 8) {
+        return { ok: false, error: 'avatar text must be at most 8 characters' };
+      }
+      return { ok: true, avatar: trimmed };
+    };
+
     if (input.toolCall.name === 'create_agent') {
       const name = typeof args.name === 'string' ? args.name.trim() : '';
       if (!name) {
@@ -21532,8 +21739,13 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       try {
         // Same validation as the UI path: �? skills, versions exist & approved.
         this.assertGlobalAgentSkillVersions(resolvedSkillIds);
+        const avatarResult = resolveAgentAvatar(args.avatar);
+        if (!avatarResult.ok) {
+          return JSON.stringify({ ok: false, error: avatarResult.error });
+        }
         const created = this.globalAgentStore.create({
           name,
+          avatar: avatarResult.avatar,
           defaultModelId: defaultModelId as ModelId,
           persona: typeof args.persona === 'string' ? args.persona : undefined,
           description: typeof args.description === 'string' ? args.description : undefined,
@@ -21631,18 +21843,29 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         changedFields.push('reasoningEffort');
       }
 
+      let nextAvatar: string | undefined;
+      if (args.avatar !== undefined) {
+        const avatarResult = resolveAgentAvatar(args.avatar);
+        if (!avatarResult.ok) {
+          return JSON.stringify({ ok: false, error: avatarResult.error });
+        }
+        nextAvatar = avatarResult.avatar;
+        if (nextAvatar !== current.avatar) changedFields.push('avatar');
+      }
+
       if (
         nextName === undefined &&
         nextModelId === undefined &&
         nextSkillIds === undefined &&
         nextPersona === undefined &&
         nextDescription === undefined &&
-        nextReasoningEffort === undefined
+        nextReasoningEffort === undefined &&
+        nextAvatar === undefined
       ) {
         return JSON.stringify({
           ok: false,
           error:
-            'No fields to update. Pass at least one of name / persona / description / defaultModelId / skillIds / reasoningEffort.',
+            'No fields to update. Pass at least one of name / avatar / persona / description / defaultModelId / skillIds / reasoningEffort.',
         });
       }
 
@@ -21652,6 +21875,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         const updated = this.globalAgentStore.update({
           agentId: current.id,
           name: nextName,
+          avatar: nextAvatar,
           persona: nextPersona,
           description: nextDescription,
           defaultModelId: nextModelId as ModelId | undefined,
@@ -25626,6 +25850,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   }
 
   start(): Promise<void> {
+    // worker 模式（守护进程自拉）：不监听管道（避免与桌面/守护进程抢
+    // pipe 名）、不恢复 run、不开网关、不启动调度 tick（唯一调度者约束）。
+    if (this.daemonWorker) {
+      void this.startedAt; // 保持 startedAt 引用（健康检查依赖启动时间）
+      return Promise.resolve();
+    }
     return new Promise((resolve, reject) => {
       this.server = createPipeServer(this.handlers, this.installId);
       const path = pipePathPortable(this.installId);

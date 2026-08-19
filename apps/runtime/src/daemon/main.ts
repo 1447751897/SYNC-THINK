@@ -10,7 +10,7 @@
  * 到点任务回调接到一个可替换的 handler（默认记录日志并更新状态）。
  */
 
-import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { Cron } from 'croner';
@@ -27,9 +27,30 @@ import {
   type DaemonStatus,
 } from './core.js';
 import { decideDue, type SchedulerDecision } from '../scheduler-core.js';
+import { chooseDispatchPath } from './dispatch.js';
+import { buildWorkerCommand, runWorkerProcess } from './worker.js';
 
 const HEARTBEAT_INTERVAL_MS = 1_000;
 const STATUS_FILE = 'daemon-status.json';
+
+/** runtime 入口探测（与 desktop runtime-supervisor 一致的多路径候选）。 */
+export function resolveRuntimeEntry(): string | null {
+  const candidates = [
+    process.env.SYNC_THINK_RUNTIME_ENTRY,
+    join(process.cwd(), 'apps', 'runtime', 'dist', 'main.js'),
+    join(process.cwd(), '..', 'runtime', 'dist', 'main.js'),
+    join(process.cwd(), 'runtime', 'main.js'),
+  ].filter((p): p is string => typeof p === 'string' && p.length > 0);
+  for (const path of candidates) {
+    if (existsSync(path)) return path;
+  }
+  return null;
+}
+
+/** node 可执行文件（注入用，默认 process.execPath）。 */
+export function resolveNodeBin(): string {
+  return process.env.SYNC_THINK_NODE_BIN ?? process.execPath;
+}
 
 /** 到点任务处理器（T6/T7 会替换为真实的投递/自拉执行）。 */
 export type TaskFireHandler = (taskId: string, decision: SchedulerDecision) => void;
@@ -113,10 +134,39 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     return clamped;
   };
 
-  // 到点处理器（默认：日志 + 今日触发计数；T6/T7 替换为真实执行）。
+  // 到点处理器（默认：日志 + 今日触发计数；桌面活着投递在 T7 接入）。
   const onFire: TaskFireHandler = options.onFire ?? ((taskId, decision) => {
     console.log(`[daemon] task ${taskId} due → action=${decision.action.type}`);
     status = updateDaemonStatus(status, { todayFired: status.todayFired + 1 });
+    if (decision.action.type !== 'fire') return;
+    // 自拉路径（T6）：桌面探测 → 关着 → spawn worker 执行。
+    void (async () => {
+      const entry = resolveRuntimeEntry();
+      if (!entry) {
+        console.error('[daemon] runtime entry not found; cannot spawn worker');
+        return;
+      }
+      const path = chooseDispatchPath(false); // T7 接入真实桌面探测
+      if (path.kind !== 'spawn-worker') return;
+      const command = buildWorkerCommand(resolveNodeBin(), {
+        runtimeEntry: entry,
+        taskId,
+        dbPath,
+        installId,
+        baseEnv: process.env,
+      });
+      console.log(`[daemon] spawning worker for ${taskId}: ${command.command} ${command.args.join(' ')}`);
+      const result = await runWorkerProcess(resolveNodeBin(), {
+        runtimeEntry: entry,
+        taskId,
+        dbPath,
+        installId,
+        baseEnv: process.env,
+      });
+      console.log(
+        `[worker] task ${taskId} exited code=${result.code}${result.signal ? ` signal=${result.signal}` : ''}`,
+      );
+    })();
   });
 
   // 到点回调：查询任务 → decideDue 决策 → 交给处理器。
