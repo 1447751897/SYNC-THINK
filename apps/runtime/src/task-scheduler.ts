@@ -84,7 +84,7 @@ function dayWindowUtc(rule: TaskRuleRandom, timeZone: string, date: string): { s
 }
 
 /** 当天日期串（任务时区）。 */
-function dateString(timeZone: string, at: Date): string {
+export function dateString(timeZone: string, at: Date): string {
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone,
     year: 'numeric',
@@ -140,6 +140,48 @@ export function nextRandomOccurrence(
   return tomorrow.getTime();
 }
 
+/** every 任务在某一天窗口内的触发点（UTC 毫秒），按间隔从窗口起点对齐。
+ *  无窗口时返回空（表示走固定间隔逻辑）。窗口跨度 < 间隔时仅窗口起点一个点。 */
+function everyWindowPointsInDay(
+  intervalMs: number,
+  timeZone: string,
+  date: string,
+  windowStart?: string,
+  windowEnd?: string,
+): number[] {
+  if (!windowStart || !windowEnd) return [];
+  const startHm = parseHm(windowStart);
+  const endHm = parseHm(windowEnd);
+  const midnight = localMidnightUtc(date, timeZone);
+  const start = midnight + minutesOfDay(startHm) * 60_000;
+  const end = midnight + minutesOfDay(endHm) * 60_000;
+  const points: number[] = [];
+  for (let t = start; t <= end; t += intervalMs) points.push(t);
+  return points;
+}
+
+/** every 窗口模式：after 之后第一个窗口触发点（当天剩余或后续某天）。 */
+function nextEveryWindowPoint(
+  task: ScheduledTask,
+  afterEpoch: number,
+  intervalMs: number,
+): string | undefined {
+  let day = dateString(task.timeZone, new Date(afterEpoch));
+  for (let guard = 0; guard < 400; guard += 1) {
+    const points = everyWindowPointsInDay(
+      intervalMs,
+      task.timeZone,
+      day,
+      task.rule.kind === 'every' ? task.rule.windowStart : undefined,
+      task.rule.kind === 'every' ? task.rule.windowEnd : undefined,
+    ).filter((point) => point > afterEpoch);
+    if (points.length > 0) return new Date(points[0]).toISOString();
+    const nextDayMs = localMidnightUtc(day, task.timeZone) + 24 * 60 * 60_000;
+    day = dateString(task.timeZone, new Date(nextDayMs));
+  }
+  return undefined;
+}
+
 /**
  * 计算任务触发后的下一次触发（UTC ISO），返回 undefined 表示无下次（单次任务完成）。
  */
@@ -154,6 +196,9 @@ export function computeNextRunAt(
       return undefined;
     case 'every': {
       const interval = Math.max(TASK_MIN_EVERY_MINUTES, rule.intervalMinutes) * 60_000;
+      if (rule.windowStart && rule.windowEnd) {
+        return nextEveryWindowPoint(task, Date.parse(firedAt), interval);
+      }
       return new Date(Date.parse(firedAt) + interval).toISOString();
     }
     case 'random': {
@@ -182,11 +227,16 @@ export function initialNextRunAt(
   const rule = task.rule;
   if (rule.kind === 'at') return rule.runAt;
   if (rule.kind === 'every') {
+    const interval = Math.max(TASK_MIN_EVERY_MINUTES, rule.intervalMinutes) * 60_000;
+    if (rule.windowStart && rule.windowEnd) {
+      // 窗口模式：now 之后第一个窗口点（当天剩余或后续某天）。
+      const next = nextEveryWindowPoint(task, now.getTime(), interval);
+      return next ?? new Date(now.getTime() + 5 * 60_000).toISOString();
+    }
     const first = rule.firstRunAt ? Date.parse(rule.firstRunAt) : now.getTime() + 5 * 60_000;
     if (!Number.isFinite(first)) return new Date(now.getTime() + 5 * 60_000).toISOString();
     // 已过去的 firstRunAt → 按间隔顺延到未来。
     let candidate = first;
-    const interval = Math.max(TASK_MIN_EVERY_MINUTES, rule.intervalMinutes) * 60_000;
     while (candidate <= now.getTime()) candidate += interval;
     return new Date(candidate).toISOString();
   }
