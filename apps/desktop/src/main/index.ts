@@ -287,6 +287,7 @@ import {
   parseUpdateScheduledTaskPayload,
   parseDeleteScheduledTaskPayload,
   parseTriggerScheduledTaskPayload,
+  parseListScheduledTaskHistoryPayload,
   parseSkillLocalScanPayload,
   parseSkillLocalImportPayload,
   parseSetConversationPinnedPayload,
@@ -328,6 +329,7 @@ import {
 import { classifyRuntimeConnectError, RuntimePipeClient } from './runtime-client.js';
 import { RuntimeSession } from './runtime-session.js';
 import {
+  ensureDaemonProcess,
   ensureRuntimeProcess,
   resolveManagedRuntimeDatabasePath,
   stopManagedRuntime,
@@ -610,14 +612,10 @@ function createWindow(): void {
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   const parsedDevServerUrl =
     !app.isPackaged && devServerUrl ? parseLoopbackDevServerUrl(devServerUrl) : null;
-  // NewMax-style shell is the default product UI (dist/renderer-shell).
-  // Set SYNC_THINK_SHELL=0 (or legacy) to force the old task-board renderer.
-  const shellFlag = (process.env.SYNC_THINK_SHELL ?? '1').trim().toLowerCase();
-  const useShell = !(shellFlag === '0' || shellFlag === 'false' || shellFlag === 'legacy');
-  const rendererPath = path.join(
-    __dirname,
-    useShell ? '../renderer-shell/index.html' : '../renderer/index.html',
-  );
+  // The NewMax-style shell is the only product UI. The legacy task-board
+  // renderer and its SYNC_THINK_SHELL escape hatch were removed once the shell
+  // reached parity — there is nothing to switch between any more.
+  const rendererPath = path.join(__dirname, '../renderer-shell/index.html');
   const nextTrustedRendererLocation: TrustedRendererLocation = parsedDevServerUrl
     ? { kind: 'origin', value: parsedDevServerUrl.origin }
     : trustedFileLocation(rendererPath);
@@ -986,6 +984,10 @@ async function ensureRuntimeConnection(): Promise<RuntimeConnectResult> {
   // Every IPC path that needs Runtime must tolerate cold start without a
   // pre-launched `pnpm dev:runtime`.
   await ensureRuntimeProcess(getDesktopRuntimeIdentity());
+  // 守护进程兜底（T3）：不在运行则拉起（定时任务无人值守的前提）。
+  void ensureDaemonProcess(getDesktopRuntimeIdentity()).catch((error) =>
+    console.warn('[desktop] daemon fallback spawn failed', error),
+  );
   const result = await getRuntimeSession().connect();
   markDesktopUpdateRollbackHealthy();
   return result;
@@ -1930,6 +1932,14 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request(
       'scheduledTask.trigger',
       parseTriggerScheduledTaskPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:scheduled-task-history', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'scheduledTask.history',
+      parseListScheduledTaskHistoryPayload(value),
     );
   });
   ipcMain.handle('runtime:goal-pause', async (event, value: unknown) => {

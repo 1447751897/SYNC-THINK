@@ -141,7 +141,7 @@ describe('desktop main RuntimeSession', () => {
     await session.connect();
     await expect.poll(() => client.subscribeCount).toBe(1);
     expect(client.subscribedAfterCursor).toEqual({ sequence: 41, eventId: 'event-41' });
-    expect(client.subscribedCategories).toEqual(['message', 'run', 'approval']);
+    expect(client.subscribedCategories).toEqual(['message', 'run', 'approval', 'system']);
 
     client.advanceCursor({ sequence: 57, eventId: 'event-57' });
     expect(saved).toEqual([{ sequence: 57, eventId: 'event-57' }]);

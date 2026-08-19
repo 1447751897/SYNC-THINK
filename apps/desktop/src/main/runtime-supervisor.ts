@@ -502,3 +502,121 @@ export async function stopManagedRuntime(timeoutMs = 12_000): Promise<void> {
   }
   if (installId) clearPidFile(installId);
 }
+
+// ── 守护进程兜底拉起（T3/Q6）───────────────────────────────────────────────
+
+/** 守护进程管道名（与 runtime daemon 约定：installId + '-daemon'）。 */
+export function daemonPipePath(installId: string): string {
+  return pipePathPortable(`${installId}-daemon`);
+}
+
+/** 探测守护进程管道是否存活（800ms 超时）。 */
+function probeDaemonPipe(installId: string, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect(daemonPipePath(installId));
+    let settled = false;
+    const done = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.removeAllListeners();
+      if (!socket.destroyed) socket.destroy();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      done(true);
+    });
+    socket.once('error', () => {
+      clearTimeout(timer);
+      done(false);
+    });
+  });
+}
+
+/** 守护进程入口探测（多路径候选，与 resolveRuntimeEntry 同思路）。 */
+function resolveDaemonEntry(): string | null {
+  const resourcesPath = electronResourcesPath();
+  const candidates = [
+    process.env.SYNC_THINK_DAEMON_ENTRY,
+    resourcesPath ? join(resourcesPath, 'runtime', 'daemon', 'index.js') : undefined,
+    join(__dirname, '..', '..', '..', 'runtime', 'dist', 'daemon', 'index.js'),
+    join(process.cwd(), 'apps', 'runtime', 'dist', 'daemon', 'index.js'),
+    join(process.cwd(), '..', 'runtime', 'dist', 'daemon', 'index.js'),
+  ].filter((p): p is string => typeof p === 'string' && p.length > 0);
+  for (const path of candidates) {
+    if (existsSync(path)) return path;
+  }
+  return null;
+}
+
+let daemonChild: ChildProcess | null = null;
+let daemonStarting: Promise<void> | null = null;
+
+/**
+ * 桌面启动时兜底拉起守护进程（T3）：探测 daemon 管道——不在运行 →
+ * spawn daemon 进程（登录自启之外的第二重保证）。已注册自启时也兜底
+ * （自启可能在下次登录才生效）。
+ */
+export async function ensureDaemonProcess(
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+): Promise<{ ready: boolean; spawned: boolean; error?: string }> {
+  const installId = identity.installId;
+
+  if (await probeDaemonPipe(installId)) {
+    return { ready: true, spawned: false };
+  }
+
+  if (daemonStarting) {
+    await daemonStarting;
+    return { ready: await probeDaemonPipe(installId), spawned: Boolean(daemonChild) };
+  }
+
+  daemonStarting = (async () => {
+    const entry = resolveDaemonEntry();
+    if (!entry) {
+      console.error('[desktop] daemon entry not found; build apps/runtime first');
+      return;
+    }
+    const nodeBin = resolveNodeBinary();
+    if (!nodeBin) {
+      console.error('[desktop] Node runtime not found for daemon; set SYNC_THINK_NODE_BIN');
+      return;
+    }
+    const env = buildManagedRuntimeEnvironment(identity, process.env, defaultDataRoot());
+    console.log('[desktop] starting managed daemon', { entry, nodeBin });
+    const childProcess = spawn(nodeBin, [entry], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      detached: false,
+      shell: false,
+    });
+    daemonChild = childProcess;
+    childProcess.on('exit', () => {
+      if (daemonChild === childProcess) daemonChild = null;
+    });
+    childProcess.on('error', (error) => {
+      console.error('[desktop] daemon spawn failed', error);
+    });
+  })();
+
+  try {
+    await daemonStarting;
+  } finally {
+    daemonStarting = null;
+  }
+  return { ready: await probeDaemonPipe(installId), spawned: Boolean(daemonChild) };
+}
+
+/** 停止守护进程（应用退出 / 升级前）。 */
+export async function stopManagedDaemon(timeoutMs = 5_000): Promise<void> {
+  const proc = daemonChild;
+  daemonChild = null;
+  if (!proc) return;
+  if (proc.exitCode !== null) return;
+  const result = await stopRuntimeChild(proc, { timeoutMs });
+  if (result.forced) {
+    console.warn('[desktop] daemon graceful shutdown timed out; terminated daemon process');
+  }
+}
