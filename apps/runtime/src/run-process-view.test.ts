@@ -122,6 +122,36 @@ describe('projectRunProcess', () => {
     ).toBe(false);
   });
 
+  it('projects task tools that kernels invoked through the platform MCP server', () => {
+    const runId = 'run-task-plan-mcp' as RunId;
+    const view = projectRunProcess(runId, [
+      event({
+        id: 'event-mcp-task-create' as EventId,
+        sequence: 1,
+        runId,
+        type: 'tool.completed',
+        payload: {
+          toolCallId: 'call-mcp-task-create',
+          // Codex / Claude reach the platform tools over MCP, so the wire name
+          // carries the mcp__<server>__ prefix. Exact matching missed it and
+          // the checklist silently stopped updating for kernel-driven runs.
+          toolName: 'mcp__sync-think-platform__TaskCreate',
+          result: JSON.stringify({
+            ok: true,
+            plan: { items: [{ title: 'Inspect the workspace', status: 'in_progress' }] },
+          }),
+        },
+      }),
+    ]);
+
+    expect(view.taskPlan).toEqual({
+      items: [{ title: 'Inspect the workspace', status: 'in_progress' }],
+      completed: 0,
+      total: 1,
+    });
+    expect(view.steps).toHaveLength(0);
+  });
+
   it('settles a running tool when the Run is paused', () => {
     const runId = 'run-paused' as RunId;
     const view = projectRunProcess(runId, [

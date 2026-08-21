@@ -6,7 +6,7 @@ import type {
   TaskPlanItem,
   TaskPlanView,
 } from '@sync-think/protocol';
-import type { Event, RunId } from '@sync-think/shared';
+import { matchesToolName, type Event, type RunId } from '@sync-think/shared';
 
 const TOOL_META: Record<string, { verb: string; kind: ProcessToolKind; zh: string }> = {
   read_file: { verb: 'Read', kind: 'read', zh: '读取文件' },
@@ -456,7 +456,9 @@ export function projectRunProcess(runId: RunId, events: readonly Event[]): RunPr
     // out of the tool step list (they would be noise there). The persisted
     // NewMax-style tools echo the current plan in their result; legacy
     // update_task_plan carries it in the request arguments/result as before.
-    if (TASK_PLAN_TOOL_NAMES.has(toolName)) {
+    // Kernels reach these tools through MCP, so the wire name arrives as
+    // mcp__sync-think-platform__TaskCreate — normalize before matching.
+    if (matchesToolName(toolName, TASK_PLAN_TOOL_NAMES)) {
       const parsedPlan = extractTaskPlan(payload);
       if (parsedPlan) taskPlan = parsedPlan;
       continue;

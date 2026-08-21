@@ -1,4 +1,7 @@
-import type { Event } from '@sync-think/shared';
+import { matchesToolName, type Event } from '@sync-think/shared';
+
+/** Task-plan tools update the checklist projection; they are not execution steps. */
+const TASK_PLAN_TOOL_NAMES = new Set(['update_task_plan', 'TaskCreate', 'TaskUpdate', 'TaskList']);
 
 export type ProcessStepStatus = 'running' | 'done' | 'error';
 export type ProcessToolKind =
@@ -455,12 +458,9 @@ export function projectExecutionProcess(
     // out of the tool step list (they would be noise there). update_task_plan
     // covers legacy runs; TaskCreate/TaskUpdate/TaskList are the persisted
     // NewMax-style tools (their results echo the same plan snapshot).
-    if (
-      toolName === 'update_task_plan' ||
-      toolName === 'TaskCreate' ||
-      toolName === 'TaskUpdate' ||
-      toolName === 'TaskList'
-    ) {
+    // Kernels reach these through MCP, so the wire name arrives as
+    // mcp__sync-think-platform__TaskCreate — normalize before matching.
+    if (matchesToolName(toolName, TASK_PLAN_TOOL_NAMES)) {
       const parsedPlan = extractTaskPlan(payload);
       if (parsedPlan) taskPlan = parsedPlan;
       continue;

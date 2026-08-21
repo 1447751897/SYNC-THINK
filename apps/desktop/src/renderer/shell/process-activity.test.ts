@@ -204,6 +204,11 @@ describe('shared tool naming', () => {
     expect(friendlyToolName('mcp.playwright.browser_click')).toBe('Browser Click');
   });
 
+  it('strips the MCP wire prefix so kernel-invoked platform tools keep their label', () => {
+    expect(friendlyToolName('mcp__sync-think-platform__read_file')).toBe('读取文件');
+    expect(friendlyToolName('mcp__playwright__browser_click')).toBe('Browser Click');
+  });
+
   it('summarizes the key argument', () => {
     expect(toolInputSummary(runningCommand as never)).toBe('pnpm -s test');
   });

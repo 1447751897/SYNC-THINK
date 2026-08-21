@@ -7,7 +7,7 @@
  *  - run.started 清空（新轮计划），run 终态保留刚完成的清单（下一轮开始才清空）；
  *  - 事件流来自持久化存储 → 刷新 / 回放可恢复。
  */
-import type { Event } from '@sync-think/shared';
+import { matchesToolName, type Event } from '@sync-think/shared';
 import type { TaskPlanItem, TaskPlanView } from './execution-process.js';
 
 export interface TodoProjection {
@@ -118,7 +118,8 @@ export function projectTodoFromEvents(events: readonly Event[]): TodoProjection 
     }
     if (isToolEvent(event.type) && isRecord(event.payload)) {
       const toolName = extractToolName(event.payload);
-      if (TASK_PLAN_TOOL_NAMES.has(toolName)) {
+      // 归一化：内核经 MCP 调用时名字是 mcp__sync-think-platform__TaskCreate。
+      if (matchesToolName(toolName, TASK_PLAN_TOOL_NAMES)) {
         const next = extractTodoSnapshot(event.payload);
         if (next) snapshot = next;
       }

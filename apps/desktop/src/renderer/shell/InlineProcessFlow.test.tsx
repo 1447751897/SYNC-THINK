@@ -183,6 +183,39 @@ describe('InlineProcessFlow', () => {
     expect(screen.getByTestId('think-row-body').textContent).toContain('第二行细节');
   });
 
+  it('strips Markdown markers from the collapsed Think summary', () => {
+    render(
+      <InlineProcessFlow
+        items={[{ ...reasoningItem, text: '**分析字段匹配**\n\n先确认 `toolName` 的形态。' }]}
+        defaultOpen
+      />,
+    );
+    // 折叠行是纯文本节点：Markdown 不会被渲染，只会漏出 ** 噪声。
+    expect(screen.getByTestId('think-row-summary').textContent).toBe('分析字段匹配');
+  });
+
+  it('does not repeat a heading first line inside the expanded Think body', () => {
+    render(
+      <InlineProcessFlow
+        items={[{ ...reasoningItem, text: '**分析字段匹配**\n\n先确认 toolName 的形态。' }]}
+        defaultOpen
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('think-row-toggle'));
+    const body = screen.getByTestId('think-row-body');
+    expect(body.textContent).toContain('先确认 toolName 的形态。');
+    expect(body.textContent).not.toContain('分析字段匹配');
+  });
+
+  it('keeps the collapsed Think row closed when the thought is only a heading', () => {
+    render(<InlineProcessFlow items={[{ ...reasoningItem, text: '**只有标题**' }]} defaultOpen />);
+
+    expect(screen.getByTestId('think-row-summary').textContent).toBe('只有标题');
+    fireEvent.click(screen.getByTestId('think-row-toggle'));
+    expect(screen.queryByTestId('think-row-body')).toBeNull();
+  });
+
   it('uses the latest non-empty Think line while reasoning is streaming', () => {
     render(
       <InlineProcessFlow

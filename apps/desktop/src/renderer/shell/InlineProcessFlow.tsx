@@ -29,15 +29,6 @@ import {
   toolStatusOf,
 } from './process-activity.js';
 
-function firstLine(text: string): string {
-  return (
-    text
-      .split('\n')
-      .find((part) => part.trim())
-      ?.trim() ?? ''
-  );
-}
-
 function latestLine(text: string): string {
   return (
     text
@@ -46,6 +37,51 @@ function latestLine(text: string): string {
       .at(-1)
       ?.trim() ?? ''
   );
+}
+
+/**
+ * 折叠行是纯文本节点，Markdown 标记不会被渲染，只会原样显示成
+ * `**分析字段匹配**` 这种噪声。这里只做**展示用**的标记剥离，不改原文
+ * （展开体仍走 MarkdownContent 完整渲染）。
+ */
+function stripInlineMarkdown(line: string): string {
+  return line
+    .replace(/^\s{0,3}#{1,6}\s+/, '')
+    .replace(/^\s{0,3}[-*+]\s+/, '')
+    .replace(/^\s{0,3}>\s?/, '')
+    .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/(^|\W)\*([^*\n]+)\*(?=\W|$)/g, '$1$2')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .trim();
+}
+
+/** 整行加粗或 ATX 标题 —— Codex 思考块惯用的小标题形态。 */
+function isHeadingLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (/^#{1,6}\s+\S/.test(trimmed)) return true;
+  return /^\*\*[^*]+\*\*$/.test(trimmed) || /^__[^_]+__$/.test(trimmed);
+}
+
+/**
+ * 把一段思考拆成「折叠行标题」与「展开体正文」。
+ *
+ * 当首行本身就是小标题时，正文剔除该行——否则折叠行和展开体首行完全重复，
+ * 展开后看起来像是同一句被说了两遍。首行不是标题时保留全文，折叠行只作预览。
+ */
+function splitReasoning(text: string): { title: string; body: string } {
+  const lines = text.split('\n');
+  const index = lines.findIndex((line) => line.trim());
+  if (index < 0) return { title: '', body: '' };
+  const head = lines[index] ?? '';
+  const title = stripInlineMarkdown(head);
+  if (!isHeadingLine(head)) return { title, body: text };
+  const body = lines
+    .slice(index + 1)
+    .join('\n')
+    .replace(/^\n+/, '');
+  return { title, body: body.trim() ? body : '' };
 }
 
 function elapsedLabel(startedAt?: string, completedAt?: string): string | undefined {
@@ -103,7 +139,11 @@ function ThinkRow({
 }) {
   const [open, setOpen] = useState(false);
   const isStreaming = item.status === 'streaming' || (item.status === undefined && streaming);
-  const summary = (isStreaming ? latestLine(item.text) : firstLine(item.text)) || '正在思考…';
+  const split = useMemo(() => splitReasoning(item.text), [item.text]);
+  // 流式期间跟随最新一行（进度感），完成后固定为该段思考的标题。
+  const summary =
+    (isStreaming ? stripInlineMarkdown(latestLine(item.text)) : split.title) || '正在思考…';
+  const body = isStreaming ? item.text : split.body;
   return (
     <div
       className={`shell-inline-process__think${open ? ' is-open' : ''}`}
@@ -131,9 +171,9 @@ function ThinkRow({
           />
         )}
       </button>
-      {open ? (
+      {open && body ? (
         <div className="shell-inline-process__think-body" data-testid="think-row-body">
-          <MarkdownContent text={item.text} streaming={false} />
+          <MarkdownContent text={body} streaming={false} />
         </div>
       ) : null}
     </div>

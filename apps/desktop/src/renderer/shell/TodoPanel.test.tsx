@@ -82,6 +82,24 @@ describe('projectTodoFromEvents', () => {
     expect(afterNextRun).toBeNull();
   });
 
+  it('projects task tools that kernels called through the platform MCP server', () => {
+    // Claude / Codex app-server 走 MCP，事件里的名字带 mcp__<server>__ 前缀；
+    // 精确匹配会漏判，任务面板就一直不刷新。
+    const events = [
+      event(1, 'run.started'),
+      toolEvent(2, 'mcp__sync-think-platform__TaskCreate', [
+        { title: 'A', status: 'pending' },
+        { title: 'B', status: 'pending' },
+      ]),
+      toolEvent(3, 'mcp__sync-think-platform__TaskUpdate', [
+        { title: 'A', status: 'completed' },
+        { title: 'B', status: 'in_progress' },
+      ]),
+    ];
+    const projected = projectTodoFromEvents(events)!;
+    expect(projected.items.map((item) => item.status)).toEqual(['completed', 'in_progress']);
+  });
+
   it('reads the plan from tool result payloads when present', () => {
     const events = [
       event(1, 'run.started'),

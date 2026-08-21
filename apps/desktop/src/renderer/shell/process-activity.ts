@@ -5,6 +5,7 @@
  * 「现在跑的是哪个工具」和「这是卡住了还是还在跑」。工具命名与参数摘要
  * 也集中在这里，保证面板头部的活动摘要和工具行的文字永远一致。
  */
+import { normalizeToolName } from '@sync-think/shared';
 import type { InlineProcessItem } from './ChatView.js';
 
 type ToolItem = Extract<InlineProcessItem, { kind: 'tool' }>;
@@ -32,7 +33,9 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 };
 
 export function friendlyToolName(name: string): string {
-  const normalized = name.trim().toLowerCase();
+  // 内核经 MCP 调用时名字是 mcp__sync-think-platform__file_read，直译会变成
+  // 「Mcp Sync Think Platform File Read」——先剥前缀才能落到中文映射表上。
+  const normalized = normalizeToolName(name.trim()).toLowerCase();
   const exact = TOOL_DISPLAY_NAMES[normalized];
   if (exact) return exact;
   const suffix = normalized.split(/[.:/]/).at(-1) ?? normalized;
