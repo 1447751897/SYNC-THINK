@@ -3,18 +3,35 @@
  * Every provider event stays on its own lightweight row; tool calls are never
  * grouped, and details expand in place without replacing the timeline.
  */
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Brain,
   Check,
   ChevronDown,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Circle,
   CircleAlert,
+  FileCode2,
+  FolderOpen,
+  GitBranch,
+  Globe,
+  ListTodo,
   LoaderCircle,
+  PencilLine,
+  Plug,
   RotateCw,
+  Search,
+  SquareTerminal,
+  Users,
   Wrench,
   X,
 } from 'lucide-react';
-import type { CommentaryTimelineSegment, ExecutionProcessStep } from '@sync-think/protocol';
+import type {
+  CommentaryTimelineSegment,
+  ExecutionProcessStep,
+  TaskPlanView,
+} from '@sync-think/protocol';
 import type { InlineProcessItem } from './ChatView.js';
 import { useAutoDisclosure } from './auto-disclosure.js';
 import { MarkdownContent } from './MarkdownContent.js';
@@ -25,8 +42,10 @@ import {
   deriveStallState,
   formatElapsedZh,
   friendlyToolName,
+  toolVisualKind,
   toolInputSummary,
   toolStatusOf,
+  type ProcessToolVisualKind,
 } from './process-activity.js';
 
 function latestLine(text: string): string {
@@ -133,11 +152,14 @@ function totalElapsedLabel(input: {
 function ThinkRow({
   item,
   streaming,
+  open,
+  onToggle,
 }: {
   item: Extract<InlineProcessItem, { kind: 'reasoning' }>;
   streaming?: boolean;
+  open: boolean;
+  onToggle: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const isStreaming = item.status === 'streaming' || (item.status === undefined && streaming);
   const split = useMemo(() => splitReasoning(item.text), [item.text]);
   // 流式期间跟随最新一行（进度感），完成后固定为该段思考的标题。
@@ -154,7 +176,7 @@ function ThinkRow({
         className="shell-inline-process__think-toggle"
         data-testid="think-row-toggle"
         aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
+        onClick={onToggle}
       >
         <Brain size={13} aria-hidden="true" />
         <span className="shell-inline-process__think-label">Think</span>
@@ -189,26 +211,103 @@ function ToolStatusIcon({ status }: { status: 'running' | 'completed' | 'failed'
   return <Check size={13} aria-hidden="true" />;
 }
 
+function ToolKindIcon({ kind }: { kind: ProcessToolVisualKind }) {
+  if (kind === 'read') return <FileCode2 size={13} />;
+  if (kind === 'write') return <PencilLine size={13} />;
+  if (kind === 'list') return <FolderOpen size={13} />;
+  if (kind === 'command') return <SquareTerminal size={13} />;
+  if (kind === 'git') return <GitBranch size={13} />;
+  if (kind === 'browser') return <Globe size={13} />;
+  if (kind === 'search') return <Search size={13} />;
+  if (kind === 'mcp') return <Plug size={13} />;
+  return <Wrench size={13} />;
+}
+
 const TOOL_STATUS_TEXT: Readonly<Record<'running' | 'completed' | 'failed', string>> = {
   running: '运行中',
   completed: '完成',
   failed: '失败',
 };
 
+function structuredFields(text: string): ReadonlyArray<readonly [string, unknown]> | undefined {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const entries = Object.entries(parsed as Record<string, unknown>);
+    return entries.length > 0 ? entries : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function structuredValueText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null) return 'null';
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function ToolPayload({
+  text,
+  testId,
+  failed = false,
+}: {
+  text: string;
+  testId: string;
+  failed?: boolean;
+}) {
+  const fields = structuredFields(text);
+  if (!fields) {
+    return (
+      <pre
+        className={`shell-inline-process__tool-code${failed ? ' is-failed' : ''}`}
+        data-testid={testId}
+      >
+        {text}
+      </pre>
+    );
+  }
+  return (
+    <dl
+      className={`shell-inline-process__structured${failed ? ' is-failed' : ''}`}
+      data-testid={testId}
+    >
+      {fields.map(([key, value]) => {
+        const nested = value !== null && typeof value === 'object';
+        return (
+          <div className="shell-inline-process__structured-row" key={key}>
+            <dt>{key}</dt>
+            <dd className={nested ? 'is-nested' : undefined}>{structuredValueText(value)}</dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+}
+
 function ToolRow({
   item,
   now,
+  open,
+  onToggle,
 }: {
   item: Extract<InlineProcessItem, { kind: 'tool' }>;
   /** 面板层的秒级时钟；仅运行中的行会用到。 */
   now: number;
+  open: boolean;
+  onToggle: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const status = toolStatusOf(item);
   const summary = toolInputSummary(item);
   const elapsed = elapsedLabel(item.startedAt, item.completedAt);
   const liveElapsed = status === 'running' ? runningElapsedLabel(item.startedAt, now) : undefined;
+  const rowElapsed = status === 'running' ? liveElapsed : elapsed;
   const displayName = item.displayName?.trim() || friendlyToolName(item.name);
+  const visualKind = toolVisualKind(item.name);
   const statusText = TOOL_STATUS_TEXT[status];
   const progressLine = status === 'running' ? item.progressLine?.trim() : undefined;
   return (
@@ -221,19 +320,24 @@ function ToolRow({
         type="button"
         className="shell-inline-process__tool-toggle"
         aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
+        onClick={onToggle}
       >
-        <span className="shell-inline-process__tool-icon" aria-hidden="true">
-          <Wrench size={13} />
+        <span
+          className="shell-inline-process__tool-icon"
+          data-testid="process-tool-kind"
+          data-kind={visualKind}
+          aria-hidden="true"
+        >
+          <ToolKindIcon kind={visualKind} />
         </span>
         <span className="shell-inline-process__tool-name">{displayName}</span>
         {summary ? <span className="shell-inline-process__tool-summary">{summary}</span> : null}
-        {liveElapsed ? (
+        {rowElapsed ? (
           <span
             className="shell-inline-process__tool-elapsed"
             data-testid="inline-process-tool-elapsed"
           >
-            {liveElapsed}
+            {rowElapsed}
           </span>
         ) : null}
         <span
@@ -274,18 +378,20 @@ function ToolRow({
           {item.argumentsJson ? (
             <div className="shell-inline-process__detail-block">
               <span>参数</span>
-              <pre className="shell-inline-process__tool-code">{item.argumentsJson}</pre>
+              <ToolPayload
+                text={item.argumentsJson}
+                testId="inline-process-tool-arguments"
+              />
             </div>
           ) : null}
           {item.result !== undefined ? (
             <div className="shell-inline-process__detail-block">
               <span>{status === 'failed' ? '错误' : '输出'}</span>
-              <pre
-                className={`shell-inline-process__tool-code${status === 'failed' ? ' is-failed' : ''}`}
-                data-testid="inline-process-tool-result"
-              >
-                {item.result}
-              </pre>
+              <ToolPayload
+                text={item.result}
+                testId="inline-process-tool-result"
+                failed={status === 'failed'}
+              />
             </div>
           ) : null}
         </div>
@@ -323,14 +429,20 @@ function ProcessItemView({
   item,
   streaming,
   now,
+  open,
+  onToggle,
 }: {
   item: InlineProcessItem;
   streaming?: boolean;
   now: number;
+  open: boolean;
+  onToggle: () => void;
 }) {
-  if (item.kind === 'reasoning') return <ThinkRow item={item} streaming={streaming} />;
+  if (item.kind === 'reasoning') {
+    return <ThinkRow item={item} streaming={streaming} open={open} onToggle={onToggle} />;
+  }
   if (item.kind === 'tool') {
-    return <ToolRow item={item} now={now} />;
+    return <ToolRow item={item} now={now} open={open} onToggle={onToggle} />;
   }
   if (item.kind === 'status') return <StatusRow item={item} />;
   return (
@@ -340,6 +452,52 @@ function ProcessItemView({
     >
       <MarkdownContent text={item.text} streaming={false} />
     </div>
+  );
+}
+
+function processItemKey(item: InlineProcessItem, index: number): string {
+  if (item.kind === 'tool' && item.toolCallId) return `tool-${item.toolCallId}`;
+  if (item.id) return item.id;
+  if (item.sequence !== undefined) return `${item.kind}-${item.sequence}`;
+  return `${item.kind}-${index}`;
+}
+
+function TurnPlanSection({ plan }: { plan: TaskPlanView }) {
+  if (plan.items.length === 0) return null;
+  return (
+    <section className="shell-process-plan" data-testid="process-turn-plan">
+      <div className="shell-process-plan__header">
+        <ListTodo size={13} aria-hidden="true" />
+        <span className="shell-process-plan__title">本轮计划</span>
+        <span className="shell-process-plan__progress">
+          {plan.completed}/{plan.total}
+        </span>
+      </div>
+      <ol className="shell-process-plan__list">
+        {plan.items.map((item, index) => (
+          <li
+            key={`${index}-${item.title}`}
+            className="shell-process-plan__item"
+            data-status={item.status}
+          >
+            <span className="shell-process-plan__status" aria-label={item.status}>
+              {item.status === 'completed' ? (
+                <Check size={12} aria-hidden="true" />
+              ) : item.status === 'in_progress' ? (
+                <LoaderCircle
+                  size={12}
+                  className="shell-inline-process__spin"
+                  aria-hidden="true"
+                />
+              ) : (
+                <Circle size={10} aria-hidden="true" />
+              )}
+            </span>
+            <span className="shell-process-plan__item-title">{item.title}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -354,6 +512,8 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   completedAt,
   durationMs,
   defaultOpen = false,
+  turnPlan,
+  agentTaskContent,
   supplementalContent,
 }: {
   items: readonly InlineProcessItem[];
@@ -367,6 +527,10 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   durationMs?: number;
   /** Deterministic fixture override; production follows the run phase. */
   defaultOpen?: boolean;
+  /** Model-authored checklist for this turn. */
+  turnPlan?: TaskPlanView;
+  /** Reserved for real delegated task projections; omitted when no tasks exist. */
+  agentTaskContent?: ReactNode;
   supplementalContent?: ReactNode;
 }) {
   const orderedItems = useMemo<readonly InlineProcessItem[]>(() => {
@@ -398,6 +562,27 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
     autoOpen: defaultOpen || Boolean(streaming && !answerStarted),
     resetKey: runId,
   });
+  const [expandedItemKeys, setExpandedItemKeys] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    setExpandedItemKeys(new Set());
+  }, [runId]);
+  const toggleItem = useCallback((itemKey: string) => {
+    setExpandedItemKeys((current) => {
+      const next = new Set(current);
+      if (next.has(itemKey)) next.delete(itemKey);
+      else next.add(itemKey);
+      return next;
+    });
+  }, []);
+  const expandableItemKeys = useMemo(
+    () =>
+      orderedItems.flatMap((item, index) =>
+        item.kind === 'reasoning' || item.kind === 'tool'
+          ? [processItemKey(item, index)]
+          : [],
+      ),
+    [orderedItems],
+  );
   const [clockNow, setClockNow] = useState(() => Date.now());
   // 面板层唯一的秒级时钟，驱动总耗时、每行运行耗时和停滞分级。运行中就必须
   // 走（不能再要求 startedAt）——工具行的耗时只依赖各自的 startedAt。
@@ -439,7 +624,10 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
   });
   const activityIdle = activity ? formatElapsedZh(stall.idleMs) : undefined;
 
-  if (orderedItems.length === 0 && !supplementalContent) return null;
+  const hasTurnPlan = Boolean(turnPlan?.items.length);
+  if (orderedItems.length === 0 && !hasTurnPlan && !agentTaskContent && !supplementalContent) {
+    return null;
+  }
   return (
     <section
       className={`shell-process-panel${open ? ' is-open' : ''}`}
@@ -489,21 +677,65 @@ export const InlineProcessFlow = memo(function InlineProcessFlow({
       </button>
       {open ? (
         <div className="shell-process-panel__body" data-testid="process-panel-body">
+          {turnPlan ? <TurnPlanSection plan={turnPlan} /> : null}
+          {agentTaskContent ? (
+            <section className="shell-process-agent-tasks" data-testid="process-agent-tasks">
+              <div className="shell-process-agent-tasks__header">
+                <Users size={13} aria-hidden="true" />
+                <span>智能体任务</span>
+              </div>
+              <div className="shell-process-agent-tasks__body">{agentTaskContent}</div>
+            </section>
+          ) : null}
+          {expandableItemKeys.length > 0 ? (
+            <div className="shell-process-panel__toolbar" aria-label="过程详情控制">
+              <button
+                type="button"
+                className="shell-process-panel__toolbar-button"
+                onClick={() => setExpandedItemKeys(new Set(expandableItemKeys))}
+              >
+                <ChevronsUpDown size={12} aria-hidden="true" />
+                <span>全部展开</span>
+              </button>
+              <button
+                type="button"
+                className="shell-process-panel__toolbar-button"
+                onClick={() => setExpandedItemKeys(new Set())}
+              >
+                <ChevronsDownUp size={12} aria-hidden="true" />
+                <span>全部收起</span>
+              </button>
+            </div>
+          ) : null}
           {orderedItems.length > 0 ? (
             <div className="shell-inline-process" data-testid="inline-process-flow">
               {orderedItems.map((item, index) => {
                 // Stable key first (toolCallId / id / sequence) so status
                 // updates reuse the row instead of remounting it.
-                const itemKey =
-                  item.kind === 'tool' && item.toolCallId
-                    ? `tool-${item.toolCallId}`
-                    : item.id
-                      ? item.id
-                      : item.sequence !== undefined
-                        ? `${item.kind}-${item.sequence}`
-                        : `${item.kind}-${index}`;
+                const itemKey = processItemKey(item, index);
                 return (
-                  <ProcessItemView key={itemKey} item={item} streaming={streaming} now={clockNow} />
+                  <div
+                    key={itemKey}
+                    className="shell-inline-process__entry"
+                    data-testid="process-entry"
+                  >
+                    <span
+                      className="shell-inline-process__entry-index"
+                      data-testid="process-entry-index"
+                      aria-hidden="true"
+                    >
+                      {String(index + 1).padStart(2, '0')}
+                    </span>
+                    <div className="shell-inline-process__entry-content">
+                      <ProcessItemView
+                        item={item}
+                        streaming={streaming}
+                        now={clockNow}
+                        open={expandedItemKeys.has(itemKey)}
+                        onToggle={() => toggleItem(itemKey)}
+                      />
+                    </div>
+                  </div>
                 );
               })}
             </div>

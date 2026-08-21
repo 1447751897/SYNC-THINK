@@ -10,6 +10,17 @@ import type { InlineProcessItem } from './ChatView.js';
 
 type ToolItem = Extract<InlineProcessItem, { kind: 'tool' }>;
 
+export type ProcessToolVisualKind =
+  | 'read'
+  | 'write'
+  | 'list'
+  | 'command'
+  | 'git'
+  | 'browser'
+  | 'search'
+  | 'mcp'
+  | 'other';
+
 const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   read: '读取文件',
   read_file: '读取文件',
@@ -48,6 +59,22 @@ export function friendlyToolName(name: string): string {
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(' ') || '工具'
   );
+}
+
+/** Stable visual category for the compact icon shown on each tool row. */
+export function toolVisualKind(name: string): ProcessToolVisualKind {
+  const normalized = normalizeToolName(name.trim()).toLowerCase();
+  if (/^(read|read_file|file_read|view_image)$/.test(normalized)) return 'read';
+  if (/^(write|write_file|file_write|edit|edit_file|apply_patch)$/.test(normalized)) {
+    return 'write';
+  }
+  if (/^(list_files|file_list|glob)$/.test(normalized)) return 'list';
+  if (/^(bash|execute_command|exec_command|run_command)$/.test(normalized)) return 'command';
+  if (normalized.startsWith('git_')) return 'git';
+  if (/^(search_query|web_search|search_web|grep|file_search)$/.test(normalized)) return 'search';
+  if (/^(open|web_fetch|browser_)/.test(normalized)) return 'browser';
+  if (name.trim().toLowerCase().startsWith('mcp__')) return 'mcp';
+  return 'other';
 }
 
 function compactValue(value: unknown): string | undefined {

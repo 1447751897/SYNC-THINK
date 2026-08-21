@@ -13,6 +13,7 @@ import {
   friendlyToolName,
   toolInputSummary,
   toolStatusOf,
+  toolVisualKind,
 } from './process-activity.js';
 
 const runningCommand: InlineProcessItem = {
@@ -207,6 +208,18 @@ describe('shared tool naming', () => {
   it('strips the MCP wire prefix so kernel-invoked platform tools keep their label', () => {
     expect(friendlyToolName('mcp__sync-think-platform__read_file')).toBe('读取文件');
     expect(friendlyToolName('mcp__playwright__browser_click')).toBe('Browser Click');
+  });
+
+  it('classifies tool rows into stable visual kinds', () => {
+    expect(toolVisualKind('read_file')).toBe('read');
+    expect(toolVisualKind('apply_patch')).toBe('write');
+    expect(toolVisualKind('list_files')).toBe('list');
+    expect(toolVisualKind('run_command')).toBe('command');
+    expect(toolVisualKind('git_status')).toBe('git');
+    expect(toolVisualKind('browser_click')).toBe('browser');
+    expect(toolVisualKind('search_query')).toBe('search');
+    expect(toolVisualKind('mcp__custom-server__custom_tool')).toBe('mcp');
+    expect(toolVisualKind('custom_tool')).toBe('other');
   });
 
   it('summarizes the key argument', () => {

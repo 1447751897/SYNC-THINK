@@ -5844,6 +5844,7 @@ const MessageBubble = memo(function MessageBubble({
           startedAt={processView?.startedAt ?? timelineTiming.startedAt}
           completedAt={processView?.completedAt ?? timelineTiming.completedAt}
           durationMs={processView?.durationMs}
+          turnPlan={processView?.taskPlan}
           supplementalContent={
             message.processStatus ||
             message.terminalState ||

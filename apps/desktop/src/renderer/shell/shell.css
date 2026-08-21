@@ -4101,6 +4101,127 @@ body {
   margin: 0;
 }
 
+.shell-process-plan,
+.shell-process-agent-tasks {
+  min-width: 0;
+  padding: 3px 4px 7px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 46%, transparent);
+}
+
+.shell-process-plan__header,
+.shell-process-agent-tasks__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.shell-process-plan__title {
+  min-width: 0;
+}
+
+.shell-process-plan__progress {
+  margin-left: auto;
+  color: var(--color-text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.shell-process-plan__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shell-process-plan__item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  min-height: 22px;
+  padding: 2px 0;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.shell-process-plan__item[data-status='in_progress'] {
+  color: var(--color-text-secondary);
+}
+
+.shell-process-plan__item[data-status='completed'] .shell-process-plan__item-title {
+  opacity: 0.72;
+}
+
+.shell-process-plan__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 18px;
+  color: var(--color-text-faint);
+}
+
+.shell-process-plan__item[data-status='in_progress'] .shell-process-plan__status {
+  color: var(--color-accent);
+}
+
+.shell-process-plan__item[data-status='completed'] .shell-process-plan__status {
+  color: color-mix(in srgb, var(--color-accent) 72%, var(--color-text-secondary));
+}
+
+.shell-process-plan__item-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.shell-process-agent-tasks__body {
+  min-width: 0;
+  padding: 2px 0 0 19px;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.shell-process-panel__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 24px;
+}
+
+.shell-process-panel__toolbar-button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.shell-process-panel__toolbar-button:hover {
+  background: color-mix(in srgb, var(--color-accent-soft) 32%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.shell-process-panel__toolbar-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
 .shell-process-panel__supplemental {
   min-width: 0;
 }
@@ -4146,6 +4267,27 @@ body {
   flex-direction: column;
   gap: 3px;
   margin: 1px 0 8px;
+}
+
+.shell-inline-process__entry {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+}
+
+.shell-inline-process__entry-index {
+  padding-top: 6px;
+  color: var(--color-text-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.68;
+}
+
+.shell-inline-process__entry-content {
+  min-width: 0;
 }
 
 .shell-inline-process__think,
@@ -4214,8 +4356,7 @@ body {
   line-height: 1.6;
 }
 
-/* 运行中工具的自增耗时。终态耗时仍留在展开详情里，这里只解决
-   「它到底还在跑吗」——所以只有 running 行会出现。 */
+/* 工具主行耗时：运行中由面板唯一时钟自增，终态冻结为最终耗时。 */
 .shell-inline-process__tool-elapsed {
   flex: none;
   font-size: 11.5px;
@@ -4336,6 +4477,54 @@ body {
 
 .shell-inline-process__tool-code.is-failed {
   border-color: color-mix(in srgb, var(--color-error) 32%, var(--color-border));
+  color: var(--color-error);
+}
+
+.shell-inline-process__structured {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-elevated) 65%, var(--color-surface));
+}
+
+.shell-inline-process__structured.is-failed {
+  border-color: color-mix(in srgb, var(--color-error) 32%, var(--color-border));
+}
+
+.shell-inline-process__structured-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.32fr) minmax(0, 1fr);
+  min-width: 0;
+}
+
+.shell-inline-process__structured-row + .shell-inline-process__structured-row {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 46%, transparent);
+}
+
+.shell-inline-process__structured-row dt,
+.shell-inline-process__structured-row dd {
+  min-width: 0;
+  margin: 0;
+  padding: 5px 7px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.shell-inline-process__structured-row dt {
+  color: var(--color-text-faint);
+  background: color-mix(in srgb, var(--color-border) 18%, transparent);
+}
+
+.shell-inline-process__structured-row dd {
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+}
+
+.shell-inline-process__structured.is-failed .shell-inline-process__structured-row dd {
   color: var(--color-error);
 }
 

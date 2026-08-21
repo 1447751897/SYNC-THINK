@@ -145,6 +145,60 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('tool-batch')).toBeNull();
   });
 
+  it('numbers process rows in durable order and identifies the tool kind', () => {
+    render(
+      <InlineProcessFlow items={[reasoningItem, commentaryItem, toolItem]} defaultOpen />,
+    );
+
+    const entries = screen.getAllByTestId('process-entry');
+    expect(entries).toHaveLength(3);
+    expect(entries.map((entry) => within(entry).getByTestId('process-entry-index').textContent)).toEqual([
+      '01',
+      '02',
+      '03',
+    ]);
+    expect(
+      within(entries[2]).getByTestId('process-tool-kind').getAttribute('data-kind'),
+    ).toBe('read');
+  });
+
+  it('shows the turn plan before the timeline and only exposes real agent tasks', () => {
+    const turnPlan = {
+      items: [
+        { title: '确认执行入口', status: 'completed' as const },
+        { title: '实现过程面板', status: 'in_progress' as const },
+        { title: '完成回归验证', status: 'pending' as const },
+      ],
+      completed: 1,
+      total: 3,
+    };
+    const { rerender } = render(
+      <InlineProcessFlow items={[toolItem]} turnPlan={turnPlan} defaultOpen />,
+    );
+
+    const plan = screen.getByTestId('process-turn-plan');
+    const timeline = screen.getByTestId('inline-process-flow');
+    expect(follows(plan, timeline)).toBe(true);
+    expect(plan.textContent).toContain('本轮计划');
+    expect(plan.textContent).toContain('1/3');
+    expect(within(plan).getByText('实现过程面板').closest('li')?.dataset.status).toBe(
+      'in_progress',
+    );
+    expect(screen.queryByTestId('process-agent-tasks')).toBeNull();
+
+    rerender(
+      <InlineProcessFlow
+        items={[toolItem]}
+        turnPlan={turnPlan}
+        agentTaskContent={<div>审查持久会话实现</div>}
+        defaultOpen
+      />,
+    );
+    expect(screen.getByTestId('process-agent-tasks').textContent).toContain(
+      '审查持久会话实现',
+    );
+  });
+
   it('keeps repeated adjacent tool calls as separate rows without count badges', () => {
     render(<InlineProcessFlow items={[toolItem, secondReadTool]} defaultOpen />);
     const tools = screen.getAllByTestId('inline-process-tool');
@@ -154,6 +208,23 @@ describe('InlineProcessFlow', () => {
     expect(tools[1].textContent).toContain('b.txt');
     expect(screen.queryByText(/×2|2 个调用/)).toBeNull();
     expect(screen.queryByTestId('tool-batch')).toBeNull();
+  });
+
+  it('expands and collapses all available row details from the panel toolbar', () => {
+    render(
+      <InlineProcessFlow items={[reasoningItem, toolItem, secondReadTool]} defaultOpen />,
+    );
+
+    expect(screen.queryByTestId('think-row-body')).toBeNull();
+    expect(document.querySelectorAll('.shell-inline-process__tool-body')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: '全部展开' }));
+    expect(screen.getByTestId('think-row-body')).toBeTruthy();
+    expect(document.querySelectorAll('.shell-inline-process__tool-body')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: '全部收起' }));
+    expect(screen.queryByTestId('think-row-body')).toBeNull();
+    expect(document.querySelectorAll('.shell-inline-process__tool-body')).toHaveLength(0);
   });
 
   it('shows a friendly tool name and key input, then reveals raw details in place', () => {
@@ -171,6 +242,36 @@ describe('InlineProcessFlow', () => {
     expect(tool.textContent).toContain('原始工具');
     expect(tool.textContent).toContain('read_file');
     expect(screen.getByTestId('inline-process-tool-result').textContent).toContain('a.txt: 1 line');
+  });
+
+  it('renders JSON arguments and results as structured key-value details', () => {
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            ...toolItem,
+            argumentsJson:
+              '{"path":"a.txt","line":2,"options":{"encoding":"utf8"}}',
+            result: '{"ok":true,"lines":1}',
+          },
+        ]}
+        defaultOpen
+      />,
+    );
+
+    fireEvent.click(within(screen.getByTestId('inline-process-tool')).getByRole('button'));
+    const argumentsView = screen.getByTestId('inline-process-tool-arguments');
+    expect(within(argumentsView).getByText('path')).toBeTruthy();
+    expect(within(argumentsView).getByText('a.txt')).toBeTruthy();
+    expect(within(argumentsView).getByText('line')).toBeTruthy();
+    expect(within(argumentsView).getByText('2')).toBeTruthy();
+    expect(within(argumentsView).getByText('options')).toBeTruthy();
+    expect(argumentsView.textContent).toContain('encoding');
+
+    const resultView = screen.getByTestId('inline-process-tool-result');
+    expect(within(resultView).getByText('ok')).toBeTruthy();
+    expect(within(resultView).getByText('true')).toBeTruthy();
+    expect(within(resultView).getByText('lines')).toBeTruthy();
   });
 
   it('collapses Think to one summary line and expands the full Markdown body', () => {
@@ -285,8 +386,26 @@ describe('InlineProcessFlow', () => {
         defaultOpen
       />,
     );
-    fireEvent.click(within(screen.getByTestId('inline-process-tool')).getByRole('button'));
-    expect(screen.getByText('2.0s')).toBeTruthy();
+    const tool = screen.getByTestId('inline-process-tool');
+    fireEvent.click(within(tool).getByRole('button'));
+    expect(tool.querySelector('.shell-inline-process__tool-body')?.textContent).toContain('2.0s');
+  });
+
+  it('keeps a completed tool duration visible on the collapsed row', () => {
+    render(
+      <InlineProcessFlow
+        items={[
+          {
+            ...toolItem,
+            startedAt: '2026-08-16T10:00:00.000Z',
+            completedAt: '2026-08-16T10:00:02.000Z',
+          },
+        ]}
+        defaultOpen
+      />,
+    );
+
+    expect(screen.getByTestId('inline-process-tool-elapsed').textContent).toBe('2.0s');
   });
 
   it('names the running tool in the header so a collapsed panel still says what is happening', () => {
@@ -326,7 +445,7 @@ describe('InlineProcessFlow', () => {
     expect(screen.queryByTestId('process-panel-activity')).toBeNull();
   });
 
-  it('counts up elapsed time on a running tool row and drops it once completed', () => {
+  it('counts up elapsed time on a running tool row and freezes it once completed', () => {
     vi.useFakeTimers();
     try {
       const startedAt = new Date(Date.now() - 8_000).toISOString();
@@ -345,7 +464,7 @@ describe('InlineProcessFlow', () => {
       });
       expect(screen.getByTestId('inline-process-tool-elapsed').textContent).toBe('11s');
 
-      // 终态耗时回到展开详情里，主行不再自增。
+      // 终态耗时冻结在主行，便于不展开就比较各步骤耗时。
       rerender(
         <InlineProcessFlow
           items={[
@@ -362,7 +481,7 @@ describe('InlineProcessFlow', () => {
           defaultOpen
         />,
       );
-      expect(screen.queryByTestId('inline-process-tool-elapsed')).toBeNull();
+      expect(screen.getByTestId('inline-process-tool-elapsed').textContent).toBe('11s');
     } finally {
       vi.useRealTimers();
     }
