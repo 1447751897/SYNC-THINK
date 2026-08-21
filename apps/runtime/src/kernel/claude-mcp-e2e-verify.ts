@@ -1,8 +1,9 @@
 /**
  * Real Claude Code + platform MCP channel verification (Slice 5 acceptance).
  *
- * Spawns the locally installed claude through ClaudeCodeKernelAdapter with the
- * platform broker wired, routes Claude's Anthropic request through the open
+ * Runs Claude through ClaudeSdkKernelAdapter (the Agent SDK ships its own CLI
+ * binary) with the platform broker wired, routes Claude's Anthropic request
+ * through the open
  * gateway into an enabled OpenAI provider, asks CC to call the host file tools
  * over MCP, and prints the normalized events. The permission bridge
  * auto-approves (CC's own tool calls); the platform MCP tool calls execute
@@ -35,7 +36,7 @@ import {
   type GatewayUpstreamProtocol,
 } from '../gateway/tickets.js';
 import { createRuntimeSecureStore, resolveRuntimeDatabasePath } from '../persistence.js';
-import { ClaudeCodeKernelAdapter } from './claude-code-adapter.js';
+import { ClaudeSdkKernelAdapter } from './claude-sdk-adapter.js';
 import { startKernelMcpBroker } from './mcp-broker.js';
 import { executePlatformTool, PLATFORM_MCP_TOOL_DEFINITIONS } from './platform-tools.js';
 
@@ -149,7 +150,7 @@ async function main(): Promise<number> {
   let secureStore: ReturnType<typeof createRuntimeSecureStore> | undefined;
   let gateway: OpenGatewayServer | undefined;
   let broker: Awaited<ReturnType<typeof startKernelMcpBroker>> | undefined;
-  let adapter: ClaudeCodeKernelAdapter | undefined;
+  let adapter: ClaudeSdkKernelAdapter | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let runId: string | undefined;
   let providerUsage: GatewayRunUsage[] = [];
@@ -221,7 +222,7 @@ async function main(): Promise<number> {
       },
     });
 
-    adapter = new ClaudeCodeKernelAdapter();
+    adapter = new ClaudeSdkKernelAdapter();
     adapter.onPermissionRequest((request) => {
       console.log('[cc] permission request', request.toolName, request.requestId);
       setTimeout(() => adapter?.respondPermission(request.requestId, { allow: true }), 30);

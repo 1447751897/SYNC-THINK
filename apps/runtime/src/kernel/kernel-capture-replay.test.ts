@@ -1,16 +1,66 @@
+/**
+ * Adapter mapping verified against a real captured Claude turn.
+ *
+ * `claude-2.1.222-partial-capture.jsonl` was captured from the real CLI on
+ * 2026-08-14 (see .data/kernel-capture/cc-capture.mjs) and only trimmed for
+ * size + session id. Every line in it except the transport-level
+ * `control_response` is exactly one `SDKMessage` — the CLI's stream-json output
+ * is the serialized form of the same objects the SDK hands to consumers — so
+ * the capture keeps proving the mapper against genuine shapes after the
+ * migration off the CLI:
+ *   stream_event content_block_delta (thinking_delta / input_json_delta / text_delta)
+ *   assistant messages (tool_use + usage)
+ *   top-level `user` tool_result (string content form)
+ *
+ * The `control_response` line is dropped here because it belongs to the wire
+ * protocol the SDK now owns; it never reaches a consumer.
+ */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { KernelEvent, KernelRequest } from '@sync-think/shared';
-import { ClaudeCodeKernelAdapter } from './claude-code-adapter.js';
-import { startKernelProcess } from './process.js';
+import { ClaudeSdkKernelAdapter } from './claude-sdk-adapter.js';
 
-const claudeFixture = fileURLToPath(
-  new URL('./fixtures/claude-partial-capture-fixture.mjs', import.meta.url),
+const capturePath = fileURLToPath(
+  new URL('./fixtures/claude-2.1.222-partial-capture.jsonl', import.meta.url),
 );
 
-function makeRequest(kernelId: string, overrides: Partial<KernelRequest> = {}): KernelRequest {
+/** Load the capture as the SDKMessage sequence a consumer would observe. */
+function loadCapturedMessages(): SDKMessage[] {
+  return readFileSync(capturePath, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as { type: string })
+    .filter((message) => message.type !== 'control_response')
+    .map((message) => message as unknown as SDKMessage);
+}
+
+/** Replay a fixed SDKMessage sequence through the SDK's query() seam. */
+function replayQuery(messages: SDKMessage[]) {
+  return ((params: { options?: Options }) => {
+    void params;
+    async function* iterate(): AsyncGenerator<SDKMessage, void> {
+      for (const message of messages) yield message;
+    }
+    const iterator = iterate();
+    const handle: Partial<Query> = {
+      next: () => iterator.next(),
+      return: (value?: unknown) => iterator.return(value as never),
+      throw: (error?: unknown) => iterator.throw(error),
+      [Symbol.asyncIterator]() {
+        return this as AsyncGenerator<SDKMessage, void>;
+      },
+      interrupt: async () => undefined,
+      close: () => undefined,
+    };
+    return handle as Query;
+  }) as never;
+}
+
+function makeRequest(overrides: Partial<KernelRequest> = {}): KernelRequest {
   return {
-    kernelId,
+    kernelId: 'claude-code',
     model: 'capture-model',
     providerModelId: 'capture-model',
     userText: 'replay the captured turn',
@@ -26,29 +76,16 @@ function makeRequest(kernelId: string, overrides: Partial<KernelRequest> = {}): 
   };
 }
 
-async function collect(
-  adapter: {
-    start(request: KernelRequest): AsyncIterable<KernelEvent>;
-    cancel(): Promise<void>;
-  },
-  request: KernelRequest,
-): Promise<KernelEvent[]> {
-  const events: KernelEvent[] = [];
-  for await (const event of adapter.start(request)) {
-    events.push(event);
-    if (event.type === 'terminal') break;
-  }
-  await adapter.cancel().catch(() => undefined);
-  return events;
-}
-
 describe('kernel adapters against real captured CLI streams', () => {
   it('maps claude 2.1.222 partial text, reasoning and the echoed tool_result exactly once', async () => {
-    const adapter = new ClaudeCodeKernelAdapter({
-      spawn: (args, env, cwd) =>
-        startKernelProcess({ command: process.execPath, args: [claudeFixture, ...args], cwd, env }),
-    });
-    const events = await collect(adapter, makeRequest('claude-code'));
+    const adapter = new ClaudeSdkKernelAdapter({ query: replayQuery(loadCapturedMessages()) });
+
+    const events: KernelEvent[] = [];
+    for await (const event of adapter.start(makeRequest())) {
+      events.push(event);
+      if (event.type === 'terminal') break;
+    }
+    await adapter.cancel().catch(() => undefined);
 
     // Text arrives as stream_event deltas; the whole-message echo must not
     // duplicate it (this run streamed exactly one text delta: "alpha").
@@ -80,5 +117,4 @@ describe('kernel adapters against real captured CLI streams', () => {
 
     expect(events.at(-1)).toMatchObject({ type: 'terminal', status: 'completed' });
   }, 20_000);
-
 });

@@ -38,3 +38,7 @@ apps/desktop/release
 # Local scratch / temp artifacts
 .codex/
 sync-think-arch.html
+# local manual-restart helper, screenshots and scratch notes
+.restart-app.ps1
+.shots/
+.zcode/

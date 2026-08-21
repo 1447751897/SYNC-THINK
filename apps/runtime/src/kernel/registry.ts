@@ -14,7 +14,7 @@ import type {
 import { KERNEL_COMMANDS, probeKernel } from './detect.js';
 import { isVersionSupported } from './version-compat.js';
 import { nativeKernelAdapter } from './native-kernel-adapter.js';
-import { ClaudeCodeKernelAdapter } from './claude-code-adapter.js';
+import { ClaudeSdkKernelAdapter } from './claude-sdk-adapter.js';
 import { CodexAppServerKernelAdapter } from './codex-app-server-adapter.js';
 
 export interface KernelRegistryEntry {
@@ -85,6 +85,49 @@ function toDetectionResult(
   };
 }
 
+/**
+ * Detection for kernels whose binary ships inside an SDK dependency.
+ *
+ * There is no PATH lookup and no "not installed" state to guide the user out
+ * of: if the dependency resolves, the kernel is usable. A null version means a
+ * broken install (missing/unreadable manifest), which we surface as
+ * not-installed so the selector does not offer a kernel that cannot start.
+ */
+async function bundledDetectionResult(
+  entry: Pick<
+    KernelRegistryEntry,
+    | 'id'
+    | 'name'
+    | 'icon'
+    | 'capabilities'
+    | 'knownGoodVersions'
+    | 'minimumSupportedVersion'
+    | 'upperExclusiveVersion'
+  >,
+  adapter: KernelAdapter,
+): Promise<KernelDetectionResult> {
+  const version = await adapter.detectVersion();
+  return {
+    kernelId: entry.id,
+    name: entry.name,
+    icon: entry.icon,
+    capabilities: entry.capabilities,
+    installed: version !== null,
+    version,
+    // Bundled binaries have no host-visible executable to display.
+    executablePath: null,
+    knownGood: isVersionSupported(version, {
+      verifiedVersions: entry.knownGoodVersions,
+      ...(entry.minimumSupportedVersion
+        ? { minimumSupportedVersion: entry.minimumSupportedVersion }
+        : {}),
+      ...(entry.upperExclusiveVersion
+        ? { upperExclusiveVersion: entry.upperExclusiveVersion }
+        : {}),
+    }),
+  };
+}
+
 export function buildKernelRegistry(): KernelRegistryEntry[] {
   const claudeCodeEntry: KernelRegistryEntry = {
     id: 'claude-code',
@@ -102,14 +145,15 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
       // 200k native budget, so the host must trim to min(configured, 200k).
       contextWindow: { nativeLimit: 200_000, overridable: false },
     },
-    knownGoodVersions: ['2.1.222'],
+    knownGoodVersions: ['2.1.222', '2.1.238'],
     // Accept the whole 2.x line; 3.0 must be re-validated before it is trusted.
     minimumSupportedVersion: '2.0.0',
     upperExclusiveVersion: '3.0.0',
-    installCommand: 'npm i -g @anthropic-ai/claude-code',
-    // Fresh instance per run — the adapter holds per-run process state.
-    createAdapter: () => new ClaudeCodeKernelAdapter(),
-    detect: async () => toDetectionResult(claudeCodeEntry),
+    // No install command: the Agent SDK dependency ships the CLI binary, so a
+    // globally installed `claude` is neither required nor consulted.
+    // Fresh instance per run — the adapter holds per-run session state.
+    createAdapter: () => new ClaudeSdkKernelAdapter(),
+    detect: async () => bundledDetectionResult(claudeCodeEntry, new ClaudeSdkKernelAdapter()),
   };
   const codexEntry: KernelRegistryEntry = {
     id: 'codex',

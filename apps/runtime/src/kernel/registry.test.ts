@@ -55,9 +55,14 @@ describe('kernel registry contract', () => {
       contextWindow: { nativeLimit: 200_000, overridable: false },
     });
     expect(claudeCode.knownGoodVersions).toContain('2.1.222');
+    // The binary bundled with the Agent SDK dependency.
+    expect(claudeCode.knownGoodVersions).toContain('2.1.238');
     // Range policy: newer 2.x builds must not regress to「版本未验证」.
     expect(claudeCode.minimumSupportedVersion).toBe('2.0.0');
     expect(claudeCode.upperExclusiveVersion).toBe('3.0.0');
+    // The SDK ships the CLI, so there is nothing for the user to install and no
+    // install command may be offered (it would point at an unused global copy).
+    expect(claudeCode.installCommand).toBeUndefined();
 
     const codex = registry.find((entry) => entry.id === 'codex')!;
     expect(codex.kind).toBe('subprocess');
@@ -104,9 +109,26 @@ describe('kernel registry contract', () => {
       if (detection.version !== null) {
         expect(detection.knownGood).toBe(expectedKnownGood(entry, detection.version));
       }
-      // A kernel can only be considered installed when we resolved an executable.
-      expect(detection.installed ? detection.executablePath !== null : true).toBe(true);
+      // PATH-probed kernels can only claim installed when an executable resolved.
+      // claude-code is exempt: its binary ships inside the Agent SDK dependency,
+      // so availability is proven by the resolved version, not by a PATH hit.
+      if (id !== 'claude-code') {
+        expect(detection.installed ? detection.executablePath !== null : true).toBe(true);
+      }
     }
+  });
+
+  it('claude-code is always available because the SDK bundles its binary', async () => {
+    const detection = await getKernelRegistry()
+      .find((entry) => entry.id === 'claude-code')!
+      .detect();
+    // No machine dependency: installing the workspace installs the kernel.
+    expect(detection.installed).toBe(true);
+    expect(detection.version).not.toBeNull();
+    expect(detection.knownGood).toBe(true);
+    // Nothing host-visible to launch, and no install guidance to render.
+    expect(detection.executablePath).toBeNull();
+    expect(detection.installCommand).toBeUndefined();
   });
 
   it('detection stays consistent with declared known-good versions anywhere', async () => {
