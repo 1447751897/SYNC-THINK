@@ -197,7 +197,9 @@ function errorMessage(value: unknown): string {
 
 function requestedModel(request: KernelRequest): string | undefined {
   const providerModelId = request.providerModelId?.trim();
-  return providerModelId || request.model?.trim() || undefined;
+  if (providerModelId && providerModelId !== 'codex-default') return providerModelId;
+  const model = request.model?.trim();
+  return model && model !== 'codex-default' ? model : undefined;
 }
 
 export class CodexAppServerKernelAdapter implements KernelAdapter {

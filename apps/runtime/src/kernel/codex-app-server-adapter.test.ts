@@ -50,6 +50,19 @@ function makeRequest(overrides: Partial<KernelRequest> = {}): KernelRequest {
 }
 
 describe('CodexAppServerKernelAdapter', () => {
+  it('lets app-server choose its configured model for the codex-default sentinel', async () => {
+    const adapter = createFixtureAdapter([]);
+    const events: KernelEvent[] = [];
+
+    for await (const event of adapter.start(
+      makeRequest({ model: 'codex-default', providerModelId: '' }),
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toContainEqual({ type: 'terminal', status: 'completed' });
+  });
+
   it('reuses one app-server process for consecutive turns on the same thread', async () => {
     const spawns: string[][] = [];
     const adapter = createFixtureAdapter(spawns);

@@ -11,6 +11,17 @@ const input = readline.createInterface({ input: process.stdin, crlfDelay: Infini
 input.on('line', (line) => {
   if (!line.trim()) return;
   const request = JSON.parse(line);
+  if (
+    ['thread/start', 'thread/resume', 'turn/start'].includes(request.method) &&
+    request.params?.model === 'codex-default'
+  ) {
+    write({
+      jsonrpc: '2.0',
+      id: request.id,
+      error: { code: -32602, message: 'codex-default is a host sentinel, not a provider model' },
+    });
+    return;
+  }
   if (request.method === 'initialize') {
     write({ jsonrpc: '2.0', id: request.id, result: {} });
     return;
