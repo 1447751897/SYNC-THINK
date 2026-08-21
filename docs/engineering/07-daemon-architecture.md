@@ -279,10 +279,10 @@ daemon 是所有后台工作共同的控制面，但不是 Agent/Kernel 业务�
 | 交互对话                                      | Desktop → 长期 Runtime                    | 补真实关闭/重连与崩溃恢复实机证据                     |
 | 定时任务                                      | daemon queue → 长期 Runtime / Worker      | 保持完整终态与幂等审计                                |
 | 浏览器/桌面自动化无人值守                     | Runtime 已有能力，daemon 可投递            | 定义无人审批策略与机器锁定行为                        |
-| 智能体/小队异步任务（提交目标→关应用→后台跑） | 执行底座已具备                            | 增加用户提交入口和 durable queue payload              |
-| 外部事件触发（webhook / 文件监听 / Git 推送） | 尚未接入                                  | 增加事件适配器、去重键、lease/heartbeat 与重放合同    |
-| 多内核                                        | Runtime 已托管 Native/Claude/Codex        | Claude Code 后续迁移官方 Agent SDK                    |
-| 结果推送（push_to_bot）                       | 尚未接入                                  | 消费 durable terminal event，增加重试和去重           |
+| 智能体/小队异步任务（提交目标→关应用→后台跑） | `ExternalEventEnvelope` → daemon → Runtime | 后续增加 Desktop 表单入口                              |
+| 外部事件触发（webhook / 文件监听 / Git 推送） | GitHub webhook 已有 HTTP endpoint；文件监听仍走 pipe | 补 Desktop 配置 UI；文件 watcher 入口 |
+| 多内核                                        | Runtime 已托管 Native/Claude/Codex        | 均已迁移官方 SDK（Claude Agent SDK / Codex app-server） |
+| 结果推送（push_to_bot）                       | bot push envelope → 带 bot 工具的 Runtime  | 后续增加渠道凭据绑定与模板 UI                         |
 
 ### 15.3 统一视图
 
@@ -290,8 +290,8 @@ daemon 是所有后台工作共同的控制面，但不是 Agent/Kernel 业务�
 触发源                         daemon 控制面                     执行体                    结果
 ├─ Desktop 对话             ─► durable queue / dispatch       ─► 长期 Runtime          ─► Run/Event/Message
 ├─ croner 定时器                并发槽位 / lease / 补跑            Worker（无会话降级）      历史/摘要
-├─ 手动后台任务                 Runtime 监督 / crash takeover                              push（后续）
-└─ webhook / 文件 / Git（后续）
+├─ 手动后台任务                 Runtime 监督 / crash takeover                              push / status
+└─ webhook / 文件 / Git / bot
 ```
 
 新增触发源复用该控制面与执行面，但必须各自定义去重键、租约、终态和重放语义，不能只接一个回调就宣称可靠。
@@ -300,9 +300,10 @@ daemon 是所有后台工作共同的控制面，但不是 Agent/Kernel 业务�
 
 | 不做                                 | 原因                         | 后续成本                      |
 | ------------------------------------ | ---------------------------- | ----------------------------- |
-| 异步任务提交入口（人关应用后后台跑） | 需用户侧入口 + 任务持久化 UI | 执行层复用，只加"入队来源"    |
-| 外部事件触发（webhook/文件监听）     | 新触发器类型                 | 同上                          |
-| 结果推送                             | Q2 明确推后                  | durable terminal event 上增加通知器 |
+| Desktop 配置表单                     | 核心已有 CLI/API，尚无 UI      | 只增加配置入口                |
+| ~~公网 HTTP webhook 暴露~~           | 已在 §17 落地（GitHub）        | —                             |
+| 隧道/反向代理内置                    | 属于部署问题，不是应用问题     | 用户自备 cloudflared/ngrok/Nginx |
+| bot 渠道凭据与消息模板 UI            | 依赖具体平台                   | 凭据留在 MCP/Provider         |
 
 ## 16. 实现记录（2026-08-19，12 张票全部完成）
 
@@ -345,7 +346,56 @@ daemon 是所有后台工作共同的控制面，但不是 Agent/Kernel 业务�
 
 - 设置页自启开关 UI 已实现（T11）；**默认注册**策略待产品确认后由安装流程调用 `registerAutostart`（当前由桌面兜底 ensureDaemonProcess 保证常驻）
 - daemon 日志写入 `daemon.log`（设置页查看）；未做日志轮转
-- 推送 / 异步任务入口 / 外部事件触发仍为 Out of Scope（§15.4）
+- 外部事件核心入口已在 2026-08-21 完成；具体平台配置 UI、HTTP 暴露与 bot 渠道模板仍是后续票。
+
+## 17. 外部事件 durable contract（2026-08-21）
+
+统一 envelope 字段为 `id`、`dedupeKey`、`source`、`instruction`、`target`、`skillVersionIds`，可选 `workspaceId`、`conversationKey`、`title` 和脱敏 `metadata`。`conversationKey` 相同且目标/工作区相同的事件复用一个 Conversation；未提供时按 eventId 创建独立会话。
+
+状态流：
+
+```text
+submit -> pending -> leased -> completed | failed | cancelled
+                      |
+                      +-- 30s 无 heartbeat -> 新 token 接管
+```
+
+- `dedupeKey` 唯一；生产者重试返回原记录，不覆盖首次 payload。
+- daemon 原子 claim 并生成 fencing token；Runtime 每 10 秒 heartbeat。旧 token 的迟到 heartbeat/complete 返回 false。
+- Runtime 在 ack 前持久准备 Conversation/Run 和 `eventId -> conversationId/runId` 映射；ack 后异步执行。重复 dispatch 返回原 runId。
+- envelope metadata 最大 64 KiB；敏感 key 在 adapter 删除，daemon 协议边界再次拒绝。
+- 本地提交：`pnpm event:submit docs/examples/external-event-git-push.json`；状态查询：`pnpm event:status evt-example-git-20260821-001`。
+
+## 18. GitHub webhook endpoint（2026-08-21）
+
+§15.4 原先把「公网 HTTP webhook 暴露」列为不做，理由是监听地址、认证与代理策略未定。这三点现在定了，所以该条目关闭。它是 §17 durable contract 之上的一层**薄生产者**：HTTP 接收 + 验签 + 投影，去重、租约、fencing、Runtime 拉起全部复用既有 inbox，没有新的可靠性机制。
+
+**为什么住在 daemon 而不是 Runtime。** daemon 是登录即起的长寿进程；Runtime 由它按需拉起。监听器放 Runtime 会在每次 Runtime 重启时丢投递，而且 Desktop 关闭时端口根本不存在——那正好是这个功能要覆盖的场景。放在 daemon，push 到达时由 coordinator 的 `ensureRuntime()` 负责拉起执行体。
+
+**认证。** `X-Hub-Signature-256`，HMAC-SHA256，**对原始字节**计算：先 `JSON.parse` 再 `JSON.stringify` 会改变 key 顺序和空白，签名必然对不上。比较用 `timingSafeEqual`，长度不等直接返回 false（让 `timingSafeEqual` 抛异常本身就是可观测的侧信道）。没有密钥就不开监听：`shouldServeGitHubWebhook` 要求 `enabled && secretHandle && routes.length > 0`——一个无认证的监听器等于让任何能触达端口的人在用户工作区里起 kernel run。密钥存 SecureStore（Windows DPAPI），配置里只有 handle。
+
+**监听地址。** 默认 `127.0.0.1:8765`，路径 `/webhooks/github`。**应用不内置隧道或反向代理**：暴露到公网属于部署问题，用户自备 cloudflared / ngrok / Nginx。这是刻意的——内置隧道意味着替用户做信任决策。
+
+**状态码语义**（按 GitHub 的重投规则设计，选错不是外观问题）：
+
+| 情况 | 状态码 | 理由 |
+| --- | --- | --- |
+| 验签通过且已入 inbox | 200 accepted | inbox 行已存在，我们接管了 |
+| `ping` | 200 ignored | 设置握手，回 200 hook 才变绿 |
+| 仓库/分支未配置路由 | **200 ignored** | 「订阅了但不处理」是合法配置；回 4xx 会让 GitHub 永久重投并把 hook 标红 |
+| 签名错误/缺失 | 401 | |
+| body 超 25 MB | 413 | 在**流式过程中**判定并 destroy，先缓冲再检查正是它要防的 DoS |
+| content-type 非 json | 400 | form-urlencoded 会把 JSON 包在 `payload=` 里，明确报错好过静默错解析 |
+| 密钥取不到 | 500 | 绝不退化成无认证处理：取不到密钥说明配置坏了，不说明请求可信 |
+| inbox 写入失败 | 500 | 让 GitHub 重投；dedupe key 使之安全 |
+
+**去重。** `X-GitHub-Delivery` 直接作为 dedupe key 的一部分（`git:github:<delivery>`）。GitHub 重投用同一个 delivery id，因此重投会落到同一 inbox 行（`INSERT OR IGNORE`），不会跑第二次。
+
+**payload 投影。** push payload 不原样转发，投影为有界摘要，原因是两条会导致**静默丢事件**的边界：其一，`parseMetadata` 拒绝任何匹配 `SENSITIVE_METADATA_KEY` 的 key，而 `signature` 匹配——GitHub 的 `head_commit.verification.signature` 会让整个 envelope 被拒；其二，metadata 上限 64 KiB，几百 commit 的 push 轻松突破。投影规则：commit 详情最多 20 条，message 只取首行截 200 字符，文件列表压成计数（rename-heavy commit 会列出上千路径），author 只留 name 不留 email（PII）。**所有**拷贝出来的字符串都有上限，包括 repo 名、ref、pusher 这些"不可能很长"的字段——它们同样是用户可控输入。
+
+**配置与生效。** `pnpm webhook:github setup --repo owner/name --model <id> [--ref main] [--events push,pull_request]`；另有 `status` / `disable`。密钥从 stdin 读（`--secret-stdin`）或自动生成，**绝不接受 argv flag**：argv 通过进程表对机器上每个进程可见，还会进 shell history。配置写 `app_setting`，daemon 在下次 rescan（≤15s）生效；仅路由变更就地刷新不重启监听器，host/port/密钥变更才重建。`disable` 保留 routes 和密钥 handle——停用是可逆的，丢掉密钥会逼用户回 GitHub 那边重配。
+
+**日志。** 每条投递记 delivery id（不透明 GUID，是与 GitHub「Recent Deliveries」列表对账的唯一线索），拒绝的也记；签名和密钥不进任何日志行。
 
 ## 附：本设计引用的决策来源
 

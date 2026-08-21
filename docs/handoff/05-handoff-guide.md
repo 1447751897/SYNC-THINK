@@ -1,3 +1,15 @@
+## Resume checkpoint（2026-08-21 · 后台恢复、外部事件与审批断连闭环）
+
+- 分支 `feature/inline-process-ui`；本轮改动尚未提交。保留用户未跟踪的 `.restart-app.ps1`、`.shots/`、`.zcode/`，不要 reset/clean。
+- Codex 已使用官方 `app-server`。`codex-default` 是宿主哨兵，不作为 Provider 模型下发；真实验证命令为 `pnpm selftest:codex-persistent`。
+- 三阶段真实验证已通过：同一进程连续两轮只启动一个 app-server；停止后新进程以同一 native thread ID 恢复；MCP、reasoning、usage、最终回答和跨进程记忆均通过。
+- Desktop 活动 Run 断连已实测：关闭 Electron 后 daemon/Runtime 原 PID 保持，后台 45 秒命令完成并持久化终态，重开后完整回放。截图：`.data/runtime-survival-e2e-20260821/after-reopen.png`。
+- daemon 崩溃恢复已实测：Runtime `52204 -> 52364`，daemon `28580` 不变；原 Codex 会话继续 `sessionMode=resume`，native thread `01a02222-6ed7-7cd3-931d-f4c72c195086` 不变。外部事件构建后的当前健康进程树为 Electron `53876` → daemon supervisor `52364` → daemon `33916` → Runtime `56548`，CDP `127.0.0.1:9335`。
+- push/webhook/文件/Git/bot/async 已接入 daemon durable inbox：迁移 0048、dedupe、lease token、10s heartbeat/30s takeover、terminal/status query 和 Runtime eventId→conversation/run 去重绑定均已实现。
+- Desktop 冷重启的待审批恢复已完成：`conversation.listPendingToolApprovals` 以 Runtime 当前状态补齐已越过 replay cursor 的请求，Renderer 只接收请求时保存的脱敏摘要。`pnpm selftest:approval-reconnect` 已通过 approve/deny；证据分别位于 `.data/tool-approval-reconnect-e2e-2026-08-21T08-06-43-923Z-approve-883c3136ef/` 与 `.data/tool-approval-reconnect-e2e-2026-08-21T08-07-08-739Z-deny-27331f5b6d/`。
+- 最终门禁：根 typecheck 20/20、lint 11/11（0 error）、build 11/11、受控串行 test 20/20；Desktop 167 files / 1324 tests、Runtime 134 files / 939 tests。Storage 首轮的单项 5 秒超时已由定向、Storage 全量和根级全量复跑三层确认是负载抖动。
+- 下一阶段补具体平台配置 UI/HTTP endpoint；Claude Code 官方 Agent SDK 迁移单独推进。
+
 ## Resume checkpoint（2026-08-05 17:44 · Browser Automation Studio P1.1 最终收口）
 
 - 当前分支 `feature/newmax-shell-rewrite`，P1.1 改动仍在未提交工作树；不要 reset、clean、覆盖式 checkout 或全仓格式化。
@@ -411,7 +423,7 @@ M1：in progress (Providers panel observable; Agents/Manifest next)
 
 最新最终证据：Protocol PID/marker 6/6、Desktop 生命周期/升级停止定向 3 files / 17 tests、Runtime daemon/Codex/Session Host 定向 8 files / 60 tests；根 typecheck 20/20、lint 11/11（0 error）、build 11/11 通过。最终受控串行根测试 `TURBO_CONCURRENCY=1 pnpm test` 为 20/20 Turbo tasks，Desktop 166 files / 1305 tests、Runtime 130 files / 918 tests 全部通过。Windows watchdog ready 的 fail-closed 窗口按真实高负载冷启动调整为 30 秒，生产健康 deadline 仍为 3 分钟。`git diff --check` 通过。
 
-未来 `push_to_bot`、Webhook、文件/Git watcher、异步任务统一进入 daemon，再由 daemon 投递长期 Runtime；仅无会话定时任务使用短期 Worker。Claude Code 官方 Agent SDK 迁移是下一阶段。
+`push_to_bot`、Webhook、文件/Git watcher、异步任务现统一提交 `ExternalEventEnvelope` 到 daemon，再由 daemon 租约投递长期 Runtime；仅无会话定时任务使用短期 Worker。提交/查询命令分别为 `pnpm event:submit <json>` 与 `pnpm event:status <eventId>`，示例见 `docs/examples/external-event-git-push.json`。具体平台 webhook 暴露与 bot 凭据仍由后续配置层提供。Claude Code 官方 Agent SDK 迁移是下一阶段。
 
 ## 2026-08-21 执行过程面板 P1 交接
 

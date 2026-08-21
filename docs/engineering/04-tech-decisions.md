@@ -1360,6 +1360,39 @@ Computer Use built-in plugin
 11. daemon 冷启动防抖只防止并发重复 spawn；daemon 外层 supervisor 独立于 Desktop，在 child 非零退出后按 `1s / 2s / 5s / 10s / 30s` 有界退避重启，正常 `daemon.stop` 退出 0 时不重启。Desktop 已知 daemon 子进程异常退出也必须绕过 10 秒冷启动防抖，避免快速崩溃后无人监督 Runtime。
 12. Runtime PID 文件必须与实际数据库目录同源。所有 daemon、Runtime 和 autostart supervisor 命令行都携带不含秘密的 `role + installId` 精确 marker；仅凭 PID 文件执行最后强杀前必须读取命令行并匹配 marker，匹配失败时拒绝终止，以防 PID 重用误杀无关进程。pipe secret 仍只通过受保护 bootstrap/环境或私有 IPC 传递，不进入 argv。
 13. 回滚通过恢复上一版本的 Runtime/adapter 实现完成；已持久化的 threadId、Run 和消息保持兼容，不做破坏性数据迁移。
+
+### TD-046：Daemon 外部事件 Inbox、租约与 Runtime 去重执行（2026-08-21）
+
+状态：已采用。落实 TD-045 第 2、8 条中预留的外部事件与 lease/heartbeat 合同。
+
+决策：
+
+1. Webhook、文件、Git、bot push 和普通异步任务统一为 `ExternalEventEnvelope`。来源适配器只负责脱敏、生成稳定 `dedupeKey` 和补充目标/会话路由，不直接操作 Runtime 或 SQLite。
+2. daemon 是事件状态唯一 owner。迁移 `0048_daemon_external_event` 保存 pending/leased/terminal、尝试次数、lease owner/token/expiry、runId 和结果；同一 `dedupeKey` 只保留首个 envelope。
+3. claim 使用原子事务；默认租约 30 秒，Runtime 每 10 秒 heartbeat。每次接管生成新 fencing token，旧 Runtime 的迟到 heartbeat/complete 不能改变新租约。
+4. `external.event.ack` 只表示 Runtime 已持久准备 Run。最终所有权在 `external.event.complete` 后结束；Runtime 无心跳时，daemon 在租约过期后重投。
+5. Runtime 持久化 `eventId -> conversationId/runId`。重复投递或 crash takeover 复用原 Run；`conversationKey` 允许同一仓库/来源的多个事件进入同一长期 Conversation，未提供时每个事件独立会话。
+6. daemon 只监督和投递，不复制 Provider、凭据、工具、审批或 Kernel 业务。bot push 由目标 Agent 的已配置工具执行；渠道秘密仍在 MCP/Provider 安全存储，不进入 envelope、日志或事件表。
+7. envelope metadata 上限 64 KiB。适配器移除常见秘密字段，daemon 白名单入口再次拒绝含 token/password/cookie/signature 等敏感 key 的直接提交。
+8. 本地生产者使用 HMAC pipe：`pnpm event:submit <json>`；状态使用 `pnpm event:status <eventId>`。公网 HTTP webhook、平台配置 UI 和文件 watcher 配置属于薄入口层，复用同一合同。（HTTP webhook 已由 TD-047 落地。）
+
+### TD-047：GitHub Webhook HTTP 入口（2026-08-21）
+
+状态：已采用。落实 TD-046 第 8 条中「薄入口层」的第一个具体生产者，同时关闭 `07-daemon-architecture.md` §15.4 中「公网 HTTP webhook 暴露」这一原定不做项。
+
+背景：TD-046 已经把去重、租约、fencing、崩溃接管和 Runtime 拉起做成了通用底座，但唯一的生产者是本地 HMAC pipe，必须有人在本机手动提交。Git push 自动触发是这套底座最直接的用途，缺的只是一个接收端。
+
+决策：
+
+1. 监听器托管在 daemon，不在 Runtime。daemon 是登录即起的长寿进程；放 Runtime 会在每次 Runtime 重启时丢投递，且 Desktop 关闭时端口不存在——而那正是本功能要覆盖的场景。事件入 inbox 后由 coordinator 的 `ensureRuntime()` 拉起执行体。
+2. 认证为 `X-Hub-Signature-256` HMAC-SHA256，**对未经解析的原始字节**计算，`timingSafeEqual` 比较，长度不等直接判否。密钥缺失时不开监听（`enabled && secretHandle && routes.length > 0`）：无认证监听器等于允许任何能触达端口者在用户工作区启动 kernel run。
+3. 密钥存 SecureStore（Windows DPAPI），配置只存 handle。CLI 只接受 stdin 或自动生成，**不提供 argv flag**——argv 经进程表对全机可见并进入 shell history。
+4. 默认绑定 `127.0.0.1:8765`，路径 `/webhooks/github`。**不内置隧道或反向代理**：公网暴露是部署决策，由用户自备 cloudflared / ngrok / Nginx，应用不代替用户做信任判断。
+5. 响应码按 GitHub 重投语义定义。关键一条：未匹配路由返回 **200 ignored 而非 4xx**——「订阅了但不处理」是合法配置，回错误会让 GitHub 永久重投并将 hook 标记为失败。密钥不可用返回 500，绝不退化为无认证处理。inbox 写入失败返回 500 让其重投，dedupe key 保证安全。
+6. `X-GitHub-Delivery` 直接充当 dedupe key。GitHub 重投复用同一 delivery id，因而重投收敛到同一 inbox 行而非第二次执行。
+7. push payload 投影为有界摘要后才入 envelope，不原样转发。两条边界都会导致**静默丢事件**：`head_commit.verification.signature` 命中 TD-046 第 7 条的敏感 key 拒绝规则；大 push 突破 64 KiB metadata 上限。投影同时承担脱敏（去 author email）与降噪（文件列表压成计数）。所有拷贝字符串一律设上限，包括看似不会超长的 repo 名与 ref。
+8. 配置写 `app_setting`，随 daemon 15 秒 rescan 生效。仅路由变更就地刷新，host/port/密钥变更才重建监听器——重建期间的投递会丢失，因此不能对无关变更重建。
+
 ### TD-048：后台活动中心（run_index 读模型 + activity 命令族）（2026-08-21）
 
 状态：已采用。

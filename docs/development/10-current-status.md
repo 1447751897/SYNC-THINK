@@ -1,21 +1,71 @@
-﻿## 当前状态：2026-08-21 · 后台持续会话架构完成，执行过程面板 P1 收尾
+﻿## 当前状态：2026-08-21 · 后台活动中心完成
+
+### 已完成
+
+- 新增 `run_index` 读模型（`packages/storage`），由事件日志派生并回填历史：按 workspace / 状态 / 来源检索 Run，冗余 kernel、model、失败分类与错误摘要。状态在 upsert 中终态粘性，乱序或重放的事件不会把已完成的 Run 打回「进行中」。
+- Protocol/Runtime 新增 activity 命令族：`activity.listRuns`（`(started_at, run_id)` 复合游标分页 + 各状态计数）、`activity.listExternalEvents`、`activity.retryAnchor`。外部事件视图直接读 daemon 与 Runtime 共用的同一 SQLite 文件，Runtime 侧只读。
+- Desktop 新增「后台活动」页：状态/来源过滤、游标翻页、失败原因、打开对话与重发，并列展示外部事件的投递状态与尝试次数。刷新只由真正推进生命周期的 Run 事件驱动，`plan.approved` / `run.queued` 不触发重查。
+- 边界：外部事件逐字段投影，`leaseToken` 与 `instruction` / `metadata` 不出 Runtime；`states` / `sources` 在主进程按词汇表白名单过滤后才进 Runtime。
+- 重发不新开 run-start 路径：`activity.retryAnchor` 只返回对话 id 与原始提示词，活动中心预填进 ChatView 输入框由用户确认发送，`expectedTaskVersion` 栅栏与模型/内核解析仍只有一份实现。
+
+### 当前验证
+
+- 定向：Runtime `activity-commands.test.ts` 12/12（含 leaseToken/instruction 不外泄的全序列化断言）、Desktop `ActivityCenterPage.test.tsx` 7/7。
+- 全仓：typecheck 20/20、lint 11/11（0 error，保留既有 warning）；Desktop 167 files / 1324 tests 全绿。
+
+### 下一步
+
+- Runtime/系统重启期间的审批恢复：`runtime.ts` 的 `pendingToolApprovals` 目前仍是纯内存 Map。
+- 浏览器 Workflow 确定性执行器：补 `ScheduledTaskTarget` 的 `workflow` kind 与自愈定位。
+
+## 当前状态：2026-08-21 · Claude Agent SDK 迁移与 GitHub Webhook 入口完成
+
+### 已完成
+
+- Claude 内核已迁移到官方 `@anthropic-ai/claude-agent-sdk`：`claude-sdk-adapter.ts` + `claude-sdk-protocol.ts` 取代原 CLI spawn 与手写 stream-json 解析，旧 adapter/protocol/测试与两份 fixture 脚本已删除。工具审批走 `canUseTool`、MCP 以对象传入不落盘、取消走 `abortController`、压缩识别 `compact_boundary`。`KernelAdapter` 边界与 `KernelEvent` 词汇表未变。
+- Registry 新增 SDK 类内核的 `bundledDetectionResult()`：不查 PATH、无 `executablePath`、无 `installCommand`；版本探测改为 resolve 主入口后读同目录版本，实测 `2.1.238`。
+- daemon 已接入可选 GitHub Webhook HTTP 入口（TD-047），默认 `127.0.0.1:8765` 的 `/webhooks/github`。签名用 `X-Hub-Signature-256` 对原始字节 HMAC-SHA256 + `timingSafeEqual`，`X-GitHub-Delivery` 作 envelope 去重键，push payload 做有界投影后进入既有外部事件底座。
+- 密钥只经 `--secret-stdin` 或自动生成进 SecureStore，配置只存 handle；argv 不接收密钥，日志不含签名或密钥，密钥读取失败返回 500 而非退化为无认证。`pnpm webhook:github` 提供 setup/status/disable。
+
+### 当前验证
+
+- Runtime 138 files / 1020 tests 全绿；webhook 四份定向测试 66/66；Claude SDK 真实抓包 replay 断言未改仍通过。typecheck、lint（0 error）、Prettier 均通过。
+- 真实数据库实测 webhook：secret 不落库、`setup` 幂等、`disable` 保留配置与密钥 handle。
+- 真实 Codex app-server 的**内容 turn** 验收仍受 Provider 503 阻塞，协议层 `initialize`/`thread/start` 已验证。
+
+### 下一步
+
+- 后台任务/事件中心 UI：统一 Run 列表、重试、取消与外部事件视图。（已于上方 TD-048 落地。）
+- Runtime/系统重启期间的审批恢复：`runtime.ts` 的 `pendingToolApprovals` 目前仍是纯内存 Map。
+- 浏览器 Workflow 确定性执行器：补 `ScheduledTaskTarget` 的 `workflow` kind 与自愈定位。
+
+## 当前状态：2026-08-21 · 后台持续会话、外部事件与审批断连恢复完成
 
 ### 已完成
 
 - Desktop 已退出执行所有权：普通关闭只断开 UI；daemon 监督长期 Runtime，Runtime 托管持久 Run、消息、工具授权和有界 Codex app-server Session。原生 threadId 与进程生命周期分离，进程回收或 Runtime 重启后可 `thread/resume`。
 - Codex Registry 已切换官方 app-server adapter；旧 `codex exec`/JSONL 路径已删除。daemon dispatch 的 ack 只表示接收，任务所有权保持到 complete/abort/crash takeover。
 - 执行过程面板 P1 已实现：稳定序号、工具类型图标、全部展开/收起、终态冻结耗时、JSON 键值详情、本轮计划；智能体任务区域只接受真实投影，不显示虚构数据。最终回答继续独立流式显示在面板外。
+- `codex-default` 现在只作为宿主“使用 app-server 本地默认模型”的哨兵，不再被错误下发为 Provider 模型 ID；真实验收入口为 `pnpm selftest:codex-persistent`。
+- push/webhook/文件/Git/异步任务现统一提交 `ExternalEventEnvelope` 到 daemon。`0048_daemon_external_event` 持久化去重、租约、心跳、Run 和终态；Runtime 持久化 event 到 conversation/run 的绑定，接管时不重复启动。
+- 本地入口：`pnpm event:submit <json>` 提交，`pnpm event:status <eventId>` 查询；Git/Webhook/文件/bot/async 适配器只做脱敏和 envelope 映射，平台凭据仍留在 Provider/MCP 配置。
+- Desktop 冷重启后的待审批恢复已闭环。Runtime 新增当前 pending approval 查询，ChatView 将其与 durable event replay 对账；即使持久游标已越过最初的 `tool.approval_requested`，重开后仍显示同一审批卡，且 approve/deny 后立即清除。
 
 ### 当前验证
 
 - 定向：`InlineProcessFlow.test.tsx` 32/32、`process-activity.test.ts` 26/26、ChatView 过程/消息投影 25/25。
-- 全仓：typecheck 20/20、lint 11/11（0 error，保留既有 warning）、build 11/11；`TURBO_CONCURRENCY=1 pnpm test` 20/20，Runtime 130 files / 921 tests。
+- 全仓：typecheck 20/20、lint 11/11（0 error，保留既有 warning）、build 11/11；`TURBO_CONCURRENCY=1 pnpm test` 20/20，Desktop 167 files / 1324 tests、Runtime 134 files / 939 tests。
 - 实窗：先关闭 Desktop，daemon PID `22936/28580` 与长期 Runtime PID `52204` 保持；随后启动最新 Electron PID `20912`（CDP `127.0.0.1:9335`）。深浅主题下过程面板均位于视口内、无横向溢出，最终回答仍是面板后的独立 Markdown。截图在 `.data/local-restart-20260821-process-p1/`。
+- 真实 Codex 0.145.0：同一 native thread `01a022dd-e165-7112-beaf-acb3a73b70d9` 完成三轮验收；前两轮复用一个 app-server，销毁后第二个 app-server 以 `thread/resume` 恢复并召回首轮随机令牌。MCP 写入/读取、reasoning、usage 与终态均通过。
+- Desktop 断连：活动 Run `KNR9EH0P27WJKR1VW08T7E2179` 执行 45 秒命令时关闭 Electron，daemon `28580` 与 Runtime `52204` 原 PID 保持，healthcheck 报告 `inFlightRuns: 1`；桌面关闭期间落下 `run.completed`，重开后完整回放。证据截图在 `.data/runtime-survival-e2e-20260821/`。
+- Runtime 崩溃恢复：强制终止受管 Runtime `52204` 后，daemon 原 PID 自动拉起 Runtime `52364`；原 Codex 会话以 `sessionMode=resume` 继续，native thread `01a02222-6ed7-7cd3-931d-f4c72c195086` 不变，并正确召回重启前上下文。
+- 外部事件：Storage 40 files / 417 tests；根级 typecheck 20/20、lint 11/11（0 error）、build 11/11、串行 test 20/20，Runtime 134 files / 938 tests。真实事件 `evt-live-20260821-1510` 以 attemptCount=1 完成 Run `ADCFJH0NHXNN5B30C9T83YZXDB`，会话、终态和助手消息均已核对。
+- 审批断连恢复：Runtime 9/9、Desktop 2 files / 13 tests、Protocol 9/9；`pnpm selftest:approval-reconnect` 的 approve/deny 两条真实 Electron 路径均通过，原 Runtime PID 保持、同一 approvalId 恢复、请求/决策各一次，写文件副作用只在 approve 路径发生一次。Storage 首轮全仓验证有一个既有迁移用例命中 5 秒负载超时；该用例定向复跑、Storage 40 files / 417 tests 和随后根级全量复跑均通过。
 
 ### 下一步
 
-- 在 Provider 渠道可用后补真实 Codex app-server 连续两轮、关闭 Desktop 后重连 replay 与 Runtime 崩溃恢复证据。
-- push/webhook/文件/Git 事件入口与 lease/heartbeat durable contract 属于下一阶段；Claude Code 官方 Agent SDK 迁移单独推进。
+- 为具体 Git 托管平台、文件目录和 bot 渠道补配置 UI/HTTP endpoint；核心适配器与 durable contract 已就绪。
+- Claude Code 迁移官方 Agent SDK，继续保持 `KernelAdapter` 边界。
 
 ## 当前状态：2026-08-16 · 新能力批量落地（plan/exec、问询卡片、任务清单、定时任务、目标模式、本地 Skill）
 
@@ -1177,12 +1227,12 @@
 
 ### 待完成
 
-- 使用本机真实 Codex app-server 完成两轮连续 turn、关闭 Desktop 后重连 replay 和 Runtime 崩溃恢复验证；当前真实 turn 仍受 Provider 渠道 503 阻塞。
-- 将 push/webhook/文件/Git 事件统一接入 daemon 的事件入口，并补 lease/heartbeat durable contract。
+- 外部事件核心入口与 lease/heartbeat contract 已完成；后续按具体平台补配置 UI、HTTP webhook 暴露和 bot 渠道凭据。
+- Desktop 审批断连/重连恢复与 approve/deny 真实验收已完成；复验命令为 `pnpm selftest:approval-reconnect`。
 - Claude Code 迁移官方 Agent SDK 属于下一阶段，不与本次 Codex/daemon 生命周期收尾混做。
 
 ### 真实 app-server 结果
 
-- 本机 Codex 0.145.0 成功完成 `initialize` 与 `thread/start`，证明 stdio app-server 和 thread 创建可用。
-- 修正了官方 schema 对齐项：`turn/start.sandboxPolicy`、空 providerModelId 回退、`error.willRetry=true` 非终态。
-- 真实 turn 到达上游后返回 503：当前 `default` 分组对 `codex-default` 与 `gpt-5.6-luna` 均无可用渠道。协议和生命周期已通过夹具双轮验证，真实内容生成等待 Provider 渠道可用后复测。
+- 本机 Codex 0.145.0 已完成 `initialize`、`thread/start`、连续 `turn/start`、新进程 `thread/resume`、MCP 工具、reasoning、usage 与终态投影。
+- 修正了官方 schema 对齐项：`turn/start.sandboxPolicy`、空 providerModelId 回退、`error.willRetry=true` 非终态；`codex-default` 宿主哨兵不再作为真实模型 ID 下发。
+- `pnpm selftest:codex-persistent` 在 62 秒内以两个 app-server PID 完成三轮，三轮 native thread ID 一致，第二、三轮均召回首轮随机令牌。先前 503/404 结论已由本次成功实测取代。

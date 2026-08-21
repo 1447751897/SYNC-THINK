@@ -22,6 +22,84 @@
 - Runtime `activity-commands.test.ts` 12/12；Desktop `ActivityCenterPage.test.tsx` 7/7；Desktop 全量 1323 tests 全绿。
 - 全仓 typecheck 20/20、lint 11/11（0 error）通过。
 
+## 2026-08-21：GitHub Webhook 入口（TD-047）
+
+### Added
+
+- daemon 新增可选 HTTP 入口 `apps/runtime/src/daemon/github-webhook{,-server,-sync,-config}.ts`，默认监听 `127.0.0.1:8765` 的 `/webhooks/github`。分层为纯函数层（配置解析、HMAC 校验、响应码判定、payload 投影）、`node:http` 监听器、rescan 驱动的启停/路由刷新循环和 `pnpm webhook:github` CLI。
+- 认证使用 `X-Hub-Signature-256` HMAC-SHA256 对原始请求字节计算并以 `timingSafeEqual` 比较；`X-GitHub-Delivery` 作为 `ExternalEventEnvelope` 去重键，重复投递返回既有事件状态而不重复启动 Run。
+- push payload 做有界投影：commit 最多 20 条、message 只取首行并截断至 200 字符、文件列表压成计数、author 去除 email，避免仓库正文进入 durable 存储。
+- 密钥只经 `--secret-stdin` 或自动生成写入 SecureStore，配置本身只存 handle；argv 永不接收密钥，签名与密钥不进入任何日志行。密钥读取失败返回 500，不退化为无认证处理。
+
+### Fixed
+
+- `-sync.ts` 的 single-flight guard 此前在“未配置 webhook”这一默认路径提前 return 且不经过 `finally`，会让 daemon 启动即永久 wedge。所有路径统一走同一个 `finally` 释放，并补回归测试。
+- 路由就地刷新此前捕获旧 `config` 快照且仅在监听器已启动时更新，导致密钥轮换静默失效；改为 getter 读取并在监听器未启动时也更新。
+- bind 之后的 `'error'` 事件此前会拖垮整个 daemon，现已做错误隔离。
+- `resolveSecret` 此前前置于签名校验，使每个未认证请求都触发一次 DPAPI 解密；现加入缓存、single-flight 与负缓存。
+
+### Verification
+
+- Runtime 138 files / 1020 tests 全绿，其中 webhook 四份定向测试 66/66；typecheck、lint（0 error）、Prettier 均通过。
+- 真实数据库实测：secret 不落库、`setup` 幂等、`disable` 保留配置与密钥 handle。
+
+## 2026-08-21：Claude Code 迁移官方 Agent SDK
+
+### Changed
+
+- Claude 内核从 CLI spawn 改为 `@anthropic-ai/claude-agent-sdk` 的 `query()`：新增 `apps/runtime/src/kernel/claude-sdk-adapter.ts` 与 `claude-sdk-protocol.ts`（`SDKMessage -> KernelEvent` 映射），`KernelAdapter` 契约与事件词汇表不变。
+- 工具审批走 SDK `canUseTool`；MCP server 以对象形式经 `Options.mcpServers` 传入，不再落盘临时配置；取消走 `options.abortController`；上下文压缩识别 `compact_boundary`。
+- Registry 新增 `bundledDetectionResult()`：SDK 类内核不查 PATH、`executablePath` 为 `null`、不提供 `installCommand`。版本探测改为 resolve 主入口后读同目录版本信息（`require('.../manifest.json')` 会被包 `exports` 挡住而恒返回 null），实测得到 `2.1.238`。
+
+### Removed
+
+- 删除 `claude-code-adapter.ts`(622 行)、`claude-code-protocol.ts`(357 行)、`claude-code-adapter.test.ts`(597 行) 以及 `claude-stream-json-fixture.mjs`、`claude-partial-capture-fixture.mjs`。
+
+### Verification
+
+- `kernel-capture-replay.test.ts` 保留真实抓包 `claude-2.1.222-partial-capture.jsonl`（滤掉第 0 行传输层 `control_response` 后每行即 `SDKMessage`），逐字段断言未修改仍通过。
+- Runtime 138 files / 1020 tests、typecheck、lint（0 error）全部通过。
+
+## 2026-08-21：Desktop 审批断连恢复闭环
+
+### Added
+
+- 新增 `conversation.listPendingToolApprovals` 公共命令。Runtime 直接从当前 pending approval 真相源返回按 Conversation/Run 过滤的有界摘要；查询结果复用请求时生成的脱敏 `approvalSummary`，不回传工具原始参数或正文。
+- Desktop Main/Preload/Renderer 补齐严格校验的查询桥。ChatView 在首次挂载、Runtime 重连和审批决策后，将 durable event replay 与 Runtime 当前状态快照合并，并用 generation fence、终态过滤和 tool-call 去重避免旧响应复活审批卡。
+- 新增 `pnpm selftest:approval-reconnect`。脚本使用隔离数据库、用户目录和本地 Provider，分别覆盖 approve/deny：审批出现后完整关闭 Electron，确认原 Runtime PID 存活，重开后恢复同一审批，再验证副作用至多一次和 pending 集合清空。
+
+### Verification
+
+- Runtime 审批管道 9/9、Desktop 恢复/IPC 2 files / 13 tests、Protocol handshake 9/9。根级 typecheck 20/20、lint 11/11（0 error）、build 11/11、受控串行 test 20/20；Desktop 167 files / 1324 tests、Runtime 134 files / 939 tests。
+- 真实 Electron approve/deny 两条路径均通过。approve 证据位于 `.data/tool-approval-reconnect-e2e-2026-08-21T08-06-43-923Z-approve-883c3136ef/`，deny 证据位于 `.data/tool-approval-reconnect-e2e-2026-08-21T08-07-08-739Z-deny-27331f5b6d/`；两次均保持原 Runtime PID、恢复同一 approvalId、Provider 恰好请求两次，且请求/决策各持久化一次。
+
+## 2026-08-21：Daemon 外部事件入口与持久租约
+
+### Added
+
+- 新增统一 `ExternalEventEnvelope` 与迁移 `0048_daemon_external_event`。Webhook、文件、Git、bot 推送和普通异步任务共用去重键、持久状态、租约令牌、心跳、终态和状态查询。
+- daemon 成为唯一事件收件箱与 lease owner；常驻 Runtime 创建/复用事件会话并启动 Run。`eventId -> conversationId/runId` 持久化，Runtime 重启或租约接管时复用原 Run。
+- 新增 Git/Webhook/文件/bot/async 薄适配器，以及 `pnpm event:submit <json>`、`pnpm event:status <eventId>` 两个本地入口。元数据限制 64 KiB，敏感字段在适配器中移除并在 daemon 协议边界拒绝。
+
+### Verification
+
+- Storage 40 files / 417 tests 全绿；外部事件存储、协议、管道客户端、协调器、适配器和 Runtime 执行聚焦测试全绿。根级 typecheck 20/20、lint 11/11（0 error）、build 11/11、串行 test 20/20；Runtime 134 files / 938 tests。
+- 真实 daemon 提交 `evt-live-20260821-1510` 一次完成：`pending -> leased -> completed`、attemptCount=1、Run `ADCFJH0NHXNN5B30C9T83YZXDB`，持久会话与助手文本 `daemon external event verified` 均已核对。
+
+## 2026-08-21：Codex 持久会话与后台恢复真实验收
+
+### Changed
+
+- `codex-default` 明确为宿主默认模型哨兵：当没有显式 `providerModelId` 时不再把它发送给 app-server，Codex 使用本地配置的默认模型。
+- `apps/runtime/src/kernel/codex-e2e-verify.ts` 扩展为三阶段真实验收：首轮 MCP 工具链、同进程连续 turn、新 app-server 进程恢复同一 native thread；新增根命令 `pnpm selftest:codex-persistent`。
+
+### Verification
+
+- 真实 Codex 0.145.0 / 本地默认模型完成三轮：native thread ID 全程一致，前两轮只启动一个 app-server，第二个 app-server 以 `thread/resume` 恢复并召回首轮随机令牌；MCP file_write/file_read、reasoning、usage 和 terminal 全部通过。
+- 活动 Run 期间关闭 Desktop 后，daemon/Runtime 原 PID 与 pipe 保持，`inFlightRuns` 从 1 自然回落到 0，后台落下 `run.completed`；重开 Desktop 后最终消息和工具时间线完整回放。
+- 受管 Runtime 被终止后，daemon 自动拉起新 Runtime；原 Codex 会话继续报告 `sessionMode=resume`，native thread ID 不变，成功回答重启前上下文问题。
+- Adapter 聚焦测试 5/5、Desktop 生命周期测试 11/11；全仓 typecheck 20/20、lint 11/11（0 error）、build 11/11、受控串行 test 20/20，Runtime 130 files / 922 tests。
+
 ## 2026-08-21：执行过程面板 P1（真实时间线、计划与结构化详情）
 
 ### Changed

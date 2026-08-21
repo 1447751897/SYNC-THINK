@@ -1,6 +1,6 @@
 # Project Structure
 
-更新时间：2026-08-05
+更新时间：2026-08-21
 
 本文档提供当前仓库的模块地图与文件放置规则。产品边界以已批准设计文档为准，技术取舍以 `04-tech-decisions.md` 为准。
 
@@ -229,9 +229,14 @@ NSIS `apps/desktop/build/installer.nsh` 负责把每个已安装版本的 instal
 
 ## Runtime 与 daemon 生命周期（2026-08-20）
 
-- `apps/runtime/src/daemon/main.ts` 是常驻控制面：负责调度、队列、Runtime 探测/拉起/崩溃恢复，以及未来 push/webhook/文件/Git 事件入口。
+- `apps/runtime/src/daemon/main.ts` 是常驻控制面：负责调度、队列、Runtime 探测/拉起/崩溃恢复，以及 push/webhook/文件/Git/async 统一事件入口。
+- `apps/runtime/src/daemon/external-event-{protocol,client,coordinator,adapters}.ts` 分别负责白名单协议、认证管道、租约状态机和来源映射；`external-event-submit.ts` / `external-event-status.ts` 是本地 CLI。
+- `apps/runtime/src/daemon/github-webhook{,-server,-sync,-config}.ts` 是 TD-047 的 HTTP 入口分层：`github-webhook.ts` 是纯函数层（配置解析、HMAC 校验、响应码判定、push payload 有界投影），`-server.ts` 是 `node:http` 监听器，`-sync.ts` 是 rescan 驱动的启停/就地路由刷新循环（single-flight 且**所有**路径都必须走同一个 `finally` 释放，否则 guard 会永久 wedge），`-config.ts` 是 `pnpm webhook:github` CLI。密钥只经 stdin 或自动生成进 SecureStore，配置只存 handle。
+- `packages/storage/src/external-event-store.ts` 是 `0048_daemon_external_event` 的持久状态机；`packages/shared/src/types/external-event.ts` 是跨层 envelope SSOT。
 - `apps/runtime/src/runtime.ts` 是执行面和 SQLite durable 真相源：对话、Run、工具授权、事件投影、Kernel adapter/session 都归 Runtime 所有。
+- `conversation.listPendingToolApprovals` 是 Desktop 重连时的当前状态对账接口：Runtime 只返回请求时保存的脱敏 `approvalSummary`；Desktop 将其与 durable event replay 合并，不把原始工具参数扩散到 Renderer。
 - `apps/runtime/src/kernel/codex-app-server-adapter.ts` 只消费官方 Codex app-server JSON-RPC；`registry.ts` 是唯一注册入口。
+- `apps/runtime/src/kernel/codex-e2e-verify.ts` 是使用本机登录态的非密封真实验收入口；`pnpm selftest:codex-persistent` 验证同进程连续 turn 与新进程 `thread/resume`，不进入普通离线测试套件。
 - `apps/desktop/src/main/runtime-supervisor.ts` 只负责 Desktop client 的冷启动/连接和升级时有界停止，不拥有普通窗口退出的 Runtime 生命周期。
 
-数据流：`Desktop/外部事件 -> daemon -> Runtime pipe -> Run/Event/Message/Kernel session -> SQLite`。Desktop 断开后，Runtime 与 daemon 继续运行；重连使用 durable cursor/replay。
+数据流：`Desktop/外部事件 -> daemon durable inbox/lease -> Runtime pipe -> Conversation/Run/Event/Message/Kernel session -> SQLite`。Desktop 断开后，Runtime 与 daemon 继续运行；重连先使用 durable cursor/replay 还原历史，再向 Runtime 查询仍 pending 的审批做当前状态对账。

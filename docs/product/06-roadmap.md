@@ -9,10 +9,14 @@
 
 ### 后续阶段
 
-1. Provider 渠道可用后补真实 Codex 连续两轮、关闭 Desktop 后重连 replay 与 Runtime 崩溃恢复证据。
-2. daemon 外部事件入口：`push_to_bot`、Webhook、文件监听、Git 推送与异步任务提交。
-3. 为每类入口补 durable 去重键、lease/heartbeat、终态与重放合同。
-4. Claude Code 迁移官方 Agent SDK，继续保持 `KernelAdapter` 边界，不让厂商 SDK 类型扩散。
+1. [x] 真实 Codex 连续 turn、新 app-server `thread/resume`、关闭 Desktop 后 replay 与 Runtime 崩溃恢复证据。
+2. [x] daemon 外部事件入口：`push_to_bot`、Webhook、文件监听、Git 推送与异步任务提交共用 durable envelope。
+3. [x] durable 去重键、lease/heartbeat、终态、状态查询与 Runtime crash takeover 合同。
+4. [x] Desktop 断连/冷重启后的 pending approval 对账，以及 approve/deny 真实 Electron 验收。
+5. [x] GitHub HTTP webhook endpoint：daemon 托管监听器、HMAC 验签、delivery id 去重、CLI 配置（`pnpm webhook:github`）。默认绑 `127.0.0.1`，公网暴露由用户自备隧道/反代。
+6. [x] Claude Code 迁移官方 Agent SDK，继续保持 `KernelAdapter` 边界，不让厂商 SDK 类型扩散。
+7. 后台任务/事件中心 UI：事件与 Run 列表、失败原因、重试与取消。
+8. 其余平台的配置 UI 与 bot 凭据绑定（GitHub 以外的 webhook 来源、文件 watcher 配置入口）。
 
 ## 2026-08-02 路线图检查点：本地工程任务收口，外部验收待补
 

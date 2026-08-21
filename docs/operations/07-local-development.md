@@ -61,6 +61,15 @@ pnpm --filter @sync-think/runtime test
 pnpm --filter @sync-think/desktop test
 ```
 
+Windows 后台会话与审批断连真实验收：
+
+```powershell
+pnpm selftest:codex-persistent
+pnpm selftest:approval-reconnect
+```
+
+`selftest:approval-reconnect` 使用隔离数据库、Electron userData、`LOCALAPPDATA` 和本地脚本 Provider，依次执行 approve/deny。脚本会在审批出现后完整关闭并重开 Desktop，断言 Runtime PID 未变化、同一 approvalId 被恢复、请求/决策各持久化一次、approve 副作用只执行一次且 deny 不产生副作用；证据保存在 `.data/tool-approval-reconnect-e2e-*/`。
+
 ## 4. 启动 Runtime 与 Desktop
 
 开发无 token 模式仅用于本机调试：
