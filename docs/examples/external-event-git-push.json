@@ -1,0 +1,29 @@
+{
+  "id": "evt-example-git-20260821-001",
+  "dedupeKey": "git:github:delivery-example-001",
+  "source": {
+    "kind": "git",
+    "name": "github"
+  },
+  "instruction": "检查这次 Git push，概括变更并指出需要处理的风险。",
+  "target": {
+    "kind": "model",
+    "modelId": "YOUR_MODEL_ID"
+  },
+  "workspaceId": "YOUR_WORKSPACE_ID",
+  "skillVersionIds": [],
+  "conversationKey": "repo:sync-think:main",
+  "title": "SYNC-THINK main 分支事件",
+  "metadata": {
+    "repository": "YOUR_ORG/SYNC-THINK",
+    "ref": "refs/heads/main",
+    "before": "BEFORE_SHA",
+    "after": "AFTER_SHA",
+    "commits": [
+      {
+        "id": "AFTER_SHA",
+        "message": "example commit"
+      }
+    ]
+  }
+}

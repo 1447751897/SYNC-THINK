@@ -439,6 +439,7 @@ describe('0040 capability governance migration', () => {
       '0045_scheduled_task_scope',
       '0046_scheduled_task_history',
       '0047_daemon_task_queue',
+      '0048_daemon_external_event',
     ]);
     const after = await openDatabaseAsync({ path: dbPath });
     try {

@@ -210,9 +210,11 @@ describe('0017_reviewer_rework migration', () => {
     expect(conversationPlanIndex).toBe(interactionModeIndex + 1);
     const taskHistoryIndex = names.indexOf('0046_scheduled_task_history');
     const daemonTaskQueueIndex = names.indexOf('0047_daemon_task_queue');
+    const daemonExternalEventIndex = names.indexOf('0048_daemon_external_event');
     expect(taskHistoryIndex).toBe(conversationPlanIndex + 3);
     expect(daemonTaskQueueIndex).toBe(taskHistoryIndex + 1);
-    expect(daemonTaskQueueIndex).toBe(names.length - 1);
+    expect(daemonExternalEventIndex).toBe(daemonTaskQueueIndex + 1);
+    expect(daemonExternalEventIndex).toBe(names.length - 1);
     expect(names.slice(frozenIndex, reviewerReworkIndex + 2)).toEqual([
       '0016_production_execution',
       '0017_reviewer_rework',

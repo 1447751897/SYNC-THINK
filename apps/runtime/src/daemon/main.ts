@@ -26,6 +26,7 @@ import { format } from 'node:util';
 import { openDatabaseAsync, runMigrations } from '@sync-think/storage';
 import { SqliteScheduledTaskStore } from '@sync-think/storage';
 import { SqliteAppSettingStore } from '@sync-think/storage';
+import { SqliteExternalEventStore } from '@sync-think/storage';
 import {
   DEFAULT_DEV_INSTALL_ID,
   encodeFrame,
@@ -38,7 +39,7 @@ import { daemonPipePath, probeDesktopPipe } from './yield.js';
 import { isAutostartRegistered as autostartRegistered } from './autostart.js';
 import { buildDaemonStatusPayload } from './manage.js';
 import { createPipeServer, type PipeServerHandlers } from '../pipe/server.js';
-import { resolveRuntimeDatabasePath } from '../persistence.js';
+import { createRuntimeSecureStore, resolveRuntimeDatabasePath } from '../persistence.js';
 import {
   TimerRegistry,
   createDaemonStatus,
@@ -50,6 +51,12 @@ import { decideDue, type SchedulerDecision } from '../scheduler-core.js';
 import { chooseDispatchPath, composeTaskCommand } from './dispatch.js';
 import { buildWorkerCommand, runWorkerProcess } from './worker.js';
 import { dispatchTaskToDesktop } from './dispatch-client.js';
+import { dispatchExternalEventToRuntime } from './external-event-client.js';
+import { ExternalEventCoordinator } from './external-event-coordinator.js';
+import { parseExternalEventFrame } from './external-event-protocol.js';
+import { GITHUB_WEBHOOK_SETTING_KEY, parseGitHubWebhookConfig } from './github-webhook.js';
+import { startGitHubWebhookServer } from './github-webhook-server.js';
+import { createGitHubWebhookSync } from './github-webhook-sync.js';
 import { classifyInterruption, DispatchedTracker, applyAbort } from './interrupt.js';
 import { parseTaskFrame } from './protocol.js';
 import { planCatchupSweep } from './catchup.js';
@@ -146,6 +153,12 @@ export interface DaemonOptions {
     registerTimer(taskId: string, fire: () => void): unknown;
   };
   statusStore?: import('./core.js').StatusFileStore;
+  /**
+   * Secure store used to read the GitHub webhook secret. Injected by tests and
+   * on platforms where the DPAPI vault is unavailable; built lazily otherwise,
+   * so a daemon with no webhook configured never touches the vault.
+   */
+  secureStore?: { retrieveSecret(handle: string): Promise<string> };
   now?: () => Date;
 }
 
@@ -436,6 +449,7 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   const connection = await openDatabaseAsync({ path: dbPath });
   const taskStore = new SqliteScheduledTaskStore(connection.raw);
   const appSettingStore = new SqliteAppSettingStore(connection.raw);
+  const externalEventStore = new SqliteExternalEventStore(connection.raw);
   // 并发队列（T9）：DB 持久化队列表（进程重启不丢，按入队顺序出队）。
   const queueStore = {
     enqueue: (taskId: string): boolean => {
@@ -541,6 +555,59 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     const clamped = Number.isFinite(value) ? Math.min(8, Math.max(1, Math.floor(value ?? 2))) : 2;
     return clamped;
   };
+
+  const externalEvents = new ExternalEventCoordinator({
+    store: externalEventStore,
+    ownerId: `daemon:${installId}:${process.pid}`,
+    leaseMs: 30_000,
+    maxConcurrent: taskMaxConcurrent,
+    dispatch: async (event) => {
+      if (!(await ensureRuntime())) {
+        return { ok: false, accepted: false, reason: 'runtime-unavailable' };
+      }
+      return dispatchExternalEventToRuntime(
+        {
+          installId,
+          helloSecret,
+          appVersion: 'sync-think-daemon',
+          timeoutMs: 10_000,
+          handshakeTimeoutMs: 5_000,
+        },
+        event,
+      );
+    },
+  });
+  const externalPumpPromises = new Set<Promise<boolean>>();
+  const pumpExternalEvents = (): void => {
+    const pump = externalEvents.pumpOnce();
+    externalPumpPromises.add(pump);
+    void pump.then(
+      () => externalPumpPromises.delete(pump),
+      (error) => {
+        externalPumpPromises.delete(pump);
+        console.warn('[daemon] external event pump failed', error);
+      },
+    );
+  };
+
+  // GitHub webhook 入口（TD-046 的薄生产者层）。
+  //
+  // 常驻在 daemon 而不是 Runtime：Desktop 关闭时 daemon 仍在，push 进来后由
+  // coordinator 的 ensureRuntime() 拉起 Runtime 执行——这正是本票的目标。
+  // 配置改动通过 15s 的 rescan 生效（读 app_setting，绑定参数变化才重建监听）。
+  const github = createGitHubWebhookSync({
+    readConfig: () =>
+      parseGitHubWebhookConfig(appSettingStore.get(GITHUB_WEBHOOK_SETTING_KEY)?.value),
+    startServer: startGitHubWebhookServer,
+    submit: (event) => {
+      const submitted = externalEvents.submit(event);
+      pumpExternalEvents();
+      return { eventId: submitted.event.id, created: submitted.created };
+    },
+    secureStore: () => options.secureStore ?? createRuntimeSecureStore(),
+    log: (message) => console.log(message),
+    warn: (message, error) => console.warn(message, error),
+  });
 
   // 并发执行管理器（T9）：信号量 + running 跟踪 + DB 排队。
   const concurrency = new TaskConcurrencyManager({
@@ -708,6 +775,9 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
 
   // 全量重扫 + 定时重扫（支持任务增删改同步）。
   const rescan = (): void => {
+    // Webhook 配置与任务同源（app_setting），所以同一节奏同步：启用/停用、
+    // 端口或密钥变更重建监听，仅路由变更就地生效。
+    github.sync();
     const tasks = taskStore
       .list(false)
       .filter((t) => t.enabled && !(t.rule.kind === 'at' && !t.nextRunAt));
@@ -779,6 +849,7 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     status = updateDaemonStatus(status, { heartbeatAt: now() });
     status = rollDaemonStatusDay(status, now());
     persistStatus(status);
+    pumpExternalEvents();
   };
 
   // Installed before the pipe starts listening so an authenticated daemon.stop
@@ -801,7 +872,13 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     if (lifecycle.startupCatchupTimer) clearTimeout(lifecycle.startupCatchupTimer);
     lifecycle.server?.destroyConnections?.();
     lifecycle.server?.close();
+    // Stop accepting deliveries before the Runtime goes away, so an inbound
+    // push cannot be acknowledged during teardown and then never dispatched.
+    await github.close();
     await stopRuntime();
+    if (externalPumpPromises.size > 0) {
+      await Promise.allSettled([...externalPumpPromises]);
+    }
     if (connection.raw.open) connection.raw.close();
     persistStatus({ ...status, running: false });
     clearDaemonPid(dbPath, installId);
@@ -823,6 +900,75 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     },
     onClientGone: () => {},
     onFrame: (socket, frame) => {
+      const externalFrame = parseExternalEventFrame(frame);
+      if (externalFrame.ok && externalFrame.frame.type === 'external.event.submit') {
+        const submitted = externalEvents.submit(externalFrame.frame.payload);
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'external.event.submit',
+            payload: {
+              accepted: true,
+              eventId: submitted.event.id,
+              created: submitted.created,
+              state: submitted.event.state,
+            },
+          }),
+        );
+        pumpExternalEvents();
+        return;
+      }
+      if (externalFrame.ok && externalFrame.frame.type === 'external.event.heartbeat') {
+        const renewed = externalEvents.heartbeat(externalFrame.frame.payload);
+        if (!renewed) {
+          console.warn(
+            `[daemon] ignored stale external event heartbeat ${externalFrame.frame.payload.eventId}`,
+          );
+        }
+        return;
+      }
+      if (externalFrame.ok && externalFrame.frame.type === 'external.event.complete') {
+        const completed = externalEvents.complete(externalFrame.frame.payload);
+        console.log(
+          `[daemon] external event complete ${externalFrame.frame.payload.eventId}` +
+            ` status=${externalFrame.frame.payload.status} accepted=${completed}`,
+        );
+        if (completed) pumpExternalEvents();
+        return;
+      }
+      if (externalFrame.ok && externalFrame.frame.type === 'external.event.status') {
+        const query = externalFrame.frame.payload;
+        const event =
+          typeof query.eventId === 'string'
+            ? externalEventStore.get(query.eventId)
+            : typeof query.dedupeKey === 'string'
+              ? externalEventStore.getByDedupeKey(query.dedupeKey)
+              : undefined;
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'external.event.status',
+            payload: { ...(event ? { event } : {}) },
+          }),
+        );
+        return;
+      }
+      if (frame.type.startsWith('external.event.')) {
+        socket.write(
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: frame.type,
+            payload: {
+              accepted: false,
+              reason: externalFrame.ok ? 'unsupported-frame' : externalFrame.error,
+            },
+          }),
+        );
+        return;
+      }
       // abort 帧：桌面退出前告知（用户主动关闭 → app-closed，不重试）。
       const parsed = parseTaskFrame(frame);
       if (parsed.ok && parsed.frame.type === 'task.abort') {

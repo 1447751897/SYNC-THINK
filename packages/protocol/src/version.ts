@@ -121,7 +121,8 @@ export type Feature =
   | 'goal.clear'
   | 'goal.pause'
   | 'goal.resume'
-  | 'scheduledTask';
+  | 'scheduledTask'
+  | 'externalEvent';
 
 export const DEFAULT_FEATURES: Feature[] = [
   'workspace.bindFolder',
@@ -149,6 +150,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'goal.pause',
   'goal.resume',
   'scheduledTask',
+  'externalEvent',
   'run.getGraph',
   'run.pause',
   'run.resume',

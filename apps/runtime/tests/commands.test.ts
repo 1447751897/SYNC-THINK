@@ -10,6 +10,7 @@ import {
   openDatabaseAsync,
   runMigrations,
   SqliteEventCheckpointStore,
+  SqliteConversationStore,
   SqliteScheduledTaskStore,
 } from '@sync-think/storage';
 import type { Event, RunId, WorkspaceId } from '@sync-think/shared';
@@ -224,6 +225,88 @@ describe('runtime commands', () => {
       expect(stored?.lastResult?.status).toBe('success');
       expect(taskStore.listHistory(taskId)).toHaveLength(1);
       expect(taskStore.listHistory(taskId)[0]?.status).toBe('success');
+    } finally {
+      socket.destroy();
+      await session.close();
+      inspectConnection.raw.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs a leased external event in a durable conversation and deduplicates takeover delivery', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-external-event-runtime-'));
+    const dbPath = join(dir, 'sync-think.db');
+    const installId = `test-external-event-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const provider = new RecordingProvider();
+    const session = await (
+      await import('../src/persistence.js')
+    ).openPersistentRuntime({
+      installId,
+      dbPath,
+      secureStoreKeyPath: join(dir, 'secure-key.bin'),
+      allowNoToken: true,
+      demoProvider: provider,
+    });
+    const inspectConnection = await openDatabaseAsync({ path: dbPath });
+    const conversationStore = new SqliteConversationStore(inspectConnection.raw);
+    await session.runtime.start();
+    const socket = await connectRuntime(installId);
+    const reader = createFrameReader(socket);
+    const event = {
+      id: 'external-event-1',
+      dedupeKey: 'github:delivery-1',
+      source: { kind: 'git', name: 'github' },
+      instruction: 'review this push',
+      target: { kind: 'model', modelId: 'fake-mini' },
+      workspaceId: undefined,
+      skillVersionIds: [],
+      metadata: { ref: 'refs/heads/main' },
+    };
+
+    try {
+      await hello(socket, reader, installId);
+      const first = await writeAndRead(socket, reader, {
+        id: 'external-dispatch-1',
+        kind: 'request',
+        type: 'external.event.dispatch',
+        payload: {
+          event,
+          leaseToken: 'lease-1',
+          leaseExpiresAt: '2099-01-01T00:00:00.000Z',
+          attemptCount: 1,
+        },
+      });
+
+      expect(first.type).toBe('external.event.ack');
+      expect(first.payload).toMatchObject({
+        eventId: 'external-event-1',
+        leaseToken: 'lease-1',
+        accepted: true,
+      });
+      const runId = (first.payload as { runId?: string }).runId;
+      expect(runId).toBeTruthy();
+      expect(await waitFor(() => provider.callCount === 1, 2_000)).toBe(true);
+      expect(conversationStore.list().some((item) => item.title === '事件 · github')).toBe(true);
+
+      const retry = await writeAndRead(socket, reader, {
+        id: 'external-dispatch-2',
+        kind: 'request',
+        type: 'external.event.dispatch',
+        payload: {
+          event,
+          leaseToken: 'lease-2',
+          leaseExpiresAt: '2099-01-01T00:01:00.000Z',
+          attemptCount: 2,
+        },
+      });
+      expect(retry.payload).toMatchObject({
+        accepted: true,
+        eventId: 'external-event-1',
+        leaseToken: 'lease-2',
+        runId,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(provider.callCount).toBe(1);
     } finally {
       socket.destroy();
       await session.close();

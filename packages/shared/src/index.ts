@@ -11,6 +11,7 @@ export * from './types/agent.js';
 export * from './types/team.js';
 export * from './types/chat-plan.js';
 export * from './types/scheduled-task.js';
+export * from './types/external-event.js';
 export * from './types/context.js';
 export * from './types/usage.js';
 export * from './types/artifact.js';

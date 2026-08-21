@@ -295,6 +295,42 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     CREATE INDEX daemon_task_queue_created_idx
       ON daemon_task_queue(created_at ASC);`,
   },
+  {
+    name: '0048_daemon_external_event',
+    // External producers share one durable inbox. A fencing token prevents a
+    // late Runtime from renewing or completing work after lease takeover.
+    sql: `CREATE TABLE daemon_external_event (
+      id TEXT PRIMARY KEY,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      source_kind TEXT NOT NULL
+        CHECK (source_kind IN ('webhook','file','git','bot','async')),
+      source_name TEXT,
+      instruction TEXT NOT NULL,
+      target_kind TEXT NOT NULL CHECK (target_kind IN ('agent','model','team')),
+      target_ref TEXT NOT NULL,
+      workspace_id TEXT,
+      skill_version_ids_json TEXT NOT NULL DEFAULT '[]',
+      conversation_key TEXT,
+      title TEXT,
+      metadata_json TEXT,
+      state TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending','leased','completed','failed','cancelled')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      lease_owner TEXT,
+      lease_token TEXT,
+      lease_expires_at TEXT,
+      run_id TEXT,
+      result_status TEXT CHECK (result_status IN ('success','failed','cancelled')),
+      result_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+    CREATE INDEX daemon_external_event_claim_idx
+      ON daemon_external_event(state, lease_expires_at, created_at);
+    CREATE INDEX daemon_external_event_run_idx
+      ON daemon_external_event(run_id);`,
+  },
 ];
 
 function taskPlanDdlSql(): string {

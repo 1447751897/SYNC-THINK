@@ -228,6 +228,7 @@ import {
   type ScheduledTaskTarget,
   type ScheduledTaskRunStatus,
   type TaskRule,
+  type ExternalEventEnvelope,
 } from '@sync-think/shared';
 import type {
   ProviderContentPart,
@@ -700,6 +701,14 @@ import type { UsageSummaryRawResult } from './usage-summary-cache.js';
 import { decideSchedulerHeartbeat, probeDaemonPipe } from './daemon/yield.js';
 import { parseTaskFrame } from './daemon/protocol.js';
 import { sendAbortToDaemon, sendTaskCompletionToDaemon } from './daemon/dispatch-client.js';
+import {
+  parseExternalEventFrame,
+  type ExternalEventDispatchPayload,
+} from './daemon/external-event-protocol.js';
+import {
+  sendExternalEventCompletionToDaemon,
+  sendExternalEventHeartbeatToDaemon,
+} from './daemon/external-event-client.js';
 
 const CODEX_STYLE_COMMENTARY_PROMPT = [
   'User-visible execution updates (Codex-style commentary):',
@@ -1837,6 +1846,14 @@ export class Runtime {
   >();
   /** Completion frames in flight; shutdown waits so daemon does not retry a finished run. */
   private readonly daemonCompletionPromises = new Set<Promise<boolean>>();
+  /** Active durable external-event lease per event id. */
+  private readonly externalEventExecutions = new Map<
+    string,
+    { leaseToken: string; runId: string }
+  >();
+  private readonly externalEventIdByRun = new Map<string, string>();
+  private readonly externalEventCleanupRuns = new Set<string>();
+  private externalEventHeartbeatTimer?: ReturnType<typeof setInterval>;
   private runtimeStopped = false;
   /** Persisted runId → kernelId, so message-stream kernel badges survive restarts. */
   private readonly runKernelIds: Map<string, string> = new Map();
@@ -2263,6 +2280,10 @@ export class Runtime {
         }
         if (frame.type === 'task.dispatch') {
           this.handleTaskDispatch(socket, frame);
+          return;
+        }
+        if (frame.type === 'external.event.dispatch') {
+          this.handleExternalEventDispatch(socket, frame);
           return;
         }
         if (frame.type === 'scheduledTask.history') {
@@ -15338,6 +15359,339 @@ export class Runtime {
     return undefined;
   }
 
+  /** Accept a daemon lease, bind it to one durable conversation/run, then execute asynchronously. */
+  private handleExternalEventDispatch(socket: Socket, frame: Frame): void {
+    const parsed = parseExternalEventFrame(frame);
+    if (!parsed.ok || parsed.frame.type !== 'external.event.dispatch') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const payload = parsed.frame.payload;
+    const event = payload.event;
+    const existing = this.loadExternalEventExecution(event.id);
+    if (existing) {
+      this.registerExternalEventExecution(event.id, payload.leaseToken, existing.runId);
+      this.writeExternalEventAck(socket, frame, payload, true, existing.runId);
+      return;
+    }
+
+    const rejectionReason = this.externalEventDispatchRejection();
+    if (rejectionReason) {
+      this.writeExternalEventAck(socket, frame, payload, false, undefined, rejectionReason);
+      return;
+    }
+
+    try {
+      const conversationId = this.getOrCreateExternalEventConversation(event);
+      const threadId = this.resolveConversationThreadId(conversationId);
+      if (!threadId || !this.stateStore || !this.workspaceStore) {
+        this.writeExternalEventAck(socket, frame, payload, false, undefined, '事件会话尚未就绪');
+        return;
+      }
+
+      const runId = ulid() as RunId;
+      const prompt = this.externalEventPrompt(event);
+      const prepared = this.prepareRunBinding({
+        runId,
+        threadId: threadId as ThreadId,
+        userText: prompt,
+        skillVersionIds: event.skillVersionIds,
+        ...(event.target.kind === 'model' ? { modelId: event.target.modelId } : {}),
+        ...(event.target.kind === 'agent' ? { globalAgentId: event.target.agentId } : {}),
+        ...(event.target.kind === 'team' ? { teamId: event.target.teamId } : {}),
+      });
+      const occurredAt = new Date().toISOString();
+      const workspaceTask = this.workspaceStore.getTaskByThreadId(threadId as ThreadId);
+      const sourceLabel = event.source.name ?? event.source.kind;
+      const eventDrafts: [EventDraft, EventDraft] = [
+        {
+          id: ulid() as Event['id'],
+          workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
+          taskId: workspaceTask?.id,
+          runId,
+          category: 'message',
+          type: 'message.appended',
+          occurredAt,
+          payload: {
+            threadId,
+            role: 'user',
+            text: `【外部事件 · ${sourceLabel}】${prompt}`,
+            externalEventId: event.id,
+            externalEventDedupeKey: event.dedupeKey,
+          },
+        },
+        {
+          id: ulid() as Event['id'],
+          workspaceId: workspaceTask?.workspaceId ?? this.workspaceId,
+          taskId: workspaceTask?.id,
+          runId,
+          category: 'context',
+          type: 'context.packet.built',
+          occurredAt,
+          payload: {
+            threadId,
+            packetId: prepared.packetId,
+            proofHash: prepared.proofHash,
+            modelId: prepared.run.modelId,
+            providerModelId: prepared.run.providerModelId,
+            resolutionSource: prepared.run.resolutionSource,
+            credentialRefId: prepared.run.credentialRefId,
+            skillVersionIds: prepared.skillVersionIds,
+            mcpServerIds: prepared.mcpServerIds,
+            externalEventId: event.id,
+            externalEventSource: event.source.kind,
+          },
+        },
+      ];
+      const projectedRuns = new Map(this.demoRuns);
+      projectedRuns.set(runId, prepared.run);
+      const events = this.persistProjectedEvents(
+        eventDrafts,
+        new Map(this.threadVersions),
+        projectedRuns,
+      );
+      this.recordCommittedEvents(events);
+      this.demoRuns.set(runId, prepared.run);
+      this.saveExternalEventExecution(event.id, conversationId, runId);
+      this.registerExternalEventExecution(event.id, payload.leaseToken, runId);
+      this.writeExternalEventAck(socket, frame, payload, true, runId);
+      for (const committed of events) this.publishEvent(committed);
+      void this.executeKernelRun(runId);
+    } catch (error) {
+      console.warn('[runtime] external.event.dispatch rejected', error);
+      this.writeExternalEventAck(socket, frame, payload, false, undefined, '事件 Run 启动失败');
+    }
+  }
+
+  private externalEventDispatchRejection(): string | undefined {
+    if (
+      !this.stateStore ||
+      !this.workspaceStore ||
+      !this.conversationStore ||
+      !this.appSettingStore
+    ) {
+      return '持久化存储不可用';
+    }
+    if (!this.canStartModelRun()) return '无可用模型供应商';
+    if (this.externalEventExecutions.size >= this.taskMaxConcurrent()) return '并发上限';
+    return undefined;
+  }
+
+  private writeExternalEventAck(
+    socket: Socket,
+    frame: Frame,
+    payload: ExternalEventDispatchPayload,
+    accepted: boolean,
+    runId?: string,
+    reason?: string,
+  ): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'external.event.ack',
+        payload: {
+          eventId: payload.event.id,
+          leaseToken: payload.leaseToken,
+          accepted,
+          ...(runId ? { runId } : {}),
+          ...(reason ? { reason } : {}),
+        },
+      }),
+    );
+  }
+
+  private externalEventPrompt(event: ExternalEventEnvelope): string {
+    if (!event.metadata || Object.keys(event.metadata).length === 0) return event.instruction;
+    return `${event.instruction}\n\n事件数据：\n${JSON.stringify(event.metadata, null, 2)}`;
+  }
+
+  private externalEventSettingKey(kind: 'conversation' | 'execution', identity: string): string {
+    const digest = createHash('sha256').update(identity, 'utf8').digest('hex');
+    return `external-event.${kind}.${digest}`;
+  }
+
+  private getOrCreateExternalEventConversation(event: ExternalEventEnvelope): string {
+    if (!this.conversationStore || !this.workspaceStore || !this.appSettingStore) {
+      throw new Error('external_event_store_unavailable');
+    }
+    const targetRef =
+      event.target.kind === 'agent'
+        ? event.target.agentId
+        : event.target.kind === 'team'
+          ? event.target.teamId
+          : event.target.modelId;
+    const conversationIdentity = [
+      event.conversationKey ?? event.id,
+      event.target.kind,
+      targetRef,
+      event.workspaceId ?? '',
+    ].join('\0');
+    const settingKey = this.externalEventSettingKey('conversation', conversationIdentity);
+    const persisted = this.appSettingStore.get(settingKey)?.value as
+      { conversationId?: unknown } | undefined;
+    if (typeof persisted?.conversationId === 'string') {
+      const existing = this.conversationStore.get(persisted.conversationId as ConversationId);
+      if (existing) return existing.id;
+    }
+
+    const now = new Date().toISOString();
+    const workspaceId =
+      event.workspaceId && this.workspaceStore.getWorkspace(event.workspaceId as WorkspaceId)
+        ? (event.workspaceId as WorkspaceId)
+        : this.getOrCreateInboxWorkspace();
+    const sourceLabel = event.source.name ?? event.source.kind;
+    const title = event.title?.trim() || `事件 · ${sourceLabel}`;
+    const conversation = this.conversationStore.create({
+      target:
+        event.target.kind === 'agent'
+          ? { track: 'agent', agentId: event.target.agentId as AgentId }
+          : event.target.kind === 'team'
+            ? { track: 'team', teamId: event.target.teamId as TeamId }
+            : { track: 'model', modelId: event.target.modelId as ModelId },
+      workspaceId,
+      title,
+      now,
+    });
+    const task = this.workspaceStore.createTask({
+      workspaceId,
+      title,
+      goal: event.instruction.slice(0, 200),
+      now,
+    });
+    this.threadVersions.set(task.threadId, task.taskVersion);
+    this.conversationStore.bindTask(conversation.id, task.taskId, now);
+    this.appSettingStore.set(settingKey, { conversationId: conversation.id }, now);
+    return conversation.id;
+  }
+
+  private saveExternalEventExecution(eventId: string, conversationId: string, runId: string): void {
+    this.appSettingStore?.set(this.externalEventSettingKey('execution', eventId), {
+      eventId,
+      conversationId,
+      runId,
+    });
+  }
+
+  private loadExternalEventExecution(eventId: string): { runId: string } | undefined {
+    const value = this.appSettingStore?.get(
+      this.externalEventSettingKey('execution', eventId),
+    )?.value;
+    if (!value || typeof value !== 'object') return undefined;
+    const raw = value as Record<string, unknown>;
+    if (raw.eventId !== eventId || typeof raw.runId !== 'string') return undefined;
+    return { runId: raw.runId };
+  }
+
+  private registerExternalEventExecution(eventId: string, leaseToken: string, runId: string): void {
+    this.externalEventExecutions.set(eventId, { leaseToken, runId });
+    this.externalEventIdByRun.set(runId, eventId);
+    this.startExternalEventHeartbeat();
+    if (!this.externalEventCleanupRuns.has(runId)) {
+      this.externalEventCleanupRuns.add(runId);
+      this.attachExternalEventRunCleanup(runId);
+    }
+    this.sendExternalEventHeartbeat(eventId);
+  }
+
+  private startExternalEventHeartbeat(): void {
+    if (this.externalEventHeartbeatTimer) return;
+    this.externalEventHeartbeatTimer = setInterval(() => {
+      for (const eventId of this.externalEventExecutions.keys()) {
+        this.sendExternalEventHeartbeat(eventId);
+      }
+    }, 10_000);
+    this.externalEventHeartbeatTimer.unref?.();
+  }
+
+  private sendExternalEventHeartbeat(eventId: string): void {
+    const execution = this.externalEventExecutions.get(eventId);
+    if (!execution || this.runtimeStopped) return;
+    void sendExternalEventHeartbeatToDaemon(
+      {
+        installId: this.installId,
+        helloSecret: this.handlers.expectedSecret,
+        appVersion: 'sync-think-runtime',
+        handshakeTimeoutMs: 2_000,
+      },
+      {
+        eventId,
+        leaseToken: execution.leaseToken,
+        runId: execution.runId,
+      },
+    );
+  }
+
+  private attachExternalEventRunCleanup(runId: string): void {
+    const check = (): void => {
+      if (this.runtimeStopped) return;
+      const run = this.demoRuns.get(runId as RunId);
+      if (run && this.inFlight.has(runId)) {
+        setTimeout(check, 50);
+        return;
+      }
+      const eventId = this.externalEventIdByRun.get(runId);
+      const execution = eventId ? this.externalEventExecutions.get(eventId) : undefined;
+      if (!eventId || !execution || execution.runId !== runId) return;
+      const result = this.externalEventRunResult(runId);
+      if (!result) {
+        setTimeout(check, 50);
+        return;
+      }
+      this.externalEventCleanupRuns.delete(runId);
+      this.externalEventIdByRun.delete(runId);
+      this.externalEventExecutions.delete(eventId);
+      if (this.externalEventExecutions.size === 0 && this.externalEventHeartbeatTimer) {
+        clearInterval(this.externalEventHeartbeatTimer);
+        this.externalEventHeartbeatTimer = undefined;
+      }
+      const completion = sendExternalEventCompletionToDaemon(
+        {
+          installId: this.installId,
+          helloSecret: this.handlers.expectedSecret,
+          appVersion: 'sync-think-runtime',
+          handshakeTimeoutMs: 2_000,
+        },
+        {
+          eventId,
+          leaseToken: execution.leaseToken,
+          runId,
+          status: result.status,
+          ...(result.reason ? { reason: result.reason } : {}),
+        },
+      );
+      this.daemonCompletionPromises.add(completion);
+      void completion.finally(() => this.daemonCompletionPromises.delete(completion));
+    };
+    setTimeout(check, 50);
+  }
+
+  private externalEventRunResult(
+    runId: string,
+  ): { status: 'success' | 'failed' | 'cancelled'; reason?: string } | undefined {
+    const events = this.stateStore?.listEventsByRun
+      ? this.stateStore.listEventsByRun(runId as RunId)
+      : this.events.filter((event) => event.runId === runId);
+    const terminal = [...(events ?? [])]
+      .reverse()
+      .find((event) => TERMINAL_RUN_EVENT_TYPES.has(event.type));
+    if (!terminal) return undefined;
+    const status =
+      terminal.type === 'run.completed'
+        ? 'success'
+        : terminal.type === 'run.cancelled'
+          ? 'cancelled'
+          : 'failed';
+    const payload = terminal.payload as Record<string, unknown>;
+    const reason =
+      typeof payload.reason === 'string'
+        ? payload.reason
+        : typeof payload.errorMessage === 'string'
+          ? payload.errorMessage
+          : undefined;
+    return { status, ...(reason ? { reason } : {}) };
+  }
+
   /** Resolve the thread id backing a conversation (goal turns run on its thread). */
   private resolveConversationThreadId(conversationId: string): string | undefined {
     const conversation = this.conversationStore?.get(
@@ -26207,6 +26561,10 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
   async stop(): Promise<void> {
     this.runtimeStopped = true;
     this.stopTaskSchedulerHeartbeat();
+    if (this.externalEventHeartbeatTimer) {
+      clearInterval(this.externalEventHeartbeatTimer);
+      this.externalEventHeartbeatTimer = undefined;
+    }
     this.localSkillWatchCleanup?.();
     this.localSkillWatchCleanup = undefined;
     // Explicit Runtime/daemon shutdown owns the Kernel process lifecycle. A
