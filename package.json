@@ -28,6 +28,7 @@
     "selftest:m2": "node scripts/selftest-m2.mjs",
     "selftest:browser-handoff": "node scripts/selftest-browser-handoff-e2e.mjs all",
     "selftest:desktop-handoff": "node scripts/selftest-desktop-handoff-e2e.mjs all",
+    "selftest:approval-reconnect": "node scripts/selftest-tool-approval-reconnect-e2e.mjs all",
     "selftest:codex-persistent": "pnpm tsx apps/runtime/src/kernel/codex-e2e-verify.ts",
     "test:release:win": "node --test scripts/windows-portable-release.test.mjs",
     "prerelease:stage:win": "pnpm build && pnpm release:assets:win && pnpm test:brand:win && pnpm test:release:win",

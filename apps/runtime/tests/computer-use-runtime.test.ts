@@ -475,6 +475,33 @@ async function decideToolApproval(
   }
 }
 
+async function listPendingToolApprovals(installId: string, threadId: string): Promise<Frame> {
+  const socket = await connectRuntime(installId);
+  const inbox = createFrameInbox(socket);
+  try {
+    await inbox.send({
+      id: `hello-pending-approvals-${threadId}`,
+      kind: 'request',
+      type: '__hello',
+      payload: {
+        protocolVersion: 2,
+        appVersion: '0.0.1',
+        installId,
+        nonce: `pending-approvals-${threadId}`,
+        features: ['conversation.listPendingToolApprovals'],
+      },
+    });
+    return await inbox.send({
+      id: `pending-approvals-${threadId}`,
+      kind: 'request',
+      type: 'conversation.listPendingToolApprovals',
+      payload: { threadId },
+    });
+  } finally {
+    socket.destroy();
+  }
+}
+
 async function startFullAccessDesktopFixture<
   TProvider extends ProviderAdapter,
   TWorker extends DesktopWorker,
@@ -534,6 +561,7 @@ async function startFullAccessDesktopFixture<
     provider,
     runtime,
     socket,
+    threadId: task.threadId,
     worker,
   };
 }
@@ -1157,6 +1185,63 @@ describe('Runtime Computer Use plugin gate', () => {
       expect(JSON.stringify(started)).not.toMatch(
         /runtime-password-value|valueDigest|nativeWindowHandle|snapshotRevision|accessibilityRevision|elementIndex|targetIdentity|ownerId|0x1234/,
       );
+    } finally {
+      fixture.socket.destroy();
+      await fixture.runtime.stop();
+      fixture.connection.raw.close();
+    }
+  });
+
+  it('lists and resolves an in-flight approval after the original Desktop connection closes', async () => {
+    const secretValue = 'runtime-reconnect-password-value';
+    const provider = new ResolvedDesktopActionProvider(
+      'desktop_set_value',
+      JSON.stringify({ target: FIXTURE_ELEMENT_TARGET, value: secretValue }),
+      { automationId: 'PasswordBox', controlType: 'Edit' },
+    );
+    const worker = new MetadataDesktopWorker({
+      name: 'Password',
+      automationId: 'PasswordBox',
+      controlType: 'Edit',
+      isPassword: true,
+      supportedPatterns: ['Value'],
+    });
+    const fixture = await startFullAccessDesktopFixture('approval-reconnect', provider, worker);
+    try {
+      expect(
+        await waitFor(() =>
+          Boolean(latestEventPayload(fixture.connection, 'tool.approval_requested')),
+        ),
+      ).toBe(true);
+      const requested = latestEventPayload(fixture.connection, 'tool.approval_requested')!;
+      const approvalId = String(requested.approvalId);
+
+      fixture.socket.destroy();
+
+      const listed = await listPendingToolApprovals(fixture.installId, fixture.threadId);
+      expect(listed.error).toBeUndefined();
+      expect(listed.payload).toMatchObject({
+        approvals: [
+          {
+            approvalId,
+            threadId: fixture.threadId,
+            toolName: 'desktop_set_value',
+            title: 'desktop_set_value',
+            detail: '需要你的批准',
+            status: 'pending',
+          },
+        ],
+      });
+      expect(JSON.stringify(listed.payload)).not.toContain(secretValue);
+
+      const response = await decideToolApproval(fixture.installId, approvalId, 'approve');
+      expect(response.error).toBeUndefined();
+      expect(await waitFor(() => Boolean(provider.toolResult))).toBe(true);
+      expect(JSON.parse(provider.toolResult ?? '{}')).toMatchObject({ ok: true });
+      expect(worker.calls.filter((call) => call.action.kind === 'set-value')).toHaveLength(1);
+
+      const afterDecision = await listPendingToolApprovals(fixture.installId, fixture.threadId);
+      expect(afterDecision.payload).toEqual({ approvals: [] });
     } finally {
       fixture.socket.destroy();
       await fixture.runtime.stop();

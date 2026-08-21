@@ -157,6 +157,8 @@ import {
   type SubscribeConversationTransientStreamResponse,
   type UnsubscribeConversationTransientStreamResponse,
   type ListWaitingBrowserHandoffsResponse,
+  type ListPendingToolApprovalsResponse,
+  type PendingToolApprovalSummary,
   type DesktopWaitingCommandSummary,
   type ListWaitingDesktopCommandsResponse,
   type ContinueDesktopCommandResponse,
@@ -547,6 +549,7 @@ import {
   parseUpgradeConversationTrackPayload,
   parseDeleteConversationPayload,
   parseConversationCompactPayload,
+  parseListPendingToolApprovalsPayload,
   parseConversationDecideToolApprovalPayload,
   parseConversationSubmitBrowserResultPayload,
   parseListBrowserProfilesPayload,
@@ -1963,6 +1966,7 @@ export class Runtime {
       /** Results for tools already executed in this round. */
       completedResults: Array<{ toolCallId: string; content: string }>;
       toolLoopRound: number;
+      approvalSummary: { title: string; detail: string; path?: string; command?: string };
       resolve: (decision: 'approve' | 'deny') => void;
       createdAt: string;
     }
@@ -2656,6 +2660,10 @@ export class Runtime {
         }
         if (frame.type === 'conversation.compact') {
           void this.handleConversationCompact(socket, frame);
+          return;
+        }
+        if (frame.type === 'conversation.listPendingToolApprovals') {
+          this.handleListPendingToolApprovals(socket, frame);
           return;
         }
         if (frame.type === 'conversation.decideToolApproval') {
@@ -19370,6 +19378,7 @@ export class Runtime {
         currentIndex: 0,
         completedResults: [],
         toolLoopRound: 0,
+        approvalSummary: summary,
         resolve: (decision) => {
           call.signal.removeEventListener('abort', onAbort);
           resolve(decision === 'approve' ? 'approve' : 'deny');
@@ -19493,6 +19502,7 @@ export class Runtime {
         currentIndex: 0,
         completedResults: [],
         toolLoopRound: 0,
+        approvalSummary: summary,
         resolve: (decision) => {
           adapter.respondPermission(
             permission.requestId,
@@ -23454,6 +23464,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
         currentIndex: input.currentIndex,
         completedResults: input.completedResults,
         toolLoopRound: input.toolLoopRound,
+        approvalSummary: summary,
         resolve: (decision) => {
           input.signal.removeEventListener('abort', onAbort);
           resolve({ decision, approvalId });
@@ -23580,6 +23591,45 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
           decision: payload.decision,
           runId: pending.runId,
         },
+      }),
+    );
+  }
+
+  private handleListPendingToolApprovals(socket: Socket, frame: Frame): void {
+    const payload = parseListPendingToolApprovalsPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const approvals: PendingToolApprovalSummary[] = [];
+    for (const pending of this.pendingToolApprovals.values()) {
+      if (pending.threadId !== payload.threadId) continue;
+      if (payload.runId && pending.runId !== payload.runId) continue;
+      const toolCall = pending.pendingToolCalls[pending.currentIndex];
+      if (!toolCall) continue;
+      const summary = pending.approvalSummary;
+      approvals.push({
+        approvalId: pending.approvalId,
+        threadId: pending.threadId as PendingToolApprovalSummary['threadId'],
+        runId: pending.runId,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        title: summary.title,
+        detail: summary.detail,
+        ...(summary.path ? { path: summary.path } : {}),
+        ...(summary.command ? { command: summary.command } : {}),
+        status: 'pending',
+        createdAt: pending.createdAt,
+      });
+    }
+    approvals.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const response: ListPendingToolApprovalsResponse = { approvals };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'conversation.listPendingToolApprovals',
+        payload: response,
       }),
     );
   }

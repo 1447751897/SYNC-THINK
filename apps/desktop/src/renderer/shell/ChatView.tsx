@@ -49,6 +49,7 @@ import {
   type MessageBlock,
   type RunId,
   type TaskId,
+  type ThreadId,
   type Team,
 } from '@sync-think/shared';
 import type {
@@ -62,6 +63,7 @@ import type {
   BrowserHandoffSummary,
   CommentaryTimelineSegment,
   DesktopWaitingCommandSummary,
+  PendingToolApprovalSummary,
   ConversationTransientSnapshot,
   RunProcessView,
   SkillVersionSummary,
@@ -2331,10 +2333,56 @@ export function ChatView({
     transientFallbackEpoch,
   ]);
 
-  // Pending tool approvals for「询问批准」(from tool.approval_requested events).
+  const [runtimePendingApprovals, setRuntimePendingApprovals] = useState<
+    PendingToolApprovalSummary[]
+  >([]);
+  const pendingToolApprovalLoadGenerationRef = useRef(0);
+  const toolApprovalLifecycleRevision = useMemo(() => {
+    let revision = 0;
+    for (const event of eventHistory) {
+      const eventThread =
+        typeof event.payload.threadId === 'string' ? event.payload.threadId : undefined;
+      if (threadId && eventThread && eventThread !== threadId) continue;
+      if (
+        event.type === 'tool.approval_requested' ||
+        event.type === 'tool.approval_decided' ||
+        isRunTerminalEventType(event.type)
+      ) {
+        revision = Math.max(revision, event.sequence);
+      }
+    }
+    return revision;
+  }, [eventHistory, threadId]);
+  const refreshPendingToolApprovals = useCallback(async () => {
+    const api = bridge();
+    if (!api?.listPendingToolApprovals || !threadId) {
+      pendingToolApprovalLoadGenerationRef.current += 1;
+      setRuntimePendingApprovals([]);
+      return;
+    }
+    const generation = (pendingToolApprovalLoadGenerationRef.current += 1);
+    try {
+      const response = await api.listPendingToolApprovals({ threadId: threadId as ThreadId });
+      if (pendingToolApprovalLoadGenerationRef.current !== generation) return;
+      setRuntimePendingApprovals(
+        response.approvals.filter((approval) => String(approval.threadId) === threadId),
+      );
+    } catch {
+      // Keep the last validated Runtime snapshot. Durable events still resolve
+      // cards while a reconnect query is transiently unavailable.
+    }
+  }, [threadId]);
+  useEffect(() => {
+    void refreshPendingToolApprovals();
+  }, [refreshPendingToolApprovals, runtimeConnectionRevision, toolApprovalLifecycleRevision]);
+
+  // Pending tool approvals merge durable history with the Runtime's current
+  // in-memory wait set. The latter restores a card when Desktop's persisted
+  // replay cursor has already advanced past its original requested event.
   const pendingApprovals = useMemo(() => {
     if (!threadId) return [] as PendingToolApproval[];
     const byId = new Map<string, PendingToolApproval>();
+    const decidedIds = new Set<string>();
     /** Runs that reached a terminal state — their unresolved cards are dead. */
     const endedRuns = new Set<string>();
     const ordered = [...eventHistory].sort((a, b) => a.sequence - b.sequence);
@@ -2363,6 +2411,7 @@ export function ChatView({
         const approvalId =
           typeof event.payload.approvalId === 'string' ? event.payload.approvalId : undefined;
         if (!approvalId) continue;
+        decidedIds.add(approvalId);
         const existing = byId.get(approvalId);
         if (existing) {
           existing.decided =
@@ -2373,6 +2422,25 @@ export function ChatView({
       } else if (isRunTerminalEventType(event.type)) {
         if (event.runId) endedRuns.add(event.runId);
       }
+    }
+    for (const approval of runtimePendingApprovals) {
+      if (
+        String(approval.threadId) !== threadId ||
+        decidedIds.has(approval.approvalId) ||
+        endedRuns.has(String(approval.runId))
+      ) {
+        continue;
+      }
+      byId.set(approval.approvalId, {
+        approvalId: approval.approvalId,
+        runId: String(approval.runId),
+        toolName: approval.toolName,
+        title: approval.title,
+        detail: approval.detail,
+        ...(approval.toolCallId ? { toolCallId: approval.toolCallId } : {}),
+        ...(approval.path ? { path: approval.path } : {}),
+        ...(approval.command ? { command: approval.command } : {}),
+      });
     }
     // Drop resolved cards and cards belonging to runs that already ended
     // (cancel/abort paths and runtime restarts can strand requested events).
@@ -2388,7 +2456,7 @@ export function ChatView({
       else noToolCall.push(item);
     }
     return [...byToolCall.values(), ...noToolCall];
-  }, [eventHistory, threadId]);
+  }, [eventHistory, runtimePendingApprovals, threadId]);
 
   const [decidingApprovalId, setDecidingApprovalId] = useState<string | null>(null);
 
@@ -2399,6 +2467,7 @@ export function ChatView({
       setDecidingApprovalId(approvalId);
       try {
         await api.decideToolApproval({ approvalId, decision });
+        await refreshPendingToolApprovals();
       } catch (error) {
         setLocalErrors((prev) => [
           ...prev,
@@ -2414,7 +2483,7 @@ export function ChatView({
         setDecidingApprovalId(null);
       }
     },
-    [decidingApprovalId],
+    [decidingApprovalId, refreshPendingToolApprovals],
   );
 
   // Remove optimistic bubbles only after their durable message id arrives.

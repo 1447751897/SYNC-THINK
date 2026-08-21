@@ -288,6 +288,8 @@ import type {
   DeleteConversationPayload,
   ConversationDecideToolApprovalPayload,
   ConversationDecideToolApprovalResponse,
+  ListPendingToolApprovalsPayload,
+  ListPendingToolApprovalsResponse,
   KernelDetectResponse,
   OpenGatewayStatusResponse,
   GatewayLogsResponse,
@@ -743,6 +745,11 @@ const api = {
         'runtime:conversation-decide-tool-approval',
         payload,
       ) as Promise<ConversationDecideToolApprovalResponse>,
+    listPendingToolApprovals: (payload: ListPendingToolApprovalsPayload) =>
+      ipcRenderer.invoke(
+        'runtime:conversation-list-pending-tool-approvals',
+        payload,
+      ) as Promise<ListPendingToolApprovalsResponse>,
     /** AI 浏览器命令（click/type/read/screenshot）结果回传给 runtime 工具循环。 */
     submitBrowserResult: (payload: {
       requestId: string;

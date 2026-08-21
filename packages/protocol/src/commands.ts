@@ -135,6 +135,7 @@ export type CommandType =
   | 'conversation.delete'
   | 'conversation.sendMessage'
   | 'conversation.compact'
+  | 'conversation.listPendingToolApprovals'
   | 'conversation.decideToolApproval'
   | 'conversation.submitBrowserResult'
   | 'browser.profile.list'
@@ -3462,6 +3463,29 @@ export interface ConversationCompactResponse {
   /** Present when a compact boundary was written. */
   summaryText?: string;
   messageId?: string;
+}
+
+export interface PendingToolApprovalSummary {
+  approvalId: string;
+  threadId: ThreadId;
+  runId: RunId;
+  toolCallId?: string;
+  toolName: string;
+  title: string;
+  detail: string;
+  path?: string;
+  command?: string;
+  status: 'pending';
+  createdAt: string;
+}
+
+export interface ListPendingToolApprovalsPayload {
+  threadId: ThreadId;
+  runId?: RunId;
+}
+
+export interface ListPendingToolApprovalsResponse {
+  approvals: PendingToolApprovalSummary[];
 }
 
 /**

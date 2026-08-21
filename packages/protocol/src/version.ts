@@ -79,6 +79,7 @@ export type Feature =
   | 'conversation.ask'
   | 'conversation.upgradeTrack'
   | 'conversation.delete'
+  | 'conversation.listPendingToolApprovals'
   | 'conversation.decideToolApproval'
   | 'browser.handoff'
   | 'browser.recording'
@@ -203,6 +204,7 @@ export const DEFAULT_FEATURES: Feature[] = [
   'conversation.ask',
   'conversation.upgradeTrack',
   'conversation.delete',
+  'conversation.listPendingToolApprovals',
   'browser.handoff',
   'browser.recording',
   'desktop.command.listWaiting',

@@ -1,6 +1,19 @@
 // approval command payload parsers (extracted from command-validation.ts).
-import type { ListApprovalsPayload, EvaluateApprovalPayload, EnqueueApprovalPayload, DecideApprovalPayload, ConversationDecideToolApprovalPayload } from '@sync-think/protocol';
-import { hasOnlyKeys, isRecord, boundedAgentText, APPROVAL_STATES, APPROVAL_KINDS } from './shared.js';
+import type {
+  ListApprovalsPayload,
+  EvaluateApprovalPayload,
+  EnqueueApprovalPayload,
+  DecideApprovalPayload,
+  ConversationDecideToolApprovalPayload,
+  ListPendingToolApprovalsPayload,
+} from '@sync-think/protocol';
+import {
+  hasOnlyKeys,
+  isRecord,
+  boundedAgentText,
+  APPROVAL_STATES,
+  APPROVAL_KINDS,
+} from './shared.js';
 
 export function parseConversationDecideToolApprovalPayload(
   value: unknown,
@@ -16,6 +29,25 @@ export function parseConversationDecideToolApprovalPayload(
   return {
     approvalId: value.approvalId,
     decision: value.decision,
+  };
+}
+
+export function parseListPendingToolApprovalsPayload(
+  value: unknown,
+): ListPendingToolApprovalsPayload | undefined {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['threadId', 'runId']) ||
+    !boundedAgentText(value.threadId, 128) ||
+    (value.runId !== undefined && !boundedAgentText(value.runId, 128))
+  ) {
+    return undefined;
+  }
+  return {
+    threadId: value.threadId as ListPendingToolApprovalsPayload['threadId'],
+    ...(typeof value.runId === 'string'
+      ? { runId: value.runId as ListPendingToolApprovalsPayload['runId'] }
+      : {}),
   };
 }
 

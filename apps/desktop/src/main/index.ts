@@ -206,6 +206,7 @@ import {
   parseEvaluateApprovalPayload,
   parseEnqueueApprovalPayload,
   parseDecideApprovalPayload,
+  parseListPendingToolApprovalsPayload,
 } from '../approval-payloads.js';
 import {
   parseCancelBrowserHandoffPayload,
@@ -2055,6 +2056,17 @@ function setupRuntimeBridge(): void {
       parseConversationDecideToolApprovalPayload(value),
     );
   });
+  ipcMain.handle(
+    'runtime:conversation-list-pending-tool-approvals',
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request(
+        'conversation.listPendingToolApprovals',
+        parseListPendingToolApprovalsPayload(value),
+      );
+    },
+  );
   // Renderer-to-Runtime result channel for browser commands.
   ipcMain.handle('runtime:conversation-submit-browser-result', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);

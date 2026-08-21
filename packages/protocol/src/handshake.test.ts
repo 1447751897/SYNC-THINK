@@ -19,6 +19,10 @@ describe('client hello verification', () => {
     expect(DEFAULT_FEATURES).toContain('browser.recording');
   });
 
+  it('advertises pending tool approval reconciliation', () => {
+    expect(DEFAULT_FEATURES).toContain('conversation.listPendingToolApprovals');
+  });
+
   it('agrees feature intersection on valid hello', () => {
     const r = verifyClientHello(base, { expectedInstallId: 'dev-0001', allowNoToken: true });
     expect(r.ok).toBe(true);

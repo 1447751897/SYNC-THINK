@@ -501,6 +501,9 @@ declare global {
         decideToolApproval(
           payload: import('@sync-think/protocol').ConversationDecideToolApprovalPayload,
         ): Promise<import('@sync-think/protocol').ConversationDecideToolApprovalResponse>;
+        listPendingToolApprovals(
+          payload: import('@sync-think/protocol').ListPendingToolApprovalsPayload,
+        ): Promise<import('@sync-think/protocol').ListPendingToolApprovalsResponse>;
         submitBrowserResult(
           payload: import('@sync-think/protocol').ConversationSubmitBrowserResultPayload,
         ): Promise<import('@sync-think/protocol').ConversationSubmitBrowserResultResponse>;

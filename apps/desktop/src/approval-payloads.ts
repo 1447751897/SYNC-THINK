@@ -3,6 +3,7 @@ import type {
   EnqueueApprovalPayload,
   EvaluateApprovalPayload,
   ListApprovalsPayload,
+  ListPendingToolApprovalsPayload,
 } from '@sync-think/protocol';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -21,6 +22,34 @@ function optionalLimit(value: unknown): number | undefined {
     throw new Error('Invalid limit');
   }
   return Math.floor(value);
+}
+
+export function parseListPendingToolApprovalsPayload(
+  value: unknown,
+): ListPendingToolApprovalsPayload {
+  if (
+    !isRecord(value) ||
+    !Object.keys(value).every((key) => key === 'threadId' || key === 'runId')
+  ) {
+    throw new Error('Invalid list-pending-tool-approvals payload');
+  }
+  if (
+    typeof value.threadId !== 'string' ||
+    value.threadId.trim().length === 0 ||
+    value.threadId.length > 128 ||
+    (value.runId !== undefined &&
+      (typeof value.runId !== 'string' ||
+        value.runId.trim().length === 0 ||
+        value.runId.length > 128))
+  ) {
+    throw new Error('Invalid list-pending-tool-approvals payload');
+  }
+  return {
+    threadId: value.threadId.trim() as ListPendingToolApprovalsPayload['threadId'],
+    ...(typeof value.runId === 'string'
+      ? { runId: value.runId.trim() as ListPendingToolApprovalsPayload['runId'] }
+      : {}),
+  };
 }
 
 export function parseListApprovalsPayload(value: unknown): ListApprovalsPayload {
