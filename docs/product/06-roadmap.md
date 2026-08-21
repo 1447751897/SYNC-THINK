@@ -1,3 +1,19 @@
+## 2026-08-21 路线图检查点：后台持续会话与执行过程 P1
+
+### 已完成
+
+- daemon 成为长期控制面，监督 Runtime；Desktop 普通退出只断开 UI。
+- Codex 迁移官方 app-server，原生 threadId 持久化并由有界 Session Host 管理 resident 进程。
+- 执行过程面板 P1：本轮计划、真实顺序、稳定编号、工具类型、批量披露、终态耗时和结构化详情。
+- 收尾门禁全绿：根级串行测试、typecheck、lint、build；Electron 完成深浅主题、长参数布局与 Desktop 断开后 Runtime 存活检查。
+
+### 后续阶段
+
+1. Provider 渠道可用后补真实 Codex 连续两轮、关闭 Desktop 后重连 replay 与 Runtime 崩溃恢复证据。
+2. daemon 外部事件入口：`push_to_bot`、Webhook、文件监听、Git 推送与异步任务提交。
+3. 为每类入口补 durable 去重键、lease/heartbeat、终态与重放合同。
+4. Claude Code 迁移官方 Agent SDK，继续保持 `KernelAdapter` 边界，不让厂商 SDK 类型扩散。
+
 ## 2026-08-02 路线图检查点：本地工程任务收口，外部验收待补
 
 - [x] Settings Diagnostics UI、脱敏导出、崩溃/恢复证据与隐私边界。

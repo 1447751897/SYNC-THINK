@@ -226,3 +226,12 @@ NSIS `apps/desktop/build/installer.nsh` 负责把每个已安装版本的 instal
 7. 行为变化同步更新 changelog/current status；架构或依赖变化同步更新 tech decisions 与本页。
 8. 新的每轮上下文附件必须先定义 `undefined`/空/非空语义、Runtime 权威校验、冻结与恢复边界；Renderer 目录默认只取 metadata。
 9. Windows 发布能力进入 `scripts/windows-*.mjs` 与 `apps/desktop/build`，必须区分正式 fail-closed 模式和显式 unsigned fixture，并让聚合 selftest 自包含准备步骤。
+
+## Runtime 与 daemon 生命周期（2026-08-20）
+
+- `apps/runtime/src/daemon/main.ts` 是常驻控制面：负责调度、队列、Runtime 探测/拉起/崩溃恢复，以及未来 push/webhook/文件/Git 事件入口。
+- `apps/runtime/src/runtime.ts` 是执行面和 SQLite durable 真相源：对话、Run、工具授权、事件投影、Kernel adapter/session 都归 Runtime 所有。
+- `apps/runtime/src/kernel/codex-app-server-adapter.ts` 只消费官方 Codex app-server JSON-RPC；`registry.ts` 是唯一注册入口。
+- `apps/desktop/src/main/runtime-supervisor.ts` 只负责 Desktop client 的冷启动/连接和升级时有界停止，不拥有普通窗口退出的 Runtime 生命周期。
+
+数据流：`Desktop/外部事件 -> daemon -> Runtime pipe -> Run/Event/Message/Kernel session -> SQLite`。Desktop 断开后，Runtime 与 daemon 继续运行；重连使用 durable cursor/replay。

@@ -278,7 +278,7 @@ claude \
 ### 5.3 Codex 内核
 
 - **协议**：OpenAI 协议族原生（Chat Completions / Responses）。`OPENAI_BASE_URL` 指向中转站即可，**零翻译层**
-- **启动**：`codex exec` 模式，JSONL 事件流（`item.*` 事件）；输入用 stdin / `--prompt`
+- **启动**：`codex app-server` stdio JSON-RPC；Runtime 发送 `initialize`、`thread/start|resume`、`turn/start`，接收 `item/*` 与 `turn/*` 通知。
 - **权限**：三层沙箱（read-only / workspace-write / danger-full-access）+ `--approval-policy`（untrusted / on-failure / on-request / never）。三档位映射：
   - 完全控制 → `--approval-policy never`（或 danger-full-access）
   - 询问批准 → `--approval-policy on-request`

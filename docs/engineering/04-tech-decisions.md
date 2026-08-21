@@ -1330,3 +1330,33 @@ Computer Use built-in plugin
 5. **终态失败必须保留**：新增 `shouldRetainTerminalDraft`——`failed`/`cancelled` 或带 `terminalError` 时，即使零输出也保留草稿；空的**成功** run 仍然丢弃（无话可说）。瞬态流两处过滤与 merge 的字段透传一并对齐。内核启动失败必须在对话中呈现可读原因，不得静默无响应。
 
 验证：runtime 487、desktop renderer 676 全通过；`codex-adapter.spawn-args.test.ts` 8 例、终态保留 3 例为新增回归围栏。真实 codex CLI 端到端仍需人工验证（单测无法证明 codex 的 TOML 解析器接受经 shim 包裹后的单引号值）。
+
+### TD-045：Daemon 托管长期 Runtime 与 Codex app-server Session（2026-08-20）
+
+状态：已采用。覆盖 TD-042 中“外部内核进程生命周期绑定单个 Run”和 TD-044 中仅适用于 `codex exec` argv 的部分；TD-042 的持久 Session 指纹、串行化、失效检测与宿主真相源约束继续有效。
+
+背景：现有 Desktop 在退出时停止 Runtime，Runtime 又为每轮 Codex Run 启动一次 `codex exec`。虽然 `threadId + resume` 能延续逻辑上下文，但关闭 Desktop 会终止在途对话，每轮仍承担 CLI 冷启动、JSONL 参数拼装和进程治理成本。产品已具备独立 daemon，后续还需要 `push_to_bot`、Webhook、文件/Git 事件和关应用后的异步任务，因此 UI 生命周期必须彻底退出执行所有权。
+
+方案对比：
+
+| 方案                                                   | 优点                                              | 缺点                                                 | 结论   |
+| ------------------------------------------------------ | ------------------------------------------------- | ---------------------------------------------------- | ------ |
+| 保持 Desktop-owned Runtime + 每轮 `codex exec`         | 改动最小                                          | 关闭 UI 中断执行；重复启动；继续维护 exec 协议       | 不采用 |
+| 直接把 Agent/Kernel 逻辑合并进 daemon                  | 进程数少                                          | daemon 变成浅层巨模块；调度、凭据、工具、会话耦合    | 不采用 |
+| daemon 监督长期 Runtime，Runtime 托管 Codex app-server | UI/执行解耦；职责清晰；支持长期 thread 与后台事件 | 需要 Runtime 监督协议、app-server 事件映射和恢复门禁 | 采用   |
+
+采用合同：
+
+1. Desktop 是可断开的 UI client。普通 `before-quit` 只断开 pipe subscription，不停止 daemon、Runtime、活动 Run 或 Kernel session；只有明确“停止后台服务”、应用升级和卸载流程可以请求有界停机。
+2. daemon 是长期控制面：负责单实例、调度、durable queue、Runtime 探测/拉起/崩溃恢复与未来外部事件入口。Runtime 继续是 Agent 执行面和持久化真相源；daemon 不复制审批、凭据、Provider、工具或 Kernel 事件归一化逻辑。
+3. 交互对话和需保持会话的后台工作由长期 Runtime 执行；无交互的定时任务仍可使用短期 Worker Runtime。两类执行共享同一持久 Run/Message/Event 模型。
+4. Codex 使用官方 `codex app-server` JSON-RPC 方法 `initialize`、`thread/start|resume`、`turn/start|interrupt`。每个 `Conversation + Kernel` 持久化原生 `threadId`；app-server 只是可回收的执行资源。Runtime 使用有界 Session Host 管理 resident app-server（默认最多 4 个、空闲 15 分钟回收），同一会话在进程仍驻留时复用，进程被 LRU/超时回收或 Runtime 重启后通过 `thread/resume` 恢复。
+5. 有界 Session Host 把会话状态与进程生命周期分离：活跃 turn（包括等待审批）持有租约，不得淘汰；容量满且全部活跃时新会话等待空闲槽位，不得突破上限继续拉进程；容量满且存在空闲实例时淘汰最久未使用者。Runtime 显式停止时统一停止全部 resident app-server，但不删除持久 `threadId`。
+6. app-server 协议以当前 Codex CLI 的 `app-server generate-ts` 输出为事实源。仓库只保存 SYNC-THINK 实际消费的最小类型投影和容错解析，不复制完整生成目录；未知通知忽略并记录，不能中断活动 turn。
+7. Claude Code 后续迁移到官方 Agent SDK，但继续通过同一 `KernelAdapter` seam 投影 `KernelEvent`。厂商 SDK 类型不得扩散到 Runtime、Storage、Protocol 或 Renderer。
+8. daemon 到 Runtime 的任务 `ack` 只表示接收。Run 所有权持续到 `task.dispatch.complete`；长期任务需要 lease/heartbeat/terminal，不能在 ack 后被 daemon 视为完成。
+9. 关闭 Desktop 后，在途 turn 继续执行，输出进入 Runtime 的 durable event/message 与 transient replay。Desktop 重连后按 cursor 恢复；需要人工审批或输入时进入 waiting 状态，不伪造决定。
+10. Runtime 正常关闭必须停止 app-server 并清理进程树；Runtime 崩溃后 daemon 拉起新 Runtime，后者使用持久 threadId 和 Run checkpoint 恢复。显式后台停止/升级遵循所有权顺序：Desktop 先请求 daemon 优雅关闭，daemon 通过私有 IPC 要求 Runtime 完成 `Runtime.stop()`；若没有私有子进程句柄，则通过 HMAC 认证 pipe 发 `runtime.shutdown`。有界超时后才允许强制进程树；Desktop 最后只清理残留 PID。机器关机只承诺重启后的恢复，不承诺进程跨关机存活。
+11. daemon 冷启动防抖只防止并发重复 spawn；daemon 外层 supervisor 独立于 Desktop，在 child 非零退出后按 `1s / 2s / 5s / 10s / 30s` 有界退避重启，正常 `daemon.stop` 退出 0 时不重启。Desktop 已知 daemon 子进程异常退出也必须绕过 10 秒冷启动防抖，避免快速崩溃后无人监督 Runtime。
+12. Runtime PID 文件必须与实际数据库目录同源。所有 daemon、Runtime 和 autostart supervisor 命令行都携带不含秘密的 `role + installId` 精确 marker；仅凭 PID 文件执行最后强杀前必须读取命令行并匹配 marker，匹配失败时拒绝终止，以防 PID 重用误杀无关进程。pipe secret 仍只通过受保护 bootstrap/环境或私有 IPC 传递，不进入 argv。
+13. 回滚通过恢复上一版本的 Runtime/adapter 实现完成；已持久化的 threadId、Run 和消息保持兼容，不做破坏性数据迁移。

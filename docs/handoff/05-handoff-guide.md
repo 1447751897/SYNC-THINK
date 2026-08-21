@@ -395,3 +395,27 @@ M1：in progress (Providers panel observable; Agents/Manifest next)
 - 最终源码实例使用 `.data/local-restart-20260806-101617-browser-workflow-v2`：Electron PID `23536`、Runtime PID `22000`、CDP `127.0.0.1:9342`，Pipe healthcheck 正常，stderr 只有 DevTools 监听行；保持运行供手测。
 - V2 批准时生命周期 Task 正确进入 `enabled` 并指向 V2；后续刷新验收留下一个空的下一版 Draft，所以当前 fixture 中 Task 为 `draft`、发布指针仍是 V2。不要直接改库清掉该 Draft；下一阶段应先设计取消/丢弃修订合同。
 - 下一任务仍是 P1.3 步骤编辑、固定值/运行变量/秘密引用绑定与确定性回放。取消 Draft、归档/删除、Profile 重绑、历史版本查看和列表 N+1 优化需要先形成产品/技术合同；P1.4/P1.5 不提前实现。
+
+## 2026-08-20 生命周期迁移交接
+
+当前 Kernel 路径已统一为 Codex `app-server`。不要重新引入 `codex exec` 或在 Desktop 中维护 Kernel 进程；Runtime 通过 `CodexAppServerKernelAdapter` 管理 thread/turn，daemon 负责 Runtime 常驻。
+
+验证重点：
+
+1. `pnpm --filter @sync-think/runtime test -- tests/external-kernel-run.test.ts src/kernel/codex-app-server-adapter.test.ts`
+2. `pnpm --filter @sync-think/runtime typecheck` 与 `pnpm --filter @sync-think/desktop typecheck`
+3. 启动 daemon 后关闭 Desktop，确认 Runtime PID、Codex app-server 和活动 Run 不变；重新打开 Desktop 后按 cursor replay。
+4. 通过 daemon stop/升级路径确认 Runtime 有界退出；Runtime 异常退出后确认 daemon outer supervisor 自动拉起，并按 threadId 恢复。
+5. PID fallback 与孤儿枚举只允许终止命令行含 exact `sync-think-managed-<role>=<installId>` token 的进程；PID 文件与当前数据库同目录。Windows 通过 CIM 读取/枚举命令行，非 Windows 通过 `ps` 枚举后逐个复用 exact-token identity fence（禁止退回 `pkill -f` 子串匹配）。若 marker 不匹配必须拒绝强杀，不能为“清理方便”退回仅凭 PID 或宽泛路径扫描。
+6. `pipeSecret` 不进入 argv。autostart 只把 DPAPI bootstrap 路径和非敏感 daemon marker 放进计划任务命令。
+
+最新最终证据：Protocol PID/marker 6/6、Desktop 生命周期/升级停止定向 3 files / 17 tests、Runtime daemon/Codex/Session Host 定向 8 files / 60 tests；根 typecheck 20/20、lint 11/11（0 error）、build 11/11 通过。最终受控串行根测试 `TURBO_CONCURRENCY=1 pnpm test` 为 20/20 Turbo tasks，Desktop 166 files / 1305 tests、Runtime 130 files / 918 tests 全部通过。Windows watchdog ready 的 fail-closed 窗口按真实高负载冷启动调整为 30 秒，生产健康 deadline 仍为 3 分钟。`git diff --check` 通过。
+
+未来 `push_to_bot`、Webhook、文件/Git watcher、异步任务统一进入 daemon，再由 daemon 投递长期 Runtime；仅无会话定时任务使用短期 Worker。Claude Code 官方 Agent SDK 迁移是下一阶段。
+
+## 2026-08-21 执行过程面板 P1 交接
+
+- `InlineProcessFlow.tsx` 是助手过程区唯一渲染入口；`ChatView` 只传 ordered items、`RunProcessView.taskPlan` 与补充状态。最终回答继续由 `ChatView` 在面板后渲染。
+- 行展开状态依赖稳定 key；新增过程类型时必须提供 `id`、`sequence` 或工具 `toolCallId`，避免流式状态翻转时重挂载。
+- `agentTaskContent` 是真实委派任务投影的插槽。协议没有 AgentTask 数据前保持不传，禁止用本地假数据填充。
+- 最小回归：`InlineProcessFlow.test.tsx`、`ChatView.process-elapsed.test.tsx`、`ChatView.messageToChat.test.tsx`；任何样式改动还需实窗检查长参数、浅深主题和窄窗口。

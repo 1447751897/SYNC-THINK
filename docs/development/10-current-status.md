@@ -1,4 +1,23 @@
-﻿## 当前状态：2026-08-16 · 新能力批量落地（plan/exec、问询卡片、任务清单、定时任务、目标模式、本地 Skill）
+﻿## 当前状态：2026-08-21 · 后台持续会话架构完成，执行过程面板 P1 收尾
+
+### 已完成
+
+- Desktop 已退出执行所有权：普通关闭只断开 UI；daemon 监督长期 Runtime，Runtime 托管持久 Run、消息、工具授权和有界 Codex app-server Session。原生 threadId 与进程生命周期分离，进程回收或 Runtime 重启后可 `thread/resume`。
+- Codex Registry 已切换官方 app-server adapter；旧 `codex exec`/JSONL 路径已删除。daemon dispatch 的 ack 只表示接收，任务所有权保持到 complete/abort/crash takeover。
+- 执行过程面板 P1 已实现：稳定序号、工具类型图标、全部展开/收起、终态冻结耗时、JSON 键值详情、本轮计划；智能体任务区域只接受真实投影，不显示虚构数据。最终回答继续独立流式显示在面板外。
+
+### 当前验证
+
+- 定向：`InlineProcessFlow.test.tsx` 32/32、`process-activity.test.ts` 26/26、ChatView 过程/消息投影 25/25。
+- 全仓：typecheck 20/20、lint 11/11（0 error，保留既有 warning）、build 11/11；`TURBO_CONCURRENCY=1 pnpm test` 20/20，Runtime 130 files / 921 tests。
+- 实窗：先关闭 Desktop，daemon PID `22936/28580` 与长期 Runtime PID `52204` 保持；随后启动最新 Electron PID `20912`（CDP `127.0.0.1:9335`）。深浅主题下过程面板均位于视口内、无横向溢出，最终回答仍是面板后的独立 Markdown。截图在 `.data/local-restart-20260821-process-p1/`。
+
+### 下一步
+
+- 在 Provider 渠道可用后补真实 Codex app-server 连续两轮、关闭 Desktop 后重连 replay 与 Runtime 崩溃恢复证据。
+- push/webhook/文件/Git 事件入口与 lease/heartbeat durable contract 属于下一阶段；Claude Code 官方 Agent SDK 迁移单独推进。
+
+## 当前状态：2026-08-16 · 新能力批量落地（plan/exec、问询卡片、任务清单、定时任务、目标模式、本地 Skill）
 
 ### 当前结论
 
@@ -24,6 +43,7 @@
 - 142 个未提交文件（本会话全部功能 + 分支既有改动），本次提交并推送 `origin/feature/inline-process-ui`。
 - `scripts/tmp-*.mjs`（E2E/诊断脚本）按惯例不提交。
 - 后续：① 排查 native + deepseek-v4-flash 平台工具调用问题（模型提示/工具描述优化，或换模型验证）；② 重启用户应用验证全部新功能 UI；③ 必要时跑通 plan-review/ask/定时任务完整真实链路。
+
 ## 当前状态：2026-08-11 · Markdown 表格数字断行修复
 
 ### 当前结论
@@ -1136,3 +1156,33 @@
 - 真实 Provider 是否返回缓存 read/write usage 仍由 Provider 决定；本修复只保证工具调用标识与 continuation 在多轮和 Runtime 重启后保持正确。
 - 本轮不生成安装包、不提交、不推送；工作树中其他既有改动和未跟踪文件继续保留。
 
+## 当前状态：2026-08-20 · Daemon 托管 Runtime 与 Codex app-server
+
+### 已完成
+
+- Desktop 普通退出不再停止 Runtime；更新/显式服务停止按 daemon-first 所有权顺序收口。daemon 优先通过私有 IPC 停 Runtime；无私有句柄时使用 HMAC 认证 `runtime.shutdown`，仅在有界超时后使用 PID fallback。
+- daemon 已成为长期控制面：启动后确保 Runtime 存在，Runtime 异常退出自动重启；daemon 停止时回收 Runtime。独立 outer supervisor 在 daemon child 非零退出后按 1s/2s/5s/10s/30s 退避拉起，正常 `daemon.stop` 退出 0 后停止。定时任务仍保留短期 Worker 降级路径。
+- Codex Registry 已切换到 `CodexAppServerKernelAdapter`。Runtime 通过有界 Session Host 托管 resident app-server：默认最多 4 个、空闲 15 分钟回收；同会话连续 turn 在驻留期复用，不同会话在上限内并行。活跃 turn/审批等待持有租约、不被淘汰；容量满且全忙时等待。原生 `threadId` 继续按 `kernel.session.codex.<conversationId>` 持久化，LRU/超时回收后用 `thread/resume` 恢复；Runtime stop 统一停止全部 resident adapter。
+- dispatch ack 只表示接收；并发槽位与 tracker 持续到 complete/abort/crash takeover。
+- 删除旧 Codex exec adapter、JSONL protocol、rollout watcher、argv 与旧 fixture 测试。
+
+### 已验证
+
+- Runtime external-kernel 与生命周期定向：34/34；其中有界 Session Host 9/9、daemon→Runtime 优雅停机 3/3、Codex app-server 2/2。
+- Runtime 全量：128 files / 914 tests；Runtime typecheck 通过。
+- Desktop 生命周期/升级停止定向：5 files / 21 tests；Desktop typecheck 通过。显式后台停止与升级按“daemon 优雅回收 Runtime → Desktop 清理残留 PID”的所有权顺序执行；daemon 快速崩溃走独立 1–5 秒有界重启，不受冷启动 10 秒防重窗口阻塞。
+- Runtime/daemon PID 文件统一放在实际数据库目录；Desktop、daemon 拉起的 Runtime、outer supervisor child 与 autostart 入口都携带非敏感 `role + installId` marker。仅凭 PID 文件或孤儿枚举强杀前会读取目标命令行并精确校验 marker，防止 PID 重用和命令行子串误杀；Windows 使用 CIM exact-token 筛选，非 Windows 使用 `ps` 枚举后复用同一 exact-token identity fence；pipe secret 不进入 argv。
+- 最新增量门禁：Protocol marker/PID 6/6、Desktop 生命周期 3 files / 17 tests、Runtime daemon/Codex/Session Host 8 files / 60 tests；Protocol/Runtime/Desktop typecheck 通过，`git diff --check` 通过。
+- 根 typecheck 20/20、lint 11/11（0 error）、build 11/11 通过。最终受控串行根测试 `TURBO_CONCURRENCY=1 pnpm test` 为 20/20 Turbo tasks：Desktop 166 files / 1305 tests、Runtime 130 files / 918 tests 全部通过。Windows watchdog ready 的 fail-closed 窗口按真实高负载冷启动调整为 30 秒，生产健康 deadline 仍为 3 分钟；对应定向测试 6/6 通过。
+
+### 待完成
+
+- 使用本机真实 Codex app-server 完成两轮连续 turn、关闭 Desktop 后重连 replay 和 Runtime 崩溃恢复验证；当前真实 turn 仍受 Provider 渠道 503 阻塞。
+- 将 push/webhook/文件/Git 事件统一接入 daemon 的事件入口，并补 lease/heartbeat durable contract。
+- Claude Code 迁移官方 Agent SDK 属于下一阶段，不与本次 Codex/daemon 生命周期收尾混做。
+
+### 真实 app-server 结果
+
+- 本机 Codex 0.145.0 成功完成 `initialize` 与 `thread/start`，证明 stdio app-server 和 thread 创建可用。
+- 修正了官方 schema 对齐项：`turn/start.sandboxPolicy`、空 providerModelId 回退、`error.willRetry=true` 非终态。
+- 真实 turn 到达上游后返回 503：当前 `default` 分组对 `codex-default` 与 `gpt-5.6-luna` 均无可用渠道。协议和生命周期已通过夹具双轮验证，真实内容生成等待 Provider 渠道可用后复测。

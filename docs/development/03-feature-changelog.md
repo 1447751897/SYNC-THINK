@@ -1,3 +1,37 @@
+## 2026-08-21：执行过程面板 P1（真实时间线、计划与结构化详情）
+
+### Changed
+
+- “执行过程”展开态改为稳定编号的真实时间线；每个 Think、说明、状态与工具调用保持独立顺序，工具按读写、目录、命令、Git、浏览器、搜索、MCP 等类型显示图标。
+- 增加“全部展开 / 全部收起”；行展开状态按稳定过程项 key 保存，工具从 running 原位转 terminal 时不丢失用户选择。
+- 工具主行在运行中自增耗时，完成/失败后冻结并继续显示；JSON 参数和结果以键值结构展示，非 JSON 内容保留原始文本。
+- `RunProcessView.taskPlan` 进入过程面板的“本轮计划”区；智能体任务区域只在收到真实委派投影时显示，不生成占位任务。最终回答继续位于过程面板之外。
+
+### Verification
+
+- `InlineProcessFlow.test.tsx` 32/32；ChatView 过程与消息投影定向 25/25；Desktop typecheck 通过。
+- 根级 typecheck 20/20、lint 11/11（0 error，保留既有 warning）、build 11/11；`TURBO_CONCURRENCY=1 pnpm test` 20/20，全量 Runtime 130 files / 921 tests 通过。
+- Electron 实窗验证深色/浅色、1424×861 与最小窗口高度：稳定序号、MCP 图标、全部展开/收起、终态耗时、结构化详情和最终回答分层均正确，面板无横向溢出。证据位于 `.data/local-restart-20260821-process-p1/`。
+
+## 2026-08-20：Daemon 托管 Runtime、Codex app-server 与有界 Session Host
+
+### Added
+
+- Desktop 正常退出只断开 UI；升级或显式停止后台服务才执行有界停机。daemon 启动时探测、拉起并监督长期 Runtime，异常退出后自动重启。
+- Codex 切换到官方 `codex app-server` JSON-RPC；同一 Conversation + Kernel 持久化原生 `threadId`，进程驻留时复用，回收或 Runtime 重启后以 `thread/resume` 恢复。
+- 新增 `BoundedKernelSessionHost`：Codex 原生 `threadId` 继续由 Runtime 持久化，resident app-server 改为有上限、可回收的执行资源。生产默认最多 4 个 app-server，空闲 15 分钟后停止；容量满时优先 LRU 淘汰空闲实例，全部活跃时新会话等待槽位。
+- 活跃 turn（包含等待命令/文件审批）持有租约，不受空闲计时器或 LRU 淘汰影响；Runtime 显式停止时统一停止 resident app-server，但不删除持久会话。
+- daemon dispatch ack 只表示 Runtime 已接收；并发槽位持续到 `task.dispatch.complete`、abort 或崩溃接管。
+- Runtime 级恢复回归：容量 1 下执行 A → B → A，确认进程依次回收后 A 仍以首次持久化 `threadId` 走 `thread/resume`。
+
+### Removed
+
+- 移除 Codex `exec --json` adapter、旧 JSONL protocol、rollout watcher 及对应 argv/fixture 测试。
+
+### Verification
+
+- Session Host 9/9；Runtime 生命周期/Codex 定向 34/34；Desktop 生命周期/升级停止 21/21。根 typecheck、lint（0 error）和 build 通过。
+
 ## 2026-08-18：删旧壳 + 颜色 token 单一真源（换肤地基 Batch A，零视觉变化）
 
 配色重构第一批：把「配色太杂 + 硬编码」的结构性成因清掉，为后续自定义配色 / 换肤铺地基。**本批刻意不改任何颜色值**——验收标准就是编译产物与改动前等价。
@@ -45,7 +79,6 @@
 - Runtime 全量、Desktop 全量、build 门禁通过（见最终验证记录）。
 
 ## 2026-08-16：定时任务与随机任务（专属会话 + 四类规则 + 绑定智能体/模型）
-
 
 ### Added
 
@@ -101,7 +134,6 @@
 - `apps/runtime/tests/plan-act.test.ts` 13 项（解析归一化、plan/execute 路由、思考强度、未配置回退、三态上下文选择：规划优先 / 仅 planExecuting 用执行模型 / 普通 execute 不路由）通过；Runtime typecheck 通过。
 - 新增 `PlanApprovalCard.test.tsx` 7 项（草稿渲染、dirty 禁用与保存修订、批准→执行交接、历史只读回看、取消、步骤增删与校验提示、验收标准渲染）；`ModelSettings.test.tsx` plan-act 断言更新；Desktop typecheck 通过。
 - Desktop 全量测试、Runtime 全量测试、build 门禁通过（见最终验证记录）。
-
 
 ### Changed
 
