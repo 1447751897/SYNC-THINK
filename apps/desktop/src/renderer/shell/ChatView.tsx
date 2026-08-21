@@ -1045,8 +1045,7 @@ export function ChatView({
                 enabled: o.enabled === true,
                 planModelId:
                   typeof o.planModelId === 'string' && o.planModelId ? o.planModelId : null,
-                actModelId:
-                  typeof o.actModelId === 'string' && o.actModelId ? o.actModelId : null,
+                actModelId: typeof o.actModelId === 'string' && o.actModelId ? o.actModelId : null,
               }
             : null,
         );
@@ -5001,7 +5000,9 @@ export function ChatView({
                 onResume={() => {
                   const api = bridge();
                   if (!conversation || !api?.goalResume) return;
-                  void api.goalResume({ conversationId: String(conversation.id) }).then(refreshGoal);
+                  void api
+                    .goalResume({ conversationId: String(conversation.id) })
+                    .then(refreshGoal);
                 }}
                 onEdit={() => {
                   setInput('/goal ');
@@ -5295,10 +5296,16 @@ export function ChatView({
                     onKeyDown={handleKeyDown}
                     onPaste={handlePaste}
                     onClick={(e) =>
-                      updatePickersFromCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
+                      updatePickersFromCaret(
+                        e.currentTarget.value,
+                        e.currentTarget.selectionStart ?? 0,
+                      )
                     }
                     onSelect={(e) =>
-                      updatePickersFromCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)
+                      updatePickersFromCaret(
+                        e.currentTarget.value,
+                        e.currentTarget.selectionStart ?? 0,
+                      )
                     }
                     rows={1}
                     disabled={compactProgress?.status === 'running'}
@@ -5320,9 +5327,7 @@ export function ChatView({
               {interactionMode === 'plan' && (
                 <div className="shell-compose__mode-strip" data-mode="plan">
                   <span className="shell-compose__mode-label">🧭 规划模式</span>
-                  <span className="shell-compose__mode-hint">
-                    只读分析，提交方案等待审批
-                  </span>
+                  <span className="shell-compose__mode-hint">只读分析，提交方案等待审批</span>
                   <button
                     type="button"
                     className="shell-compose__mode-switch"
@@ -5347,14 +5352,10 @@ export function ChatView({
                   data-mode={planActHint.role}
                   data-testid="plan-act-hint"
                 >
-                  <span className="shell-compose__mode-label">
-                    🧭 本轮由规划模型驱动
-                  </span>
+                  <span className="shell-compose__mode-label">🧭 本轮由规划模型驱动</span>
                   <span className="shell-compose__mode-hint">
                     {planActHint.label}
-                    {planActHint.ignoredLabel
-                      ? `（已忽略所选 ${planActHint.ignoredLabel}）`
-                      : ''}
+                    {planActHint.ignoredLabel ? `（已忽略所选 ${planActHint.ignoredLabel}）` : ''}
                   </span>
                 </div>
               )}
@@ -6690,7 +6691,12 @@ function GoalCapsule({
   onClear: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
-  if (goal.status !== 'active' && goal.status !== 'paused' && goal.status !== 'blocked' && goal.status !== 'achieved') {
+  if (
+    goal.status !== 'active' &&
+    goal.status !== 'paused' &&
+    goal.status !== 'blocked' &&
+    goal.status !== 'achieved'
+  ) {
     return null;
   }
   const elapsedMinutes = Math.max(
@@ -6727,23 +6733,45 @@ function GoalCapsule({
           </div>
           {goal.lastReason ? (
             <div className="shell-goal-capsule__reason">
-              {goal.status === 'blocked' ? `受阻原因：${goal.blockedReason ?? goal.lastReason}` : `最近评估：${goal.lastReason}`}
+              {goal.status === 'blocked'
+                ? `受阻原因：${goal.blockedReason ?? goal.lastReason}`
+                : `最近评估：${goal.lastReason}`}
             </div>
           ) : null}
           <div className="shell-goal-capsule__actions">
             {goal.status === 'active' ? (
-              <button type="button" className="shell-goal-capsule__clear" onClick={onPause} title="暂停目标">
+              <button
+                type="button"
+                className="shell-goal-capsule__clear"
+                onClick={onPause}
+                title="暂停目标"
+              >
                 ⏸ 暂停
               </button>
             ) : goal.status === 'paused' || goal.status === 'blocked' ? (
-              <button type="button" className="shell-goal-capsule__clear" onClick={onResume} title="恢复目标">
+              <button
+                type="button"
+                className="shell-goal-capsule__clear"
+                onClick={onResume}
+                title="恢复目标"
+              >
                 ▶ 恢复
               </button>
             ) : null}
-            <button type="button" className="shell-goal-capsule__clear" onClick={onEdit} title="编辑目标">
+            <button
+              type="button"
+              className="shell-goal-capsule__clear"
+              onClick={onEdit}
+              title="编辑目标"
+            >
               ✎ 编辑
             </button>
-            <button type="button" className="shell-goal-capsule__clear" onClick={onClear} title="清除目标">
+            <button
+              type="button"
+              className="shell-goal-capsule__clear"
+              onClick={onClear}
+              title="清除目标"
+            >
               <X size={12} />
               清除目标
             </button>

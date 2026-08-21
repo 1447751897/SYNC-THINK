@@ -6090,7 +6090,6 @@ body {
 
 /* ─── 定时任务面板（侧栏「定时任务」stage） ───────────────────────────────── */
 
-
 /* ═══ 定时任务 · 设计稿 v3 视觉 ═══════════════════════════════════════════
  * 页面背景 = --color-page（浅色暖米 / 深色暖黑），卡片浮于其上：
  * 浅色 = 纯白卡 + 细边框 + 轻投影；深色 = 暖黑卡 + 细边框 + 柔投影。
@@ -6234,7 +6233,10 @@ body {
   background: none;
   border: 1px solid transparent;
   text-align: left;
-  transition: background 0.13s, color 0.13s, border-color 0.13s;
+  transition:
+    background 0.13s,
+    color 0.13s,
+    border-color 0.13s;
 }
 
 .task-panel__sb-item:hover:not(:disabled) {
@@ -6295,7 +6297,10 @@ body {
   justify-content: center;
   font-size: 9px;
   color: transparent;
-  transition: background 0.13s, border-color 0.13s, color 0.13s;
+  transition:
+    background 0.13s,
+    border-color 0.13s,
+    color 0.13s;
 }
 
 .task-panel__sb-item[data-active='1'] .task-panel__sb-check {
@@ -6345,7 +6350,10 @@ body {
   bottom: 0;
   width: 1px;
   background: var(--task-border);
-  transition: background 0.15s, width 0.15s, left 0.15s;
+  transition:
+    background 0.15s,
+    width 0.15s,
+    left 0.15s;
 }
 
 .task-panel__grip:hover::after {
@@ -6428,7 +6436,10 @@ body {
   border: 1px solid var(--task-border);
   border-radius: 12px;
   padding: 12px 14px;
-  transition: border-color 0.15s, box-shadow 0.15s, opacity 0.2s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    opacity 0.2s;
   flex-shrink: 0;
 }
 
@@ -6649,7 +6660,9 @@ body {
   background: none;
   border: none;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .task-panel__icon-btn:hover:not(:disabled) {
@@ -7203,7 +7216,9 @@ body {
   color: var(--task-text);
   min-height: 34px;
   box-sizing: border-box;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .task-editor__field input:focus,
@@ -7259,7 +7274,9 @@ body {
   border-radius: 12px;
   padding: 10px 12px;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
   text-align: left;
   width: 100%;
 }
@@ -7378,7 +7395,9 @@ body {
   border: 1px solid var(--task-border);
   background: var(--task-surface-2);
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
   text-align: left;
   width: 100%;
 }
@@ -7722,7 +7741,9 @@ body {
   gap: 8px;
   cursor: pointer;
   width: 100%;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .task-editor__select-box:hover {
@@ -12175,7 +12196,9 @@ body {
   color: var(--color-text-secondary);
   font-size: 11.5px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 .settings-gateway-logs__action:hover:not(:disabled) {
   background: var(--color-active);
@@ -12218,7 +12241,10 @@ body {
   color: var(--color-text-secondary);
   font-size: 11px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
 }
 .settings-gateway-logs__chip:hover {
   color: var(--color-text);

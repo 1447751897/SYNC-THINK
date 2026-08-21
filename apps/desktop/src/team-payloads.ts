@@ -118,16 +118,18 @@ export function parseUpdateGlobalAgentPayload(value: unknown): UpdateGlobalAgent
   const label = 'Invalid update-global-agent payload';
   if (!isRecord(value)) throw new Error(label);
   if (value.archived !== undefined && typeof value.archived !== 'boolean') throw new Error(label);
-  const base = isRecord(value) && value.name !== undefined
-    ? { name: requiredString(value.name, label) }
-    : {};
+  const base =
+    isRecord(value) && value.name !== undefined ? { name: requiredString(value.name, label) } : {};
   return {
     agentId: requiredString(value.agentId, label) as UpdateGlobalAgentPayload['agentId'],
     ...base,
     defaultModelId:
       value.defaultModelId === undefined
         ? undefined
-        : (requiredString(value.defaultModelId, label) as UpdateGlobalAgentPayload['defaultModelId']),
+        : (requiredString(
+            value.defaultModelId,
+            label,
+          ) as UpdateGlobalAgentPayload['defaultModelId']),
     avatar: optionalString(value.avatar, label),
     persona: optionalString(value.persona, label),
     description: optionalString(value.description, label),
@@ -180,7 +182,10 @@ export function parseCreateTeamPayload(value: unknown): CreateTeamPayload {
     coordinatorAgentId:
       value.coordinatorAgentId === undefined
         ? undefined
-        : (requiredString(value.coordinatorAgentId, label) as CreateTeamPayload['coordinatorAgentId']),
+        : (requiredString(
+            value.coordinatorAgentId,
+            label,
+          ) as CreateTeamPayload['coordinatorAgentId']),
     members: parseTeamMembers(value.members, label),
   };
 }
@@ -200,7 +205,10 @@ export function parseUpdateTeamPayload(value: unknown): UpdateTeamPayload {
     coordinatorAgentId:
       value.coordinatorAgentId === undefined
         ? undefined
-        : (requiredString(value.coordinatorAgentId, label) as UpdateTeamPayload['coordinatorAgentId']),
+        : (requiredString(
+            value.coordinatorAgentId,
+            label,
+          ) as UpdateTeamPayload['coordinatorAgentId']),
     members: parseTeamMembers(value.members, label),
   };
 }
@@ -298,8 +306,7 @@ export function parseConversationGetContextStatusPayload(
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
   const conversationId = requiredString(value.conversationId, label);
   if (conversationId.length > 128) throw new Error(label);
-  const modelId =
-    value.modelId === undefined ? undefined : requiredString(value.modelId, label);
+  const modelId = value.modelId === undefined ? undefined : requiredString(value.modelId, label);
   if (modelId !== undefined && modelId.length > 256) throw new Error(label);
   return {
     conversationId: conversationId as ConversationGetContextStatusPayload['conversationId'],
@@ -328,8 +335,7 @@ export function parseSubscribeConversationTransientStreamPayload(
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error(label);
   if (
     value.afterStreamSequence !== undefined &&
-    (!Number.isSafeInteger(value.afterStreamSequence) ||
-      (value.afterStreamSequence as number) < 0)
+    (!Number.isSafeInteger(value.afterStreamSequence) || (value.afterStreamSequence as number) < 0)
   ) {
     throw new Error(label);
   }
@@ -343,9 +349,9 @@ export function parseSubscribeConversationTransientStreamPayload(
   };
 }
 
-export function parseUnsubscribeConversationTransientStreamPayload(
-  value: unknown,
-): { subscriptionId: string } {
+export function parseUnsubscribeConversationTransientStreamPayload(value: unknown): {
+  subscriptionId: string;
+} {
   const label = 'Invalid unsubscribe-conversation-transient-stream payload';
   if (!isRecord(value)) throw new Error(label);
   const allowed = new Set(['subscriptionId']);
@@ -394,7 +400,9 @@ export function parseSetConversationPinnedPayload(value: unknown): SetConversati
   };
 }
 
-export function parseSetConversationArchivedPayload(value: unknown): SetConversationArchivedPayload {
+export function parseSetConversationArchivedPayload(
+  value: unknown,
+): SetConversationArchivedPayload {
   const label = 'Invalid set-conversation-archived payload';
   if (!isRecord(value) || typeof value.archived !== 'boolean') throw new Error(label);
   return {
@@ -436,16 +444,18 @@ export function parseSetConversationInteractionModePayload(
   };
 }
 
-function requiredChatPlanSubmission(value: unknown, label: string): ConversationPlanSubmitPayload['plan'] {
+function requiredChatPlanSubmission(
+  value: unknown,
+  label: string,
+): ConversationPlanSubmitPayload['plan'] {
   if (!isRecord(value)) throw new Error(label);
   if (typeof value.title !== 'string' || typeof value.goal !== 'string') throw new Error(label);
-  if (!Array.isArray(value.steps) || !Array.isArray(value.finalAcceptanceChecks)) throw new Error(label);
+  if (!Array.isArray(value.steps) || !Array.isArray(value.finalAcceptanceChecks))
+    throw new Error(label);
   return value as unknown as ConversationPlanSubmitPayload['plan'];
 }
 
-export function parseConversationPlanSubmitPayload(
-  value: unknown,
-): ConversationPlanSubmitPayload {
+export function parseConversationPlanSubmitPayload(value: unknown): ConversationPlanSubmitPayload {
   const label = 'Invalid conversation-plan-submit payload';
   if (!isRecord(value)) throw new Error(label);
   return {
@@ -482,9 +492,7 @@ export function parseConversationPlanApprovePayload(
   };
 }
 
-export function parseConversationPlanRevisePayload(
-  value: unknown,
-): ConversationPlanRevisePayload {
+export function parseConversationPlanRevisePayload(value: unknown): ConversationPlanRevisePayload {
   const label = 'Invalid conversation-plan-revise payload';
   if (!isRecord(value)) throw new Error(label);
   return {
@@ -497,9 +505,7 @@ export function parseConversationPlanRevisePayload(
   };
 }
 
-export function parseConversationPlanCancelPayload(
-  value: unknown,
-): ConversationPlanCancelPayload {
+export function parseConversationPlanCancelPayload(value: unknown): ConversationPlanCancelPayload {
   const label = 'Invalid conversation-plan-cancel payload';
   if (!isRecord(value)) throw new Error(label);
   return {
@@ -510,9 +516,7 @@ export function parseConversationPlanCancelPayload(
   };
 }
 
-export function parseConversationAskAnswerPayload(
-  value: unknown,
-): ConversationAskAnswerPayload {
+export function parseConversationAskAnswerPayload(value: unknown): ConversationAskAnswerPayload {
   const label = 'Invalid conversation-ask-answer payload';
   if (!isRecord(value)) throw new Error(label);
   const askId = requiredString(value.askId, label);
@@ -533,17 +537,13 @@ export function parseConversationAskAnswerPayload(
   return { askId, answers };
 }
 
-export function parseConversationAskCancelPayload(
-  value: unknown,
-): ConversationAskCancelPayload {
+export function parseConversationAskCancelPayload(value: unknown): ConversationAskCancelPayload {
   const label = 'Invalid conversation-ask-cancel payload';
   if (!isRecord(value)) throw new Error(label);
   return { askId: requiredString(value.askId, label) };
 }
 
-export function parseConversationAskPendingPayload(
-  value: unknown,
-): ConversationAskPendingPayload {
+export function parseConversationAskPendingPayload(value: unknown): ConversationAskPendingPayload {
   const label = 'Invalid conversation-ask-pending payload';
   if (!isRecord(value)) throw new Error(label);
   return { threadId: requiredString(value.threadId, label) };
@@ -615,16 +615,10 @@ function parseOptionalWorkspaceId(value: unknown, label: string): string | null 
 }
 
 /** skillVersionIds: undefined = 不修改；null = 清空；string[] = 注入列表。 */
-function parseOptionalSkillVersionIds(
-  value: unknown,
-  label: string,
-): string[] | null | undefined {
+function parseOptionalSkillVersionIds(value: unknown, label: string): string[] | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
-  if (
-    Array.isArray(value) &&
-    value.every((item) => typeof item === 'string')
-  ) {
+  if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
     return value;
   }
   throw new Error(label);
@@ -660,7 +654,9 @@ export function parseCreateScheduledTaskPayload(value: unknown): CreateScheduled
 export function parseListScheduledTasksPayload(value: unknown): ListScheduledTasksPayload {
   if (!isRecord(value)) return {};
   return {
-    ...(typeof value.includeDisabled === 'boolean' ? { includeDisabled: value.includeDisabled } : {}),
+    ...(typeof value.includeDisabled === 'boolean'
+      ? { includeDisabled: value.includeDisabled }
+      : {}),
   };
 }
 

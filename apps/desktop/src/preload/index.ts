@@ -345,8 +345,7 @@ const api = {
       ipcRenderer.invoke('runtime:gateway-status') as Promise<OpenGatewayStatusResponse>,
     getGatewayLogs: (query?: { offset?: number; limit?: number }) =>
       ipcRenderer.invoke('runtime:gateway-logs', query ?? {}) as Promise<GatewayLogsResponse>,
-    clearGatewayLogs: () =>
-      ipcRenderer.invoke('runtime:gateway-logs-clear') as Promise<void>,
+    clearGatewayLogs: () => ipcRenderer.invoke('runtime:gateway-logs-clear') as Promise<void>,
     installKernel: (kernelId: string) =>
       ipcRenderer.invoke('desktop:kernel-install', kernelId) as Promise<
         { ok: true } | { ok: false; error: string }
@@ -676,40 +675,29 @@ const api = {
         payload,
       ) as Promise<ConversationPlanResponse>,
     conversationAskAnswer: (payload: ConversationAskAnswerPayload) =>
-      ipcRenderer.invoke(
-        'runtime:conversation-ask-answer',
-        payload,
-      ) as Promise<{ askId: string }>,
+      ipcRenderer.invoke('runtime:conversation-ask-answer', payload) as Promise<{ askId: string }>,
     conversationAskCancel: (payload: ConversationAskCancelPayload) =>
-      ipcRenderer.invoke(
-        'runtime:conversation-ask-cancel',
-        payload,
-      ) as Promise<{ askId: string }>,
+      ipcRenderer.invoke('runtime:conversation-ask-cancel', payload) as Promise<{ askId: string }>,
     conversationAskPending: (payload: ConversationAskPendingPayload) =>
       ipcRenderer.invoke(
         'runtime:conversation-ask-pending',
         payload,
       ) as Promise<ConversationAskPendingResponse>,
     createScheduledTask: (payload: CreateScheduledTaskPayload) =>
-      ipcRenderer.invoke(
-        'runtime:scheduled-task-create',
-        payload,
-      ) as Promise<{ task: import('@sync-think/shared').ScheduledTask }>,
+      ipcRenderer.invoke('runtime:scheduled-task-create', payload) as Promise<{
+        task: import('@sync-think/shared').ScheduledTask;
+      }>,
     listScheduledTasks: (payload?: ListScheduledTasksPayload) =>
       ipcRenderer.invoke(
         'runtime:scheduled-task-list',
         payload ?? {},
       ) as Promise<ListScheduledTasksResponse>,
     updateScheduledTask: (payload: UpdateScheduledTaskPayload) =>
-      ipcRenderer.invoke(
-        'runtime:scheduled-task-update',
-        payload,
-      ) as Promise<{ task: import('@sync-think/shared').ScheduledTask }>,
+      ipcRenderer.invoke('runtime:scheduled-task-update', payload) as Promise<{
+        task: import('@sync-think/shared').ScheduledTask;
+      }>,
     deleteScheduledTask: (payload: DeleteScheduledTaskPayload) =>
-      ipcRenderer.invoke(
-        'runtime:scheduled-task-delete',
-        payload,
-      ) as Promise<{ deleted: boolean }>,
+      ipcRenderer.invoke('runtime:scheduled-task-delete', payload) as Promise<{ deleted: boolean }>,
     triggerScheduledTask: (payload: TriggerScheduledTaskPayload) =>
       ipcRenderer.invoke(
         'runtime:scheduled-task-trigger',
@@ -841,7 +829,10 @@ const api = {
     importSkill: (payload: ImportSkillPayload) =>
       ipcRenderer.invoke('runtime:skill-import', payload) as Promise<ImportSkillResponse>,
     importRemoteSkill: (payload: ImportRemoteSkillPayload) =>
-      ipcRenderer.invoke('runtime:skill-import-remote', payload) as Promise<ImportRemoteSkillResponse>,
+      ipcRenderer.invoke(
+        'runtime:skill-import-remote',
+        payload,
+      ) as Promise<ImportRemoteSkillResponse>,
     listSkills: (payload: ListSkillsPayload = {}) =>
       ipcRenderer.invoke('runtime:skill-list', payload) as Promise<ListSkillsResponse>,
     deleteSkill: (payload: DeleteSkillPayload) =>
@@ -853,11 +844,17 @@ const api = {
     registerMcpServer: (payload: RegisterMcpServerPayload) =>
       ipcRenderer.invoke('runtime:mcp-register', payload) as Promise<RegisterMcpServerResponse>,
     registerRemoteMcpServer: (payload: RegisterRemoteMcpPayload) =>
-      ipcRenderer.invoke('runtime:mcp-register-remote', payload) as Promise<RegisterRemoteMcpResponse>,
+      ipcRenderer.invoke(
+        'runtime:mcp-register-remote',
+        payload,
+      ) as Promise<RegisterRemoteMcpResponse>,
     listMcpServers: (payload: ListMcpServersPayload = {}) =>
       ipcRenderer.invoke('runtime:mcp-list', payload) as Promise<ListMcpServersResponse>,
     setMcpServerEnabled: (payload: SetMcpServerEnabledPayload) =>
-      ipcRenderer.invoke('runtime:mcp-set-enabled', payload) as Promise<SetMcpServerEnabledResponse>,
+      ipcRenderer.invoke(
+        'runtime:mcp-set-enabled',
+        payload,
+      ) as Promise<SetMcpServerEnabledResponse>,
     deleteMcpServer: (payload: DeleteMcpServerPayload) =>
       ipcRenderer.invoke('runtime:mcp-delete', payload) as Promise<DeleteMcpServerResponse>,
     probeMcpPolicy: (payload: ProbeMcpPolicyPayload = {}) =>

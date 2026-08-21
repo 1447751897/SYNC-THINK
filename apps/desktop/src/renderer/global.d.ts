@@ -248,9 +248,7 @@ declare global {
         connect(): Promise<RuntimeConnectOutcome>;
         appendMessage(payload: AppendMessagePayload): Promise<AppendMessageResponse>;
         detectKernels(): Promise<import('@sync-think/protocol').KernelDetectResponse>;
-        getGatewayStatus?(): Promise<
-          import('@sync-think/protocol').OpenGatewayStatusResponse
-        >;
+        getGatewayStatus?(): Promise<import('@sync-think/protocol').OpenGatewayStatusResponse>;
         getGatewayLogs?(query?: {
           offset?: number;
           limit?: number;
@@ -640,9 +638,7 @@ declare global {
           review(
             payload: ReviewBrowserWorkflowDraftPayload,
           ): Promise<ReviewBrowserWorkflowDraftResponse>;
-          execute(
-            payload: ExecuteBrowserWorkflowPayload,
-          ): Promise<ExecuteBrowserWorkflowResponse>;
+          execute(payload: ExecuteBrowserWorkflowPayload): Promise<ExecuteBrowserWorkflowResponse>;
           approveAndExecute(
             payload: ApproveExecuteBrowserWorkflowPayload,
           ): Promise<ExecuteBrowserWorkflowResponse>;
