@@ -36,6 +36,8 @@ import {
   SqliteAppSettingStore,
   SqliteAgentContextStore,
   SqliteScheduledTaskStore,
+  SqliteRunIndexStore,
+  SqliteExternalEventStore,
 } from '@sync-think/storage';
 import {
   SecureStore,
@@ -91,6 +93,8 @@ export interface OpenPersistentRuntimeOptions extends Omit<
   | 'secureStore'
   | 'appSettingStore'
   | 'queryUsageSummary'
+  | 'runIndexStore'
+  | 'externalEventStore'
 > {
   dbPath: string;
   secureStoreBackend?: SecureStoreBackend;
@@ -310,6 +314,26 @@ export async function openPersistentRuntime(
           }
         : undefined,
     );
+    // 0049: activity-centre read model. Any run still marked `running` belongs
+    // to a Runtime that no longer exists, so it is closed out before the new
+    // Runtime starts writing — otherwise a crashed run advertises itself as
+    // active forever.
+    const runIndexStore = new SqliteRunIndexStore(connection.raw);
+    try {
+      const stale = runIndexStore.listUnfinished();
+      if (stale.length > 0) {
+        runIndexStore.markInterrupted({
+          runIds: stale.map((entry) => entry.runId),
+          reason: 'Runtime 重启，该 Run 未留下终态',
+        });
+      }
+    } catch (error) {
+      console.warn(
+        '[runtime] run_index interrupted sweep failed',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
     runtime = new Runtime({
       ...runtimeOptions,
       stateStore: eventPayloadStateStore,
@@ -338,6 +362,9 @@ export async function openPersistentRuntime(
       stepExecutor,
       appSettingStore,
       scheduledTaskStore: new SqliteScheduledTaskStore(connection.raw),
+      runIndexStore,
+      // Read-only here: the daemon owns every write to this queue.
+      externalEventStore: new SqliteExternalEventStore(connection.raw),
       queryUsageSummary,
       browserHost,
       browserProfileGate,

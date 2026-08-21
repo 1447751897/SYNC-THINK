@@ -6884,6 +6884,206 @@ body {
   background: var(--task-accent-strong);
 }
 
+/* ==========================================================================
+ * 后台活动中心（TD-048）
+ * 复用 .task-panel 的 --task-* 调色板与左右框架，仅补 Run 行与徽章。
+ * 页面根元素同时挂 .task-panel，否则这些 var() 全部取不到值。
+ * ======================================================================== */
+
+/* 定时任务页的左栏宽度由拖拽手柄内联写入；活动中心不支持拖拽，给固定值。 */
+.activity-panel .task-panel__side {
+  width: 190px;
+  border-right: 1px solid var(--task-border);
+}
+
+.activity-panel__main {
+  overflow-y: auto;
+}
+
+.activity-panel__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 7px 10px;
+  border-radius: 9px;
+  font-size: 12px;
+  background: var(--task-warn-soft);
+  color: var(--task-warn);
+  border: 1px solid color-mix(in srgb, var(--task-warn) 30%, transparent);
+}
+
+.activity-panel__notice button {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.activity-panel__notice button:hover {
+  opacity: 1;
+}
+
+.activity-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.activity-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--task-surface-2);
+  border: 1px solid var(--task-border);
+}
+
+.activity-row__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.activity-row__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--task-text);
+  /* Titles come from user prompts and can be long; keep the row one line. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-row__source {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--task-text-3);
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--task-border);
+}
+
+.activity-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 11px;
+  color: var(--task-text-2);
+}
+
+.activity-row__error {
+  font-size: 11.5px;
+  color: var(--task-fail);
+  background: var(--task-fail-soft);
+  border-radius: 7px;
+  padding: 4px 7px;
+  margin-top: 2px;
+  /* Scrubbed upstream, but still arbitrary length — clamp to two lines. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.activity-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.activity-panel__more {
+  align-self: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--task-text-2);
+  background: var(--task-surface-2);
+  border: 1px solid var(--task-border);
+}
+
+.activity-panel__more:hover:not(:disabled) {
+  color: var(--task-text);
+  border-color: var(--task-border-strong);
+}
+
+.activity-panel__more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.activity-panel__events {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--task-border);
+}
+
+.activity-panel__events-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--task-text-3);
+}
+
+/* 状态徽章：run 与外部事件共用一套词汇，覆盖两条状态机的全部取值。 */
+.activity-badge {
+  font-size: 10px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 1px;
+  background: var(--task-surface);
+  color: var(--task-text-2);
+  border: 1px solid var(--task-border);
+}
+
+.activity-badge.is-running,
+.activity-badge.is-leased {
+  background: var(--task-accent-soft);
+  color: var(--task-accent);
+  border-color: transparent;
+}
+
+.activity-badge.is-completed {
+  background: var(--task-ok-soft);
+  color: var(--task-ok);
+  border-color: transparent;
+}
+
+.activity-badge.is-failed {
+  background: var(--task-fail-soft);
+  color: var(--task-fail);
+  border-color: transparent;
+}
+
+.activity-badge.is-paused,
+.activity-badge.is-pending {
+  background: var(--task-warn-soft);
+  color: var(--task-warn);
+  border-color: transparent;
+}
+
 /* ── 编辑器弹窗（设计稿 v6 六分区） ──────────────────────────── */
 
 .task-editor-backdrop {

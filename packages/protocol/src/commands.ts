@@ -211,6 +211,9 @@ export type CommandType =
   | 'scheduledTask.delete'
   | 'scheduledTask.trigger'
   | 'scheduledTask.history'
+  | 'activity.listRuns'
+  | 'activity.listExternalEvents'
+  | 'activity.retryAnchor'
   | 'kernel.detect'
   | 'gateway.status'
   | 'gateway.logs'
@@ -4087,6 +4090,84 @@ export interface ListScheduledTaskHistoryPayload {
 
 export interface ListScheduledTaskHistoryResponse {
   entries: import('@sync-think/shared').ScheduledTaskHistoryEntry[];
+}
+
+// --- Activity centre (TD-048) ---------------------------------------------
+// Background runs and external events are read through a dedicated projection
+// rather than the orchestration `run` table, which never holds conversation
+// runs and carries no kernel/model/timing/failure columns.
+
+export interface ActivityListRunsPayload {
+  workspaceId?: string;
+  conversationId?: string;
+  states?: import('@sync-think/shared').RunIndexState[];
+  sources?: import('@sync-think/shared').RunIndexSource[];
+  /** Opaque cursor returned by a previous page. */
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ActivityListRunsResponse {
+  entries: import('@sync-think/shared').RunIndexEntry[];
+  nextCursor?: string;
+  /** Per-state totals for the same workspace scope, for filter chips. */
+  counts: Record<import('@sync-think/shared').RunIndexState, number>;
+}
+
+/**
+ * External event view for the activity centre.
+ *
+ * Deliberately not `ExternalEventRecord`: that type carries `leaseToken`, a
+ * fencing credential that must never leave the daemon/Runtime boundary.
+ */
+export interface ActivityExternalEventSummary {
+  id: string;
+  dedupeKey: string;
+  sourceKind: import('@sync-think/shared').ExternalEventSourceKind;
+  sourceName?: string;
+  title?: string;
+  state: import('@sync-think/shared').ExternalEventState;
+  attemptCount: number;
+  runId?: string;
+  workspaceId?: string;
+  resultStatus?: import('@sync-think/shared').ExternalEventTerminalStatus;
+  resultReason?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface ActivityListExternalEventsPayload {
+  workspaceId?: string;
+  states?: import('@sync-think/shared').ExternalEventState[];
+  limit?: number;
+}
+
+export interface ActivityListExternalEventsResponse {
+  entries: ActivityExternalEventSummary[];
+}
+
+export interface ActivityRetryAnchorPayload {
+  runId: string;
+}
+
+/**
+ * Resolves what a failed run should re-send, without starting the run here.
+ *
+ * Retry deliberately does not open a second run-start path: `task.appendMessage`
+ * already owns task-version fencing, kernel/agent resolution and approval
+ * checks, and duplicating that machinery is how those fences get out of sync.
+ * The caller replays through the normal command instead.
+ */
+export interface ActivityRetryAnchorResponse {
+  runId: string;
+  conversationId: string;
+  /** Message to re-send. Absent when the original prompt is no longer durable. */
+  messageId?: string;
+  text?: string;
+  /** False when the run cannot be retried, with `reason` explaining why. */
+  retryable: boolean;
+  reason?: string;
 }
 
 // Helper: build a typed request envelope.

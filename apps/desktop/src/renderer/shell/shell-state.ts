@@ -15,6 +15,7 @@ export type ShellStage =
   | 'browser' // 浏览器（Profile 管理 + 独立登录态）
   | 'abilities' // 能力
   | 'tasks' // 定时任务
+  | 'activity' // 后台活动中心（Run 与外部事件）
   | 'settings';
 
 export interface ShellNavState {
@@ -52,6 +53,7 @@ export const STAGE_LABELS: Record<ShellStage, string> = {
   browser: '浏览器',
   abilities: '能力',
   tasks: '定时任务',
+  activity: '后台活动',
   settings: '设置',
 };
 

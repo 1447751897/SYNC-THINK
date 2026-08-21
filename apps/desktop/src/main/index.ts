@@ -301,6 +301,9 @@ import {
   parseDeleteScheduledTaskPayload,
   parseTriggerScheduledTaskPayload,
   parseListScheduledTaskHistoryPayload,
+  parseActivityListRunsPayload,
+  parseActivityListExternalEventsPayload,
+  parseActivityRetryAnchorPayload,
   parseSkillLocalScanPayload,
   parseSkillLocalImportPayload,
   parseSetConversationPinnedPayload,
@@ -1975,6 +1978,27 @@ function setupRuntimeBridge(): void {
     return getRuntimeClient().request(
       'scheduledTask.history',
       parseListScheduledTaskHistoryPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:activity-list-runs', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request('activity.listRuns', parseActivityListRunsPayload(value));
+  });
+  ipcMain.handle('runtime:activity-list-external-events', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'activity.listExternalEvents',
+      parseActivityListExternalEventsPayload(value),
+    );
+  });
+  ipcMain.handle('runtime:activity-retry-anchor', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'activity.retryAnchor',
+      parseActivityRetryAnchorPayload(value),
     );
   });
   // ── 守护进程管理（T11）：走 daemon 独立管道，不经过 runtime。 ──────────

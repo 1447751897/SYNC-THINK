@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useDialog } from './Dialog.js';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
+  Activity,
   Archive,
   ArchiveRestore,
   Bot,
@@ -211,6 +212,13 @@ export function Sidebar(props: SidebarProps) {
           testId="nav-scheduled"
           active={props.nav.stage === 'tasks'}
           onClick={() => props.onSelectStage('tasks')}
+        />
+        <ActionRow
+          icon={<Activity size={15} />}
+          label="后台活动"
+          testId="nav-activity"
+          active={props.nav.stage === 'activity'}
+          onClick={() => props.onSelectStage('activity')}
         />
         <ActionRow
           icon={<Globe size={15} />}

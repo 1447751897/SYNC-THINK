@@ -161,7 +161,10 @@ export function parseDecideApprovalPayload(value: unknown): DecideApprovalPayloa
     decision: value.decision,
     decidedBy,
     ...(validatedDelegateAgentVersionId
-      ? { delegateAgentVersionId: validatedDelegateAgentVersionId as DecideApprovalPayload['delegateAgentVersionId'] }
+      ? {
+          delegateAgentVersionId:
+            validatedDelegateAgentVersionId as DecideApprovalPayload['delegateAgentVersionId'],
+        }
       : {}),
     decisionNote: optionalString(value.decisionNote),
   };

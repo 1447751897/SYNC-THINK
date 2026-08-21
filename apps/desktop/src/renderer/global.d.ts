@@ -478,6 +478,15 @@ declare global {
         scheduledTaskHistory(
           payload: import('@sync-think/protocol').ListScheduledTaskHistoryPayload,
         ): Promise<import('@sync-think/protocol').ListScheduledTaskHistoryResponse>;
+        activityListRuns(
+          payload: import('@sync-think/protocol').ActivityListRunsPayload,
+        ): Promise<import('@sync-think/protocol').ActivityListRunsResponse>;
+        activityListExternalEvents(
+          payload: import('@sync-think/protocol').ActivityListExternalEventsPayload,
+        ): Promise<import('@sync-think/protocol').ActivityListExternalEventsResponse>;
+        activityRetryAnchor(
+          payload: import('@sync-think/protocol').ActivityRetryAnchorPayload,
+        ): Promise<import('@sync-think/protocol').ActivityRetryAnchorResponse>;
         goalPause(
           payload: import('@sync-think/protocol').GoalPausePayload,
         ): Promise<{ goal?: import('@sync-think/protocol').GoalStatus }>;

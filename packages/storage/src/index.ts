@@ -40,6 +40,7 @@ export * from './agent-context-store.js';
 export * from './task-plan-store.js';
 export * from './scheduled-task-store.js';
 export * from './external-event-store.js';
+export * from './run-index-store.js';
 export * from './event-payload-backfill-executor.js';
 export * from './event-payload-backfill-rollback.js';
 export * from './event-payload-sidecar-gc.js';

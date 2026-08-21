@@ -1,3 +1,27 @@
+## 2026-08-21：后台活动中心（TD-048）
+
+### Added
+
+- 新增 `run_index` 读模型表与 store（`packages/storage`），由事件日志派生：按 workspace / 状态 / 来源检索 Run，冗余 kernel、model、失败分类与错误摘要供列表直接渲染。Runtime 在 Run 生命周期事件上写入，并从历史事件回填既有数据。
+- 状态在 upsert 中终态粘性：`completed` / `failed` / `cancelled` 落定后不再被乱序或重放的事件打回「进行中」。
+- Protocol/Runtime 新增 activity 命令族：`activity.listRuns`（`(started_at, run_id)` 复合游标分页 + 各状态计数）、`activity.listExternalEvents`（只读 daemon 与 Runtime 共用的同一 SQLite 文件）、`activity.retryAnchor`（解析某个 Run 该重发什么）。
+- Desktop 新增「后台活动」页：状态/来源过滤、游标翻页、失败原因展示、打开对话与重发；外部事件列表并列展示投递状态与尝试次数。列表刷新由 Run 生命周期事件驱动，`primedRef` 跳过挂载前已累积的历史。
+
+### Security
+
+- 外部事件投影到 Renderer 时逐字段拷贝而非展开：`ExternalEventRecord` 的 `leaseToken`（fencing 凭证）与 `instruction` / `metadata`（事件正文）一律不出 Runtime 边界，并有断言全序列化文本的回归测试守住。
+- `states` / `sources` 过滤值在 Desktop 主进程按词汇表白名单过滤后才进 Runtime，renderer 无法把任意值送进 SQL 过滤条件。
+
+### Notes
+
+- 重发不新开 run-start 路径：`activity.retryAnchor` 只返回对话 id 与原始提示词，活动中心把它预填进 ChatView 输入框，由用户按发送。`expectedTaskVersion` 栅栏、模型/内核/思考档解析与自动压缩仍只有 ChatView 一份实现。进行中的 Run、无对话归属或原始消息已不可用时返回 `retryable: false` 加原因，属正常应答。
+- 状态计数只按 workspace 收窄，不跟随当前状态过滤——否则选中「失败」后其余过滤器芯片会全部显示 0。
+
+### Verification
+
+- Runtime `activity-commands.test.ts` 12/12；Desktop `ActivityCenterPage.test.tsx` 7/7；Desktop 全量 1323 tests 全绿。
+- 全仓 typecheck 20/20、lint 11/11（0 error）通过。
+
 ## 2026-08-21：执行过程面板 P1（真实时间线、计划与结构化详情）
 
 ### Changed

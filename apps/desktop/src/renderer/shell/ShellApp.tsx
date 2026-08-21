@@ -37,6 +37,7 @@ import { BrowserPanel } from './BrowserPanel.js';
 import { ReviewPanel, WorkspaceFilesPanel } from './RightDock.js';
 import { AgentLibrary } from './AgentLibrary.js';
 import { TaskPanel } from './TaskPanel.js';
+import { ActivityCenterPage } from './ActivityCenterPage.js';
 import { TeamLibrary } from './TeamLibrary.js';
 import { AbilitiesPage } from './AbilitiesPage.js';
 import { BrowserStage } from './BrowserStage.js';
@@ -385,6 +386,24 @@ function ShellAppInner() {
     skillVersionIds: string[];
   } | null>(null);
   const initialConversationSkillSelectionsRef = useRef(new Map<string, string[]>());
+  /**
+   * conversationId → text waiting to be dropped into that chat's composer
+   * (活动中心 re-send). A ref alone would not re-render the mounted ChatView,
+   * so a revision counter forces the pass-through.
+   */
+  const seedComposerTextRef = useRef(new Map<string, string>());
+  const [seedComposerRevision, setSeedComposerRevision] = useState(0);
+  const readSeedComposerText = useCallback(
+    (conversationId: string): string | undefined => seedComposerTextRef.current.get(conversationId),
+    // `seedComposerRevision` is the only reason this callback changes identity:
+    // it is what propagates a newly queued seed down to the mounted ChatView.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [seedComposerRevision],
+  );
+  const queueSeedComposerText = useCallback((conversationId: string, text: string) => {
+    seedComposerTextRef.current.set(conversationId, text);
+    setSeedComposerRevision((revision) => revision + 1);
+  }, []);
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const persistGroups = useCallback(
@@ -2472,6 +2491,10 @@ function ShellAppInner() {
                                   conversationId,
                                 );
                               }}
+                              seedComposerText={readSeedComposerText(String(conversation.id))}
+                              onSeedComposerTextConsumed={(conversationId) => {
+                                seedComposerTextRef.current.delete(conversationId);
+                              }}
                               onTitleUpdated={() => void refresh()}
                               onConversationUpdated={handleConversationUpdated}
                               onLatestReviewChange={setLatestReviewView}
@@ -2627,6 +2650,18 @@ function ShellAppInner() {
               teams={data.teams}
               workspaces={data.workspaces}
               skills={data.skills}
+              onOpenConversation={(conversationId) => {
+                void openConversationById(conversationId);
+                setNav((n) => selectStage(n, 'talk'));
+              }}
+            />
+          ) : nav.stage === 'activity' ? (
+            <ActivityCenterPage
+              eventHistory={eventHistory}
+              onRetryRun={({ conversationId, text }) => {
+                // Only stages the prompt; ChatView still owns the send.
+                queueSeedComposerText(conversationId, text);
+              }}
               onOpenConversation={(conversationId) => {
                 void openConversationById(conversationId);
                 setNav((n) => selectStage(n, 'talk'));

@@ -1360,3 +1360,20 @@ Computer Use built-in plugin
 11. daemon 冷启动防抖只防止并发重复 spawn；daemon 外层 supervisor 独立于 Desktop，在 child 非零退出后按 `1s / 2s / 5s / 10s / 30s` 有界退避重启，正常 `daemon.stop` 退出 0 时不重启。Desktop 已知 daemon 子进程异常退出也必须绕过 10 秒冷启动防抖，避免快速崩溃后无人监督 Runtime。
 12. Runtime PID 文件必须与实际数据库目录同源。所有 daemon、Runtime 和 autostart supervisor 命令行都携带不含秘密的 `role + installId` 精确 marker；仅凭 PID 文件执行最后强杀前必须读取命令行并匹配 marker，匹配失败时拒绝终止，以防 PID 重用误杀无关进程。pipe secret 仍只通过受保护 bootstrap/环境或私有 IPC 传递，不进入 argv。
 13. 回滚通过恢复上一版本的 Runtime/adapter 实现完成；已持久化的 threadId、Run 和消息保持兼容，不做破坏性数据迁移。
+### TD-048：后台活动中心（run_index 读模型 + activity 命令族）（2026-08-21）
+
+状态：已采用。
+
+背景：TD-046 / TD-047 之后，Run 可以由定时任务、外部事件和 Git push 在无人值守时启动，但 UI 只能沿对话逐个翻。要回答「刚才哪些 Run 失败了、为什么、怎么重来」，得先有一份可按状态/来源/时间检索的清单——事件日志是 append-only 的流水，不能直接当列表查。
+
+决策：
+
+1. 新增 `run_index` 表作为**读模型**，由事件日志派生，不是真相源。丢失或写歪都可以从事件重建，因此它可以为查询而反范式（冗余 kernel / model / 失败分类），不必背负写路径的一致性约束。
+2. 状态在 `ON CONFLICT DO UPDATE` 里**终态粘性**：`completed` / `failed` / `cancelled` 落定后不再被覆盖。事件可能乱序或重放，若允许回退，一个迟到的 `run.started` 会把已完成的 Run 打回「进行中」。
+3. 分页用 `(started_at, run_id)` 复合游标（base64url），不用 OFFSET。列表在持续追加新行，OFFSET 分页会在翻页时重复或漏掉行；复合键还消除了同一毫秒内多个 Run 的排序歧义。取 `limit + 1` 判断是否有下一页。
+4. 状态计数只按 workspace 收窄，**不跟随当前状态过滤**。计数是过滤器芯片自身的标签，若随选中项收窄，选中「失败」后其余每个芯片都会显示 0。
+5. 外部事件视图直接读 daemon 与 Runtime 共用的同一个 SQLite 文件，不新开 daemon 桥接；Runtime 侧只读，写入路径仍然只属于 daemon。
+6. 投影到 Renderer 时**逐字段拷贝，不用展开**。`ExternalEventRecord` 带 `leaseToken`（fencing 凭证）以及 `instruction` / `metadata`（事件正文），任何一个越过 Runtime 边界都是泄漏。错误文本继续走既有 scrub。
+7. `states` / `sources` 过滤值在 Desktop 主进程按词汇表白名单**过滤**（不是透传）后才进 Runtime，避免 renderer 缺陷把任意值送进 SQL 过滤条件。
+8. 重发**不新开一条 run-start 路径**。`activity.retryAnchor` 只回答「该重发什么」（对话 id + 原始提示词），实际发送仍走 ChatView 既有通道——那里独占 `expectedTaskVersion` 栅栏、模型/内核/思考档解析和自动压缩。活动中心只把提示词预填进输入框，由用户按发送。进行中的 Run、无对话归属的 Run、原始消息已不可用时返回 `retryable: false` 并附原因，属正常应答而非错误帧。
+9. 列表刷新由事件驱动，但只认真正推进生命周期的类型（`run.started` / `recovered` / `retrying` / `completed` / `failed` / `cancelled` / `paused`）。按 `category === 'run'` 筛会连带 `plan.approved`、`run.queued`，触发改不动任何一行的重查。事件本身只是「该重新查询」的信号：其 payload 不含 kernel / model / 失败分类，拼不出 UI 行，行始终来自读模型。

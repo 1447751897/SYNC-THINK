@@ -331,6 +331,45 @@ export const MIGRATIONS: { name: string; sql: string }[] = [
     CREATE INDEX daemon_external_event_run_idx
       ON daemon_external_event(run_id);`,
   },
+  {
+    name: '0049_run_index',
+    // Read model for the activity centre. Conversation runs never reach the
+    // orchestration `run` table, and that table carries no kernel, model,
+    // start/finish or failure columns, so neither source can answer "list every
+    // run". This projection is rebuilt from durable run lifecycle events and is
+    // never a source of truth.
+    sql: `CREATE TABLE run_index (
+      run_id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      conversation_id TEXT,
+      task_id TEXT,
+      source TEXT NOT NULL
+        CHECK (source IN ('chat','scheduled','external','orchestration')),
+      state TEXT NOT NULL
+        CHECK (state IN ('running','completed','failed','cancelled','paused')),
+      kernel_id TEXT,
+      model_id TEXT,
+      provider_model_id TEXT,
+      title TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      failure_class TEXT,
+      error_message TEXT,
+      trigger_message_id TEXT,
+      external_event_id TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX run_index_started_idx
+      ON run_index(started_at DESC, run_id DESC);
+    CREATE INDEX run_index_workspace_started_idx
+      ON run_index(workspace_id, started_at DESC, run_id DESC);
+    CREATE INDEX run_index_state_started_idx
+      ON run_index(state, started_at DESC, run_id DESC);
+    CREATE INDEX run_index_conversation_idx
+      ON run_index(conversation_id, started_at DESC);
+    CREATE INDEX run_index_external_event_idx
+      ON run_index(external_event_id);`,
+  },
 ];
 
 function taskPlanDdlSql(): string {

@@ -146,6 +146,13 @@ import {
   type TriggerScheduledTaskResponse,
   type ListScheduledTaskHistoryPayload,
   type ListScheduledTaskHistoryResponse,
+  type ActivityListRunsPayload,
+  type ActivityListRunsResponse,
+  type ActivityListExternalEventsPayload,
+  type ActivityListExternalEventsResponse,
+  type ActivityExternalEventSummary,
+  type ActivityRetryAnchorPayload,
+  type ActivityRetryAnchorResponse,
   type SkillLocalScanPayload,
   type SkillLocalScanResponse,
   type SkillLocalImportPayload,
@@ -241,6 +248,7 @@ import type {
 import { defaultSurfaceForProtocol, inferProviderSurface } from '@sync-think/shared';
 import type { ConversationGetRunProcessResponse } from '@sync-think/protocol';
 import { projectRunProcess } from './run-process-view.js';
+import { projectRunIndexUpsert } from './run-index-projection.js';
 import {
   backfillMessagesFromEvents,
   MESSAGE_STORE_BACKFILL_SETTING_KEY,
@@ -264,6 +272,8 @@ import {
   type ModelRecord,
   type SqliteAppSettingStore,
   type SqliteScheduledTaskStore,
+  type SqliteRunIndexStore,
+  type SqliteExternalEventStore,
   type SqliteAgentStore,
   type SqliteMemoryStore,
   type SqliteSkillStore,
@@ -790,6 +800,13 @@ export interface RuntimeOptions {
   appSettingStore?: SqliteAppSettingStore;
   /** 0044: 定时任务表。 */
   scheduledTaskStore?: SqliteScheduledTaskStore;
+  /** 0049: 后台活动中心的 Run 读模型投影。缺省时只是不写投影，不影响执行。 */
+  runIndexStore?: SqliteRunIndexStore;
+  /**
+   * 0048: 外部事件队列，活动中心只读。daemon 与 Runtime 共用同一 SQLite 文件，
+   * 所以这里直接读表，不必新开 daemon 桥接。写入路径仍然只属于 daemon。
+   */
+  externalEventStore?: SqliteExternalEventStore;
   /** 0026+: usage rows, request log, and tool aggregates from durable runtime events. */
   queryUsageSummary?: (sinceIso?: string) => Promise<UsageSummaryRawResult>;
   /**
@@ -1838,6 +1855,10 @@ export class Runtime {
   private readonly appSettingStore?: SqliteAppSettingStore;
   /** 0044: 定时任务表与调度心跳。 */
   private readonly scheduledTaskStore?: SqliteScheduledTaskStore;
+  /** 0049: Run 读模型。投影失败绝不影响执行面。 */
+  private readonly runIndexStore?: SqliteRunIndexStore;
+  /** 0048: 外部事件队列，仅供活动中心只读投影。 */
+  private readonly externalEventStore?: SqliteExternalEventStore;
   private taskSchedulerTimer?: ReturnType<typeof setInterval>;
   private taskSchedulerTicking = false;
   /** 当前由定时任务触发的 run（并发上限统计）。 */
@@ -2011,6 +2032,8 @@ export class Runtime {
     this.providerStore = opts.providerStore;
     this.appSettingStore = opts.appSettingStore;
     this.scheduledTaskStore = opts.scheduledTaskStore;
+    this.runIndexStore = opts.runIndexStore;
+    this.externalEventStore = opts.externalEventStore;
     this.openGateway = new OpenGatewayManager({
       listCatalog: () => this.collectGatewayCatalog(),
       resolveProviderSecret: (providerId) => this.resolveProviderSecret(providerId),
@@ -2292,6 +2315,18 @@ export class Runtime {
         }
         if (frame.type === 'scheduledTask.history') {
           this.handleListScheduledTaskHistory(socket, frame);
+          return;
+        }
+        if (frame.type === 'activity.listRuns') {
+          this.handleActivityListRuns(socket, frame);
+          return;
+        }
+        if (frame.type === 'activity.listExternalEvents') {
+          this.handleActivityListExternalEvents(socket, frame);
+          return;
+        }
+        if (frame.type === 'activity.retryAnchor') {
+          this.handleActivityRetryAnchor(socket, frame);
           return;
         }
         if (frame.type === 'workspace.create') {
@@ -15249,6 +15284,191 @@ export class Runtime {
     );
   }
 
+  // --- Activity centre (TD-048) --------------------------------------------
+
+  private writeActivityStoreUnavailable(socket: Socket, frame: Frame, store: string): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code: ErrorCode.STORAGE_WRITE_FAILED,
+          message: `Activity ${store} is not configured on this Runtime`,
+        },
+      }),
+    );
+  }
+
+  private handleActivityListRuns(socket: Socket, frame: Frame): void {
+    const payload = (frame.payload ?? {}) as ActivityListRunsPayload;
+    if (typeof payload !== 'object') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.runIndexStore) {
+      this.writeActivityStoreUnavailable(socket, frame, 'run index');
+      return;
+    }
+    const page = this.runIndexStore.list({
+      ...(typeof payload.workspaceId === 'string' ? { workspaceId: payload.workspaceId } : {}),
+      ...(typeof payload.conversationId === 'string'
+        ? { conversationId: payload.conversationId }
+        : {}),
+      ...(Array.isArray(payload.states) ? { states: payload.states } : {}),
+      ...(Array.isArray(payload.sources) ? { sources: payload.sources } : {}),
+      ...(typeof payload.cursor === 'string' ? { cursor: payload.cursor } : {}),
+      ...(typeof payload.limit === 'number' ? { limit: payload.limit } : {}),
+    });
+    // Counts follow the workspace scope only: they drive the filter chips, so
+    // narrowing them by the active state filter would make every chip read 0.
+    const counts = this.runIndexStore.countByState(
+      typeof payload.workspaceId === 'string' ? { workspaceId: payload.workspaceId } : {},
+    );
+    const response: ActivityListRunsResponse = {
+      entries: page.entries,
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      counts,
+    };
+    socket.write(
+      encodeFrame({ id: frame.id, kind: 'response', type: 'activity.listRuns', payload: response }),
+    );
+  }
+
+  private handleActivityListExternalEvents(socket: Socket, frame: Frame): void {
+    const payload = (frame.payload ?? {}) as ActivityListExternalEventsPayload;
+    if (typeof payload !== 'object') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.externalEventStore) {
+      this.writeActivityStoreUnavailable(socket, frame, 'external event queue');
+      return;
+    }
+    const limit =
+      typeof payload.limit === 'number' && Number.isInteger(payload.limit)
+        ? Math.min(Math.max(payload.limit, 1), 100)
+        : 50;
+    const states = Array.isArray(payload.states) ? new Set(payload.states) : undefined;
+    const entries: ActivityExternalEventSummary[] = [];
+    // The store returns oldest-first; the activity list shows newest-first.
+    for (const record of this.externalEventStore.list().reverse()) {
+      if (states && !states.has(record.state)) continue;
+      if (payload.workspaceId && record.workspaceId !== payload.workspaceId) continue;
+      // Projected field by field rather than spread: `ExternalEventRecord`
+      // carries `leaseToken`, a fencing credential that must never reach the
+      // Renderer, and `instruction`/`metadata`, which hold event body text.
+      entries.push({
+        id: record.id,
+        dedupeKey: record.dedupeKey,
+        sourceKind: record.source.kind,
+        ...(record.source.name ? { sourceName: record.source.name } : {}),
+        ...(record.title ? { title: record.title } : {}),
+        state: record.state,
+        attemptCount: record.attemptCount,
+        ...(record.runId ? { runId: record.runId } : {}),
+        ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+        ...(record.resultStatus ? { resultStatus: record.resultStatus } : {}),
+        ...(record.resultReason
+          ? { resultReason: this.scrubDiagnosticMessage(record.resultReason) ?? '' }
+          : {}),
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        ...(record.completedAt ? { completedAt: record.completedAt } : {}),
+      });
+      if (entries.length >= limit) break;
+    }
+    const response: ActivityListExternalEventsResponse = { entries };
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'activity.listExternalEvents',
+        payload: response,
+      }),
+    );
+  }
+
+  /**
+   * Resolves the prompt a failed run should re-send. This does not start a run:
+   * the caller replays through `task.appendMessage` so task-version fencing and
+   * approval checks stay in exactly one place.
+   */
+  private handleActivityRetryAnchor(socket: Socket, frame: Frame): void {
+    const payload = frame.payload as ActivityRetryAnchorPayload | undefined;
+    if (!payload || typeof payload.runId !== 'string') {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    if (!this.runIndexStore) {
+      this.writeActivityStoreUnavailable(socket, frame, 'run index');
+      return;
+    }
+    const entry = this.runIndexStore.get(payload.runId);
+    const write = (response: ActivityRetryAnchorResponse) => {
+      socket.write(
+        encodeFrame({
+          id: frame.id,
+          kind: 'response',
+          type: 'activity.retryAnchor',
+          payload: response,
+        }),
+      );
+    };
+    if (!entry) {
+      write({
+        runId: payload.runId,
+        conversationId: '',
+        retryable: false,
+        reason: '找不到这个 Run',
+      });
+      return;
+    }
+    if (!entry.conversationId) {
+      write({
+        runId: entry.runId,
+        conversationId: '',
+        retryable: false,
+        reason: '该 Run 不属于任何对话，无法重发',
+      });
+      return;
+    }
+    if (entry.state === 'running' || entry.state === 'paused') {
+      write({
+        runId: entry.runId,
+        conversationId: entry.conversationId,
+        retryable: false,
+        reason: '该 Run 仍在进行中',
+      });
+      return;
+    }
+    const anchor = entry.triggerMessageId
+      ? this.messageStore?.getMessage(entry.triggerMessageId as MessageId)
+      : undefined;
+    const text = anchor?.blocks
+      ?.filter((block) => block.type === 'text')
+      .map((block) => block.text ?? '')
+      .join('')
+      .trim();
+    if (!text) {
+      write({
+        runId: entry.runId,
+        conversationId: entry.conversationId,
+        retryable: false,
+        reason: '原始消息已不可用，请手动重发',
+      });
+      return;
+    }
+    write({
+      runId: entry.runId,
+      conversationId: entry.conversationId,
+      ...(entry.triggerMessageId ? { messageId: entry.triggerMessageId } : {}),
+      text,
+      retryable: true,
+    });
+  }
+
   private async handleTriggerScheduledTask(socket: Socket, frame: Frame): Promise<void> {
     const payload = frame.payload as TriggerScheduledTaskPayload | undefined;
     if (!payload || typeof payload.taskId !== 'string') {
@@ -16665,6 +16885,38 @@ export class Runtime {
     if (events.length === 0) throw new Error('Cannot project an empty event transition');
     this.eventSequence = Math.max(this.eventSequence, events[events.length - 1]!.sequence);
     this.rememberRecentEvents(events);
+    this.projectRunIndex(events);
+  }
+
+  /**
+   * Maintains the activity-centre read model from committed run lifecycle
+   * events. This is the single write point: every durable event funnels through
+   * `recordCommittedEvents`, so individual emit sites never need to know the
+   * projection exists.
+   *
+   * The read model is strictly derived state — a projection failure must never
+   * fail a run, so errors are swallowed after logging. `run_index` can always be
+   * rebuilt from the event log.
+   */
+  private projectRunIndex(events: readonly Event[]): void {
+    const store = this.runIndexStore;
+    if (!store) return;
+    for (const event of events) {
+      try {
+        const upsert = projectRunIndexUpsert({
+          event,
+          fallbackWorkspaceId: this.workspaceId,
+          scrub: (message) => this.scrubDiagnosticMessage(message) ?? '',
+        });
+        if (upsert) store.upsert(upsert);
+      } catch (error) {
+        console.warn(
+          '[runtime] run_index projection failed',
+          event.type,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
   }
 
   private rememberRecentEvents(events: readonly Event[]): void {

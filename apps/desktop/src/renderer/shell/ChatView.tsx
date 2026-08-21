@@ -850,6 +850,13 @@ interface ChatViewProps {
   /** One-shot selection carried from the welcome-page first send. */
   initialSkillVersionIds?: readonly string[];
   onInitialSkillSelectionConsumed?(conversationId: string): void;
+  /**
+   * One-shot composer text pushed in from outside (活动中心 re-send).
+   * It only fills the input — the user still presses Send, so the turn keeps
+   * going through this component's single send path.
+   */
+  seedComposerText?: string;
+  onSeedComposerTextConsumed?(conversationId: string): void;
   /** Latest run with file changes, reported up so the workspace-files tab
    *  (ConversationTabs) can render the Review panel. */
   onLatestReviewChange?(view: RunProcessView | null): void;
@@ -887,6 +894,8 @@ export function ChatView({
   onConversationUpdated,
   initialSkillVersionIds,
   onInitialSkillSelectionConsumed,
+  seedComposerText,
+  onSeedComposerTextConsumed,
   onLatestReviewChange,
   onOpenFile,
   onOpenReview,
@@ -1503,6 +1512,28 @@ export function ChatView({
     // effect 被误触发：消息被清空而 loadMessages 不重跑，聊天区永远停在
     // 「加载中…」。权限模式由 setPermission 自行同步，这里只需跟随 id。
   }, [clearCompactDismissTimer, clearRunProcessRetryState, conversation.id]);
+
+  // Seeded composer text (活动中心 re-send). Declared *after* the conversation
+  // reset effect above so the seed survives: effects run in declaration order,
+  // and that one clears `input` when the chat is (re)mounted.
+  useEffect(() => {
+    const seed = seedComposerText?.trim();
+    if (!seed) return;
+    onSeedComposerTextConsumed?.(String(conversation.id));
+    setInput((current) =>
+      // Never clobber something the user already typed — append instead.
+      current.trim() ? `${current.replace(/\s+$/, '')}\n${seed}` : seed,
+    );
+    window.requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      // `resizeComposeInput` is declared further down this component, so it is
+      // in its TDZ here; the shared helper it wraps is a module import.
+      computeTextareaHeight(el, 56, 220);
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }, [conversation.id, onSeedComposerTextConsumed, seedComposerText]);
 
   const detectKernels = useCallback(async (): Promise<KernelDetectionResult[] | null> => {
     const api = bridge();

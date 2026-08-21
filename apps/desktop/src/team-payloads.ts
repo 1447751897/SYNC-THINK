@@ -30,6 +30,9 @@ import type {
   CreateScheduledTaskPayload,
   ListScheduledTasksPayload,
   ListScheduledTaskHistoryPayload,
+  ActivityListRunsPayload,
+  ActivityListExternalEventsPayload,
+  ActivityRetryAnchorPayload,
   UpdateScheduledTaskPayload,
   DeleteScheduledTaskPayload,
   TriggerScheduledTaskPayload,
@@ -46,7 +49,13 @@ import type {
   ConversationDecideToolApprovalPayload,
   ConversationSubmitBrowserResultPayload,
 } from '@sync-think/protocol';
-import type { ScheduledTaskTarget, TaskRule } from '@sync-think/shared';
+import type {
+  ScheduledTaskTarget,
+  TaskRule,
+  RunIndexState,
+  RunIndexSource,
+  ExternalEventState,
+} from '@sync-think/shared';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -701,6 +710,76 @@ export function parseListScheduledTaskHistoryPayload(
       ? { limit: value.limit }
       : {}),
   };
+}
+
+const ACTIVITY_RUN_STATES: readonly RunIndexState[] = [
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+  'paused',
+];
+const ACTIVITY_RUN_SOURCES: readonly RunIndexSource[] = [
+  'chat',
+  'scheduled',
+  'external',
+  'orchestration',
+];
+const ACTIVITY_EXTERNAL_EVENT_STATES: readonly ExternalEventState[] = [
+  'pending',
+  'leased',
+  'completed',
+  'failed',
+  'cancelled',
+];
+
+/**
+ * Enum members are filtered against the vocabulary rather than forwarded, so a
+ * renderer bug cannot push an unknown value into a Runtime SQL filter.
+ */
+function parseEnumList<T extends string>(value: unknown, allowed: readonly T[]): T[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const picked = value.filter(
+    (entry): entry is T =>
+      typeof entry === 'string' && (allowed as readonly string[]).includes(entry),
+  );
+  return picked.length > 0 ? picked : undefined;
+}
+
+export function parseActivityListRunsPayload(value: unknown): ActivityListRunsPayload {
+  if (!isRecord(value)) return {};
+  const states = parseEnumList(value.states, ACTIVITY_RUN_STATES);
+  const sources = parseEnumList(value.sources, ACTIVITY_RUN_SOURCES);
+  return {
+    ...(typeof value.workspaceId === 'string' ? { workspaceId: value.workspaceId } : {}),
+    ...(typeof value.conversationId === 'string' ? { conversationId: value.conversationId } : {}),
+    ...(states ? { states } : {}),
+    ...(sources ? { sources } : {}),
+    ...(typeof value.cursor === 'string' ? { cursor: value.cursor } : {}),
+    ...(typeof value.limit === 'number' && Number.isInteger(value.limit)
+      ? { limit: value.limit }
+      : {}),
+  };
+}
+
+export function parseActivityListExternalEventsPayload(
+  value: unknown,
+): ActivityListExternalEventsPayload {
+  if (!isRecord(value)) return {};
+  const states = parseEnumList(value.states, ACTIVITY_EXTERNAL_EVENT_STATES);
+  return {
+    ...(typeof value.workspaceId === 'string' ? { workspaceId: value.workspaceId } : {}),
+    ...(states ? { states } : {}),
+    ...(typeof value.limit === 'number' && Number.isInteger(value.limit)
+      ? { limit: value.limit }
+      : {}),
+  };
+}
+
+export function parseActivityRetryAnchorPayload(value: unknown): ActivityRetryAnchorPayload {
+  const label = 'Invalid activity-retry-anchor payload';
+  if (!isRecord(value)) throw new Error(label);
+  return { runId: requiredString(value.runId, label) };
 }
 
 export function parseSkillLocalScanPayload(value: unknown): SkillLocalScanPayload {

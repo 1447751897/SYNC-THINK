@@ -271,6 +271,12 @@ import type {
   ListScheduledTasksResponse,
   ListScheduledTaskHistoryPayload,
   ListScheduledTaskHistoryResponse,
+  ActivityListRunsPayload,
+  ActivityListRunsResponse,
+  ActivityListExternalEventsPayload,
+  ActivityListExternalEventsResponse,
+  ActivityRetryAnchorPayload,
+  ActivityRetryAnchorResponse,
   UpdateScheduledTaskPayload,
   DeleteScheduledTaskPayload,
   TriggerScheduledTaskPayload,
@@ -714,13 +720,33 @@ const api = {
         'runtime:scheduled-task-history',
         payload,
       ) as Promise<ListScheduledTaskHistoryResponse>,
+    activityListRuns: (payload: ActivityListRunsPayload) =>
+      ipcRenderer.invoke(
+        'runtime:activity-list-runs',
+        payload ?? {},
+      ) as Promise<ActivityListRunsResponse>,
+    activityListExternalEvents: (payload: ActivityListExternalEventsPayload) =>
+      ipcRenderer.invoke(
+        'runtime:activity-list-external-events',
+        payload ?? {},
+      ) as Promise<ActivityListExternalEventsResponse>,
+    activityRetryAnchor: (payload: ActivityRetryAnchorPayload) =>
+      ipcRenderer.invoke(
+        'runtime:activity-retry-anchor',
+        payload,
+      ) as Promise<ActivityRetryAnchorResponse>,
     goalPause: (payload: GoalPausePayload) =>
       ipcRenderer.invoke('runtime:goal-pause', payload) as Promise<{ goal?: GoalStatus }>,
     goalResume: (payload: GoalResumePayload) =>
       ipcRenderer.invoke('runtime:goal-resume', payload) as Promise<GoalResumeResponse>,
     requestDaemonStatus: () =>
-      ipcRenderer.invoke('daemon:get-status') as Promise<{ ok: boolean; payload?: unknown; error?: string }>,
-    daemonStart: () => ipcRenderer.invoke('daemon:start') as Promise<{ ok: boolean; spawned: boolean }>,
+      ipcRenderer.invoke('daemon:get-status') as Promise<{
+        ok: boolean;
+        payload?: unknown;
+        error?: string;
+      }>,
+    daemonStart: () =>
+      ipcRenderer.invoke('daemon:start') as Promise<{ ok: boolean; spawned: boolean }>,
     daemonStop: () => ipcRenderer.invoke('daemon:stop') as Promise<{ ok: boolean }>,
     daemonSetAutostart: (payload: { enabled: boolean }) =>
       ipcRenderer.invoke('daemon:set-autostart', payload) as Promise<{ ok: boolean }>,
