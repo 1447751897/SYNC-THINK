@@ -62,9 +62,9 @@ describe('kernel registry contract', () => {
     const codex = registry.find((entry) => entry.id === 'codex')!;
     expect(codex.kind).toBe('subprocess');
     expect(codex.capabilities).toMatchObject({
-      permissionBridge: false,
-      pause: 'session',
-      // codex exec accepts `-c model_context_window=<n>` → host overrides the window.
+      permissionBridge: true,
+      pause: 'turn',
+      // app-server accepts per-thread context configuration.
       contextWindow: { nativeLimit: 128_000, overridable: true },
     });
     expect(codex.knownGoodVersions).toContain('0.145.0');

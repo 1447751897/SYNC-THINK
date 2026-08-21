@@ -15,7 +15,7 @@ import { KERNEL_COMMANDS, probeKernel } from './detect.js';
 import { isVersionSupported } from './version-compat.js';
 import { nativeKernelAdapter } from './native-kernel-adapter.js';
 import { ClaudeCodeKernelAdapter } from './claude-code-adapter.js';
-import { CodexKernelAdapter } from './codex-adapter.js';
+import { CodexAppServerKernelAdapter } from './codex-app-server-adapter.js';
 
 export interface KernelRegistryEntry {
   id: KernelId;
@@ -118,18 +118,18 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
     kind: 'subprocess',
     capabilities: {
       // Codex speaks only the OpenAI Responses dialect: the Chat wire API was
-      // removed upstream in 2026-02 (codex-adapter.ts mirrors this). Declaring
+      // removed upstream in 2026-02. Declaring
       // openai-chat here would make kernelNeedsGateway skip the bridge for
       // Chat-only upstreams (e.g. DeepSeek) and Codex would then miss provider
       // reasoning (thinking is not exposed over the Chat wire).
       protocols: ['openai-responses'],
       permission: 'own',
-      permissionBridge: false,
-      pause: 'session',
+      permissionBridge: true,
+      pause: 'turn',
       compress: 'own',
       usageReport: true,
-      // codex exec accepts `-c model_context_window=<n>` (verified 0.145.0), so
-      // the host overrides the window directly; nativeLimit is informational.
+      // app-server accepts per-thread context configuration; nativeLimit is
+      // informational when the host supplies a smaller configured window.
       contextWindow: { nativeLimit: 128_000, overridable: true },
     },
     knownGoodVersions: ['0.145.0'],
@@ -137,7 +137,7 @@ export function buildKernelRegistry(): KernelRegistryEntry[] {
     minimumSupportedVersion: '0.140.0',
     upperExclusiveVersion: '1.0.0',
     installCommand: 'npm i -g @openai/codex',
-    createAdapter: () => new CodexKernelAdapter(),
+    createAdapter: () => new CodexAppServerKernelAdapter(),
     detect: async () => toDetectionResult(codexEntry),
   };
   const piEntry: KernelRegistryEntry = {

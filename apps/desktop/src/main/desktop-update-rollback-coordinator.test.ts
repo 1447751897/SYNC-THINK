@@ -118,10 +118,9 @@ describe('DesktopUpdateRollbackCoordinator', () => {
     expect(result).toMatchObject({ status: 'unavailable', reason: 'prior-installer-missing' });
     expect(launchWatchdog).not.toHaveBeenCalled();
     const outcome = JSON.parse(
-      await (await import('node:fs/promises')).readFile(
-        join(root, 'outcomes', 'intent-unavailable.json'),
-        'utf8',
-      ),
+      await (
+        await import('node:fs/promises')
+      ).readFile(join(root, 'outcomes', 'intent-unavailable.json'), 'utf8'),
     );
     expect(outcome).toMatchObject({
       automaticRollbackAttempted: false,
@@ -144,7 +143,9 @@ describe('DesktopUpdateRollbackCoordinator', () => {
       launchWatchdog: armed.launchWatchdog,
     });
     await expect(target.markRuntimeHealthy({ registerInstaller: false })).resolves.toBe('marked');
-    const marker = await new DesktopUpdateRollbackStore(armed.root).readHealthMarker('intent-fixed');
+    const marker = await new DesktopUpdateRollbackStore(armed.root).readHealthMarker(
+      'intent-fixed',
+    );
     expect(marker).toMatchObject({ intentId: 'intent-fixed', targetVersion: '0.0.2' });
   });
 
@@ -188,7 +189,7 @@ describe('DesktopUpdateRollbackCoordinator', () => {
         currentVersion: '0.0.1',
         targetExecutablePath: join(root, 'install', 'SYNC-THINK.exe'),
         allowUnsignedFixture: true,
-        healthDeadlineMs: 10_000,
+        healthDeadlineMs: 60_000,
         createIntentId: () => 'intent-default-watchdog',
         verifyInstaller: vi.fn(async () => verification),
       });
@@ -208,7 +209,7 @@ describe('DesktopUpdateRollbackCoordinator', () => {
         targetVersion: '0.0.2',
         healthyAt: new Date().toISOString(),
       });
-      const deadline = Date.now() + 5_000;
+      const deadline = Date.now() + 60_000;
       while (!(await store.readOutcome('intent-default-watchdog'))) {
         if (Date.now() >= deadline) throw new Error('watchdog-outcome-timeout');
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
@@ -217,5 +218,6 @@ describe('DesktopUpdateRollbackCoordinator', () => {
         status: 'healthy',
       });
     },
+    90_000,
   );
 });

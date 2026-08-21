@@ -117,6 +117,7 @@ class CapturingKernelAdapter implements KernelAdapter {
     usageReport: true,
   };
   readonly requests: KernelRequest[] = [];
+  stopCalls = 0;
 
   constructor(
     readonly id: 'codex' | 'claude-code',
@@ -132,7 +133,9 @@ class CapturingKernelAdapter implements KernelAdapter {
     yield* this.events;
   }
 
-  async stop(): Promise<void> {}
+  async stop(): Promise<void> {
+    this.stopCalls += 1;
+  }
   async pause(): Promise<void> {}
   async resume(): Promise<void> {}
   async cancel(): Promise<void> {}
@@ -228,6 +231,7 @@ class DeferredKernelAdapter implements KernelAdapter {
 
   async *start(request: KernelRequest): AsyncIterable<KernelEvent> {
     this.requests.push(request);
+    this.wasCancelled = false;
     if (this.sessionId) {
       yield { type: 'session-started', sessionId: this.sessionId };
     }
@@ -315,6 +319,14 @@ async function waitForPromise<T>(promise: Promise<T>, timeoutMs = 1_000): Promis
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+async function waitForCondition(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for test condition');
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
 
@@ -666,13 +678,10 @@ describe('Runtime external kernel finalization', () => {
       const assistant = assistantMessage(
         fixture.messageStore.listMessages(fixture.threadId as never).messages,
       );
-      const commentary = assistant?.blocks.find(
-        (block) => block.type === 'commentary',
-      ) as { payload?: { assistantTimeline?: unknown[] } } | undefined;
+      const commentary = assistant?.blocks.find((block) => block.type === 'commentary') as
+        { payload?: { assistantTimeline?: unknown[] } } | undefined;
       const timeline = commentary?.payload?.assistantTimeline ?? [];
-      const toolRows = timeline.filter(
-        (segment) => (segment as { kind?: string }).kind === 'tool',
-      );
+      const toolRows = timeline.filter((segment) => (segment as { kind?: string }).kind === 'tool');
       expect(toolRows.map((row) => (row as { toolCallId?: string }).toolCallId)).toEqual([
         'tool-1',
         'tool-2',
@@ -705,13 +714,10 @@ describe('Runtime external kernel finalization', () => {
       const assistant = assistantMessage(
         fixture.messageStore.listMessages(fixture.threadId as never).messages,
       );
-      const commentary = assistant?.blocks.find(
-        (block) => block.type === 'commentary',
-      ) as { payload?: { assistantTimeline?: unknown[] } } | undefined;
+      const commentary = assistant?.blocks.find((block) => block.type === 'commentary') as
+        { payload?: { assistantTimeline?: unknown[] } } | undefined;
       const timeline = commentary?.payload?.assistantTimeline ?? [];
-      const toolRows = timeline.filter(
-        (segment) => (segment as { kind?: string }).kind === 'tool',
-      );
+      const toolRows = timeline.filter((segment) => (segment as { kind?: string }).kind === 'tool');
       expect(toolRows.map((row) => (row as { toolCallId?: string }).toolCallId)).toEqual([
         'tool-1',
         'tool-2',
@@ -1113,11 +1119,71 @@ describe('Runtime external kernel finalization', () => {
     }
   });
 
+  it('resumes a durable Codex thread after its idle app-server is evicted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-think-codex-session-host-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'sync-think.db');
+    await runMigrations(dbPath);
+    const connection = await openDatabaseAsync({ path: dbPath });
+    const firstThreadId = 'thread-codex-host-first' as ThreadId;
+    const secondThreadId = 'thread-codex-host-second' as ThreadId;
+    for (const threadId of [firstThreadId, secondThreadId]) {
+      connection.raw
+        .prepare('INSERT INTO thread (id, task_id, created_at) VALUES (?, ?, ?)')
+        .run(threadId, `task-${threadId}`, '2026-08-20T00:00:00.000Z');
+    }
+    const firstAdapter = new CapturingKernelAdapter('codex', [
+      { type: 'session-started', sessionId: 'codex-thread-host-first' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    const secondAdapter = new CapturingKernelAdapter('codex', [
+      { type: 'session-started', sessionId: 'codex-thread-host-second' },
+      { type: 'terminal', status: 'completed' },
+    ]);
+    const resumedAdapter = new CapturingKernelAdapter('codex', [
+      { type: 'terminal', status: 'completed' },
+    ]);
+    const adapters = [firstAdapter, secondAdapter, resumedAdapter];
+    let adapterIndex = 0;
+    const runtime = new Runtime({
+      installId: 'codex-session-host-eviction',
+      allowNoToken: true,
+      stateStore: new SqliteEventCheckpointStore(connection.raw),
+      messageStore: new SqliteMessageStore(connection.raw),
+      appSettingStore: new SqliteAppSettingStore(connection.raw),
+      workspaceId: 'workspace-codex-session-host' as WorkspaceId,
+      codexSessionMaxEntries: 1,
+      codexSessionIdleTimeoutMs: 60_000,
+      kernelAdapterResolver: () => adapters[adapterIndex++],
+    });
+    const harness = runtime as unknown as RuntimeExternalKernelHarness;
+    const run = (runId: RunId, threadId: ThreadId, userText: string) => {
+      harness.demoRuns.set(runId, createCodexRun(runId, threadId, userText));
+      return harness.executeExternalKernelRun(runId);
+    };
+
+    try {
+      await run('run-codex-host-first' as RunId, firstThreadId, 'first conversation');
+      await run('run-codex-host-second' as RunId, secondThreadId, 'second conversation');
+      expect(firstAdapter.stopCalls).toBe(1);
+
+      await run('run-codex-host-resumed' as RunId, firstThreadId, 'resume first conversation');
+
+      expect(secondAdapter.stopCalls).toBe(1);
+      expect(resumedAdapter.requests[0]?.session).toEqual({
+        id: 'codex-thread-host-first',
+        mode: 'resume',
+      });
+    } finally {
+      await runtime.stop();
+      connection.raw.close();
+    }
+  });
+
   it('serializes one conversation and builds the next request after the session is saved', async () => {
     const threadId = 'thread-kernel-session-serialized' as ThreadId;
     const firstAdapter = new DeferredKernelAdapter('codex', 'codex-thread-serialized');
-    const secondAdapter = new DeferredKernelAdapter('codex');
-    const fixture = await createControlledRuntime([firstAdapter, secondAdapter], [threadId]);
+    const fixture = await createControlledRuntime([firstAdapter], [threadId]);
     const firstRunId = 'run-kernel-session-serialized-first' as RunId;
     const secondRunId = 'run-kernel-session-serialized-second' as RunId;
     fixture.runtime.demoRuns.set(firstRunId, createCodexRun(firstRunId, threadId, 'first turn'));
@@ -1129,17 +1195,17 @@ describe('Runtime external kernel finalization', () => {
       const secondRun = fixture.runtime.executeExternalKernelRun(secondRunId);
       await new Promise((resolve) => setTimeout(resolve, 25));
 
-      expect(secondAdapter.requests).toHaveLength(0);
+      expect(firstAdapter.requests).toHaveLength(1);
 
       firstAdapter.release();
       await firstRun;
-      await waitForPromise(secondAdapter.started);
-      expect(secondAdapter.requests[0]?.session).toEqual({
+      await waitForCondition(() => firstAdapter.requests.length === 2);
+      expect(firstAdapter.requests).toHaveLength(2);
+      expect(firstAdapter.requests[1]?.session).toEqual({
         id: 'codex-thread-serialized',
         mode: 'resume',
       });
 
-      secondAdapter.release();
       await secondRun;
     } finally {
       fixture.connection.raw.close();
@@ -1186,8 +1252,7 @@ describe('Runtime external kernel finalization', () => {
   it('cancels an active adapter immediately and releases the session queue', async () => {
     const threadId = 'thread-kernel-session-cancel-active' as ThreadId;
     const firstAdapter = new DeferredKernelAdapter('codex', 'codex-thread-cancel-active');
-    const secondAdapter = new DeferredKernelAdapter('codex');
-    const fixture = await createControlledRuntime([firstAdapter, secondAdapter], [threadId]);
+    const fixture = await createControlledRuntime([firstAdapter], [threadId]);
     const firstRunId = 'run-kernel-session-cancel-active-first' as RunId;
     const secondRunId = 'run-kernel-session-cancel-active-second' as RunId;
     fixture.runtime.demoRuns.set(firstRunId, createCodexRun(firstRunId, threadId, 'blocking turn'));
@@ -1198,15 +1263,15 @@ describe('Runtime external kernel finalization', () => {
       await waitForPromise(firstAdapter.started);
       const secondRun = fixture.runtime.executeExternalKernelRun(secondRunId);
       await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(secondAdapter.requests).toHaveLength(0);
+      expect(firstAdapter.requests).toHaveLength(1);
 
       fixture.runtime.demoRunAborts.get(firstRunId)?.abort();
       await waitForPromise(firstAdapter.cancelled);
       await firstRun;
-      await waitForPromise(secondAdapter.started);
+      await waitForCondition(() => firstAdapter.requests.length === 2);
+      expect(firstAdapter.requests).toHaveLength(2);
 
       expect(firstAdapter.cancelCalls).toBe(1);
-      secondAdapter.release();
       await secondRun;
     } finally {
       fixture.connection.raw.close();
@@ -1216,8 +1281,7 @@ describe('Runtime external kernel finalization', () => {
   it('skips a queued run that is cancelled before its session turn', async () => {
     const threadId = 'thread-kernel-session-cancel-queued' as ThreadId;
     const firstAdapter = new DeferredKernelAdapter('codex', 'codex-thread-cancel-queued');
-    const nextAdapter = new DeferredKernelAdapter('codex');
-    const fixture = await createControlledRuntime([firstAdapter, nextAdapter], [threadId]);
+    const fixture = await createControlledRuntime([firstAdapter], [threadId]);
     const firstRunId = 'run-kernel-session-cancel-queued-first' as RunId;
     const cancelledRunId = 'run-kernel-session-cancel-queued-second' as RunId;
     const nextRunId = 'run-kernel-session-cancel-queued-third' as RunId;
@@ -1241,10 +1305,9 @@ describe('Runtime external kernel finalization', () => {
       const nextRun = fixture.runtime.executeExternalKernelRun(nextRunId);
       firstAdapter.release();
       await firstRun;
-      await waitForPromise(nextAdapter.started);
+      await waitForCondition(() => firstAdapter.requests.length === 2);
 
-      expect(nextAdapter.requests[0]?.userText).toBe('next queued turn');
-      nextAdapter.release();
+      expect(firstAdapter.requests[1]?.userText).toBe('next queued turn');
       await nextRun;
     } finally {
       fixture.connection.raw.close();

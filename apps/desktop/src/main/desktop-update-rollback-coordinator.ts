@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile);
 const VERSION_PATTERN = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
 const DEFAULT_HEALTH_DEADLINE_MS = 3 * 60_000;
 const MAX_HEALTH_DEADLINE_MS = 15 * 60_000;
-const WATCHDOG_READY_TIMEOUT_MS = 15_000;
+const WATCHDOG_READY_TIMEOUT_MS = 30_000;
 const HEALTHY_RELEASE_LIMIT = 2;
 const WATCHDOG_HOST_SCRIPT = `@echo off\r\n"%SYNC_THINK_WATCHDOG_POWERSHELL%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%SYNC_THINK_WATCHDOG_SCRIPT%" -IntentPath "%SYNC_THINK_WATCHDOG_INTENT%" -RecoveryRoot "%SYNC_THINK_WATCHDOG_ROOT%"\r\nexit /b %errorlevel%\r\n`;
 
@@ -166,7 +166,8 @@ export class DesktopUpdateRollbackCoordinator {
     this.expectedSignerThumbprint = normalizeThumbprint(options.expectedSignerThumbprint);
     this.targetExecutablePath = resolve(options.targetExecutablePath ?? process.execPath);
     this.verifyInstaller = options.verifyInstaller ?? verifyDesktopUpdateRecoveryInstaller;
-    this.launchWatchdog = options.launchWatchdog ?? ((intent) => this.launchDefaultWatchdog(intent));
+    this.launchWatchdog =
+      options.launchWatchdog ?? ((intent) => this.launchDefaultWatchdog(intent));
     assertVersion(options.currentVersion);
   }
 
@@ -248,9 +249,9 @@ export class DesktopUpdateRollbackCoordinator {
     return { status: 'armed', intentId };
   }
 
-  async markRuntimeHealthy(options: { registerInstaller?: boolean } = {}): Promise<
-    'marked' | 'no-intent' | 'version-mismatch'
-  > {
+  async markRuntimeHealthy(
+    options: { registerInstaller?: boolean } = {},
+  ): Promise<'marked' | 'no-intent' | 'version-mismatch'> {
     if (options.registerInstaller !== false) await this.registerCurrentVersionInstaller();
     const intent = await this.store.readActiveIntent();
     if (!intent) return 'no-intent';
@@ -335,33 +336,28 @@ export class DesktopUpdateRollbackCoordinator {
     await writeFile(watchdogPath, DESKTOP_UPDATE_ROLLBACK_WATCHDOG_SCRIPT, 'utf8');
     await writeFile(watchdogHostPath, WATCHDOG_HOST_SCRIPT, 'utf8');
     const systemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows';
-    const commandInterpreter =
-      process.env.ComSpec ?? join(systemRoot, 'System32', 'cmd.exe');
-    const child = spawn(
-      commandInterpreter,
-      ['/d', '/s', '/c', 'call', watchdogHostPath],
-      {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        shell: false,
-        env: {
-          SystemRoot: systemRoot,
-          WINDIR: systemRoot,
-          ComSpec: commandInterpreter,
-          APPDATA: process.env.APPDATA,
-          LOCALAPPDATA: process.env.LOCALAPPDATA,
-          USERPROFILE: process.env.USERPROFILE,
-          TEMP: process.env.TEMP,
-          TMP: process.env.TMP,
-          PSModulePath: process.env.PSModulePath,
-          SYNC_THINK_WATCHDOG_POWERSHELL: powershellExecutable(),
-          SYNC_THINK_WATCHDOG_SCRIPT: watchdogPath,
-          SYNC_THINK_WATCHDOG_INTENT: this.store.intentPath(intent.intentId),
-          SYNC_THINK_WATCHDOG_ROOT: this.options.recoveryRoot,
-        },
+    const commandInterpreter = process.env.ComSpec ?? join(systemRoot, 'System32', 'cmd.exe');
+    const child = spawn(commandInterpreter, ['/d', '/s', '/c', 'call', watchdogHostPath], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      shell: false,
+      env: {
+        SystemRoot: systemRoot,
+        WINDIR: systemRoot,
+        ComSpec: commandInterpreter,
+        APPDATA: process.env.APPDATA,
+        LOCALAPPDATA: process.env.LOCALAPPDATA,
+        USERPROFILE: process.env.USERPROFILE,
+        TEMP: process.env.TEMP,
+        TMP: process.env.TMP,
+        PSModulePath: process.env.PSModulePath,
+        SYNC_THINK_WATCHDOG_POWERSHELL: powershellExecutable(),
+        SYNC_THINK_WATCHDOG_SCRIPT: watchdogPath,
+        SYNC_THINK_WATCHDOG_INTENT: this.store.intentPath(intent.intentId),
+        SYNC_THINK_WATCHDOG_ROOT: this.options.recoveryRoot,
       },
-    );
+    });
     let exitCode: number | null | undefined;
     child.once('exit', (code) => {
       exitCode = code;
@@ -370,7 +366,8 @@ export class DesktopUpdateRollbackCoordinator {
       child.once('spawn', resolvePromise);
       child.once('error', reject);
     });
-    const readyDeadline = Date.now() + WATCHDOG_READY_TIMEOUT_MS;
+    const readyTimeoutMs = Math.min(WATCHDOG_READY_TIMEOUT_MS, this.healthDeadlineMs);
+    const readyDeadline = Date.now() + readyTimeoutMs;
     while (true) {
       try {
         await stat(intent.watchdogReadyPath);

@@ -5,11 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeFrames, encodeFrame, pipePathPortable, type Frame } from '@sync-think/protocol';
-import type {
-  AdapterEvent,
-  ProviderAdapter,
-  ProviderCallRequest,
-} from '@sync-think/adapters';
+import type { AdapterEvent, ProviderAdapter, ProviderCallRequest } from '@sync-think/adapters';
 import {
   openDatabaseAsync,
   runMigrations,
@@ -49,10 +45,7 @@ class FailingProvider implements ProviderAdapter {
   }
 }
 
-async function waitFor(
-  predicate: () => boolean,
-  timeoutMs: number = 1_000,
-): Promise<boolean> {
+async function waitFor(predicate: () => boolean, timeoutMs: number = 1_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return true;
@@ -149,12 +142,43 @@ async function hello(
 }
 
 describe('runtime commands', () => {
+  it('acknowledges an authenticated shutdown request and schedules process cleanup', async () => {
+    const installId = `runtime-shutdown-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let shutdownRequests = 0;
+    const runtime = new Runtime({
+      installId,
+      allowNoToken: true,
+      onShutdownRequested: () => {
+        shutdownRequests += 1;
+      },
+    });
+    await runtime.start();
+    const socket = await connectRuntime(installId);
+    const reader = createFrameReader(socket);
+    try {
+      await hello(socket, reader, installId);
+      const response = await writeAndRead(socket, reader, {
+        id: 'runtime-shutdown',
+        kind: 'request',
+        type: 'runtime.shutdown',
+        payload: {},
+      });
+      expect(response.payload).toEqual({ accepted: true });
+      expect(await waitFor(() => shutdownRequests === 1)).toBe(true);
+    } finally {
+      socket.destroy();
+      await runtime.stop();
+    }
+  });
+
   it('reports a scheduled task trigger as fired without creating a duplicate failure', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduled-trigger-'));
     const dbPath = join(dir, 'sync-think.db');
     const installId = `test-scheduled-trigger-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const provider = new RecordingProvider();
-    const session = await (await import('../src/persistence.js')).openPersistentRuntime({
+    const session = await (
+      await import('../src/persistence.js')
+    ).openPersistentRuntime({
       installId,
       dbPath,
       secureStoreKeyPath: join(dir, 'secure-key.bin'),
@@ -212,7 +236,9 @@ describe('runtime commands', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-think-scheduled-failure-'));
     const dbPath = join(dir, 'sync-think.db');
     const installId = `test-scheduled-failure-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const session = await (await import('../src/persistence.js')).openPersistentRuntime({
+    const session = await (
+      await import('../src/persistence.js')
+    ).openPersistentRuntime({
       installId,
       dbPath,
       secureStoreKeyPath: join(dir, 'secure-key.bin'),
@@ -244,9 +270,7 @@ describe('runtime commands', () => {
         payload: { taskId },
       });
       expect(response.payload).toMatchObject({ fired: true });
-      expect(
-        await waitFor(() => taskStore.listHistory(taskId).length === 1, 2_000),
-      ).toBe(true);
+      expect(await waitFor(() => taskStore.listHistory(taskId).length === 1, 2_000)).toBe(true);
       expect(taskStore.listHistory(taskId)[0]?.status).toBe('failed');
       expect(taskStore.get(taskId)?.lastResult?.status).toBe('failed');
     } finally {
@@ -271,11 +295,13 @@ describe('runtime commands', () => {
     ]);
 
     expect(stopped).toBe(true);
-    expect(await new Promise<boolean>((resolve) => {
-      if (sock.destroyed) return resolve(true);
-      sock.once('close', () => resolve(true));
-      setTimeout(() => resolve(false), 250);
-    })).toBe(true);
+    expect(
+      await new Promise<boolean>((resolve) => {
+        if (sock.destroyed) return resolve(true);
+        sock.once('close', () => resolve(true));
+        setTimeout(() => resolve(false), 250);
+      }),
+    ).toBe(true);
     sock.destroy();
   });
 
@@ -463,15 +489,19 @@ describe('runtime commands', () => {
 
   it('keeps a fixed replay high-watermark and hands concurrent events to live once', async () => {
     const installId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const events = Array.from({ length: 12 }, (_, index) => ({
-      id: `event-handoff-${index + 1}` as Event['id'],
-      workspaceId: 'workspace-dev' as WorkspaceId,
-      category: 'message' as const,
-      type: 'message.appended',
-      sequence: index + 1,
-      occurredAt: new Date().toISOString(),
-      payload: { text: `${index + 1}:`.padEnd(99_000, 'x') },
-    } satisfies Event));
+    const events = Array.from(
+      { length: 12 },
+      (_, index) =>
+        ({
+          id: `event-handoff-${index + 1}` as Event['id'],
+          workspaceId: 'workspace-dev' as WorkspaceId,
+          category: 'message' as const,
+          type: 'message.appended',
+          sequence: index + 1,
+          occurredAt: new Date().toISOString(),
+          payload: { text: `${index + 1}:`.padEnd(99_000, 'x') },
+        }) satisfies Event,
+    );
     const runtime = new Runtime({
       installId,
       allowNoToken: true,
@@ -556,15 +586,18 @@ describe('runtime commands', () => {
       { sequence: 1, category: 'message', type: 'message.appended' },
       { sequence: 2, category: 'run', type: 'run.started' },
       { sequence: 3, category: 'message', type: 'message.appended' },
-    ].map(({ sequence, category, type }) => ({
-      id: `event-category-${sequence}` as Event['id'],
-      workspaceId: 'workspace-dev' as WorkspaceId,
-      category: category as Event['category'],
-      type,
-      sequence,
-      occurredAt: new Date().toISOString(),
-      payload: { sequence },
-    } satisfies Event));
+    ].map(
+      ({ sequence, category, type }) =>
+        ({
+          id: `event-category-${sequence}` as Event['id'],
+          workspaceId: 'workspace-dev' as WorkspaceId,
+          category: category as Event['category'],
+          type,
+          sequence,
+          occurredAt: new Date().toISOString(),
+          payload: { sequence },
+        }) satisfies Event,
+    );
     const runtime = new Runtime({
       installId,
       allowNoToken: true,
@@ -623,7 +656,9 @@ describe('runtime commands', () => {
         },
       });
       const [messageLive] = await messageReader.read(1);
-      expect(messageLive).toMatchObject({ payload: { event: { sequence: 4, category: 'message' } } });
+      expect(messageLive).toMatchObject({
+        payload: { event: { sequence: 4, category: 'message' } },
+      });
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(runReader.queuedCount()).toBe(0);
     } finally {
@@ -636,15 +671,19 @@ describe('runtime commands', () => {
 
   it('rejects future, unknown, and stale replay cursors without advancing the stream', async () => {
     const installId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const events = Array.from({ length: 65 }, (_, index) => ({
-      id: `event-cursor-${index + 1}` as Event['id'],
-      workspaceId: 'workspace-dev' as WorkspaceId,
-      category: 'message' as const,
-      type: 'message.appended',
-      sequence: index + 1,
-      occurredAt: new Date().toISOString(),
-      payload: { sequence: index + 1 },
-    } satisfies Event));
+    const events = Array.from(
+      { length: 65 },
+      (_, index) =>
+        ({
+          id: `event-cursor-${index + 1}` as Event['id'],
+          workspaceId: 'workspace-dev' as WorkspaceId,
+          category: 'message' as const,
+          type: 'message.appended',
+          sequence: index + 1,
+          occurredAt: new Date().toISOString(),
+          payload: { sequence: index + 1 },
+        }) satisfies Event,
+    );
     const runtime = new Runtime({
       installId,
       allowNoToken: true,
@@ -714,15 +753,19 @@ describe('runtime commands', () => {
 
   it('bounds replay scanning and serialization work per page', async () => {
     const installId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const events = Array.from({ length: 1_000 }, (_, index) => ({
-      id: `event-bounded-work-${index + 1}` as Event['id'],
-      workspaceId: 'workspace-dev' as WorkspaceId,
-      category: 'message' as const,
-      type: 'message.appended',
-      sequence: index + 1,
-      occurredAt: new Date().toISOString(),
-      payload: { sequence: index + 1 },
-    } satisfies Event));
+    const events = Array.from(
+      { length: 1_000 },
+      (_, index) =>
+        ({
+          id: `event-bounded-work-${index + 1}` as Event['id'],
+          workspaceId: 'workspace-dev' as WorkspaceId,
+          category: 'message' as const,
+          type: 'message.appended',
+          sequence: index + 1,
+          occurredAt: new Date().toISOString(),
+          payload: { sequence: index + 1 },
+        }) satisfies Event,
+    );
     const runtime = new Runtime({
       installId,
       allowNoToken: true,
@@ -982,12 +1025,11 @@ describe('runtime commands', () => {
       expect(retried.error).toBeUndefined();
       expect(retried.payload).toMatchObject({ taskVersion: 1 });
       expect(await waitFor(() => provider.callCount === 1)).toBe(true);
-      const intentTypes = store.listEvents(workspaceId, 0).map((event) => event.type).slice(0, 3);
-      expect(intentTypes).toEqual([
-        'message.appended',
-        'context.packet.built',
-        'run.started',
-      ]);
+      const intentTypes = store
+        .listEvents(workspaceId, 0)
+        .map((event) => event.type)
+        .slice(0, 3);
+      expect(intentTypes).toEqual(['message.appended', 'context.packet.built', 'run.started']);
     } finally {
       socket.destroy();
       await runtime.stop();

@@ -259,6 +259,7 @@ async function openLegacyConflictStore() {
       '0044_scheduled_task',
       '0045_scheduled_task_scope',
       '0046_scheduled_task_history',
+      '0047_daemon_task_queue',
     ]);
     await runMigrations(dbPath);
   } finally {

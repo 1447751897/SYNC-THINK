@@ -1,5 +1,55 @@
 import { describe, expect, it } from 'vitest';
-import { buildDaemonAutostartCommand, buildManagedRuntimeEnvironment } from './runtime-supervisor.js';
+import {
+  buildDaemonAutostartCommand,
+  buildManagedRuntimeEnvironment,
+  buildRuntimeSpawnOptions,
+  daemonRestartDelayMs,
+  managedRuntimeCommandLineMatches,
+} from './runtime-supervisor.js';
+
+// Existing spawn contracts remain deliberately pure so lifecycle changes can
+// be checked without creating real detached processes in unit tests.
+describe('buildRuntimeSpawnOptions', () => {
+  it('makes the Runtime independent from the Desktop process lifetime', () => {
+    expect(buildRuntimeSpawnOptions()).toMatchObject({
+      detached: true,
+      windowsHide: true,
+      shell: false,
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+  });
+});
+
+describe('daemon supervised restart', () => {
+  it('uses bounded backoff independent from the cold-start spawn debounce', () => {
+    expect(daemonRestartDelayMs(1)).toBe(1_000);
+    expect(daemonRestartDelayMs(2)).toBe(2_000);
+    expect(daemonRestartDelayMs(10)).toBe(5_000);
+  });
+});
+
+describe('managed Runtime identity matching', () => {
+  it('requires an exact role and install marker token', () => {
+    expect(
+      managedRuntimeCommandLineMatches(
+        'node runtime.js sync-think-managed-runtime=install-managed',
+        'install-managed',
+      ),
+    ).toBe(true);
+    expect(
+      managedRuntimeCommandLineMatches(
+        'node helper.js --note=sync-think-managed-runtime=install-managed',
+        'install-managed',
+      ),
+    ).toBe(false);
+    expect(
+      managedRuntimeCommandLineMatches(
+        'node runtime.js sync-think-managed-runtime=other-install',
+        'install-managed',
+      ),
+    ).toBe(false);
+  });
+});
 
 describe('buildManagedRuntimeEnvironment', () => {
   it('passes the exact packaged install id and pipe secret to Runtime with no-token disabled', () => {
@@ -45,10 +95,12 @@ describe('buildManagedRuntimeEnvironment', () => {
       'C:\\node\\node.exe',
       'C:\\runtime\\daemon\\index.js',
       'C:\\Users\\fixture\\daemon-bootstrap.json',
+      'install-managed',
     );
 
     expect(command).toContain('--bootstrap');
     expect(command).toContain('daemon-bootstrap.json');
+    expect(command).toContain('sync-think-managed-daemon=install-managed');
     expect(command).not.toContain('pipe-secret');
   });
 });

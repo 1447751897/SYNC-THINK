@@ -590,6 +590,10 @@ import {
 import { collectWorkspaceSharedFacts } from './kernel/shared-facts.js';
 import { formatKernelExitDiagnostic } from './kernel/kernel-diagnostics.js';
 import {
+  BoundedKernelSessionHost,
+  type KernelSessionLease,
+} from './kernel/bounded-session-host.js';
+import {
   OpenGatewayManager,
   kernelNeedsGateway,
   toGatewayUpstreamProtocol,
@@ -618,10 +622,7 @@ import {
   resolvePlanActRouteForContext,
   type PlanActRoute,
 } from './plan-act.js';
-import {
-  computeNextRunAt,
-  initialNextRunAt,
-} from './task-scheduler.js';
+import { computeNextRunAt, initialNextRunAt } from './task-scheduler.js';
 import {
   localSkillsDirectory,
   scanLocalSkills,
@@ -698,10 +699,7 @@ import type { SkillQueryContext } from './commands/skill-query-context.js';
 import type { UsageSummaryRawResult } from './usage-summary-cache.js';
 import { decideSchedulerHeartbeat, probeDaemonPipe } from './daemon/yield.js';
 import { parseTaskFrame } from './daemon/protocol.js';
-import {
-  sendAbortToDaemon,
-  sendTaskCompletionToDaemon,
-} from './daemon/dispatch-client.js';
+import { sendAbortToDaemon, sendTaskCompletionToDaemon } from './daemon/dispatch-client.js';
 
 const CODEX_STYLE_COMMENTARY_PROMPT = [
   'User-visible execution updates (Codex-style commentary):',
@@ -720,6 +718,8 @@ export interface RuntimeOptions {
   allowNoToken?: boolean;
   /** worker 模式（守护进程自拉）：不监听管道、不启动调度 tick、不恢复 run。 */
   daemonWorker?: boolean;
+  /** Called after an authenticated runtime.shutdown request is acknowledged. */
+  onShutdownRequested?: () => void;
   checkpoint?: RuntimeCheckpointSnapshot;
   stateStore?: RuntimeStateStore;
   workspaceStore?: SqliteWorkspaceStore;
@@ -763,6 +763,10 @@ export interface RuntimeOptions {
   hasApprovedPlan?: (taskId: TaskId) => boolean;
   /** Test/embedding seam; production defaults to the registered adapters. */
   kernelAdapterResolver?: (kernelId?: string) => KernelAdapter | undefined;
+  /** Maximum resident Codex app-server processes. Active turns consume one lease. */
+  codexSessionMaxEntries?: number;
+  /** Idle duration before a resident Codex app-server is stopped. */
+  codexSessionIdleTimeoutMs?: number;
   /**
    * Protocol-family discovery adapters (OpenAI-compatible live adapters, etc.).
    * Preferred over the single discoveryAdapter when a protocol key matches.
@@ -894,6 +898,14 @@ function parsePersistedKernelConversationSession(
     ...(typeof record.responseContinuationScopeId === 'string' &&
     record.responseContinuationScopeId.trim()
       ? { responseContinuationScopeId: record.responseContinuationScopeId.trim() }
+      : {}),
+    ...(typeof record.lastMessageSequence === 'number' &&
+    Number.isSafeInteger(record.lastMessageSequence) &&
+    record.lastMessageSequence >= 0
+      ? { lastMessageSequence: record.lastMessageSequence }
+      : {}),
+    ...(typeof record.lastMessageAt === 'string' && record.lastMessageAt.trim()
+      ? { lastMessageAt: record.lastMessageAt.trim() }
       : {}),
   };
 }
@@ -1791,6 +1803,7 @@ export class Runtime {
   private server: ReturnType<typeof createPipeServer> | null = null;
   private readonly inFlight = new Set<string>();
   private readonly daemonWorker: boolean;
+  private readonly onShutdownRequested?: () => void;
   /** 投递来且尚未完成的任务 id（T8：stop() 时向其发 abort）。 */
   private readonly dispatchedTasks = new Set<string>();
   /** runId → taskId（投递任务终态时从 dispatchedTasks 移除）。 */
@@ -1875,6 +1888,11 @@ export class Runtime {
   private readonly desktopController?: RuntimeDesktopController;
   private readonly kernelAdapterResolver: (kernelId?: string) => KernelAdapter | undefined;
   /**
+   * Bounded resident Codex processes. Durable thread ids remain in app_setting,
+   * so evicting an idle process never deletes conversation context.
+   */
+  private readonly codexSessionHost: BoundedKernelSessionHost;
+  /**
    * Platform MCP catalog frozen per external-kernel run. The kernel may only
    * call tools that were exposed when its broker started; a later capability or
    * permission-mode change must not widen an in-flight run.
@@ -1956,7 +1974,13 @@ export class Runtime {
   constructor(opts: RuntimeOptions) {
     this.installId = opts.installId;
     this.daemonWorker = opts.daemonWorker ?? false;
+    this.onShutdownRequested = opts.onShutdownRequested;
     this.kernelAdapterResolver = opts.kernelAdapterResolver ?? resolveRegisteredKernelAdapter;
+    this.codexSessionHost = new BoundedKernelSessionHost({
+      maxEntries: opts.codexSessionMaxEntries ?? 4,
+      idleTimeoutMs: opts.codexSessionIdleTimeoutMs ?? 15 * 60_000,
+      createAdapter: () => this.kernelAdapterResolver('codex'),
+    });
     this.stateStore = opts.stateStore;
     this.workspaceStore = opts.workspaceStore;
     this.workspaceId = opts.workspaceId ?? ('workspace-dev' as WorkspaceId);
@@ -2153,6 +2177,18 @@ export class Runtime {
         if (!socket.destroyed) socket.destroy();
       },
       onFrame: (socket, frame: Frame) => {
+        if (frame.type === 'runtime.shutdown') {
+          socket.write(
+            encodeFrame({
+              id: frame.id,
+              kind: 'response',
+              type: 'runtime.shutdown',
+              payload: { accepted: Boolean(this.onShutdownRequested) },
+            }),
+          );
+          if (this.onShutdownRequested) queueMicrotask(this.onShutdownRequested);
+          return;
+        }
         if (frame.type === 'runtime.healthcheck') {
           const hc = this.currentHealthcheck();
           socket.write(
@@ -7837,10 +7873,7 @@ export class Runtime {
           limit: pageLimit,
         },
       );
-      while (
-        pageLimit > 1 &&
-        messagePageJsonBytes(response) > MAX_FRAME_BYTES - 8 * 1024
-      ) {
+      while (pageLimit > 1 && messagePageJsonBytes(response) > MAX_FRAME_BYTES - 8 * 1024) {
         pageLimit = Math.max(1, Math.floor(pageLimit / 2));
         response = this.messageStore.listMessages(task.threadId, {
           beforeSequence: payload.beforeSequence,
@@ -10876,7 +10909,11 @@ export class Runtime {
     }
     const root = localSkillsDirectory();
     const relativePath = relative(root, payload.path);
-    if (relativePath.startsWith('..') || relativePath.startsWith('.' + sep) || relativePath === '..') {
+    if (
+      relativePath.startsWith('..') ||
+      relativePath.startsWith('.' + sep) ||
+      relativePath === '..'
+    ) {
       this.writeMalformedPayload(socket, frame);
       return;
     }
@@ -14940,24 +14977,28 @@ export class Runtime {
   // ── 定时任务命令（scheduledTask.*） ───────────────────────────────────────
 
   private validateTaskRule(rule: TaskRule): string | undefined {
-    if (rule.kind === 'every' && (!Number.isInteger(rule.intervalMinutes) || rule.intervalMinutes < 5)) {
-      return 'intervalMinutes 必须为 ≥5 的整数';
-    }
     if (
       rule.kind === 'every' &&
-      rule.windowStart !== undefined &&
-      rule.windowEnd !== undefined
+      (!Number.isInteger(rule.intervalMinutes) || rule.intervalMinutes < 5)
     ) {
-      const hm = /^([01]\d|2[0-3]):[0-5]\d$/.test(rule.windowStart) &&
+      return 'intervalMinutes 必须为 ≥5 的整数';
+    }
+    if (rule.kind === 'every' && rule.windowStart !== undefined && rule.windowEnd !== undefined) {
+      const hm =
+        /^([01]\d|2[0-3]):[0-5]\d$/.test(rule.windowStart) &&
         /^([01]\d|2[0-3]):[0-5]\d$/.test(rule.windowEnd);
       if (!hm) return 'every 的 windowStart/windowEnd 必须是 HH:mm';
-      const startMin = Number(rule.windowStart.slice(0, 2)) * 60 + Number(rule.windowStart.slice(3, 5));
+      const startMin =
+        Number(rule.windowStart.slice(0, 2)) * 60 + Number(rule.windowStart.slice(3, 5));
       const endMin = Number(rule.windowEnd.slice(0, 2)) * 60 + Number(rule.windowEnd.slice(3, 5));
       if (endMin <= startMin) return 'every 的 windowEnd 必须晚于 windowStart';
     }
     if (
       rule.kind === 'random' &&
-      (!Number.isInteger(rule.minTimes) || !Number.isInteger(rule.maxTimes) || rule.minTimes < 1 || rule.maxTimes < rule.minTimes)
+      (!Number.isInteger(rule.minTimes) ||
+        !Number.isInteger(rule.maxTimes) ||
+        rule.minTimes < 1 ||
+        rule.maxTimes < rule.minTimes)
     ) {
       return 'random 的 minTimes/maxTimes 非法';
     }
@@ -15111,7 +15152,10 @@ export class Runtime {
         );
         return;
       }
-      this.publishTaskEvent('scheduledTask.updated', updated.id, { taskId: updated.id, action: 'update' });
+      this.publishTaskEvent('scheduledTask.updated', updated.id, {
+        taskId: updated.id,
+        action: 'update',
+      });
       socket.write(
         encodeFrame({
           id: frame.id,
@@ -15166,7 +15210,14 @@ export class Runtime {
         : 20;
     const entries = this.scheduledTaskStore.listHistory(payload.taskId, limit);
     const response: ListScheduledTaskHistoryResponse = { entries };
-    socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'scheduledTask.history', payload: response }));
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: 'scheduledTask.history',
+        payload: response,
+      }),
+    );
   }
 
   private async handleTriggerScheduledTask(socket: Socket, frame: Frame): Promise<void> {
@@ -15225,7 +15276,9 @@ export class Runtime {
     }
     const { taskId } = parsed.frame.payload;
     const dispatchTask = this.scheduledTaskStore?.get(taskId);
-    const rejectionReason = dispatchTask ? this.scheduledTaskDispatchRejection(dispatchTask) : '任务不存在';
+    const rejectionReason = dispatchTask
+      ? this.scheduledTaskDispatchRejection(dispatchTask)
+      : '任务不存在';
     // 立即 ack（spec：桌面收到指令立即回复，不等执行完成）。
     socket.write(
       encodeFrame({
@@ -15271,7 +15324,9 @@ export class Runtime {
   private scheduledTaskDispatchRejection(task: ScheduledTask): string | undefined {
     if (!task.enabled) return '任务已停用';
     if (this.taskRuns.size >= this.taskMaxConcurrent()) return '并发上限';
-    const threadId = task.conversationId ? this.resolveConversationThreadId(task.conversationId) : undefined;
+    const threadId = task.conversationId
+      ? this.resolveConversationThreadId(task.conversationId)
+      : undefined;
     if (
       threadId &&
       [...this.demoRuns.values()].some(
@@ -15314,10 +15369,7 @@ export class Runtime {
    * （planExecuting 标志）→ 执行模型；普通 execute 消息不干预（手动覆盖
    * / Agent 默认链照常生效）。
    */
-  private resolvePlanActRouteForThread(
-    threadId: string,
-    planExecuting = false,
-  ): PlanActRoute {
+  private resolvePlanActRouteForThread(threadId: string, planExecuting = false): PlanActRoute {
     return resolvePlanActRouteForContext(
       parsePlanActSetting(this.appSettingStore?.get(PLAN_ACT_SETTING_KEY)?.value),
       {
@@ -15795,7 +15847,12 @@ export class Runtime {
               appVersion: 'sync-think-runtime',
               handshakeTimeoutMs: 2_000,
             },
-            { taskId, runId, status: result.status, ...(result.reason ? { reason: result.reason } : {}) },
+            {
+              taskId,
+              runId,
+              status: result.status,
+              ...(result.reason ? { reason: result.reason } : {}),
+            },
           );
           this.daemonCompletionPromises.add(completion);
           void completion.then(
@@ -15896,13 +15953,7 @@ export class Runtime {
           : terminal
             ? undefined
             : 'run 未产生终态事件';
-    const entryId = this.recordTaskHistory(
-      metadata.task,
-      status,
-      metadata.firedAt,
-      runId,
-      reason,
-    );
+    const entryId = this.recordTaskHistory(metadata.task, status, metadata.firedAt, runId, reason);
     this.scheduledTaskStore.update(metadata.task.id, {
       lastResult: {
         status,
@@ -16445,7 +16496,9 @@ export class Runtime {
               signal: abort.signal,
             });
             if (process.env.SYNC_THINK_E2E_DEBUG === '1') {
-              const schemas = nativePlatformToolSchemas({ planningMode: initialRun.planningMode === true });
+              const schemas = nativePlatformToolSchemas({
+                planningMode: initialRun.planningMode === true,
+              });
               console.log('[e2e-debug] platformSchemas:', schemas.map((s) => s.name).join(','));
             }
             if (finalTurn) {
@@ -17414,11 +17467,13 @@ export class Runtime {
       this.kernelConversationSessionKey(kernelId, initialRun),
     );
     let adapter: KernelAdapter | undefined;
+    let adapterLease: KernelSessionLease | undefined;
     let broker: KernelMcpBroker | undefined;
     let request: KernelRequest | undefined;
     let reportedSessionId: string | undefined;
     let cancelAdapterPromise: Promise<void> | undefined;
     let abortAdapterListener: (() => void) | undefined;
+    let turnCompleted = false;
     const kernelUsageReports: KernelUsage[] = [];
     let usagePersisted = false;
     const persistAuthoritativeUsage = (run: DemoRunState): void => {
@@ -17453,7 +17508,15 @@ export class Runtime {
       );
       if (!hasSessionTurn) return;
 
-      adapter = this.kernelAdapterResolver(kernelId);
+      if (kernelId === 'codex') {
+        adapterLease = await this.codexSessionHost.acquire(
+          this.kernelConversationSessionKey(kernelId, initialRun),
+          abort.signal,
+        );
+        adapter = adapterLease.adapter;
+      } else {
+        adapter = this.kernelAdapterResolver(kernelId);
+      }
       if (!adapter) {
         throw new Error(`Kernel adapter not wired: ${kernelId}`);
       }
@@ -17489,7 +17552,7 @@ export class Runtime {
         if (abort.signal.aborted) break;
         switch (event.type) {
           case 'delta':
-            this.publishKernelTextDelta(runId, initialRun.threadId, event.text);
+            this.publishKernelTextDelta(runId, initialRun.threadId, event.text, event.final);
             break;
           case 'reasoning':
             this.publishKernelReasoningDelta(runId, initialRun.threadId, event.text);
@@ -17519,6 +17582,7 @@ export class Runtime {
             // Handled through the approval bridge; no durable event here.
             break;
           case 'terminal':
+            turnCompleted = true;
             finalStatus = event.status;
             finalError = event.error;
             break;
@@ -17579,7 +17643,7 @@ export class Runtime {
       if (abortAdapterListener) {
         abort.signal.removeEventListener('abort', abortAdapterListener);
       }
-      await cancelAdapterOnce();
+      if (abort.signal.aborted || !turnCompleted) await cancelAdapterOnce();
       if (broker) await broker.close().catch(() => undefined);
       if (!usagePersisted) {
         const finalRun = this.demoRuns.get(runId);
@@ -17595,6 +17659,7 @@ export class Runtime {
       this.openGateway.revokeRun(runId);
       this.platformMcpCatalogByRun.delete(runId);
       this.platformMcpResultsByRun.delete(runId);
+      adapterLease?.release();
       sessionLease.release();
       this.demoRunAborts.delete(runId);
       this.forgetInFlight(runId);
@@ -18427,18 +18492,23 @@ export class Runtime {
       return { ok: false, error: 'goal_manage: 当前对话没有进行中的目标' };
     }
     const input =
-      call.input && typeof call.input === 'object'
-        ? (call.input as Record<string, unknown>)
-        : {};
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
     const action = input.action;
     const reason =
-      typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim().slice(0, 500) : '';
+      typeof input.reason === 'string' && input.reason.trim()
+        ? input.reason.trim().slice(0, 500)
+        : '';
     if (action !== 'complete' && action !== 'block' && action !== 'progress') {
       return { ok: false, error: 'goal_manage: action 必须为 complete/block/progress' };
     }
     const now = new Date().toISOString();
     if (action === 'complete') {
-      this.saveGoal({ ...goal, status: 'achieved', achievedAt: now, lastReason: reason || '模型自证完成' });
+      this.saveGoal({
+        ...goal,
+        status: 'achieved',
+        achievedAt: now,
+        lastReason: reason || '模型自证完成',
+      });
       return { ok: true, content: '目标已标记完成。' };
     }
     if (action === 'block') {
@@ -18563,8 +18633,7 @@ export class Runtime {
           ok: true,
           planSubmitted: true,
           revision: plan.currentRevision,
-          message:
-            '计划已提交，等待用户审批。请简要总结计划要点并停止执行，不要继续做任何改动。',
+          message: '计划已提交，等待用户审批。请简要总结计划要点并停止执行，不要继续做任何改动。',
         }),
       };
     } catch (error) {
@@ -18589,9 +18658,7 @@ export class Runtime {
       return { ok: false, error: 'task_schedule: 定时任务存储不可用' };
     }
     const input =
-      call.input && typeof call.input === 'object'
-        ? (call.input as Record<string, unknown>)
-        : {};
+      call.input && typeof call.input === 'object' ? (call.input as Record<string, unknown>) : {};
     const action = input.action;
     if (action !== 'create' && action !== 'list' && action !== 'cancel') {
       return { ok: false, error: 'task_schedule: action 必须为 create/list/cancel' };
@@ -18647,9 +18714,7 @@ export class Runtime {
           ? (input.target as Record<string, unknown>)
           : {};
       const ruleRaw =
-        input.rule && typeof input.rule === 'object'
-          ? (input.rule as Record<string, unknown>)
-          : {};
+        input.rule && typeof input.rule === 'object' ? (input.rule as Record<string, unknown>) : {};
       const targetKind = targetRaw.kind;
       const target: ScheduledTaskTarget | undefined =
         targetKind === 'agent' && typeof targetRaw.agentId === 'string'
@@ -18696,7 +18761,8 @@ export class Runtime {
         };
       }
       const id = `task-${ulid()}`;
-      const timeZone = typeof input.timeZone === 'string' && input.timeZone.trim() ? input.timeZone.trim() : 'UTC';
+      const timeZone =
+        typeof input.timeZone === 'string' && input.timeZone.trim() ? input.timeZone.trim() : 'UTC';
       const task: ScheduledTask = {
         id,
         name,
@@ -18730,7 +18796,10 @@ export class Runtime {
         }),
       };
     } catch (error) {
-      return { ok: false, error: `task_schedule failed: ${error instanceof Error ? error.message : String(error)}` };
+      return {
+        ok: false,
+        error: `task_schedule failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
     }
   }
 
@@ -19083,10 +19152,59 @@ export class Runtime {
     });
   }
 
-  private publishKernelTextDelta(runId: RunId, threadId: string, text: string): void {
+  private publishKernelTextDelta(
+    runId: RunId,
+    threadId: string,
+    text: string,
+    final?: boolean,
+  ): void {
     const run = this.demoRuns.get(runId);
     if (!run || !text) return;
     const occurredAt = new Date().toISOString();
+    if (final) {
+      // §12.17.18 exception: the kernel itself declared this text final
+      // (codex agentMessage IS the user-facing reply; its working prose rides
+      // the reasoning channel). Stream it straight into the answer area — no
+      // buffering, no terminal-time jump from process panel to chat bubble.
+      // Defensive: fold any unclassified buffered prefix into the answer so
+      // ordering survives even if an adapter ever mixes both delta kinds.
+      const pending = run.legacyPendingText ?? '';
+      let nextRun: DemoRunState = {
+        ...run,
+        legacyPendingText: '',
+        legacyPendingTextSeq: undefined,
+        assistantText: run.assistantText + pending + text,
+      };
+      nextRun = appendAssistantTextDelta(
+        nextRun,
+        'final_answer',
+        pending + text,
+        occurredAt,
+        pending ? run.legacyPendingTextSeq : undefined,
+      );
+      nextRun = closeCommentaryTimelineSegment(nextRun, occurredAt);
+      this.demoRuns.set(runId, nextRun);
+      this.publishTransientDelta({
+        threadId: threadId as ThreadId,
+        runId,
+        kind: 'text',
+        textDelta: text,
+        occurredAt,
+      });
+      this.updateTransientTextSnapshot({
+        threadId: threadId as ThreadId,
+        runId,
+        streamSequence: this.transientSequenceByThread.get(threadId) ?? 0,
+        text: nextRun.assistantText,
+        commentaryText: nextRun.commentaryText,
+        commentarySegments: nextRun.commentarySegments,
+        reasoningText: nextRun.reasoningText,
+        reasoningSegments: nextRun.reasoningSegments,
+        assistantTimeline: nextRun.assistantTimeline,
+        updatedAt: occurredAt,
+      });
+      return;
+    }
     // §12.17.18: kernel delta carries no phase metadata — buffer it and let
     // the next tool boundary (commentary) or the terminal (final_answer)
     // classify it, so process prose never masquerades as the final answer
@@ -21591,7 +21709,9 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
 
   private handleGatewayLogsClear(socket: Socket, frame: Frame): void {
     this.openGateway.clearLogs();
-    socket.write(encodeFrame({ id: frame.id, kind: 'response', type: 'gateway.logs.clear', payload: {} }));
+    socket.write(
+      encodeFrame({ id: frame.id, kind: 'response', type: 'gateway.logs.clear', payload: {} }),
+    );
   }
 
   private resolveEventWorkspaceId(threadId: string): WorkspaceId {
@@ -21863,10 +21983,12 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (typeof raw !== 'string') return { ok: false, error: 'avatar must be a string' };
       const trimmed = raw.trim();
       if (!trimmed) return { ok: true, avatar: '' };
-      if ([...trimmed].some((char) => {
-        const code = char.charCodeAt(0);
-        return code <= 0x1f || code === 0x7f;
-      })) {
+      if (
+        [...trimmed].some((char) => {
+          const code = char.charCodeAt(0);
+          return code <= 0x1f || code === 0x7f;
+        })
+      ) {
         return { ok: false, error: 'avatar contains control characters' };
       }
       if (trimmed.startsWith('data:image/')) {
@@ -21878,7 +22000,8 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
       if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
         return {
           ok: false,
-          error: 'avatar must be an emoji, short text, or a data:image URL (remote URLs are not allowed)',
+          error:
+            'avatar must be an emoji, short text, or a data:image URL (remote URLs are not allowed)',
         };
       }
       if (trimmed.length > 8) {
@@ -24987,10 +25110,7 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
               includeBrowserWorkflowTools: browserWorkflowToolsEnabled,
               includeMcpCatalogTools: mcpCatalogToolsEnabled,
               includeMcpRegistryTools: mcpRegistryToolsEnabled,
-              extraTools: [
-                ...mcpExtra.tools,
-                ...(options.platformSchemas ?? []),
-              ],
+              extraTools: [...mcpExtra.tools, ...(options.platformSchemas ?? [])],
             }),
           ]
         : undefined;
@@ -26089,18 +26209,30 @@ ${parent.acceptanceCriteria.map((item) => `- ${item}`).join('\n')}`
     this.stopTaskSchedulerHeartbeat();
     this.localSkillWatchCleanup?.();
     this.localSkillWatchCleanup = undefined;
+    // Explicit Runtime/daemon shutdown owns the Kernel process lifecycle. A
+    // normal Desktop window close never calls Runtime.stop(), so active turns
+    // remain alive across UI disconnects. Durable thread ids remain persisted;
+    // only resident app-server processes are stopped here.
+    // Explicit shutdown cancels active/queued runs before stopping resident
+    // app-server processes. Their finally blocks release both the per-session
+    // turn queue and the bounded host lease.
+    for (const controller of this.demoRunAborts.values()) controller.abort();
+    await this.codexSessionHost.stopAll();
+    if (this.externalKernelSessionTails.size > 0) {
+      await Promise.allSettled([...this.externalKernelSessionTails.values()]);
+    }
     // 投递任务尚未完成 → 向守护进程发 abort（用户主动关闭，app-closed）。
     if (this.dispatchedTasks.size > 0 && !this.daemonWorker) {
       const taskIds = [...this.dispatchedTasks];
       try {
         await sendAbortToDaemon(
-        {
-          installId: this.installId,
-          helloSecret: this.handlers.expectedSecret,
-          appVersion: 'sync-think-runtime',
-          handshakeTimeoutMs: 2_000,
-        },
-        taskIds,
+          {
+            installId: this.installId,
+            helloSecret: this.handlers.expectedSecret,
+            appVersion: 'sync-think-runtime',
+            handshakeTimeoutMs: 2_000,
+          },
+          taskIds,
         );
       } catch {
         /* 尽力而为；连接超时由客户端内部有界返回。 */

@@ -10,7 +10,15 @@
  * 到点任务回调接到一个可替换的 handler（默认记录日志并更新状态）。
  */
 
-import { appendFileSync, writeFileSync, mkdirSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
+import {
+  appendFileSync,
+  writeFileSync,
+  mkdirSync,
+  readFileSync,
+  existsSync,
+  unlinkSync,
+} from 'node:fs';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +26,13 @@ import { format } from 'node:util';
 import { openDatabaseAsync, runMigrations } from '@sync-think/storage';
 import { SqliteScheduledTaskStore } from '@sync-think/storage';
 import { SqliteAppSettingStore } from '@sync-think/storage';
-import { DEFAULT_DEV_INSTALL_ID, encodeFrame } from '@sync-think/protocol';
+import {
+  DEFAULT_DEV_INSTALL_ID,
+  encodeFrame,
+  managedProcessMarker,
+  matchesManagedProcessCommandLine,
+  runtimePidFilePath,
+} from '@sync-think/protocol';
 import { ulid } from '@sync-think/shared';
 import { daemonPipePath, probeDesktopPipe } from './yield.js';
 import { isAutostartRegistered as autostartRegistered } from './autostart.js';
@@ -41,8 +55,12 @@ import { parseTaskFrame } from './protocol.js';
 import { planCatchupSweep } from './catchup.js';
 import { TaskConcurrencyManager } from './queue.js';
 import { createRuleAwareTimerRegistrar } from './timers.js';
+import { buildSupervisedRuntimeSpawnOptions, stopSupervisedRuntimeChild } from './runtime-child.js';
+import { requestRuntimeShutdown } from './runtime-control-client.js';
 
 const HEARTBEAT_INTERVAL_MS = 1_000;
+const RUNTIME_HEALTH_INTERVAL_MS = 5_000;
+const RUNTIME_START_TIMEOUT_MS = 15_000;
 const STATUS_FILE = 'daemon-status.json';
 let configuredLogPath: string | undefined;
 const baseConsole = {
@@ -63,7 +81,11 @@ function configureFileLogging(dbPath: string): void {
   configuredLogPath = logPath;
   const append = (level: string, args: unknown[]): void => {
     try {
-      appendFileSync(logPath, `${new Date().toISOString()} [${level}] ${format(...args)}\n`, 'utf8');
+      appendFileSync(
+        logPath,
+        `${new Date().toISOString()} [${level}] ${format(...args)}\n`,
+        'utf8',
+      );
     } catch {
       /* logging must never affect scheduling */
     }
@@ -120,7 +142,9 @@ export interface DaemonOptions {
   /** 到点处理器（默认：日志 + 状态计数）。 */
   onFire?: TaskFireHandler;
   /** 注入的定时器注册器（默认 croner；测试可注入 fake）。 */
-  registrar?: TimerRegistry['registrar'] & { registerTimer(taskId: string, fire: () => void): unknown };
+  registrar?: TimerRegistry['registrar'] & {
+    registerTimer(taskId: string, fire: () => void): unknown;
+  };
   statusStore?: import('./core.js').StatusFileStore;
   now?: () => Date;
 }
@@ -174,13 +198,238 @@ function clearDaemonPid(dbPath: string, installId: string): void {
   }
 }
 
+function runtimePidPath(dbPath: string, installId: string): string {
+  return runtimePidFilePath(dbPath, installId);
+}
+
+function readRuntimePid(dbPath: string, installId: string): number | null {
+  try {
+    const pid = Number(readFileSync(runtimePidPath(dbPath, installId), 'utf8').trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRuntimePid(dbPath: string, installId: string, pid: number): void {
+  try {
+    mkdirSync(stateDir(dbPath), { recursive: true });
+    writeFileSync(runtimePidPath(dbPath, installId), String(pid), 'utf8');
+  } catch (error) {
+    console.warn('[daemon] failed to write runtime pid', error);
+  }
+}
+
+function clearRuntimePid(dbPath: string, installId: string): void {
+  try {
+    unlinkSync(runtimePidPath(dbPath, installId));
+  } catch {
+    /* ignore */
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function killProcessTree(pid: number): void {
+  if (!isProcessAlive(pid)) return;
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    } else {
+      process.kill(pid, 'SIGTERM');
+    }
+  } catch (error) {
+    console.warn('[daemon] failed to stop Runtime', error);
+  }
+}
+
+function readProcessCommandLine(pid: number): string | undefined {
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  if (process.platform === 'win32') {
+    try {
+      const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue; if ($p) { [Console]::Out.Write($p.CommandLine) }`;
+      const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 3_000,
+      });
+      return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const result = spawnSync('ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      timeout: 3_000,
+    });
+    return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function killManagedRuntimeProcessTree(pid: number, installId: string): boolean {
+  if (!isProcessAlive(pid)) return true;
+  if (!matchesManagedProcessCommandLine(readProcessCommandLine(pid), 'runtime', installId)) {
+    console.warn('[daemon] refused to kill stale/reused Runtime pid', { pid, installId });
+    return false;
+  }
+  killProcessTree(pid);
+  return true;
+}
+
+async function waitForRuntimePipe(
+  installId: string,
+  timeoutMs = RUNTIME_START_TIMEOUT_MS,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await probeDesktopPipe(installId, undefined, 500)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return probeDesktopPipe(installId, undefined, 500);
+}
+
+async function waitForRuntimePipeDown(installId: string, timeoutMs = 8_000): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!(await probeDesktopPipe(installId, undefined, 300))) return;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+}
+
 export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
-  const installId = options.installId ?? process.env.SYNC_THINK_INSTALL_ID ?? DEFAULT_DEV_INSTALL_ID;
+  const installId =
+    options.installId ?? process.env.SYNC_THINK_INSTALL_ID ?? DEFAULT_DEV_INSTALL_ID;
   const dbPath = options.dbPath ?? resolveRuntimeDatabasePath();
   configureFileLogging(dbPath);
   const now = options.now ?? (() => new Date());
   const helloSecret = options.helloSecret ?? process.env.SYNC_THINK_PIPE_SECRET;
-  const allowNoToken = options.allowNoToken ?? (process.env.SYNC_THINK_DEV_NO_TOKEN === '1' || !helloSecret);
+  const allowNoToken =
+    options.allowNoToken ?? (process.env.SYNC_THINK_DEV_NO_TOKEN === '1' || !helloSecret);
+
+  // The daemon owns the detached long-lived Runtime. Desktop is only a client;
+  // this supervisor keeps conversation runs alive when the window closes and
+  // restarts the Runtime after an unexpected process failure.
+  let runtimeChild: ChildProcess | null = null;
+  let runtimeStarting: Promise<boolean> | null = null;
+  let runtimeStopRequested = false;
+  let runtimeRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  const ensureRuntime = async (): Promise<boolean> => {
+    if (runtimeStopRequested) return false;
+    if (await probeDesktopPipe(installId, undefined, 500)) return true;
+    if (runtimeStarting) return runtimeStarting;
+    runtimeStarting = (async () => {
+      if (await probeDesktopPipe(installId, undefined, 500)) return true;
+      const existingPid = readRuntimePid(dbPath, installId);
+      if (existingPid && existingPid !== process.pid && isProcessAlive(existingPid)) {
+        const ready = await waitForRuntimePipe(installId);
+        if (ready) return true;
+      }
+      if (existingPid) {
+        killManagedRuntimeProcessTree(existingPid, installId);
+        clearRuntimePid(dbPath, installId);
+        await waitForRuntimePipeDown(installId);
+      }
+      const entry = resolveRuntimeEntry();
+      if (!entry) {
+        console.warn(
+          '[daemon] Runtime entry not found; scheduled and background runs remain unavailable',
+        );
+        return false;
+      }
+      const nodeBin = resolveNodeBin();
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        SYNC_THINK_INSTALL_ID: installId,
+        SYNC_THINK_DB_PATH: dbPath,
+        SYNC_THINK_DEV_NO_TOKEN: allowNoToken ? '1' : '0',
+      };
+      if (helloSecret) env.SYNC_THINK_PIPE_SECRET = helloSecret;
+      else delete env.SYNC_THINK_PIPE_SECRET;
+      delete env.SYNC_THINK_DAEMON_WORKER;
+      console.log('[daemon] starting supervised Runtime', { entry, nodeBin });
+      const child = spawn(
+        nodeBin,
+        [entry, managedProcessMarker('runtime', installId)],
+        buildSupervisedRuntimeSpawnOptions(env),
+      );
+      runtimeChild = child;
+      writeRuntimePid(dbPath, installId, child.pid ?? 0);
+      child.unref();
+      child.once('exit', (code, signal) => {
+        if (runtimeChild === child) runtimeChild = null;
+        clearRuntimePid(dbPath, installId);
+        if (!runtimeStopRequested) {
+          console.warn('[daemon] supervised Runtime exited', { code, signal });
+          if (!runtimeRestartTimer) {
+            runtimeRestartTimer = setTimeout(() => {
+              runtimeRestartTimer = null;
+              void ensureRuntime();
+            }, 1_000);
+          }
+        }
+      });
+      child.once('error', (error) =>
+        console.warn('[daemon] supervised Runtime spawn failed', error),
+      );
+      return waitForRuntimePipe(installId);
+    })().finally(() => {
+      runtimeStarting = null;
+    });
+    return runtimeStarting;
+  };
+  const stopRuntime = async (): Promise<void> => {
+    runtimeStopRequested = true;
+    if (runtimeRestartTimer) {
+      clearTimeout(runtimeRestartTimer);
+      runtimeRestartTimer = null;
+    }
+    const child = runtimeChild;
+    runtimeChild = null;
+    let gracefulRequested = false;
+    if (child && child.exitCode === null) {
+      const result = await stopSupervisedRuntimeChild(child, {
+        timeoutMs: 12_000,
+        forceWaitMs: 2_000,
+        forceKillTree: killProcessTree,
+      });
+      gracefulRequested = result.gracefulRequested;
+      if (result.forced) {
+        console.warn('[daemon] Runtime graceful shutdown timed out; terminated process tree');
+      }
+    }
+    if (!gracefulRequested && (await probeDesktopPipe(installId, undefined, 500))) {
+      gracefulRequested = await requestRuntimeShutdown({
+        installId,
+        helloSecret,
+        appVersion: 'sync-think-daemon',
+        timeoutMs: 5_000,
+      });
+      if (gracefulRequested) await waitForRuntimePipeDown(installId, 12_000);
+    }
+    const pid = readRuntimePid(dbPath, installId);
+    if (pid && pid !== process.pid && isProcessAlive(pid)) {
+      // PID is a last-resort orphan fallback after authenticated shutdown or
+      // private child IPC was unavailable/expired.
+      const observationMs = gracefulRequested ? 2_000 : 500;
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < observationMs && isProcessAlive(pid)) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      if (isProcessAlive(pid)) killManagedRuntimeProcessTree(pid, installId);
+    }
+    clearRuntimePid(dbPath, installId);
+    await waitForRuntimePipeDown(installId);
+  };
 
   // 轻量 DB：只建 daemon 需要的 store，不启动完整 Runtime。
   await runMigrations(dbPath);
@@ -205,9 +454,7 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
           .prepare('SELECT task_id FROM daemon_task_queue ORDER BY created_at ASC LIMIT 1')
           .get() as { task_id: string } | undefined;
         if (!row) return undefined;
-        connection.raw
-          .prepare('DELETE FROM daemon_task_queue WHERE task_id = ?')
-          .run(row.task_id);
+        connection.raw.prepare('DELETE FROM daemon_task_queue WHERE task_id = ?').run(row.task_id);
         return row.task_id;
       } catch {
         return undefined;
@@ -253,9 +500,9 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
   let status = rollDaemonStatusDay(readPersistedStatus ?? createDaemonStatus(now()), now());
   const persistStatus = (next: DaemonStatus): void => {
     if (options.statusStore) {
-      void options.statusStore.write(next).catch((error) =>
-        console.warn('[daemon] failed to write injected status store', error),
-      );
+      void options.statusStore
+        .write(next)
+        .catch((error) => console.warn('[daemon] failed to write injected status store', error));
       return;
     }
     writeStatus(dbPath, next);
@@ -301,103 +548,113 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     enqueue: (taskId) => queueStore.enqueue(taskId),
     store: queueStore,
   });
+  const dispatchedReleases = new Map<string, () => void>();
 
   // 到点处理器（默认：日志 + 今日触发计数；执行路径 = 投递 or 自拉）。
-  const onFire: TaskFireHandler = options.onFire ?? ((taskId, decision) => {
-    console.log(`[daemon] task ${taskId} due → action=${decision.action.type}`);
-    status = rollDaemonStatusDay(status, now());
-    status = updateDaemonStatus(status, { todayFired: status.todayFired + 1 });
-    if (decision.action.type !== 'fire') return;
-    // 并发槽位（T9）：占满则入队等待（decideDue 已给出 enqueue）。
-    if (!concurrency.acquire(taskId)) {
-      queueStore.enqueue(taskId);
-      status = updateDaemonStatus(status, { queued: queueStore.count() });
-      console.log(`[daemon] ${taskId} no slot; queued`);
-      return;
-    }
-    let released = false;
-    const completeTask = (): void => {
-      if (released) return;
-      released = true;
-      concurrency.release(taskId);
-      // 空出槽位 → 自动接上队首任务（同时清理重启后失效的行）。
-      drainQueue();
-    };
-    // 执行路径（T7）：探测桌面活着 → 投递；否则自拉 worker。
-    void (async () => {
-      try {
-        const task = taskStore.get(taskId);
-        if (!task) {
-          console.warn(`[daemon] queued task ${taskId} no longer exists`);
-          return;
-        }
-        const desktopAlive = await probeDesktopPipe(installId);
-        const path = chooseDispatchPath(desktopAlive);
-        if (path.kind === 'dispatched') {
-          // Register before waiting for the ack. A fast Runtime can finish and
-          // send task.dispatch.complete in the same event-loop turn as ack;
-          // registering only after dispatchTaskToDesktop resolves would lose
-          // that completion frame and leave a stale crash-retry entry.
-          dispatched.add(taskId, now());
-          const result = await dispatchTaskToDesktop(
-            {
-              installId,
-              helloSecret,
-              appVersion: 'sync-think-daemon',
-              timeoutMs: 30_000,
-            },
-            composeTaskCommand(task),
-          );
-          console.log(
-            `[daemon] dispatched ${taskId} → ok=${result.ok} acked=${result.acked}` +
-              (result.ok && !result.acked ? ' (no ack; taking over)' : ''),
-          );
-          if (result.outcome === 'accepted') {
-            // 桌面接管执行：桌面有自己的并发管理，daemon 槽位立即释放。
-            return;
-          }
-          dispatched.markCompleted(taskId);
-          if (result.outcome === 'timeout') {
-            // 桌面假死（30s 无 ack）→ desktop-hung → 接管自拉（T8）。
-            console.warn(`[daemon] ${taskId} hung (no ack); taking over`);
-          }
-          if (result.outcome === 'rejected') {
-            console.warn(
-              `[daemon] desktop rejected ${taskId}; no worker takeover` +
-                (result.reason ? ` reason=${result.reason}` : ''),
-            );
-            return;
-          }
-          // 投递失败（桌面刚关/握手失败）→ 降级自拉。
-          if (!result.ok) console.warn(`[daemon] dispatch ${taskId} failed; falling back to worker`);
-        }
-        const entry = resolveRuntimeEntry();
-        if (!entry) {
-          console.error('[daemon] runtime entry not found; cannot spawn worker');
-          return;
-        }
-        const workerOptions = {
-          runtimeEntry: entry,
-          taskId,
-          dbPath,
-          installId,
-          baseEnv: process.env,
-        };
-        const command = buildWorkerCommand(resolveNodeBin(), workerOptions);
-        console.log(`[daemon] spawning worker for ${taskId}: ${command.command} ${command.args.join(' ')}`);
-        const result = await runWorkerProcess(resolveNodeBin(), workerOptions);
-        console.log(
-          `[worker] task ${taskId} exited code=${result.code}${result.signal ? ` signal=${result.signal}` : ''}`,
-        );
-      } catch (error) {
-        console.error(`[daemon] task ${taskId} execution failed`, error);
-      } finally {
-        // Every acquired slot is released exactly once, including lookup,
-        // probe, spawn and worker failures.
-        completeTask();
+  const onFire: TaskFireHandler =
+    options.onFire ??
+    ((taskId, decision) => {
+      console.log(`[daemon] task ${taskId} due → action=${decision.action.type}`);
+      status = rollDaemonStatusDay(status, now());
+      status = updateDaemonStatus(status, { todayFired: status.todayFired + 1 });
+      if (decision.action.type !== 'fire') return;
+      // 并发槽位（T9）：占满则入队等待（decideDue 已给出 enqueue）。
+      if (!concurrency.acquire(taskId)) {
+        queueStore.enqueue(taskId);
+        status = updateDaemonStatus(status, { queued: queueStore.count() });
+        console.log(`[daemon] ${taskId} no slot; queued`);
+        return;
       }
-    })();
-  });
+      let released = false;
+      const completeTask = (): void => {
+        if (released) return;
+        released = true;
+        concurrency.release(taskId);
+        // 空出槽位 → 自动接上队首任务（同时清理重启后失效的行）。
+        drainQueue();
+      };
+      // 执行路径（T7）：探测桌面活着 → 投递；否则自拉 worker。
+      void (async () => {
+        let releaseInFinally = true;
+        try {
+          const task = taskStore.get(taskId);
+          if (!task) {
+            console.warn(`[daemon] queued task ${taskId} no longer exists`);
+            return;
+          }
+          const desktopAlive = await probeDesktopPipe(installId);
+          const path = chooseDispatchPath(desktopAlive);
+          if (path.kind === 'dispatched') {
+            // Register before waiting for the ack. A fast Runtime can finish and
+            // send task.dispatch.complete in the same event-loop turn as ack;
+            // registering only after dispatchTaskToDesktop resolves would lose
+            // that completion frame and leave a stale crash-retry entry.
+            dispatched.add(taskId, now());
+            const result = await dispatchTaskToDesktop(
+              {
+                installId,
+                helloSecret,
+                appVersion: 'sync-think-daemon',
+                timeoutMs: 30_000,
+              },
+              composeTaskCommand(task),
+            );
+            console.log(
+              `[daemon] dispatched ${taskId} → ok=${result.ok} acked=${result.acked}` +
+                (result.ok && !result.acked ? ' (no ack; taking over)' : ''),
+            );
+            if (result.outcome === 'accepted') {
+              // Ack means accepted, not completed. Keep the daemon slot and
+              // crash tracker until Runtime reports task.dispatch.complete.
+              dispatchedReleases.set(taskId, completeTask);
+              releaseInFinally = false;
+              return;
+            }
+            dispatched.markCompleted(taskId);
+            if (result.outcome === 'timeout') {
+              // 桌面假死（30s 无 ack）→ desktop-hung → 接管自拉（T8）。
+              console.warn(`[daemon] ${taskId} hung (no ack); taking over`);
+            }
+            if (result.outcome === 'rejected') {
+              console.warn(
+                `[daemon] desktop rejected ${taskId}; no worker takeover` +
+                  (result.reason ? ` reason=${result.reason}` : ''),
+              );
+              return;
+            }
+            // 投递失败（桌面刚关/握手失败）→ 降级自拉。
+            if (!result.ok)
+              console.warn(`[daemon] dispatch ${taskId} failed; falling back to worker`);
+          }
+          const entry = resolveRuntimeEntry();
+          if (!entry) {
+            console.error('[daemon] runtime entry not found; cannot spawn worker');
+            return;
+          }
+          const workerOptions = {
+            runtimeEntry: entry,
+            taskId,
+            dbPath,
+            installId,
+            baseEnv: process.env,
+          };
+          const command = buildWorkerCommand(resolveNodeBin(), workerOptions);
+          console.log(
+            `[daemon] spawning worker for ${taskId}: ${command.command} ${command.args.join(' ')}`,
+          );
+          const result = await runWorkerProcess(resolveNodeBin(), workerOptions);
+          console.log(
+            `[worker] task ${taskId} exited code=${result.code}${result.signal ? ` signal=${result.signal}` : ''}`,
+          );
+        } catch (error) {
+          console.error(`[daemon] task ${taskId} execution failed`, error);
+        } finally {
+          // Every acquired slot is released exactly once, including lookup,
+          // probe, spawn and worker failures.
+          if (releaseInFinally) completeTask();
+        }
+      })();
+    });
 
   // 到点回调：查询任务 → decideDue 决策 → 交给处理器。
   const fireTask = (taskId: string, force = false): void => {
@@ -476,11 +733,15 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         if (c.status === 'runtime-crash' && c.retry) {
           console.warn(`[daemon] ${taskId} runtime-crash; retrying once`);
           dispatched.markRetried(taskId);
+          dispatchedReleases.get(taskId)?.();
+          dispatchedReleases.delete(taskId);
           fireTask(taskId, true); // 重试一次（自拉 worker），忽略已推进的周期时间
         } else if (c.status === 'runtime-crash') {
           console.warn(`[daemon] ${taskId} runtime-crash; already retried, terminal`);
           recordInterruptionHistory(taskId, entry.dispatchedAt, 'runtime-crash');
           dispatched.markCompleted(taskId);
+          dispatchedReleases.get(taskId)?.();
+          dispatchedReleases.delete(taskId);
         }
       }
     })();
@@ -520,6 +781,33 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
     persistStatus(status);
   };
 
+  // Installed before the pipe starts listening so an authenticated daemon.stop
+  // can never hit an uninitialized closure.
+  const lifecycle: {
+    server?: ReturnType<typeof createPipeServer>;
+    startupCatchupTimer?: ReturnType<typeof setTimeout>;
+    rescanTimer?: ReturnType<typeof setInterval>;
+    heartbeatTimer?: ReturnType<typeof setInterval>;
+    runtimeHealthTimer?: ReturnType<typeof setInterval>;
+  } = {};
+  let shuttingDown = false;
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log('[daemon] shutting down');
+    if (lifecycle.rescanTimer) clearInterval(lifecycle.rescanTimer);
+    if (lifecycle.heartbeatTimer) clearInterval(lifecycle.heartbeatTimer);
+    if (lifecycle.runtimeHealthTimer) clearInterval(lifecycle.runtimeHealthTimer);
+    if (lifecycle.startupCatchupTimer) clearTimeout(lifecycle.startupCatchupTimer);
+    lifecycle.server?.destroyConnections?.();
+    lifecycle.server?.close();
+    await stopRuntime();
+    if (connection.raw.open) connection.raw.close();
+    persistStatus({ ...status, running: false });
+    clearDaemonPid(dbPath, installId);
+    process.exit(0);
+  };
+
   // 管道服务端（HMAC 握手；供 CLI 查询 / 未来投递协议）。
   const handlers: PipeServerHandlers = {
     expectedInstallId: installId,
@@ -544,12 +832,18 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
         if (classification?.status === 'app-closed' && entry) {
           recordInterruptionHistory(taskId, entry.dispatchedAt, 'app-closed');
         }
-        console.log(`[daemon] abort ${taskId} reason=${reason} → ${classification?.status ?? 'unknown'}`);
+        dispatchedReleases.get(taskId)?.();
+        dispatchedReleases.delete(taskId);
+        console.log(
+          `[daemon] abort ${taskId} reason=${reason} → ${classification?.status ?? 'unknown'}`,
+        );
         return;
       }
       if (parsed.ok && parsed.frame.type === 'task.dispatch.complete') {
         const { taskId, status, reason } = parsed.frame.payload;
         dispatched.markCompleted(taskId);
+        dispatchedReleases.get(taskId)?.();
+        dispatchedReleases.delete(taskId);
         console.log(
           `[daemon] dispatch complete ${taskId} status=${status}${reason ? ` reason=${reason}` : ''}`,
         );
@@ -574,7 +868,12 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       if (frame.type === 'daemon.stop') {
         console.log('[daemon] stop requested via pipe');
         socket.write(
-          encodeFrame({ id: frame.id, kind: 'response', type: 'daemon.stop', payload: { ok: true } }),
+          encodeFrame({
+            id: frame.id,
+            kind: 'response',
+            type: 'daemon.stop',
+            payload: { ok: true },
+          }),
         );
         void shutdown();
         return;
@@ -610,52 +909,48 @@ export async function runDaemon(options: DaemonOptions = {}): Promise<void> {
       }
     },
   };
-  const server = createPipeServer(handlers, installId);
+  lifecycle.server = createPipeServer(handlers, installId);
   // 单实例约束：管道已被占用（另一个 daemon 已在监听）→ 立即退出。
   // 后启动的 daemon 不参与调度（唯一调度者），避免多实例重复触发任务。
-  server.on('error', (err) => {
+  lifecycle.server.on('error', (err) => {
     if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-      console.error(`[daemon] pipe ${daemonPipePath(installId)} in use; another daemon is running. Exiting.`);
+      console.error(
+        `[daemon] pipe ${daemonPipePath(installId)} in use; another daemon is running. Exiting.`,
+      );
       process.exit(0);
     }
     console.error('[daemon] pipe server error', err);
   });
   await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(daemonPipePath(installId), () => {
-      server.removeListener('error', reject);
+    lifecycle.server?.once('error', reject);
+    lifecycle.server?.listen(daemonPipePath(installId), () => {
+      lifecycle.server?.removeListener('error', reject);
       handlers.onReady(daemonPipePath(installId));
       resolve();
     });
   });
 
+  const runtimeReady = await ensureRuntime();
+  if (!runtimeReady) {
+    console.warn('[daemon] Runtime is not ready; will keep retrying in the background');
+  }
+
   // 只有成功成为管道 owner 后才开启调度、补跑和心跳。
   writeDaemonPid(dbPath, installId);
   rescan();
-  const startupCatchupTimer = setTimeout(startupCatchup, 1_000);
-  const rescanTimer = setInterval(rescan, 15_000);
+  lifecycle.startupCatchupTimer = setTimeout(startupCatchup, 1_000);
+  lifecycle.rescanTimer = setInterval(rescan, 15_000);
   heartbeat();
-  const heartbeatTimer = setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
+  lifecycle.heartbeatTimer = setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
+  lifecycle.runtimeHealthTimer = setInterval(() => {
+    void ensureRuntime().catch((error) =>
+      console.warn('[daemon] Runtime supervision failed', error),
+    );
+  }, RUNTIME_HEALTH_INTERVAL_MS);
   drainQueue();
 
   console.log(`[daemon] started. installId=${installId} pid=${process.pid} db=${dbPath}`);
 
-  // 优雅关闭。
-  let shuttingDown = false;
-  const shutdown = async (): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log('[daemon] shutting down');
-    if (rescanTimer) clearInterval(rescanTimer);
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    if (startupCatchupTimer) clearTimeout(startupCatchupTimer);
-    server.destroyConnections?.();
-    server.close();
-    if (connection.raw.open) connection.raw.close();
-    persistStatus({ ...status, running: false });
-    clearDaemonPid(dbPath, installId);
-    process.exit(0);
-  };
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
 }

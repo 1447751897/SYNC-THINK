@@ -143,32 +143,44 @@ function goalConversationId(value: unknown): string | undefined {
   return record.conversationId.trim();
 }
 
-function parseGoalSetPayloadLocal(value: unknown): import('@sync-think/protocol').GoalSetPayload | undefined {
+function parseGoalSetPayloadLocal(
+  value: unknown,
+): import('@sync-think/protocol').GoalSetPayload | undefined {
   const conversationId = goalConversationId(value);
-  if (!conversationId || !value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const condition = typeof (value as Record<string, unknown>).condition === 'string'
-    ? ((value as Record<string, unknown>).condition as string).trim()
-    : '';
+  if (!conversationId || !value || typeof value !== 'object' || Array.isArray(value))
+    return undefined;
+  const condition =
+    typeof (value as Record<string, unknown>).condition === 'string'
+      ? ((value as Record<string, unknown>).condition as string).trim()
+      : '';
   if (!condition || condition.length > 4000) return undefined;
   return { conversationId, condition };
 }
 
-function parseGoalGetPayloadLocal(value: unknown): import('@sync-think/protocol').GoalGetPayload | undefined {
+function parseGoalGetPayloadLocal(
+  value: unknown,
+): import('@sync-think/protocol').GoalGetPayload | undefined {
   const conversationId = goalConversationId(value);
   return conversationId ? { conversationId } : undefined;
 }
 
-function parseGoalClearPayloadLocal(value: unknown): import('@sync-think/protocol').GoalClearPayload | undefined {
+function parseGoalClearPayloadLocal(
+  value: unknown,
+): import('@sync-think/protocol').GoalClearPayload | undefined {
   const conversationId = goalConversationId(value);
   return conversationId ? { conversationId } : undefined;
 }
 
-function parseGoalPausePayloadLocal(value: unknown): import('@sync-think/protocol').GoalPausePayload | undefined {
+function parseGoalPausePayloadLocal(
+  value: unknown,
+): import('@sync-think/protocol').GoalPausePayload | undefined {
   const conversationId = goalConversationId(value);
   return conversationId ? { conversationId } : undefined;
 }
 
-function parseGoalResumePayloadLocal(value: unknown): import('@sync-think/protocol').GoalResumePayload | undefined {
+function parseGoalResumePayloadLocal(
+  value: unknown,
+): import('@sync-think/protocol').GoalResumePayload | undefined {
   const conversationId = goalConversationId(value);
   return conversationId ? { conversationId } : undefined;
 }
@@ -331,12 +343,15 @@ import { RuntimeSession } from './runtime-session.js';
 import {
   ensureDaemonProcess,
   ensureRuntimeProcess,
+  probeDaemonPipe,
+  probeRuntimePipe,
   readDaemonLogs,
   requestDaemonFrame,
   resolveManagedRuntimeDatabasePath,
   setDaemonAutostart,
   stopManagedDaemon,
   stopManagedRuntime,
+  waitForRuntimeProcess,
 } from './runtime-supervisor.js';
 import { ArtifactImagePreviewRegistry } from './artifact-image-preview.js';
 import {
@@ -351,6 +366,11 @@ import {
   type RuntimeConnectOutcome,
   type RuntimeConnectResult,
 } from '../runtime-bridge-contract.js';
+import {
+  executeDesktopShutdownPlan,
+  planDesktopShutdown,
+  type DesktopShutdownReason,
+} from './desktop-runtime-lifecycle.js';
 import { TerminalProcessWorker, type TerminalWorkerOutput } from '@sync-think/workers';
 import type {
   CancelProjectTerminalPayload,
@@ -530,9 +550,9 @@ function initializeDesktopUpdater(): void {
         targetVersion: context.targetVersion,
         downloadedFile: context.downloadedFile,
       });
-      // T12：升级前先停守护进程——否则文件被占用，覆盖更新失败。
-      await stopManagedDaemon(5_000, getDesktopRuntimeIdentity());
-      await shutdownDesktopServices();
+      // T12：升级前按所有权顺序停止执行面：daemon 先优雅回收
+      // Runtime，Desktop 随后只做有界残留兜底。
+      await shutdownDesktopServices('update-install');
     },
     installSilently: desktopUpdateInstallProbeConfiguration !== null,
   });
@@ -987,13 +1007,23 @@ function getRuntimeSession(): RuntimeSession {
 }
 
 async function ensureRuntimeConnection(): Promise<RuntimeConnectResult> {
-  // Every IPC path that needs Runtime must tolerate cold start without a
-  // pre-launched `pnpm dev:runtime`.
-  await ensureRuntimeProcess(getDesktopRuntimeIdentity());
-  // 守护进程兜底（T3）：不在运行则拉起（定时任务无人值守的前提）。
-  const daemon = await ensureDaemonProcess(getDesktopRuntimeIdentity());
-  if (!daemon.ready) {
-    console.warn('[desktop] daemon is not ready; Runtime scheduler may run as fallback', daemon.error);
+  // The daemon is the long-lived execution owner. Start it first and let it
+  // create the Runtime through its private IPC channel; Desktop only falls back
+  // to a directly managed Runtime when daemon startup is unavailable.
+  const identity = getDesktopRuntimeIdentity();
+  const daemon = await ensureDaemonProcess(identity);
+  if (daemon.ready) {
+    const runtimeReady = await waitForRuntimeProcess(identity.installId, 20_000);
+    if (!runtimeReady) {
+      throw new Error('runtime.daemon-supervision-timeout');
+    }
+  } else {
+    console.warn(
+      '[desktop] daemon is not ready; starting fallback Runtime scheduler',
+      daemon.error,
+    );
+    const fallback = await ensureRuntimeProcess(identity);
+    if (!fallback.ready) throw new Error(fallback.error ?? 'runtime.spawn-timeout');
   }
   const result = await getRuntimeSession().connect();
   markDesktopUpdateRollbackHealthy();
@@ -1022,23 +1052,11 @@ function markDesktopUpdateRollbackHealthy(): void {
 
 async function connectRendererToRuntime(): Promise<RuntimeConnectOutcome> {
   try {
-    // Auto-start the local Runtime pipe process when missing (dev + future release).
-    // Without this, cold start shows「加载中…」forever if pnpm dev:runtime wasn't launched.
-    const supervised = await ensureRuntimeProcess(getDesktopRuntimeIdentity());
-    if (!supervised.ready) {
-      return {
-        ok: false,
-        error: {
-          code: 'runtime.unavailable',
-          retryable: true,
-        },
-      };
-    }
     return { ok: true, result: await ensureRuntimeConnection() };
   } catch (error) {
-    // One more ensure+retry: race where pipe appears mid-handshake.
+    // One more ownership-aware ensure+retry: the daemon or fallback Runtime may
+    // have opened the pipe while the first authenticated handshake was racing.
     try {
-      await ensureRuntimeProcess(getDesktopRuntimeIdentity());
       return { ok: true, result: await ensureRuntimeConnection() };
     } catch {
       return { ok: false, error: classifyRuntimeConnectError(error) };
@@ -1916,7 +1934,10 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('runtime:scheduled-task-create', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request('scheduledTask.create', parseCreateScheduledTaskPayload(value));
+    return getRuntimeClient().request(
+      'scheduledTask.create',
+      parseCreateScheduledTaskPayload(value),
+    );
   });
   ipcMain.handle('runtime:scheduled-task-list', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -1926,12 +1947,18 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('runtime:scheduled-task-update', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request('scheduledTask.update', parseUpdateScheduledTaskPayload(value));
+    return getRuntimeClient().request(
+      'scheduledTask.update',
+      parseUpdateScheduledTaskPayload(value),
+    );
   });
   ipcMain.handle('runtime:scheduled-task-delete', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request('scheduledTask.delete', parseDeleteScheduledTaskPayload(value));
+    return getRuntimeClient().request(
+      'scheduledTask.delete',
+      parseDeleteScheduledTaskPayload(value),
+    );
   });
   ipcMain.handle('runtime:scheduled-task-trigger', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -1952,7 +1979,12 @@ function setupRuntimeBridge(): void {
   // ── 守护进程管理（T11）：走 daemon 独立管道，不经过 runtime。 ──────────
   ipcMain.handle('daemon:get-status', async (event) => {
     assertRuntimeIpcSource(event);
-    return requestDaemonFrame('daemon.status', {}, getDesktopRuntimeIdentity().installId, getDesktopRuntimeIdentity().pipeSecret);
+    return requestDaemonFrame(
+      'daemon.status',
+      {},
+      getDesktopRuntimeIdentity().installId,
+      getDesktopRuntimeIdentity().pipeSecret,
+    );
   });
   ipcMain.handle('daemon:start', async (event) => {
     assertRuntimeIpcSource(event);
@@ -1961,9 +1993,16 @@ function setupRuntimeBridge(): void {
   });
   ipcMain.handle('daemon:stop', async (event) => {
     assertRuntimeIpcSource(event);
-    await requestDaemonFrame('daemon.stop', {}, getDesktopRuntimeIdentity().installId, getDesktopRuntimeIdentity().pipeSecret);
-    await stopManagedDaemon();
-    return { ok: true };
+    const identity = getDesktopRuntimeIdentity();
+    await executeDesktopShutdownPlan(planDesktopShutdown('background-stop'), {
+      stopDaemon: () => stopManagedDaemon(12_000, identity),
+      stopRuntime: () => stopManagedRuntime(12_000, identity),
+    });
+    const [daemonAlive, runtimeAlive] = await Promise.all([
+      probeDaemonPipe(identity.installId, 500),
+      probeRuntimePipe(identity.installId, 500),
+    ]);
+    return { ok: !daemonAlive && !runtimeAlive, daemonAlive, runtimeAlive };
   });
   ipcMain.handle('daemon:get-logs', async (event) => {
     assertRuntimeIpcSource(event);
@@ -1971,7 +2010,9 @@ function setupRuntimeBridge(): void {
   });
   ipcMain.handle('daemon:set-autostart', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
-    const enabled = Boolean(value && typeof value === 'object' && (value as { enabled?: unknown }).enabled);
+    const enabled = Boolean(
+      value && typeof value === 'object' && (value as { enabled?: unknown }).enabled,
+    );
     return setDaemonAutostart(enabled, getDesktopRuntimeIdentity());
   });
   ipcMain.handle('daemon:set-max-concurrent', async (event, value: unknown) => {
@@ -2004,10 +2045,7 @@ function setupRuntimeBridge(): void {
   ipcMain.handle('runtime:skill-local-import', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
-    return getRuntimeClient().request(
-      'skill.local.import',
-      parseSkillLocalImportPayload(value),
-    );
+    return getRuntimeClient().request('skill.local.import', parseSkillLocalImportPayload(value));
   });
   ipcMain.handle('runtime:conversation-decide-tool-approval', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
@@ -2248,17 +2286,14 @@ function setupRuntimeBridge(): void {
       );
     },
   );
-  ipcMain.handle(
-    CAPABILITY_RUNTIME_IPC_CHANNELS.listGovernance,
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'capability.governance.list',
-        parseCapabilityGovernanceListPayload(value),
-      );
-    },
-  );
+  ipcMain.handle(CAPABILITY_RUNTIME_IPC_CHANNELS.listGovernance, async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'capability.governance.list',
+      parseCapabilityGovernanceListPayload(value),
+    );
+  });
   ipcMain.handle(
     CAPABILITY_RUNTIME_IPC_CHANNELS.savePublishDraft,
     async (event, value: unknown) => {
@@ -2281,17 +2316,14 @@ function setupRuntimeBridge(): void {
       );
     },
   );
-  ipcMain.handle(
-    CAPABILITY_RUNTIME_IPC_CHANNELS.getPublishDraft,
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'capability.publishDraft.get',
-        parseGetSkillPublishDraftPayload(value),
-      );
-    },
-  );
+  ipcMain.handle(CAPABILITY_RUNTIME_IPC_CHANNELS.getPublishDraft, async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'capability.publishDraft.get',
+      parseGetSkillPublishDraftPayload(value),
+    );
+  });
   ipcMain.handle(
     CAPABILITY_RUNTIME_IPC_CHANNELS.submitPublishDraft,
     async (event, value: unknown) => {
@@ -2303,17 +2335,14 @@ function setupRuntimeBridge(): void {
       );
     },
   );
-  ipcMain.handle(
-    CAPABILITY_RUNTIME_IPC_CHANNELS.previewOrganize,
-    async (event, value: unknown) => {
-      assertRuntimeIpcSource(event);
-      await ensureRuntimeConnection();
-      return getRuntimeClient().request(
-        'capability.organize.preview',
-        parsePreviewCapabilityOrganizePayload(value),
-      );
-    },
-  );
+  ipcMain.handle(CAPABILITY_RUNTIME_IPC_CHANNELS.previewOrganize, async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request(
+      'capability.organize.preview',
+      parsePreviewCapabilityOrganizePayload(value),
+    );
+  });
   ipcMain.handle(
     CAPABILITY_RUNTIME_IPC_CHANNELS.getLatestOrganize,
     async (event, value: unknown) => {
@@ -3330,9 +3359,12 @@ function setupRuntimeBridge(): void {
 
   // Read-only Git branch, status, and recent-commit summary for the workspace panel.
   const MAX_FILES_PER_COMMIT = 100;
-  function parseRecentCommitBlocks(
-    stdout: string,
-  ): Array<{ hash: string; subject: string; files: Array<{ status: string; path: string }>; truncated: boolean }> {
+  function parseRecentCommitBlocks(stdout: string): Array<{
+    hash: string;
+    subject: string;
+    files: Array<{ status: string; path: string }>;
+    truncated: boolean;
+  }> {
     const normalized = stdout.replace(/\r\n/g, '\n');
     const blocks = normalized.split(/\n{2,}/).filter((block) => block.trim().length > 0);
     const commits: Array<{
@@ -3404,12 +3436,7 @@ function setupRuntimeBridge(): void {
       .filter(Boolean)
       .slice(0, 100)
       .map((line) => ({ status: line.slice(0, 2).trim(), path: line.slice(3).trim() }));
-    const logRaw = await run([
-      'log',
-      '-8',
-      '--name-status',
-      '--format=%h%x00%s',
-    ]);
+    const logRaw = await run(['log', '-8', '--name-status', '--format=%h%x00%s']);
     const recentCommits = parseRecentCommitBlocks(logRaw);
     return { branch, branches, changes, recentCommits, isRepo: true };
   });
@@ -3534,9 +3561,10 @@ if (!gotLock) {
   }
 }
 
-function shutdownDesktopServices(): Promise<void> {
+function shutdownDesktopServices(reason: DesktopShutdownReason = 'desktop-exit'): Promise<void> {
   if (desktopShutdownPromise) return desktopShutdownPromise;
   shutdownStarted = true;
+  const plan = planDesktopShutdown(reason);
   projectContentSearchRegistry.abortAll();
   abortAllProjectTerminals();
   for (const subscription of projectFileWatchSubscriptions.values()) subscription.dispose();
@@ -3546,11 +3574,14 @@ function shutdownDesktopServices(): Promise<void> {
 
   desktopShutdownPromise = Promise.allSettled([
     desktopUpdateController?.flushRecoveryEvidence() ?? Promise.resolve(),
-    stopManagedRuntime(),
+    executeDesktopShutdownPlan(plan, {
+      stopDaemon: () => stopManagedDaemon(12_000, getDesktopRuntimeIdentity()),
+      stopRuntime: () => stopManagedRuntime(12_000, getDesktopRuntimeIdentity()),
+    }),
   ]).then((results) => {
     runtimeShutdownComplete = true;
-    const runtimeResult = results[1];
-    if (runtimeResult?.status === 'rejected') throw runtimeResult.reason;
+    const executionOwnerResult = results[1];
+    if (executionOwnerResult?.status === 'rejected') throw executionOwnerResult.reason;
   });
   return desktopShutdownPromise;
 }

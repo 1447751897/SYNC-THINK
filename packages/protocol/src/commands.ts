@@ -39,6 +39,7 @@ import type { Feature } from './version.js';
 
 export type CommandType =
   | 'runtime.healthcheck'
+  | 'runtime.shutdown'
   | 'workspace.create'
   | 'workspace.bindFolder'
   | 'workspace.list'

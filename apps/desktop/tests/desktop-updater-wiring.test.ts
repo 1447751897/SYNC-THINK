@@ -37,7 +37,7 @@ describe('desktop updater Electron wiring', () => {
     expect(mainSource).toContain("target.send('desktop:update-state', snapshot)");
     expect(mainSource).toContain('beforeInstall: async (context) =>');
     expect(mainSource).toContain('desktopUpdateRollbackCoordinator?.prepareInstall');
-    expect(mainSource).toContain('await shutdownDesktopServices()');
+    expect(mainSource).toContain("await shutdownDesktopServices('update-install')");
     expect(driverSource).toContain("import electronUpdater from 'electron-updater'");
     expect(driverSource).not.toContain("import { autoUpdater } from 'electron-updater'");
   });

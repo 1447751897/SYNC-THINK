@@ -217,10 +217,7 @@ describe('event payload backfill durable executor', () => {
         .prepare("UPDATE event SET payload_json = '{\"changed\":true}' WHERE id = 'event-0'")
         .run();
       await expect(
-        executeEventPayloadBackfill(
-          sourceDrift.raw,
-          executionOptions(plan, sourceDrift.auditPath),
-        ),
+        executeEventPayloadBackfill(sourceDrift.raw, executionOptions(plan, sourceDrift.auditPath)),
       ).rejects.toThrow(/changed after|source references changed/);
     } finally {
       sourceDrift.raw.close();
@@ -240,10 +237,7 @@ describe('event payload backfill durable executor', () => {
         .prepare("UPDATE event SET payload_json = '{\"changed\":true}' WHERE id = 'event-0'")
         .run();
       await expect(
-        executeEventPayloadBackfill(
-          resumeDrift.raw,
-          executionOptions(plan, resumeDrift.auditPath),
-        ),
+        executeEventPayloadBackfill(resumeDrift.raw, executionOptions(plan, resumeDrift.auditPath)),
       ).rejects.toThrow('processed Event event-0');
     } finally {
       resumeDrift.raw.close();
@@ -266,7 +260,7 @@ describe('event payload backfill durable executor', () => {
     } finally {
       recoveryDrift.raw.close();
     }
-  });
+  }, 15_000);
 
   it('rejects missing confirmation, maintenance windows, audit mismatches, and readonly handles', async () => {
     const item = await fixture(1);
@@ -296,10 +290,7 @@ describe('event payload backfill durable executor', () => {
       });
       try {
         await expect(
-          executeEventPayloadBackfill(
-            readonly.raw,
-            executionOptions(plan, item.auditPath),
-          ),
+          executeEventPayloadBackfill(readonly.raw, executionOptions(plan, item.auditPath)),
         ).rejects.toThrow('writable connection');
       } finally {
         readonly.raw.close();

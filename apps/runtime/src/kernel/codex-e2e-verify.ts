@@ -1,7 +1,7 @@
 /**
  * Real codex end-to-end verification (Slice 4 acceptance).
  *
- * Spawns the locally installed codex-cli through CodexKernelAdapter with the
+ * Spawns the locally installed codex-cli through CodexAppServerKernelAdapter with the
  * local login state (reuseLocalLogin), asks it to call the platform file tools
  * through MCP, then verifies the normalized tool stream, final answer and
  * usage. Not part of the test suite — run manually:
@@ -13,14 +13,13 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { KernelEvent } from '@sync-think/shared';
-import { CodexKernelAdapter } from './codex-adapter.js';
+import { CodexAppServerKernelAdapter } from './codex-app-server-adapter.js';
 import { startKernelMcpBroker } from './mcp-broker.js';
 import { executePlatformTool, PLATFORM_MCP_TOOL_DEFINITIONS } from './platform-tools.js';
 import { getKernelRegistry } from './registry.js';
 
 const PERMISSION_MODE = (process.env.E2E_PERMISSION_MODE ?? 'full-access') as
   'full-access' | 'ask' | 'workspace';
-const ISOLATE_USER_TOOLS = process.env.E2E_ISOLATE_USER_TOOLS !== '0';
 const PROMPT =
   process.env.E2E_PROMPT ??
   'Use the sync-think-platform MCP file_write tool to create codex-hello.txt with content "hi from codex". Then use its file_read tool to read the file and reply with exactly the file content.';
@@ -61,26 +60,11 @@ async function main(): Promise<number> {
       }
     },
   });
-  const adapter = new CodexKernelAdapter(
-    ISOLATE_USER_TOOLS
-      ? {
-          globalArgs: [
-            '--disable',
-            'plugins',
-            '--disable',
-            'apps',
-            '-c',
-            'mcp_servers.node_repl.enabled=false',
-          ],
-          execArgs: ['--ignore-rules'],
-        }
-      : {},
-  );
+  const adapter = new CodexAppServerKernelAdapter();
   console.log(
     '[codex-e2e] invocation',
     JSON.stringify({
       permissionMode: PERMISSION_MODE,
-      isolateUserTools: ISOLATE_USER_TOOLS,
     }),
   );
   const startedAt = Date.now();

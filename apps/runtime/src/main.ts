@@ -57,11 +57,19 @@ async function main() {
             : {}),
         }
       : undefined;
+  const shutdownState: {
+    run?: () => Promise<void>;
+    pending: boolean;
+  } = { pending: false };
   const session = await openPersistentRuntime({
     dbPath: resolveRuntimeDatabasePath(),
     installId,
     allowNoToken,
     helloSecret: process.env.SYNC_THINK_PIPE_SECRET,
+    onShutdownRequested: () => {
+      if (shutdownState.run) void shutdownState.run();
+      else shutdownState.pending = true;
+    },
     ...(eventPayloadSidecar ? { eventPayloadSidecar } : {}),
     daemonWorker,
     demoProvider:
@@ -81,7 +89,9 @@ async function main() {
     }
     console.log(`[worker] executing task ${daemonTaskId}`);
     const result = await session.runtime.runDaemonTask(daemonTaskId);
-    console.log(`[worker] task ${daemonTaskId} → ok=${result.ok}${result.reason ? ` reason=${result.reason}` : ''}`);
+    console.log(
+      `[worker] task ${daemonTaskId} → ok=${result.ok}${result.reason ? ` reason=${result.reason}` : ''}`,
+    );
     await session.close();
     process.exit(result.ok ? 0 : 1);
   }
@@ -94,7 +104,7 @@ async function main() {
   );
 
   let shuttingDown = false;
-  const shutdown = async () => {
+  shutdownState.run = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[runtime] shutting down');
@@ -106,15 +116,16 @@ async function main() {
       process.exit(1);
     }
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  if (shutdownState.pending) void shutdownState.run();
+  process.on('SIGINT', () => void shutdownState.run?.());
+  process.on('SIGTERM', () => void shutdownState.run?.());
   process.on('message', (message: unknown) => {
     if (
       typeof message === 'object' &&
       message !== null &&
       (message as { type?: unknown }).type === 'sync-think.runtime.shutdown'
     ) {
-      void shutdown();
+      void shutdownState.run?.();
     }
   });
 }

@@ -81,8 +81,8 @@ async function fixture(intentId: string, deadlineAt: string) {
   };
 }
 
-async function waitForPath(path: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
+async function waitForPath(path: string, timeoutMs = 60_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       await access(path);
@@ -128,7 +128,7 @@ afterEach(async () => {
 
 describe.skipIf(process.platform !== 'win32')('desktop update rollback watchdog', () => {
   it('accepts a matching runtime health marker and records a healthy outcome', async () => {
-    const input = await fixture('healthy', new Date(Date.now() + 10_000).toISOString());
+    const input = await fixture('healthy', new Date(Date.now() + 60_000).toISOString());
     await mkdir(join(input.root, 'health'), { recursive: true });
     await writeFile(
       input.healthMarkerPath,
@@ -146,14 +146,18 @@ describe.skipIf(process.platform !== 'win32')('desktop update rollback watchdog'
       status: 'healthy',
       automaticRollbackAttempted: false,
     });
-  });
+  }, 90_000);
 
   it('rejects a second rollback attempt through the durable attempt fence', async () => {
     const input = await fixture('fenced', new Date(Date.now() - 1_000).toISOString());
     await mkdir(join(input.root, 'attempts'), { recursive: true });
     await writeFile(
       input.attemptFencePath,
-      JSON.stringify({ schemaVersion: 1, intentId: input.intentId, attemptedAt: new Date().toISOString() }),
+      JSON.stringify({
+        schemaVersion: 1,
+        intentId: input.intentId,
+        attemptedAt: new Date().toISOString(),
+      }),
       'utf8',
     );
 
@@ -163,10 +167,13 @@ describe.skipIf(process.platform !== 'win32')('desktop update rollback watchdog'
       automaticRollbackAttempted: false,
       reason: 'attempt-already-recorded',
     });
-  });
+  }, 90_000);
 
   it('relaunches the installed target once after its version is published', async () => {
-    const input = await fixture('relaunch', new Date(Date.now() + 10_000).toISOString());
+    // This fixture exercises a real PowerShell watchdog process. Under the full
+    // Desktop suite its cold start can take well over ten seconds, so the
+    // business deadline must not expire before the fixture process begins.
+    const input = await fixture('relaunch', new Date(Date.now() + 60_000).toISOString());
     await copyFile(
       join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'where.exe'),
       input.targetExecutablePath,
@@ -186,9 +193,11 @@ describe.skipIf(process.platform !== 'win32')('desktop update rollback watchdog'
     );
 
     await expect(watchdog).resolves.toMatchObject({ stdout: '', stderr: '' });
-    await expect(readFile(input.relaunchFencePath, 'utf8').then(JSON.parse)).resolves.toMatchObject({
-      intentId: input.intentId,
-      targetVersion: '0.0.2',
-    });
-  });
+    await expect(readFile(input.relaunchFencePath, 'utf8').then(JSON.parse)).resolves.toMatchObject(
+      {
+        intentId: input.intentId,
+        targetVersion: '0.0.2',
+      },
+    );
+  }, 90_000);
 });

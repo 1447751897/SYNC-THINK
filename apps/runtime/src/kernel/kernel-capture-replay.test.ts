@@ -2,14 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import type { KernelEvent, KernelRequest } from '@sync-think/shared';
 import { ClaudeCodeKernelAdapter } from './claude-code-adapter.js';
-import { CodexKernelAdapter } from './codex-adapter.js';
 import { startKernelProcess } from './process.js';
 
 const claudeFixture = fileURLToPath(
   new URL('./fixtures/claude-partial-capture-fixture.mjs', import.meta.url),
-);
-const codexFixture = fileURLToPath(
-  new URL('./fixtures/codex-mcp-capture-fixture.mjs', import.meta.url),
 );
 
 function makeRequest(kernelId: string, overrides: Partial<KernelRequest> = {}): KernelRequest {
@@ -85,31 +81,4 @@ describe('kernel adapters against real captured CLI streams', () => {
     expect(events.at(-1)).toMatchObject({ type: 'terminal', status: 'completed' });
   }, 20_000);
 
-  it('keeps the real codex MCP identity and does not double-count cached input', async () => {
-    const adapter = new CodexKernelAdapter({
-      spawn: (args, env, cwd) =>
-        startKernelProcess({
-          command: process.execPath,
-          args: [codexFixture, ...args],
-          cwd,
-          env,
-          stdin: 'ignore',
-        }),
-    });
-    const events = await collect(adapter, makeRequest('codex'));
-
-    const toolCall = events.find((event) => event.type === 'tool-call');
-    expect(toolCall).toMatchObject({
-      type: 'tool-call',
-      name: 'mcp__codex__list_mcp_resource_templates',
-      partial: false,
-    });
-
-    const usage = events.find((event) => event.type === 'usage') as
-      | { type: 'usage'; usage: { real: number; input?: number; output?: number; cached?: number } }
-      | undefined;
-    // Captured turn.completed: input 142300 (cached 121344 is a subset), output 653.
-    expect(usage?.usage).toMatchObject({ input: 142300, output: 653, cached: 121344 });
-    expect(usage?.usage.real).toBe(142300 + 653);
-  });
 });

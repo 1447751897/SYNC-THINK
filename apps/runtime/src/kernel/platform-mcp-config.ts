@@ -74,13 +74,13 @@ export function buildClaudeMcpConfigJson(broker: PlatformBrokerInfo): string {
 }
 
 /**
- * codex `mcp_servers.<name>.*` config overrides. codex exec (0.145.0, verified)
- * has no --mcp-config flag; the -c dotted-path overrides register the server
- * for this invocation only without touching ~/.codex/config.toml.
+ * codex `mcp_servers.<name>.*` config overrides. codex app-server (0.145.0,
+ * verified) receives the server object in thread/start config without touching
+ * ~/.codex/config.toml.
  *
  * Values are TOML literal strings (single-quoted). Double quotes are rejected
- * by the cmd.exe shim whitelist (process.ts buildSafeCmdShimCommand), while
- * single quotes pass through — and codex's TOML parser accepts them.
+ * by the cmd.exe shim whitelist; the app-server path keeps values in the
+ * JSON-RPC config object.
  */
 export function buildCodexMcpConfigArgs(broker: PlatformBrokerInfo): string[] {
   const server = PLATFORM_MCP_SERVER_NAME;

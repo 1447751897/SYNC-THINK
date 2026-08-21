@@ -23,8 +23,11 @@ import {
   decodeFrames,
   DEFAULT_FEATURES,
   encodeFrame,
+  managedProcessMarker,
+  matchesManagedProcessCommandLine,
   pipePathPortable,
   PROTOCOL_VERSION,
+  runtimePidFilePath,
   type Hello,
   type HelloProofPayload,
 } from '@sync-think/protocol';
@@ -79,12 +82,11 @@ function resolveRuntimeEntry(): string | null {
 }
 
 function runtimeStateDir(): string {
-  const dataRoot = process.env.LOCALAPPDATA ?? join(homedir(), '.sync-think');
-  return join(dataRoot, 'SYNC-THINK');
+  return dirname(resolveManagedRuntimeDatabasePath());
 }
 
 function runtimePidPath(installId: string): string {
-  return join(runtimeStateDir(), `runtime-${installId}.pid`);
+  return runtimePidFilePath(resolveManagedRuntimeDatabasePath(), installId);
 }
 
 function readPidFile(installId: string): number | null {
@@ -139,7 +141,7 @@ function killProcessTree(pid: number): void {
   }
 }
 
-function probePipe(installId: string, timeoutMs = 800): Promise<boolean> {
+export function probeRuntimePipe(installId: string, timeoutMs = 800): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = connect(pipePathPortable(installId));
     let settled = false;
@@ -165,18 +167,78 @@ function probePipe(installId: string, timeoutMs = 800): Promise<boolean> {
 async function waitForPipe(installId: string, totalMs = 12_000): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < totalMs) {
-    if (await probePipe(installId, 500)) return true;
+    if (await probeRuntimePipe(installId, 500)) return true;
     await new Promise((r) => setTimeout(r, 250));
   }
-  return probePipe(installId, 500);
+  return probeRuntimePipe(installId, 500);
+}
+
+export async function waitForRuntimeProcess(installId: string, totalMs = 12_000): Promise<boolean> {
+  return waitForPipe(installId, totalMs);
 }
 
 async function waitForPipeDown(installId: string, totalMs = 5_000): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < totalMs) {
-    if (!(await probePipe(installId, 300))) return;
+    if (!(await probeRuntimePipe(installId, 300))) return;
     await new Promise((r) => setTimeout(r, 150));
   }
+}
+
+function readProcessCommandLine(pid: number): string | undefined {
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  if (process.platform === 'win32') {
+    try {
+      const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue; if ($p) { [Console]::Out.Write($p.CommandLine) }`;
+      const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 3_000,
+      });
+      return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const result = spawnSync('ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      timeout: 3_000,
+    });
+    return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isExpectedManagedProcess(
+  pid: number,
+  role: 'runtime' | 'daemon',
+  installId: string,
+): boolean {
+  return matchesManagedProcessCommandLine(readProcessCommandLine(pid), role, installId);
+}
+
+/** Pure identity predicate used by non-Windows orphan enumeration and tests. */
+export function managedRuntimeCommandLineMatches(
+  commandLine: string | undefined,
+  installId: string,
+): boolean {
+  return matchesManagedProcessCommandLine(commandLine, 'runtime', installId);
+}
+
+function killManagedProcessTree(
+  pid: number,
+  role: 'runtime' | 'daemon',
+  installId: string,
+): boolean {
+  if (!isProcessAlive(pid)) return true;
+  if (!isExpectedManagedProcess(pid, role, installId)) {
+    console.warn('[desktop] refused to kill stale/reused managed pid', { pid, role, installId });
+    return false;
+  }
+  killProcessTree(pid);
+  return true;
 }
 
 function nodeMajor(binary: string): number | null {
@@ -256,7 +318,9 @@ export function buildManagedRuntimeEnvironment(
     SYNC_THINK_INSTALL_ID: identity.installId,
     SYNC_THINK_DEV_NO_TOKEN: identity.allowNoToken ? '1' : '0',
     // Keep DB + image staging on a drive with free space (dev machines often fill C:).
-    SYNC_THINK_DB_PATH: resolve(baseEnvironment.SYNC_THINK_DB_PATH ?? join(dataRoot, 'sync-think.db')),
+    SYNC_THINK_DB_PATH: resolve(
+      baseEnvironment.SYNC_THINK_DB_PATH ?? join(dataRoot, 'sync-think.db'),
+    ),
     SYNC_THINK_CHAT_IMAGE_STAGING:
       baseEnvironment.SYNC_THINK_CHAT_IMAGE_STAGING ?? join(dataRoot, 'chat-image-staging'),
     SYNC_THINK_CHAT_MESSAGE_IMAGES:
@@ -285,13 +349,13 @@ function spawnRuntime(
   }
   const env = buildManagedRuntimeEnvironment(identity, process.env, dataRoot);
 
-  const childProcess = spawn(nodeBin, [entry], {
-    env,
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    windowsHide: true,
-    detached: false,
-    shell: false,
-  });
+  const childProcess = spawn(
+    nodeBin,
+    [entry, managedProcessMarker('runtime', identity.installId)],
+    buildRuntimeSpawnOptions(env),
+  );
+
+  if (typeof childProcess.unref === 'function') childProcess.unref();
 
   if (typeof childProcess.pid === 'number') {
     childInstallId = identity.installId;
@@ -326,6 +390,22 @@ function spawnRuntime(
   return childProcess;
 }
 
+export function buildRuntimeSpawnOptions(env: NodeJS.ProcessEnv = process.env): {
+  env: NodeJS.ProcessEnv;
+  stdio: ['ignore', 'ignore', 'ignore', 'ipc'];
+  windowsHide: true;
+  detached: true;
+  shell: false;
+} {
+  return {
+    env,
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    windowsHide: true,
+    detached: true,
+    shell: false,
+  };
+}
+
 function runCommand(
   command: string,
   args: string[],
@@ -355,25 +435,17 @@ function runCommand(
 }
 
 async function killOrphanRuntimeProcesses(installId: string): Promise<void> {
-  // Best-effort: kill any leftover runtime holding the named pipe after rebuilds.
-  // Must be awaited — fire-and-forget caused EADDRINUSE races on restart.
+  // Best-effort force-restart cleanup is identity-scoped. Broad path-based sweeps
+  // can terminate another workspace/install that happens to run the same entry.
   if (process.platform === 'win32') {
-    // Match managed dist entry AND lingering `pnpm dev:runtime` / tsx watch trees.
+    const marker = managedProcessMarker('runtime', installId);
     const ps = [
       "$ErrorActionPreference='SilentlyContinue'",
+      `$marker='${marker}'`,
       'Get-CimInstance Win32_Process |',
       '  Where-Object {',
-      '    $_.CommandLine -and (',
-      "      ($_.Name -match 'node' -and (",
-      "        $_.CommandLine -match 'runtime[\\\\/]+dist[\\\\/]+main\\.js' -or",
-      "        $_.CommandLine -match 'apps[\\\\/]+runtime[\\\\/]+dist' -or",
-      "        ($_.CommandLine -match 'apps[\\\\/]+runtime' -and $_.CommandLine -match 'tsx') -or",
-      "        ($_.CommandLine -match 'SYNC-THINK' -and $_.CommandLine -match 'src/main\\.ts' -and $_.CommandLine -match 'tsx') -or",
-      "        $_.CommandLine -match 'filter @sync-think/runtime' -or",
-      "        $_.CommandLine -match 'dev:runtime'",
-      '      )) -or',
-      `      ($_.Name -match 'node|cmd|powershell' -and $_.CommandLine -match 'sync-think-${installId}')`,
-      '    )',
+      "    $_.CommandLine -and $_.Name -match 'node' -and",
+      `    ((($_.CommandLine -split '\\s+') -replace '^["'']|["'']$','') -contains $marker)`,
       '  } |',
       '  ForEach-Object {',
       "    Write-Output ('kill-runtime-pid=' + $_.ProcessId + ' name=' + $_.Name);",
@@ -401,8 +473,25 @@ async function killOrphanRuntimeProcesses(installId: string): Promise<void> {
     return;
   }
 
+  // Non-Windows fallback enumerates candidates and applies the same exact-token
+  // identity fence before terminating them. `pkill -f` is intentionally avoided:
+  // it performs substring matching and can hit an unrelated command that merely
+  // embeds the marker text.
   try {
-    await runCommand('pkill', ['-f', 'runtime/dist/main.js']);
+    const result = await runCommand('ps', ['-eo', 'pid=,command=']);
+    for (const line of result.stdout.split(/\r?\n/u)) {
+      const match = /^\s*(\d+)\s+(.+)$/u.exec(line);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const commandLine = match[2];
+      if (
+        pid !== process.pid &&
+        Number.isInteger(pid) &&
+        managedRuntimeCommandLineMatches(commandLine, installId)
+      ) {
+        killManagedProcessTree(pid, 'runtime', installId);
+      }
+    }
   } catch {
     /* ignore */
   }
@@ -422,7 +511,7 @@ async function stopExistingRuntime(installId: string): Promise<void> {
   const pid = readPidFile(installId);
   if (pid && pid !== process.pid) {
     console.log('[desktop] stopping runtime from pid file', pid);
-    killProcessTree(pid);
+    killManagedProcessTree(pid, 'runtime', installId);
   }
   await killOrphanRuntimeProcesses(installId);
   clearPidFile(installId);
@@ -447,13 +536,13 @@ export async function ensureRuntimeProcess(
   const forceRestart =
     process.env.SYNC_THINK_RUNTIME_FORCE_RESTART === '1' && !didForceRestartThisSession;
 
-  if (!forceRestart && (await probePipe(installId))) {
+  if (!forceRestart && (await probeRuntimePipe(installId))) {
     return { ready: true, spawned: false };
   }
 
   if (starting) {
     await starting;
-    return { ready: await probePipe(installId), spawned: Boolean(child) };
+    return { ready: await probeRuntimePipe(installId), spawned: Boolean(child) };
   }
 
   starting = (async () => {
@@ -477,7 +566,7 @@ export async function ensureRuntimeProcess(
       didForceRestartThisSession = true;
       console.log('[desktop] recycling runtime so Desktop uses the latest build');
       await stopExistingRuntime(installId);
-    } else if (await probePipe(installId)) {
+    } else if (await probeRuntimePipe(installId)) {
       return;
     }
 
@@ -494,7 +583,7 @@ export async function ensureRuntimeProcess(
   });
 
   await starting;
-  const ready = await probePipe(installId);
+  const ready = await probeRuntimePipe(installId);
   return {
     ready,
     spawned: Boolean(child),
@@ -502,24 +591,35 @@ export async function ensureRuntimeProcess(
   };
 }
 
-export async function stopManagedRuntime(timeoutMs = 12_000): Promise<void> {
+export async function stopManagedRuntime(
+  timeoutMs = 12_000,
+  requestedIdentity?: Pick<DesktopRuntimeIdentity, 'installId'>,
+): Promise<void> {
   const proc = child;
-  const installId = childInstallId;
+  const installId = childInstallId ?? requestedIdentity?.installId;
   child = null;
   childInstallId = null;
-  if (!proc) {
-    if (installId) clearPidFile(installId);
-    return;
+  if (proc) {
+    const result = await stopRuntimeChild(proc, { timeoutMs });
+    if (result.forced) {
+      console.warn('[desktop] runtime graceful shutdown timed out; terminated runtime process');
+    }
+    if (!result.exited) {
+      console.warn('[desktop] runtime process did not report exit after termination');
+    }
+  } else if (installId) {
+    // A newly opened Desktop may be only a client of the detached Runtime.
+    // Update/explicit service stop still owns the persisted process lifecycle.
+    const pid = readPidFile(installId);
+    if (pid && pid !== process.pid) killManagedProcessTree(pid, 'runtime', installId);
   }
-
-  const result = await stopRuntimeChild(proc, { timeoutMs });
-  if (result.forced) {
-    console.warn('[desktop] runtime graceful shutdown timed out; terminated runtime process');
+  if (installId) {
+    // The PID file is only a fast path. It may be missing after a crash or stale
+    // writer race, so finish explicit shutdown with an exact-marker orphan sweep.
+    await killOrphanRuntimeProcesses(installId);
+    clearPidFile(installId);
+    await waitForPipeDown(installId, Math.min(timeoutMs, 8_000));
   }
-  if (!result.exited) {
-    console.warn('[desktop] runtime process did not report exit after termination');
-  }
-  if (installId) clearPidFile(installId);
 }
 
 // ── 守护进程兜底拉起（T3/Q6）───────────────────────────────────────────────
@@ -530,7 +630,7 @@ export function daemonPipePath(installId: string): string {
 }
 
 /** 探测守护进程管道是否存活（800ms 超时）。 */
-function probeDaemonPipe(installId: string, timeoutMs = 800): Promise<boolean> {
+export function probeDaemonPipe(installId: string, timeoutMs = 800): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = connect(daemonPipePath(installId));
     let settled = false;
@@ -572,7 +672,10 @@ function resolveDaemonEntry(): string | null {
 let daemonChild: ChildProcess | null = null;
 let daemonStarting: Promise<void> | null = null;
 let daemonInstallId: string | null = null;
-let daemonIdentity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'> | null = null;
+let daemonIdentity: Pick<
+  DesktopRuntimeIdentity,
+  'installId' | 'pipeSecret' | 'allowNoToken'
+> | null = null;
 let daemonStopRequested = false;
 let daemonRestartTimer: NodeJS.Timeout | null = null;
 let daemonRestartAttempts = 0;
@@ -607,7 +710,7 @@ function readDaemonPid(installId: string): number | null {
 
 function writeDaemonPid(installId: string, pid: number): void {
   try {
-    mkdirSync(defaultDataRoot(), { recursive: true });
+    mkdirSync(daemonStateDir(), { recursive: true });
     writeFileSync(daemonPidPath(installId), String(pid), 'utf8');
   } catch (error) {
     console.warn('[desktop] failed to write daemon pid file', error);
@@ -639,6 +742,32 @@ async function waitForDaemonPipeDown(installId: string, totalMs = 5_000): Promis
   }
 }
 
+async function waitForProcessExit(proc: ChildProcess, totalMs: number): Promise<boolean> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return true;
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      proc.removeListener('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => done(true);
+    const timer = setTimeout(() => done(false), totalMs);
+    proc.once('exit', onExit);
+  });
+}
+
+async function waitForPidExit(pid: number, totalMs: number): Promise<boolean> {
+  const started = Date.now();
+  while (Date.now() - started < totalMs) {
+    if (!isProcessAlive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return !isProcessAlive(pid);
+}
+
 /**
  * 桌面启动时兜底拉起守护进程（T3）：探测 daemon 管道——不在运行 →
  * spawn daemon 进程（登录自启之外的第二重保证）。已注册自启时也兜底
@@ -646,6 +775,7 @@ async function waitForDaemonPipeDown(installId: string, totalMs = 5_000): Promis
  */
 async function ensureDaemonProcessInternal(
   identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+  options: { bypassSpawnDebounce?: boolean } = {},
 ): Promise<DaemonEnsureResult> {
   const installId = identity.installId;
   daemonInstallId = installId;
@@ -659,11 +789,7 @@ async function ensureDaemonProcessInternal(
 
   // 先按当前安装的 PID 清理残留，避免 detached/autostart daemon 占用旧代码。
   const stalePid = readDaemonPid(installId);
-  if (
-    stalePid &&
-    stalePid !== process.pid &&
-    (!daemonChild || daemonChild.pid !== stalePid)
-  ) {
+  if (stalePid && stalePid !== process.pid && (!daemonChild || daemonChild.pid !== stalePid)) {
     if (isProcessAlive(stalePid)) {
       const existingReady = await waitForDaemonPipe(installId, 3_000);
       if (existingReady) {
@@ -671,14 +797,19 @@ async function ensureDaemonProcessInternal(
         return { ready: true, spawned: false };
       }
     }
-    killProcessTree(stalePid);
+    killManagedProcessTree(stalePid, 'daemon', installId);
     clearDaemonPid(installId);
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  await killOrphanDaemonProcesses(installId);
+  // Sweep only when a persisted managed identity exists. Running a global scan
+  // on every cold start could kill the outer supervisor we just spawned (its PID
+  // is distinct from the child daemon PID that later owns the pid file).
+  if (stalePid) await killOrphanDaemonProcesses(installId);
 
-  // 防抖：短时间内已拉起过（管道可能还没监听）→ 不再重复 spawn。
-  if (Date.now() - daemonSpawnedAt < DAEMON_SPAWN_DEBOUNCE_MS) {
+  // Cold-start calls are debounced while the just-spawned process opens its
+  // pipe. A known child exit is different: the old process is gone, so the
+  // supervised restart must be allowed to spawn immediately after backoff.
+  if (!options.bypassSpawnDebounce && Date.now() - daemonSpawnedAt < DAEMON_SPAWN_DEBOUNCE_MS) {
     const ready = await waitForDaemonPipe(installId, 3_000);
     return { ready, spawned: true, ...(ready ? {} : { error: 'daemon readiness timeout' }) };
   }
@@ -686,7 +817,11 @@ async function ensureDaemonProcessInternal(
   if (daemonStarting) {
     await daemonStarting;
     const ready = await waitForDaemonPipe(installId, 3_000);
-    return { ready, spawned: Boolean(daemonChild), ...(ready ? {} : { error: 'daemon readiness timeout' }) };
+    return {
+      ready,
+      spawned: Boolean(daemonChild),
+      ...(ready ? {} : { error: 'daemon readiness timeout' }),
+    };
   }
 
   daemonStarting = (async () => {
@@ -702,15 +837,19 @@ async function ensureDaemonProcessInternal(
     }
     const env = buildManagedRuntimeEnvironment(identity, process.env, defaultDataRoot());
     console.log('[desktop] starting managed daemon', { entry, nodeBin });
-    const childProcess = spawn(nodeBin, [entry], {
-      env,
-      // daemon/index.js writes daemon.log itself; stdio remains detached from
-      // Electron so process lifetime is independent of the desktop window.
-      stdio: 'ignore',
-      windowsHide: true,
-      detached: true,
-      shell: false,
-    });
+    const childProcess = spawn(
+      nodeBin,
+      [entry, managedProcessMarker('daemon', identity.installId)],
+      {
+        env,
+        // daemon/index.js writes daemon.log itself; stdio remains detached from
+        // Electron so process lifetime is independent of the desktop window.
+        stdio: 'ignore',
+        windowsHide: true,
+        detached: true,
+        shell: false,
+      },
+    );
     daemonChild = childProcess;
     daemonInstallId = installId;
     daemonIdentity = identity;
@@ -740,35 +879,54 @@ async function ensureDaemonProcessInternal(
   }
   const ready = await waitForDaemonPipe(installId);
   if (ready) daemonRestartAttempts = 0;
-  return { ready, spawned: Boolean(daemonChild), ...(ready ? {} : { error: 'daemon readiness timeout' }) };
+  return {
+    ready,
+    spawned: Boolean(daemonChild),
+    ...(ready ? {} : { error: 'daemon readiness timeout' }),
+  };
 }
 
 /** Serialize cold-start/reconnect calls so two IPC requests cannot spawn two daemons. */
-export async function ensureDaemonProcess(
+async function ensureDaemonProcessWithOptions(
   identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+  options: { bypassSpawnDebounce?: boolean } = {},
 ): Promise<DaemonEnsureResult> {
   if (daemonEnsureLock) return daemonEnsureLock;
-  const operation = ensureDaemonProcessInternal(identity);
+  const operation = ensureDaemonProcessInternal(identity, options);
   daemonEnsureLock = operation.finally(() => {
     daemonEnsureLock = null;
   });
   return daemonEnsureLock;
 }
 
-/** 清理所有孤儿 daemon 进程（命令行含 daemon/index.js 的 node 进程）。 */
+export function ensureDaemonProcess(
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+): Promise<DaemonEnsureResult> {
+  return ensureDaemonProcessWithOptions(identity);
+}
+
+/** 清理携带当前安装身份 marker 的孤儿 daemon 进程。 */
 async function killOrphanDaemonProcesses(installId: string): Promise<void> {
   if (process.platform !== 'win32') return;
-  const pattern = `SYNC_THINK_INSTALL_ID[= ]+${installId}`;
-  const kill = spawn('powershell', [
-    '-NoProfile',
-    '-Command',
-    `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '${pattern}' -and $_.CommandLine -match 'daemon[\\\\/]+index\\.js' -and $_.Name -eq 'node.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-  ], { stdio: 'ignore', windowsHide: true });
+  const marker = managedProcessMarker('daemon', installId);
+  const kill = spawn(
+    'powershell',
+    [
+      '-NoProfile',
+      '-Command',
+      `$marker = '${marker}'; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and (((($_.CommandLine -split '\\s+') -replace '^["'']|["'']$','') -contains $marker)) -and $_.Name -eq 'node.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+    ],
+    { stdio: 'ignore', windowsHide: true },
+  );
   await new Promise<void>((resolve) => {
     kill.on('exit', () => resolve());
     kill.on('error', () => resolve());
     setTimeout(resolve, 3_000);
   });
+}
+
+export function daemonRestartDelayMs(attempt: number): number {
+  return Math.min(5_000, Math.max(1, attempt) * 1_000);
 }
 
 function scheduleDaemonRestart(): void {
@@ -782,10 +940,15 @@ function scheduleDaemonRestart(): void {
     daemonRestartTimer = null;
     const identity = daemonIdentity;
     if (!identity || daemonStopRequested) return;
-    void ensureDaemonProcess(identity).catch((error) =>
-      console.warn('[desktop] daemon restart failed', error),
-    );
-  }, Math.min(5_000, daemonRestartAttempts * 1_000));
+    void ensureDaemonProcessWithOptions(identity, { bypassSpawnDebounce: true })
+      .then((result) => {
+        if (!result.ready) scheduleDaemonRestart();
+      })
+      .catch((error) => {
+        console.warn('[desktop] daemon restart failed', error);
+        scheduleDaemonRestart();
+      });
+  }, daemonRestartDelayMs(daemonRestartAttempts));
 }
 
 /** 停止守护进程（应用退出 / 升级前）。 */
@@ -798,7 +961,9 @@ export async function stopManagedDaemon(
     clearTimeout(daemonRestartTimer);
     daemonRestartTimer = null;
   }
-  const identity = requestedIdentity ?? daemonIdentity ??
+  const identity =
+    requestedIdentity ??
+    daemonIdentity ??
     (daemonInstallId
       ? {
           installId: daemonInstallId,
@@ -818,14 +983,20 @@ export async function stopManagedDaemon(
     ).catch(() => undefined);
   }
   if (proc && proc.exitCode === null) {
-    const result = await stopRuntimeChild(proc, { timeoutMs });
-    if (result.forced) {
-      console.warn('[desktop] daemon graceful shutdown timed out; terminated daemon process');
+    const exited = await waitForProcessExit(proc, timeoutMs);
+    if (!exited && proc.exitCode === null) {
+      const result = await stopRuntimeChild(proc, { timeoutMs });
+      if (result.forced) {
+        console.warn('[desktop] daemon graceful shutdown timed out; terminated daemon process');
+      }
     }
   }
   if (identity) {
     const pid = readDaemonPid(identity.installId);
-    if (pid && pid !== process.pid) killProcessTree(pid);
+    if (pid && pid !== process.pid && isProcessAlive(pid)) {
+      const exited = await waitForPidExit(pid, timeoutMs);
+      if (!exited) killManagedProcessTree(pid, 'daemon', identity.installId);
+    }
     clearDaemonPid(identity.installId);
     await waitForDaemonPipeDown(identity.installId, timeoutMs);
   }
@@ -864,17 +1035,28 @@ export async function requestDaemonFrame(
       done({ ok: false, error: 'daemon timeout' });
     }, timeoutMs);
 
-    const isChallenge = (value: unknown): value is { challenge: true; runtimeNonce: string; runtimeToken: string } => {
+    const isChallenge = (
+      value: unknown,
+    ): value is { challenge: true; runtimeNonce: string; runtimeToken: string } => {
       if (!value || typeof value !== 'object') return false;
       const p = value as Record<string, unknown>;
-      return p.challenge === true && typeof p.runtimeNonce === 'string' && typeof p.runtimeToken === 'string';
+      return (
+        p.challenge === true &&
+        typeof p.runtimeNonce === 'string' &&
+        typeof p.runtimeToken === 'string'
+      );
     };
     const isAccepted = (value: unknown): value is { ok: true } =>
       Boolean(value && typeof value === 'object' && (value as { ok?: unknown }).ok === true);
 
     const handleHelloFrame = (frame: import('@sync-think/protocol').Frame): void => {
       if (helloPhase === 'hello' && frame.type === '__hello') {
-        const payload = frame.payload as { challenge?: boolean; ok?: boolean; runtimeNonce?: string; runtimeToken?: string };
+        const payload = frame.payload as {
+          challenge?: boolean;
+          ok?: boolean;
+          runtimeNonce?: string;
+          runtimeToken?: string;
+        };
         if (isAccepted(payload)) {
           helloPhase = 'done';
           authenticated = true;
@@ -898,7 +1080,14 @@ export async function requestDaemonFrame(
           runtimeNonce: payload.runtimeNonce,
           token: computeClientProof(helloSecret, helloNonce, payload.runtimeNonce, installId),
         };
-        socket.write(encodeFrame({ id: 'hello-proof', kind: 'request', type: '__hello.proof', payload: proof }));
+        socket.write(
+          encodeFrame({
+            id: 'hello-proof',
+            kind: 'request',
+            type: '__hello.proof',
+            payload: proof,
+          }),
+        );
         return;
       }
       if (helloPhase === 'proof' && frame.type === '__hello.proof') {
@@ -948,7 +1137,9 @@ export async function requestDaemonFrame(
           features: [...DEFAULT_FEATURES],
         };
         if (helloSecret) hello.token = computeHmac(helloSecret, helloNonce, installId);
-        socket.write(encodeFrame({ id: 'hello', kind: 'request', type: '__hello', payload: hello }));
+        socket.write(
+          encodeFrame({ id: 'hello', kind: 'request', type: '__hello', payload: hello }),
+        );
         setTimeout(() => {
           if (helloPhase !== 'done') {
             helloPhase = 'done';
@@ -962,7 +1153,9 @@ export async function requestDaemonFrame(
           done({ ok: false, error: 'daemon handshake failed' });
           return;
         }
-        socket.write(encodeFrame({ id: `daemon-mgmt-${Date.now()}`, kind: 'request', type, payload }));
+        socket.write(
+          encodeFrame({ id: `daemon-mgmt-${Date.now()}`, kind: 'request', type, payload }),
+        );
       });
     });
     socket.on('error', () => {
@@ -1018,8 +1211,10 @@ export function buildDaemonAutostartCommand(
   nodeBin: string,
   daemonEntry: string,
   bootstrapPath: string,
+  installId?: string,
 ): string {
-  return `schtasks /Create /TN "SYNC-THINK Daemon" /TR "\\"${nodeBin}\\" \\"${daemonEntry}\\" --bootstrap \\"${bootstrapPath}\\"" /SC ONLOGON /RL LIMITED /F`;
+  const marker = installId ? ` ${managedProcessMarker('daemon', installId)}` : '';
+  return `schtasks /Create /TN "SYNC-THINK Daemon" /TR "\\"${nodeBin}\\" \\"${daemonEntry}\\" --bootstrap \\"${bootstrapPath}\\"${marker}" /SC ONLOGON /RL LIMITED /F`;
 }
 
 export async function setDaemonAutostart(
@@ -1028,10 +1223,11 @@ export async function setDaemonAutostart(
 ): Promise<{ ok: boolean }> {
   try {
     if (!enabled) {
-      const result = spawnSync(
-        'schtasks /Delete /TN "SYNC-THINK Daemon" /F',
-        { shell: true, windowsHide: true, encoding: 'utf8' },
-      );
+      const result = spawnSync('schtasks /Delete /TN "SYNC-THINK Daemon" /F', {
+        shell: true,
+        windowsHide: true,
+        encoding: 'utf8',
+      });
       try {
         unlinkSync(join(daemonStateDir(), 'daemon-bootstrap.json'));
       } catch {
@@ -1044,8 +1240,12 @@ export async function setDaemonAutostart(
     if (!entry || !nodeBin || !identity) return { ok: false };
     const bootstrapPath = await writeDaemonBootstrap(identity);
     const result = spawnSync(
-      buildDaemonAutostartCommand(nodeBin, entry, bootstrapPath),
-      { shell: true, windowsHide: true, encoding: 'utf8' },
+      buildDaemonAutostartCommand(nodeBin, entry, bootstrapPath, identity.installId),
+      {
+        shell: true,
+        windowsHide: true,
+        encoding: 'utf8',
+      },
     );
     return { ok: result.status === 0 };
   } catch {

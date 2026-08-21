@@ -6,9 +6,10 @@
  * （与 runtime main.js 同一套环境约定）。
  */
 
+import { fileURLToPath } from 'node:url';
 import { runDaemon } from './main.js';
 import { applyDaemonBootstrap } from './bootstrap.js';
-import { existsSync } from 'node:fs';
+import { DAEMON_CHILD_ENV, runDaemonSupervisor } from './supervisor.js';
 
 async function main(): Promise<void> {
   process.env.SYNC_THINK_DAEMON_FILE_LOG = '1';
@@ -16,7 +17,11 @@ async function main(): Promise<void> {
   const bootstrapPath =
     process.env.SYNC_THINK_DAEMON_BOOTSTRAP ??
     (bootstrapFlag >= 0 ? process.argv[bootstrapFlag + 1] : undefined);
-  if (bootstrapPath && existsSync(bootstrapPath)) await applyDaemonBootstrap(bootstrapPath);
+  if (bootstrapPath) await applyDaemonBootstrap(bootstrapPath);
+  if (process.env[DAEMON_CHILD_ENV] !== '1') {
+    await runDaemonSupervisor({ entryPath: fileURLToPath(import.meta.url) });
+    return;
+  }
   await runDaemon();
 }
 

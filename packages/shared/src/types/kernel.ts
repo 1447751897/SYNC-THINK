@@ -202,7 +202,17 @@ export interface KernelRequest {
  */
 export type KernelEvent =
   | { type: 'session-started'; sessionId: string }
-  | { type: 'delta'; text: string }
+  | {
+      type: 'delta';
+      text: string;
+      /**
+       * The kernel declares this text is the user-facing final message (e.g.
+       * codex `agentMessage`), not working commentary. The host streams it
+       * straight into the answer area instead of buffering it for later
+       * classification (§12.17.18 exception). Absent = unclassified.
+       */
+      final?: boolean;
+    }
   | { type: 'reasoning'; text: string }
   | {
       type: 'tool-call';
