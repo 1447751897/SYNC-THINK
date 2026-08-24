@@ -10,13 +10,7 @@ import { DialogProvider } from './Dialog.js';
 
 vi.mock('./compose-toolbar.js', () => ({
   ModelPickerMenu: () => null,
-  ModelTrigger: ({
-    label,
-    onClick,
-  }: {
-    label: string;
-    onClick(): void;
-  }) => (
+  ModelTrigger: ({ label, onClick }: { label: string; onClick(): void }) => (
     <button type="button" onClick={onClick}>
       {label}
     </button>
@@ -76,9 +70,9 @@ describe('AgentLibrary shared visual structure', () => {
 
     const card = screen.getByText('Agent Alpha').closest('.shell-library-card');
     expect(card).toBeTruthy();
-    expect(card?.querySelector('.shell-library-card__description')?.getAttribute('data-empty')).toBe(
-      '1',
-    );
+    expect(
+      card?.querySelector('.shell-library-card__description')?.getAttribute('data-empty'),
+    ).toBe('1');
     expect(card?.classList.contains('shell-library-card--selected')).toBe(false);
 
     fireEvent.click(card!);
@@ -100,6 +94,61 @@ describe('AgentLibrary shared visual structure', () => {
 
     expect(onStartConversation).toHaveBeenCalledWith('agent-alpha');
     expect(document.querySelector('.shell-library-drawer--agent')).toBeNull();
+  });
+
+  it('searches and filters agents and offers a compact list view', () => {
+    const beta = {
+      ...agent,
+      id: 'agent-beta' as GlobalAgent['id'],
+      name: 'Agent Beta',
+      description: 'Handles release planning.',
+      defaultModelId: 'model-beta' as GlobalAgent['defaultModelId'],
+    };
+    renderLibrary(undefined, {
+      agents: [agent, beta],
+      models: [
+        { modelId: 'model-alpha', displayName: 'Model Alpha', providerName: 'Provider Alpha' },
+        { modelId: 'model-beta', displayName: 'Model Beta', providerName: 'Provider Beta' },
+      ],
+    });
+
+    expect(screen.getAllByRole('button', { name: '开始对话' })).toHaveLength(2);
+
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索智能体' }), {
+      target: { value: 'release' },
+    });
+    expect(screen.queryByText('Agent Alpha')).toBeNull();
+    expect(screen.getByText('Agent Beta')).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索智能体' }), {
+      target: { value: '' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: '按模型筛选' }), {
+      target: { value: 'model-alpha' },
+    });
+    expect(screen.getByText('Agent Alpha')).toBeTruthy();
+    expect(screen.queryByText('Agent Beta')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '列表视图' }));
+    expect(document.querySelector('.shell-library-grid')?.getAttribute('data-view')).toBe('list');
+    expect(screen.getByRole('button', { name: '列表视图' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+  });
+
+  it('labels a missing model without exposing its internal id as the model name', () => {
+    const missingModelAgent = {
+      ...agent,
+      defaultModelId: 'model-removed-from-catalog' as GlobalAgent['defaultModelId'],
+    };
+    renderLibrary(undefined, { agents: [missingModelAgent], models: [] });
+
+    expect(screen.getByText('模型不可用')).toBeTruthy();
+    expect(screen.queryByText('model-removed-from-catalog')).toBeNull();
+
+    fireEvent.click(screen.getByText('Agent Alpha').closest('.shell-library-card')!);
+    expect(screen.getAllByText('模型不可用').length).toBeGreaterThan(1);
+    expect(screen.queryByText('model-removed-from-catalog')).toBeNull();
   });
 
   it('closes the agent drawer with Escape', () => {
@@ -171,7 +220,12 @@ describe('AgentLibrary tabbed detail drawer', () => {
       teams: [team],
       conversations: [assignedConversation],
       workspaces: [
-        { workspaceId: 'workspace-1' as never, name: '工作区 一', createdAt: '', updatedAt: '' } as never,
+        {
+          workspaceId: 'workspace-1' as never,
+          name: '工作区 一',
+          createdAt: '',
+          updatedAt: '',
+        } as never,
       ],
       onOpenConversation,
     });
@@ -249,9 +303,7 @@ describe('AgentLibrary tabbed detail drawer', () => {
     expect(settings.querySelector('select')).toBeTruthy();
     expect(settings.querySelector('textarea')).toBeNull();
 
-    const nameInput = settings.querySelector(
-      'input[placeholder="前端小张"]',
-    ) as HTMLInputElement;
+    const nameInput = settings.querySelector('input[placeholder="前端小张"]') as HTMLInputElement;
     fireEvent.change(nameInput, { target: { value: '新名称' } });
     expect(nameInput.value).toBe('新名称');
   });

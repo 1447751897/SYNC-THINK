@@ -1,4 +1,5 @@
 export type PaneSplitDirection = 'horizontal' | 'vertical';
+export type PaneSplitSide = 'before' | 'after';
 
 export interface ConversationPaneTab {
   id: string;
@@ -1099,6 +1100,55 @@ export function movePaneResourceToPane(
   }
   if (next.panes[found.paneId]?.tabs.length === 0) next = closePane(next, found.paneId);
   return { ...next, focusedPaneId: targetPaneId };
+}
+
+export function splitPaneWithResource(
+  layout: WorkspacePaneLayout,
+  targetPaneId: string,
+  direction: PaneSplitDirection,
+  resource: PaneResourceRef,
+  side: PaneSplitSide = 'after',
+): WorkspacePaneLayout {
+  const found = findPaneTab(layout, resource);
+  const targetPane = layout.panes[targetPaneId];
+  if (!found || !targetPane) return layout;
+  if (found.paneId === targetPaneId && targetPane.tabs.length <= 1) return layout;
+
+  let next = removePaneTabWithoutCollapsing(layout, found.paneId, found.tab.id);
+  if (
+    found.paneId !== targetPaneId &&
+    next.panes[found.paneId]?.tabs.length === 0 &&
+    Object.keys(next.panes).length > 1
+  ) {
+    next = closePane(next, found.paneId);
+  }
+  const currentTarget = next.panes[targetPaneId];
+  const currentTargetNode = findPaneNode(next.root, targetPaneId);
+  if (!currentTarget || !currentTargetNode) return layout;
+
+  const newPaneId = nextId('pane');
+  const newPaneNode: PaneLeafNode = { type: 'pane', id: nextId('node'), paneId: newPaneId };
+  const splitNode: PaneSplitNode = {
+    type: 'split',
+    id: nextId('split'),
+    direction,
+    ratio: 0.5,
+    children:
+      side === 'before' ? [newPaneNode, currentTargetNode] : [currentTargetNode, newPaneNode],
+  };
+  return {
+    ...next,
+    panes: {
+      ...next.panes,
+      [newPaneId]: {
+        id: newPaneId,
+        tabs: [found.tab],
+        activeTabId: found.tab.id,
+      },
+    },
+    root: replacePaneNode(next.root, targetPaneId, splitNode),
+    focusedPaneId: newPaneId,
+  };
 }
 
 export function closeBrowserPaneTab(

@@ -345,6 +345,7 @@ import {
 import { classifyRuntimeConnectError, RuntimePipeClient } from './runtime-client.js';
 import { RuntimeSession } from './runtime-session.js';
 import {
+  ensureDaemonAutostartDefault,
   ensureDaemonProcess,
   ensureRuntimeProcess,
   probeDaemonPipe,
@@ -437,6 +438,7 @@ let desktopRuntimeIdentity: DesktopRuntimeIdentity | null = null;
 let shutdownStarted = false;
 let runtimeShutdownComplete = false;
 let runtimeSession: RuntimeSession | null = null;
+let daemonAutostartFailureLogged = false;
 let desktopUpdateController: DesktopUpdateController | null = null;
 let desktopUpdateRollbackCoordinator: DesktopUpdateRollbackCoordinator | null = null;
 let desktopUpdateRollbackHealthPromise: Promise<void> | null = null;
@@ -1016,6 +1018,11 @@ async function ensureRuntimeConnection(): Promise<RuntimeConnectResult> {
   // to a directly managed Runtime when daemon startup is unavailable.
   const identity = getDesktopRuntimeIdentity();
   const daemon = await ensureDaemonProcess(identity);
+  const autostart = await ensureDaemonAutostartDefault(identity);
+  if (!autostart.ok && !daemonAutostartFailureLogged) {
+    daemonAutostartFailureLogged = true;
+    console.warn('[desktop] daemon login startup registration failed');
+  }
   if (daemon.ready) {
     const runtimeReady = await waitForRuntimeProcess(identity.installId, 20_000);
     if (!runtimeReady) {

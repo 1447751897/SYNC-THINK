@@ -133,17 +133,45 @@ describe('WorkspaceFilesPanel', () => {
     expect(document.querySelector('.shell-code-preview__ln')).toBeNull();
   });
 
-  it('switches between 文件 / Git / Review sections and renders the Review panel', () => {
+  it('uses NewMax file views and keeps Git/review inside the more menu', () => {
     render(<WorkspaceFilesPanel projectFolder="C:/workspace" />);
 
-    expect(screen.getByRole('tab', { name: '文件' }).getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByRole('tab', { name: 'Git' }).getAttribute('aria-selected')).toBe('false');
-    expect(screen.getByRole('tab', { name: 'Review' }).getAttribute('aria-selected')).toBe('false');
+    expect(screen.getByRole('tab', { name: '所有文件' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.getByRole('tab', { name: '对话文件 0' }).getAttribute('aria-selected')).toBe(
+      'false',
+    );
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Review' }));
-    expect(screen.getByRole('tab', { name: 'Review' }).getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '工作区文件更多操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /审阅变动/ }));
     expect(screen.getByTestId('review-panel')).toBeTruthy();
     expect(screen.getByText('暂无本轮变更')).toBeTruthy();
+  });
+
+  it('opens review as a standalone workbench resource when the host provides the action', () => {
+    const view = {
+      runId: 'run-files',
+      steps: [],
+      fileChanges: [{ path: 'src/app.ts', action: 'edited' }],
+      running: false,
+      doneCount: 1,
+      errorCount: 0,
+    } as unknown as RunProcessView;
+    const onOpenReview = vi.fn();
+    render(
+      <WorkspaceFilesPanel
+        projectFolder="C:/workspace"
+        reviewView={view}
+        onOpenReview={onOpenReview}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '工作区文件更多操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /审阅变动/ }));
+
+    expect(onOpenReview).toHaveBeenCalledWith(view);
+    expect(screen.queryByTestId('review-panel')).toBeNull();
   });
 });
 
@@ -230,7 +258,7 @@ describe('ReviewPanel', () => {
     });
 
     expect(separator.getAttribute('aria-orientation')).toBe('vertical');
-    expect(separator.getAttribute('aria-valuenow')).toBe('280');
+    expect(separator.getAttribute('aria-valuenow')).toBe('288');
     fireEvent.pointerDown(separator, { clientX: 620, pointerId: 1 });
     expect(document.body.style.cursor).toBe('col-resize');
     expect(document.body.style.userSelect).toBe('none');
@@ -246,11 +274,11 @@ describe('ReviewPanel', () => {
     fireEvent.keyDown(separator, { key: 'ArrowLeft' });
     expect(separator.getAttribute('aria-valuenow')).toBe('360');
     fireEvent.keyDown(separator, { key: 'Home' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('220');
+    expect(separator.getAttribute('aria-valuenow')).toBe('221');
     fireEvent.keyDown(separator, { key: 'End' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('440');
+    expect(separator.getAttribute('aria-valuenow')).toBe('539');
     fireEvent.doubleClick(separator);
-    expect(separator.getAttribute('aria-valuenow')).toBe('280');
+    expect(separator.getAttribute('aria-valuenow')).toBe('288');
   });
 
   it('keeps enough room for the diff while resizing the change list', () => {
@@ -284,7 +312,7 @@ describe('ReviewPanel', () => {
 
     fireEvent.pointerDown(separator, { clientX: 320, pointerId: 2 });
     fireEvent.pointerMove(separator, { clientX: -500, pointerId: 2 });
-    expect(separator.getAttribute('aria-valuenow')).toBe('295');
+    expect(separator.getAttribute('aria-valuenow')).toBe('239');
     fireEvent.pointerUp(separator, { pointerId: 2 });
   });
 
@@ -323,7 +351,7 @@ describe('ReviewPanel', () => {
         {} as ResizeObserver,
       );
     });
-    expect(separator.getAttribute('aria-valuenow')).toBe('220');
+    expect(separator.getAttribute('aria-valuenow')).toBe('164');
 
     act(() => {
       resizeCallback?.(
@@ -331,10 +359,10 @@ describe('ReviewPanel', () => {
         {} as ResizeObserver,
       );
     });
-    expect(separator.getAttribute('aria-valuenow')).toBe('280');
+    expect(separator.getAttribute('aria-valuenow')).toBe('288');
 
     fireEvent.keyDown(separator, { key: 'ArrowLeft' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('296');
+    expect(separator.getAttribute('aria-valuenow')).toBe('304');
 
     act(() => {
       resizeCallback?.(
@@ -346,6 +374,6 @@ describe('ReviewPanel', () => {
         {} as ResizeObserver,
       );
     });
-    expect(separator.getAttribute('aria-valuenow')).toBe('296');
+    expect(separator.getAttribute('aria-valuenow')).toBe('304');
   });
 });

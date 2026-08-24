@@ -851,7 +851,7 @@ interface ChatViewProps {
   initialSkillVersionIds?: readonly string[];
   onInitialSkillSelectionConsumed?(conversationId: string): void;
   /**
-   * One-shot composer text pushed in from outside (活动中心 re-send).
+   * One-shot composer text pushed in from outside (活动中心“重新编辑”).
    * It only fills the input — the user still presses Send, so the turn keeps
    * going through this component's single send path.
    */
@@ -1512,7 +1512,7 @@ export function ChatView({
     // 「加载中…」。权限模式由 setPermission 自行同步，这里只需跟随 id。
   }, [clearCompactDismissTimer, clearRunProcessRetryState, conversation.id]);
 
-  // Seeded composer text (活动中心 re-send). Declared *after* the conversation
+  // Seeded composer text (活动中心“重新编辑”). Declared *after* the conversation
   // reset effect above so the seed survives: effects run in declaration order,
   // and that one clears `input` when the chat is (re)mounted.
   useEffect(() => {
@@ -3848,7 +3848,7 @@ export function ChatView({
               tone: 'success',
               text: result?.evaluatorConfigured
                 ? '目标已设置：每轮结束后将自动评估并续跑'
-                : '目标已设置，但尚未配置评估模型（设置 → 模型 → 目标模式评估模型）',
+                : '目标已设置，但尚未配置评估模型（设置 → 模型 → 更多模型设置 → 目标模式评估模型）',
               timestamp: new Date().toISOString(),
             },
           ]);

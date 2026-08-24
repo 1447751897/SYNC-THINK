@@ -431,3 +431,19 @@ M1：in progress (Providers panel observable; Agents/Manifest next)
 - 行展开状态依赖稳定 key；新增过程类型时必须提供 `id`、`sequence` 或工具 `toolCallId`，避免流式状态翻转时重挂载。
 - `agentTaskContent` 是真实委派任务投影的插槽。协议没有 AgentTask 数据前保持不传，禁止用本地假数据填充。
 - 最小回归：`InlineProcessFlow.test.tsx`、`ChatView.process-elapsed.test.tsx`、`ChatView.messageToChat.test.tsx`；任何样式改动还需实窗检查长参数、浅深主题和窄窗口。
+
+## 2026-08-24 NewMax 分屏与工作台交接
+
+- `pane-layout.ts` / `WorkspacePaneHost.tsx` 管理主递归分屏；标签拖到中心表示移动，拖到上下左右边缘表示创建分屏。不要重新加入常驻“横向/纵向分屏”按钮。
+- `workspace-workbench.ts` 是右侧/底部工作台的版本化 UI 状态模型，`WorkspaceWorkbench.tsx` 只渲染共享标签和调宽边界。布局按 workspaceId 存在 `sync-think.workspaceWorkbenchLayouts`，不得写入文件正文、diff 正文、终端输出或运行态。
+- 几何契约：紧凑右栏 330px；文件/审阅工作台 713px；内容 424px、分隔线 1px、文件/变更树 288px；底栏 280px。外层边界用 inset 1px 线，不占内容宽度。
+- `WorkspaceFileView.tsx` 负责文件预览/编辑 + 文件树；`RightDock.tsx` 的 `WorkspaceFilesPanel` 负责对话文件/所有文件，`ReviewPanel standalone` 负责 diff + 本轮变更树。工作区文件栏的“审阅变动”必须打开独立审阅标签。
+- 最小回归：`workspace-workbench.test.ts`、`WorkspaceWorkbench.test.tsx`、`ShellApp.test.tsx`、`WorkspaceFileView.test.tsx`、`RightDock.test.tsx`、`responsive-pane-layout.test.ts`、`newmax-visual-contract.test.ts`。视觉证据位于 `.data/newmax-workbench-qa/`。
+
+## 2026-08-24 NewMax 模型设置交接
+
+- `SettingsPage.tsx` 负责 192px 设置侧栏、搜索和完成动作；模型配置的数据加载、保存和脏状态仍全部归 `ModelSettings.tsx`。不要把 Provider 行为移进设置外壳。
+- 固定几何契约为：弹窗 `1060 × 720px`、标题行 48px、模型类型行 64px、底栏 72px、模型列表 240px、右侧内容 596px；详情/目录/云同步入口相对弹窗从 `x=440 / y≈119` 开始。紧凑窗口允许缩放，但必须完整留在视口内。
+- 顶部顺序固定为文本生成、图像生成、视频生成、语音生成、语音识别、使用统计；推荐服务只保留自定义供应商和 CC Switch。NewMax Gateway 已从目录移除，不要重新加入。
+- 图片识别 Fallback、规划/执行模型、模型配置云同步位于模型列表下方；目标模式评估模型位于“已停用模型”更多菜单。这些是现有产品能力，视觉对齐时不能删除。
+- 最小回归为 `ModelSettings.test.tsx`、`SettingsPage.test.tsx`、`ShellApp.test.tsx`；还需实窗检查亮暗主题、分类滑动、服务商详情/目录、云同步和 900x650 窄窗。证据目录为 `.data/newmax-models-qa/`。

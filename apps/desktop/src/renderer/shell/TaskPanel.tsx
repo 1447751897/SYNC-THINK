@@ -11,7 +11,7 @@
  * - 随机规则支持「最少 / 最多」两次输入（minTimes / maxTimes）。
  * - 编辑器六分区、执行历史弹层保持 v6 视觉不变。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Check,
@@ -148,7 +148,10 @@ export function TaskPanel({
       const res = await api.listScheduledTasks({});
       setTasks(res.tasks);
     } catch (error) {
-      onNotify?.('error', `加载任务失败: ${error instanceof Error ? error.message : String(error)}`);
+      onNotify?.(
+        'error',
+        `加载任务失败: ${error instanceof Error ? error.message : String(error)}`,
+      );
     } finally {
       setLoading(false);
     }
@@ -209,11 +212,14 @@ export function TaskPanel({
     }
   };
 
-  const workspaceName = (workspaceId?: string): string => {
-    if (!workspaceId) return '全局';
-    const ws = workspaces.find((w) => w.workspaceId === workspaceId);
-    return ws?.name ?? '未知工作区';
-  };
+  const workspaceName = useCallback(
+    (workspaceId?: string): string => {
+      if (!workspaceId) return '全局';
+      const ws = workspaces.find((w) => w.workspaceId === workspaceId);
+      return ws?.name ?? '未知工作区';
+    },
+    [workspaces],
+  );
 
   // 归属选项：全局收件箱 + 有任务或已选的工作区
   const scopeOptions = useMemo(() => {
@@ -253,9 +259,7 @@ export function TaskPanel({
     () =>
       sorted.filter((task) => {
         const scopeOk =
-          scopeAll ||
-          scopeSel.size === 0 ||
-          scopeSel.has(task.workspaceId ?? 'global');
+          scopeAll || scopeSel.size === 0 || scopeSel.has(task.workspaceId ?? 'global');
         const statusOk =
           statusSel.size === 0 ||
           (statusSel.has('enabled') && task.enabled) ||
@@ -278,11 +282,15 @@ export function TaskPanel({
       );
     }
     if (statusSel.size > 0) {
-      const names: Record<StatusKey, string> = { enabled: '启用中', disabled: '已停用', 'last-fail': '上次失败' };
+      const names: Record<StatusKey, string> = {
+        enabled: '启用中',
+        disabled: '已停用',
+        'last-fail': '上次失败',
+      };
       parts.push([...statusSel].map((k) => names[k]).join(' + '));
     }
     return parts.length > 0 ? parts.join(' · ') : '全部';
-  }, [scopeAll, scopeSel, statusSel, workspaces]);
+  }, [scopeAll, scopeSel, statusSel, workspaceName]);
 
   // 拖拽调宽
   const onGripMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -367,7 +375,9 @@ export function TaskPanel({
             onClick={() => toggleScope('global')}
           >
             <span className="task-panel__sb-label">全局收件箱</span>
-            <span className="task-panel__sb-count">{scopeOptions.find((o) => o.id === 'global')?.count ?? 0}</span>
+            <span className="task-panel__sb-count">
+              {scopeOptions.find((o) => o.id === 'global')?.count ?? 0}
+            </span>
             <span className="task-panel__sb-check">✓</span>
           </button>
           {scopeOptions
@@ -443,7 +453,8 @@ export function TaskPanel({
             ) : (
               shown.map((task) => {
                 const nextMs = task.nextRunAt ? Date.parse(task.nextRunAt) : NaN;
-                const dueSoon = Number.isFinite(nextMs) && nextMs - now < 5 * 60_000 && task.enabled;
+                const dueSoon =
+                  Number.isFinite(nextMs) && nextMs - now < 5 * 60_000 && task.enabled;
                 return (
                   <div
                     key={task.id}
@@ -499,7 +510,10 @@ export function TaskPanel({
                           title="查看执行历史"
                           onClick={() => setHistoryTask(task)}
                         >
-                          <span className="task-panel__lr-dot" data-status={task.lastResult.status} />
+                          <span
+                            className="task-panel__lr-dot"
+                            data-status={task.lastResult.status}
+                          />
                           {task.lastResult.status === 'success'
                             ? '✓'
                             : task.lastResult.status === 'skipped'
@@ -737,13 +751,19 @@ function HistoryPanel({
   }, [entries]);
 
   return (
-    <div className="task-hist-backdrop" data-testid="task-history" onMouseDown={(e) => {
-      if (e.target === e.currentTarget) onClose();
-    }}>
+    <div
+      className="task-hist-backdrop"
+      data-testid="task-history"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div className="task-hist">
         <header className="task-hist__head">
           <div>
-            <h2>执行历史 <span className="task-hist__task">· {task.name}</span></h2>
+            <h2>
+              执行历史 <span className="task-hist__task">· {task.name}</span>
+            </h2>
             <p className="task-hist__subtitle">最近 {HISTORY_LIMIT} 次执行记录</p>
           </div>
           <button type="button" className="task-editor__close" aria-label="关闭" onClick={onClose}>
@@ -752,7 +772,9 @@ function HistoryPanel({
         </header>
         <div className="task-hist__body">
           {error ? (
-            <div className="task-panel__empty" role="alert">{error}</div>
+            <div className="task-panel__empty" role="alert">
+              {error}
+            </div>
           ) : !entries ? (
             <div className="task-panel__empty">
               <LoaderCircle size={16} className="shell-process-spin" />
@@ -764,7 +786,11 @@ function HistoryPanel({
             entries.map((entry) => (
               <div key={entry.id} className="task-hist__row" data-status={entry.status}>
                 <span className={`task-hist__status is-${entry.status}`}>
-                  {entry.status === 'success' ? '成功' : entry.status === 'failed' ? '失败' : '跳过'}
+                  {entry.status === 'success'
+                    ? '成功'
+                    : entry.status === 'failed'
+                      ? '失败'
+                      : '跳过'}
                 </span>
                 <span className="task-hist__time">{formatLocal(entry.firedAt)}</span>
                 {entry.summary ? (
@@ -866,13 +892,7 @@ function SelectOption({
 
 // ─── 时区菜单（搜索 + 常用/全部分组）────────────────────────────────────────
 
-function ZoneMenu({
-  value,
-  onPick,
-}: {
-  value: string;
-  onPick(zone: string): void;
-}) {
+function ZoneMenu({ value, onPick }: { value: string; onPick(zone: string): void }) {
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
   const filtered = q ? TIME_ZONES.filter((z) => z.toLowerCase().includes(q)) : null;
@@ -891,18 +911,36 @@ function ZoneMenu({
           <div className="task-editor__zone-empty">无匹配时区</div>
         ) : (
           filtered.map((zone) => (
-            <SelectOption key={zone} value={zone} label={zone} active={zone === value} onPick={onPick} />
+            <SelectOption
+              key={zone}
+              value={zone}
+              label={zone}
+              active={zone === value}
+              onPick={onPick}
+            />
           ))
         )
       ) : (
         <>
           <div className="task-editor__zone-group">常用</div>
           {TIME_ZONE_COMMON.map((zone) => (
-            <SelectOption key={zone} value={zone} label={zone} active={zone === value} onPick={onPick} />
+            <SelectOption
+              key={zone}
+              value={zone}
+              label={zone}
+              active={zone === value}
+              onPick={onPick}
+            />
           ))}
           <div className="task-editor__zone-group">全部</div>
           {TIME_ZONES.filter((z) => !TIME_ZONE_COMMON.includes(z)).map((zone) => (
-            <SelectOption key={zone} value={zone} label={zone} active={zone === value} onPick={onPick} />
+            <SelectOption
+              key={zone}
+              value={zone}
+              label={zone}
+              active={zone === value}
+              onPick={onPick}
+            />
           ))}
         </>
       )}
@@ -933,9 +971,15 @@ function TaskEditor({
 }) {
   const [name, setName] = useState(task?.name ?? '');
   const [instruction, setInstruction] = useState(task?.instruction ?? '');
-  const [ownerKind, setOwnerKind] = useState<'global' | 'workspace'>(task?.workspaceId ? 'workspace' : 'global');
-  const [workspaceId, setWorkspaceId] = useState(task?.workspaceId ?? workspaces[0]?.workspaceId ?? '');
-  const [targetKind, setTargetKind] = useState<'agent' | 'model' | 'team'>(task?.target.kind ?? 'agent');
+  const [ownerKind, setOwnerKind] = useState<'global' | 'workspace'>(
+    task?.workspaceId ? 'workspace' : 'global',
+  );
+  const [workspaceId, setWorkspaceId] = useState(
+    task?.workspaceId ?? workspaces[0]?.workspaceId ?? '',
+  );
+  const [targetKind, setTargetKind] = useState<'agent' | 'model' | 'team'>(
+    task?.target.kind ?? 'agent',
+  );
   const [targetRef, setTargetRef] = useState(() => {
     if (!task) return '';
     const t = task.target;
@@ -953,9 +997,7 @@ function TaskEditor({
     task?.rule.kind === 'every' ? String(task.rule.intervalMinutes) : '60',
   );
   const [windowUnlimited, setWindowUnlimited] = useState(
-    task?.rule.kind === 'every'
-      ? !(task.rule.windowStart && task.rule.windowEnd)
-      : false,
+    task?.rule.kind === 'every' ? !(task.rule.windowStart && task.rule.windowEnd) : false,
   );
   const [windowStart, setWindowStart] = useState(
     task?.rule.kind === 'every' && task.rule.windowStart ? task.rule.windowStart : '09:00',
@@ -963,11 +1005,21 @@ function TaskEditor({
   const [windowEnd, setWindowEnd] = useState(
     task?.rule.kind === 'every' && task.rule.windowEnd ? task.rule.windowEnd : '18:00',
   );
-  const [randomStart, setRandomStart] = useState(task?.rule.kind === 'random' ? task.rule.windowStart : '09:00');
-  const [randomEnd, setRandomEnd] = useState(task?.rule.kind === 'random' ? task.rule.windowEnd : '18:00');
-  const [randomMin, setRandomMin] = useState(task?.rule.kind === 'random' ? String(task.rule.minTimes) : '1');
-  const [randomMax, setRandomMax] = useState(task?.rule.kind === 'random' ? String(task.rule.maxTimes) : '2');
-  const [cronExpr, setCronExpr] = useState(task?.rule.kind === 'cron' ? task.rule.expression : '0 9 * * *');
+  const [randomStart, setRandomStart] = useState(
+    task?.rule.kind === 'random' ? task.rule.windowStart : '09:00',
+  );
+  const [randomEnd, setRandomEnd] = useState(
+    task?.rule.kind === 'random' ? task.rule.windowEnd : '18:00',
+  );
+  const [randomMin, setRandomMin] = useState(
+    task?.rule.kind === 'random' ? String(task.rule.minTimes) : '1',
+  );
+  const [randomMax, setRandomMax] = useState(
+    task?.rule.kind === 'random' ? String(task.rule.maxTimes) : '2',
+  );
+  const [cronExpr, setCronExpr] = useState(
+    task?.rule.kind === 'cron' ? task.rule.expression : '0 9 * * *',
+  );
   const [timeZone, setTimeZone] = useState(task?.timeZone ?? 'Asia/Shanghai');
   const [selectedSkills, setSelectedSkills] = useState<string[]>(task?.skillVersionIds ?? []);
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
@@ -1022,7 +1074,8 @@ function TaskEditor({
   useEffect(() => {
     if (!skillPickerOpen) return;
     const onDoc = (e: MouseEvent) => {
-      if (skillRef.current && !skillRef.current.contains(e.target as Node)) setSkillPickerOpen(false);
+      if (skillRef.current && !skillRef.current.contains(e.target as Node))
+        setSkillPickerOpen(false);
     };
     document.addEventListener('click', onDoc);
     return () => document.removeEventListener('click', onDoc);
@@ -1068,7 +1121,13 @@ function TaskEditor({
         setError('窗口时间需为 HH:mm');
         return null;
       }
-      return { kind: 'random', windowStart: randomStart, windowEnd: randomEnd, minTimes: min, maxTimes: max };
+      return {
+        kind: 'random',
+        windowStart: randomStart,
+        windowEnd: randomEnd,
+        minTimes: min,
+        maxTimes: max,
+      };
     }
     if (ruleKind === 'cron') {
       if (!cronExpr.trim()) {
@@ -1140,9 +1199,13 @@ function TaskEditor({
   const windowIsCrossDay = !windowUnlimited && windowStart >= windowEnd;
 
   return (
-    <div className="task-editor-backdrop" data-testid="task-editor" onMouseDown={(e) => {
-      if (e.target === e.currentTarget) onClose();
-    }}>
+    <div
+      className="task-editor-backdrop"
+      data-testid="task-editor"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div className="task-editor">
         <header className="task-editor__head">
           <div>
@@ -1161,7 +1224,11 @@ function TaskEditor({
             <div className="task-editor__section-body">
               <label className="task-editor__field">
                 <span>任务名称</span>
-                <input value={name} placeholder="如：每日代码巡检" onChange={(e) => setName(e.target.value)} />
+                <input
+                  value={name}
+                  placeholder="如：每日代码巡检"
+                  onChange={(e) => setName(e.target.value)}
+                />
               </label>
 
               <label className="task-editor__field">
@@ -1187,10 +1254,15 @@ function TaskEditor({
                   data-active={ownerKind === 'global' ? '1' : '0'}
                   onClick={() => setOwnerKind('global')}
                 >
-                  <span className="task-editor__radio" data-checked={ownerKind === 'global' ? '1' : '0'} />
+                  <span
+                    className="task-editor__radio"
+                    data-checked={ownerKind === 'global' ? '1' : '0'}
+                  />
                   <span className="task-editor__owner-info">
                     <span className="task-editor__owner-title">全局任务</span>
-                    <span className="task-editor__owner-desc">使用独立会话，不携带工作区上下文</span>
+                    <span className="task-editor__owner-desc">
+                      使用独立会话，不携带工作区上下文
+                    </span>
                   </span>
                 </button>
                 <button
@@ -1199,10 +1271,15 @@ function TaskEditor({
                   data-active={ownerKind === 'workspace' ? '1' : '0'}
                   onClick={() => setOwnerKind('workspace')}
                 >
-                  <span className="task-editor__radio" data-checked={ownerKind === 'workspace' ? '1' : '0'} />
+                  <span
+                    className="task-editor__radio"
+                    data-checked={ownerKind === 'workspace' ? '1' : '0'}
+                  />
                   <span className="task-editor__owner-info">
                     <span className="task-editor__owner-title">绑定工作区</span>
-                    <span className="task-editor__owner-desc">触发时使用该工作区的上下文与文件</span>
+                    <span className="task-editor__owner-desc">
+                      触发时使用该工作区的上下文与文件
+                    </span>
                   </span>
                 </button>
               </div>
@@ -1211,7 +1288,8 @@ function TaskEditor({
                   <SelectBox
                     value={
                       workspaceId
-                        ? (workspaces.find((ws) => ws.workspaceId === workspaceId)?.name ?? workspaceId)
+                        ? (workspaces.find((ws) => ws.workspaceId === workspaceId)?.name ??
+                          workspaceId)
                         : ''
                     }
                     placeholder="选择工作区"
@@ -1265,7 +1343,9 @@ function TaskEditor({
               {targetKind === 'agent' ? (
                 <div className="task-editor__target-list">
                   {agentOptions.length === 0 ? (
-                    <div className="task-editor__target-empty">（智能体库为空，请先创建智能体）</div>
+                    <div className="task-editor__target-empty">
+                      （智能体库为空，请先创建智能体）
+                    </div>
                   ) : (
                     agentOptions.map((agent) => (
                       <button
@@ -1279,10 +1359,15 @@ function TaskEditor({
                         <span className="task-editor__target-info">
                           <span className="task-editor__target-name">{agent.name}</span>
                           {agent.description?.trim() ? (
-                            <span className="task-editor__target-desc">{agent.description.trim()}</span>
+                            <span className="task-editor__target-desc">
+                              {agent.description.trim()}
+                            </span>
                           ) : null}
                         </span>
-                        <span className="task-editor__radio" data-checked={targetRef === agent.id ? '1' : '0'} />
+                        <span
+                          className="task-editor__radio"
+                          data-checked={targetRef === agent.id ? '1' : '0'}
+                        />
                       </button>
                     ))
                   )}
@@ -1309,7 +1394,10 @@ function TaskEditor({
                             <span className="task-editor__target-desc">{team.mission.trim()}</span>
                           ) : null}
                         </span>
-                        <span className="task-editor__radio" data-checked={targetRef === team.id ? '1' : '0'} />
+                        <span
+                          className="task-editor__radio"
+                          data-checked={targetRef === team.id ? '1' : '0'}
+                        />
                       </button>
                     ))
                   )}
@@ -1322,8 +1410,7 @@ function TaskEditor({
                     <span className="task-editor__field-label">供应商</span>
                     <SelectBox
                       value={
-                        providerRef ||
-                        (providerOptions.length === 1 ? providerOptions[0]! : '')
+                        providerRef || (providerOptions.length === 1 ? providerOptions[0]! : '')
                       }
                       placeholder="选择供应商"
                       className="task-editor__select-grow"
@@ -1451,7 +1538,11 @@ function TaskEditor({
                         checked={windowUnlimited}
                         onChange={(e) => setWindowUnlimited(e.target.checked)}
                       />
-                      <span className="task-editor__switch" data-on={windowUnlimited ? '1' : '0'} aria-hidden="true" />
+                      <span
+                        className="task-editor__switch"
+                        data-on={windowUnlimited ? '1' : '0'}
+                        aria-hidden="true"
+                      />
                       <span className="task-editor__field-label">不限（全天）</span>
                     </label>
                   </div>
@@ -1499,7 +1590,9 @@ function TaskEditor({
                       onChange={(e) => setRandomMin(e.target.value)}
                     />
                     <span className="task-editor__field-label">次</span>
-                    <span className="task-editor__field-label" style={{ marginLeft: 6 }}>最多</span>
+                    <span className="task-editor__field-label" style={{ marginLeft: 6 }}>
+                      最多
+                    </span>
                     <input
                       className="task-editor__num"
                       type="number"
@@ -1525,13 +1618,7 @@ function TaskEditor({
                     />
                   </div>
                   <div className="task-editor__presets">
-                    {(
-                      [
-                        '*/30 * * * *',
-                        '0 9 * * 1-5',
-                        '0 8 * * *',
-                      ] as const
-                    ).map((expr) => (
+                    {(['*/30 * * * *', '0 9 * * 1-5', '0 8 * * *'] as const).map((expr) => (
                       <button key={expr} type="button" onClick={() => setCronExpr(expr)}>
                         {expr}
                       </button>
@@ -1555,7 +1642,9 @@ function TaskEditor({
                       <button
                         type="button"
                         aria-label="移除"
-                        onClick={() => setSelectedSkills((prev) => prev.filter((id) => id !== skillVersionId))}
+                        onClick={() =>
+                          setSelectedSkills((prev) => prev.filter((id) => id !== skillVersionId))
+                        }
                       >
                         <X size={11} />
                       </button>
@@ -1592,7 +1681,9 @@ function TaskEditor({
                             <span className="task-editor__skill-opt-info">
                               <span className="task-editor__skill-opt-name">{skill.name}</span>
                               {skill.description ? (
-                                <span className="task-editor__skill-opt-desc">{skill.description}</span>
+                                <span className="task-editor__skill-opt-desc">
+                                  {skill.description}
+                                </span>
                               ) : null}
                             </span>
                             <span className="task-editor__skill-opt-state">
@@ -1605,7 +1696,9 @@ function TaskEditor({
                   </div>
                 ) : null}
               </div>
-              <div className="task-editor__hint-row">候选 Skill 仅在点击「添加 Skill」时弹出；已添加项置灰防重复，最多 5 个</div>
+              <div className="task-editor__hint-row">
+                候选 Skill 仅在点击「添加 Skill」时弹出；已添加项置灰防重复，最多 5 个
+              </div>
             </div>
           </section>
 
@@ -1613,10 +1706,7 @@ function TaskEditor({
           <section className="task-editor__section">
             <h3 className="task-editor__section-title">⑥ 时区</h3>
             <div className="task-editor__section-body">
-              <SelectBox
-                value={timeZone}
-                placeholder="选择时区"
-              >
+              <SelectBox value={timeZone} placeholder="选择时区">
                 <ZoneMenu value={timeZone} onPick={setTimeZone} />
               </SelectBox>
             </div>

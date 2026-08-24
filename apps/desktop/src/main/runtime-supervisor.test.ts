@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildDaemonAutostartCommand,
+  buildDaemonRegistryAutostartCommand,
   buildManagedRuntimeEnvironment,
   buildRuntimeSpawnOptions,
   daemonRestartDelayMs,
   managedRuntimeCommandLineMatches,
+  resolveDaemonAutostartStartupAction,
 } from './runtime-supervisor.js';
 
 // Existing spawn contracts remain deliberately pure so lifecycle changes can
@@ -25,6 +27,16 @@ describe('daemon supervised restart', () => {
     expect(daemonRestartDelayMs(1)).toBe(1_000);
     expect(daemonRestartDelayMs(2)).toBe(2_000);
     expect(daemonRestartDelayMs(10)).toBe(5_000);
+  });
+});
+
+describe('daemon autostart default', () => {
+  it('enables on first run, repairs an enabled registration, and preserves opt-out', () => {
+    expect(resolveDaemonAutostartStartupAction(undefined, false)).toBe('enable');
+    expect(resolveDaemonAutostartStartupAction(true, false)).toBe('enable');
+    expect(resolveDaemonAutostartStartupAction(true, true)).toBe('none');
+    expect(resolveDaemonAutostartStartupAction(false, false)).toBe('none');
+    expect(resolveDaemonAutostartStartupAction(false, true)).toBe('disable');
   });
 });
 
@@ -101,6 +113,20 @@ describe('buildManagedRuntimeEnvironment', () => {
     expect(command).toContain('--bootstrap');
     expect(command).toContain('daemon-bootstrap.json');
     expect(command).toContain('sync-think-managed-daemon=install-managed');
+    expect(command).not.toContain('pipe-secret');
+  });
+
+  it('builds the user registry fallback from the same secret-free bootstrap command', () => {
+    const command = buildDaemonRegistryAutostartCommand(
+      'C:\\node\\node.exe',
+      'C:\\runtime\\daemon\\index.js',
+      'C:\\Users\\fixture\\daemon-bootstrap.json',
+      'install-managed',
+    );
+
+    expect(command).toBe(
+      '"C:\\node\\node.exe" "C:\\runtime\\daemon\\index.js" --bootstrap "C:\\Users\\fixture\\daemon-bootstrap.json" sync-think-managed-daemon=install-managed',
+    );
     expect(command).not.toContain('pipe-secret');
   });
 });

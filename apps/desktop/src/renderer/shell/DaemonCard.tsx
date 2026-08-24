@@ -100,7 +100,7 @@ export function DaemonCard() {
         <label className="settings-daemon-row">
           <span>
             开机自启
-            <small>登录时自动启动守护进程</small>
+            <small>默认开启；手动关闭后将保持关闭</small>
           </span>
           <input
             type="checkbox"
@@ -133,7 +133,11 @@ export function DaemonCard() {
             停止
           </button>
         ) : (
-          <button type="button" className="settings-button is-primary" onClick={() => void handleStart()}>
+          <button
+            type="button"
+            className="settings-button is-primary"
+            onClick={() => void handleStart()}
+          >
             启动
           </button>
         )}

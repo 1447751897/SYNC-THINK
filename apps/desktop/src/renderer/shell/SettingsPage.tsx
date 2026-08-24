@@ -31,6 +31,7 @@ import {
   TerminalSquare,
   Trash2,
   UsersRound,
+  WandSparkles,
   WalletCards,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -105,14 +106,15 @@ const SECTIONS: Array<{
   label: string;
   icon: typeof Palette;
   ready: boolean;
+  visible?: boolean;
   keywords?: string;
 }> = [
   { id: 'account', label: '账号', icon: CircleUserRound, ready: false },
   { id: 'wallet', label: '钱包', icon: WalletCards, ready: false },
   { id: 'organization', label: '组织', icon: UsersRound, ready: false },
   { id: 'general', label: '通用', icon: Settings, ready: true, keywords: '动画 权限 个性化' },
-  { id: 'theme', label: '主题', icon: Palette, ready: true, keywords: '浅色 深色 外观' },
-  { id: 'shortcuts', label: '快捷键', icon: Keyboard, ready: false },
+  { id: 'theme', label: '偏好', icon: WandSparkles, ready: true, keywords: '主题 浅色 深色 外观' },
+  { id: 'shortcuts', label: '快捷键', icon: Keyboard, ready: false, visible: false },
   {
     id: 'models',
     label: '模型',
@@ -120,7 +122,7 @@ const SECTIONS: Array<{
     ready: true,
     keywords: '供应商 API 密钥 CC Switch 使用统计',
   },
-  { id: 'voice', label: '语音模型', icon: Mic2, ready: false },
+  { id: 'voice', label: '语音模型', icon: Mic2, ready: false, visible: false },
   { id: 'insights', label: '每日回顾', icon: BarChart3, ready: false },
   {
     id: 'connection',
@@ -129,12 +131,13 @@ const SECTIONS: Array<{
     ready: true,
     keywords: 'AI 模型网关 协议转换 Claude Code Codex 反向代理 baseUrl 端口 /v1/models',
   },
-  { id: 'security', label: '安全查杀', icon: ShieldCheck, ready: false },
+  { id: 'security', label: '安全查杀', icon: ShieldCheck, ready: false, visible: false },
   {
     id: 'plugins',
     label: '插件',
     icon: Sparkles,
     ready: true,
+    visible: false,
     keywords: 'Computer Use 桌面 UIA 自动化',
   },
   {
@@ -160,10 +163,13 @@ export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: Settin
   const [completing, setCompleting] = useState(false);
   const modelSettingsRef = useRef<ModelSettingsHandle | null>(null);
 
-  const reportDirty = useCallback((dirty: boolean) => {
-    setModelDirty(dirty);
-    onDirtyChange?.(dirty);
-  }, [onDirtyChange]);
+  const reportDirty = useCallback(
+    (dirty: boolean) => {
+      setModelDirty(dirty);
+      onDirtyChange?.(dirty);
+    },
+    [onDirtyChange],
+  );
 
   const handleDone = async () => {
     if (completing) return;
@@ -183,7 +189,7 @@ export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: Settin
 
   const visibleSections = useMemo(() => {
     const value = query.trim().toLocaleLowerCase('zh-CN');
-    if (!value) return SECTIONS;
+    if (!value) return SECTIONS.filter((item) => item.visible !== false);
     return SECTIONS.filter((item) =>
       `${item.label} ${item.keywords ?? ''}`.toLocaleLowerCase('zh-CN').includes(value),
     );
@@ -477,9 +483,7 @@ function PersonalizationPanel() {
           />
         }
       />
-      <p className="settings-note">
-        {saved ? '已保存。' : '失焦或按回车保存，仅存在本机。'}
-      </p>
+      <p className="settings-note">{saved ? '已保存。' : '失焦或按回车保存，仅存在本机。'}</p>
     </div>
   );
 }
@@ -505,19 +509,14 @@ function ComputerUsePluginSection() {
       .then((response) => {
         if (disposed) return;
         setEnabled(
-          normalizeComputerUsePluginSetting(
-            response.settings[COMPUTER_USE_PLUGIN_SETTING_KEY],
-          ).enabled,
+          normalizeComputerUsePluginSetting(response.settings[COMPUTER_USE_PLUGIN_SETTING_KEY])
+            .enabled,
         );
         setError(undefined);
       })
       .catch((reason: unknown) => {
         if (disposed) return;
-        setError(
-          reason instanceof Error
-            ? reason.message
-            : '无法读取 Computer Use 插件状态。',
-        );
+        setError(reason instanceof Error ? reason.message : '无法读取 Computer Use 插件状态。');
       })
       .finally(() => {
         if (!disposed) setLoading(false);
@@ -541,11 +540,7 @@ function ComputerUsePluginSection() {
       });
     } catch (reason) {
       setEnabled(previous);
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : '保存 Computer Use 插件状态失败。',
-      );
+      setError(reason instanceof Error ? reason.message : '保存 Computer Use 插件状态失败。');
     } finally {
       setSaving(false);
     }
@@ -850,10 +845,7 @@ function ConnectionSection() {
             </div>
           ) : null}
 
-          <p
-            className="settings-gateway-card__upstream"
-            data-testid="settings-gateway-upstream"
-          >
+          <p className="settings-gateway-card__upstream" data-testid="settings-gateway-upstream">
             {status?.lastUpstream
               ? `上游：${status.lastUpstream.providerName}（${protocolLabel(
                   status.lastUpstream.protocol,
@@ -1042,21 +1034,30 @@ function GatewayAuditLogs() {
           <span className="settings-gateway-logs__filter-label">类型</span>
           <button
             type="button"
-            className={clsx('settings-gateway-logs__chip', filter.converted === undefined && 'is-active')}
+            className={clsx(
+              'settings-gateway-logs__chip',
+              filter.converted === undefined && 'is-active',
+            )}
             onClick={() => patchFilter({ converted: undefined })}
           >
             全部
           </button>
           <button
             type="button"
-            className={clsx('settings-gateway-logs__chip', filter.converted === true && 'is-active')}
+            className={clsx(
+              'settings-gateway-logs__chip',
+              filter.converted === true && 'is-active',
+            )}
             onClick={() => patchFilter({ converted: true })}
           >
             转换
           </button>
           <button
             type="button"
-            className={clsx('settings-gateway-logs__chip', filter.converted === false && 'is-active')}
+            className={clsx(
+              'settings-gateway-logs__chip',
+              filter.converted === false && 'is-active',
+            )}
             onClick={() => patchFilter({ converted: false })}
           >
             直通
@@ -1066,21 +1067,30 @@ function GatewayAuditLogs() {
           <span className="settings-gateway-logs__filter-label">状态</span>
           <button
             type="button"
-            className={clsx('settings-gateway-logs__chip', filter.status === undefined && 'is-active')}
+            className={clsx(
+              'settings-gateway-logs__chip',
+              filter.status === undefined && 'is-active',
+            )}
             onClick={() => patchFilter({ status: undefined })}
           >
             全部
           </button>
           <button
             type="button"
-            className={clsx('settings-gateway-logs__chip', filter.status === 'success' && 'is-active')}
+            className={clsx(
+              'settings-gateway-logs__chip',
+              filter.status === 'success' && 'is-active',
+            )}
             onClick={() => patchFilter({ status: 'success' })}
           >
             成功
           </button>
           <button
             type="button"
-            className={clsx('settings-gateway-logs__chip', filter.status === 'error' && 'is-active')}
+            className={clsx(
+              'settings-gateway-logs__chip',
+              filter.status === 'error' && 'is-active',
+            )}
             onClick={() => patchFilter({ status: 'error' })}
           >
             失败
@@ -1133,7 +1143,9 @@ function GatewayAuditLogs() {
                   onClick={() => setExpandedId(expanded ? undefined : entry.id)}
                   data-testid="gateway-log-row"
                 >
-                  <span className="settings-gateway-logs__time">{formatLogTime(entry.occurredAt)}</span>
+                  <span className="settings-gateway-logs__time">
+                    {formatLogTime(entry.occurredAt)}
+                  </span>
                   <span
                     className="settings-gateway-logs__kernel"
                     title={GATEWAY_KERNEL_LABEL[entry.kernelId ?? 'external'] ?? entry.kernelId}
@@ -1170,10 +1182,15 @@ function GatewayAuditLogs() {
                   <div className="settings-gateway-logs__detail">
                     <div className="settings-gateway-logs__detail-meta">
                       <span>
-                        内核：{GATEWAY_KERNEL_LABEL[entry.kernelId ?? 'external'] ?? entry.kernelId ?? '外部'}
+                        内核：
+                        {GATEWAY_KERNEL_LABEL[entry.kernelId ?? 'external'] ??
+                          entry.kernelId ??
+                          '外部'}
                       </span>
                       {entry.runId ? <span>运行：{entry.runId}</span> : null}
-                      <span>耗时：{entry.latencyMs !== undefined ? `${entry.latencyMs}ms` : '—'}</span>
+                      <span>
+                        耗时：{entry.latencyMs !== undefined ? `${entry.latencyMs}ms` : '—'}
+                      </span>
                       {entry.truncated ? <span>正文已截断</span> : null}
                     </div>
                     {entry.errorMessage ? (
@@ -1181,15 +1198,11 @@ function GatewayAuditLogs() {
                     ) : null}
                     <div className="settings-gateway-logs__detail-bodies">
                       <div className="settings-gateway-logs__detail-body">
-                        <p>
-                          原始格式（{GATEWAY_DIALECT_LABEL[entry.inboundDialect]}）
-                        </p>
+                        <p>原始格式（{GATEWAY_DIALECT_LABEL[entry.inboundDialect]}）</p>
                         <pre>{prettyJsonText(entry.rawRequest)}</pre>
                       </div>
                       <div className="settings-gateway-logs__detail-body">
-                        <p>
-                          转换后格式（{GATEWAY_DIALECT_LABEL[entry.upstreamProtocol]}）
-                        </p>
+                        <p>转换后格式（{GATEWAY_DIALECT_LABEL[entry.upstreamProtocol]}）</p>
                         <pre>{prettyJsonText(entry.convertedRequest)}</pre>
                       </div>
                     </div>

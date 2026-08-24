@@ -1,8 +1,8 @@
 /** @vitest-environment jsdom */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Conversation } from '@sync-think/shared';
-import { ConversationTabs } from './ConversationTabs.js';
+import { ConversationTabs, calculatePaneTabWidth } from './ConversationTabs.js';
 
 afterEach(cleanup);
 
@@ -11,7 +11,80 @@ const conversations = [
   { id: 'c2', title: '对话二', track: 'agent' },
 ] as unknown as Conversation[];
 
+describe('ConversationTabs NewMax tab track', () => {
+  it('shares the 58-172px measured width rule across every resource tab', () => {
+    expect(calculatePaneTabWidth(760, 5)).toBe(141);
+    expect(calculatePaneTabWidth(2400, 5)).toBe(172);
+    expect(calculatePaneTabWidth(260, 8)).toBe(58);
+  });
+
+  it('uses one common resource-tab class and width variable', () => {
+    const { container } = render(
+      <ConversationTabs
+        conversations={conversations}
+        openIds={['c1', 'c2']}
+        activeId="c1"
+        fileTabs={[{ id: 'file:readme', path: 'README.md' }]}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onSelectFile={vi.fn()}
+        onCloseFile={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('conversation-tab-c1').classList.contains('shell-pane-tab')).toBe(
+      true,
+    );
+    expect(screen.getByTestId('file-tab-README.md').classList.contains('shell-pane-tab')).toBe(
+      true,
+    );
+    expect(
+      (
+        container.querySelector('.shell-conversation-tabs__scroller') as HTMLElement
+      ).style.getPropertyValue('--shell-pane-tab-width'),
+    ).toBe('172px');
+  });
+});
+
 describe('ConversationTabs pane actions', () => {
+  it('searches, selects and closes open conversations from the fixed tab manager', async () => {
+    const manyConversations = Array.from({ length: 6 }, (_, index) => ({
+      id: `c${index + 1}`,
+      title: `对话${index + 1}`,
+      track: 'model',
+    })) as unknown as Conversation[];
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ConversationTabs
+        conversations={manyConversations}
+        openIds={manyConversations.map((conversation) => String(conversation.id))}
+        activeId="c1"
+        onSelect={onSelect}
+        onClose={onClose}
+        onNew={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '窗格更多操作' }));
+    const menu = await screen.findByTestId('conversation-tab-manager');
+    fireEvent.change(within(menu).getByRole('searchbox', { name: '搜索已打开的对话' }), {
+      target: { value: '对话6' },
+    });
+    expect(within(menu).queryByRole('button', { name: '切换到 对话1' })).toBeNull();
+    fireEvent.click(within(menu).getByRole('button', { name: '切换到 对话6' }));
+    expect(onSelect).toHaveBeenCalledWith('c6');
+
+    fireEvent.click(screen.getByRole('button', { name: '窗格更多操作' }));
+    fireEvent.click(
+      within(await screen.findByTestId('conversation-tab-manager')).getByRole('button', {
+        name: '关闭标签 对话2',
+      }),
+    );
+    expect(onClose).toHaveBeenCalledWith('c2');
+  });
+
   it('flips the plus menu above the anchor when the tab strip is near the viewport bottom', async () => {
     const previousHeight = window.innerHeight;
     const previousWidth = window.innerWidth;

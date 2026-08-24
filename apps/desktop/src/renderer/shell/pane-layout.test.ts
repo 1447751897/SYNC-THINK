@@ -27,6 +27,7 @@ import {
   splitPaneWithConversation,
   splitPaneWithFile,
   splitPaneWithReview,
+  splitPaneWithResource,
   updateTerminalPaneCwd,
 } from './pane-layout.js';
 
@@ -72,6 +73,40 @@ describe('workspace pane layout', () => {
     expect(right?.type === 'split' ? right.direction : '').toBe('vertical');
     expect(Object.keys(vertical.panes)).toHaveLength(3);
     expect(focusedConversationId(vertical)).toBe('c3');
+  });
+
+  it('splits any dragged resource before or after a pane without duplicating it', () => {
+    const initial = createWorkspacePaneLayout('ws-a', ['c1', 'c2'], 'c1');
+    const paneId = initial.focusedPaneId;
+    const right = splitPaneWithResource(
+      initial,
+      paneId,
+      'horizontal',
+      { type: 'conversation', id: 'c2' },
+      'after',
+    );
+    expect(right.root).toMatchObject({ type: 'split', direction: 'horizontal' });
+    expect(Object.values(right.panes).flatMap((pane) => pane.tabs)).toHaveLength(2);
+    expect(right.panes[right.focusedPaneId]?.tabs).toContainEqual(
+      expect.objectContaining({ type: 'conversation', conversationId: 'c2' }),
+    );
+
+    const firstPaneId =
+      right.root.type === 'split' && right.root.children[0].type === 'pane'
+        ? right.root.children[0].paneId
+        : '';
+    const below = splitPaneWithResource(
+      right,
+      firstPaneId,
+      'vertical',
+      { type: 'conversation', id: 'c2' },
+      'before',
+    );
+    expect(below.root).toMatchObject({ type: 'split', direction: 'vertical' });
+    expect(below.root.type === 'split' ? below.root.children[0] : null).toMatchObject({
+      type: 'pane',
+      paneId: below.focusedPaneId,
+    });
   });
 
   it('deduplicates conversations across panes and reorders tabs inside one pane', () => {

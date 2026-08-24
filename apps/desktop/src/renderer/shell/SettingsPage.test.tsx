@@ -54,6 +54,9 @@ afterEach(() => {
 
 async function openPlugins() {
   render(<SettingsPage />);
+  fireEvent.change(screen.getByRole('textbox', { name: '搜索设置' }), {
+    target: { value: '插件' },
+  });
   fireEvent.click(screen.getByRole('button', { name: '插件' }));
   const toggle = await screen.findByRole('switch', { name: '启用 Computer Use 插件' });
   await waitFor(() => expect((toggle as HTMLButtonElement).disabled).toBe(false));
@@ -103,7 +106,6 @@ describe('SettingsPage Computer Use plugin', () => {
     expect(screen.getByRole('alert').textContent).toContain('save failed');
   });
 });
-
 
 async function openDataDiagnostics() {
   render(<SettingsPage />);

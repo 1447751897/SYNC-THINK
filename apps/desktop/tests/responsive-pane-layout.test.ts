@@ -58,16 +58,22 @@ describe('responsive pane layout wiring', () => {
     );
   });
 
-  it('keeps the file editor and embedded workspace tree usable in a narrow pane', () => {
+  it('keeps a 360px preview and floats the file tree when a workbench is narrow', () => {
     expect(shellStyles).toContain('.shell-file-workbench__layout');
     expect(shellStyles).toContain(
       ".shell-file-workbench[data-explorer-open='true'] .shell-file-workbench__layout",
     );
     expect(shellStyles).toMatch(
-      /@container shell-file-workbench \(max-width: 520px\)[\s\S]*\.shell-file-workbench\[data-explorer-open='true'\] \.shell-file-workbench__layout\s*\{[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\);[\s\S]*grid-template-rows:\s*minmax\(180px, 3fr\) minmax\(150px, 2fr\)/,
+      /\.shell-file-workbench\[data-explorer-open='true'\] \.shell-file-workbench__layout\s*\{[\s\S]*grid-template-columns:[\s\S]*minmax\(360px, 1fr\) 1px[\s\S]*var\(--shell-file-explorer-width, 288px\)/,
     );
     expect(shellStyles).toMatch(
-      /\.shell-file-workbench__explorer\s*\{[\s\S]*grid-row:\s*2;[\s\S]*border-top:\s*1px solid var\(--color-border\)/,
+      /\.shell-file-workbench\[data-explorer-floating='true'\] \.shell-file-workbench__explorer\s*\{[\s\S]*position:\s*absolute;[\s\S]*width:\s*var\(--shell-file-explorer-width, 288px\)/,
+    );
+    expect(shellStyles).toMatch(
+      /\.shell-review-panel\s*\{[\s\S]*width:\s*100%;[\s\S]*flex:\s*1 1 auto;/,
+    );
+    expect(shellStyles).toMatch(
+      /\.shell-workbench--right\s*\{[\s\S]*box-shadow:\s*inset 1px 0 var\(--color-border\);/,
     );
   });
 });

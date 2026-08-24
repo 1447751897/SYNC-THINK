@@ -550,10 +550,7 @@ export function FileChangesCard({
           const counts = countLineChanges(item);
           const absolutePath = resolveAbsoluteProjectPath(projectFolder, item.path);
           return (
-            <li
-              key={itemKey}
-              className={`shell-changes-card__item ${open ? 'is-open' : ''}`}
-            >
+            <li key={itemKey} className={`shell-changes-card__item ${open ? 'is-open' : ''}`}>
               <div className="shell-changes-card__row">
                 <button
                   type="button"
@@ -562,9 +559,7 @@ export function FileChangesCard({
                   onClick={() => {
                     setExpandedPath((prev) => (prev === item.path ? null : item.path));
                   }}
-                  title={
-                    hasBody || hasDiff ? (open ? '收起 diff' : '展开 diff') : '暂无可展开内容'
-                  }
+                  title={hasBody || hasDiff ? (open ? '收起 diff' : '展开 diff') : '暂无可展开内容'}
                   aria-label={open ? `收起 ${item.path} diff` : `展开 ${item.path} diff`}
                 >
                   <ChevronDown
@@ -676,8 +671,7 @@ function FilePathTooltip({
       const maximumLeft = Math.max(margin, viewportWidth - tooltipRect.width - margin);
       const left = Math.min(Math.max(margin, anchorRect.left + 7), maximumLeft);
       const fitsAbove = anchorRect.top - gap - tooltipRect.height >= margin;
-      const overflowsBelow =
-        anchorRect.bottom + gap + tooltipRect.height > viewportHeight - margin;
+      const overflowsBelow = anchorRect.bottom + gap + tooltipRect.height > viewportHeight - margin;
       const preferredTop =
         overflowsBelow && fitsAbove
           ? anchorRect.top - gap - tooltipRect.height
@@ -790,13 +784,15 @@ export function countLineChanges(
   if (item.action === 'created') {
     if (item.content === undefined) return undefined;
     const lines = item.content.replace(/\r\n/g, '\n').split('\n');
-    const count = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
+    const count =
+      lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
     return { added: count, removed: 0 };
   }
   if (item.action === 'deleted') {
     if (item.previousContent === undefined) return undefined;
     const lines = item.previousContent.replace(/\r\n/g, '\n').split('\n');
-    const count = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
+    const count =
+      lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
     return { added: 0, removed: count };
   }
   const diff = computeLineDiff(item.previousContent, item.content);
@@ -819,14 +815,23 @@ export function LineDiffView({
   newText,
   path,
   truncated = false,
+  wrapLines,
+  onWrapLinesChange,
+  showToolbar = true,
+  showWhitespace = false,
 }: {
   oldText: string | undefined;
   newText: string | undefined;
   path?: string;
   truncated?: boolean;
+  wrapLines?: boolean;
+  onWrapLinesChange?(wrap: boolean): void;
+  showToolbar?: boolean;
+  showWhitespace?: boolean;
 }) {
   const lines = computeLineDiff(oldText, newText);
-  const [wrap, setWrap] = useState(true);
+  const [internalWrap, setInternalWrap] = useState(true);
+  const wrap = wrapLines ?? internalWrap;
   if (!lines) {
     return (
       <div className="shell-changes-card__diff-empty">
@@ -840,16 +845,21 @@ export function LineDiffView({
   }
   return (
     <div className="shell-changes-card__diff-body">
-      <div className="shell-changes-card__diff-toolbar">
-        <label className="shell-changes-card__diff-wrap">
-          <input
-            type="checkbox"
-            checked={wrap}
-            onChange={(event) => setWrap(event.target.checked)}
-          />
-          自动换行
-        </label>
-      </div>
+      {showToolbar ? (
+        <div className="shell-changes-card__diff-toolbar">
+          <label className="shell-changes-card__diff-wrap">
+            <input
+              type="checkbox"
+              checked={wrap}
+              onChange={(event) => {
+                setInternalWrap(event.target.checked);
+                onWrapLinesChange?.(event.target.checked);
+              }}
+            />
+            自动换行
+          </label>
+        </div>
+      ) : null}
       <div className={`shell-changes-card__diff-lines ${wrap ? 'is-wrap' : ''}`} data-path={path}>
         {lines.map((line, index) => (
           <div
@@ -857,16 +867,17 @@ export function LineDiffView({
             className={`shell-changes-card__diff-line is-${line.kind}`}
             data-kind={line.kind}
           >
+            <span className="shell-changes-card__diff-no" aria-hidden="true">
+              {line.kind === 'del' ? line.oldLine : (line.newLine ?? line.oldLine ?? '')}
+            </span>
             <span className="shell-changes-card__diff-gutter" aria-hidden="true">
               {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
             </span>
-            <span className="shell-changes-card__diff-no" aria-hidden="true">
-              {line.kind === 'add' ? line.newLine : ''}
-            </span>
-            <span className="shell-changes-card__diff-no" aria-hidden="true">
-              {line.kind === 'del' ? line.oldLine : ''}
-            </span>
-            <code className="shell-changes-card__diff-text">{line.text || ' '}</code>
+            <code className="shell-changes-card__diff-text">
+              {showWhitespace
+                ? (line.text || ' ').replace(/\t/g, '→\t').replace(/ /g, '·')
+                : line.text || ' '}
+            </code>
           </div>
         ))}
       </div>

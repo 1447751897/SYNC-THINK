@@ -36,12 +36,14 @@ SYNC-THINK/
 | Updater/recovery  | `desktop-updater.ts`、`electron-updater-driver.ts`、`desktop-update-recovery-store.ts`、`desktop-update-rollback-*.ts` | Main-only feed 控制、bounded failure evidence、healthy installer 登记、rollback intent/health/outcome 与独立 watchdog |
 | Preload           | `apps/desktop/src/preload/index.ts`                                                                                    | 在 sandbox/contextIsolation 下暴露最小 typed bridge，转发 terminal 事件并返回 disposer                                |
 | IPC contract      | `apps/desktop/src/workspace-tools-contract.ts`、`browser-workflow-payloads.ts`、`renderer/global.d.ts`                 | Renderer 可见 payload/result/event 类型；Browser Workflow 变更需额外严格校验，不得暴露 Node 或 secret                 |
-| Renderer shell    | `apps/desktop/src/renderer/shell/ShellApp.tsx`                                                                         | 顶层目录、Workspace/会话状态、Pane 快照提交和各页面装配                                                               |
+| Renderer shell    | `apps/desktop/src/renderer/shell/ShellApp.tsx`                                                                         | 顶层目录、Workspace/会话状态、Pane/Workbench 快照提交和各页面装配                                                     |
 | Pane model        | `pane-layout.ts`、`WorkspacePaneHost.tsx`、`ConversationTabs.tsx`                                                      | 递归布局、焦点、Tab 资源、恢复/迁移和最多两路 ChatView 挂载                                                           |
+| Workbench model   | `workspace-workbench.ts`、`WorkspaceWorkbench.tsx`                                                                     | 每 Workspace 的右侧/底部标签、开关、尺寸与文件树宽度；只保存 UI 布局，不保存文件正文或终端输出                        |
 | Resource views    | `ChatView.tsx`、`FilePane.tsx`、`TerminalPane.tsx`                                                                     | 对话、文件编辑、终端三类 Pane 内容；临时状态留在 Renderer                                                             |
 | Compose Skill     | `TurnSkillControl.tsx`、`compose-skill-selection.ts`、`compose-toolbar.tsx`                                            | 解析 Agent/Team 有效 owner、懒取 metadata、维护当前会话临时选择和稳定菜单表达                                         |
+| Settings/models   | `SettingsPage.tsx`、`ModelSettings.tsx`、`shell.css`                                                                   | 设置分类、Provider/凭据/模型优先级、服务商目录、使用统计及 NewMax 设置窗口视觉契约                                    |
 | Terminal renderer | `terminal-session-store.ts`、`xterm-vendor-loader.ts`、`xterm-vendor.ts`                                               | 会话事件归并、命令竞态处理和 xterm 按需加载/主题同步                                                                  |
-| File dock         | `RightDock.tsx`                                                                                                        | 文件树、文件名搜索、内容搜索和命中打开/定位                                                                           |
+| File/review views | `WorkspaceFileView.tsx`、`RightDock.tsx`                                                                               | 文件树、文件预览/编辑、搜索、对话变更树与行级审阅；可作为 Workbench 独立资源                                          |
 
 Main 或 Preload 发生变化后必须完整重启 Electron；只刷新 Renderer 不会注册新的 IPC handler，也不会替换旧 preload。
 
@@ -57,6 +59,7 @@ Main 或 Preload 发生变化后必须完整重启 Electron；只刷新 Renderer
 - `apps/runtime/src/browser/runtime-browser-controller.ts` 把聊天 `browser_*` 参数映射为 Worker action，使用 `SqliteBrowserStore` 持久化 origin grant、command 与人工 handoff，并保证 Runtime 的脱敏意图先于 Worker 副作用；Page lease 与浏览器进程仍由 `BrowserHost` 管理。
 - `packages/core` 保持无 I/O 的领域规则；`packages/adapters` 隔离 Provider 差异；`packages/ui-kit` 自 2026-08-18 起只剩旧渲染层遗留组件，Desktop 侧仅有 type-only 引用，不再提供样式或主题控制器。
 - 颜色/字体/圆角 token 的唯一真源是 `docs/product/16-shell-design-tokens.json`；`pnpm tokens:css`（`scripts/generate-shell-tokens.mjs`）生成 `apps/desktop/src/renderer/shell/tokens.css`，由 `shell.css` `@import`。生成物禁止手改；`scripts/check-design-tokens.mjs` 拦裸 hex。
+- 模型设置的数据行为集中在 `ModelSettings.tsx`，`SettingsPage.tsx` 只负责设置分类和完成/脏状态协调。NewMax 对齐的尺寸、颜色与动效只落在 `shell.css` 和设计 token 中；不要把服务商密钥、模型优先级或使用记录复制成 Renderer 假数据。
 
 ## 4. Workspace 工具调用链
 
@@ -68,7 +71,7 @@ RightDock
   -> Main IPC payload/sender 校验
   -> project-content-search (`rg --json` 或 Node fallback)
   -> 相对路径 + 行/列 + preview
-  -> ShellApp 在焦点 Pane 打开 FilePane，并传 transient location
+  -> ShellApp 在右侧 Workbench 打开文件标签，并传 transient location
 ```
 
 ### 文件编辑
@@ -199,6 +202,7 @@ NSIS `apps/desktop/build/installer.nsh` 负责把每个已安装版本的 instal
 | 任务、消息、Run、Step、Agent/Skill/Policy、Artifact、审计 | Runtime + SQLite durable store                                                                                                    |
 | 已启动 Run 的 Skill 选择                                  | durable event/checkpoint 保存精确 ID + fingerprint；正文继续以不可变 SkillVersion 为真源                                          |
 | Workspace Pane 树、比例、焦点、资源 Tab、terminal cwd     | 版本化 Renderer UI preference                                                                                                     |
+| Workspace 右侧/底部 Workbench、尺寸、资源 Tab、文件树宽度 | 版本化 Renderer UI preference；按 workspaceId 隔离，不包含文件正文、diff 正文或 terminal 输出                                     |
 | 当前会话的 Skill 临时选择                                 | 当前 `ChatView`/欢迎页 Renderer state；成功或失败后保持，切换有效 Agent/Team owner 时恢复新默认，模型直聊为 `[]`；不写入布局偏好  |
 | 文件磁盘正文                                              | 项目目录；保存时以 mtime/size 做并发校验                                                                                          |
 | 未保存文件草稿                                            | 当前 Renderer Session，按 workspaceId + path 隔离                                                                                 |
@@ -220,7 +224,7 @@ NSIS `apps/desktop/build/installer.nsh` 负责把每个已安装版本的 instal
 1. 新 Electron OS 能力：Main service + Main IPC 校验 + Preload bridge + Renderer type，不能只在 Renderer 实现。
 2. 新 Runtime 命令/事件：先放 `packages/protocol` 合同与校验，再接 Runtime handler 和 Desktop client。
 3. 新可恢复业务状态：进入 `packages/storage` 和 Runtime 投影；localStorage 只用于版本化 UI preference。
-4. 新 Pane 资源：先扩展 `pane-layout.ts` 的资源联合类型/解析/上限，再实现 view 和 Tab 表达，并写迁移/恢复测试。
+4. 新 Pane/Workbench 资源：先扩展对应 `pane-layout.ts` 或 `workspace-workbench.ts` 的资源联合类型、解析和上限，再实现 view/Tab 表达，并写迁移与恢复测试。
 5. 新本地执行能力：进入 `packages/workers`，显式声明 capability、路径/参数边界、超时、取消和输出上限。
 6. 重型 Renderer 依赖：独立 bundle 并按需加载；进入首屏前必须记录性能与回滚决策。
 7. 行为变化同步更新 changelog/current status；架构或依赖变化同步更新 tech decisions 与本页。

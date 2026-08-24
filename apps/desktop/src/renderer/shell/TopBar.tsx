@@ -1,16 +1,24 @@
 // NewMax-style top bar: workspace tabs + full menu from "+"
 // Menu portals to body so overflow:hidden stage boards cannot clip it.
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  Activity,
+  Bot,
+  CalendarClock,
   Check,
   FolderOpen,
   FolderPlus,
+  Globe,
+  PanelBottom,
   PanelLeft,
+  PanelRight,
   Pencil,
   Plus,
   SquareTerminal,
   Trash2,
+  Users,
+  Wrench,
   X,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -31,8 +39,218 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { STAGE_LABELS, type ShellStage } from './shell-state.js';
 
 const WORKSPACE_ICON_PRESETS = ['📁', '💼', '🧠', '🚀', '📦', '🛠', '📚', '🧪', '🏠', '⭐'] as const;
+
+const WORKSPACE_TAB_HEIGHT = 31;
+const WORKSPACE_TAB_BASELINE = 30.5;
+const WORKSPACE_TAB_SHOULDER = 13;
+const WORKSPACE_TAB_EDGE_OVERLAP = 4;
+const WORKSPACE_TAB_EDGE_FADE = 6;
+const WORKSPACE_TAB_TOP_RADIUS = 10;
+const WORKSPACE_TAB_SHOULDER_CONTROL = WORKSPACE_TAB_SHOULDER * 0.45;
+const WORKSPACE_TAB_GAP = 3;
+const WORKSPACE_TAB_MIN_WIDTH = 58;
+const WORKSPACE_TAB_MAX_WIDTH = 172;
+const WORKSPACE_TAB_ROW_RESERVED = 64;
+const WORKSPACE_TAB_OVERFLOW_WIDTH = 44;
+
+interface WorkspaceTabLayout {
+  visibleIds: string[];
+  tabWidth: number;
+  overflowCount: number;
+}
+
+export function calculateWorkspaceTabLayout(
+  containerWidth: number,
+  orderedIds: readonly string[],
+  activeId?: string,
+): WorkspaceTabLayout {
+  const count = orderedIds.length;
+  if (count === 0) return { visibleIds: [], tabWidth: WORKSPACE_TAB_MAX_WIDTH, overflowCount: 0 };
+
+  // JSDOM and the first browser paint report zero width. Keep every tab visible
+  // until ResizeObserver provides the real track width.
+  if (containerWidth <= 0) {
+    return {
+      visibleIds: [...orderedIds],
+      tabWidth: WORKSPACE_TAB_MAX_WIDTH,
+      overflowCount: 0,
+    };
+  }
+
+  const allTabsWidth =
+    (containerWidth - WORKSPACE_TAB_ROW_RESERVED - (count - 1) * WORKSPACE_TAB_GAP) / count;
+  if (allTabsWidth >= WORKSPACE_TAB_MIN_WIDTH) {
+    return {
+      visibleIds: [...orderedIds],
+      tabWidth: Math.min(WORKSPACE_TAB_MAX_WIDTH, allTabsWidth),
+      overflowCount: 0,
+    };
+  }
+
+  const availableWithOverflow =
+    containerWidth - WORKSPACE_TAB_ROW_RESERVED - WORKSPACE_TAB_OVERFLOW_WIDTH - WORKSPACE_TAB_GAP;
+  const visibleCount = Math.min(
+    Math.max(1, count - 1),
+    Math.max(
+      1,
+      Math.floor(
+        (availableWithOverflow + WORKSPACE_TAB_GAP) / (WORKSPACE_TAB_MIN_WIDTH + WORKSPACE_TAB_GAP),
+      ),
+    ),
+  );
+  const visibleIds = orderedIds.slice(0, visibleCount);
+  if (activeId && orderedIds.includes(activeId) && !visibleIds.includes(activeId)) {
+    visibleIds[visibleIds.length - 1] = activeId;
+  }
+
+  const tabGaps = (visibleCount - 1) * WORKSPACE_TAB_GAP;
+  const reservedWidth =
+    WORKSPACE_TAB_ROW_RESERVED + WORKSPACE_TAB_OVERFLOW_WIDTH + WORKSPACE_TAB_GAP + tabGaps;
+  return {
+    visibleIds,
+    tabWidth: Math.max(
+      WORKSPACE_TAB_MIN_WIDTH,
+      Math.min(WORKSPACE_TAB_MAX_WIDTH, (containerWidth - reservedWidth) / visibleCount),
+    ),
+    overflowCount: count - visibleCount,
+  };
+}
+
+function useElementWidth(ref: React.RefObject<HTMLElement>): number {
+  const [width, setWidth] = useState(0);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    const measure = () => {
+      const next = element.clientWidth || element.getBoundingClientRect().width;
+      setWidth((current) => (Math.abs(current - next) < 0.5 ? current : next));
+    };
+    measure();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [ref]);
+
+  return width;
+}
+
+function coordinate(value: number): string {
+  return String(Number(value.toFixed(3)));
+}
+
+function workspaceTabCurves(width: number, baseline: number): string {
+  const shoulderInner = WORKSPACE_TAB_SHOULDER - WORKSPACE_TAB_SHOULDER_CONTROL;
+  return [
+    `C ${coordinate(-shoulderInner)} ${coordinate(baseline)}`,
+    `0 ${coordinate(baseline - WORKSPACE_TAB_SHOULDER_CONTROL)} 0 18`,
+    `L 0 ${WORKSPACE_TAB_TOP_RADIUS}`,
+    `Q 0 0 ${WORKSPACE_TAB_TOP_RADIUS} 0`,
+    `H ${coordinate(width - WORKSPACE_TAB_TOP_RADIUS)}`,
+    `Q ${coordinate(width)} 0 ${coordinate(width)} ${WORKSPACE_TAB_TOP_RADIUS}`,
+    `L ${coordinate(width)} 18`,
+    `C ${coordinate(width)} ${coordinate(baseline - WORKSPACE_TAB_SHOULDER_CONTROL)}`,
+    `${coordinate(width + shoulderInner)} ${coordinate(baseline)}`,
+    `${coordinate(width + WORKSPACE_TAB_SHOULDER)} ${coordinate(baseline)}`,
+  ].join(' ');
+}
+
+function WorkspaceTabShape({ width }: { width: number }) {
+  const id = useId().replace(/:/g, '');
+  const boundaryStart = -WORKSPACE_TAB_SHOULDER - WORKSPACE_TAB_EDGE_OVERLAP;
+  const boundaryEnd = width + WORKSPACE_TAB_SHOULDER + WORKSPACE_TAB_EDGE_OVERLAP;
+  const surfaceBoundary = `M ${-WORKSPACE_TAB_SHOULDER} ${WORKSPACE_TAB_HEIGHT} ${workspaceTabCurves(
+    width,
+    WORKSPACE_TAB_HEIGHT,
+  )}`;
+  const fillPath = `${surfaceBoundary} L ${-WORKSPACE_TAB_SHOULDER} ${WORKSPACE_TAB_HEIGHT} Z`;
+  const boundaryPath = `M ${boundaryStart} ${WORKSPACE_TAB_BASELINE} H ${-WORKSPACE_TAB_SHOULDER} ${workspaceTabCurves(
+    width,
+    WORKSPACE_TAB_BASELINE,
+  )} H ${coordinate(boundaryEnd)}`;
+  const totalWidth = width + (WORKSPACE_TAB_SHOULDER + WORKSPACE_TAB_EDGE_OVERLAP) * 2;
+  const fadeOffset = (x: number) => `${coordinate(((x - boundaryStart) / totalWidth) * 100)}%`;
+  const fadeStops = (color: string) => (
+    <>
+      <stop offset="0%" stopColor={color} stopOpacity="0" />
+      <stop offset={fadeOffset(-WORKSPACE_TAB_SHOULDER)} stopColor={color} stopOpacity="0" />
+      <stop
+        offset={fadeOffset(-WORKSPACE_TAB_SHOULDER + WORKSPACE_TAB_EDGE_FADE)}
+        stopColor={color}
+      />
+      <stop
+        offset={fadeOffset(width + WORKSPACE_TAB_SHOULDER - WORKSPACE_TAB_EDGE_FADE)}
+        stopColor={color}
+      />
+      <stop offset={fadeOffset(width + WORKSPACE_TAB_SHOULDER)} stopColor={color} stopOpacity="0" />
+      <stop offset="100%" stopColor={color} stopOpacity="0" />
+    </>
+  );
+
+  return (
+    <svg
+      data-testid="workspace-tab-shape"
+      className="shell-workspace-tab-shape"
+      width={totalWidth}
+      height={WORKSPACE_TAB_HEIGHT}
+      viewBox={`${boundaryStart} 0 ${coordinate(totalWidth)} ${WORKSPACE_TAB_HEIGHT}`}
+      aria-hidden="true"
+    >
+      <defs>
+        <linearGradient
+          id={`${id}-outline-fade`}
+          x1={boundaryStart}
+          y1="0"
+          x2={boundaryEnd}
+          y2="0"
+          gradientUnits="userSpaceOnUse"
+        >
+          {fadeStops('var(--shell-tab-outline)')}
+        </linearGradient>
+        <linearGradient
+          id={`${id}-highlight-fade`}
+          x1={boundaryStart}
+          y1="0"
+          x2={boundaryEnd}
+          y2="0"
+          gradientUnits="userSpaceOnUse"
+        >
+          {fadeStops('var(--shell-tab-highlight)')}
+        </linearGradient>
+        <clipPath id={`${id}-clip`}>
+          <path d={fillPath} />
+        </clipPath>
+      </defs>
+      <path d={fillPath} fill="var(--color-chat)" />
+      <path
+        d={boundaryPath}
+        fill="none"
+        stroke={`url(#${id}-outline-fade)`}
+        className="shell-workspace-tab-shape__outline"
+        vectorEffect="non-scaling-stroke"
+      />
+      <path
+        d={boundaryPath}
+        fill="none"
+        stroke={`url(#${id}-highlight-fade)`}
+        strokeWidth="1.2"
+        clipPath={`url(#${id}-clip)`}
+        className="shell-workspace-tab-shape__highlight"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
+}
 
 export interface TopBarProps {
   workspaces: readonly WorkspaceSummary[];
@@ -62,6 +280,10 @@ export interface TopBarProps {
   onToggleSidebar(): void;
   onOpenTerminal?(): void;
   canOpenTerminal?: boolean;
+  bottomWorkbenchOpen?: boolean;
+  rightWorkbenchOpen?: boolean;
+  onToggleBottomWorkbench?(): void;
+  onToggleRightWorkbench?(): void;
   /** Optional pick-folder bridge used by the create/edit dialog. */
   onPickFolder(): Promise<{ canceled: boolean; path?: string }>;
   /**
@@ -69,14 +291,33 @@ export interface TopBarProps {
    * key = workspaceId；缺省即无指示。
    */
   workspaceActivity?: ReadonlyMap<string, { running: boolean; unread: boolean }>;
+  /** Non-conversation pages occupy one contextual tab instead of workspace tabs. */
+  contextStage?: Exclude<ShellStage, 'talk' | 'settings'>;
+}
+
+function ContextStageIcon({ stage }: { stage: NonNullable<TopBarProps['contextStage']> }) {
+  const Icon =
+    stage === 'tasks'
+      ? CalendarClock
+      : stage === 'activity'
+        ? Activity
+        : stage === 'browser'
+          ? Globe
+          : stage === 'agents'
+            ? Bot
+            : stage === 'teams'
+              ? Users
+              : Wrench;
+  return <Icon size={14} aria-hidden="true" />;
 }
 
 export function TopBar(props: TopBarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<WorkspaceSummary | null>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const workspaceTrackRef = useRef<HTMLDivElement>(null);
   const [menuStyle, setMenuStyle] = useState<React.CSSProperties | null>(null);
 
   // Local display order for drag reordering; follows props when not dragging.
@@ -92,6 +333,12 @@ export function TopBar(props: TopBarProps) {
     if (isDraggingRef.current) return;
     setOrderIds(props.workspaces.filter((w) => !w.hidden).map((w) => w.workspaceId));
   }, [props.workspaces]);
+  const workspaceTrackWidth = useElementWidth(workspaceTrackRef);
+  const workspaceLayout = calculateWorkspaceTabLayout(
+    workspaceTrackWidth,
+    orderIds,
+    props.activeWorkspaceId,
+  );
 
   const sensors = useSensors(
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -155,7 +402,7 @@ export function TopBar(props: TopBarProps) {
       return;
     }
     const update = () => {
-      const el = triggerRef.current;
+      const el = menuAnchor;
       if (!el) return;
       const r = el.getBoundingClientRect();
       const width = 320;
@@ -184,14 +431,14 @@ export function TopBar(props: TopBarProps) {
       window.removeEventListener('resize', update);
       window.removeEventListener('scroll', update, true);
     };
-  }, [menuOpen]);
+  }, [menuAnchor, menuOpen]);
 
   useEffect(() => {
     if (!menuOpen) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (menuRef.current?.contains(t)) return;
-      if (triggerRef.current?.contains(t)) return;
+      if (menuAnchor?.contains(t)) return;
       setMenuOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -207,17 +454,28 @@ export function TopBar(props: TopBarProps) {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [menuOpen]);
+  }, [menuAnchor, menuOpen]);
+
+  const toggleWorkspaceMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    const nextAnchor = event.currentTarget;
+    const sameAnchor = menuAnchor === nextAnchor;
+    setMenuAnchor(nextAnchor);
+    setMenuOpen((open) => (sameAnchor ? !open : true));
+  };
 
   return (
     <header
       data-testid="shell-topbar"
-      className="shell-topbar shell-workspace-tabs relative flex h-9 shrink-0 items-end gap-0 px-2"
+      className={clsx(
+        'shell-topbar shell-workspace-tabs relative z-[3] mt-0.5 flex h-8 shrink-0 items-start gap-[3px] pr-[3px] pt-px',
+        props.sidebarCollapsed ? 'pl-[3px]' : 'pl-[26px]',
+      )}
     >
       {props.sidebarCollapsed ? (
         <button
           data-testid="topbar-open-sidebar"
-          className="st-icon-motion mb-0.5 mr-1 flex h-7 w-7 items-center justify-center rounded-(--radius-row) text-text-secondary hover:bg-hover hover:text-text"
+          className="st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] text-text-secondary hover:bg-hover hover:text-text"
           title="展开侧栏 (Ctrl+B)"
           onClick={props.onToggleSidebar}
         >
@@ -225,7 +483,28 @@ export function TopBar(props: TopBarProps) {
         </button>
       ) : null}
 
-      <div className="shell-workspace-tabs__scroller flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto overflow-y-hidden">
+      {props.contextStage ? (
+        <div
+          className="shell-context-tab shell-workspace-tab shell-workspace-tab-active relative h-[31px] w-[184px] shrink-0 pb-[3px]"
+          data-testid="topbar-context-tab"
+        >
+          <WorkspaceTabShape width={184} />
+          <div className="shell-workspace-tab__body relative z-[1] flex h-7 w-full items-center gap-1.5 rounded-t-[10px] px-2.5 text-[13px] font-medium text-text">
+            <ContextStageIcon stage={props.contextStage} />
+            <span className="truncate">{STAGE_LABELS[props.contextStage]}</span>
+          </div>
+        </div>
+      ) : null}
+
+      <div
+        ref={workspaceTrackRef}
+        data-testid="topbar-workspace-scroller"
+        className={clsx(
+          'shell-workspace-tabs__scroller flex min-w-0 flex-1 items-start gap-[3px]',
+          props.contextStage && 'hidden',
+        )}
+        aria-hidden={props.contextStage ? 'true' : undefined}
+      >
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -235,8 +514,11 @@ export function TopBar(props: TopBarProps) {
             isDraggingRef.current = false;
           }}
         >
-          <SortableContext items={orderIds} strategy={horizontalListSortingStrategy}>
-            {orderIds.map((workspaceId) => {
+          <SortableContext
+            items={workspaceLayout.visibleIds}
+            strategy={horizontalListSortingStrategy}
+          >
+            {workspaceLayout.visibleIds.map((workspaceId) => {
               const workspace = props.workspaces.find((w) => w.workspaceId === workspaceId);
               if (!workspace) return null;
               return (
@@ -249,6 +531,7 @@ export function TopBar(props: TopBarProps) {
                   active={props.activeWorkspaceId === workspace.workspaceId}
                   running={props.workspaceActivity?.get(workspace.workspaceId)?.running ?? false}
                   unread={props.workspaceActivity?.get(workspace.workspaceId)?.unread ?? false}
+                  width={workspaceLayout.tabWidth}
                   onClick={() => props.onSelectWorkspace(workspace.workspaceId)}
                   onHide={() => props.onSetWorkspaceHidden?.(workspace.workspaceId, true)}
                   onNativeDragStart={(event) =>
@@ -266,18 +549,30 @@ export function TopBar(props: TopBarProps) {
           </SortableContext>
         </DndContext>
 
-        <div className="relative mb-0.5 shrink-0">
+        {workspaceLayout.overflowCount > 0 ? (
+          <div className="flex h-[31px] shrink-0 items-start pb-[3px]">
+            <button
+              type="button"
+              data-testid="topbar-workspace-overflow"
+              className="st-icon-motion flex h-7 w-11 items-center justify-center rounded-[10px] text-[12px] font-medium text-text-secondary hover:bg-hover hover:text-text"
+              title={`还有 ${workspaceLayout.overflowCount} 个工作区`}
+              aria-label={`显示其余 ${workspaceLayout.overflowCount} 个工作区`}
+              aria-expanded={menuOpen && menuAnchor?.dataset.testid === 'topbar-workspace-overflow'}
+              onClick={toggleWorkspaceMenu}
+            >
+              +{workspaceLayout.overflowCount}
+            </button>
+          </div>
+        ) : null}
+
+        <div className="relative flex h-[31px] shrink-0 items-start pb-[3px]">
           <button
-            ref={triggerRef}
             type="button"
             data-testid="topbar-workspace-menu"
-            className="st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) text-text-secondary hover:bg-hover hover:text-text"
+            className="st-icon-motion flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary hover:bg-hover hover:text-text"
             title="工作区"
-            aria-expanded={menuOpen}
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenuOpen((v) => !v);
-            }}
+            aria-expanded={menuOpen && menuAnchor?.dataset.testid === 'topbar-workspace-menu'}
+            onClick={toggleWorkspaceMenu}
           >
             <Plus size={14} />
           </button>
@@ -458,13 +753,51 @@ export function TopBar(props: TopBarProps) {
         </div>
       </div>
 
-      {props.onOpenTerminal ? (
+      {!props.contextStage && (props.onToggleBottomWorkbench || props.onToggleRightWorkbench) ? (
+        <div
+          className="shell-workspace-workbench-toggles flex h-7 shrink-0 items-center gap-[3px]"
+          data-workspace-workbench-toggles="true"
+        >
+          {props.onToggleBottomWorkbench ? (
+            <button
+              type="button"
+              data-testid="topbar-toggle-bottom-workbench"
+              data-workspace-bottom-toggle="true"
+              aria-label={props.bottomWorkbenchOpen ? '隐藏底部工作台' : '打开底部工作台'}
+              aria-pressed={Boolean(props.bottomWorkbenchOpen)}
+              className={clsx(
+                'st-icon-motion flex h-7 w-[38px] items-center justify-center rounded-[10px] text-text-secondary hover:bg-hover hover:text-text',
+                props.bottomWorkbenchOpen && 'bg-active text-text',
+              )}
+              onClick={props.onToggleBottomWorkbench}
+            >
+              <PanelBottom size={15} />
+            </button>
+          ) : null}
+          {props.onToggleRightWorkbench ? (
+            <button
+              type="button"
+              data-testid="topbar-toggle-right-workbench"
+              data-workspace-files-toggle="true"
+              aria-label={props.rightWorkbenchOpen ? '隐藏右侧工作台' : '打开右侧工作台'}
+              aria-pressed={Boolean(props.rightWorkbenchOpen)}
+              className={clsx(
+                'st-icon-motion flex h-7 w-[38px] items-center justify-center rounded-[10px] text-text-secondary hover:bg-hover hover:text-text',
+                props.rightWorkbenchOpen && 'bg-active text-text',
+              )}
+              onClick={props.onToggleRightWorkbench}
+            >
+              <PanelRight size={15} />
+            </button>
+          ) : null}
+        </div>
+      ) : !props.contextStage && props.onOpenTerminal ? (
         <button
           type="button"
           data-testid="topbar-open-terminal"
           disabled={props.canOpenTerminal === false}
           className={clsx(
-            'st-icon-motion mb-0.5 ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-(--radius-row) text-text-secondary hover:bg-hover hover:text-text',
+            'st-icon-motion flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] text-text-secondary hover:bg-hover hover:text-text',
             props.canOpenTerminal === false && 'cursor-not-allowed opacity-35',
           )}
           title={props.canOpenTerminal === false ? '先绑定项目文件夹' : '在当前窗格打开终端'}
@@ -519,6 +852,7 @@ function ProjectTab(props: {
   icon?: string;
   title?: string;
   active: boolean;
+  width: number;
   /** 该工作区有任务正在运行 → 呼吸圆点动效。 */
   running?: boolean;
   /** 该工作区有已完成但未查看的任务 → 静态未读圆点。 */
@@ -543,6 +877,7 @@ function ProjectTab(props: {
     <div
       ref={props.sortableProps?.ref}
       data-testid={`project-tab-${props.label}`}
+      data-active={props.active ? 'true' : 'false'}
       draggable
       title={
         props.running
@@ -558,68 +893,79 @@ function ProjectTab(props: {
       onDrop={props.onNativeDrop}
       onDragEnd={props.onNativeDragEnd}
       className={clsx(
-        'st-row-motion group relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
-        props.active
-          ? 'shell-workspace-tab-active font-medium text-text'
-          : 'text-text-secondary hover:bg-hover/70 hover:text-text',
+        'shell-workspace-tab group relative h-[31px] shrink-0 pb-[3px]',
+        props.active && 'shell-workspace-tab-active',
         props.dragging && 'z-50 opacity-70',
       )}
       style={{
+        width: props.width,
         ...(props.dragTransform
           ? { transform: props.dragTransform, transition: 'transform 150ms ease' }
           : {}),
       }}
     >
-      <button
-        type="button"
-        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-        onClick={props.onClick}
+      {props.active ? <WorkspaceTabShape width={props.width} /> : null}
+      <div
+        className={clsx(
+          'shell-workspace-tab__body st-row-motion relative z-[1] flex h-7 w-full items-center gap-1.5 rounded-[10px] pl-2.5 pr-1 text-[13px] font-medium',
+          props.active ? 'text-text' : 'text-text-secondary hover:bg-hover hover:text-text',
+        )}
       >
-        <span
-          className={clsx(
-            'flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[12px] leading-none',
-            props.active ? 'text-text-secondary' : 'text-text-faint',
-          )}
-          aria-hidden
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          onClick={props.onClick}
         >
-          {props.icon?.trim() || '📁'}
-        </span>
-        <span className="truncate">{props.label}</span>
-        {props.running ? (
           <span
-            className="shell-activity-dot shell-activity-dot--running"
-            data-testid={`workspace-running-${props.label}`}
-            aria-label="有任务正在运行"
-          />
-        ) : props.unread ? (
+            className={clsx(
+              'flex h-4 w-4 shrink-0 items-center justify-center leading-none',
+              props.active ? 'text-text-secondary' : 'text-text-faint',
+            )}
+            aria-hidden
+          >
+            {props.icon?.trim() ? (
+              <span className="text-[13px]">{props.icon}</span>
+            ) : (
+              <FolderOpen size={14} strokeWidth={1.7} />
+            )}
+          </span>
+          <span className="truncate">{props.label}</span>
+          {props.running ? (
+            <span
+              className="shell-activity-dot shell-activity-dot--running"
+              data-testid={`workspace-running-${props.label}`}
+              aria-label="有任务正在运行"
+            />
+          ) : props.unread ? (
+            <span
+              className="shell-activity-dot shell-activity-dot--unread"
+              data-testid={`workspace-unread-${props.label}`}
+              aria-label="有已完成任务待查看"
+            />
+          ) : null}
+        </button>
+        {props.onHide ? (
           <span
-            className="shell-activity-dot shell-activity-dot--unread"
-            data-testid={`workspace-unread-${props.label}`}
-            aria-label="有已完成任务待查看"
-          />
+            className="shell-workspace-tab__close flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text"
+            role="button"
+            tabIndex={0}
+            aria-label={`从文件夹行移除 ${props.label}`}
+            title="从文件夹行移除"
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onHide?.();
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              e.preventDefault();
+              e.stopPropagation();
+              props.onHide?.();
+            }}
+          >
+            <X size={11} />
+          </span>
         ) : null}
-      </button>
-      {props.onHide ? (
-        <span
-          className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint opacity-0 transition-opacity hover:bg-hover hover:text-text group-hover:opacity-100"
-          role="button"
-          tabIndex={0}
-          aria-label={`从文件夹行移除 ${props.label}`}
-          title="从文件夹行移除"
-          onClick={(e) => {
-            e.stopPropagation();
-            props.onHide?.();
-          }}
-          onKeyDown={(e) => {
-            if (e.key !== 'Enter' && e.key !== ' ') return;
-            e.preventDefault();
-            e.stopPropagation();
-            props.onHide?.();
-          }}
-        >
-          <X size={11} />
-        </span>
-      ) : null}
+      </div>
     </div>
   );
 }
@@ -630,6 +976,7 @@ function SortableProjectTab(props: {
   icon?: string;
   title?: string;
   active: boolean;
+  width: number;
   running?: boolean;
   unread?: boolean;
   onClick(): void;
@@ -648,6 +995,7 @@ function SortableProjectTab(props: {
       icon={props.icon}
       title={props.title}
       active={props.active}
+      width={props.width}
       running={props.running}
       unread={props.unread}
       dragging={isDragging}

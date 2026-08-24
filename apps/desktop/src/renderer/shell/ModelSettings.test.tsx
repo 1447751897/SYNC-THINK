@@ -238,7 +238,7 @@ async function openProviderCatalog() {
   const button = document.querySelector<HTMLButtonElement>('.model-enabled-list__add');
   expect(button).toBeTruthy();
   fireEvent.click(button!);
-  await screen.findByRole('heading', { name: '添加模型' });
+  await screen.findByRole('region', { name: '添加模型' });
 }
 
 describe('ModelSettings NewMax provider detail', () => {
@@ -345,7 +345,11 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.queryByText('保存更改')).toBeNull();
     expect(screen.queryByText('轮换 API Key（留空则不改）')).toBeNull();
     expect(screen.getByText('API 密钥')).toBeTruthy();
-    expect(screen.getByText('模型优先级（1）')).toBeTruthy();
+    expect(screen.getByText('模型优先级（至少添加一个）')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '语音识别' })).toBeTruthy();
+    expect(document.querySelector('.model-settings-guide')?.textContent).toBe(
+      '如果配置遇到问题，可以查阅配置指南。',
+    );
   });
 
   it('saves the provider name only on blur with a partial patch', async () => {
@@ -426,6 +430,32 @@ describe('ModelSettings NewMax provider detail', () => {
     });
   });
 
+  it('matches the NewMax secondary list while keeping the goal evaluator in the more menu', async () => {
+    await renderSettings();
+
+    expect(screen.getByRole('button', { name: '模型配置云同步' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '目标模式评估模型' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '更多模型设置' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '目标模式评估模型' }));
+    expect(await screen.findByRole('heading', { name: '目标模式评估模型' })).toBeTruthy();
+  });
+
+  it('persists the model configuration cloud-sync preference', async () => {
+    await renderSettings();
+    fireEvent.click(screen.getByRole('button', { name: '模型配置云同步' }));
+
+    expect(await screen.findByRole('heading', { name: '云端同步' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('switch'));
+
+    await waitFor(() => {
+      expect(runtime.setSetting).toHaveBeenCalledWith({
+        key: 'model-config-cloud-sync',
+        value: true,
+      });
+    });
+  });
+
   it('reveals a saved credential through the explicit eye control without primary label', async () => {
     await renderSettings();
     expect(screen.queryByText('primary')).toBeNull();
@@ -495,14 +525,14 @@ describe('ModelSettings NewMax provider detail', () => {
     await renderSettings();
     await openProviderCatalog();
 
-    expect(await screen.findByRole('heading', { name: '添加模型' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: '添加模型' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '推荐服务' }).getAttribute('aria-selected')).toBe(
       'true',
     );
-    expect(screen.getByRole('button', { name: /NewMax Gateway/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /NewMax Gateway/ })).toBeNull();
     expect(screen.getByRole('button', { name: /自定义供应商/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /从 CC Switch 导入/ })).toBeTruthy();
-    expect(screen.getByTestId('provider-icon-newmax-gateway')).toBeTruthy();
+    expect(screen.queryByTestId('provider-icon-newmax-gateway')).toBeNull();
     expect(screen.getByTestId('provider-icon-custom')).toBeTruthy();
     expect(screen.getByTestId('provider-icon-cc-switch')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '添加模型源' })).toBeNull();
@@ -512,11 +542,6 @@ describe('ModelSettings NewMax provider detail', () => {
   it('renders vendored brand logos for catalog providers that have one', async () => {
     await renderSettings();
     await openProviderCatalog();
-
-    // NewMax Gateway has no upstream brand mark and keeps the letter glyph.
-    const gateway = screen.getByTestId('provider-icon-newmax-gateway');
-    expect(gateway.getAttribute('data-brand-logo')).toBeNull();
-    expect(gateway.textContent?.trim()).not.toBe('');
 
     fireEvent.click(screen.getByRole('tab', { name: '国内服务' }));
     const deepseek = await screen.findByTestId('provider-icon-deepseek');
@@ -540,7 +565,7 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(screen.getByTestId('provider-base-url')).toHaveProperty('value', 'https://');
 
     fireEvent.click(screen.getByRole('button', { name: '返回服务商目录' }));
-    expect(await screen.findByRole('heading', { name: '添加模型' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: '添加模型' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '添加模型源' })).toBeNull();
   });
 
@@ -618,13 +643,15 @@ describe('ModelSettings NewMax provider detail', () => {
     expect(runtime.createProvider).not.toHaveBeenCalled();
   });
 
-  it('cancels provider creation and restores the previously selected provider', async () => {
+  it('restores the previously selected provider when its list row is selected', async () => {
     await renderSettings();
     await openProviderCatalog();
-    fireEvent.click(screen.getByRole('button', { name: '取消添加模型' }));
+    const providerRow = document.querySelector<HTMLButtonElement>('.model-enabled-row__main');
+    expect(providerRow).toBeTruthy();
+    fireEvent.click(providerRow!);
 
     expect(await screen.findByDisplayValue('CODEX')).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: '添加模型' })).toBeNull();
+    expect(screen.queryByRole('region', { name: '添加模型' })).toBeNull();
   });
 
   it('previews and imports selected CC Switch providers', async () => {

@@ -45,10 +45,21 @@ vi.mock('./FilePane.js', () => ({
 
 vi.mock('./RightDock.js', () => ({
   WorkspaceFilesPanel: (props: {
+    reviewView?: { fileChanges: unknown[] } | null;
+    onOpenReview?(view: unknown): void;
     onOpenFile?(path: string, location?: unknown): void;
     onOpenFileInNewTab?(path: string, location?: unknown): void;
   }) => (
-    <div data-testid="mock-workspace-files-panel">
+    <div
+      data-testid="mock-workspace-files-panel"
+      data-review-count={String(props.reviewView?.fileChanges.length ?? 0)}
+    >
+      <button
+        type="button"
+        onClick={() => props.reviewView && props.onOpenReview?.(props.reviewView)}
+      >
+        打开审阅
+      </button>
       <button type="button" onClick={() => props.onOpenFile?.('src/current.ts', undefined)}>
         当前标签打开
       </button>
@@ -100,6 +111,30 @@ describe('WorkspaceFileView', () => {
     expect(onOpenFileInNewTab).toHaveBeenCalledWith('src/new.ts', undefined);
   });
 
+  it('keeps conversation changes and the standalone review action in the embedded tree', () => {
+    const reviewView = {
+      runId: 'run-1',
+      fileChanges: [{ path: 'src/index.ts', action: 'edited' }],
+    };
+    const onOpenReview = vi.fn();
+    render(
+      <WorkspaceFileView
+        projectFolder="C:/workspace"
+        path="src/index.ts"
+        reviewView={reviewView as never}
+        onOpenReview={onOpenReview}
+        onOpenFileInCurrentTab={vi.fn()}
+        onOpenFileInNewTab={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('mock-workspace-files-panel').getAttribute('data-review-count')).toBe(
+      '1',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '打开审阅' }));
+    expect(onOpenReview).toHaveBeenCalledWith(reviewView);
+  });
+
   it('resizes the embedded workspace tree with pointer and keyboard controls', () => {
     render(
       <WorkspaceFileView
@@ -137,26 +172,26 @@ describe('WorkspaceFileView', () => {
     });
 
     expect(separator.getAttribute('aria-orientation')).toBe('vertical');
-    expect(separator.getAttribute('aria-valuenow')).toBe('30');
+    expect(separator.getAttribute('aria-valuenow')).toBe('288');
     fireEvent.pointerDown(separator, { clientX: 700, pointerId: 1 });
     fireEvent.pointerMove(separator, { clientX: 600, pointerId: 1 });
     fireEvent.pointerUp(separator, { pointerId: 1 });
 
-    expect(separator.getAttribute('aria-valuenow')).toBe('40');
+    expect(separator.getAttribute('aria-valuenow')).toBe('400');
     expect(
       screen
         .getByTestId('workspace-file-view')
         .style.getPropertyValue('--shell-file-explorer-width'),
-    ).toBe('40%');
+    ).toBe('400px');
 
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('35');
+    expect(separator.getAttribute('aria-valuenow')).toBe('384');
     fireEvent.keyDown(separator, { key: 'Home' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('22');
+    expect(separator.getAttribute('aria-valuenow')).toBe('221');
     fireEvent.keyDown(separator, { key: 'End' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('60');
+    expect(separator.getAttribute('aria-valuenow')).toBe('600');
     fireEvent.doubleClick(separator);
-    expect(separator.getAttribute('aria-valuenow')).toBe('30');
+    expect(separator.getAttribute('aria-valuenow')).toBe('288');
   });
 
   it('clamps drag resizing so both the editor and explorer remain usable', () => {
@@ -197,9 +232,9 @@ describe('WorkspaceFileView', () => {
 
     fireEvent.pointerDown(separator, { clientX: 380, pointerId: 2 });
     fireEvent.pointerMove(separator, { clientX: -500, pointerId: 2 });
-    expect(separator.getAttribute('aria-valuenow')).toBe('53');
+    expect(separator.getAttribute('aria-valuenow')).toBe('239');
     fireEvent.pointerMove(separator, { clientX: 1_500, pointerId: 2 });
-    expect(separator.getAttribute('aria-valuenow')).toBe('37');
+    expect(separator.getAttribute('aria-valuenow')).toBe('221');
     fireEvent.pointerUp(separator, { pointerId: 2 });
   });
 
@@ -258,6 +293,6 @@ describe('WorkspaceFileView', () => {
     expect(document.body.style.cursor).toBe('');
 
     fireEvent.pointerMove(separator, { clientX: 500, pointerId: 3 });
-    expect(separator.getAttribute('aria-valuenow')).toBe('30');
+    expect(separator.getAttribute('aria-valuenow')).toBe('288');
   });
 });

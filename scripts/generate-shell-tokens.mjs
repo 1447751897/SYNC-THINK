@@ -57,6 +57,15 @@ function valueFor(groupId, name, raw, theme) {
   return null;
 }
 
+/** Keep long font stacks in the same stable shape Prettier expects. */
+function declaration(group, name, value, indent) {
+  const property = `${group.prefix}${name}`;
+  if (group.id === 'fonts') {
+    return `${indent}${property}:\n${indent}  ${value};`;
+  }
+  return `${indent}${property}: ${value};`;
+}
+
 /** Emit one group's declarations for one theme; returns null if nothing applies. */
 function emitGroup(group, theme, indent) {
   const decls = [];
@@ -65,7 +74,7 @@ function emitGroup(group, theme, indent) {
     if (value === null) continue;
     const perToken = group._notes?.[name];
     if (perToken) decls.push(comment(perToken, indent));
-    decls.push(`${indent}${group.prefix}${name}: ${value};`);
+    decls.push(declaration(group, name, value, indent));
   }
   if (decls.length === 0) return null;
   const head = theme === LIGHT ? comment(group._note, indent) : null;

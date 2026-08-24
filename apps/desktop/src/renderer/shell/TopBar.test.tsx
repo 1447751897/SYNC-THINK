@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSummary } from '@sync-think/protocol';
-import { TopBar } from './TopBar.js';
+import { TopBar, calculateWorkspaceTabLayout } from './TopBar.js';
 
 afterEach(cleanup);
 
@@ -23,7 +23,104 @@ const workspaceTwo = {
   hidden: false,
 } as unknown as WorkspaceSummary;
 
+describe('TopBar NewMax tab track', () => {
+  it('uses the measured width rules and keeps the active workspace visible on overflow', () => {
+    const ids = Array.from({ length: 10 }, (_, index) => `workspace-${index + 1}`);
+
+    const full = calculateWorkspaceTabLayout(1567, ids, ids[0]);
+    expect(full.visibleIds).toEqual(ids);
+    expect(full.tabWidth).toBeCloseTo(147.6, 1);
+    expect(full.overflowCount).toBe(0);
+
+    const overflow = calculateWorkspaceTabLayout(300, ids, ids[9]);
+    expect(overflow.visibleIds).toEqual([ids[0], ids[1], ids[9]]);
+    expect(overflow.tabWidth).toBe(61);
+    expect(overflow.overflowCount).toBe(7);
+  });
+
+  it('draws the connected SVG surface only behind the active workspace', () => {
+    const visibleWorkspace = { ...workspace, hidden: false } as WorkspaceSummary;
+    render(
+      <TopBar
+        workspaces={[visibleWorkspace, workspaceTwo]}
+        activeWorkspaceId={visibleWorkspace.workspaceId}
+        sidebarCollapsed={false}
+        onSelectWorkspace={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onCreateWorkspace={vi.fn().mockResolvedValue(true)}
+        onUpdateWorkspace={vi.fn().mockResolvedValue(true)}
+        onDeleteWorkspace={vi.fn().mockResolvedValue(true)}
+        onToggleSidebar={vi.fn()}
+        onPickFolder={vi.fn().mockResolvedValue({ canceled: true })}
+      />,
+    );
+
+    const active = screen.getByTestId('project-tab-同步工作区');
+    const inactive = screen.getByTestId('project-tab-第二工作区');
+    expect(active.getAttribute('data-active')).toBe('true');
+    expect(active.querySelector('[data-testid="workspace-tab-shape"]')).toBeTruthy();
+    expect(inactive.querySelector('[data-testid="workspace-tab-shape"]')).toBeNull();
+  });
+
+  it('exposes the bottom and right workbench toggles with their persisted state', () => {
+    const visibleWorkspace = { ...workspace, hidden: false } as WorkspaceSummary;
+    const onToggleBottomWorkbench = vi.fn();
+    const onToggleRightWorkbench = vi.fn();
+    render(
+      <TopBar
+        workspaces={[visibleWorkspace]}
+        activeWorkspaceId={visibleWorkspace.workspaceId}
+        sidebarCollapsed={false}
+        bottomWorkbenchOpen={false}
+        rightWorkbenchOpen
+        onSelectWorkspace={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onCreateWorkspace={vi.fn().mockResolvedValue(true)}
+        onUpdateWorkspace={vi.fn().mockResolvedValue(true)}
+        onDeleteWorkspace={vi.fn().mockResolvedValue(true)}
+        onToggleSidebar={vi.fn()}
+        onToggleBottomWorkbench={onToggleBottomWorkbench}
+        onToggleRightWorkbench={onToggleRightWorkbench}
+        onPickFolder={vi.fn().mockResolvedValue({ canceled: true })}
+      />,
+    );
+
+    const bottom = screen.getByTestId('topbar-toggle-bottom-workbench');
+    const right = screen.getByTestId('topbar-toggle-right-workbench');
+    expect(bottom.getAttribute('data-workspace-bottom-toggle')).toBe('true');
+    expect(bottom.getAttribute('aria-pressed')).toBe('false');
+    expect(right.getAttribute('data-workspace-files-toggle')).toBe('true');
+    expect(right.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(bottom);
+    fireEvent.click(right);
+    expect(onToggleBottomWorkbench).toHaveBeenCalledTimes(1);
+    expect(onToggleRightWorkbench).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('TopBar workspace menu', () => {
+  it('replaces workspace controls with one contextual tab outside conversations', () => {
+    render(
+      <TopBar
+        workspaces={[workspaceTwo]}
+        activeWorkspaceId={workspaceTwo.workspaceId}
+        sidebarCollapsed={false}
+        contextStage="tasks"
+        onSelectWorkspace={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onCreateWorkspace={vi.fn().mockResolvedValue(true)}
+        onUpdateWorkspace={vi.fn().mockResolvedValue(true)}
+        onDeleteWorkspace={vi.fn().mockResolvedValue(true)}
+        onToggleSidebar={vi.fn()}
+        onPickFolder={vi.fn().mockResolvedValue({ canceled: true })}
+      />,
+    );
+
+    expect(screen.getByTestId('topbar-context-tab').textContent).toContain('定时任务');
+    expect(screen.getByTestId('topbar-workspace-scroller').classList.contains('hidden')).toBe(true);
+  });
+
   it('uses native dragging to reorder workspace tabs without transforming the scroll track', () => {
     const visibleWorkspace = { ...workspace, hidden: false } as WorkspaceSummary;
     const onReorderWorkspaces = vi.fn();

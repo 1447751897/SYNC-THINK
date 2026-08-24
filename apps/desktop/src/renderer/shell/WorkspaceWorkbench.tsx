@@ -1,0 +1,359 @@
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+} from 'react';
+import { FileDiff, Folder, Globe, MoreHorizontal, Plus, SquareTerminal, X } from 'lucide-react';
+import clsx from 'clsx';
+import { FileTypeIcon } from './FileTypeIcon.js';
+import type { WorkbenchPlacement, WorkbenchScope, WorkbenchTab } from './workspace-workbench.js';
+import {
+  WORKBENCH_BOTTOM_DEFAULT_HEIGHT,
+  WORKBENCH_BOTTOM_MAX_HEIGHT,
+  WORKBENCH_BOTTOM_MIN_HEIGHT,
+  WORKBENCH_RIGHT_COMPACT_WIDTH,
+  WORKBENCH_RIGHT_MAX_WIDTH,
+  WORKBENCH_RIGHT_MIN_WIDTH,
+} from './workspace-workbench.js';
+
+export type WorkbenchNewResource = 'files' | 'terminal' | 'browser';
+
+export interface WorkspaceWorkbenchProps {
+  placement: WorkbenchPlacement;
+  scope: WorkbenchScope;
+  focused?: boolean;
+  canOpenTerminal?: boolean;
+  renderContent(tab: WorkbenchTab): ReactNode;
+  onActivateTab(tabId: string): void;
+  onCloseTab(tab: WorkbenchTab): void;
+  onNewResource(resource: WorkbenchNewResource): void;
+  onClose(): void;
+  onSizeChange(size: number, commit: boolean): void;
+}
+
+interface ResizeDrag {
+  startClient: number;
+  startSize: number;
+  pointerId: number;
+  target: HTMLDivElement;
+  lastSize: number;
+}
+
+function tabLabel(tab: WorkbenchTab): string {
+  if (tab.type === 'file') return tab.path.split(/[\\/]/).at(-1) || tab.path;
+  if (tab.type === 'terminal') return 'Terminal';
+  if (tab.type === 'browser') {
+    try {
+      return new URL(tab.url).hostname || '浏览器';
+    } catch {
+      return '浏览器';
+    }
+  }
+  if (tab.type === 'review') return '审阅';
+  return '工作区文件';
+}
+
+function WorkbenchTabIcon({ tab }: { tab: WorkbenchTab }) {
+  if (tab.type === 'file') return <FileTypeIcon path={tab.path} size={14} className="shrink-0" />;
+  if (tab.type === 'terminal') return <SquareTerminal size={14} aria-hidden="true" />;
+  if (tab.type === 'browser') return <Globe size={14} aria-hidden="true" />;
+  if (tab.type === 'review') return <FileDiff size={14} aria-hidden="true" />;
+  return <Folder size={14} aria-hidden="true" />;
+}
+
+function sizeBounds(placement: WorkbenchPlacement, host: HTMLElement | null) {
+  if (placement === 'right') {
+    const available = host?.parentElement?.getBoundingClientRect().width ?? 0;
+    return {
+      min: WORKBENCH_RIGHT_MIN_WIDTH,
+      max: Math.max(
+        WORKBENCH_RIGHT_MIN_WIDTH,
+        Math.min(
+          WORKBENCH_RIGHT_MAX_WIDTH,
+          available > 0 ? available - 320 : WORKBENCH_RIGHT_MAX_WIDTH,
+        ),
+      ),
+    };
+  }
+  const available = host?.parentElement?.getBoundingClientRect().height ?? 0;
+  return {
+    min: WORKBENCH_BOTTOM_MIN_HEIGHT,
+    max: Math.max(
+      WORKBENCH_BOTTOM_MIN_HEIGHT,
+      Math.min(
+        WORKBENCH_BOTTOM_MAX_HEIGHT,
+        available > 0 ? available - 200 : WORKBENCH_BOTTOM_MAX_HEIGHT,
+      ),
+    ),
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+export function WorkspaceWorkbench(props: WorkspaceWorkbenchProps) {
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const hostRef = useRef<HTMLElement>(null);
+  const dragRef = useRef<ResizeDrag | null>(null);
+  const activeTab =
+    props.scope.tabs.find((tab) => tab.id === props.scope.activeTabId) ?? props.scope.tabs.at(-1);
+
+  const finishResize = useCallback(
+    (commit = true) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      dragRef.current = null;
+      if (drag.target.hasPointerCapture?.(drag.pointerId)) {
+        drag.target.releasePointerCapture?.(drag.pointerId);
+      }
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (commit) props.onSizeChange(drag.lastSize, true);
+    },
+    [props],
+  );
+
+  useEffect(() => {
+    const blur = () => finishResize();
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('blur', blur);
+      finishResize(false);
+    };
+  }, [finishResize]);
+
+  useEffect(() => {
+    if (!newMenuOpen && !moreMenuOpen) return;
+    const close = () => {
+      setNewMenuOpen(false);
+      setMoreMenuOpen(false);
+    };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('blur', close);
+    };
+  }, [moreMenuOpen, newMenuOpen]);
+
+  const beginResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    dragRef.current = {
+      startClient: props.placement === 'right' ? event.clientX : event.clientY,
+      startSize: props.scope.size,
+      pointerId: event.pointerId,
+      target: event.currentTarget,
+      lastSize: props.scope.size,
+    };
+    document.body.style.cursor = props.placement === 'right' ? 'col-resize' : 'row-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  const resizeWithPointer = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const client = props.placement === 'right' ? event.clientX : event.clientY;
+    const bounds = sizeBounds(props.placement, hostRef.current);
+    const size = Math.round(
+      clamp(drag.startSize - (client - drag.startClient), bounds.min, bounds.max),
+    );
+    drag.lastSize = size;
+    props.onSizeChange(size, false);
+  };
+
+  const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    const bounds = sizeBounds(props.placement, hostRef.current);
+    let size: number | undefined;
+    if (event.key === 'Home') size = bounds.min;
+    else if (event.key === 'End') size = bounds.max;
+    else if (
+      (props.placement === 'right' && event.key === 'ArrowLeft') ||
+      (props.placement === 'bottom' && event.key === 'ArrowUp')
+    ) {
+      size = props.scope.size + 16;
+    } else if (
+      (props.placement === 'right' && event.key === 'ArrowRight') ||
+      (props.placement === 'bottom' && event.key === 'ArrowDown')
+    ) {
+      size = props.scope.size - 16;
+    }
+    if (size === undefined) return;
+    event.preventDefault();
+    props.onSizeChange(Math.round(clamp(size, bounds.min, bounds.max)), true);
+  };
+
+  const defaultSize =
+    props.placement === 'right' ? WORKBENCH_RIGHT_COMPACT_WIDTH : WORKBENCH_BOTTOM_DEFAULT_HEIGHT;
+
+  return (
+    <section
+      ref={hostRef}
+      className={clsx('shell-workbench', `shell-workbench--${props.placement}`)}
+      data-workspace-file-inspector={props.placement === 'right' ? 'true' : undefined}
+      data-workspace-bottom-inspector={props.placement === 'bottom' ? 'true' : undefined}
+      data-workspace-panel-layout="true"
+      data-workspace-panel-placement={props.placement}
+      data-workspace-panel-open="true"
+      style={
+        props.placement === 'right'
+          ? { width: props.scope.size, flexBasis: props.scope.size }
+          : { height: props.scope.size, flexBasis: props.scope.size }
+      }
+    >
+      <div
+        role="separator"
+        tabIndex={0}
+        aria-label={props.placement === 'right' ? '调整右侧工作台宽度' : '调整底部工作台高度'}
+        aria-orientation={props.placement === 'right' ? 'vertical' : 'horizontal'}
+        aria-valuemin={sizeBounds(props.placement, hostRef.current).min}
+        aria-valuemax={sizeBounds(props.placement, hostRef.current).max}
+        aria-valuenow={Math.round(props.scope.size)}
+        className="shell-workbench__outer-resizer"
+        onPointerDown={beginResize}
+        onPointerMove={resizeWithPointer}
+        onPointerUp={() => finishResize()}
+        onPointerCancel={() => finishResize()}
+        onLostPointerCapture={() => finishResize()}
+        onDoubleClick={() => props.onSizeChange(defaultSize, true)}
+        onKeyDown={resizeWithKeyboard}
+      />
+
+      <div
+        className="shell-workbench__tabbar"
+        data-workspace-inspector-tabbar="true"
+        data-pane-tab-bar="true"
+      >
+        <div className="shell-workbench__tabs" role="tablist" aria-label="工作台标签">
+          {props.scope.tabs.map((tab) => {
+            const active = tab.id === activeTab?.id;
+            const label = tabLabel(tab);
+            return (
+              <div
+                key={tab.id}
+                role="tab"
+                aria-selected={active}
+                data-tab-item="true"
+                data-tab-active={active ? 'true' : undefined}
+                data-workspace-file-preview-tab={
+                  tab.type === 'file' ? tab.path : tab.type === 'review' ? tab.id : undefined
+                }
+                className={clsx('shell-workbench-tab group', active && 'is-active')}
+                title={label}
+                onClick={() => props.onActivateTab(tab.id)}
+              >
+                <WorkbenchTabIcon tab={tab} />
+                <span className="shell-workbench-tab__label" data-pane-tab-label="true">
+                  {label}
+                </span>
+                <button
+                  type="button"
+                  className="shell-workbench-tab__close"
+                  aria-label={`关闭 ${label}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onCloseTab(tab);
+                  }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            );
+          })}
+          <div className="shell-workbench__menu-anchor">
+            <button
+              type="button"
+              className="shell-workbench__tab-action"
+              aria-label={`添加${props.placement === 'right' ? '右侧' : '底部'}工作台标签`}
+              aria-expanded={newMenuOpen}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                setNewMenuOpen((open) => !open);
+                setMoreMenuOpen(false);
+              }}
+            >
+              <Plus size={15} />
+            </button>
+            {newMenuOpen ? (
+              <div
+                className="shell-workbench-menu"
+                role="menu"
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <button type="button" role="menuitem" onClick={() => props.onNewResource('files')}>
+                  <Folder size={14} /> 工作区文件
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={props.canOpenTerminal === false}
+                  onClick={() => props.onNewResource('terminal')}
+                >
+                  <SquareTerminal size={14} /> 新建终端
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => props.onNewResource('browser')}
+                >
+                  <Globe size={14} /> 网页浏览
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="shell-workbench__menu-anchor shell-workbench__more">
+          <button
+            type="button"
+            className="shell-workbench__tab-action"
+            aria-label="工作台更多操作"
+            aria-expanded={moreMenuOpen}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={() => {
+              setMoreMenuOpen((open) => !open);
+              setNewMenuOpen(false);
+            }}
+          >
+            <MoreHorizontal size={16} />
+          </button>
+          {moreMenuOpen ? (
+            <div
+              className="shell-workbench-menu shell-workbench-menu--end"
+              role="menu"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              {props.scope.tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="menuitem"
+                  className={tab.id === activeTab?.id ? 'is-active' : undefined}
+                  onClick={() => props.onActivateTab(tab.id)}
+                >
+                  <WorkbenchTabIcon tab={tab} />
+                  <span>{tabLabel(tab)}</span>
+                </button>
+              ))}
+              <div className="shell-workbench-menu__divider" />
+              <button type="button" role="menuitem" onClick={props.onClose}>
+                <X size={14} /> 关闭工作台
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="shell-workbench__divider" data-pane-tab-divider="true" />
+      <div className="shell-workbench__content">
+        {activeTab ? props.renderContent(activeTab) : null}
+      </div>
+    </section>
+  );
+}

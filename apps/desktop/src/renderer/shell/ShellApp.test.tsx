@@ -261,6 +261,10 @@ beforeEach(() => {
   });
   runtime.writeProjectFile.mockReset();
   runtime.watchProjectFile.mockClear();
+  Object.defineProperties(window, {
+    innerWidth: { configurable: true, value: 1024 },
+    innerHeight: { configurable: true, value: 768 },
+  });
   window.localStorage.clear();
 });
 
@@ -315,6 +319,28 @@ describe('ShellApp settings modal', () => {
       expect(positioner?.style.right).toBe('-18px');
       expect(positioner?.style.top).toBe('-9px');
       expect(positioner?.style.bottom).toBe('9px');
+    });
+  });
+
+  it('clamps a restored settings position inside a narrow viewport', async () => {
+    installRuntime();
+    window.localStorage.setItem('sync-think-settings-pos', JSON.stringify({ dx: 500, dy: 500 }));
+
+    Object.defineProperties(window, {
+      innerWidth: { configurable: true, value: 900 },
+      innerHeight: { configurable: true, value: 650 },
+    });
+
+    render(<ShellApp />);
+    fireEvent.click(screen.getByTestId('nav-settings'));
+
+    const closeButton = screen.getByRole('button', { name: '关闭设置' });
+    const positioner = closeButton.closest<HTMLElement>('.settings-modal-positioner');
+    await waitFor(() => {
+      expect(positioner?.style.left).toBe('8px');
+      expect(positioner?.style.right).toBe('-8px');
+      expect(positioner?.style.top).toBe('8px');
+      expect(positioner?.style.bottom).toBe('-8px');
     });
   });
 
@@ -374,6 +400,57 @@ describe('ShellApp settings modal', () => {
 });
 
 describe('ShellApp workspace context', () => {
+  it('persists and restores right workbench visibility independently for each workspace', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [
+        { workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' },
+        { workspaceId: 'ws-b', name: 'B', folderPath: 'D:\\b' },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+
+    render(<ShellApp />);
+    await waitFor(() => expect(topBarProps.current?.activeWorkspaceId).toBe('ws-a'));
+
+    act(() => (topBarProps.current?.onToggleRightWorkbench as (() => void) | undefined)?.());
+    await waitFor(() => expect(topBarProps.current?.rightWorkbenchOpen).toBe(true));
+
+    let stored = JSON.parse(
+      window.localStorage.getItem('sync-think.workspaceWorkbenchLayouts') ?? '{}',
+    );
+    expect(stored.workspaces['ws-a'].right).toMatchObject({
+      open: true,
+      activeTabId: 'workspace-files',
+      tabs: [{ id: 'workspace-files', type: 'workspace-files' }],
+    });
+
+    act(() =>
+      (topBarProps.current?.onSelectWorkspace as ((workspaceId: string) => void) | undefined)?.(
+        'ws-b',
+      ),
+    );
+    await waitFor(() => {
+      expect(topBarProps.current?.activeWorkspaceId).toBe('ws-b');
+      expect(topBarProps.current?.rightWorkbenchOpen).toBe(false);
+    });
+
+    act(() =>
+      (topBarProps.current?.onSelectWorkspace as ((workspaceId: string) => void) | undefined)?.(
+        'ws-a',
+      ),
+    );
+    await waitFor(() => {
+      expect(topBarProps.current?.activeWorkspaceId).toBe('ws-a');
+      expect(topBarProps.current?.rightWorkbenchOpen).toBe(true);
+    });
+
+    stored = JSON.parse(
+      window.localStorage.getItem('sync-think.workspaceWorkbenchLayouts') ?? '{}',
+    );
+    expect(stored.workspaces['ws-b']).toBeUndefined();
+  });
+
   it('keeps same-path file drafts and dirty markers isolated by workspace', async () => {
     installRuntime();
     runtime.listWorkspaces.mockResolvedValue({
@@ -587,6 +664,100 @@ describe('ShellApp workspace context', () => {
       window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}',
     );
     expect(paneConversationIds(stored.workspaces['ws-a'])).toEqual(['c2', 'c1']);
+  });
+
+  it('creates a right split when a tab is dropped on the pane edge', async () => {
+    installRuntime();
+    runtime.listWorkspaces.mockResolvedValue({
+      workspaces: [{ workspaceId: 'ws-a', name: 'A', folderPath: 'D:\\a' }],
+    });
+    runtime.listConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'c1',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'C1',
+          executionMode: 'full-access',
+        },
+        {
+          id: 'c2',
+          workspaceId: 'ws-a',
+          track: 'model',
+          targetRef: 'model-a',
+          title: 'C2',
+          executionMode: 'full-access',
+        },
+      ],
+    });
+    window.localStorage.setItem('sync-think.activeWorkspaceId', 'ws-a');
+    window.localStorage.setItem(
+      'sync-think.workspacePaneLayouts',
+      JSON.stringify({
+        version: 1,
+        workspaces: { 'ws-a': createWorkspacePaneLayout('ws-a', ['c1', 'c2'], 'c1') },
+      }),
+    );
+
+    const payloads = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      setData: vi.fn((type: string, value: string) => payloads.set(type, value)),
+      getData: vi.fn((type: string) => payloads.get(type) ?? ''),
+    };
+
+    render(<ShellApp />);
+    await waitFor(() => expect(screen.getByTestId('conversation-tab-c2')).toBeTruthy());
+    const sourceTab = screen.getByTestId('conversation-tab-c2');
+    const pane = sourceTab.closest<HTMLElement>('[data-testid^="workspace-pane-"]');
+    const dropSurface = pane?.firstElementChild as HTMLElement | null;
+    expect(dropSurface).toBeTruthy();
+    vi.spyOn(dropSurface!, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 1_000,
+      bottom: 600,
+      width: 1_000,
+      height: 600,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.dragStart(sourceTab, { dataTransfer });
+    await waitFor(() => {
+      expect(dataTransfer.setData).toHaveBeenCalledWith(
+        'application/x-sync-think-pane-resource',
+        JSON.stringify({ type: 'conversation', id: 'c2' }),
+      );
+    });
+    const edgeDragEvent = (type: 'dragover' | 'drop') => {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: 980,
+        clientY: 300,
+      });
+      Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+      return event;
+    };
+    fireEvent(dropSurface!, edgeDragEvent('dragover'));
+    await waitFor(() => {
+      expect(dropSurface?.querySelector('[data-zone="right"]')).toBeTruthy();
+    });
+    fireEvent(dropSurface!, edgeDragEvent('drop'));
+
+    await waitFor(() => expect(document.querySelectorAll('.shell-workspace-pane')).toHaveLength(2));
+    const stored = JSON.parse(
+      window.localStorage.getItem('sync-think.workspacePaneLayouts') ?? '{}',
+    );
+    expect(stored.workspaces['ws-a'].root).toMatchObject({
+      type: 'split',
+      direction: 'horizontal',
+    });
+    expect(paneConversationIds(stored.workspaces['ws-a'])).toEqual(['c1', 'c2']);
   });
 
   it('opens a terminal in the focused pane and persists only its cwd in the layout', async () => {

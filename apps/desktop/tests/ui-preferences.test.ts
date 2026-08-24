@@ -18,7 +18,10 @@ import {
   writeTraceCollapsedPreference,
   UI_PREF_KEYS,
 } from '../src/renderer/ui-preferences.js';
-import { createWorkspacePaneLayout, paneConversationIds } from '../src/renderer/shell/pane-layout.js';
+import {
+  createWorkspacePaneLayout,
+  paneConversationIds,
+} from '../src/renderer/shell/pane-layout.js';
 
 function memoryStorage(initial: Record<string, string> = {}): Storage {
   const map = new Map<string, string>(Object.entries(initial));
@@ -82,10 +85,7 @@ describe('ui-preferences (Locked IA §15.2 workspace prefs)', () => {
       team: true,
     });
 
-    writeRecentConversationSectionPreference(
-      { model: true, agent: false, team: true },
-      s,
-    );
+    writeRecentConversationSectionPreference({ model: true, agent: false, team: true }, s);
     expect(readRecentConversationSectionPreference(s)).toEqual({
       model: true,
       agent: false,
@@ -95,10 +95,7 @@ describe('ui-preferences (Locked IA §15.2 workspace prefs)', () => {
     writePinnedConversationIds(['task-1', 'task-2', 'task-1'], s);
     expect(readPinnedConversationIds(s)).toEqual(['task-1', 'task-2']);
 
-    writeConversationTrackPreferences(
-      { 'task-1': 'model', 'task-2': 'team' },
-      s,
-    );
+    writeConversationTrackPreferences({ 'task-1': 'model', 'task-2': 'team' }, s);
     expect(readConversationTrackPreferences(s)).toEqual({
       'task-1': 'model',
       'task-2': 'team',

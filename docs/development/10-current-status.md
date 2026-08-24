@@ -1,12 +1,54 @@
-﻿## 当前状态：2026-08-21 · 后台活动中心完成
+﻿## 当前状态：2026-08-24 · Desktop 可用性与 Daemon 自启动修复完成
+
+### NewMax 视觉对齐
+
+- 深色主题已按本机 NewMax 1.1.14 的真实设计令牌统一：`#1e1f1f` 应用底色、`#252726` 侧栏/面板、`#2a2d2b` 选中面、`#36d385` 品牌绿；浅色主题也使用对应的暖灰表面层级。
+- Shell 几何契约收敛为 220px 主侧栏、18px 工作画布圆角和 744px 对话/输入区。非对话页顶栏只保留当前功能上下文。
+- 工作区标签现使用 NewMax 同参数 SVG 肩部曲面、3px 间距和 `58–172px` 自适应宽度；第二行所有资源类型统一为 40px 轨道中的 28px 标签。活动工作区直接衔接资源行和正文，不再存在 4px 内层卡片间隙或重复圆角。
+- 右侧/底部工作台已按工作区独立持久化。右侧工作区文件默认 330px，文件预览与审阅为 713px（`424 + 1 + 288`），底部终端为 280px；关闭预览标签后自动回到紧凑文件栏。
+- 对话、文件、终端、浏览器、审阅和工作区文件共享同一标签表达。主窗格通过标签拖到中心或四个边缘完成移动/分屏，右侧文件栏可直接把文件和本轮变更提升为独立文件/审阅标签。
+- 定时任务页沿用原有的左侧筛选栏 + 右侧任务卡片流，配色接入统一的 NewMax 视觉令牌；设置窗口配色和布局同步收敛，并修复历史拖拽坐标导致的小视口越界。
+- 模型设置页已完成 NewMax 1.1.14 级别的结构对齐：`1060 × 720px` 设置弹窗、192px 设置侧栏、240px 模型列表、596px 详情内容、六分类连续分段轨和 72px 底栏均按实窗尺寸实现。服务商目录已移除 NewMax Gateway，推荐页只显示自定义供应商与 CC Switch，国内服务目录按参考顺序补齐。
+- 模型详情仍绑定真实 Provider/API Key/优先级数据；图片识别 Fallback、规划/执行模型、目标评估模型均保留，新增模型配置云同步偏好入口。分类与详情切换使用统一缓动，系统 reduced-motion 偏好会停用动画。
+- 颜色、尺寸和主题值继续由 `docs/product/16-shell-design-tokens.json` 单一生成；视觉契约测试防止关键 NewMax 值回退。
+
+### NewMax 对齐验证
+
+- 聚焦测试 4 files / 50 tests；全仓串行测试 20/20 tasks、lint 11/11（0 error）、typecheck 20/20、build 11/11 全部通过。
+- 1424x861 与 1024x700 的深浅主题均完成实窗检查，无 document 级横向或纵向溢出；设置弹窗在旧坐标和窄视口下保持完整可见。
+- QA 截图位于 `.data/newmax-theme-20260824/`，当前 Desktop 已加载新主题并保持运行。
+- 标签轨道新增 3 files / 26 tests；1424x861 亮暗主题与 1024x700 窄窗均无 document 溢出，最终截图为 `sync-tabs-final-light.png`、`sync-tabs-final-dark.png` 和 `sync-tabs-final-1024x700.png`。
+- 工作台最终门禁：根级 test 20/20 tasks（Desktop 171 files / 1361 tests）、lint 11/11（0 error）、typecheck 20/20、build 11/11。1424x861 与 1024x700 实窗无 document 溢出，精确尺寸与交互截图位于 `.data/newmax-workbench-qa/`。
+- 模型设置聚焦测试 3 files / 77 tests、Desktop 全量 171 files / 1363 tests 通过；根级串行 test 20/20 tasks（Runtime 141 files / 1059 tests）、lint 11/11（0 error）、typecheck 20/20、build 11/11、Prettier、设计令牌与空白差异检查全部通过。
+- 实窗测得详情、目录和云同步面板均从弹窗相对坐标 `x=440 / y=118` 开始，内容宽 596px，云同步卡高 120px。900x650 下弹窗边缘完整可见且无 document 溢出，截图位于 `.data/newmax-models-qa/`。
+
+### 已完成
+
+- 智能体库现支持搜索、模型筛选、网格/列表切换；“开始对话”始终可见，失效模型显示“模型不可用”。
+- 多对话标签增加固定管理入口，支持搜索、切换、单独关闭和关闭其他标签；设置页辅助文字与 Skill 安装按钮的可读性已修复。
+- 后台活动将 Webhook、Git 推送、文件监听等来源显示为“系统触发”。失败 Run 只提供“重新编辑”，把原指令恢复到输入框；不会自动发送或切换模型。
+- daemon 登录自启默认开启，显式关闭偏好持久保存。Windows 计划任务创建被系统策略拒绝时自动回退到当前用户 Run 登录启动项，状态查询和关闭操作同时覆盖两种注册。
+
+### 当前验证
+
+- Desktop 聚焦 4 files / 42 tests（含自启动 supervisor 8/8）、Desktop/Runtime typecheck、根级 build 11/11 均通过。
+- 实机关闭 Desktop 后 daemon/Runtime 保持运行；新构建注册登录启动项成功，重启后台进程后状态为 `autostart: true`，手动关闭再开启的状态为 `false -> true`。
+- 1424x861 实窗检查无横向溢出；智能体、设置、能力、活动中心和 12 标签管理器截图位于 `.data/local-restart-20260824-fixes/`。
+
+### 下一步
+
+- 为具体文件目录、Git 仓库和 bot 渠道补配置 UI；外部事件 durable contract 与 daemon 收件箱已具备。
+- Runtime/系统重启期间的审批恢复仍需将 `pendingToolApprovals` 从纯内存状态迁到 durable 真相源。
+
+## 当前状态：2026-08-21 · 后台活动中心完成
 
 ### 已完成
 
 - 新增 `run_index` 读模型（`packages/storage`），由事件日志派生并回填历史：按 workspace / 状态 / 来源检索 Run，冗余 kernel、model、失败分类与错误摘要。状态在 upsert 中终态粘性，乱序或重放的事件不会把已完成的 Run 打回「进行中」。
 - Protocol/Runtime 新增 activity 命令族：`activity.listRuns`（`(started_at, run_id)` 复合游标分页 + 各状态计数）、`activity.listExternalEvents`、`activity.retryAnchor`。外部事件视图直接读 daemon 与 Runtime 共用的同一 SQLite 文件，Runtime 侧只读。
-- Desktop 新增「后台活动」页：状态/来源过滤、游标翻页、失败原因、打开对话与重发，并列展示外部事件的投递状态与尝试次数。刷新只由真正推进生命周期的 Run 事件驱动，`plan.approved` / `run.queued` 不触发重查。
+- Desktop 新增「后台活动」页：状态/来源过滤、游标翻页、失败原因、打开对话与重新编辑，并列展示系统触发事件的投递状态与尝试次数。刷新只由真正推进生命周期的 Run 事件驱动，`plan.approved` / `run.queued` 不触发重查。
 - 边界：外部事件逐字段投影，`leaseToken` 与 `instruction` / `metadata` 不出 Runtime；`states` / `sources` 在主进程按词汇表白名单过滤后才进 Runtime。
-- 重发不新开 run-start 路径：`activity.retryAnchor` 只返回对话 id 与原始提示词，活动中心预填进 ChatView 输入框由用户确认发送，`expectedTaskVersion` 栅栏与模型/内核解析仍只有一份实现。
+- “重新编辑”不新开 run-start 路径：`activity.retryAnchor` 只返回对话 id 与原始提示词，活动中心预填进 ChatView 输入框由用户确认发送，`expectedTaskVersion` 栅栏与模型/内核解析仍只有一份实现。
 
 ### 当前验证
 

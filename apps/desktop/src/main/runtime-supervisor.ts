@@ -680,6 +680,11 @@ let daemonStopRequested = false;
 let daemonRestartTimer: NodeJS.Timeout | null = null;
 let daemonRestartAttempts = 0;
 let daemonEnsureLock: Promise<DaemonEnsureResult> | null = null;
+let daemonAutostartDefaultPromise: Promise<{
+  ok: boolean;
+  changed: boolean;
+  enabled: boolean;
+}> | null = null;
 /** 上次 spawn daemon 的时间（防抖：spawn 到管道监听有秒级延迟，期间重复调用不再拉起）。 */
 let daemonSpawnedAt = 0;
 const DAEMON_SPAWN_DEBOUNCE_MS = 10_000;
@@ -693,6 +698,64 @@ interface DaemonEnsureResult {
 
 function daemonStateDir(): string {
   return dirname(resolveManagedRuntimeDatabasePath());
+}
+
+type DaemonAutostartPreference = boolean | undefined;
+type DaemonAutostartStartupAction = 'enable' | 'disable' | 'none';
+const DAEMON_AUTOSTART_NAME = 'SYNC-THINK Daemon';
+const WINDOWS_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+
+function daemonAutostartPreferencePath(): string {
+  return join(daemonStateDir(), 'daemon-autostart-preference.json');
+}
+
+function readDaemonAutostartPreference(): DaemonAutostartPreference {
+  try {
+    const value = JSON.parse(readFileSync(daemonAutostartPreferencePath(), 'utf8')) as {
+      enabled?: unknown;
+    };
+    return typeof value.enabled === 'boolean' ? value.enabled : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeDaemonAutostartPreference(enabled: boolean): void {
+  const path = daemonAutostartPreferencePath();
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ version: 1, enabled })}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  renameSync(temporary, path);
+}
+
+function isDaemonAutostartRegistered(): boolean {
+  try {
+    const scheduled = spawnSync('schtasks.exe', ['/Query', '/TN', DAEMON_AUTOSTART_NAME], {
+      shell: false,
+      windowsHide: true,
+      encoding: 'utf8',
+    });
+    if (scheduled.status === 0) return true;
+    const registry = spawnSync('reg.exe', ['QUERY', WINDOWS_RUN_KEY, '/v', DAEMON_AUTOSTART_NAME], {
+      shell: false,
+      windowsHide: true,
+      encoding: 'utf8',
+    });
+    return registry.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+export function resolveDaemonAutostartStartupAction(
+  preference: DaemonAutostartPreference,
+  registered: boolean,
+): DaemonAutostartStartupAction {
+  if (preference === false) return registered ? 'disable' : 'none';
+  return registered ? 'none' : 'enable';
 }
 
 function daemonPidPath(installId: string): string {
@@ -1179,8 +1242,8 @@ export function readDaemonLogs(limit = 200): string[] {
 }
 
 /**
- * 设置登录自启（schtasks 注册/移除）。
- * 注册需要 node + daemon 入口路径；移除只删任务。
+ * 设置登录自启。优先使用 schtasks，权限策略拒绝时回退到 HKCU Run；
+ * 注册需要 node + daemon 入口路径，关闭时同时清理两种注册。
  */
 async function writeDaemonBootstrap(
   identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
@@ -1217,38 +1280,135 @@ export function buildDaemonAutostartCommand(
   return `schtasks /Create /TN "SYNC-THINK Daemon" /TR "\\"${nodeBin}\\" \\"${daemonEntry}\\" --bootstrap \\"${bootstrapPath}\\"${marker}" /SC ONLOGON /RL LIMITED /F`;
 }
 
+/** Launch command stored in the current-user Run key when Task Scheduler denies creation. */
+export function buildDaemonRegistryAutostartCommand(
+  nodeBin: string,
+  daemonEntry: string,
+  bootstrapPath: string,
+  installId?: string,
+): string {
+  const marker = installId ? ` ${managedProcessMarker('daemon', installId)}` : '';
+  return `"${nodeBin}" "${daemonEntry}" --bootstrap "${bootstrapPath}"${marker}`;
+}
+
 export async function setDaemonAutostart(
   enabled: boolean,
   identity?: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
 ): Promise<{ ok: boolean }> {
   try {
     if (!enabled) {
-      const result = spawnSync('schtasks /Delete /TN "SYNC-THINK Daemon" /F', {
-        shell: true,
+      spawnSync('schtasks.exe', ['/Delete', '/TN', DAEMON_AUTOSTART_NAME, '/F'], {
+        shell: false,
         windowsHide: true,
         encoding: 'utf8',
       });
-      try {
-        unlinkSync(join(daemonStateDir(), 'daemon-bootstrap.json'));
-      } catch {
-        /* ignore */
+      spawnSync('reg.exe', ['DELETE', WINDOWS_RUN_KEY, '/v', DAEMON_AUTOSTART_NAME, '/f'], {
+        shell: false,
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+      const disabled = !isDaemonAutostartRegistered();
+      if (disabled) {
+        try {
+          unlinkSync(join(daemonStateDir(), 'daemon-bootstrap.json'));
+        } catch {
+          /* ignore */
+        }
+        writeDaemonAutostartPreference(false);
       }
-      return { ok: result.status === 0 };
+      return { ok: disabled };
     }
     const entry = resolveDaemonEntry();
     const nodeBin = resolveNodeBinary();
     if (!entry || !nodeBin || !identity) return { ok: false };
     const bootstrapPath = await writeDaemonBootstrap(identity);
-    const result = spawnSync(
-      buildDaemonAutostartCommand(nodeBin, entry, bootstrapPath, identity.installId),
+    const launchCommand = buildDaemonRegistryAutostartCommand(
+      nodeBin,
+      entry,
+      bootstrapPath,
+      identity.installId,
+    );
+    const scheduled = spawnSync(
+      'schtasks.exe',
+      [
+        '/Create',
+        '/TN',
+        DAEMON_AUTOSTART_NAME,
+        '/TR',
+        launchCommand,
+        '/SC',
+        'ONLOGON',
+        '/RL',
+        'LIMITED',
+        '/F',
+      ],
       {
-        shell: true,
+        shell: false,
         windowsHide: true,
         encoding: 'utf8',
       },
     );
-    return { ok: result.status === 0 };
+    let ok = scheduled.status === 0;
+    if (ok) {
+      // Avoid two login launches after a previously required registry fallback.
+      spawnSync('reg.exe', ['DELETE', WINDOWS_RUN_KEY, '/v', DAEMON_AUTOSTART_NAME, '/f'], {
+        shell: false,
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+    } else {
+      const registry = spawnSync(
+        'reg.exe',
+        [
+          'ADD',
+          WINDOWS_RUN_KEY,
+          '/v',
+          DAEMON_AUTOSTART_NAME,
+          '/t',
+          'REG_SZ',
+          '/d',
+          launchCommand,
+          '/f',
+        ],
+        {
+          shell: false,
+          windowsHide: true,
+          encoding: 'utf8',
+        },
+      );
+      ok = registry.status === 0;
+    }
+    if (ok) writeDaemonAutostartPreference(true);
+    return { ok };
   } catch {
     return { ok: false };
   }
+}
+
+/** Enable login startup once by default, while preserving an explicit opt-out. */
+async function initializeDaemonAutostartDefault(
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+): Promise<{ ok: boolean; changed: boolean; enabled: boolean }> {
+  const preference = readDaemonAutostartPreference();
+  const registered = isDaemonAutostartRegistered();
+  const action = resolveDaemonAutostartStartupAction(preference, registered);
+
+  if (action === 'none') {
+    if (preference === undefined && registered) writeDaemonAutostartPreference(true);
+    return { ok: true, changed: false, enabled: registered };
+  }
+
+  const result = await setDaemonAutostart(action === 'enable', identity);
+  return {
+    ok: result.ok,
+    changed: result.ok,
+    enabled: result.ok ? action === 'enable' : registered,
+  };
+}
+
+export function ensureDaemonAutostartDefault(
+  identity: Pick<DesktopRuntimeIdentity, 'installId' | 'pipeSecret' | 'allowNoToken'>,
+): Promise<{ ok: boolean; changed: boolean; enabled: boolean }> {
+  daemonAutostartDefaultPromise ??= initializeDaemonAutostartDefault(identity);
+  return daemonAutostartDefaultPromise;
 }

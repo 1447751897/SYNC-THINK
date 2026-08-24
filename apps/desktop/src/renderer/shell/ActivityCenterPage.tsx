@@ -31,7 +31,7 @@ const STATE_LABELS: Record<RunIndexState, string> = {
 const SOURCE_LABELS: Record<RunIndexSource, string> = {
   chat: '对话',
   scheduled: '定时任务',
-  external: '外部事件',
+  external: '系统触发',
   orchestration: '编排',
 };
 
@@ -209,7 +209,7 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
         // `retryable: false` is a normal answer (run still active, anchor
         // message gone), not a transport failure — it arrives as a payload.
         if (!anchor.retryable || !anchor.conversationId || !anchor.text) {
-          setNotice(anchor.reason ?? '该 Run 无法重发');
+          setNotice(anchor.reason ?? '该 Run 无法恢复原指令');
           return;
         }
         setNotice(null);
@@ -239,7 +239,7 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
         <div>
           <h1 className="task-panel__title">后台活动</h1>
           <p className="task-panel__subtitle">
-            查看所有后台 Run 与外部事件，定位失败原因并重新发送
+            查看后台 Run，以及 Webhook、Git 推送和文件监听等系统触发记录
           </p>
         </div>
         <button
@@ -368,9 +368,10 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
                           className="task-hist__open-conv"
                           data-testid="activity-retry"
                           disabled={retryingId === entry.runId}
+                          title="将原指令带回对话输入框；不会自动发送或更换模型"
                           onClick={() => void retry(entry)}
                         >
-                          <RotateCcw size={13} /> 重发
+                          <RotateCcw size={13} /> 重新编辑
                         </button>
                       ) : null}
                     </div>
@@ -394,7 +395,7 @@ export function ActivityCenterPage(props: ActivityCenterPageProps): JSX.Element 
           {externalEvents && externalEvents.length > 0 ? (
             <section className="activity-panel__events" data-testid="activity-external-events">
               <h2 className="activity-panel__events-title">
-                <Webhook size={14} /> 外部事件
+                <Webhook size={14} /> 系统触发事件
               </h2>
               {externalEvents.map((event) => (
                 <div key={event.id} className="activity-row" data-state={event.state}>

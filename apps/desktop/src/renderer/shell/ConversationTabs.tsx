@@ -5,14 +5,17 @@ import { createPortal } from 'react-dom';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Bot,
+  Check,
   Columns2,
   FileDiff,
   Folder,
   Globe,
   MessageSquare,
   MessageSquarePlus,
+  MoreHorizontal,
   Plus,
   Rows2,
+  Search,
   SquareTerminal,
   Users,
   X,
@@ -39,6 +42,7 @@ import { FileTypeIcon } from './FileTypeIcon.js';
 
 export interface ConversationTabsProps {
   paneId?: string;
+  focused?: boolean;
   conversations: readonly Conversation[];
   openIds: readonly string[];
   activeId?: string;
@@ -115,6 +119,57 @@ const SPLIT_PICKER_CONFIG: AnchoredMenuConfig = {
   maxHeight: 320,
   estimatedHeight: 160,
   align: 'end',
+};
+
+const TAB_MANAGER_CONFIG: AnchoredMenuConfig = {
+  width: 320,
+  maxHeight: 420,
+  estimatedHeight: 360,
+  align: 'end',
+};
+
+const PANE_TAB_MAX_WIDTH = 172;
+const PANE_TAB_MIN_WIDTH = 58;
+const PANE_TAB_GAP = 3;
+const PANE_TAB_NEW_BUTTON_RESERVED = 41;
+
+export function calculatePaneTabWidth(containerWidth: number, tabCount: number): number {
+  if (tabCount <= 0 || containerWidth <= 0) return PANE_TAB_MAX_WIDTH;
+  const availableWidth = Math.floor(containerWidth - PANE_TAB_NEW_BUTTON_RESERVED);
+  const width = Math.floor((availableWidth - (tabCount - 1) * PANE_TAB_GAP) / tabCount);
+  return Math.max(PANE_TAB_MIN_WIDTH, Math.min(PANE_TAB_MAX_WIDTH, width));
+}
+
+function usePaneTabWidth(ref: React.RefObject<HTMLElement>, tabCount: number): number {
+  const [width, setWidth] = useState(PANE_TAB_MAX_WIDTH);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    const measure = () => {
+      const containerWidth = element.clientWidth || element.getBoundingClientRect().width;
+      setWidth(calculatePaneTabWidth(containerWidth, tabCount));
+    };
+    measure();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [ref, tabCount]);
+
+  return width;
+}
+
+const TRACK_TAB_LABEL: Record<ConversationTrack, string> = {
+  model: '模型对话',
+  agent: '智能体对话',
+  team: '小队对话',
 };
 
 function useAnchoredMenuStyle(
@@ -196,10 +251,15 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const [splitPickerDirection, setSplitPickerDirection] = useState<PaneSplitDirection | null>(null);
   /** New-resource menu anchored at the plus button. */
   const [newResourceMenuOpen, setNewResourceMenuOpen] = useState(false);
+  /** Searchable manager remains fixed while the tab strip itself scrolls. */
+  const [tabManagerOpen, setTabManagerOpen] = useState(false);
+  const [tabManagerQuery, setTabManagerQuery] = useState('');
   const newResourceAnchorRef = useRef<HTMLDivElement>(null);
   const newResourceMenuRef = useRef<HTMLDivElement>(null);
   const splitPickerAnchorRef = useRef<HTMLDivElement>(null);
   const splitPickerRef = useRef<HTMLDivElement>(null);
+  const tabManagerAnchorRef = useRef<HTMLDivElement>(null);
+  const tabTrackRef = useRef<HTMLDivElement>(null);
   const newResourceMenuStyle = useAnchoredMenuStyle(
     newResourceMenuOpen,
     newResourceAnchorRef,
@@ -210,14 +270,20 @@ export function ConversationTabs(props: ConversationTabsProps) {
     splitPickerAnchorRef,
     SPLIT_PICKER_CONFIG,
   );
+  const tabManagerStyle = useAnchoredMenuStyle(
+    tabManagerOpen,
+    tabManagerAnchorRef,
+    TAB_MANAGER_CONFIG,
+  );
 
   // Any outside click dismisses menus (they're fixed-position overlays).
   useEffect(() => {
-    if (!ctxMenu && !splitPickerDirection && !newResourceMenuOpen) return;
+    if (!ctxMenu && !splitPickerDirection && !newResourceMenuOpen && !tabManagerOpen) return;
     const dismiss = () => {
       setCtxMenu(null);
       setSplitPickerDirection(null);
       setNewResourceMenuOpen(false);
+      setTabManagerOpen(false);
     };
     window.addEventListener('mousedown', dismiss);
     window.addEventListener('blur', dismiss);
@@ -225,7 +291,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
       window.removeEventListener('mousedown', dismiss);
       window.removeEventListener('blur', dismiss);
     };
-  }, [ctxMenu, newResourceMenuOpen, splitPickerDirection]);
+  }, [ctxMenu, newResourceMenuOpen, splitPickerDirection, tabManagerOpen]);
 
   /**
    * Conversations eligible for the split pane: any other than the active one.
@@ -241,6 +307,33 @@ export function ConversationTabs(props: ConversationTabsProps) {
   const paneSuffix = props.paneId ? `-${props.paneId}` : '';
   const canSplit = props.canSplit !== false;
   const hasWorkspaceFilesTab = props.workspaceFilesTab ?? props.workspaceFilesActive ?? false;
+  const paneResourceTabCount =
+    tabs.length +
+    (props.fileTabs?.length ?? 0) +
+    (props.terminalTabs?.length ?? 0) +
+    (props.browserTabs?.length ?? 0) +
+    (props.reviewTabs?.length ?? 0) +
+    (hasWorkspaceFilesTab ? 1 : 0);
+  const paneTabWidth = usePaneTabWidth(tabTrackRef, paneResourceTabCount);
+  const normalizedTabQuery = tabManagerQuery.trim().toLocaleLowerCase();
+  const managedTabs = normalizedTabQuery
+    ? tabs.filter((conversation) =>
+        (conversation.title?.trim() || '新对话').toLocaleLowerCase().includes(normalizedTabQuery),
+      )
+    : tabs;
+
+  useEffect(() => {
+    const activeTab = tabTrackRef.current?.querySelector<HTMLElement>('[data-active="true"]');
+    if (!activeTab || typeof activeTab.scrollIntoView !== 'function') return;
+    activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [
+    props.activeBrowserId,
+    props.activeFilePath,
+    props.activeId,
+    props.activeReviewRunId,
+    props.activeTerminalId,
+    props.workspaceFilesActive,
+  ]);
 
   const sensors = useSensors(
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -300,11 +393,15 @@ export function ConversationTabs(props: ConversationTabsProps) {
   return (
     <div
       data-testid="conversation-tabs"
-      className="shell-conversation-tabs flex h-9 shrink-0 items-center px-2"
+      className="shell-conversation-tabs relative flex h-10 shrink-0 items-center gap-[3px] p-1"
     >
       {/* Scrollable tab area is isolated from the right-side action group so
           pane actions stay visible even when many tabs overflow. */}
-      <div className="shell-conversation-tabs__scroller flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+      <div
+        ref={tabTrackRef}
+        className="shell-conversation-tabs__scroller flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
+        style={{ '--shell-pane-tab-width': `${paneTabWidth}px` } as React.CSSProperties}
+      >
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -331,7 +428,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
                   key={id}
                   conversationId={id}
                   label={label}
-                  icon={<Icon size={12} aria-hidden />}
+                  icon={<Icon size={14} aria-hidden />}
                   active={active}
                   activeIconClass={active ? 'text-text-secondary' : 'text-text-faint'}
                   splitId={props.splitId}
@@ -343,12 +440,11 @@ export function ConversationTabs(props: ConversationTabsProps) {
                   onContextMenu={(e) => {
                     // Context menu lives on the whole tab (not just the title button)
                     // so right-clicking icon/close-area works too.
-                    if (!props.onOpenInSplit) return;
                     e.preventDefault();
                     e.stopPropagation();
                     setCtxMenu({ id, x: e.clientX, y: e.clientY });
                   }}
-                  hasSplitAction={Boolean(props.onOpenInSplit)}
+                  hasSplitAction={Boolean(props.onRename)}
                   onNativeDragStart={(event) => beginConversationDrag(event, id)}
                   onNativeDragOver={handleConversationDragOver}
                   onNativeDrop={(event) => handleConversationDrop(event, id)}
@@ -374,7 +470,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               data-pane-resource-type="file"
               draggable
               className={clsx(
-                'st-row-motion group relative flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+                'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
                 active
                   ? 'shell-conversation-tab-active font-medium text-text'
                   : 'text-text-secondary hover:bg-hover/70 hover:text-text',
@@ -384,7 +480,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               }
               onDragEnd={() => props.onTabDragStateChange?.(null)}
             >
-              <FileTypeIcon path={file.path} size={12} className="shrink-0" />
+              <FileTypeIcon path={file.path} size={14} className="shrink-0" />
               <button
                 type="button"
                 className="min-w-0 flex-1 truncate text-left"
@@ -409,7 +505,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               <button
                 type="button"
                 className={clsx(
-                  'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+                  'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
                   active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
                 )}
                 aria-label={`关闭文件 ${file.path}`}
@@ -437,7 +533,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               data-pane-resource-type="terminal"
               draggable
               className={clsx(
-                'st-row-motion group relative flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+                'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
                 active
                   ? 'shell-conversation-tab-active font-medium text-text'
                   : 'text-text-secondary hover:bg-hover/70 hover:text-text',
@@ -448,7 +544,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               onDragEnd={() => props.onTabDragStateChange?.(null)}
             >
               <SquareTerminal
-                size={12}
+                size={14}
                 className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
                 aria-hidden="true"
               />
@@ -464,7 +560,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               <button
                 type="button"
                 className={clsx(
-                  'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+                  'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
                   active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
                 )}
                 aria-label={`关闭终端 ${terminal.terminalId}`}
@@ -491,7 +587,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               data-pane-resource-type="browser"
               draggable
               className={clsx(
-                'st-row-motion group relative flex h-7 max-w-[240px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+                'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
                 active
                   ? 'shell-conversation-tab-active font-medium text-text'
                   : 'text-text-secondary hover:bg-hover/70 hover:text-text',
@@ -502,7 +598,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               onDragEnd={() => props.onTabDragStateChange?.(null)}
             >
               <Globe
-                size={12}
+                size={14}
                 className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
                 aria-hidden="true"
               />
@@ -518,7 +614,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               <button
                 type="button"
                 className={clsx(
-                  'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+                  'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
                   active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
                 )}
                 aria-label={`关闭网页 ${browser.browserId}`}
@@ -545,7 +641,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               data-pane-resource-type="review"
               draggable
               className={clsx(
-                'st-row-motion group relative flex h-7 max-w-[180px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+                'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
                 active
                   ? 'shell-conversation-tab-active font-medium text-text'
                   : 'text-text-secondary hover:bg-hover/70 hover:text-text',
@@ -556,7 +652,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               onDragEnd={() => props.onTabDragStateChange?.(null)}
             >
               <FileDiff
-                size={12}
+                size={14}
                 className={clsx('shrink-0', active ? 'text-accent' : 'text-text-faint')}
                 aria-hidden="true"
               />
@@ -572,7 +668,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               <button
                 type="button"
                 className={clsx(
-                  'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+                  'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
                   active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
                 )}
                 aria-label={`关闭审阅 ${review.runId}`}
@@ -595,7 +691,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
             data-pane-resource-type="workspace-files"
             draggable
             className={clsx(
-              'st-row-motion group relative flex h-7 max-w-[180px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+              'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
               props.workspaceFilesActive
                 ? 'shell-conversation-tab-active font-medium text-text'
                 : 'text-text-secondary hover:bg-hover/70 hover:text-text',
@@ -610,7 +706,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
             onDragEnd={() => props.onTabDragStateChange?.(null)}
           >
             <Folder
-              size={12}
+              size={14}
               className={clsx(
                 'shrink-0',
                 props.workspaceFilesActive ? 'text-accent' : 'text-text-faint',
@@ -629,7 +725,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
             <button
               type="button"
               className={clsx(
-                'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+                'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
                 props.workspaceFilesActive ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
               )}
               aria-label="关闭工作区文件"
@@ -649,7 +745,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
             type="button"
             data-testid="conversation-tab-new"
             className={clsx(
-              'st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row)',
+              'st-icon-motion flex h-7 w-[38px] items-center justify-center rounded-[12px]',
               newResourceMenuOpen
                 ? 'bg-active text-text'
                 : 'text-text-secondary hover:bg-hover hover:text-text',
@@ -731,13 +827,145 @@ export function ConversationTabs(props: ConversationTabsProps) {
         </div>
       </div>
 
-      <div className="ml-2 flex shrink-0 items-center gap-0.5">
+      <div className="ml-[3px] flex shrink-0 items-center gap-[3px]">
+        {paneResourceTabCount > 0 ? (
+          <div ref={tabManagerAnchorRef} className="relative shrink-0">
+            <button
+              type="button"
+              data-testid={`conversation-tab-manager-trigger${paneSuffix}`}
+              data-pane-more-menu="true"
+              data-pane-more-visible={props.focused === false ? 'false' : 'true'}
+              className={clsx(
+                'shell-tab-manager__trigger st-icon-motion flex h-7 w-[38px] items-center justify-center rounded-[12px]',
+                tabManagerOpen
+                  ? 'bg-active text-text'
+                  : 'text-text-faint hover:bg-hover hover:text-text',
+                props.focused === false && 'shell-pane-more--unfocused',
+              )}
+              title="窗格更多操作"
+              aria-label="窗格更多操作"
+              aria-expanded={tabManagerOpen}
+              aria-haspopup="dialog"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                const next = !tabManagerOpen;
+                setTabManagerOpen(next);
+                if (next) {
+                  setTabManagerQuery('');
+                  setNewResourceMenuOpen(false);
+                  setSplitPickerDirection(null);
+                }
+              }}
+            >
+              <MoreHorizontal size={16} />
+            </button>
+            {tabManagerOpen && tabManagerStyle && typeof document !== 'undefined'
+              ? createPortal(
+                  <div
+                    className="shell-tab-manager"
+                    role="dialog"
+                    aria-label="已打开的对话标签"
+                    data-testid="conversation-tab-manager"
+                    style={tabManagerStyle}
+                    onMouseDown={(event) => event.stopPropagation()}
+                  >
+                    <div className="shell-tab-manager__header">
+                      <strong>对话标签</strong>
+                      <span>{tabs.length}</span>
+                    </div>
+                    <label className="shell-tab-manager__search">
+                      <Search size={13} aria-hidden="true" />
+                      <input
+                        type="search"
+                        aria-label="搜索已打开的对话"
+                        placeholder="搜索已打开的对话"
+                        value={tabManagerQuery}
+                        onChange={(event) => setTabManagerQuery(event.target.value)}
+                        autoFocus
+                      />
+                    </label>
+                    <div className="shell-tab-manager__list">
+                      {managedTabs.length > 0 ? (
+                        managedTabs.map((conversation) => {
+                          const id = String(conversation.id);
+                          const label = conversation.title?.trim() || '新对话';
+                          const active = id === props.activeId;
+                          const Icon = TRACK_TAB_ICON[conversation.track] ?? MessageSquare;
+                          return (
+                            <div
+                              key={id}
+                              className="shell-tab-manager__row"
+                              data-active={active ? 'true' : 'false'}
+                            >
+                              <button
+                                type="button"
+                                className="shell-tab-manager__select"
+                                aria-label={`切换到 ${label}`}
+                                onClick={() => {
+                                  setTabManagerOpen(false);
+                                  props.onSelect(id);
+                                }}
+                              >
+                                <Icon size={13} />
+                                <span title={label}>{label}</span>
+                                <small>{TRACK_TAB_LABEL[conversation.track]}</small>
+                                {active ? <Check size={13} /> : null}
+                              </button>
+                              <button
+                                type="button"
+                                className="shell-tab-manager__close"
+                                aria-label={`关闭标签 ${label}`}
+                                title={`关闭 ${label}`}
+                                onClick={() => props.onClose(id)}
+                              >
+                                <X size={12} />
+                              </button>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="shell-tab-manager__empty">没有匹配的对话</div>
+                      )}
+                    </div>
+                    <div className="shell-tab-manager__footer">
+                      <button
+                        type="button"
+                        disabled={!props.activeId || tabs.length <= 1}
+                        onClick={() => {
+                          for (const conversation of tabs) {
+                            const id = String(conversation.id);
+                            if (id !== props.activeId) props.onClose(id);
+                          }
+                          setTabManagerOpen(false);
+                        }}
+                      >
+                        关闭其他标签
+                      </button>
+                      {props.onClosePane ? (
+                        <button
+                          type="button"
+                          data-testid={`pane-menu-close-pane${paneSuffix}`}
+                          onClick={() => {
+                            setTabManagerOpen(false);
+                            props.onClosePane?.();
+                          }}
+                        >
+                          关闭窗格
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>,
+                  document.body,
+                )
+              : null}
+          </div>
+        ) : null}
         {props.onToggleWorkspaceFilesPane ? (
           <button
             type="button"
             data-testid={`workspace-files-toggle${paneSuffix}`}
             className={clsx(
-              'st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) transition-colors',
+              'st-icon-motion flex h-7 w-7 items-center justify-center rounded-[12px] transition-colors',
               props.workspaceFilesPaneOpen
                 ? 'bg-active text-text'
                 : 'text-text-faint hover:bg-hover hover:text-text',
@@ -750,13 +978,13 @@ export function ConversationTabs(props: ConversationTabsProps) {
           </button>
         ) : null}
         {props.onOpenInSplit ? (
-          <div ref={splitPickerAnchorRef} className="relative flex items-center gap-0.5">
+          <div ref={splitPickerAnchorRef} className="relative flex items-center gap-[3px]">
             <button
               type="button"
               data-testid={`chat-split-horizontal${paneSuffix}`}
               disabled={!canSplit}
               className={clsx(
-                'st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) transition-colors',
+                'st-icon-motion flex h-7 w-7 items-center justify-center rounded-[12px] transition-colors',
                 splitPickerDirection === 'horizontal'
                   ? 'bg-active text-text'
                   : 'text-text-faint hover:bg-hover hover:text-text',
@@ -773,7 +1001,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
               data-testid={`chat-split-vertical${paneSuffix}`}
               disabled={!canSplit}
               className={clsx(
-                'st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) transition-colors',
+                'st-icon-motion flex h-7 w-7 items-center justify-center rounded-[12px] transition-colors',
                 splitPickerDirection === 'vertical'
                   ? 'bg-active text-text'
                   : 'text-text-faint hover:bg-hover hover:text-text',
@@ -830,7 +1058,7 @@ export function ConversationTabs(props: ConversationTabsProps) {
           <button
             type="button"
             data-testid={`chat-close-pane${paneSuffix}`}
-            className="st-icon-motion flex h-7 w-7 items-center justify-center rounded-(--radius-row) text-text-faint hover:bg-hover hover:text-text"
+            className="st-icon-motion flex h-7 w-7 items-center justify-center rounded-[12px] text-text-faint hover:bg-hover hover:text-text"
             title="关闭窗格"
             onClick={props.onClosePane}
           >
@@ -846,20 +1074,6 @@ export function ConversationTabs(props: ConversationTabsProps) {
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <button
-            type="button"
-            className="shell-tab-ctx-menu__item"
-            data-testid="tab-ctx-open-split"
-            disabled={!canSplit || ctxMenu.id === props.activeId}
-            onClick={() => {
-              const id = ctxMenu.id;
-              setCtxMenu(null);
-              props.onOpenInSplit?.(id, 'horizontal');
-            }}
-          >
-            <Columns2 size={12} />
-            在分屏中打开
-          </button>
           <button
             type="button"
             className="shell-tab-ctx-menu__item"
@@ -920,7 +1134,7 @@ function SortableConversationTab(props: {
       data-active={props.active ? 'true' : 'false'}
       draggable
       className={clsx(
-        'st-row-motion group relative flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-t-(--radius-row) px-2.5 text-[14px]',
+        'shell-pane-tab st-row-motion group relative flex shrink-0 items-center',
         props.active
           ? 'shell-conversation-tab-active font-medium text-text'
           : 'text-text-secondary hover:bg-hover/70 hover:text-text',
@@ -984,7 +1198,7 @@ function SortableConversationTab(props: {
         type="button"
         data-testid={`conversation-tab-close-${props.conversationId}`}
         className={clsx(
-          'st-icon-motion flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-faint hover:bg-hover hover:text-text',
+          'shell-pane-tab__close st-icon-motion flex h-5 shrink-0 items-center justify-center overflow-hidden rounded text-text-faint hover:bg-hover hover:text-text',
           props.active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100',
         )}
         title="关闭标签"

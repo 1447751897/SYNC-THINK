@@ -7,42 +7,53 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from 'react';
+import type { RunProcessView } from '@sync-think/protocol';
 import type { ProjectTextLocation } from '../../workspace-tools-contract.js';
 import { FilePane, type FileRevealTarget } from './FilePane.js';
 import { WorkspaceFilesPanel } from './RightDock.js';
 
-const DEFAULT_EXPLORER_PERCENT = 30;
-const MIN_EXPLORER_PERCENT = 22;
-const MAX_EXPLORER_PERCENT = 60;
-const MIN_EXPLORER_WIDTH = 220;
-const MIN_EDITOR_WIDTH = 280;
-const DIVIDER_WIDTH = 5;
-const KEYBOARD_RESIZE_STEP = 5;
-const STACKED_LAYOUT_MAX_WIDTH = 520;
+const DEFAULT_EXPLORER_WIDTH = 288;
+const MIN_EXPLORER_WIDTH = 221;
+const MAX_EXPLORER_WIDTH = 600;
+const MIN_EDITOR_WIDTH = 360;
+const DIVIDER_WIDTH = 1;
+const KEYBOARD_RESIZE_STEP = 16;
+const FLOATING_LAYOUT_MAX_WIDTH = MIN_EXPLORER_WIDTH + MIN_EDITOR_WIDTH + DIVIDER_WIDTH;
 
 interface ExplorerResizeDrag {
   startClientX: number;
   startWidth: number;
+  lastWidth: number;
   pointerId: number;
   target: HTMLDivElement;
 }
 
-function explorerPercentBounds(containerWidth: number): { min: number; max: number } {
+function explorerWidthBounds(
+  containerWidth: number,
+  floating: boolean,
+): { min: number; max: number } {
   if (containerWidth <= 0) {
-    return { min: MIN_EXPLORER_PERCENT, max: MAX_EXPLORER_PERCENT };
+    return { min: MIN_EXPLORER_WIDTH, max: MAX_EXPLORER_WIDTH };
   }
-  const min = Math.max(MIN_EXPLORER_PERCENT, (MIN_EXPLORER_WIDTH / containerWidth) * 100);
-  const max = Math.min(
-    MAX_EXPLORER_PERCENT,
-    ((containerWidth - MIN_EDITOR_WIDTH - DIVIDER_WIDTH) / containerWidth) * 100,
-  );
-  return { min, max: Math.max(min, max) };
+  const available = floating
+    ? Math.max(MIN_EXPLORER_WIDTH, containerWidth - 40)
+    : Math.max(MIN_EXPLORER_WIDTH, containerWidth - MIN_EDITOR_WIDTH - DIVIDER_WIDTH);
+  return {
+    min: Math.min(MIN_EXPLORER_WIDTH, available),
+    max: Math.max(MIN_EXPLORER_WIDTH, Math.min(MAX_EXPLORER_WIDTH, available)),
+  };
 }
 
 export function WorkspaceFileView({
   projectFolder,
   path,
   revealTarget,
+  workspaceFilesOpen: controlledWorkspaceFilesOpen,
+  onWorkspaceFilesOpenChange,
+  explorerWidth: controlledExplorerWidth,
+  onExplorerWidthChange,
+  reviewView,
+  onOpenReview,
   onDirtyChange,
   onOpenFileInCurrentTab,
   onOpenFileInNewTab,
@@ -50,15 +61,32 @@ export function WorkspaceFileView({
   projectFolder?: string;
   path: string;
   revealTarget?: FileRevealTarget;
+  workspaceFilesOpen?: boolean;
+  onWorkspaceFilesOpenChange?(open: boolean): void;
+  explorerWidth?: number;
+  onExplorerWidthChange?(width: number, commit: boolean): void;
+  reviewView?: RunProcessView | null;
+  onOpenReview?(view: RunProcessView): void;
   onDirtyChange?(dirty: boolean): void;
   onOpenFileInCurrentTab(path: string, location?: ProjectTextLocation): void;
   onOpenFileInNewTab(path: string, location?: ProjectTextLocation): void;
 }) {
-  const [workspaceFilesOpen, setWorkspaceFilesOpen] = useState(true);
-  const [explorerPercent, setExplorerPercent] = useState(DEFAULT_EXPLORER_PERCENT);
+  const [internalWorkspaceFilesOpen, setInternalWorkspaceFilesOpen] = useState(true);
+  const workspaceFilesOpen = controlledWorkspaceFilesOpen ?? internalWorkspaceFilesOpen;
+  const setWorkspaceFilesOpen = useCallback(
+    (open: boolean) => {
+      if (controlledWorkspaceFilesOpen === undefined) setInternalWorkspaceFilesOpen(open);
+      onWorkspaceFilesOpenChange?.(open);
+    },
+    [controlledWorkspaceFilesOpen, onWorkspaceFilesOpenChange],
+  );
+  const [internalExplorerWidth, setInternalExplorerWidth] = useState(DEFAULT_EXPLORER_WIDTH);
+  const explorerWidth = controlledExplorerWidth ?? internalExplorerWidth;
+  const [containerWidth, setContainerWidth] = useState(0);
+  const floating = containerWidth > 0 && containerWidth < FLOATING_LAYOUT_MAX_WIDTH;
   const [resizeBounds, setResizeBounds] = useState({
-    min: MIN_EXPLORER_PERCENT,
-    max: MAX_EXPLORER_PERCENT,
+    min: MIN_EXPLORER_WIDTH,
+    max: MAX_EXPLORER_WIDTH,
   });
   const layoutRef = useRef<HTMLDivElement>(null);
   const explorerRef = useRef<HTMLElement>(null);
@@ -68,13 +96,17 @@ export function WorkspaceFileView({
     return layoutRef.current?.getBoundingClientRect().width ?? 0;
   }, []);
 
-  const applyExplorerPercent = useCallback(
-    (value: number, containerWidth = currentContainerWidth()) => {
-      const nextBounds = explorerPercentBounds(containerWidth);
+  const applyExplorerWidth = useCallback(
+    (value: number, commit: boolean, width = currentContainerWidth()) => {
+      const nextFloating = width > 0 && width < FLOATING_LAYOUT_MAX_WIDTH;
+      const nextBounds = explorerWidthBounds(width, nextFloating);
+      const nextWidth = Math.round(Math.min(nextBounds.max, Math.max(nextBounds.min, value)));
       setResizeBounds(nextBounds);
-      setExplorerPercent(Math.min(nextBounds.max, Math.max(nextBounds.min, value)));
+      if (controlledExplorerWidth === undefined) setInternalExplorerWidth(nextWidth);
+      onExplorerWidthChange?.(nextWidth, commit);
+      return nextWidth;
     },
-    [currentContainerWidth],
+    [controlledExplorerWidth, currentContainerWidth, onExplorerWidthChange],
   );
 
   const finishResize = useCallback(() => {
@@ -86,7 +118,8 @@ export function WorkspaceFileView({
     }
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-  }, []);
+    onExplorerWidthChange?.(drag.lastWidth, true);
+  }, [onExplorerWidthChange]);
 
   useEffect(() => {
     window.addEventListener('blur', finishResize);
@@ -101,24 +134,25 @@ export function WorkspaceFileView({
     if (!layout || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? layout.getBoundingClientRect().width;
-      if (width <= STACKED_LAYOUT_MAX_WIDTH) return;
+      setContainerWidth(width);
       if (resizeDragRef.current) finishResize();
-      const nextBounds = explorerPercentBounds(width);
+      const nextFloating = width > 0 && width < FLOATING_LAYOUT_MAX_WIDTH;
+      const nextBounds = explorerWidthBounds(width, nextFloating);
       setResizeBounds(nextBounds);
-      setExplorerPercent((current) => Math.min(nextBounds.max, Math.max(nextBounds.min, current)));
+      if (controlledExplorerWidth === undefined) {
+        setInternalExplorerWidth((current) =>
+          Math.min(nextBounds.max, Math.max(nextBounds.min, current)),
+        );
+      }
     });
     observer.observe(layout);
     return () => observer.disconnect();
-  }, [finishResize]);
+  }, [controlledExplorerWidth, finishResize]);
 
   const beginResize = (event: PointerEvent<HTMLDivElement>) => {
     const containerWidth = currentContainerWidth();
     const startWidth = explorerRef.current?.getBoundingClientRect().width ?? 0;
-    if (
-      containerWidth <= STACKED_LAYOUT_MAX_WIDTH ||
-      startWidth <= 0 ||
-      (event.pointerType === 'mouse' && event.button !== 0)
-    ) {
+    if (startWidth <= 0 || (event.pointerType === 'mouse' && event.button !== 0)) {
       return;
     }
     event.preventDefault();
@@ -126,10 +160,11 @@ export function WorkspaceFileView({
     resizeDragRef.current = {
       startClientX: event.clientX,
       startWidth,
+      lastWidth: startWidth,
       pointerId: event.pointerId,
       target: event.currentTarget,
     };
-    setResizeBounds(explorerPercentBounds(containerWidth));
+    setResizeBounds(explorerWidthBounds(containerWidth, floating));
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   };
@@ -138,29 +173,25 @@ export function WorkspaceFileView({
     const drag = resizeDragRef.current;
     if (!drag || event.pointerId !== drag.pointerId) return;
     const containerWidth = currentContainerWidth();
-    if (containerWidth <= STACKED_LAYOUT_MAX_WIDTH) {
-      finishResize();
-      return;
-    }
     const nextWidth = drag.startWidth - (event.clientX - drag.startClientX);
-    applyExplorerPercent((nextWidth / containerWidth) * 100, containerWidth);
+    drag.lastWidth = applyExplorerWidth(nextWidth, false, containerWidth);
   };
 
   const adjustWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
     const containerWidth = currentContainerWidth();
-    const bounds = explorerPercentBounds(containerWidth);
+    const bounds = explorerWidthBounds(containerWidth, floating);
     let next: number | undefined;
     if (event.key === 'Home') next = bounds.min;
     else if (event.key === 'End') next = bounds.max;
-    else if (event.key === 'ArrowLeft') next = explorerPercent + KEYBOARD_RESIZE_STEP;
-    else if (event.key === 'ArrowRight') next = explorerPercent - KEYBOARD_RESIZE_STEP;
+    else if (event.key === 'ArrowLeft') next = explorerWidth + KEYBOARD_RESIZE_STEP;
+    else if (event.key === 'ArrowRight') next = explorerWidth - KEYBOARD_RESIZE_STEP;
     if (next === undefined) return;
     event.preventDefault();
-    applyExplorerPercent(next, containerWidth);
+    applyExplorerWidth(next, true, containerWidth);
   };
 
   const workbenchStyle = {
-    '--shell-file-explorer-width': `${explorerPercent}%`,
+    '--shell-file-explorer-width': `${explorerWidth}px`,
   } as CSSProperties;
 
   return (
@@ -168,6 +199,7 @@ export function WorkspaceFileView({
       className="shell-file-workbench"
       data-testid="workspace-file-view"
       data-explorer-open={workspaceFilesOpen ? 'true' : 'false'}
+      data-explorer-floating={floating ? 'true' : 'false'}
       style={workbenchStyle}
     >
       <div
@@ -182,7 +214,7 @@ export function WorkspaceFileView({
             revealTarget={revealTarget}
             onDirtyChange={onDirtyChange}
             workspaceFilesOpen={workspaceFilesOpen}
-            onToggleWorkspaceFiles={() => setWorkspaceFilesOpen((open) => !open)}
+            onToggleWorkspaceFiles={() => setWorkspaceFilesOpen(!workspaceFilesOpen)}
           />
         </div>
         {workspaceFilesOpen ? (
@@ -194,7 +226,7 @@ export function WorkspaceFileView({
               aria-orientation="vertical"
               aria-valuemin={Math.round(resizeBounds.min)}
               aria-valuemax={Math.round(resizeBounds.max)}
-              aria-valuenow={Math.round(explorerPercent)}
+              aria-valuenow={Math.round(explorerWidth)}
               className="shell-file-workbench__divider"
               data-testid="workspace-file-divider"
               onPointerDown={beginResize}
@@ -203,7 +235,7 @@ export function WorkspaceFileView({
               onPointerCancel={finishResize}
               onLostPointerCapture={finishResize}
               onDoubleClick={() =>
-                applyExplorerPercent(DEFAULT_EXPLORER_PERCENT, currentContainerWidth())
+                applyExplorerWidth(DEFAULT_EXPLORER_WIDTH, true, currentContainerWidth())
               }
               onKeyDown={adjustWithKeyboard}
             />
@@ -216,6 +248,8 @@ export function WorkspaceFileView({
               <WorkspaceFilesPanel
                 projectFolder={projectFolder}
                 activeFilePath={path}
+                reviewView={reviewView}
+                onOpenReview={onOpenReview}
                 onOpenFile={onOpenFileInCurrentTab}
                 onOpenFileInNewTab={onOpenFileInNewTab}
               />

@@ -25,6 +25,7 @@ import {
   GitBranch,
   GitCommitHorizontal,
   Loader2,
+  MoreHorizontal,
   RefreshCw,
   Search,
   X,
@@ -38,14 +39,14 @@ import type {
 } from '../../workspace-tools-contract.js';
 import { FileContentPreview } from './FileContentPreview.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
-import { LineDiffView } from './ExecutionProcessBlock.js';
+import { countLineChanges, LineDiffView } from './ExecutionProcessBlock.js';
 
 /** Preload bridge accessor (undefined in bare unit-test DOM). */
 function dockBridge() {
   return window.syncThink?.runtime;
 }
 
-type WorkspaceFilesSection = 'files' | 'git' | 'review';
+type WorkspaceFilesSection = 'conversation' | 'files' | 'git' | 'review';
 
 interface ProjectFileEntry {
   path: string;
@@ -70,67 +71,135 @@ export function WorkspaceFilesPanel(props: {
   projectFolder?: string;
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
   onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
+  onOpenReview?(view: RunProcessView): void;
   activeFilePath?: string | null;
   /** Latest run's file changes for the Review tab (NewMax-style per-run review). */
   reviewView?: RunProcessView | null;
 }) {
-  const [section, setSection] = useState<WorkspaceFilesSection>('files');
+  const [section, setSection] = useState<WorkspaceFilesSection>(() =>
+    (props.reviewView?.fileChanges.length ?? 0) > 0 ? 'conversation' : 'files',
+  );
+  const [searchExpanded, setSearchExpanded] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [refreshRevision, setRefreshRevision] = useState(0);
+  const conversationChanges = props.reviewView?.fileChanges ?? [];
 
   return (
     <div
       className="shell-workspace-files-panel flex h-full min-h-0 flex-col"
       data-testid="workspace-files-panel"
+      data-workspace-compact-file-browser="true"
     >
-      <div
-        className="shell-workspace-files-switcher shrink-0"
-        role="tablist"
-        aria-label="工作区文件视图"
-      >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={section === 'files'}
-          className={clsx(
-            'shell-workspace-files-switcher__tab',
-            section === 'files' && 'is-active',
-          )}
-          onClick={() => setSection('files')}
+      <div className="shell-workspace-files-switcher shrink-0">
+        <div
+          className="shell-workspace-files-switcher__views"
+          role="tablist"
+          aria-label="工作区文件视图"
         >
-          <Folder size={12} />
-          文件
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={section === 'git'}
-          className={clsx('shell-workspace-files-switcher__tab', section === 'git' && 'is-active')}
-          onClick={() => setSection('git')}
-        >
-          <GitBranch size={12} />
-          Git
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={section === 'review'}
-          className={clsx(
-            'shell-workspace-files-switcher__tab',
-            section === 'review' && 'is-active',
-          )}
-          onClick={() => setSection('review')}
-        >
-          <FileDiff size={12} />
-          Review
-        </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={section === 'conversation'}
+            className={clsx(
+              'shell-workspace-files-switcher__tab',
+              section === 'conversation' && 'is-active',
+            )}
+            onClick={() => setSection('conversation')}
+          >
+            对话文件 <span>{conversationChanges.length}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={section === 'files'}
+            className={clsx(
+              'shell-workspace-files-switcher__tab',
+              section === 'files' && 'is-active',
+            )}
+            onClick={() => setSection('files')}
+          >
+            所有文件
+          </button>
+        </div>
+        <div className="shell-workspace-files-switcher__actions">
+          <button
+            type="button"
+            aria-label="搜索文件"
+            aria-pressed={searchExpanded}
+            onClick={() => {
+              setSection('files');
+              setSearchExpanded((open) => !open);
+            }}
+          >
+            <Search size={14} />
+          </button>
+          <button
+            type="button"
+            aria-label="刷新"
+            onClick={() => setRefreshRevision((revision) => revision + 1)}
+          >
+            <RefreshCw size={14} />
+          </button>
+          <div className="shell-workspace-files-more">
+            <button
+              type="button"
+              aria-label="工作区文件更多操作"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((open) => !open)}
+            >
+              <MoreHorizontal size={15} />
+            </button>
+            {moreOpen ? (
+              <div className="shell-workspace-files-more__menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setSection('git');
+                    setMoreOpen(false);
+                  }}
+                >
+                  <GitBranch size={14} /> Git 状态
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    if (props.reviewView && props.onOpenReview) {
+                      props.onOpenReview(props.reviewView);
+                    } else {
+                      setSection('review');
+                    }
+                    setMoreOpen(false);
+                  }}
+                >
+                  <FileDiff size={14} /> 审阅变动
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
       </div>
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {section === 'files' ? (
+        {section === 'conversation' ? (
+          <div className="shell-dock-panel absolute inset-0 is-active">
+            <ConversationFilesPanel
+              changes={conversationChanges}
+              projectFolder={props.projectFolder}
+              activeFilePath={props.activeFilePath}
+              onOpenFile={props.onOpenFile}
+              onOpenFileInNewTab={props.onOpenFileInNewTab}
+            />
+          </div>
+        ) : section === 'files' ? (
           <div className="shell-dock-panel absolute inset-0 is-active">
             <FilesPanel
               projectFolder={props.projectFolder}
               onOpenFile={props.onOpenFile}
               onOpenFileInNewTab={props.onOpenFileInNewTab}
               activeFilePath={props.activeFilePath}
+              searchExpanded={searchExpanded}
+              refreshRevision={refreshRevision}
             />
           </div>
         ) : section === 'git' ? (
@@ -156,6 +225,75 @@ export function WorkspaceFilesPanel(props: {
   );
 }
 
+function ConversationFilesPanel({
+  changes,
+  projectFolder,
+  activeFilePath,
+  onOpenFile,
+  onOpenFileInNewTab,
+}: {
+  changes: NonNullable<RunProcessView['fileChanges']>;
+  projectFolder?: string;
+  activeFilePath?: string | null;
+  onOpenFile?(path: string, location?: ProjectTextLocation): void;
+  onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
+}) {
+  const groups = useMemo(() => {
+    const next = new Map<string, typeof changes>();
+    for (const change of changes) {
+      const directory = reviewDirectory(change.path);
+      const current = next.get(directory);
+      if (current) current.push(change);
+      else next.set(directory, [change]);
+    }
+    return [...next.entries()];
+  }, [changes]);
+
+  if (changes.length === 0) {
+    return (
+      <DockEmpty
+        icon={<Folder size={22} />}
+        title="暂无对话文件"
+        subtitle="当前对话修改过的文件会显示在这里"
+      />
+    );
+  }
+
+  return (
+    <div className="shell-conversation-files" role="list" aria-label="对话文件">
+      {groups.map(([directory, items]) => (
+        <div className="shell-conversation-files__group" key={directory}>
+          <div className="shell-conversation-files__directory" title={directory}>
+            <ChevronDown size={12} />
+            <FolderOpen size={14} />
+            <span>{directory}</span>
+            <small>{items.length}</small>
+          </div>
+          {items.map((item) => (
+            <button
+              key={item.path}
+              type="button"
+              role="listitem"
+              className={clsx(
+                'shell-conversation-files__item',
+                activeFilePath === item.path && 'is-active',
+              )}
+              title={reviewAbsolutePath(projectFolder, item.path)}
+              onClick={() => (onOpenFile ?? onOpenFileInNewTab)?.(item.path)}
+            >
+              <FileTypeIcon path={item.path} size={14} />
+              <span>{reviewFileName(item.path)}</span>
+              <small>
+                {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
+              </small>
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Review 面板（本轮文件变更 + 行级 diff） ──────────────────────────────────
 
 function reviewDirectory(path: string): string {
@@ -177,11 +315,11 @@ function reviewAbsolutePath(projectFolder: string | undefined, path: string): st
   return `${root}${separator}${path.replace(/^[.][\\/]/, '').replace(/[\\/]/g, separator)}`;
 }
 
-const DEFAULT_REVIEW_LIST_WIDTH = 280;
-const MIN_REVIEW_LIST_WIDTH = 220;
-const MAX_REVIEW_LIST_WIDTH = 440;
-const MIN_REVIEW_DETAIL_WIDTH = 300;
-const REVIEW_DIVIDER_WIDTH = 5;
+const DEFAULT_REVIEW_LIST_WIDTH = 288;
+const MIN_REVIEW_LIST_WIDTH = 221;
+const MAX_REVIEW_LIST_WIDTH = 600;
+const MIN_REVIEW_DETAIL_WIDTH = 360;
+const REVIEW_DIVIDER_WIDTH = 1;
 const REVIEW_KEYBOARD_RESIZE_STEP = 16;
 
 interface ReviewResizeDrag {
@@ -219,6 +357,9 @@ export function ReviewPanel({
   standalone?: boolean;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [reviewOptionsOpen, setReviewOptionsOpen] = useState(false);
+  const [wrapLines, setWrapLines] = useState(true);
+  const [showWhitespace, setShowWhitespace] = useState(false);
   const [reviewListWidth, setReviewListWidth] = useState(DEFAULT_REVIEW_LIST_WIDTH);
   const [resizeBounds, setResizeBounds] = useState({
     min: MIN_REVIEW_LIST_WIDTH,
@@ -229,7 +370,7 @@ export function ReviewPanel({
   const reviewListRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<ReviewResizeDrag | null>(null);
   const desiredReviewListWidthRef = useRef(DEFAULT_REVIEW_LIST_WIDTH);
-  const changes = view?.fileChanges ?? [];
+  const changes = useMemo(() => view?.fileChanges ?? [], [view]);
   const selected = changes.find((item) => item.path === selectedPath) ?? changes[0];
   const groupedChanges = useMemo(() => {
     const groups = new Map<string, typeof changes>();
@@ -241,6 +382,24 @@ export function ReviewPanel({
     }
     return [...groups.entries()];
   }, [changes]);
+  const changeStats = useMemo(() => {
+    const stats = new Map<string, { added: number; removed: number }>();
+    for (const change of changes) {
+      const count = countLineChanges(change);
+      if (count) stats.set(change.path, count);
+    }
+    return stats;
+  }, [changes]);
+  const totals = useMemo(() => {
+    let added = 0;
+    let removed = 0;
+    for (const count of changeStats.values()) {
+      added += count.added;
+      removed += count.removed;
+    }
+    return { added, removed };
+  }, [changeStats]);
+  const selectedStats = selected ? changeStats.get(selected.path) : undefined;
 
   const currentPanelWidth = useCallback(() => {
     return panelRef.current?.getBoundingClientRect().width ?? 0;
@@ -371,6 +530,7 @@ export function ReviewPanel({
       ref={panelRef}
       className={clsx('shell-review-panel', standalone && 'is-standalone')}
       data-testid="review-panel"
+      data-turn-review-workspace={standalone ? 'true' : undefined}
       data-resizing={isResizing ? 'true' : 'false'}
       style={panelStyle}
     >
@@ -387,28 +547,38 @@ export function ReviewPanel({
               <span>{directory}</span>
               <small>{items.length}</small>
             </div>
-            {items.map((item) => (
-              <button
-                key={item.path}
-                type="button"
-                role="listitem"
-                className={clsx(
-                  'shell-review-list__item',
-                  selected?.path === item.path && 'is-active',
-                )}
-                onClick={() => setSelectedPath(item.path)}
-                title={reviewAbsolutePath(projectFolder, item.path)}
-              >
-                <FileTypeIcon path={item.path} size={13} className="shrink-0" />
-                <span className="shell-review-list__path">{reviewFileName(item.path)}</span>
-                <span
-                  className={`shell-changes-card__badge is-${item.action}`}
-                  data-action={item.action}
+            {items.map((item) => {
+              const stats = changeStats.get(item.path);
+              return (
+                <button
+                  key={item.path}
+                  type="button"
+                  role="listitem"
+                  className={clsx(
+                    'shell-review-list__item',
+                    selected?.path === item.path && 'is-active',
+                  )}
+                  onClick={() => setSelectedPath(item.path)}
+                  title={reviewAbsolutePath(projectFolder, item.path)}
                 >
-                  {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
-                </span>
-              </button>
-            ))}
+                  <FileTypeIcon path={item.path} size={13} className="shrink-0" />
+                  <span className="shell-review-list__path">{reviewFileName(item.path)}</span>
+                  {stats ? (
+                    <span className="shell-review-list__stats">
+                      <span>+{stats.added}</span>
+                      <span>-{stats.removed}</span>
+                    </span>
+                  ) : (
+                    <span
+                      className={`shell-changes-card__badge is-${item.action}`}
+                      data-action={item.action}
+                    >
+                      {item.action === 'created' ? 'A' : item.action === 'deleted' ? 'D' : 'M'}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         ))}
       </div>
@@ -435,30 +605,77 @@ export function ReviewPanel({
       <div className="shell-review-detail">
         {selected ? (
           <>
-            <div className="shell-review-detail__header">
-              <span className="shell-review-detail__path" title={selected.path}>
-                {selected.path}
-              </span>
-              <div className="shell-review-detail__actions">
-                {onOpenFile ? (
-                  <button
-                    type="button"
-                    className="shell-review-detail__btn"
-                    onClick={() => onOpenFile(selected.path)}
-                  >
-                    打开
-                  </button>
-                ) : null}
-                {onOpenFileInNewTab ? (
-                  <button
-                    type="button"
-                    className="shell-review-detail__btn"
-                    onClick={() => onOpenFileInNewTab(selected.path)}
-                  >
-                    新标签打开
-                  </button>
+            <div className="shell-review-summary" data-review-header="true">
+              <div className="shell-review-summary__stats">
+                <strong data-review-scope="turn">上一轮</strong>
+                <span className="is-added" data-review-total-additions="true">
+                  +{totals.added}
+                </span>
+                <span className="is-removed" data-review-total-deletions="true">
+                  -{totals.removed}
+                </span>
+              </div>
+              <div className="shell-review-options">
+                <button
+                  type="button"
+                  className="shell-review-options__trigger"
+                  aria-label="审阅更多选项"
+                  aria-expanded={reviewOptionsOpen}
+                  onClick={() => setReviewOptionsOpen((open) => !open)}
+                >
+                  <MoreHorizontal size={16} />
+                </button>
+                {reviewOptionsOpen ? (
+                  <div className="shell-review-options__menu" role="menu">
+                    <button
+                      type="button"
+                      role="menuitemcheckbox"
+                      aria-checked={wrapLines}
+                      onClick={() => setWrapLines((value) => !value)}
+                    >
+                      <span>自动换行</span>
+                      {wrapLines ? <Check size={13} /> : null}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemcheckbox"
+                      aria-checked={showWhitespace}
+                      onClick={() => setShowWhitespace((value) => !value)}
+                    >
+                      <span>显示空白字符</span>
+                      {showWhitespace ? <Check size={13} /> : null}
+                    </button>
+                  </div>
                 ) : null}
               </div>
+            </div>
+            <div className="shell-review-detail__divider" />
+            <div className="shell-review-detail__header" data-review-file-header="true">
+              <FileTypeIcon path={selected.path} size={14} className="shrink-0" />
+              <span
+                className="shell-review-detail__path"
+                data-review-selected-file="true"
+                title={reviewAbsolutePath(projectFolder, selected.path)}
+              >
+                {selected.path}
+              </span>
+              {selectedStats ? (
+                <span className="shell-review-detail__stats" data-review-selected-stats="true">
+                  <span>+{selectedStats.added}</span>
+                  <span>-{selectedStats.removed}</span>
+                </span>
+              ) : null}
+              {onOpenFile || onOpenFileInNewTab ? (
+                <button
+                  type="button"
+                  className="shell-review-detail__btn"
+                  aria-label="打开"
+                  title="打开文件"
+                  onClick={() => (onOpenFileInNewTab ?? onOpenFile)?.(selected.path)}
+                >
+                  <ExternalLink size={13} />
+                </button>
+              ) : null}
             </div>
             <div className="shell-changes-card__diff">
               <LineDiffView
@@ -466,6 +683,10 @@ export function ReviewPanel({
                 newText={selected.content}
                 path={selected.path}
                 truncated={selected.previousTruncated}
+                wrapLines={wrapLines}
+                onWrapLinesChange={setWrapLines}
+                showToolbar={false}
+                showWhitespace={showWhitespace}
               />
             </div>
           </>
@@ -488,11 +709,15 @@ function FilesPanel({
   onOpenFile,
   onOpenFileInNewTab,
   activeFilePath,
+  searchExpanded = false,
+  refreshRevision = 0,
 }: {
   projectFolder?: string;
   onOpenFile?(path: string, location?: ProjectTextLocation): void;
   onOpenFileInNewTab?(path: string, location?: ProjectTextLocation): void;
   activeFilePath?: string | null;
+  searchExpanded?: boolean;
+  refreshRevision?: number;
 }) {
   const [query, setQuery] = useState('');
   const [searchKind, setSearchKind] = useState<'filename' | 'content'>('filename');
@@ -551,7 +776,7 @@ function FilesPanel({
     setDirs({});
     setExpanded(new Set());
     loadDir('');
-  }, [projectFolder, loadDir]);
+  }, [projectFolder, loadDir, refreshRevision]);
 
   const toggleDir = useCallback(
     (dir: string) => {
@@ -675,36 +900,38 @@ function FilesPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shell-workspace-files-search shrink-0">
-        <div className="shell-workspace-files-search__modes" role="group" aria-label="搜索范围">
-          {(['filename', 'content'] as const).map((kind) => (
-            <button
-              key={kind}
-              type="button"
-              aria-label={kind === 'filename' ? '文件名' : '内容'}
-              aria-pressed={searchKind === kind}
-              className={clsx(
-                'shell-workspace-files-search__mode',
-                searchKind === kind && 'is-active',
-              )}
-              onClick={() => setSearchKind(kind)}
-            >
-              {kind === 'filename' ? '文件名' : '内容'}
-            </button>
-          ))}
+      {searchExpanded ? (
+        <div className="shell-workspace-files-search shrink-0">
+          <div className="shell-workspace-files-search__modes" role="group" aria-label="搜索范围">
+            {(['filename', 'content'] as const).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                aria-label={kind === 'filename' ? '文件名' : '内容'}
+                aria-pressed={searchKind === kind}
+                className={clsx(
+                  'shell-workspace-files-search__mode',
+                  searchKind === kind && 'is-active',
+                )}
+                onClick={() => setSearchKind(kind)}
+              >
+                {kind === 'filename' ? '文件名' : '内容'}
+              </button>
+            ))}
+          </div>
+          <div className="shell-workspace-files-search__field">
+            <Search size={11} className="shell-workspace-files-search__icon" />
+            <input
+              className="shell-workspace-files-search__input"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={searchKind === 'filename' ? '搜索文件名…' : '搜索文件内容…'}
+              spellCheck={false}
+              data-testid="dock-files-search"
+            />
+          </div>
         </div>
-        <div className="shell-workspace-files-search__field">
-          <Search size={11} className="shell-workspace-files-search__icon" />
-          <input
-            className="shell-workspace-files-search__input"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={searchKind === 'filename' ? '搜索文件名…' : '搜索文件内容…'}
-            spellCheck={false}
-            data-testid="dock-files-search"
-          />
-        </div>
-      </div>
+      ) : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div
           className={clsx(

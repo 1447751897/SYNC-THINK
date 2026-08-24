@@ -2,10 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkspacePaneHost } from './WorkspacePaneHost.js';
-import {
-  createWorkspacePaneLayout,
-  splitPaneWithConversation,
-} from './pane-layout.js';
+import { createWorkspacePaneLayout, splitPaneWithConversation } from './pane-layout.js';
 
 afterEach(cleanup);
 
@@ -86,5 +83,46 @@ describe('WorkspacePaneHost', () => {
     const targetPaneId = layout.focusedPaneId;
     fireEvent.focus(screen.getByTestId(`focus-control-${targetPaneId}`));
     expect(onFocusPane).toHaveBeenCalledWith(targetPaneId);
+  });
+
+  it('covers the workspace while a divider is dragged and commits the final ratio', () => {
+    const initial = createWorkspacePaneLayout('ws-a', ['c1', 'c2'], 'c1');
+    const layout = splitPaneWithConversation(initial, initial.focusedPaneId, 'horizontal', 'c2');
+    expect(layout.root.type).toBe('split');
+    const onSplitRatioChange = vi.fn();
+
+    render(
+      <WorkspacePaneHost
+        layout={layout}
+        onFocusPane={vi.fn()}
+        onSplitRatioChange={onSplitRatioChange}
+        renderPane={(pane) => <div>{pane.id}</div>}
+      />,
+    );
+
+    const separator = screen.getByRole('separator');
+    const split = screen.getByTestId(`workspace-split-${layout.root.id}`);
+    vi.spyOn(split, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 1_000,
+      bottom: 600,
+      width: 1_000,
+      height: 600,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.mouseDown(separator, { clientX: 500 });
+    expect(document.querySelector('.shell-pane-resize-shield')).toBeTruthy();
+    expect(document.body.style.cursor).toBe('col-resize');
+
+    fireEvent.mouseMove(window, { clientX: 600 });
+    expect(onSplitRatioChange).toHaveBeenCalledWith(layout.root.id, 0.6, false);
+    fireEvent.mouseUp(window);
+    expect(document.querySelector('.shell-pane-resize-shield')).toBeNull();
+    expect(document.body.style.cursor).toBe('');
+    expect(onSplitRatioChange).toHaveBeenLastCalledWith(layout.root.id, 0.6, true);
   });
 });

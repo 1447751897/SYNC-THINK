@@ -109,7 +109,7 @@ describe('ActivityCenterPage', () => {
     );
   });
 
-  it('seeds the composer on retry and never sends the message itself', async () => {
+  it('restores a failed Run prompt for editing without sending or changing models', async () => {
     runtime.activityListRuns.mockResolvedValue({
       entries: [run({ runId: 'run-1', title: '失败的 Run', state: 'failed' })],
       counts: { ...EMPTY_COUNTS, failed: 1 },
@@ -123,7 +123,11 @@ describe('ActivityCenterPage', () => {
     const onOpenConversation = vi.fn();
 
     render(<ActivityCenterPage onRetryRun={onRetryRun} onOpenConversation={onOpenConversation} />);
-    fireEvent.click(await screen.findByTestId('activity-retry'));
+    expect(screen.getByText(/Webhook、Git 推送和文件监听等系统触发记录/)).toBeTruthy();
+    const restore = await screen.findByRole('button', { name: '重新编辑' });
+    expect(restore.getAttribute('title')).toContain('不会自动发送或更换模型');
+    expect(screen.queryByRole('button', { name: '重发' })).toBeNull();
+    fireEvent.click(restore);
 
     await waitFor(() => {
       expect(onRetryRun).toHaveBeenCalledWith({

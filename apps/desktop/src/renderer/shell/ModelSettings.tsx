@@ -34,16 +34,14 @@ import {
   ArrowLeft,
   ArrowDown,
   ArrowUp,
-  BarChart3,
-  Bot,
   Check,
   ChevronDown,
+  Cloud,
   Database,
   Gauge,
   GripVertical,
   Image,
   Loader2,
-  Mic2,
   MoreHorizontal,
   Pencil,
   Plug,
@@ -58,7 +56,6 @@ import {
   Sparkles,
   Target,
   Trash2,
-  Video,
   X,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -176,12 +173,7 @@ const EMPTY_CREATE: CreateDraft = {
   supportsDiscovery: true,
 };
 
-type ProviderCatalogCategory =
-  | 'recommended'
-  | 'domestic'
-  | 'aggregator'
-  | 'overseas'
-  | 'local';
+type ProviderCatalogCategory = 'recommended' | 'domestic' | 'aggregator' | 'overseas' | 'local';
 
 type CreateProviderStep = 'catalog' | 'form' | 'cc-switch';
 
@@ -192,8 +184,21 @@ interface ProviderCatalogItem {
   action: 'form' | 'cc-switch';
   endpointMode?: 'builtin' | 'custom';
   badge?: string;
+  status?: string;
+  variant?: 'flat';
   draft?: Partial<CreateDraft>;
 }
+
+type ModelTab = 'text' | 'image' | 'video' | 'voice' | 'recognition' | 'usage';
+
+const MODEL_TABS: Array<{ id: ModelTab; label: string }> = [
+  { id: 'text', label: '文本生成' },
+  { id: 'image', label: '图像生成' },
+  { id: 'video', label: '视频生成' },
+  { id: 'voice', label: '语音生成' },
+  { id: 'recognition', label: '语音识别' },
+  { id: 'usage', label: '使用统计' },
+];
 
 const PROVIDER_CATALOG_CATEGORIES: Array<{
   id: ProviderCatalogCategory;
@@ -212,42 +217,41 @@ const CUSTOM_PROVIDER_ITEM: ProviderCatalogItem = {
   description: '配置自定义 API 兼容的供应商',
   action: 'form',
   endpointMode: 'custom',
+  variant: 'flat',
   draft: EMPTY_CREATE,
 };
 
 const CC_SWITCH_ITEM: ProviderCatalogItem = {
   id: 'cc-switch',
   name: '从 CC Switch 导入',
-  description: '读取本机 CC Switch 中已配置的供应商',
+  description: '读取本机 CC Switch 中已配置的 Claude 供应商',
   action: 'cc-switch',
+  variant: 'flat',
 };
 
 const PROVIDER_CATALOG: Record<ProviderCatalogCategory, ProviderCatalogItem[]> = {
-  recommended: [
-    {
-      id: 'newmax-gateway',
-      name: 'NewMax Gateway',
-      description: '统一网关入口，连接现有 NewMax 兼容服务',
-      action: 'form',
-      badge: '推荐',
-      draft: {
-        name: 'NewMax Gateway',
-        baseUrl: 'https://',
-        protocol: 'openai-chat',
-        supportsDiscovery: true,
-      },
-    },
-    CUSTOM_PROVIDER_ITEM,
-    CC_SWITCH_ITEM,
-  ],
+  recommended: [CUSTOM_PROVIDER_ITEM, CC_SWITCH_ITEM],
   domestic: [
     {
-      id: 'minimax-cn',
-      name: 'MiniMax',
-      description: 'MiniMax 国内 API，支持文本与编程模型',
+      id: 'minimax-token-plan',
+      name: 'MiniMax Token Plan',
+      description: 'MiniMax Token Plan 订阅套餐（国内）',
       action: 'form',
+      badge: '套餐',
       draft: {
-        name: 'MiniMax',
+        name: 'MiniMax Token Plan',
+        baseUrl: 'https://api.minimax.chat/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'minimax-api',
+      name: 'MiniMax 按量 API',
+      description: 'MiniMax 开放平台按量计费 API',
+      action: 'form',
+      badge: '按量',
+      draft: {
+        name: 'MiniMax 按量 API',
         baseUrl: 'https://api.minimax.chat/v1',
         protocol: 'openai-chat',
       },
@@ -255,8 +259,9 @@ const PROVIDER_CATALOG: Record<ProviderCatalogCategory, ProviderCatalogItem[]> =
     {
       id: 'kimi-coding',
       name: 'Kimi Coding Plan',
-      description: 'Kimi 智能编程增强版',
+      description: 'Kimi 智能助手的编程版，月之暗面出品',
       action: 'form',
+      badge: '套餐',
       draft: { name: 'Kimi Coding Plan', baseUrl: 'https://', protocol: 'openai-chat' },
     },
     {
@@ -264,6 +269,8 @@ const PROVIDER_CATALOG: Record<ProviderCatalogCategory, ProviderCatalogItem[]> =
       name: 'Moonshot',
       description: '月之暗面开放平台，按量付费',
       action: 'form',
+      badge: '按量',
+      status: '已激活',
       draft: {
         name: 'Moonshot',
         baseUrl: 'https://api.moonshot.cn/v1',
@@ -271,12 +278,25 @@ const PROVIDER_CATALOG: Record<ProviderCatalogCategory, ProviderCatalogItem[]> =
       },
     },
     {
-      id: 'zhipu',
-      name: '智谱',
-      description: '智谱 GLM 开放平台',
+      id: 'zhipu-coding',
+      name: '智谱 GLM Coding Plan',
+      description: '智谱 GLM 编程模型',
       action: 'form',
+      badge: '套餐',
       draft: {
-        name: '智谱',
+        name: '智谱 GLM Coding Plan',
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'zhipu-api',
+      name: '智谱开放平台 API',
+      description: '智谱开放平台通用 API，按实际调用量计费',
+      action: 'form',
+      badge: '按量',
+      draft: {
+        name: '智谱开放平台 API',
         baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
         protocol: 'openai-chat',
       },
@@ -284,8 +304,9 @@ const PROVIDER_CATALOG: Record<ProviderCatalogCategory, ProviderCatalogItem[]> =
     {
       id: 'deepseek',
       name: 'DeepSeek',
-      description: 'DeepSeek 官方 API，按量付费',
+      description: 'DeepSeek 官方 API，按量计费',
       action: 'form',
+      status: '已激活',
       draft: {
         name: 'DeepSeek',
         baseUrl: 'https://api.deepseek.com/v1',
@@ -297,8 +318,33 @@ const PROVIDER_CATALOG: Record<ProviderCatalogCategory, ProviderCatalogItem[]> =
       name: '百炼 Coding Plan',
       description: '阿里云百炼面向 Qwen 模型的 Coding Plan',
       action: 'form',
+      badge: '套餐',
       draft: {
         name: '百炼 Coding Plan',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'bailian-token-plan',
+      name: '百炼 Token Plan',
+      description: '阿里云百炼 Token Plan 订阅套餐',
+      action: 'form',
+      badge: '套餐',
+      draft: {
+        name: '百炼 Token Plan',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        protocol: 'openai-chat',
+      },
+    },
+    {
+      id: 'bailian-api',
+      name: '百炼按量 API',
+      description: '阿里云百炼 Model Studio 按量计费 API',
+      action: 'form',
+      badge: '按量',
+      draft: {
+        name: '百炼按量 API',
         baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
         protocol: 'openai-chat',
       },
@@ -668,24 +714,26 @@ export const ModelSettings = forwardRef<
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createStep, setCreateStep] = useState<CreateProviderStep>('catalog');
-  const [catalogCategory, setCatalogCategory] =
-    useState<ProviderCatalogCategory>('recommended');
+  const [catalogCategory, setCatalogCategory] = useState<ProviderCatalogCategory>('recommended');
   const [createDraft, setCreateDraft] = useState<CreateDraft>(EMPTY_CREATE);
   const [createTemplate, setCreateTemplate] = useState<ProviderCatalogItem | null>(null);
-  const [ccSwitchPreview, setCcSwitchPreview] =
-    useState<PreviewCcSwitchImportResponse | null>(null);
+  const [ccSwitchPreview, setCcSwitchPreview] = useState<PreviewCcSwitchImportResponse | null>(
+    null,
+  );
   const [selectedCcSwitchIds, setSelectedCcSwitchIds] = useState<string[]>([]);
   const [ccSwitchLoading, setCcSwitchLoading] = useState(false);
   const [ccSwitchImporting, setCcSwitchImporting] = useState(false);
-  const [modelTab, setModelTab] = useState<'text' | 'image' | 'video' | 'voice' | 'usage'>('text');
+  const [modelTab, setModelTab] = useState<ModelTab>('text');
   const [detailView, setDetailView] = useState<
-    'provider' | 'vision' | 'plan-act' | 'goal-evaluator'
+    'provider' | 'vision' | 'plan-act' | 'cloud-sync' | 'goal-evaluator'
   >('provider');
+  const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
   const [visionFallback, setVisionFallback] = useState<VisionFallbackSetting>({
     enabled: false,
     modelId: null,
   });
   const [goalEvaluatorModelId, setGoalEvaluatorModelId] = useState<string | null>(null);
+  const [modelConfigCloudSync, setModelConfigCloudSync] = useState(false);
   const [planAct, setPlanAct] = useState<PlanActSetting>({
     enabled: false,
     planModelId: null,
@@ -748,8 +796,9 @@ export const ModelSettings = forwardRef<
     try {
       const [listed, settings] = await Promise.all([
         api.listProviders({}),
-        api.getSettings?.({ keys: ['vision-fallback', 'plan-act', 'goal.evaluator-model'] }) ??
-          Promise.resolve({ settings: {} as Record<string, unknown> }),
+        api.getSettings?.({
+          keys: ['vision-fallback', 'plan-act', 'goal.evaluator-model', 'model-config-cloud-sync'],
+        }) ?? Promise.resolve({ settings: {} as Record<string, unknown> }),
       ]);
       const next = [...listed.providers].sort((a, b) => a.sortOrder - b.sortOrder);
       setProviders(next);
@@ -761,6 +810,7 @@ export const ModelSettings = forwardRef<
           ? storedEvaluator.trim()
           : null,
       );
+      setModelConfigCloudSync(settings.settings?.['model-config-cloud-sync'] === true);
       setSelectedId((prev) => {
         if (prev && next.some((p) => p.providerId === prev)) return prev;
         return next[0]?.providerId ?? null;
@@ -882,8 +932,13 @@ export const ModelSettings = forwardRef<
   }, [resetCreateState, restoreProviderSelection]);
 
   const openProviderTemplate = useCallback((item: ProviderCatalogItem) => {
-    setCreateDraft({ ...EMPTY_CREATE, ...(item.draft ?? {}) });
-    setCreateTemplate(item);
+    const baseUrl = item.draft?.baseUrl?.trim();
+    const resolvedItem =
+      item.action === 'form' && (!baseUrl || baseUrl === 'https://')
+        ? { ...item, endpointMode: 'custom' as const }
+        : item;
+    setCreateDraft({ ...EMPTY_CREATE, ...(resolvedItem.draft ?? {}) });
+    setCreateTemplate(resolvedItem);
     setCreateStep('form');
   }, []);
 
@@ -945,14 +1000,7 @@ export const ModelSettings = forwardRef<
     } finally {
       setCcSwitchImporting(false);
     }
-  }, [
-    ccSwitchImporting,
-    load,
-    onCatalogChanged,
-    resetCreateState,
-    selectedCcSwitchIds,
-    showToast,
-  ]);
+  }, [ccSwitchImporting, load, onCatalogChanged, resetCreateState, selectedCcSwitchIds, showToast]);
 
   const persistProviderOrder = useCallback(
     async (orderedEnabled: ProviderSummary[], previousProviders = providers) => {
@@ -1543,6 +1591,25 @@ export const ModelSettings = forwardRef<
     );
   };
 
+  const handleSaveModelConfigCloudSync = (enabled: boolean) => {
+    const previous = modelConfigCloudSync;
+    setModelConfigCloudSync(enabled);
+    void withBusy(
+      { kind: 'save-preference', label: '正在保存模型配置云同步…' },
+      async () => {
+        const api = bridge();
+        if (!api?.setSetting) throw new Error('Runtime 未连接');
+        try {
+          await api.setSetting({ key: 'model-config-cloud-sync', value: enabled });
+        } catch (error) {
+          setModelConfigCloudSync(previous);
+          throw error;
+        }
+      },
+      enabled ? '模型配置云同步已开启' : '模型配置云同步已关闭',
+    );
+  };
+
   const createDraftDirty =
     showCreate &&
     createStep === 'form' &&
@@ -1692,30 +1759,28 @@ export const ModelSettings = forwardRef<
   return (
     <div className="model-settings-root flex h-full min-h-0 flex-col">
       <div className="model-settings-tabs" role="tablist" aria-label="模型类型">
-        {[
-          { id: 'text', label: '文本生成', icon: Bot },
-          { id: 'image', label: '图像生成', icon: Image },
-          { id: 'video', label: '视频生成', icon: Video },
-          { id: 'voice', label: '语音生成', icon: Mic2 },
-          { id: 'usage', label: '使用统计', icon: BarChart3 },
-        ].map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={modelTab === id}
-            className={modelTab === id ? 'is-active' : undefined}
-            onClick={() => {
-              void confirmDiscardChanges().then((ok) => {
-                if (ok) setModelTab(id as typeof modelTab);
-              });
-            }}
-          >
-            <Icon size={13} aria-hidden="true" />
-            {label}
-          </button>
-        ))}
-        <span className="model-settings-guide">配置遇到问题？查看配置指南</span>
+        <div className="model-settings-tabs__rail" data-active-tab={modelTab}>
+          <span className="model-settings-tabs__indicator" aria-hidden="true" />
+          {MODEL_TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={modelTab === id}
+              className={modelTab === id ? 'is-active' : undefined}
+              onClick={() => {
+                void confirmDiscardChanges().then((ok) => {
+                  if (ok) setModelTab(id);
+                });
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="model-settings-guide">
+          如果配置遇到问题，可以查阅<span>配置指南</span>。
+        </span>
       </div>
 
       {modelTab === 'usage' ? (
@@ -1723,7 +1788,7 @@ export const ModelSettings = forwardRef<
       ) : modelTab !== 'text' ? (
         <div key={modelTab} className="model-settings-tab-panel model-settings-unavailable">
           <p>
-            {modelTab === 'image' ? '图像生成' : modelTab === 'video' ? '视频生成' : '语音生成'}
+            {MODEL_TABS.find((tab) => tab.id === modelTab)?.label ?? '模型'}
             模型配置尚未接入。
           </p>
           <span>入口按 NewMax 的模型设置结构保留。</span>
@@ -1842,64 +1907,100 @@ export const ModelSettings = forwardRef<
                 >
                   <Plus size={13} /> 添加模型
                 </button>
-                {disabledProviders.length > 0 ? (
-                  <div className={clsx('model-disabled-list', disabledOpen && 'is-open')}>
+                <div
+                  className={clsx(
+                    'model-disabled-list',
+                    disabledOpen && 'is-open',
+                    disabledProviders.length === 0 && 'is-empty',
+                  )}
+                >
+                  <div className="model-disabled-list__head">
                     <button
                       type="button"
                       className="model-disabled-list__summary"
                       onClick={() => setDisabledOpen((value) => !value)}
                       aria-expanded={disabledOpen}
+                      disabled={disabledProviders.length === 0}
                     >
-                      <ChevronDown size={12} aria-hidden="true" />
                       <span>已停用模型 {disabledProviders.length}</span>
                     </button>
-                    <div className="model-disabled-list__body" aria-hidden={!disabledOpen}>
-                      <ul>
-                        {disabledProviders.map((provider) => {
-                          const primaryModel = [...provider.models].sort(
-                            (a, b) => a.priority - b.priority,
-                          )[0];
-                          return (
-                            <li
-                              key={provider.providerId}
-                              className={clsx(
-                                'model-enabled-row is-disabled',
-                                detailView === 'provider' &&
-                                  provider.providerId === selectedId &&
-                                  !showCreate &&
-                                  'is-active',
-                              )}
-                            >
-                              <ProviderRowAvatar provider={provider} />
-                              <button
-                                type="button"
-                                className="model-enabled-row__main"
-                                onClick={() => {
-                                  setShowCreate(false);
-                                  setSelectedId(provider.providerId);
-                                  setLastSelectedId(provider.providerId);
-                                }}
-                              >
-                                <span className="model-enabled-row__copy">
-                                  <span>{provider.name}</span>
-                                  <small>{primaryModel?.displayName ?? '未添加模型'}</small>
-                                </span>
-                              </button>
-                              <button
-                                type="button"
-                                className="model-disabled-list__enable"
-                                disabled={providerListBusy}
-                                onClick={() => handleToggleEnabled(provider, true)}
-                              >
-                                启用
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
+                    <div className="model-disabled-list__menu-wrap">
+                      <button
+                        type="button"
+                        className="model-disabled-list__menu-trigger"
+                        aria-label="更多模型设置"
+                        aria-expanded={strategyMenuOpen}
+                        onClick={() => setStrategyMenuOpen((open) => !open)}
+                      >
+                        <MoreHorizontal size={14} aria-hidden="true" />
+                      </button>
+                      {strategyMenuOpen ? (
+                        <div className="model-disabled-list__menu" role="menu">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              void confirmDiscardChanges().then((ok) => {
+                                if (!ok) return;
+                                setStrategyMenuOpen(false);
+                                setShowCreate(false);
+                                setDetailView('goal-evaluator');
+                              });
+                            }}
+                          >
+                            <Target size={13} aria-hidden="true" />
+                            目标模式评估模型
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
-                ) : null}
+                  <div className="model-disabled-list__body" aria-hidden={!disabledOpen}>
+                    <ul>
+                      {disabledProviders.map((provider) => {
+                        const primaryModel = [...provider.models].sort(
+                          (a, b) => a.priority - b.priority,
+                        )[0];
+                        return (
+                          <li
+                            key={provider.providerId}
+                            className={clsx(
+                              'model-enabled-row is-disabled',
+                              detailView === 'provider' &&
+                                provider.providerId === selectedId &&
+                                !showCreate &&
+                                'is-active',
+                            )}
+                          >
+                            <ProviderRowAvatar provider={provider} />
+                            <button
+                              type="button"
+                              className="model-enabled-row__main"
+                              onClick={() => {
+                                setShowCreate(false);
+                                setSelectedId(provider.providerId);
+                                setLastSelectedId(provider.providerId);
+                              }}
+                            >
+                              <span className="model-enabled-row__copy">
+                                <span>{provider.name}</span>
+                                <small>{primaryModel?.displayName ?? '未添加模型'}</small>
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className="model-disabled-list__enable"
+                              disabled={providerListBusy}
+                              onClick={() => handleToggleEnabled(provider, true)}
+                            >
+                              启用
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                </div>
               </div>
 
               <div className="model-enabled-list__secondary">
@@ -1936,19 +2037,19 @@ export const ModelSettings = forwardRef<
                 </button>
                 <button
                   type="button"
-                  className={detailView === 'goal-evaluator' ? 'is-active' : undefined}
-                  aria-pressed={detailView === 'goal-evaluator'}
-                  data-testid="model-strategy-goal-evaluator"
+                  className={detailView === 'cloud-sync' ? 'is-active' : undefined}
+                  aria-pressed={detailView === 'cloud-sync'}
+                  data-testid="model-strategy-cloud-sync"
                   onClick={() => {
                     void confirmDiscardChanges().then((ok) => {
                       if (!ok) return;
                       setShowCreate(false);
-                      setDetailView('goal-evaluator');
+                      setDetailView('cloud-sync');
                     });
                   }}
                 >
-                  <Target size={13} />
-                  <span>目标模式评估模型</span>
+                  <Cloud size={13} />
+                  <span>模型配置云同步</span>
                 </button>
               </div>
             </aside>
@@ -1977,7 +2078,6 @@ export const ModelSettings = forwardRef<
                         }
                         openProviderTemplate(item);
                       }}
-                      onCancel={cancelCreateFlow}
                     />
                   ) : createStep === 'cc-switch' ? (
                     <CcSwitchImportPanel
@@ -2040,6 +2140,12 @@ export const ModelSettings = forwardRef<
                     value={planAct}
                     busy={operation?.kind === 'save-preference'}
                     onChange={handleSavePlanAct}
+                  />
+                ) : detailView === 'cloud-sync' ? (
+                  <ModelCloudSyncPanel
+                    enabled={modelConfigCloudSync}
+                    busy={operation?.kind === 'save-preference'}
+                    onChange={handleSaveModelConfigCloudSync}
                   />
                 ) : detailView === 'goal-evaluator' ? (
                   <GoalEvaluatorPanel
@@ -2120,26 +2226,14 @@ function ProviderCatalog({
   category,
   onCategoryChange,
   onSelect,
-  onCancel,
 }: {
   category: ProviderCatalogCategory;
   onCategoryChange: (category: ProviderCatalogCategory) => void;
   onSelect: (item: ProviderCatalogItem) => void;
-  onCancel: () => void;
 }) {
   const items = PROVIDER_CATALOG[category];
   return (
-    <section className="model-provider-catalog" aria-labelledby="model-provider-catalog-title">
-      <header className="model-provider-catalog__header">
-        <div>
-          <h2 id="model-provider-catalog-title">添加模型</h2>
-          <p>先选择服务商类型，再填写对应的连接配置。</p>
-        </div>
-        <button type="button" aria-label="取消添加模型" onClick={onCancel}>
-          <X size={16} />
-        </button>
-      </header>
-
+    <section className="model-provider-catalog" aria-label="添加模型">
       <div className="model-provider-catalog__tabs" role="tablist" aria-label="模型服务商分类">
         {PROVIDER_CATALOG_CATEGORIES.map((item) => (
           <button
@@ -2159,54 +2253,44 @@ function ProviderCatalog({
       </div>
 
       <div className="model-provider-catalog__grid" role="tabpanel">
-        {items.map((item) => {
-          const templateReady =
-            item.action !== 'form' ||
-            item.endpointMode === 'custom' ||
-            Boolean(item.draft?.baseUrl && item.draft.baseUrl !== 'https://');
-          return (
-            <button
-              key={`${category}-${item.id}`}
-              type="button"
-              className="model-provider-card"
-              disabled={!templateReady}
-              title={
-                templateReady
-                  ? undefined
-                  : '该服务商暂未内置固定连接地址，请使用“自定义供应商”添加'
-              }
-              onClick={() => onSelect(item)}
-            >
-              <ProviderBrandIcon providerId={item.id} providerName={item.name} />
-              <span className="model-provider-card__copy">
-                <strong>
-                  {item.name}
-                  {item.badge ? (
-                    <span className="model-provider-card__badge">{item.badge}</span>
-                  ) : null}
-                </strong>
-                <small>
-                  {templateReady
-                    ? item.description
-                    : `${item.description} · 固定连接地址待接入`}
-                </small>
-              </span>
-            </button>
-          );
-        })}
+        {items.map((item) => (
+          <button
+            key={`${category}-${item.id}`}
+            type="button"
+            className={clsx('model-provider-card', item.variant === 'flat' && 'is-flat')}
+            onClick={() => onSelect(item)}
+          >
+            <ProviderBrandIcon providerId={item.id} providerName={item.name} />
+            <span className="model-provider-card__copy">
+              <strong>
+                {item.name}
+                {item.badge ? (
+                  <span className="model-provider-card__badge">{item.badge}</span>
+                ) : null}
+                {item.status ? (
+                  <span className="model-provider-card__badge is-status">{item.status}</span>
+                ) : null}
+              </strong>
+              <small>{item.description}</small>
+            </span>
+          </button>
+        ))}
       </div>
     </section>
   );
 }
 
 const PROVIDER_BRAND_GLYPHS: Record<string, string> = {
-  'newmax-gateway': 'N',
-  'minimax-cn': 'M',
+  'minimax-token-plan': 'M',
+  'minimax-api': 'M',
   'kimi-coding': 'K',
   moonshot: '◐',
-  zhipu: 'Z',
+  'zhipu-coding': 'Z',
+  'zhipu-api': 'Z',
   deepseek: 'D',
   'bailian-coding': 'Q',
+  'bailian-token-plan': 'Q',
+  'bailian-api': 'Q',
   stepfun: 'S',
   bailing: 'B',
   longcat: 'L',
@@ -2251,9 +2335,9 @@ function ProviderBrandIcon({
 }) {
   const specialIcon =
     providerId === 'custom' ? (
-      <Settings2 size={15} />
+      <Settings2 size={16} />
     ) : providerId === 'cc-switch' ? (
-      <Download size={15} />
+      <Download size={16} />
     ) : null;
   const brandLogo = specialIcon
     ? undefined
@@ -2271,7 +2355,7 @@ function ProviderBrandIcon({
     >
       {specialIcon ??
         (brandLogo ? (
-          <BrandLogoMark logo={brandLogo} size={18} />
+          <BrandLogoMark logo={brandLogo} size={16} />
         ) : (
           (PROVIDER_BRAND_GLYPHS[providerId] ?? providerName.slice(0, 1).toUpperCase())
         ))}
@@ -2472,12 +2556,7 @@ function CreateProviderForm({
   return (
     <section className="model-provider-form" aria-labelledby="model-provider-form-title">
       <header className="model-provider-form__header">
-        <button
-          type="button"
-          aria-label="返回服务商目录"
-          onClick={onBackToCatalog}
-          disabled={busy}
-        >
+        <button type="button" aria-label="返回服务商目录" onClick={onBackToCatalog} disabled={busy}>
           <ArrowLeft size={16} />
         </button>
         <div className="model-provider-form__identity">
@@ -2493,12 +2572,7 @@ function CreateProviderForm({
             <p>{templateLabel ? `正在配置 ${templateLabel}` : '填写供应商连接信息'}</p>
           </div>
         </div>
-        <button
-          type="button"
-          aria-label="取消添加模型源"
-          onClick={onCancel}
-          disabled={busy}
-        >
+        <button type="button" aria-label="取消添加模型源" onClick={onCancel} disabled={busy}>
           <X size={16} />
         </button>
       </header>
@@ -2554,19 +2628,10 @@ function CreateProviderForm({
           创建后自动发现模型（/models）
         </label>
         <div className="model-provider-form__actions">
-          <button
-            type="button"
-            className="is-primary"
-            disabled={busy}
-            onClick={onSubmit}
-          >
+          <button type="button" className="is-primary" disabled={busy} onClick={onSubmit}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : '创建并保存'}
           </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onCancel}
-          >
+          <button type="button" disabled={busy} onClick={onCancel}>
             取消
           </button>
         </div>
@@ -2597,7 +2662,9 @@ function ProviderRowAvatar({ provider }: { provider: ProviderSummary }) {
       </span>
     );
   }
-  return <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>;
+  return (
+    <span className="model-enabled-row__avatar">{provider.name[0]?.toUpperCase() ?? '?'}</span>
+  );
 }
 
 function SortableProviderRow({
@@ -2785,7 +2852,10 @@ function ProtocolSelector({
       <div className={clsx('model-responses-row', family !== 'openai' && 'is-hidden')}>
         <div>
           <strong>使用 Responses API</strong>
-          <span>强制走 /v1/responses。仅在供应商支持 Responses 端点时开启。</span>
+          <span>
+            强制走 /v1/responses，中转站 prompt cache 命中率更高。仅当供应商支持 Responses
+            端点时开启，否则会 404。
+          </span>
         </div>
         <Toggle
           checked={protocol === 'openai-responses'}
@@ -2979,7 +3049,7 @@ function ProviderDetail({
   };
 
   return (
-    <div className="model-provider-detail border-b border-border px-6 py-5">
+    <div className="model-provider-detail">
       <div className="model-provider-detail__head">
         <span className="model-provider-detail__avatar">
           {provider.name[0]?.toUpperCase() ?? '?'}
@@ -3003,10 +3073,10 @@ function ProviderDetail({
           </div>
           {nameError ? <span className="model-field-error">{nameError}</span> : null}
         </Field>
-        <Field label="API Base URL">
+        <Field label="API 地址（自定义服务）">
           <div className="model-autosave-field">
             <input
-              className="st-field-input font-mono text-[12.5px]"
+              className="st-field-input"
               value={baseUrlDraft}
               aria-invalid={Boolean(baseUrlError)}
               aria-label="API Base URL"
@@ -3018,6 +3088,9 @@ function ProviderDetail({
             ) : null}
           </div>
           {baseUrlError ? <span className="model-field-error">{baseUrlError}</span> : null}
+          <span className="model-field-helper">
+            请从服务商接入文档复制 Base URL 或完整请求地址，离开输入框后会自动识别并整理。
+          </span>
         </Field>
         <Field label="API 格式">
           <div className="model-autosave-control">
@@ -3032,7 +3105,7 @@ function ProviderDetail({
         </Field>
       </div>
 
-      <section className="model-newmax-section">
+      <section className="model-newmax-section model-newmax-section--credentials">
         <div className="model-newmax-section__label">API 密钥</div>
         <div className="model-credential-list">
           {provider.credentials.length === 0 ? (
@@ -3111,10 +3184,7 @@ function ProviderDetail({
       <section className="model-newmax-section">
         <div className="model-newmax-section__heading">
           <div>
-            <span className="model-newmax-section__label">
-              模型优先级（{models.length || '至少添加一个'}）
-            </span>
-            <small>主模型失败后按顺序尝试备用模型 · 悬停行尾的垃圾桶图标可删除模型</small>
+            <span className="model-newmax-section__label">模型优先级（至少添加一个）</span>
           </div>
         </div>
         {models.length === 0 ? (
@@ -3921,6 +3991,34 @@ function VisionFallbackPanel({
   );
 }
 
+function ModelCloudSyncPanel({
+  enabled,
+  busy,
+  onChange,
+}: {
+  enabled: boolean;
+  busy: boolean;
+  onChange(enabled: boolean): void;
+}) {
+  return (
+    <div className="model-cloud-sync-panel">
+      <section className="model-cloud-sync-card" aria-labelledby="model-cloud-sync-title">
+        <h2 id="model-cloud-sync-title">云端同步</h2>
+        <div className="model-cloud-sync-card__row">
+          <div>
+            <strong>模型配置云同步</strong>
+            <p>
+              将模型、供应商及 API Key
+              等模型配置同步到云端（包含密钥，默认关闭）。开关对账号下所有设备生效。
+            </p>
+          </div>
+          <Toggle checked={enabled} disabled={busy} onChange={onChange} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function GoalEvaluatorPanel({
   allModels,
   value,
@@ -4270,7 +4368,7 @@ export function UsageSettings() {
           value={
             cacheReadReported.requests > 0 && cacheReadReported.inputTokens > 0
               ? formatRate(cacheReadReported.readTokens, cacheReadReported.inputTokens)
-              : '—'
+              : '-'
           }
           hint={
             hasCacheUsage
@@ -4746,12 +4844,12 @@ function UsageProviderTable({ rows }: { rows: AggregateUsageRow[] }) {
               <td className="usage-positive">
                 {typeof row.toolSuccessRate === 'number'
                   ? `${row.toolSuccessRate.toFixed(1)}%`
-                  : '—'}
+                  : '-'}
               </td>
               <td>
                 {typeof row.averageLatencyMs === 'number'
                   ? formatLatency(row.averageLatencyMs)
-                  : '—'}
+                  : '-'}
               </td>
             </tr>
           ))}
@@ -4909,8 +5007,8 @@ function UsageToolPanel({
                   <tr key={`${row.occurredAt}:${row.toolName}:${index}`}>
                     <td>{formatTimestamp(row.occurredAt)}</td>
                     <td>{row.toolName}</td>
-                    <td>{row.conversationTitle ?? '—'}</td>
-                    <td>{row.displayName ?? row.modelId ?? '—'}</td>
+                    <td>{row.conversationTitle ?? '-'}</td>
+                    <td>{row.displayName ?? row.modelId ?? '-'}</td>
                     <td className="usage-error" title={row.errorSummary}>
                       {row.errorSummary}
                     </td>
@@ -5122,7 +5220,7 @@ function EmptyDetail({ onAdd }: { onAdd: () => void }) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-1 block text-[11.5px] font-medium text-text-secondary">{label}</label>
+      <label className="model-field-label">{label}</label>
       {children}
     </div>
   );
@@ -5144,23 +5242,15 @@ function Toggle({
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={clsx(
-        'relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50',
-        checked ? 'bg-accent' : 'bg-border-strong',
-      )}
+      className={clsx('model-toggle', checked && 'is-checked')}
     >
-      <span
-        className={clsx(
-          'absolute top-0.5 h-4 w-4 rounded-full bg-surface shadow transition-transform',
-          checked ? 'left-4' : 'left-0.5',
-        )}
-      />
+      <span className="model-toggle__thumb" />
     </button>
   );
 }
 
 function formatCurrency(value: number | undefined, currency: 'USD' | 'CNY' | undefined): string {
-  if (typeof value !== 'number' || !currency) return '—';
+  if (typeof value !== 'number' || !currency) return '-';
   const symbol = currency === 'CNY' ? '¥' : '$';
   const digits = value >= 1 ? 2 : value > 0 ? 4 : 2;
   return `${symbol}${value.toLocaleString('zh-CN', {
@@ -5173,7 +5263,7 @@ function formatCurrencyDetail(
   value: number | undefined,
   currency: 'USD' | 'CNY' | undefined,
 ): string {
-  if (typeof value !== 'number' || !currency) return '—';
+  if (typeof value !== 'number' || !currency) return '-';
   const symbol = currency === 'CNY' ? '¥' : '$';
   return `${symbol}${value.toFixed(6)}`;
 }
@@ -5182,11 +5272,11 @@ function formatCurrencyTotals(totals: Partial<Record<'USD' | 'CNY', number>>): s
   const values = (['CNY', 'USD'] as const).flatMap((currency) =>
     typeof totals[currency] === 'number' ? [formatCurrency(totals[currency], currency)] : [],
   );
-  return values.length > 0 ? values.join(' / ') : '—';
+  return values.length > 0 ? values.join(' / ') : '-';
 }
 
 function formatRate(successes: number, total: number): string {
-  return total > 0 ? `${((successes / total) * 100).toFixed(1)}%` : '—';
+  return total > 0 ? `${((successes / total) * 100).toFixed(1)}%` : '-';
 }
 
 function formatTokenCount(n: number): string {

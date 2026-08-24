@@ -10,36 +10,23 @@
 
 @theme {
   /* One sans stack for the whole shell, CJK fallbacks included. Components must consume the token rather than re-declaring a family: a local stack that omitted PingFang/YaHei is what made Chinese text in the reasoning block render in a different face from everything around it. */
-  --font-sans: 'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', system-ui, sans-serif;
-  --font-mono: 'Cascadia Code', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans:
+    'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', system-ui, sans-serif;
+  --font-mono:
+    'Cascadia Code', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  /*
-   * Surface stack, sampled pixel-for-pixel from NewMax light mode.
-   * The window background (--color-page) is the *darkest* layer: both the
-   * sidebar and the stage float on top of it as inset boards, so the visible
-   * gutter between them is the page showing through.
-   *   page (#f2eee6) < sidebar (#f6f4ef) < stage (#faf9f5) < overlay (#ffffff)
-   * The ramp is warm beige, not neutral gray — dropping the warmth is what
-   * made our shell read as "cold" next to the reference. Dark mirrors the
-   * same ordering, with hues carrying a trace of warmth (green/red slightly
-   * above blue) so it reads as the same product rather than a cold blue-gray.
-   */
+  /* NewMax 1.1.14 surface stack. Light uses its warm four-step ramp. Dark follows the current DS variables exactly: surface-100 #191a1a, app background surface-200 #1e1f1f, panels surface-300 #252726, and selected/hovered surface-400 #2a2d2b. The window gutter stays on the app background instead of becoming a bright gray band. */
   --color-page: #f2eee6;
-  --color-page-gutter: #e4e0d7;
+  --color-page-gutter: #f2eee6;
   --color-sidebar: #f6f4ef;
   --color-surface: #faf9f5;
   --color-elevated: #f6f4ef;
   --color-overlay: #ffffff;
 
-  /*
-   * Stage sub-surfaces. Light keeps the historical flat values so the beige
-   * ramp is unchanged; dark follows the product spec: stage panel + tab strip
-   * #343736, chat canvas #1e1f1f (selected tabs share it), inner boxes
-   * #2a2d2b.
-   */
+  /* Stage sub-surfaces. NewMax keeps the stage and tab strip on surface-200, raises active tabs to surface-300, and reserves surface-400 for selected rows and inset sections. */
   --color-panel: #faf9f5;
   --color-chat: #faf9f5;
-  --color-recent: #faf9f5;
+  --color-recent: #f2eee6;
   --color-stage-tabs: #f6f4ef;
   --color-tab-active-border: #e7e4db;
   --color-tab-active-fill: #d5d1c6;
@@ -56,12 +43,10 @@
   --color-accent-text: #1f6b3f;
   /* Foreground for text/icons sitting on --color-accent. Dark flips this to a near-black because the dark accent is a bright mint and white text on it fails contrast. */
   --color-accent-fg: #ffffff;
+  --color-settings-action: #2d4739;
+  --color-settings-action-fg: #ffffff;
 
-  /*
-   * Sidebar selection in NewMax is *recessed*, not raised: the pill is filled
-   * with the page color so it reads as a hole punched through the sidebar
-   * board. Hence --color-active === --color-page by design, in both themes.
-   */
+  /* NewMax interaction overlays. Dark values are copied from --ds-on-surface and --ds-on-surface-active so hover and selection stay translucent across every surface. */
   --color-hover: #efece3;
   --color-active: #f2eee6;
 
@@ -175,48 +160,65 @@
 
   --radius-card: 12px;
   --radius-row: 8px;
-  --radius-compose: 16px;
+  --radius-compose: 20px;
+  --radius-shell: 18px;
+  --radius-modal: 18px;
 
-  --sidebar-width: 300px;
+  --sidebar-width: 220px;
+}
+
+:root {
+  /* NewMax 1.1.14 tab-track primitives measured from the live client. These values drive the connected workspace SVG and the resource-tab hover/active surface without leaking component-specific effects into the global palette. */
+  --shell-tab-hover: rgba(55, 61, 58, 0.06);
+  --shell-tab-outline: rgba(0, 0, 0, 0.04);
+  --shell-tab-highlight: rgba(255, 255, 255, 0.85);
+  --shell-tab-shadow: drop-shadow(0.5px 0.5px 0.5px rgba(0, 0, 0, 0.08));
 }
 
 .dark {
-  --color-page: #0d0d0c;
-  --color-page-gutter: #2a2d2b;
+  --color-page: #1e1f1f;
+  --color-page-gutter: #1e1f1f;
   --color-sidebar: #252726;
-  --color-surface: #343736;
-  --color-elevated: #252726;
-  --color-overlay: #201f1d;
+  --color-surface: #252726;
+  --color-elevated: #191a1a;
+  --color-overlay: #2a2d2b;
 
-  --color-panel: #343736;
+  --color-panel: #1e1f1f;
   --color-chat: #1e1f1f;
   --color-recent: #2a2d2b;
-  --color-stage-tabs: #343736;
-  --color-tab-active-border: #2a2d2b;
-  --color-tab-active-fill: #2a2d2b;
+  --color-stage-tabs: #1e1f1f;
+  --color-tab-active-border: rgba(255, 255, 255, 0.08);
+  --color-tab-active-fill: #252726;
 
-  --color-border: #2a2926;
-  --color-border-strong: #3a3833;
+  --shell-tab-hover: rgba(168, 184, 176, 0.08);
+  --shell-tab-outline: rgba(255, 255, 255, 0.08);
+  --shell-tab-highlight: transparent;
+  --shell-tab-shadow: none;
 
-  --color-text: #eceae4;
-  --color-text-secondary: #a3a099;
-  --color-text-faint: #75726b;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.14);
 
-  --color-accent: #3ecf7a;
-  --color-accent-soft: #143324;
-  --color-accent-text: #7ee0a8;
+  --color-text: rgba(255, 255, 255, 0.9);
+  --color-text-secondary: rgba(255, 255, 255, 0.5);
+  --color-text-faint: rgba(255, 255, 255, 0.38);
+
+  --color-accent: #36d385;
+  --color-accent-soft: rgba(54, 211, 133, 0.08);
+  --color-accent-text: #36d385;
   /* Foreground for text/icons sitting on --color-accent. Dark flips this to a near-black because the dark accent is a bright mint and white text on it fails contrast. */
-  --color-accent-fg: #08130d;
+  --color-accent-fg: rgba(0, 0, 0, 0.9);
+  --color-settings-action: #36d385;
+  --color-settings-action-fg: rgba(0, 0, 0, 0.9);
 
-  --color-hover: #201f1c;
-  --color-active: #0d0d0c;
+  --color-hover: rgba(168, 184, 176, 0.08);
+  --color-active: rgba(168, 184, 176, 0.16);
 
-  --color-success: var(--color-accent);
-  --color-error: #e0716a;
-  --color-warning: #d6a44e;
+  --color-success: #4ade80;
+  --color-error: #e56555;
+  --color-warning: #e0a830;
   --color-info: #5b93d6;
 
-  --color-avatar-1: #3ecf7a;
+  --color-avatar-1: #36d385;
   --color-avatar-2: #5b93d6;
   --color-avatar-3: #a688e0;
   --color-avatar-4: #d6a44e;
@@ -224,7 +226,7 @@
   --color-avatar-6: #4fb5b5;
   --color-avatar-7: #b8875a;
   --color-avatar-8: #8f66c9;
-  --color-avatar-fg: #0b0d10;
+  --color-avatar-fg: rgba(0, 0, 0, 0.9);
 
   --color-syntax-keyword: #b3a6ff;
   --color-syntax-string: #7ddea4;
@@ -234,34 +236,34 @@
 
   --color-modal-shadow: color-mix(in srgb, #000 55%, transparent);
 
-  --color-cap-bg: #1b1d1e;
-  --color-cap-surface: #242728;
-  --color-cap-surface-raised: #2a2d2e;
-  --color-cap-surface-soft: #202324;
+  --color-cap-bg: #1e1f1f;
+  --color-cap-surface: #252726;
+  --color-cap-surface-raised: #2a2d2b;
+  --color-cap-surface-soft: #191a1a;
   --color-cap-border: rgba(255, 255, 255, 0.08);
   --color-cap-border-strong: rgba(255, 255, 255, 0.14);
-  --color-cap-text: #f2f4f3;
-  --color-cap-muted: #909795;
-  --color-cap-faint: #676f6d;
-  --color-cap-green: #32d58b;
+  --color-cap-text: rgba(255, 255, 255, 0.9);
+  --color-cap-muted: rgba(255, 255, 255, 0.5);
+  --color-cap-faint: rgba(255, 255, 255, 0.38);
+  --color-cap-green: #36d385;
   --color-cap-green-deep: #1da86c;
   --color-cap-yellow: #e8b54a;
   --color-cap-red: #ee6b5d;
-  --color-cap-surface-deep: #161818;
-  --color-cap-surface-selected: #303536;
-  --color-cap-accent-fg: #07150e;
-  --color-cap-green-bright: #55e2a0;
-  --color-cap-text-secondary: #c9cfcd;
-  --color-cap-popover: #252829;
-  --color-cap-toolbar: #1e2021;
-  --color-cap-rail: #171919;
-  --color-cap-search: #282b2c;
-  --color-cap-search-hover: #2d3031;
-  --color-cap-search-focus: #292d2d;
-  --color-cap-placeholder: #777e7c;
+  --color-cap-surface-deep: #191a1a;
+  --color-cap-surface-selected: #2a2d2b;
+  --color-cap-accent-fg: rgba(0, 0, 0, 0.9);
+  --color-cap-green-bright: #4ade80;
+  --color-cap-text-secondary: rgba(255, 255, 255, 0.7);
+  --color-cap-popover: #252726;
+  --color-cap-toolbar: #1e1f1f;
+  --color-cap-rail: #191a1a;
+  --color-cap-search: #252726;
+  --color-cap-search-hover: #2a2d2b;
+  --color-cap-search-focus: #2a2d2b;
+  --color-cap-placeholder: rgba(255, 255, 255, 0.38);
   --color-cap-mcp: #83b5ff;
   --color-cap-stat-label: #d7dcda;
-  --color-cap-meter-track: #353a39;
+  --color-cap-meter-track: #2a2d2b;
   --color-cap-meter-green: #27c77d;
   --color-cap-meter-yellow: #f0b04d;
   --color-cap-meter-red: #ed6d5d;
@@ -269,19 +271,19 @@
   --color-cap-option-bg: #f6f8f7;
   --color-cap-rule-strong: #d8dfdc;
   --color-cap-origin: #c0c7c4;
-  --color-cap-toggle-track: #414746;
+  --color-cap-toggle-track: #2a2d2b;
   --color-cap-toggle-thumb: #a2aaa7;
   --color-cap-toggle-active-thumb: #dfffee;
-  --color-cap-form-bg: #1c1f20;
-  --color-cap-form-focus: #202525;
-  --color-cap-form-readonly: #171a1b;
-  --color-cap-code-text: #e4ebe7;
-  --color-cap-trust-bg: #2f3634;
-  --color-cap-hover: rgba(255, 255, 255, 0.055);
-  --color-cap-active: #303536;
-  --color-cap-control: rgba(255, 255, 255, 0.045);
-  --color-cap-row: #242728;
-  --color-cap-form: #1c1f20;
+  --color-cap-form-bg: #191a1a;
+  --color-cap-form-focus: #252726;
+  --color-cap-form-readonly: #191a1a;
+  --color-cap-code-text: rgba(255, 255, 255, 0.9);
+  --color-cap-trust-bg: #2a2d2b;
+  --color-cap-hover: rgba(168, 184, 176, 0.08);
+  --color-cap-active: rgba(168, 184, 176, 0.16);
+  --color-cap-control: rgba(168, 184, 176, 0.08);
+  --color-cap-row: #252726;
+  --color-cap-form: #191a1a;
   --color-cap-overlay-border: rgba(255, 255, 255, 0.08);
   --color-cap-shadow: rgba(0, 0, 0, 0.46);
   --color-cap-divider: rgba(255, 255, 255, 0.045);

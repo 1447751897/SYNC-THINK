@@ -1,10 +1,11 @@
 // Workspace UI preferences (product §15.2 / §10.1 L3 soft craft).
 // M1: renderer localStorage — calm, restart-safe, no Runtime dependency.
 
+import { parseWorkspacePaneLayouts, type WorkspacePaneLayouts } from './shell/pane-layout.js';
 import {
-  parseWorkspacePaneLayouts,
-  type WorkspacePaneLayouts,
-} from './shell/pane-layout.js';
+  parseWorkspaceWorkbenchLayouts,
+  type WorkspaceWorkbenchLayouts,
+} from './shell/workspace-workbench.js';
 
 export type ConversationLayoutPreference = 'default' | 'single';
 export type ThemePreference = 'light' | 'dark' | 'system';
@@ -30,6 +31,8 @@ export const UI_PREF_KEYS = {
   lastConversationTrack: 'sync-think.lastConversationTrack',
   /** Shell sidebar width in px (draggable). */
   sidebarWidth: 'sync-think.sidebarWidth',
+  /** Geometry revision used to migrate the former 300px default once. */
+  sidebarWidthVersion: 'sync-think.sidebarWidthVersion',
   /** Active workspace id (no "全部" — always a workspace when possible). */
   activeWorkspaceId: 'sync-think.activeWorkspaceId',
   /** Display name used in the welcome greeting. */
@@ -52,6 +55,8 @@ export const UI_PREF_KEYS = {
   selectedConversationByWorkspace: 'sync-think.selectedConversationByWorkspace',
   /** Versioned recursive pane tree and focused tab state per workspace. */
   workspacePaneLayouts: 'sync-think.workspacePaneLayouts',
+  /** NewMax-style right/bottom workbench tabs, visibility, and dimensions. */
+  workspaceWorkbenchLayouts: 'sync-think.workspaceWorkbenchLayouts',
   /**
    * Per-conversation model override (catalog modelId).
    * Shape: Record<conversationId, modelId>.
@@ -96,9 +101,10 @@ const DEFAULT_CONVERSATION_GROUPS: ConversationGroupsByTrack = {
   team: [],
 };
 
-export const SIDEBAR_WIDTH_MIN = 220;
-export const SIDEBAR_WIDTH_MAX = 420;
-export const SIDEBAR_WIDTH_DEFAULT = 300;
+export const SIDEBAR_WIDTH_MIN = 200;
+export const SIDEBAR_WIDTH_MAX = 360;
+export const SIDEBAR_WIDTH_DEFAULT = 220;
+const SIDEBAR_WIDTH_VERSION = '2';
 
 export type RecentConversationSectionState = Record<'model' | 'agent' | 'team', boolean>;
 
@@ -156,9 +162,7 @@ export function writeConversationLayoutPreference(
   safeSet(UI_PREF_KEYS.conversationLayout, layout);
 }
 
-export function readThemePreference(
-  storage?: Pick<Storage, 'getItem'>,
-): ThemePreference {
+export function readThemePreference(storage?: Pick<Storage, 'getItem'>): ThemePreference {
   const raw = storage
     ? (() => {
         try {
@@ -220,9 +224,7 @@ export function writeDefaultPermission(
   safeSet(UI_PREF_KEYS.defaultPermission, permission);
 }
 
-export function readNewConversationDraft(
-  storage?: Pick<Storage, 'getItem'>,
-): string {
+export function readNewConversationDraft(storage?: Pick<Storage, 'getItem'>): string {
   try {
     return (
       storage?.getItem(UI_PREF_KEYS.newConversationDraft) ??
@@ -234,10 +236,7 @@ export function readNewConversationDraft(
   }
 }
 
-export function writeNewConversationDraft(
-  draft: string,
-  storage?: Pick<Storage, 'setItem'>,
-): void {
+export function writeNewConversationDraft(draft: string, storage?: Pick<Storage, 'setItem'>): void {
   if (storage) {
     try {
       storage.setItem(UI_PREF_KEYS.newConversationDraft, draft);
@@ -249,9 +248,7 @@ export function writeNewConversationDraft(
   safeSet(UI_PREF_KEYS.newConversationDraft, draft);
 }
 
-export function readNewConversationModel(
-  storage?: Pick<Storage, 'getItem'>,
-): string {
+export function readNewConversationModel(storage?: Pick<Storage, 'getItem'>): string {
   try {
     return (
       storage?.getItem(UI_PREF_KEYS.newConversationModel) ??
@@ -279,9 +276,7 @@ export function writeNewConversationModel(
 }
 
 /** Default: expanded (false). Collapsing does not pause Run — only UI rail. */
-export function readTraceCollapsedPreference(
-  storage?: Pick<Storage, 'getItem'>,
-): boolean {
+export function readTraceCollapsedPreference(storage?: Pick<Storage, 'getItem'>): boolean {
   const raw = storage
     ? (() => {
         try {
@@ -310,10 +305,7 @@ export function writeTraceCollapsedPreference(
   safeSet(UI_PREF_KEYS.traceCollapsed, value);
 }
 
-function readJsonPreference(
-  key: string,
-  storage?: Pick<Storage, 'getItem'>,
-): unknown {
+function readJsonPreference(key: string, storage?: Pick<Storage, 'getItem'>): unknown {
   const raw = storage
     ? (() => {
         try {
@@ -370,12 +362,12 @@ export function writeRecentConversationSectionPreference(
   writeJsonPreference(UI_PREF_KEYS.recentConversationSections, state, storage);
 }
 
-export function readPinnedConversationIds(
-  storage?: Pick<Storage, 'getItem'>,
-): readonly string[] {
+export function readPinnedConversationIds(storage?: Pick<Storage, 'getItem'>): readonly string[] {
   const raw = readJsonPreference(UI_PREF_KEYS.pinnedConversations, storage);
   if (!Array.isArray(raw)) return [];
-  return [...new Set(raw.filter((item): item is string => typeof item === 'string' && item.length > 0))];
+  return [
+    ...new Set(raw.filter((item): item is string => typeof item === 'string' && item.length > 0)),
+  ];
 }
 
 export function writePinnedConversationIds(
@@ -436,9 +428,7 @@ export function writeLastConversationTrack(
   safeSet(UI_PREF_KEYS.lastConversationTrack, track);
 }
 
-export function readSidebarWidth(
-  storage?: Pick<Storage, 'getItem'>,
-): number {
+export function readSidebarWidth(storage?: Pick<Storage, 'getItem'>): number {
   const raw = storage
     ? (() => {
         try {
@@ -448,34 +438,38 @@ export function readSidebarWidth(
         }
       })()
     : safeGet(UI_PREF_KEYS.sidebarWidth);
+  const version = storage
+    ? (() => {
+        try {
+          return storage.getItem(UI_PREF_KEYS.sidebarWidthVersion);
+        } catch {
+          return null;
+        }
+      })()
+    : safeGet(UI_PREF_KEYS.sidebarWidthVersion);
   const n = raw ? Number(raw) : NaN;
   if (!Number.isFinite(n)) return SIDEBAR_WIDTH_DEFAULT;
+  if (version !== SIDEBAR_WIDTH_VERSION) return SIDEBAR_WIDTH_DEFAULT;
   return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(n)));
 }
 
-export function writeSidebarWidth(
-  width: number,
-  storage?: Pick<Storage, 'setItem'>,
-): void {
-  const clamped = Math.min(
-    SIDEBAR_WIDTH_MAX,
-    Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)),
-  );
+export function writeSidebarWidth(width: number, storage?: Pick<Storage, 'setItem'>): void {
+  const clamped = Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)));
   const value = String(clamped);
   if (storage) {
     try {
       storage.setItem(UI_PREF_KEYS.sidebarWidth, value);
+      storage.setItem(UI_PREF_KEYS.sidebarWidthVersion, SIDEBAR_WIDTH_VERSION);
     } catch {
       /* ignore */
     }
     return;
   }
   safeSet(UI_PREF_KEYS.sidebarWidth, value);
+  safeSet(UI_PREF_KEYS.sidebarWidthVersion, SIDEBAR_WIDTH_VERSION);
 }
 
-export function readActiveWorkspaceId(
-  storage?: Pick<Storage, 'getItem'>,
-): string | undefined {
+export function readActiveWorkspaceId(storage?: Pick<Storage, 'getItem'>): string | undefined {
   const raw = storage
     ? (() => {
         try {
@@ -569,7 +563,9 @@ interface WorkspaceConversationGroupsPreference {
   workspaces: Record<string, ConversationGroupsByTrack>;
 }
 
-function parseWorkspaceConversationGroups(raw: unknown): WorkspaceConversationGroupsPreference | null {
+function parseWorkspaceConversationGroups(
+  raw: unknown,
+): WorkspaceConversationGroupsPreference | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
   if (record.version !== 2 || !record.workspaces || typeof record.workspaces !== 'object') {
@@ -697,9 +693,7 @@ export function writeSelectedConversationByWorkspace(
   writeJsonPreference(UI_PREF_KEYS.selectedConversationByWorkspace, selected, storage);
 }
 
-export function readWorkspacePaneLayouts(
-  storage?: Pick<Storage, 'getItem'>,
-): WorkspacePaneLayouts {
+export function readWorkspacePaneLayouts(storage?: Pick<Storage, 'getItem'>): WorkspacePaneLayouts {
   return parseWorkspacePaneLayouts(readJsonPreference(UI_PREF_KEYS.workspacePaneLayouts, storage));
 }
 
@@ -709,6 +703,25 @@ export function writeWorkspacePaneLayouts(
 ): void {
   writeJsonPreference(
     UI_PREF_KEYS.workspacePaneLayouts,
+    { version: 1, workspaces: layouts },
+    storage,
+  );
+}
+
+export function readWorkspaceWorkbenchLayouts(
+  storage?: Pick<Storage, 'getItem'>,
+): WorkspaceWorkbenchLayouts {
+  return parseWorkspaceWorkbenchLayouts(
+    readJsonPreference(UI_PREF_KEYS.workspaceWorkbenchLayouts, storage),
+  );
+}
+
+export function writeWorkspaceWorkbenchLayouts(
+  layouts: WorkspaceWorkbenchLayouts,
+  storage?: Pick<Storage, 'setItem'>,
+): void {
+  writeJsonPreference(
+    UI_PREF_KEYS.workspaceWorkbenchLayouts,
     { version: 1, workspaces: layouts },
     storage,
   );

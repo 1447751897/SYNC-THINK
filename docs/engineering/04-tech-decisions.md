@@ -1360,6 +1360,7 @@ Computer Use built-in plugin
 11. daemon 冷启动防抖只防止并发重复 spawn；daemon 外层 supervisor 独立于 Desktop，在 child 非零退出后按 `1s / 2s / 5s / 10s / 30s` 有界退避重启，正常 `daemon.stop` 退出 0 时不重启。Desktop 已知 daemon 子进程异常退出也必须绕过 10 秒冷启动防抖，避免快速崩溃后无人监督 Runtime。
 12. Runtime PID 文件必须与实际数据库目录同源。所有 daemon、Runtime 和 autostart supervisor 命令行都携带不含秘密的 `role + installId` 精确 marker；仅凭 PID 文件执行最后强杀前必须读取命令行并匹配 marker，匹配失败时拒绝终止，以防 PID 重用误杀无关进程。pipe secret 仍只通过受保护 bootstrap/环境或私有 IPC 传递，不进入 argv。
 13. 回滚通过恢复上一版本的 Runtime/adapter 实现完成；已持久化的 threadId、Run 和消息保持兼容，不做破坏性数据迁移。
+14. daemon 登录自启默认开启，但显式用户偏好优先。Windows 首选 ONLOGON 计划任务；若当前系统策略拒绝创建，则回退到 `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`，仍保持当前用户权限且不引入 Windows Service。关闭自启时同时删除两种注册并持久化 opt-out；后续 Desktop 启动不得擅自重新开启。启动命令只含 bootstrap 路径和非秘密 process marker，pipe secret 继续只保存在 DPAPI 保护的 bootstrap 中。
 
 ### TD-046：Daemon 外部事件 Inbox、租约与 Runtime 去重执行（2026-08-21）
 

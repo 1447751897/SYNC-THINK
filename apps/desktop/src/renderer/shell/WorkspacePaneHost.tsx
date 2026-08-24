@@ -1,4 +1,11 @@
-import { useEffect, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import clsx from 'clsx';
 import type {
   PaneNode,
@@ -30,6 +37,9 @@ function clampRatio(value: number): number {
 
 export function WorkspacePaneHost(props: WorkspacePaneHostProps) {
   const dragRef = useRef<ResizeDrag | null>(null);
+  const [activeResizeDirection, setActiveResizeDirection] = useState<PaneSplitDirection | null>(
+    null,
+  );
   const onSplitRatioChange = props.onSplitRatioChange;
 
   useEffect(() => {
@@ -45,6 +55,7 @@ export function WorkspacePaneHost(props: WorkspacePaneHostProps) {
       const drag = dragRef.current;
       if (!drag) return;
       dragRef.current = null;
+      setActiveResizeDirection(null);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       onSplitRatioChange(drag.splitNodeId, drag.lastRatio, true);
@@ -77,6 +88,7 @@ export function WorkspacePaneHost(props: WorkspacePaneHostProps) {
       size,
       lastRatio: node.ratio,
     };
+    setActiveResizeDirection(node.direction);
     document.body.style.cursor = node.direction === 'horizontal' ? 'col-resize' : 'row-resize';
     document.body.style.userSelect = 'none';
   };
@@ -162,6 +174,13 @@ export function WorkspacePaneHost(props: WorkspacePaneHostProps) {
   return (
     <div className="shell-pane-tree" data-testid="workspace-pane-tree">
       {renderNode(props.layout.root)}
+      {activeResizeDirection ? (
+        <div
+          className="shell-pane-resize-shield"
+          data-direction={activeResizeDirection}
+          aria-hidden="true"
+        />
+      ) : null}
     </div>
   );
 }
