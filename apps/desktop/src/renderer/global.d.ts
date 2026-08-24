@@ -3,6 +3,22 @@ import type {
   ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
 import type {
+  ExportDesktopDataPayload,
+  ExportDesktopDataResponse,
+  ImportDesktopDataPayload,
+  ImportDesktopDataResponse,
+  OpenDesktopDataDirectoryResponse,
+} from '../data-management-contract.js';
+import type {
+  DataBackupPayload,
+  DataBackupResponse,
+  DataCleanConversationsPayload,
+  DataCleanConversationsResponse,
+  DataCleanEmptyAttachmentDirectoriesResponse,
+  DataCompactStorageResponse,
+  DataStorageStatsResponse,
+} from '@sync-think/protocol';
+import type {
   AppendMessagePayload,
   AppendMessageResponse,
   BindWorkspaceFolderPayload,
@@ -348,6 +364,16 @@ declare global {
         removeProviderModel(payload: RemoveModelPayload): Promise<RemoveModelResponse>;
         getSettings(payload?: GetSettingsPayload): Promise<GetSettingsResponse>;
         setSetting(payload: SetSettingPayload): Promise<SetSettingResponse>;
+        getDataStorageStats(): Promise<DataStorageStatsResponse>;
+        exportData(payload?: ExportDesktopDataPayload): Promise<ExportDesktopDataResponse>;
+        importData(payload: ImportDesktopDataPayload): Promise<ImportDesktopDataResponse>;
+        backupData(payload: DataBackupPayload): Promise<DataBackupResponse>;
+        compactDataStorage(): Promise<DataCompactStorageResponse>;
+        cleanConversations(
+          payload?: DataCleanConversationsPayload,
+        ): Promise<DataCleanConversationsResponse>;
+        cleanEmptyAttachmentDirectories(): Promise<DataCleanEmptyAttachmentDirectoriesResponse>;
+        openDataDirectory(): Promise<OpenDesktopDataDirectoryResponse>;
         getUsageSummary(payload?: UsageSummaryPayload): Promise<UsageSummaryResponse>;
         getAgent(payload?: GetAgentPayload): Promise<GetAgentResponse>;
         updateAgentBinding(payload: UpdateAgentBindingPayload): Promise<UpdateAgentBindingResponse>;
@@ -668,7 +694,9 @@ declare global {
         exportDiagnostics(
           payload?: ExportDesktopDiagnosticsPayload,
         ): Promise<ExportDesktopDiagnosticsResponse>;
-        pickFolder(): Promise<{ canceled: boolean; path: string | null }>;
+        pickFolder(payload?: {
+          title?: string;
+        }): Promise<{ canceled: boolean; path: string | null }>;
         /** Push the renderer theme preference onto the native frame/title bar. */
         setTheme(theme: 'light' | 'dark' | 'system'): Promise<{ dark: boolean }>;
         listProjectFiles(payload: { root: string; query?: string; maxEntries?: number }): Promise<{

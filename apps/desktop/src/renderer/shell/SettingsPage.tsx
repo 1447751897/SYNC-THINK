@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DaemonCard } from './DaemonCard.js';
 import {
   AlertCircle,
+  ArrowLeft,
   ArrowRight,
   BarChart3,
   Bot,
@@ -14,28 +15,41 @@ import {
   Copy,
   Database,
   Download,
+  Eye,
+  EyeOff,
+  FolderOpen,
   Info,
   Keyboard,
+  Link2,
   Mic2,
   Monitor,
   Moon,
   Network,
   Palette,
   Plug,
+  Plus,
   RefreshCw,
+  Save,
   Search,
+  Server,
   Settings,
   ShieldCheck,
   Sparkles,
   Sun,
   TerminalSquare,
   Trash2,
-  UsersRound,
+  Upload,
   WandSparkles,
   WalletCards,
 } from 'lucide-react';
 import clsx from 'clsx';
+import type {
+  DataStorageStatsResponse,
+  McpServerSummary,
+  WorkspaceSummary,
+} from '@sync-think/protocol';
 import syncThinkLogo from './assets/sync-think-logo.png';
+import { NEWMAX_CONNECTOR_CATALOG, type ManagedConnectorCatalogItem } from './connector-catalog.js';
 import {
   COMPUTER_USE_PLUGIN_SETTING_KEY,
   normalizeComputerUsePluginSetting,
@@ -69,7 +83,6 @@ type ThemeMode = 'system' | 'light' | 'dark';
 type SettingsSection =
   | 'account'
   | 'wallet'
-  | 'organization'
   | 'general'
   | 'theme'
   | 'shortcuts'
@@ -111,7 +124,6 @@ const SECTIONS: Array<{
 }> = [
   { id: 'account', label: '账号', icon: CircleUserRound, ready: false },
   { id: 'wallet', label: '钱包', icon: WalletCards, ready: false },
-  { id: 'organization', label: '组织', icon: UsersRound, ready: false },
   { id: 'general', label: '通用', icon: Settings, ready: true, keywords: '动画 权限 个性化' },
   { id: 'theme', label: '偏好', icon: WandSparkles, ready: true, keywords: '主题 浅色 深色 外观' },
   { id: 'shortcuts', label: '快捷键', icon: Keyboard, ready: false, visible: false },
@@ -195,7 +207,8 @@ export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: Settin
     );
   }, [query]);
 
-  const current = SECTIONS.find((item) => item.id === section) ?? SECTIONS[3];
+  const current =
+    SECTIONS.find((item) => item.id === section) ?? SECTIONS.find((item) => item.id === 'general')!;
   const fullBleed = section === 'models';
 
   return (
@@ -265,7 +278,9 @@ export function SettingsPage({ onDone, onCatalogChanged, onDirtyChange }: Settin
             />
           )}
           {section === 'plugins' && <ComputerUsePluginSection />}
-          {section === 'connection' && <ConnectionSection />}
+          {section === 'connection' && (
+            <ConnectionSection onOpenWallet={() => setSection('wallet')} />
+          )}
           {section === 'data' && <DataDiagnosticsSection />}
           {section === 'about' && <AboutSection />}
           {!current.ready && <ComingSoonSection label={current.label} />}
@@ -581,6 +596,630 @@ function ComputerUsePluginSection() {
   );
 }
 
+type ConnectionTab = 'connectors' | 'mcp' | 'plugins' | 'search' | 'bots' | 'gateway' | 'network';
+
+type ConnectorSelection =
+  | { kind: 'managed'; item: ManagedConnectorCatalogItem }
+  | { kind: 'server'; server: McpServerSummary }
+  | { kind: 'new' };
+
+const CONNECTION_TABS: Array<{ id: ConnectionTab; label: string }> = [
+  { id: 'connectors', label: '连接器' },
+  { id: 'mcp', label: 'MCP' },
+  { id: 'plugins', label: '插件' },
+  { id: 'search', label: '搜索服务' },
+  { id: 'bots', label: '机器人对话' },
+  { id: 'gateway', label: '开放网关' },
+  { id: 'network', label: '网络' },
+];
+
+function ConnectionSection({ onOpenWallet }: { onOpenWallet(): void }) {
+  const [tab, setTab] = useState<ConnectionTab>('connectors');
+  const [providerTab, setProviderTab] = useState<'newmax' | 'third-party'>('newmax');
+  const [query, setQuery] = useState('');
+  const [servers, setServers] = useState<McpServerSummary[]>([]);
+  const [serversLoading, setServersLoading] = useState(true);
+  const [selection, setSelection] = useState<ConnectorSelection>();
+  const [busyId, setBusyId] = useState<string>();
+  const [notice, setNotice] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  const loadServers = useCallback(async () => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.listMcpServers) {
+      setServersLoading(false);
+      return;
+    }
+    setServersLoading(true);
+    try {
+      const response = await runtime.listMcpServers({ limit: 100 });
+      setServers(response.servers);
+      setError(undefined);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '读取 MCP 连接失败。');
+    } finally {
+      setServersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadServers();
+  }, [loadServers]);
+
+  const saveConnection = async (payload: {
+    name: string;
+    endpoint: string;
+    key?: string;
+    authScheme: 'bearer' | 'api-key';
+    notes: string;
+  }) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.registerRemoteMcpServer) {
+      setError('Runtime 连接不可用。');
+      return;
+    }
+    setBusyId('save');
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const result = await runtime.registerRemoteMcpServer({
+        name: payload.name,
+        endpoint: payload.endpoint,
+        ...(payload.key ? { key: payload.key } : {}),
+        authScheme: payload.authScheme,
+        discoverTools: true,
+        trusted: false,
+        notes: payload.notes,
+      });
+      setNotice(
+        result.discoveryError
+          ? `连接已保存，工具发现失败：${result.discoveryError}`
+          : `已连接 ${result.server.name}${result.discovered ? `，发现 ${result.server.tools.length} 个工具` : ''}。`,
+      );
+      setSelection(undefined);
+      await loadServers();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '连接失败。');
+    } finally {
+      setBusyId(undefined);
+    }
+  };
+
+  const setServerEnabled = async (server: McpServerSummary, enabled: boolean) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.setMcpServerEnabled || busyId) return;
+    setBusyId(server.mcpServerId);
+    setError(undefined);
+    try {
+      await runtime.setMcpServerEnabled({ mcpServerId: server.mcpServerId, enabled });
+      setServers((current) =>
+        current.map((item) =>
+          item.mcpServerId === server.mcpServerId ? { ...item, enabled } : item,
+        ),
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '更新连接状态失败。');
+    } finally {
+      setBusyId(undefined);
+    }
+  };
+
+  const deleteServer = async (server: McpServerSummary) => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.deleteMcpServer || busyId) return;
+    if (!confirm(`确定删除“${server.name}”连接吗？`)) return;
+    setBusyId(server.mcpServerId);
+    setError(undefined);
+    try {
+      await runtime.deleteMcpServer({ mcpServerId: server.mcpServerId });
+      setSelection(undefined);
+      setNotice(`已删除 ${server.name}。`);
+      await loadServers();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '删除连接失败。');
+    } finally {
+      setBusyId(undefined);
+    }
+  };
+
+  const connectedNames = useMemo(
+    () => new Set(servers.map((server) => server.name.trim().toLocaleLowerCase())),
+    [servers],
+  );
+
+  return (
+    <div className="settings-connection-page">
+      <div className="settings-connection-tabs" role="tablist" aria-label="连接设置分类">
+        {CONNECTION_TABS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            className={tab === item.id ? 'is-active' : undefined}
+            onClick={() => {
+              setTab(item.id);
+              setSelection(undefined);
+              setError(undefined);
+              setNotice(undefined);
+            }}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="settings-connection-body">
+        {tab === 'connectors' ? (
+          selection ? (
+            <RemoteMcpConnectionForm
+              key={
+                selection.kind === 'managed'
+                  ? selection.item.id
+                  : selection.kind === 'server'
+                    ? selection.server.mcpServerId
+                    : 'new'
+              }
+              selection={selection}
+              busy={busyId === 'save'}
+              error={error}
+              onBack={() => {
+                setSelection(undefined);
+                setError(undefined);
+              }}
+              onDelete={
+                selection.kind === 'server' ? () => void deleteServer(selection.server) : undefined
+              }
+              onSave={(payload) => void saveConnection(payload)}
+            />
+          ) : (
+            <ConnectorCatalog
+              providerTab={providerTab}
+              query={query}
+              servers={servers}
+              loading={serversLoading}
+              connectedNames={connectedNames}
+              notice={notice}
+              error={error}
+              onProviderTabChange={setProviderTab}
+              onQueryChange={setQuery}
+              onOpenWallet={onOpenWallet}
+              onOpenManaged={(item) => setSelection({ kind: 'managed', item })}
+              onOpenServer={(server) => setSelection({ kind: 'server', server })}
+              onAddServer={() => setSelection({ kind: 'new' })}
+              onToggleServer={(server, enabled) => void setServerEnabled(server, enabled)}
+            />
+          )
+        ) : null}
+        {tab === 'mcp' ? (
+          <McpManagementPane
+            servers={servers}
+            loading={serversLoading}
+            busyId={busyId}
+            notice={notice}
+            error={error}
+            onAdd={() => {
+              setTab('connectors');
+              setProviderTab('third-party');
+              setSelection({ kind: 'new' });
+            }}
+            onOpen={(server) => {
+              setTab('connectors');
+              setProviderTab('third-party');
+              setSelection({ kind: 'server', server });
+            }}
+            onToggle={(server, enabled) => void setServerEnabled(server, enabled)}
+            onRefresh={() => void loadServers()}
+          />
+        ) : null}
+        {tab === 'plugins' ? <ComputerUsePluginSection /> : null}
+        {tab === 'gateway' ? <OpenGatewaySection /> : null}
+        {tab === 'search' ? <ConnectionEmptyPane icon={Search} title="暂无搜索服务连接" /> : null}
+        {tab === 'bots' ? <ConnectionEmptyPane icon={Bot} title="暂无机器人对话连接" /> : null}
+        {tab === 'network' ? (
+          <ConnectionEmptyPane icon={Network} title="网络使用系统代理设置" />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ConnectorCatalog({
+  providerTab,
+  query,
+  servers,
+  loading,
+  connectedNames,
+  notice,
+  error,
+  onProviderTabChange,
+  onQueryChange,
+  onOpenWallet,
+  onOpenManaged,
+  onOpenServer,
+  onAddServer,
+  onToggleServer,
+}: {
+  providerTab: 'newmax' | 'third-party';
+  query: string;
+  servers: McpServerSummary[];
+  loading: boolean;
+  connectedNames: Set<string>;
+  notice?: string;
+  error?: string;
+  onProviderTabChange(value: 'newmax' | 'third-party'): void;
+  onQueryChange(value: string): void;
+  onOpenWallet(): void;
+  onOpenManaged(item: ManagedConnectorCatalogItem): void;
+  onOpenServer(server: McpServerSummary): void;
+  onAddServer(): void;
+  onToggleServer(server: McpServerSummary, enabled: boolean): void;
+}) {
+  const needle = query.trim().toLocaleLowerCase();
+  const visibleServers = servers.filter(
+    (server) => !needle || `${server.name} ${server.endpoint}`.toLocaleLowerCase().includes(needle),
+  );
+
+  return (
+    <div className="settings-connector-catalog">
+      <div className="settings-provider-switcher">
+        <div>
+          <button
+            type="button"
+            className={providerTab === 'newmax' ? 'is-active' : undefined}
+            aria-pressed={providerTab === 'newmax'}
+            onClick={() => onProviderTabChange('newmax')}
+          >
+            NewMax Provider
+          </button>
+          <button
+            type="button"
+            className={providerTab === 'third-party' ? 'is-active' : undefined}
+            aria-pressed={providerTab === 'third-party'}
+            onClick={() => onProviderTabChange('third-party')}
+          >
+            第三方 Provider
+          </button>
+        </div>
+        {providerTab === 'third-party' ? (
+          <label className="settings-provider-search">
+            <Search size={13} aria-hidden="true" />
+            <input
+              value={query}
+              aria-label="搜索第三方 Provider"
+              placeholder="搜索 Provider"
+              onChange={(event) => onQueryChange(event.target.value)}
+            />
+          </label>
+        ) : null}
+      </div>
+
+      <div className="settings-connectors-summary">
+        <span>
+          {providerTab === 'newmax'
+            ? 'NewMax 提供的托管连接器，云端执行、按量计费。'
+            : '通过远程 MCP 接入第三方 Provider，并在 Runtime 中发现可用工具。'}
+        </span>
+        {providerTab === 'newmax' ? (
+          <button type="button" onClick={onOpenWallet}>
+            钱包余额 0.00 N币 ›
+          </button>
+        ) : (
+          <button type="button" className="settings-connectors-add" onClick={onAddServer}>
+            <Plus size={13} aria-hidden="true" />
+            添加 Provider
+          </button>
+        )}
+      </div>
+
+      {notice ? (
+        <p className="settings-connectors-notice" role="status">
+          {notice}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="settings-connectors-notice is-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {providerTab === 'newmax' ? (
+        <div className="settings-connectors-scroll">
+          <div className="settings-connectors-grid">
+            {NEWMAX_CONNECTOR_CATALOG.map((item) => {
+              const connected = connectedNames.has(item.name.toLocaleLowerCase());
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="settings-connector-row"
+                  aria-label={`${connected ? '打开' : '连接'} ${item.name}`}
+                  onClick={() => onOpenManaged(item)}
+                >
+                  <img src={item.icon} alt="" draggable={false} />
+                  <span>{item.name}</span>
+                  <small className={connected ? 'is-connected' : undefined}>
+                    {connected ? '✓ 已连接' : '连接 ›'}
+                  </small>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className="settings-connectors-scroll">
+          {loading ? (
+            <p className="settings-connectors-empty">正在读取连接…</p>
+          ) : visibleServers.length === 0 ? (
+            <div className="settings-connectors-empty">
+              <Server size={24} aria-hidden="true" />
+              <span>
+                {servers.length === 0 ? '尚未添加第三方 Provider' : '没有匹配的 Provider'}
+              </span>
+            </div>
+          ) : (
+            <div className="settings-third-party-list">
+              {visibleServers.map((server) => (
+                <div key={server.mcpServerId} className="settings-third-party-row">
+                  <button type="button" onClick={() => onOpenServer(server)}>
+                    <span className="settings-third-party-row__icon">
+                      <Link2 size={15} aria-hidden="true" />
+                    </span>
+                    <span>
+                      <strong>{server.name}</strong>
+                      <small>{server.endpoint}</small>
+                    </span>
+                  </button>
+                  <Toggle
+                    checked={server.enabled}
+                    label={`${server.name} 连接`}
+                    onChange={(enabled) => onToggleServer(server, enabled)}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RemoteMcpConnectionForm({
+  selection,
+  busy,
+  error,
+  onBack,
+  onDelete,
+  onSave,
+}: {
+  selection: ConnectorSelection;
+  busy: boolean;
+  error?: string;
+  onBack(): void;
+  onDelete?: () => void;
+  onSave(payload: {
+    name: string;
+    endpoint: string;
+    key?: string;
+    authScheme: 'bearer' | 'api-key';
+    notes: string;
+  }): void;
+}) {
+  const item = selection.kind === 'managed' ? selection.item : undefined;
+  const server = selection.kind === 'server' ? selection.server : undefined;
+  const [name, setName] = useState(item?.name ?? server?.name ?? '');
+  const [endpoint, setEndpoint] = useState(server?.endpoint ?? '');
+  const [apiKey, setApiKey] = useState('');
+  const [authScheme, setAuthScheme] = useState<'bearer' | 'api-key'>('bearer');
+  const [showKey, setShowKey] = useState(false);
+  const title = item?.name ?? server?.name ?? '添加第三方 Provider';
+
+  return (
+    <div className="settings-connector-detail">
+      <button type="button" className="settings-connector-back" onClick={onBack}>
+        <ArrowLeft size={14} aria-hidden="true" />
+        返回连接器
+      </button>
+      <div className="settings-connector-detail__head">
+        {item ? (
+          <img src={item.icon} alt="" draggable={false} />
+        ) : (
+          <span className="settings-connector-detail__icon">
+            <Server size={20} aria-hidden="true" />
+          </span>
+        )}
+        <div>
+          <h2>{title}</h2>
+          <p>远程 MCP Provider</p>
+        </div>
+      </div>
+      <form
+        className="settings-connector-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!name.trim() || !endpoint.trim() || busy) return;
+          onSave({
+            name: name.trim(),
+            endpoint: endpoint.trim(),
+            ...(apiKey.trim() ? { key: apiKey.trim() } : {}),
+            authScheme,
+            notes: item ? `NewMax connector: ${item.id}` : (server?.notes ?? ''),
+          });
+        }}
+      >
+        <label>
+          <span>名称</span>
+          <input
+            aria-label="连接器名称"
+            value={name}
+            readOnly={Boolean(item)}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>MCP 服务地址</span>
+          <input
+            type="url"
+            aria-label="MCP 服务地址"
+            value={endpoint}
+            placeholder="https://provider.example.com/mcp"
+            onChange={(event) => setEndpoint(event.target.value)}
+          />
+        </label>
+        <div className="settings-connector-form__auth-row">
+          <label>
+            <span>鉴权方式</span>
+            <select
+              aria-label="鉴权方式"
+              value={authScheme}
+              onChange={(event) => setAuthScheme(event.target.value as 'bearer' | 'api-key')}
+            >
+              <option value="bearer">Bearer Token</option>
+              <option value="api-key">API Key Header</option>
+            </select>
+          </label>
+          <label>
+            <span>API Key</span>
+            <div className="settings-connector-form__secret">
+              <input
+                type={showKey ? 'text' : 'password'}
+                aria-label="API Key"
+                value={apiKey}
+                placeholder={server?.authConfigured ? '留空保留现有密钥' : '可选'}
+                onChange={(event) => setApiKey(event.target.value)}
+              />
+              <button
+                type="button"
+                aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
+                onClick={() => setShowKey((current) => !current)}
+              >
+                {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </label>
+        </div>
+        {error ? (
+          <p className="settings-connector-form__error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="settings-connector-form__actions">
+          {onDelete ? (
+            <button type="button" className="is-danger" disabled={busy} onClick={onDelete}>
+              <Trash2 size={14} aria-hidden="true" />
+              删除连接
+            </button>
+          ) : (
+            <span />
+          )}
+          <button
+            type="submit"
+            className="is-primary"
+            disabled={busy || !name.trim() || !endpoint.trim()}
+          >
+            <Plug size={14} aria-hidden="true" />
+            {busy ? '正在连接' : '保存并连接'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function McpManagementPane({
+  servers,
+  loading,
+  busyId,
+  notice,
+  error,
+  onAdd,
+  onOpen,
+  onToggle,
+  onRefresh,
+}: {
+  servers: McpServerSummary[];
+  loading: boolean;
+  busyId?: string;
+  notice?: string;
+  error?: string;
+  onAdd(): void;
+  onOpen(server: McpServerSummary): void;
+  onToggle(server: McpServerSummary, enabled: boolean): void;
+  onRefresh(): void;
+}) {
+  return (
+    <div className="settings-mcp-pane">
+      <div className="settings-mcp-pane__head">
+        <div>
+          <h2>MCP 服务</h2>
+          <p>已注册的远程服务会向 Agent 提供发现到的工具。</p>
+        </div>
+        <div>
+          <button type="button" aria-label="刷新 MCP" onClick={onRefresh}>
+            <RefreshCw size={14} aria-hidden="true" />
+          </button>
+          <button type="button" className="is-primary" onClick={onAdd}>
+            <Plus size={14} aria-hidden="true" />
+            添加 MCP
+          </button>
+        </div>
+      </div>
+      {notice ? (
+        <p className="settings-connectors-notice" role="status">
+          {notice}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="settings-connectors-notice is-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {loading ? (
+        <p className="settings-connectors-empty">正在读取 MCP 服务…</p>
+      ) : servers.length === 0 ? (
+        <div className="settings-connectors-empty">
+          <Server size={26} aria-hidden="true" />
+          <span>尚未注册 MCP 服务</span>
+        </div>
+      ) : (
+        <div className="settings-third-party-list">
+          {servers.map((server) => (
+            <div key={server.mcpServerId} className="settings-third-party-row">
+              <button type="button" onClick={() => onOpen(server)}>
+                <span className="settings-third-party-row__icon">
+                  <Server size={15} aria-hidden="true" />
+                </span>
+                <span>
+                  <strong>{server.name}</strong>
+                  <small>
+                    {server.tools.length} 个工具 · {server.endpoint}
+                  </small>
+                </span>
+              </button>
+              <Toggle
+                checked={server.enabled}
+                disabled={busyId === server.mcpServerId}
+                label={`${server.name} MCP`}
+                onChange={(enabled) => onToggle(server, enabled)}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConnectionEmptyPane({ icon: Icon, title }: { icon: typeof Search; title: string }) {
+  return (
+    <div className="settings-connectors-empty settings-connectors-empty--pane">
+      <Icon size={26} aria-hidden="true" />
+      <span>{title}</span>
+    </div>
+  );
+}
+
 /** Copy-to-clipboard row used for the gateway base URLs and external token. */
 function CopyableValue({
   label,
@@ -639,7 +1278,7 @@ function CopyableValue({
  * run the gateway actually routed. External terminal clients (no run context)
  * resolve model names through the catalog; no default-provider setting exists.
  */
-function ConnectionSection() {
+function OpenGatewaySection() {
   const [setting, setSetting] = useState<OpenGatewaySetting>({ enabled: false, port: 0 });
   const [portDraft, setPortDraft] = useState('');
   const [status, setStatus] = useState<OpenGatewayStatusResponse>();
@@ -1243,130 +1882,550 @@ function GatewayAuditLogs() {
   );
 }
 
-type DiagnosticsExportState =
-  | { kind: 'idle' }
-  | { kind: 'exporting' }
-  | {
-      kind: 'saved';
-      path: string;
-      diagnosticCount: number;
-      crashReportCount: number;
-    }
-  | {
-      kind: 'cancelled';
-      diagnosticCount: number;
-      crashReportCount: number;
-    }
-  | { kind: 'error'; message: string };
+const DATA_BACKUP_SETTING_KEY = 'data.backup.preferences';
+
+interface DataBackupPreference {
+  directory: string;
+  lastBackupAt?: string;
+}
+
+type DataFeedback = { tone: 'working' | 'success' | 'error'; text: string };
+
+function normalizeDataBackupPreference(value: unknown): DataBackupPreference {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { directory: '' };
+  const record = value as Record<string, unknown>;
+  return {
+    directory: typeof record.directory === 'string' ? record.directory : '',
+    ...(typeof record.lastBackupAt === 'string' ? { lastBackupAt: record.lastBackupAt } : {}),
+  };
+}
+
+function formatDataBytes(value: number | undefined): string {
+  if (value === undefined) return '—';
+  if (value < 1024) return `${value} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let amount = value / 1024;
+  let unit = units[0]!;
+  for (let index = 1; index < units.length && amount >= 1024; index += 1) {
+    amount /= 1024;
+    unit = units[index]!;
+  }
+  return `${amount.toFixed(1)} ${unit}`;
+}
+
+function formatBackupTime(value: string | undefined): string {
+  if (!value) return '从未备份';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
+}
 
 export function DataDiagnosticsSection() {
-  const [exportState, setExportState] = useState<DiagnosticsExportState>({ kind: 'idle' });
+  const [stats, setStats] = useState<DataStorageStatsResponse>();
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [exportScope, setExportScope] = useState('all');
+  const [backupDirectory, setBackupDirectory] = useState('');
+  const [lastBackupAt, setLastBackupAt] = useState<string>();
+  const [cleanupRange, setCleanupRange] = useState('month');
+  const [busyAction, setBusyAction] = useState<string>();
+  const [feedback, setFeedback] = useState<DataFeedback>();
+
+  const refreshStats = useCallback(async () => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.getDataStorageStats) return;
+    const response = await runtime.getDataStorageStats();
+    setStats(response);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const runtime = window.syncThink?.runtime;
+    if (!runtime) return undefined;
+    void Promise.all([
+      runtime.getDataStorageStats(),
+      runtime.listWorkspaces({}),
+      runtime.getSettings({ keys: [DATA_BACKUP_SETTING_KEY] }),
+    ])
+      .then(([nextStats, workspaceResponse, settingResponse]) => {
+        if (disposed) return;
+        setStats(nextStats);
+        setWorkspaces(workspaceResponse.workspaces);
+        const preference = normalizeDataBackupPreference(
+          settingResponse.settings[DATA_BACKUP_SETTING_KEY],
+        );
+        setBackupDirectory(preference.directory);
+        setLastBackupAt(preference.lastBackupAt);
+      })
+      .catch((reason: unknown) => {
+        if (!disposed) {
+          setFeedback({
+            tone: 'error',
+            text: reason instanceof Error ? reason.message : '读取数据状态失败。',
+          });
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   const handleExport = async () => {
-    if (exportState.kind === 'exporting') return;
-    setExportState({ kind: 'exporting' });
+    if (busyAction) return;
+    setBusyAction('export');
+    setFeedback({ tone: 'working', text: '正在导出数据…' });
     try {
       const runtime = window.syncThink?.runtime;
-      if (!runtime?.exportDiagnostics) throw new Error('诊断导出服务尚未就绪。');
-      const result = await runtime.exportDiagnostics({});
+      if (!runtime?.exportData) throw new Error('数据导出服务尚未就绪。');
+      const result = await runtime.exportData(
+        exportScope === 'all' ? {} : { workspaceId: exportScope },
+      );
       if (result.status === 'saved') {
-        setExportState({
-          kind: 'saved',
-          path: result.path,
-          diagnosticCount: result.diagnosticCount,
-          crashReportCount: result.crashReportCount,
+        setFeedback({
+          tone: 'success',
+          text: `已导出 ${result.count.workspaces} 个工作区、${result.count.conversations} 个对话、${result.count.messages} 条消息：${result.filePath}`,
         });
-        return;
+      } else {
+        setFeedback({ tone: 'success', text: '已取消导出。' });
       }
-      setExportState({
-        kind: 'cancelled',
-        diagnosticCount: result.diagnosticCount,
-        crashReportCount: result.crashReportCount,
-      });
     } catch (reason) {
-      setExportState({
-        kind: 'error',
-        message: reason instanceof Error ? reason.message : '诊断导出失败。',
+      setFeedback({
+        tone: 'error',
+        text: reason instanceof Error ? reason.message : '数据导出失败。',
       });
+    } finally {
+      setBusyAction(undefined);
     }
   };
 
-  const status = (() => {
-    switch (exportState.kind) {
-      case 'exporting':
-        return { role: 'status' as const, text: '正在收集并脱敏诊断信息…' };
-      case 'saved':
-        return {
-          role: 'status' as const,
-          text: `已保存 ${exportState.diagnosticCount} 条诊断与 ${exportState.crashReportCount} 条崩溃记录：${exportState.path}`,
-        };
-      case 'cancelled':
-        return {
-          role: 'status' as const,
-          text: `已取消保存。已准备 ${exportState.diagnosticCount} 条诊断与 ${exportState.crashReportCount} 条崩溃记录。`,
-        };
-      case 'error':
-        return { role: 'alert' as const, text: exportState.message };
-      default:
-        return null;
+  const handleImport = async () => {
+    if (busyAction) return;
+    setBusyAction('import');
+    setFeedback({ tone: 'working', text: '正在导入数据…' });
+    try {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.importData) throw new Error('数据导入服务尚未就绪。');
+      const result = await runtime.importData({ conflictStrategy: 'skip' });
+      if (result.status === 'imported') {
+        setFeedback({
+          tone: 'success',
+          text: `已导入 ${result.imported.workspaces} 个工作区、${result.imported.conversations} 个对话、${result.imported.messages} 条消息${result.skipped > 0 ? `，跳过 ${result.skipped} 条冲突数据` : ''}。`,
+        });
+        await refreshStats();
+      } else {
+        setFeedback({ tone: 'success', text: '已取消导入。' });
+      }
+    } catch (reason) {
+      setFeedback({
+        tone: 'error',
+        text: reason instanceof Error ? reason.message : '数据导入失败。',
+      });
+    } finally {
+      setBusyAction(undefined);
     }
-  })();
+  };
+
+  const handleSelectBackupDirectory = async () => {
+    const runtime = window.syncThink?.runtime;
+    if (!runtime?.pickFolder) return;
+    const result = await runtime.pickFolder({ title: '选择备份目录' });
+    if (result.canceled || !result.path) return;
+    setBackupDirectory(result.path);
+    await runtime.setSetting({
+      key: DATA_BACKUP_SETTING_KEY,
+      value: { directory: result.path, ...(lastBackupAt ? { lastBackupAt } : {}) },
+    });
+  };
+
+  const handleBackup = async () => {
+    if (!backupDirectory || busyAction) return;
+    setBusyAction('backup');
+    setFeedback({ tone: 'working', text: '正在创建数据库备份…' });
+    try {
+      const runtime = window.syncThink?.runtime;
+      if (!runtime?.backupData) throw new Error('备份服务尚未就绪。');
+      const result = await runtime.backupData({ targetDirectory: backupDirectory });
+      setLastBackupAt(result.createdAt);
+      setFeedback({
+        tone: 'success',
+        text: `备份完成：${result.backupPath}（${formatDataBytes(result.sizeBytes)}）`,
+      });
+      await runtime.setSetting({
+        key: DATA_BACKUP_SETTING_KEY,
+        value: { directory: backupDirectory, lastBackupAt: result.createdAt },
+      });
+    } catch (reason) {
+      setFeedback({
+        tone: 'error',
+        text: reason instanceof Error ? reason.message : '备份失败。',
+      });
+    } finally {
+      setBusyAction(undefined);
+    }
+  };
+
+  const runMaintenance = async (
+    action: string,
+    workingText: string,
+    operation: () => Promise<string>,
+  ) => {
+    if (busyAction) return;
+    setBusyAction(action);
+    setFeedback({ tone: 'working', text: workingText });
+    try {
+      setFeedback({ tone: 'success', text: await operation() });
+      await refreshStats();
+    } catch (reason) {
+      setFeedback({
+        tone: 'error',
+        text: reason instanceof Error ? reason.message : '操作失败。',
+      });
+    } finally {
+      setBusyAction(undefined);
+    }
+  };
+
+  const cleanupBeforeTimestamp = () => {
+    const days = cleanupRange === 'year' ? 365 : cleanupRange === 'quarter' ? 90 : 30;
+    return Date.now() - days * 24 * 60 * 60 * 1000;
+  };
 
   return (
-    <div className="settings-scroll settings-standard-pane settings-diagnostics-export">
-      <section className="settings-diagnostics-export__hero" aria-labelledby="diagnostics-title">
-        <div className="settings-diagnostics-export__eyebrow">LOCAL SUPPORT BUNDLE</div>
-        <div className="settings-diagnostics-export__heading">
-          <div>
-            <h2 id="diagnostics-title">导出脱敏诊断</h2>
-            <p>生成一份可人工检查和共享的本地 JSON，用于定位 Runtime、更新器与桌面进程问题。</p>
+    <div className="settings-scroll settings-data-page settings-diagnostics-export">
+      <section className="settings-data-card" aria-labelledby="data-sync-title">
+        <h2 className="settings-data-card__title" id="data-sync-title">
+          云端同步
+        </h2>
+        <div className="settings-data-card__body settings-data-switch-row">
+          <div className="settings-data-copy">
+            <strong>设置云同步</strong>
+            <p>
+              在多设备间同步设置中心的配置（不含模型配置，也不含本机路径、代理等设备本地项）。开关对账号下所有设备生效。
+            </p>
           </div>
           <button
             type="button"
-            className="settings-diagnostics-export__button"
-            disabled={exportState.kind === 'exporting'}
-            aria-describedby="diagnostics-privacy diagnostics-status"
-            onClick={() => void handleExport()}
+            className="settings-data-switch"
+            role="switch"
+            aria-checked="false"
+            aria-label="设置云同步"
+            title="当前版本暂未开放云端同步"
+            disabled
           >
-            <Download size={15} aria-hidden="true" />
-            {exportState.kind === 'exporting' ? '正在导出' : '导出诊断 JSON'}
+            <span />
           </button>
         </div>
       </section>
 
-      <div className="settings-diagnostics-export__ledger" aria-label="诊断导出隐私范围">
-        <div>
-          <span>INCLUDED</span>
-          <strong>运行状态、更新器证据、脱敏事件</strong>
-          <p>仅保留故障定位所需的结构化元数据。</p>
+      <section className="settings-data-card" aria-labelledby="data-migration-title">
+        <h2 className="settings-data-card__title" id="data-migration-title">
+          数据迁移
+        </h2>
+        <div className="settings-data-card__body settings-data-stack">
+          <div className="settings-data-row settings-data-row--adaptive">
+            <p className="settings-data-row-label">导出</p>
+            <div className="settings-data-actions">
+              <select
+                className="settings-data-select settings-data-select--scope"
+                aria-label="导出范围"
+                value={exportScope}
+                onChange={(event) => setExportScope(event.target.value)}
+              >
+                <option value="all">全部数据</option>
+                {workspaces.map((workspace) => (
+                  <option key={workspace.workspaceId} value={workspace.workspaceId}>
+                    {workspace.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="settings-data-select settings-data-select--format"
+                aria-label="导出格式"
+                value="json"
+                onChange={() => undefined}
+              >
+                <option value="json">JSON</option>
+              </select>
+              <button
+                type="button"
+                className="settings-data-button settings-data-button--secondary settings-diagnostics-export__button"
+                disabled={Boolean(busyAction)}
+                aria-label="导出数据"
+                onClick={() => void handleExport()}
+              >
+                <Download size={14} aria-hidden="true" />
+                {busyAction === 'export' ? '正在导出' : '导出'}
+              </button>
+            </div>
+          </div>
+          {feedback ? (
+            <span
+              className={clsx(
+                'settings-data-status',
+                feedback.tone === 'error' && 'is-error',
+                feedback.tone === 'success' && 'is-saved',
+              )}
+              role={feedback.tone === 'error' ? 'alert' : 'status'}
+              aria-live="polite"
+            >
+              {feedback.text}
+            </span>
+          ) : null}
+          <div className="settings-data-divider" />
+          <div className="settings-data-row">
+            <div className="settings-data-copy">
+              <strong>导入数据</strong>
+              <p>支持导入 JSON 格式的导出文件</p>
+            </div>
+            <button
+              type="button"
+              className="settings-data-button settings-data-button--secondary"
+              disabled={Boolean(busyAction)}
+              onClick={() => void handleImport()}
+            >
+              <Upload size={14} aria-hidden="true" />
+              {busyAction === 'import' ? '正在导入' : '选择并导入'}
+            </button>
+          </div>
         </div>
-        <div>
-          <span>EXCLUDED</span>
-          <strong>API Key、原始提示词、原始消息内容</strong>
-          <p>敏感字段与用户目录会在写盘前清理。</p>
-        </div>
-        <div>
-          <span>RETENTION</span>
-          <strong>最多 20 条 / 14 天</strong>
-          <p>崩溃记录只保存在本机，并按期限自动清理。</p>
-        </div>
-      </div>
+      </section>
 
-      <p id="diagnostics-privacy" className="settings-note">
-        诊断包不会自动上传。保存前可选择路径，保存后可用文本编辑器检查全部内容。
-      </p>
-      <div
-        id="diagnostics-status"
-        className={clsx(
-          'settings-diagnostics-export__status',
-          exportState.kind === 'error' && 'is-error',
-          exportState.kind === 'saved' && 'is-saved',
-        )}
-        role={status?.role}
-        aria-live="polite"
-      >
-        {status?.text ?? '尚未创建诊断包。'}
-      </div>
+      <section className="settings-data-card" aria-labelledby="data-backup-title">
+        <h2 className="settings-data-card__title" id="data-backup-title">
+          数据备份
+        </h2>
+        <div className="settings-data-card__body settings-data-stack">
+          <div className="settings-data-row">
+            <div className="settings-data-copy">
+              <strong>备份目录</strong>
+              <p className="settings-data-path" title={backupDirectory || '未设置'}>
+                {backupDirectory || '未设置'}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="settings-data-button settings-data-button--ghost"
+              disabled={Boolean(busyAction)}
+              onClick={() => void handleSelectBackupDirectory()}
+            >
+              <FolderOpen size={14} aria-hidden="true" />
+              选择目录
+            </button>
+          </div>
+          <div className="settings-data-divider" />
+          <div className="settings-data-row">
+            <div className="settings-data-copy">
+              <strong>备份频率</strong>
+              <p>自动备份的执行频率</p>
+            </div>
+            <select
+              className="settings-data-select settings-data-select--frequency"
+              aria-label="备份频率"
+              value="manual"
+              onChange={() => undefined}
+            >
+              <option value="manual">手动</option>
+            </select>
+          </div>
+          <div className="settings-data-divider" />
+          <div className="settings-data-row">
+            <div className="settings-data-copy">
+              <strong>上次备份</strong>
+              <p>{formatBackupTime(lastBackupAt)}</p>
+            </div>
+            <button
+              type="button"
+              className="settings-data-button settings-data-button--secondary"
+              disabled={!backupDirectory || Boolean(busyAction)}
+              onClick={() => void handleBackup()}
+            >
+              <Save size={14} aria-hidden="true" />
+              {busyAction === 'backup' ? '正在备份' : '立即备份'}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-data-card" aria-labelledby="data-storage-title">
+        <h2 className="settings-data-card__title" id="data-storage-title">
+          存储管理
+        </h2>
+        <div className="settings-data-card__body settings-data-stack">
+          <div className="settings-data-storage-stats">
+            <div>
+              <span>数据库大小</span>
+              <strong>{formatDataBytes(stats?.dbSizeBytes)}</strong>
+            </div>
+            <div>
+              <span>对话文件</span>
+              <strong>{formatDataBytes(stats?.conversationFilesSizeBytes)}</strong>
+            </div>
+            <div>
+              <span>对话数量</span>
+              <strong>{stats ? `${stats.conversationCount} 个` : '—'}</strong>
+            </div>
+            <div>
+              <span>消息数量</span>
+              <strong>{stats ? `${stats.messageCount} 条` : '—'}</strong>
+            </div>
+          </div>
+          <div className="settings-data-row">
+            <div className="settings-data-copy">
+              <strong>数据目录</strong>
+              <p>数据库、对话记录、配置等所有数据所在位置</p>
+            </div>
+            <button
+              type="button"
+              className="settings-data-button settings-data-button--ghost"
+              disabled={Boolean(busyAction)}
+              onClick={() =>
+                void runMaintenance('open-directory', '正在打开数据目录…', async () => {
+                  const runtime = window.syncThink?.runtime;
+                  if (!runtime?.openDataDirectory) throw new Error('数据目录服务尚未就绪。');
+                  const result = await runtime.openDataDirectory();
+                  if (!result.opened) throw new Error(result.error || '打开数据目录失败。');
+                  return `已打开数据目录：${result.path}`;
+                })
+              }
+            >
+              <FolderOpen size={14} aria-hidden="true" />
+              打开目录
+            </button>
+          </div>
+          <div className="settings-data-divider" />
+          <div className="settings-data-row">
+            <div className="settings-data-copy">
+              <strong>优化存储</strong>
+              <p>压缩对话记录中的冗余数据，回收磁盘空间，不会删除任何对话</p>
+            </div>
+            <button
+              type="button"
+              className="settings-data-button settings-data-button--tertiary"
+              aria-label="优化存储"
+              disabled={Boolean(busyAction)}
+              onClick={() =>
+                void runMaintenance('compact', '正在优化存储…', async () => {
+                  const runtime = window.syncThink?.runtime;
+                  if (!runtime?.compactDataStorage) throw new Error('存储优化服务尚未就绪。');
+                  const result = await runtime.compactDataStorage();
+                  return `存储优化完成，处理 ${result.compacted} 项，回收 ${formatDataBytes(result.reclaimedBytes)}。`;
+                })
+              }
+            >
+              <WandSparkles size={14} aria-hidden="true" />
+              优化
+            </button>
+          </div>
+          <div className="settings-data-divider" />
+          <div className="settings-data-row">
+            <div className="settings-data-copy">
+              <strong>清理空附件目录</strong>
+              <p>清理工作区中当前或旧版遗留的空对话附件目录，不会删除对话记录或附件文件</p>
+            </div>
+            <button
+              type="button"
+              className="settings-data-button settings-data-button--tertiary"
+              aria-label="清理空附件目录"
+              disabled={Boolean(busyAction)}
+              onClick={() =>
+                void runMaintenance('clean-attachments', '正在检查空附件目录…', async () => {
+                  const runtime = window.syncThink?.runtime;
+                  if (!runtime?.cleanEmptyAttachmentDirectories) {
+                    throw new Error('附件目录清理服务尚未就绪。');
+                  }
+                  const result = await runtime.cleanEmptyAttachmentDirectories();
+                  return `已清理 ${result.removedConversationDirs} 个空附件目录。`;
+                })
+              }
+            >
+              <Trash2 size={14} aria-hidden="true" />
+              清理
+            </button>
+          </div>
+          <div className="settings-data-divider" />
+          <div className="settings-data-row">
+            <p className="settings-data-row-label">清理范围</p>
+            <div className="settings-data-actions">
+              <select
+                className="settings-data-select settings-data-select--range"
+                aria-label="对话清理范围"
+                value={cleanupRange}
+                disabled={Boolean(busyAction)}
+                onChange={(event) => setCleanupRange(event.target.value)}
+              >
+                <option value="month">1 个月前</option>
+                <option value="quarter">3 个月前</option>
+                <option value="year">1 年前</option>
+              </select>
+              <button
+                type="button"
+                className="settings-data-button settings-data-button--tertiary"
+                aria-label="按范围清理对话"
+                disabled={Boolean(busyAction)}
+                onClick={() => {
+                  if (!confirm('确定清理所选时间范围之前的对话和消息吗？')) return;
+                  void runMaintenance('clean-range', '正在清理对话…', async () => {
+                    const runtime = window.syncThink?.runtime;
+                    if (!runtime?.cleanConversations) throw new Error('对话清理服务尚未就绪。');
+                    const result = await runtime.cleanConversations({
+                      beforeTimestamp: cleanupBeforeTimestamp(),
+                    });
+                    return `已清理 ${result.deletedConversations} 个对话、${result.deletedMessages} 条消息。`;
+                  });
+                }}
+              >
+                <Trash2 size={14} aria-hidden="true" />
+                清理
+              </button>
+            </div>
+          </div>
+          <div className="settings-data-divider" />
+          <div className="settings-data-row">
+            <div className="settings-data-copy">
+              <strong>清空对话历史</strong>
+              <p>仅删除对话和消息记录，保留账号、设置、模型、技能等其它数据</p>
+            </div>
+            <button
+              type="button"
+              className="settings-data-button settings-data-button--danger-subtle"
+              disabled={Boolean(busyAction)}
+              onClick={() => {
+                if (!confirm('确定清空全部对话历史吗？此操作不会删除其它设置。')) return;
+                void runMaintenance('clean-all', '正在清空对话历史…', async () => {
+                  const runtime = window.syncThink?.runtime;
+                  if (!runtime?.cleanConversations) throw new Error('对话清理服务尚未就绪。');
+                  const result = await runtime.cleanConversations({});
+                  return `已清空 ${result.deletedConversations} 个对话、${result.deletedMessages} 条消息。`;
+                });
+              }}
+            >
+              <Trash2 size={14} aria-hidden="true" />
+              清空对话
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-data-card" aria-labelledby="data-wipe-title">
+        <h2 className="settings-data-card__title" id="data-wipe-title">
+          清空本机数据
+        </h2>
+        <div className="settings-data-card__body settings-data-row">
+          <div className="settings-data-copy">
+            <strong>删除并退出</strong>
+            <p>
+              永久删除本机对话、设置、Skill、插件、日志等并退出应用。Claude CLI 共享目录不会被删。
+            </p>
+          </div>
+          <button
+            type="button"
+            className="settings-data-button settings-data-button--danger is-static"
+            title="当前版本暂未开放清空本机数据"
+            disabled
+          >
+            <Trash2 size={16} aria-hidden="true" />
+            删除并退出
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

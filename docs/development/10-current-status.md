@@ -1,4 +1,24 @@
-﻿## 当前状态：2026-08-24 · NewMax 与 Runtime 增强已合并并冷重启
+﻿## 当前状态：2026-08-24 · 设置数据与连接页 NewMax 对齐完成
+
+### 实现结果
+
+- “设置 → 数据”按 NewMax `1.1.14` 的五段信息架构和组件几何重做，并接通真实本机数据合同：存储统计、全量 JSON 导出/导入、SQLite 在线备份、存储优化、空附件目录清理和按范围清空对话。
+- “设置 → 连接”按 NewMax 恢复 7 个页签、Provider 切换条、余额摘要和 27 个同序连接器；连接器图标来自本地资源，三列布局与参考实窗坐标一致。
+- 任一连接器可进入远程 MCP 配置并保存发现；第三方 Provider 与 MCP 共用真实服务目录和启停、编辑、删除、刷新能力。插件与开放网关继续使用现有真实实现，未接入合同的页签保持明确空态。
+
+### 当前验证
+
+- Desktop `172 files / 1394 tests`、Runtime `151 files / 1138 tests` 全绿；根级 typecheck `20/20`、lint `11/11`（0 error）、设计令牌和 `git diff --check` 通过。
+- 强制全量构建 `11/11`、`0 cached`。真实 Electron 中 Runtime bridge 的数据导出、导入、备份、优化、清理和远程 MCP 注册方法均存在；pipe healthcheck 报告 protocol v2、`data.management` 和 `inFlightRuns=0`。
+- 实窗设置弹窗为 `1060 × 720px`，连接页为 7 个页签、27 个连接器，填写合法地址后保存按钮启用；数据页显示真实 `15.7 GB / 2.0 MB / 22 个对话 / 818 条消息`。窗口 `1426 × 863` 下 document 无溢出，页面错误和控制台错误为 0。
+
+### 运行状态
+
+- 最新源码实例正在运行：Electron PID `56192`、daemon PID `48260 / 43336`、Runtime PID `41784`，进程启动时间均晚于强制构建且状态为 Responding；实窗调试端口为 `127.0.0.1:9334`。
+- Pipe smoke 返回 `PIPE_SMOKE_OK`；启动 stderr 只有本地 DevTools 监听行。日志、实窗截图和机器可读 QA 结果位于 `.data/local-restart-20260824-225305-newmax-settings/`。
+- 当前改动尚未提交或推送；本地 `scripts/tmp-*.mjs` 调试脚本保持原样。
+
+## 当前状态：2026-08-24 · NewMax 与 Runtime 增强已合并并冷重启
 
 ### 合并结果
 

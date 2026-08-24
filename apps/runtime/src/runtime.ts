@@ -199,6 +199,13 @@ import {
   type GatewayLogsResponse,
   type OpenGatewayStatusResponse,
 } from '@sync-think/protocol';
+import {
+  parseDataBackupPayload,
+  parseDataCleanConversationsPayload,
+  parseDataExportPayload,
+  parseDataImportPayload,
+  parseEmptyDataPayload,
+} from '@sync-think/protocol';
 import { z } from 'zod';
 import {
   ErrorCode,
@@ -723,6 +730,7 @@ import {
   BrowserWorkflowRunnerError,
 } from './browser/runtime-browser-workflow-runner.js';
 import { RuntimeDesktopController } from './desktop/runtime-desktop-controller.js';
+import type { RuntimeDataManagementService } from './data-management-service.js';
 
 import {
   estimateUsageCostBreakdown,
@@ -830,6 +838,8 @@ export interface RuntimeOptions {
   discoveryAdapter?: DemoProvider;
   /** 0026: app-level KV settings (vision fallback, plan & act). */
   appSettingStore?: SqliteAppSettingStore;
+  /** Runtime-owned data export, backup and storage maintenance service. */
+  dataManagement?: RuntimeDataManagementService;
   /** Test/embedding seam; production uses Windows.Media.Ocr. */
   windowsOcrRecognizer?: typeof recognizeImageTextWithWindowsOcr;
   /** 0044: 定时任务表。 */
@@ -1998,6 +2008,7 @@ export class Runtime {
    */
   private readonly openGateway: OpenGatewayManager;
   private readonly queryUsageSummary?: RuntimeOptions['queryUsageSummary'];
+  private readonly dataManagement?: RuntimeDataManagementService;
   private readonly agentStore?: SqliteAgentStore;
   private readonly globalAgentStore?: SqliteGlobalAgentStore;
   private readonly teamStore?: SqliteTeamStore;
@@ -2156,6 +2167,7 @@ export class Runtime {
       },
     });
     this.queryUsageSummary = opts.queryUsageSummary;
+    this.dataManagement = opts.dataManagement;
     this.agentStore = opts.agentStore;
     this.globalAgentStore = opts.globalAgentStore;
     this.teamStore = opts.teamStore;
@@ -2648,6 +2660,34 @@ export class Runtime {
         }
         if (frame.type === 'gateway.logs.clear') {
           this.handleGatewayLogsClear(socket, frame);
+          return;
+        }
+        if (frame.type === 'data.storageStats') {
+          void this.handleDataStorageStats(socket, frame);
+          return;
+        }
+        if (frame.type === 'data.export') {
+          void this.handleDataExport(socket, frame);
+          return;
+        }
+        if (frame.type === 'data.import') {
+          void this.handleDataImport(socket, frame);
+          return;
+        }
+        if (frame.type === 'data.backup') {
+          void this.handleDataBackup(socket, frame);
+          return;
+        }
+        if (frame.type === 'data.compactStorage') {
+          void this.handleDataCompactStorage(socket, frame);
+          return;
+        }
+        if (frame.type === 'data.cleanConversations') {
+          void this.handleDataCleanConversations(socket, frame);
+          return;
+        }
+        if (frame.type === 'data.cleanEmptyAttachmentDirectories') {
+          void this.handleDataCleanEmptyAttachmentDirectories(socket, frame);
           return;
         }
         if (frame.type === 'agent.get') {
@@ -6942,6 +6982,108 @@ export class Runtime {
       }
     } catch (error) {
       this.writeProviderCommandError(socket, frame, error);
+    }
+  }
+
+  private async handleDataStorageStats(socket: Socket, frame: Frame): Promise<void> {
+    if (!parseEmptyDataPayload(frame.payload ?? {})) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    await this.runDataManagementOperation(socket, frame, (service) => service.getStorageStats());
+  }
+
+  private async handleDataExport(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseDataExportPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    await this.runDataManagementOperation(socket, frame, (service) => service.exportData(payload));
+  }
+
+  private async handleDataImport(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseDataImportPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    await this.runDataManagementOperation(socket, frame, (service) => service.importData(payload));
+  }
+
+  private async handleDataBackup(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseDataBackupPayload(frame.payload);
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    await this.runDataManagementOperation(socket, frame, (service) =>
+      service.backup({ targetDirectory: payload.targetDirectory }),
+    );
+  }
+
+  private async handleDataCompactStorage(socket: Socket, frame: Frame): Promise<void> {
+    if (!parseEmptyDataPayload(frame.payload ?? {})) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    await this.runDataManagementOperation(socket, frame, (service) => service.compactStorage());
+  }
+
+  private async handleDataCleanConversations(socket: Socket, frame: Frame): Promise<void> {
+    const payload = parseDataCleanConversationsPayload(frame.payload ?? {});
+    if (!payload) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    const scopeIds: string[] = [];
+    if (this.conversationStore) {
+      for (const conversation of this.conversationStore.list({ includeArchived: true })) {
+        const timestamp = Date.parse(conversation.lastMessageAt ?? conversation.createdAt);
+        if (payload.beforeTimestamp !== undefined && timestamp >= payload.beforeTimestamp) continue;
+        scopeIds.push(String(conversation.id));
+        if (conversation.taskId) {
+          const threadId = this.workspaceStore?.getTask(conversation.taskId)?.threadId;
+          if (threadId) scopeIds.push(String(threadId));
+        }
+      }
+    }
+    await this.runDataManagementOperation(socket, frame, async (service) => {
+      const result = await service.cleanConversations(payload);
+      this.clearKernelConversationSessionsForScopeIds(scopeIds);
+      return result;
+    });
+  }
+
+  private async handleDataCleanEmptyAttachmentDirectories(
+    socket: Socket,
+    frame: Frame,
+  ): Promise<void> {
+    if (!parseEmptyDataPayload(frame.payload ?? {})) {
+      this.writeMalformedPayload(socket, frame);
+      return;
+    }
+    await this.runDataManagementOperation(socket, frame, (service) =>
+      service.cleanEmptyAttachmentDirectories(),
+    );
+  }
+
+  private async runDataManagementOperation(
+    socket: Socket,
+    frame: Frame,
+    operation: (service: RuntimeDataManagementService) => Promise<unknown>,
+  ): Promise<void> {
+    if (!this.dataManagement) {
+      this.writeDataManagementUnavailable(socket, frame);
+      return;
+    }
+    try {
+      const response = await operation(this.dataManagement);
+      socket.write(
+        encodeFrame({ id: frame.id, kind: 'response', type: frame.type, payload: response }),
+      );
+    } catch (error) {
+      this.writeDataManagementError(socket, frame, error);
     }
   }
 
@@ -17053,6 +17195,39 @@ export class Runtime {
         error: {
           code: ErrorCode.PROTOCOL_FRAME_MALFORMED,
           message: `Invalid payload for ${frame.type}`,
+        },
+      }),
+    );
+  }
+
+  private writeDataManagementUnavailable(socket: Socket, frame: Frame): void {
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code: ErrorCode.STORAGE_WRITE_FAILED,
+          message: 'Data management is not configured on this Runtime',
+        },
+      }),
+    );
+  }
+
+  private writeDataManagementError(socket: Socket, frame: Frame, error: unknown): void {
+    const message = error instanceof Error ? error.message : 'Data management operation failed';
+    socket.write(
+      encodeFrame({
+        id: frame.id,
+        kind: 'response',
+        type: frame.type,
+        payload: {},
+        error: {
+          code: /invalid|unsupported|must be|contains/i.test(message)
+            ? ErrorCode.PROTOCOL_FRAME_MALFORMED
+            : ErrorCode.STORAGE_WRITE_FAILED,
+          message,
         },
       }),
     );

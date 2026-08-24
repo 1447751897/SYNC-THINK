@@ -218,7 +218,14 @@ export type CommandType =
   | 'kernel.detect'
   | 'gateway.status'
   | 'gateway.logs'
-  | 'gateway.logs.clear';
+  | 'gateway.logs.clear'
+  | 'data.storageStats'
+  | 'data.export'
+  | 'data.import'
+  | 'data.backup'
+  | 'data.compactStorage'
+  | 'data.cleanConversations'
+  | 'data.cleanEmptyAttachmentDirectories';
 
 export interface CommandRequest<T = unknown> {
   /** Routed by type; runtime dispatches by union. */

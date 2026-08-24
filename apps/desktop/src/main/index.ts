@@ -34,6 +34,11 @@ import {
   parseExportDesktopDiagnosticsPayload,
   type ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
+import type {
+  ExportDesktopDataResponse,
+  ImportDesktopDataResponse,
+  OpenDesktopDataDirectoryResponse,
+} from '../data-management-contract.js';
 import { FileRuntimeActivityCursorStore } from './runtime-activity-cursor-store.js';
 import {
   isAllowedM1OpenDocId,
@@ -75,6 +80,18 @@ import type {
   CancelRunPayload,
   Frame,
   GetArtifactVersionResponse,
+} from '@sync-think/protocol';
+import {
+  parseDataBackupPayload,
+  parseDataCleanConversationsPayload,
+  parseEmptyDataPayload,
+  type DataBackupResponse,
+  type DataCleanConversationsResponse,
+  type DataCleanEmptyAttachmentDirectoriesResponse,
+  type DataCompactStorageResponse,
+  type DataExportResponse,
+  type DataImportResponse,
+  type DataStorageStatsResponse,
 } from '@sync-think/protocol';
 import {
   parseArchiveTaskPayload,
@@ -1654,6 +1671,128 @@ function setupRuntimeBridge(): void {
     await ensureRuntimeConnection();
     return getRuntimeClient().request('settings.set', parseSetSettingPayload(value));
   });
+  ipcMain.handle('runtime:data-storage-stats', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseEmptyDataPayload(value ?? {});
+    if (!payload) throw new Error('Invalid data storage stats payload');
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<DataStorageStatsResponse>('data.storageStats', payload);
+  });
+  ipcMain.handle('desktop:data-export', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const record =
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+    if (
+      Object.keys(record).some((key) => key !== 'workspaceId') ||
+      (record.workspaceId !== undefined &&
+        (typeof record.workspaceId !== 'string' || record.workspaceId.trim().length === 0))
+    ) {
+      throw new Error('Invalid data export payload');
+    }
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: '导出数据',
+      defaultPath: `sync-think-export-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON 文件', extensions: ['json'] }],
+    };
+    const selected = win
+      ? await dialog.showSaveDialog(win, options)
+      : await dialog.showSaveDialog(options);
+    if (selected.canceled || !selected.filePath) {
+      return { status: 'cancelled' } satisfies ExportDesktopDataResponse;
+    }
+    await ensureRuntimeConnection();
+    const response = await getRuntimeClient().request<DataExportResponse>('data.export', {
+      filePath: selected.filePath,
+      ...(typeof record.workspaceId === 'string' ? { workspaceId: record.workspaceId.trim() } : {}),
+    });
+    return { status: 'saved', ...response } satisfies ExportDesktopDataResponse;
+  });
+  ipcMain.handle('desktop:data-import', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const record =
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : undefined;
+    if (
+      !record ||
+      Object.keys(record).some((key) => key !== 'conflictStrategy') ||
+      (record.conflictStrategy !== 'skip' && record.conflictStrategy !== 'overwrite')
+    ) {
+      throw new Error('Invalid data import payload');
+    }
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: '导入数据',
+      properties: ['openFile'] as Array<'openFile'>,
+      filters: [{ name: 'JSON 文件', extensions: ['json'] }],
+    };
+    const selected = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    if (selected.canceled || selected.filePaths.length === 0) {
+      return { status: 'cancelled' } satisfies ImportDesktopDataResponse;
+    }
+    await ensureRuntimeConnection();
+    const response = await getRuntimeClient().request<DataImportResponse>('data.import', {
+      filePath: selected.filePaths[0]!,
+      conflictStrategy: record.conflictStrategy,
+    });
+    return { status: 'imported', ...response } satisfies ImportDesktopDataResponse;
+  });
+  ipcMain.handle('runtime:data-backup', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseDataBackupPayload(value);
+    if (!payload) throw new Error('Invalid data backup payload');
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<DataBackupResponse>('data.backup', payload);
+  });
+  ipcMain.handle('runtime:data-compact-storage', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseEmptyDataPayload(value ?? {});
+    if (!payload) throw new Error('Invalid data compact payload');
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<DataCompactStorageResponse>('data.compactStorage', payload);
+  });
+  ipcMain.handle('runtime:data-clean-conversations', async (event, value: unknown) => {
+    assertRuntimeIpcSource(event);
+    const payload = parseDataCleanConversationsPayload(value ?? {});
+    if (!payload) throw new Error('Invalid data cleanup payload');
+    await ensureRuntimeConnection();
+    return getRuntimeClient().request<DataCleanConversationsResponse>(
+      'data.cleanConversations',
+      payload,
+    );
+  });
+  ipcMain.handle(
+    'runtime:data-clean-empty-attachment-directories',
+    async (event, value: unknown) => {
+      assertRuntimeIpcSource(event);
+      const payload = parseEmptyDataPayload(value ?? {});
+      if (!payload) throw new Error('Invalid empty attachment directory cleanup payload');
+      await ensureRuntimeConnection();
+      return getRuntimeClient().request<DataCleanEmptyAttachmentDirectoriesResponse>(
+        'data.cleanEmptyAttachmentDirectories',
+        payload,
+      );
+    },
+  );
+  ipcMain.handle('desktop:data-open-directory', async (event) => {
+    assertRuntimeIpcSource(event);
+    await ensureRuntimeConnection();
+    const stats = await getRuntimeClient().request<DataStorageStatsResponse>(
+      'data.storageStats',
+      {},
+    );
+    const error = await shell.openPath(stats.dataDirectory);
+    return {
+      opened: error.length === 0,
+      path: stats.dataDirectory,
+      ...(error ? { error } : {}),
+    } satisfies OpenDesktopDataDirectoryResponse;
+  });
   ipcMain.handle('runtime:usage-summary', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     await ensureRuntimeConnection();
@@ -2910,15 +3049,22 @@ function setupRuntimeBridge(): void {
     return { dark: nativeTheme.shouldUseDarkColors };
   });
 
-  ipcMain.handle('desktop:pick-folder', async (event) => {
+  ipcMain.handle('desktop:pick-folder', async (event, value: unknown) => {
     assertRuntimeIpcSource(event);
     const win = BrowserWindow.fromWebContents(event.sender);
+    const requestedTitle =
+      value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? (value as { title?: unknown }).title
+        : undefined;
     const options = {
       title: '为项目绑定文件夹',
       properties: ['openDirectory', 'createDirectory'] as Array<
         'openDirectory' | 'createDirectory'
       >,
     };
+    if (typeof requestedTitle === 'string' && requestedTitle.trim().length > 0) {
+      options.title = requestedTitle.trim().slice(0, 80);
+    }
     const result = win
       ? await dialog.showOpenDialog(win, options)
       : await dialog.showOpenDialog(options);

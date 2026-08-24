@@ -19,19 +19,94 @@ const runtime = {
   getSettings: vi.fn(),
   setSetting: vi.fn(),
   setTheme: vi.fn(),
-  exportDiagnostics: vi.fn(),
+  pickFolder: vi.fn(),
+  listWorkspaces: vi.fn(),
+  getDataStorageStats: vi.fn(),
+  exportData: vi.fn(),
+  importData: vi.fn(),
+  backupData: vi.fn(),
+  compactDataStorage: vi.fn(),
+  cleanConversations: vi.fn(),
+  cleanEmptyAttachmentDirectories: vi.fn(),
+  openDataDirectory: vi.fn(),
   getGatewayStatus: vi.fn(),
   listProviders: vi.fn(),
+  listMcpServers: vi.fn(),
+  registerRemoteMcpServer: vi.fn(),
+  setMcpServerEnabled: vi.fn(),
+  deleteMcpServer: vi.fn(),
 };
 
 beforeEach(() => {
-  runtime.exportDiagnostics.mockResolvedValue({
+  runtime.exportData.mockResolvedValue({
     status: 'saved',
-    path: 'C:\\support\\sync-think-diagnostics.json',
-    diagnosticCount: 12,
-    crashReportCount: 2,
-    generatedAt: '2026-08-02T00:00:00.000Z',
+    success: true,
+    filePath: 'C:\\support\\sync-think-export.json',
+    count: { workspaces: 2, conversations: 12, messages: 48 },
   });
+  runtime.importData.mockResolvedValue({
+    status: 'imported',
+    success: true,
+    imported: { workspaces: 1, conversations: 3, messages: 8 },
+    skipped: 0,
+  });
+  runtime.getDataStorageStats.mockResolvedValue({
+    success: true,
+    dataDirectory: 'C:\\Users\\tester\\AppData\\Roaming\\SYNC-THINK',
+    dbSizeBytes: 12 * 1024 * 1024,
+    conversationFilesSizeBytes: 3 * 1024 * 1024,
+    conversationCount: 12,
+    messageCount: 48,
+  });
+  runtime.backupData.mockResolvedValue({
+    success: true,
+    backupPath: 'D:\\backups\\sync-think-backup-2026-08-24.db',
+    sizeBytes: 12 * 1024 * 1024,
+    createdAt: '2026-08-24T03:00:00.000Z',
+  });
+  runtime.compactDataStorage.mockResolvedValue({
+    success: true,
+    reclaimedBytes: 2 * 1024 * 1024,
+    compacted: 12,
+  });
+  runtime.cleanConversations.mockResolvedValue({
+    success: true,
+    deletedConversations: 2,
+    deletedMessages: 9,
+  });
+  runtime.cleanEmptyAttachmentDirectories.mockResolvedValue({
+    success: true,
+    removedConversationDirs: 4,
+  });
+  runtime.openDataDirectory.mockResolvedValue({
+    opened: true,
+    path: 'C:\\Users\\tester\\AppData\\Roaming\\SYNC-THINK',
+  });
+  runtime.pickFolder.mockResolvedValue({ canceled: false, path: 'D:\\backups' });
+  runtime.listWorkspaces.mockResolvedValue({ workspaces: [] });
+  runtime.listMcpServers.mockResolvedValue({ servers: [] });
+  runtime.registerRemoteMcpServer.mockResolvedValue({
+    server: {
+      mcpServerId: 'mcp-douyin',
+      name: '抖音',
+      transport: 'remote-http',
+      endpoint: 'https://connector.example.com/mcp',
+      tools: [],
+      trusted: false,
+      enabled: true,
+      maxOutputBytes: 1_000_000,
+      timeoutMs: 30_000,
+      notes: '',
+      createdAt: '2026-08-24T03:00:00.000Z',
+      updatedAt: '2026-08-24T03:00:00.000Z',
+    },
+    updated: false,
+    endpoint: 'https://connector.example.com/mcp',
+    authConfigured: true,
+    discovered: true,
+  });
+  runtime.setMcpServerEnabled.mockResolvedValue({ server: {} });
+  runtime.deleteMcpServer.mockResolvedValue({ mcpServerId: 'mcp-douyin', deleted: true });
   runtime.getSettings.mockResolvedValue({ settings: {} });
   runtime.setSetting.mockResolvedValue({
     key: COMPUTER_USE_PLUGIN_SETTING_KEY,
@@ -120,58 +195,116 @@ describe('SettingsPage Computer Use plugin', () => {
   });
 });
 
-async function openDataDiagnostics() {
+async function openDataSettings() {
   render(<SettingsPage />);
   const dataButton = screen.getByRole('button', { name: '数据' });
   dataButton.focus();
   fireEvent.click(dataButton);
-  const exportButton = await screen.findByRole('button', { name: '导出诊断 JSON' });
+  const exportButton = await screen.findByRole('button', { name: '导出数据' });
   exportButton.focus();
+  await waitFor(() => expect(runtime.getDataStorageStats).toHaveBeenCalled());
   return exportButton;
 }
 
-describe('SettingsPage diagnostics export', () => {
-  it('exposes the data section with explicit privacy and retention boundaries', async () => {
-    const exportButton = await openDataDiagnostics();
+describe('SettingsPage data management', () => {
+  it('uses the NewMax information architecture with live storage values', async () => {
+    await openDataSettings();
 
-    expect(exportButton).toBe(document.activeElement);
-    expect(screen.queryByText(/能力尚未接入/)).toBeNull();
-    expect(screen.getByText(/API Key、原始提示词、原始消息内容/)).toBeTruthy();
-    expect(screen.getByText('最多 20 条 / 14 天')).toBeTruthy();
-    expect(screen.getByText(/不会自动上传/)).toBeTruthy();
-    expect(exportButton.getAttribute('aria-describedby')).toContain('diagnostics-privacy');
+    expect(screen.getByRole('region', { name: '云端同步' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: '数据迁移' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: '数据备份' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: '存储管理' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: '清空本机数据' })).toBeTruthy();
+    expect(screen.getByText('全部数据')).toBeTruthy();
+    expect(screen.getByText('数据库大小')).toBeTruthy();
+    expect(screen.getByText('对话文件')).toBeTruthy();
+    expect(screen.getByText('对话数量')).toBeTruthy();
+    expect(screen.getByText('消息数量')).toBeTruthy();
+    expect(screen.getByText('12.0 MB')).toBeTruthy();
+    expect(screen.getByText('3.0 MB')).toBeTruthy();
+    expect(screen.getByText('12 个')).toBeTruthy();
+    expect(screen.getByText('48 条')).toBeTruthy();
+
+    const syncToggle = screen.getByRole('switch', { name: '设置云同步' });
+    expect(syncToggle.getAttribute('aria-checked')).toBe('false');
+    expect((syncToggle as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '选择并导入' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect((screen.getByRole('button', { name: '选择目录' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect((screen.getByRole('button', { name: '立即备份' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
   });
 
-  it('exports a scrubbed diagnostics bundle and announces saved counts', async () => {
-    const exportButton = await openDataDiagnostics();
+  it('selects a backup directory and performs an online database backup', async () => {
+    await openDataSettings();
+    fireEvent.click(screen.getByRole('button', { name: '选择目录' }));
+
+    await waitFor(() => expect(runtime.pickFolder).toHaveBeenCalledWith({ title: '选择备份目录' }));
+    expect(screen.getByTitle('D:\\backups').textContent).toBe('D:\\backups');
+    const backupButton = screen.getByRole('button', { name: '立即备份' });
+    expect((backupButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(backupButton);
+    await waitFor(() =>
+      expect(runtime.backupData).toHaveBeenCalledWith({ targetDirectory: 'D:\\backups' }),
+    );
+    expect((await screen.findByRole('status')).textContent).toContain('备份完成');
+  });
+
+  it('locks the NewMax card and compact-control geometry in CSS', () => {
+    expect(shellCss).toMatch(
+      /\.settings-data-card\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*18px;/s,
+    );
+    expect(shellCss).toMatch(/\.settings-data-card__body\s*\{[^}]*margin-top:\s*8px;/s);
+    expect(shellCss).toMatch(/\.settings-data-stack\s*\{[^}]*gap:\s*12px;/s);
+    expect(shellCss).toMatch(
+      /\.settings-data-button,\s*\.settings-data-select\s*\{[^}]*height:\s*28px;/s,
+    );
+    expect(shellCss).toMatch(/\.settings-data-storage-stats\s*\{[^}]*repeat\(4,/s);
+    expect(shellCss).not.toContain('.settings-data-card--sync');
+  });
+
+  it('exports complete user data and announces the saved counts', async () => {
+    const exportButton = await openDataSettings();
     fireEvent.click(exportButton);
 
     expect((await screen.findByRole('status')).textContent).toContain(
-      '已保存 12 条诊断与 2 条崩溃记录',
+      '已导出 2 个工作区、12 个对话、48 条消息',
     );
-    expect(runtime.exportDiagnostics).toHaveBeenCalledWith({});
-    expect(screen.getByRole('status').textContent).toContain('sync-think-diagnostics.json');
+    expect(runtime.exportData).toHaveBeenCalledWith({});
+    expect(screen.getByRole('status').textContent).toContain('sync-think-export.json');
   });
 
-  it('reports cancellation without treating it as an error', async () => {
-    runtime.exportDiagnostics.mockResolvedValue({
-      status: 'cancelled',
-      diagnosticCount: 4,
-      crashReportCount: 1,
-      generatedAt: '2026-08-02T00:00:00.000Z',
-    });
-    const exportButton = await openDataDiagnostics();
-    fireEvent.click(exportButton);
+  it('imports a selected JSON export with skip-on-conflict semantics', async () => {
+    await openDataSettings();
+    fireEvent.click(screen.getByRole('button', { name: '选择并导入' }));
 
-    const status = await screen.findByRole('status');
-    expect(status.textContent).toContain('已取消保存');
-    expect(status.textContent).toContain('4 条诊断与 1 条崩溃记录');
-    expect(screen.queryByRole('alert')).toBeNull();
+    await waitFor(() =>
+      expect(runtime.importData).toHaveBeenCalledWith({ conflictStrategy: 'skip' }),
+    );
+    expect((await screen.findByRole('status')).textContent).toContain(
+      '已导入 1 个工作区、3 个对话、8 条消息',
+    );
+  });
+
+  it('opens the data directory and runs both non-destructive storage maintenance actions', async () => {
+    await openDataSettings();
+    fireEvent.click(screen.getByRole('button', { name: '打开目录' }));
+    await waitFor(() => expect(runtime.openDataDirectory).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: '优化存储' }));
+    await waitFor(() => expect(runtime.compactDataStorage).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: '清理空附件目录' }));
+    await waitFor(() => expect(runtime.cleanEmptyAttachmentDirectories).toHaveBeenCalled());
   });
 
   it('announces export failures and restores the action', async () => {
-    runtime.exportDiagnostics.mockRejectedValue(new Error('disk full'));
-    const exportButton = await openDataDiagnostics();
+    runtime.exportData.mockRejectedValue(new Error('disk full'));
+    const exportButton = await openDataSettings();
     fireEvent.click(exportButton);
 
     expect((await screen.findByRole('alert')).textContent).toContain('disk full');
@@ -179,9 +312,60 @@ describe('SettingsPage diagnostics export', () => {
   });
 });
 
+describe('SettingsPage NewMax connection catalog', () => {
+  it('matches the NewMax tabs, provider switcher and three-column catalog', async () => {
+    render(<SettingsPage />);
+    const navigation = screen.getByRole('navigation', { name: '设置分类' });
+    expect(
+      Array.from(navigation.querySelectorAll('button span'), (node) => node.textContent),
+    ).toEqual(['账号', '钱包', '通用', '偏好', '模型', '每日回顾', '连接', '数据', '关于']);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+
+    expect(await screen.findByRole('tab', { name: '连接器' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'MCP' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '插件' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '搜索服务' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '机器人对话' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '开放网关' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '网络' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'NewMax Provider' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '第三方 Provider' })).toBeTruthy();
+    expect(screen.getByText('NewMax 提供的托管连接器，云端执行、按量计费。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '连接 抖音' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '连接 TikTok' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '连接 企查查' })).toBeTruthy();
+    expect(document.querySelectorAll('.settings-connector-row')).toHaveLength(27);
+  });
+
+  it('opens a real remote MCP connection form from a managed connector', async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '连接' }));
+    fireEvent.click(await screen.findByRole('button', { name: '连接 抖音' }));
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'MCP 服务地址' }), {
+      target: { value: 'https://connector.example.com/mcp' },
+    });
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'secret-key' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存并连接' }));
+
+    await waitFor(() =>
+      expect(runtime.registerRemoteMcpServer).toHaveBeenCalledWith({
+        name: '抖音',
+        endpoint: 'https://connector.example.com/mcp',
+        key: 'secret-key',
+        authScheme: 'bearer',
+        discoverTools: true,
+        trusted: false,
+        notes: 'NewMax connector: douyin',
+      }),
+    );
+  });
+});
+
 async function openGateway() {
   render(<SettingsPage />);
   fireEvent.click(screen.getByRole('button', { name: '连接' }));
+  fireEvent.click(await screen.findByRole('tab', { name: '开放网关' }));
   const toggle = await screen.findByRole('switch', { name: '启用网关' });
   await waitFor(() => expect((toggle as HTMLButtonElement).disabled).toBe(false));
   return toggle;

@@ -58,6 +58,7 @@ import { RuntimeBrowserController } from './browser/runtime-browser-controller.j
 import { RuntimeBrowserProfileService } from './browser/runtime-browser-profile-service.js';
 import { RuntimeBrowserProfileGate } from './browser/runtime-browser-profile-gate.js';
 import { RuntimeBrowserRecordingService } from './browser/runtime-browser-recording-service.js';
+import { RuntimeDataManagementService } from './data-management-service.js';
 
 export interface RuntimeEventPayloadSidecarOptions {
   /** Explicit opt-in. Omitting this object keeps every Event payload inline. */
@@ -93,6 +94,7 @@ export interface OpenPersistentRuntimeOptions extends Omit<
   | 'secureStore'
   | 'appSettingStore'
   | 'queryUsageSummary'
+  | 'dataManagement'
   | 'runIndexStore'
   | 'externalEventStore'
 > {
@@ -361,6 +363,11 @@ export async function openPersistentRuntime(
       secureStore,
       stepExecutor,
       appSettingStore,
+      dataManagement: new RuntimeDataManagementService({
+        raw: connection.raw,
+        databasePath,
+        dataRoot: runtimeDataRoot,
+      }),
       scheduledTaskStore: new SqliteScheduledTaskStore(connection.raw),
       runIndexStore,
       // Read-only here: the daemon owns every write to this queue.

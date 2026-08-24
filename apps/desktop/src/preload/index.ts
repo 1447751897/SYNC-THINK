@@ -6,6 +6,22 @@ import type {
   ExportDesktopDiagnosticsResponse,
 } from '../diagnostics-export-contract.js';
 import type {
+  ExportDesktopDataPayload,
+  ExportDesktopDataResponse,
+  ImportDesktopDataPayload,
+  ImportDesktopDataResponse,
+  OpenDesktopDataDirectoryResponse,
+} from '../data-management-contract.js';
+import type {
+  DataBackupPayload,
+  DataBackupResponse,
+  DataCleanConversationsPayload,
+  DataCleanConversationsResponse,
+  DataCleanEmptyAttachmentDirectoriesResponse,
+  DataCompactStorageResponse,
+  DataStorageStatsResponse,
+} from '@sync-think/protocol';
+import type {
   AppendMessagePayload,
   AppendMessageResponse,
   BindWorkspaceFolderPayload,
@@ -510,6 +526,30 @@ const api = {
       ipcRenderer.invoke('runtime:settings-get', payload) as Promise<GetSettingsResponse>,
     setSetting: (payload: SetSettingPayload) =>
       ipcRenderer.invoke('runtime:settings-set', payload) as Promise<SetSettingResponse>,
+    getDataStorageStats: () =>
+      ipcRenderer.invoke('runtime:data-storage-stats', {}) as Promise<DataStorageStatsResponse>,
+    exportData: (payload: ExportDesktopDataPayload = {}) =>
+      ipcRenderer.invoke('desktop:data-export', payload) as Promise<ExportDesktopDataResponse>,
+    importData: (payload: ImportDesktopDataPayload) =>
+      ipcRenderer.invoke('desktop:data-import', payload) as Promise<ImportDesktopDataResponse>,
+    backupData: (payload: DataBackupPayload) =>
+      ipcRenderer.invoke('runtime:data-backup', payload) as Promise<DataBackupResponse>,
+    compactDataStorage: () =>
+      ipcRenderer.invoke('runtime:data-compact-storage', {}) as Promise<DataCompactStorageResponse>,
+    cleanConversations: (payload: DataCleanConversationsPayload = {}) =>
+      ipcRenderer.invoke(
+        'runtime:data-clean-conversations',
+        payload,
+      ) as Promise<DataCleanConversationsResponse>,
+    cleanEmptyAttachmentDirectories: () =>
+      ipcRenderer.invoke(
+        'runtime:data-clean-empty-attachment-directories',
+        {},
+      ) as Promise<DataCleanEmptyAttachmentDirectoriesResponse>,
+    openDataDirectory: () =>
+      ipcRenderer.invoke(
+        'desktop:data-open-directory',
+      ) as Promise<OpenDesktopDataDirectoryResponse>,
     getUsageSummary: (payload: UsageSummaryPayload = {}) =>
       ipcRenderer.invoke('runtime:usage-summary', payload) as Promise<UsageSummaryResponse>,
     getAgent: (payload: GetAgentPayload = {}) =>
@@ -1073,8 +1113,8 @@ const api = {
         'desktop:diagnostics-export',
         payload,
       ) as Promise<ExportDesktopDiagnosticsResponse>,
-    pickFolder: () =>
-      ipcRenderer.invoke('desktop:pick-folder') as Promise<{
+    pickFolder: (payload?: { title?: string }) =>
+      ipcRenderer.invoke('desktop:pick-folder', payload) as Promise<{
         canceled: boolean;
         path: string | null;
       }>,

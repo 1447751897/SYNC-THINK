@@ -24,8 +24,8 @@ describe('Phase 3 accessibility contract', () => {
   it('keeps trace disclosure, diagnostics announcements, and current-step semantics explicit', () => {
     expect(trace).toContain('aria-expanded={open}');
     expect(diagnostics).toContain('aria-live="polite"');
-    expect(diagnostics).toContain("role={status?.role}");
-    expect(diagnostics).toContain("role: 'alert' as const");
+    expect(diagnostics).toContain("role={feedback.tone === 'error' ? 'alert' : 'status'}");
+    expect(diagnostics).toContain("tone: 'working' | 'success' | 'error'");
     expect(onboarding).toContain('className="sr-only"');
     expect(onboarding).toContain('aria-label=');
   });
@@ -47,7 +47,7 @@ describe('Phase 3 accessibility contract', () => {
   });
 
   it('isolates visual evidence behind an explicit query route and disables motion', () => {
-    expect(entry).toContain("resolvePhase3VisualCase(window.location.search)");
+    expect(entry).toContain('resolvePhase3VisualCase(window.location.search)');
     expect(entry).toContain("document.documentElement.setAttribute('data-reduced-motion', '')");
     expect(entry).toContain("fixtureTheme === 'dark'");
   });

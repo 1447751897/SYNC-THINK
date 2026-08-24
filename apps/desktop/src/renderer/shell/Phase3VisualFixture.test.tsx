@@ -17,7 +17,25 @@ beforeEach(() => {
     configurable: true,
     value: {
       runtime: {
-        exportDiagnostics: vi.fn(),
+        getDataStorageStats: vi.fn().mockResolvedValue({
+          success: true,
+          dataDirectory: 'C:\\Users\\fixture\\SYNC-THINK',
+          dbSizeBytes: 12 * 1024 * 1024,
+          conversationFilesSizeBytes: 3 * 1024 * 1024,
+          conversationCount: 12,
+          messageCount: 48,
+        }),
+        listWorkspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
+        getSettings: vi.fn().mockResolvedValue({ settings: {} }),
+        setSetting: vi.fn(),
+        exportData: vi.fn(),
+        importData: vi.fn(),
+        backupData: vi.fn(),
+        compactDataStorage: vi.fn(),
+        cleanConversations: vi.fn(),
+        cleanEmptyAttachmentDirectories: vi.fn(),
+        openDataDirectory: vi.fn(),
+        pickFolder: vi.fn(),
       },
     },
   });
@@ -161,14 +179,17 @@ describe('Phase3VisualFixture accessibility', () => {
     expect(screen.getByText('验证完成，最终回答已经开始输出。')).toBeTruthy();
   });
 
-  it('renders the real diagnostics privacy ledger and live status region', () => {
+  it('renders the NewMax data layout with live storage status and enabled migration actions', async () => {
     render(<Phase3VisualFixture visualCase="diagnostics" />);
 
     expect(screen.getByRole('main', { name: '诊断导出' })).toBeTruthy();
-    const exportButton = screen.getByRole('button', { name: '导出诊断 JSON' });
-    expect(exportButton.getAttribute('aria-describedby')).toContain('diagnostics-privacy');
-    expect(screen.getByText('EXCLUDED')).toBeTruthy();
-    expect(document.querySelector('[aria-live="polite"]')).toBeTruthy();
+    const exportButton = screen.getByRole('button', { name: '导出数据' });
+    expect((exportButton as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole('region', { name: '数据迁移' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: '存储管理' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: '清空本机数据' })).toBeTruthy();
+    expect(screen.getByText('数据库大小')).toBeTruthy();
+    expect(await screen.findByText('12.0 MB')).toBeTruthy();
   });
 
   it('renders reconnect/fallback notices and an unclipped short text block', () => {

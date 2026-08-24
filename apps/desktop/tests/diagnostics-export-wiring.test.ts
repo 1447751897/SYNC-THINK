@@ -23,14 +23,14 @@ describe('desktop diagnostics export wiring', () => {
     expect(preloadSource).toContain('exportDiagnostics:');
     expect(preloadSource).toContain("'desktop:diagnostics-export'");
     expect(globalSource).toContain('exportDiagnostics(');
-    expect(settingsSource).toContain('runtime.exportDiagnostics({})');
+    expect(settingsSource).toContain('runtime.exportData(');
     expect(settingsSource).not.toContain("from 'node:fs'");
   });
 
-  it('keeps privacy, keyboard focus, scaling, and reduced-motion evidence in the surface', () => {
-    expect(settingsSource).toContain('API Key、原始提示词、原始消息内容');
-    expect(settingsSource).toContain('最多 20 条 / 14 天');
-    expect(settingsSource).toContain('诊断包不会自动上传');
+  it('keeps keyboard focus, scaling, and reduced-motion evidence in the data surface', () => {
+    expect(settingsSource).toContain('getDataStorageStats');
+    expect(settingsSource).toContain('cleanEmptyAttachmentDirectories');
+    expect(settingsSource).toContain('数据迁移');
     expect(settingsSource).toContain('aria-live="polite"');
     expect(shellCss).toContain('.settings-diagnostics-export__button:focus-visible');
     expect(shellCss).toContain('@media (max-width: 820px)');

@@ -39,22 +39,25 @@ describe('open gateway settings section', () => {
   it('registers the connection section that the search box can find', () => {
     expect(settingsSource).toMatch(/id:\s*'connection',\s*\n\s*label:\s*'连接'/);
     expect(settingsSource).toContain("keywords: 'AI 模型网关 协议转换");
-    expect(settingsSource).toContain("{section === 'connection' && <ConnectionSection />}");
+    expect(settingsSource).toContain(
+      "<ConnectionSection onOpenWallet={() => setSection('wallet')} />",
+    );
+    expect(settingsSource).toContain("{ id: 'gateway', label: '开放网关' }");
     // The gateway no longer has its own sidebar section.
     expect(settingsSource).not.toContain("{ section === 'gateway'");
-    // The `general` fallback is index-based; inserting ahead of it would break it.
+    // The fallback resolves by id so NewMax navigation changes cannot retarget it.
     const sections = settingsSource.slice(
       settingsSource.indexOf('const SECTIONS'),
       settingsSource.indexOf('export interface SettingsPageProps'),
     );
     expect(sections.indexOf("id: 'general'")).toBeLessThan(sections.indexOf("id: 'connection'"));
-    expect(settingsSource).toContain('SECTIONS.find((item) => item.id === section) ?? SECTIONS[3]');
+    expect(settingsSource).toContain("SECTIONS.find((item) => item.id === 'general')!");
   });
 
   it('persists through the shared settings bridge and re-polls status afterwards', () => {
     const section = settingsSource.slice(
-      settingsSource.indexOf('function ConnectionSection'),
-      settingsSource.indexOf('type DiagnosticsExportState'),
+      settingsSource.indexOf('function OpenGatewaySection'),
+      settingsSource.indexOf('const GATEWAY_PAGE_SIZE'),
     );
     expect(section).toContain('OPEN_GATEWAY_SETTING_KEY');
     expect(section).toContain('normalizeOpenGatewaySetting');
@@ -66,8 +69,8 @@ describe('open gateway settings section', () => {
 
   it('renders a read-only upstream line and never exposes per-run tickets or keys', () => {
     const section = settingsSource.slice(
-      settingsSource.indexOf('function ConnectionSection'),
-      settingsSource.indexOf('type DiagnosticsExportState'),
+      settingsSource.indexOf('function OpenGatewaySection'),
+      settingsSource.indexOf('const GATEWAY_PAGE_SIZE'),
     );
     expect(section).not.toContain('externalToken');
     expect(section).not.toContain('ticket');

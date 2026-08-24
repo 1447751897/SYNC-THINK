@@ -1,3 +1,25 @@
+## 2026-08-24：设置数据与连接页严格对齐 NewMax 1.1.14
+
+### Added
+
+- Protocol、Runtime 与 Electron bridge 新增本机数据管理合同：实时存储统计、全量 JSON 导出、冲突策略导入、SQLite 在线备份、存储优化、空附件目录清理和按时间范围清空对话。
+- “连接器”新增 NewMax 同序的 27 个 Provider 入口；点击任一入口可填写远程 MCP 地址和鉴权信息并保存连接，第三方 Provider 与 MCP 页共用真实服务目录、启停、编辑、删除和工具刷新能力。
+
+### Changed
+
+- 直接依据本机 NewMax `1.1.14` 的 `DataTab`、`DsCard`、`DsButton`、`DsSelect` 与 `DsSwitch` 实现重做“设置 → 数据”，替换先前按截图猜测的固定卡片高度、常规边框、`30px` 控件和自定义隐私卡。
+- 页面恢复 NewMax 的完整五段结构：云端同步、数据迁移、数据备份、存储管理和清空本机数据；存储管理补齐四列统计、数据目录、优化、空附件目录清理、按范围清理及清空对话行，并使用原版中文文案和顺序。
+- 卡片改为 `18px` filled surface + elevation，内边距 `16px`、标题间距 `8px`、正文间距 `12px`；标题/行标题/说明为 `14px / 13px / 11px`，小按钮与选择器统一 `28px`。导出、导入、备份、优化和清理均连接真实 Runtime；云同步与“删除数据并退出”在没有对应持久化合同前保留明确禁用态。
+- “设置 → 连接”恢复 NewMax 的连接器、MCP、插件、搜索服务、机器人对话、开放网关和网络七段页签，以及 NewMax Provider / 第三方 Provider 切换条、余额摘要、三列连接器目录和本地图标资源；设置弹窗恢复 `1060 × 720px` 上限。
+- 插件页复用真实 Computer Use 配置，开放网关继续使用既有启停、端口和请求日志能力；尚未接入产品合同的搜索服务、机器人对话和网络页只展示真实状态，不生成伪连接。
+
+### Verification
+
+- Desktop 全量 `172 files / 1394 tests`、Runtime 全量 `151 files / 1138 tests` 通过；根级 typecheck `20/20`、lint `11/11`（0 error）、设计令牌和 `git diff --check` 通过。
+- `pnpm exec turbo run build --force` 强制全量构建 `11/11`，`0 cached`；Protocol、Runtime、Desktop Main、Preload 与 Renderer 均从当前源码生成。
+- 旧 Electron、daemon 和 Runtime 全部停止后冷启动最新构建：Electron PID `56192`、daemon PID `48260 / 43336`、Runtime PID `41784`；pipe healthcheck 返回 `ok=true`、protocol v2、`data.management`、`inFlightRuns=0` 和 `PIPE_SMOKE_OK`。最终 Desktop 格式化重建后通过 CDP `127.0.0.1:9334` 再次实窗核对。
+- 真实 Electron 实窗验证设置弹窗为 `1060 × 720px`，连接页包含 7 个页签和 27 个同序连接器，合法 MCP 地址会启用“保存并连接”；数据页读取真实 `15.7 GB / 22 个对话 / 818 条消息`，导出、导入、优化和附件清理按钮均可执行。页面错误与控制台错误为 0，证据位于 `.data/local-restart-20260824-225305-newmax-settings/`。
+
 ## 2026-08-24：合并远程 NewMax 与本地 Runtime 增强
 
 ### Changed
